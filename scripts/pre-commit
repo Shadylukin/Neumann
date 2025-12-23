@@ -4,7 +4,7 @@ set -e
 source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CRATES="tensor_store relational_engine"
+CRATES="tensor_store relational_engine graph_engine"
 MINIMUM_COVERAGE=95
 
 echo "Running pre-commit checks..."

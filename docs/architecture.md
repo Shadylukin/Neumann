@@ -13,7 +13,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 |                  Query Engines                    |
 |  +------------+ +------------+ +------------+    |
 |  | Relational | |   Graph    | |   Vector   |    |
-|  |  [DONE]    | |  (Future)  | |  (Future)  |    |
+|  |  [DONE]    | |   [DONE]   | |  (Future)  |    |
 |  +------------+ +------------+ +------------+    |
 +--------------------------------------------------+
                         |
@@ -71,13 +71,21 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Implement indexes (full table scans)
 - Support transactions
 
-### Module 3: Graph Engine (Planned)
+### Module 3: Graph Engine (Complete)
 
 **Responsibility**: Graph traversals and path queries.
 
-**Will Provide**:
-- `TRAVERSE`, `PATH`, `NEIGHBORS`
-- Relationship queries
+**Interface**:
+- `create_node(label, properties) -> Result<node_id>`
+- `create_edge(from, to, type, properties, directed) -> Result<edge_id>`
+- `traverse(start, direction, depth, edge_type) -> Result<Vec<Node>>`
+- `find_path(from, to) -> Result<Path>`
+- `neighbors(node_id, edge_type, direction) -> Result<Vec<Node>>`
+
+**Does Not**:
+- Store data directly (uses Tensor Store)
+- Implement weighted paths (Dijkstra)
+- Support pattern matching (Cypher-style)
 
 ### Module 4: Vector Engine (Planned)
 
@@ -205,12 +213,16 @@ Neumann/
     architecture.md          # This file
     tensor-store.md          # Module 1 documentation
     relational-engine.md     # Module 2 documentation
+    graph-engine.md          # Module 3 documentation
   tensor_store/
     Cargo.toml
     src/lib.rs               # Module 1: Storage layer
   relational_engine/
     Cargo.toml
     src/lib.rs               # Module 2: SQL-like operations
+  graph_engine/
+    Cargo.toml
+    src/lib.rs               # Module 3: Graph operations
 ```
 
 ## Quality Gates
