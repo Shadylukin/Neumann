@@ -3,20 +3,28 @@ set -e
 
 source "$HOME/.cargo/env" 2>/dev/null || true
 
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CRATES="tensor_store relational_engine"
+
 echo "Running pre-commit checks..."
 
-cd "$(git rev-parse --show-toplevel)/tensor_store"
+for crate in $CRATES; do
+    echo ""
+    echo "=== Checking $crate ==="
+    cd "$REPO_ROOT/$crate"
 
-echo "Checking formatting..."
-cargo fmt --check
+    echo "Formatting..."
+    cargo fmt --check
 
-echo "Running clippy..."
-cargo clippy -- -D warnings
+    echo "Clippy..."
+    cargo clippy -- -D warnings
 
-echo "Running tests..."
-cargo test --quiet
+    echo "Testing..."
+    cargo test --quiet
 
-echo "Building docs..."
-cargo doc --no-deps --quiet
+    echo "Docs..."
+    cargo doc --no-deps --quiet
+done
 
+echo ""
 echo "All checks passed."

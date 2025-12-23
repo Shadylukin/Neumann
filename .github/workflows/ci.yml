@@ -14,31 +14,40 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tensor_store
+          workspaces: ${{ matrix.crate }}
       - name: Check
-        working-directory: tensor_store
+        working-directory: ${{ matrix.crate }}
         run: cargo check --all-features
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Format check
-        working-directory: tensor_store
+        working-directory: ${{ matrix.crate }}
         run: cargo fmt --check
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -46,35 +55,41 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tensor_store
+          workspaces: ${{ matrix.crate }}
       - name: Clippy
-        working-directory: tensor_store
+        working-directory: ${{ matrix.crate }}
         run: cargo clippy --all-features -- -D warnings
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tensor_store
+          workspaces: ${{ matrix.crate }}
       - name: Run tests
-        working-directory: tensor_store
+        working-directory: ${{ matrix.crate }}
         run: cargo test --all-features
 
   doc:
     name: Documentation
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tensor_store
+          workspaces: ${{ matrix.crate }}
       - name: Build docs
-        working-directory: tensor_store
+        working-directory: ${{ matrix.crate }}
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
@@ -90,6 +105,6 @@ jobs:
       - name: Setup Miri
         working-directory: tensor_store
         run: cargo miri setup
-      - name: Run Miri
+      - name: Run Miri on tensor_store
         working-directory: tensor_store
         run: cargo miri test

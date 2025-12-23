@@ -64,7 +64,9 @@ The shell is the primary interface. Everything is a command. State lives in the 
 | Module | Status | Description |
 |--------|--------|-------------|
 | Tensor Store | Complete | Key-value storage for tensor data |
-| Query Layer | Planned | Relational, graph, and vector queries |
+| Relational Engine | Complete | Tables, schemas, SQL-like operations |
+| Graph Engine | Planned | Nodes, edges, traversals |
+| Vector Engine | Planned | Embeddings, similarity search |
 | Shell | Planned | CLI interface |
 | Persistence | Planned | Durability and backup |
 
@@ -84,6 +86,7 @@ Neumann finishes the thought.
 
 - [Architecture Overview](docs/architecture.md)
 - [Tensor Store API](docs/tensor-store.md)
+- [Relational Engine API](docs/relational-engine.md)
 
 ## License
 

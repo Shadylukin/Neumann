@@ -10,10 +10,11 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
-|               Query Layer (Future)                |
-|   - Relational queries (SQL-like)                |
-|   - Graph traversals                             |
-|   - Vector similarity search                     |
+|                  Query Engines                    |
+|  +------------+ +------------+ +------------+    |
+|  | Relational | |   Graph    | |   Vector   |    |
+|  |  [DONE]    | |  (Future)  | |  (Future)  |    |
+|  +------------+ +------------+ +------------+    |
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
@@ -53,20 +54,40 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Enforce relationships
 - Handle persistence
 
-### Module 2: Query Layer (Planned)
+### Module 2: Relational Engine (Complete)
 
-**Responsibility**: Interpret queries, delegate storage to Tensor Store.
+**Responsibility**: SQL-like table operations on Tensor Store.
+
+**Interface**:
+- `create_table(name, schema) -> Result<()>`
+- `insert(table, values) -> Result<row_id>`
+- `select(table, condition) -> Result<Vec<Row>>`
+- `update(table, condition, values) -> Result<count>`
+- `delete_rows(table, condition) -> Result<count>`
+- `join(table_a, table_b, on_a, on_b) -> Result<Vec<(Row, Row)>>`
+
+**Does Not**:
+- Store data directly (uses Tensor Store)
+- Implement indexes (full table scans)
+- Support transactions
+
+### Module 3: Graph Engine (Planned)
+
+**Responsibility**: Graph traversals and path queries.
 
 **Will Provide**:
-- Relational: `SELECT`, `JOIN`, `WHERE`
-- Graph: `TRAVERSE`, `PATH`, `NEIGHBORS`
-- Vector: `SIMILAR`, `NEAREST`
+- `TRAVERSE`, `PATH`, `NEIGHBORS`
+- Relationship queries
 
-**Will Not**:
-- Store data directly
-- Manage concurrency (Tensor Store handles this)
+### Module 4: Vector Engine (Planned)
 
-### Module 3: Shell (Planned)
+**Responsibility**: Similarity search on embeddings.
+
+**Will Provide**:
+- `SIMILAR`, `NEAREST`
+- Distance calculations
+
+### Module 5: Shell (Planned)
 
 **Responsibility**: User interface.
 
@@ -171,22 +192,25 @@ Tensor Store accepts any `TensorData`. Schema validation belongs in Query Layer.
 
 ```
 Neumann/
-  README.md              # Project overview
-  CLAUDE.md              # AI coding guidelines
+  README.md                  # Project overview
+  CLAUDE.md                  # AI coding guidelines
   .gitignore
   .github/
     workflows/
-      ci.yml             # GitHub Actions CI
+      ci.yml                 # GitHub Actions CI
   scripts/
-    pre-commit           # Quality gate hook
-    setup-hooks.sh       # Hook installer
+    pre-commit               # Quality gate hook
+    setup-hooks.sh           # Hook installer
   docs/
-    architecture.md      # This file
-    tensor-store.md      # Module 1 documentation
+    architecture.md          # This file
+    tensor-store.md          # Module 1 documentation
+    relational-engine.md     # Module 2 documentation
   tensor_store/
-    Cargo.toml           # Rust package manifest
-    src/
-      lib.rs             # All Module 1 code
+    Cargo.toml
+    src/lib.rs               # Module 1: Storage layer
+  relational_engine/
+    Cargo.toml
+    src/lib.rs               # Module 2: SQL-like operations
 ```
 
 ## Quality Gates
