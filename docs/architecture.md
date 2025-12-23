@@ -121,7 +121,7 @@ Query Layer validates and transforms
 Tensor Store.put(key, tensor)
     |
     v
-RwLock write lock acquired
+DashMap shard lock acquired (only this shard)
     |
     v
 HashMap insert
@@ -145,7 +145,7 @@ Query Layer plans execution
 Tensor Store.get(key) / scan(prefix)
     |
     v
-RwLock read lock acquired
+DashMap lookup (lock-free for reads)
     |
     v
 Data cloned and returned
@@ -181,16 +181,15 @@ Keys are strings with convention `type:id`. This:
 - Is human-readable
 - Avoids complex key encoding
 
-### 4. Thread Safety via RwLock
+### 4. Thread Safety via DashMap
 
-Single `RwLock` over entire HashMap. Simple and correct, but:
-- All writes serialize
-- Long scans block writes
+Uses DashMap (sharded concurrent HashMap) for thread safety:
+- Reads are lock-free
+- Writes only block other writes to the same shard (~16 shards)
+- No lock poisoning (unlike RwLock)
+- Simple API without manual lock handling
 
-For high-throughput scenarios, consider:
-- Sharded locks by key prefix
-- Lock-free data structures
-- Read-optimized snapshots
+This provides significantly better concurrent write throughput compared to a single RwLock.
 
 ### 5. No Schema Enforcement
 

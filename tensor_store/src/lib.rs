@@ -1,5 +1,5 @@
+use dashmap::DashMap;
 use std::collections::HashMap;
-use std::sync::RwLock;
 
 /// Represents different types of values a tensor can hold
 #[derive(Debug, Clone, PartialEq)]
@@ -72,85 +72,95 @@ pub type Result<T> = std::result::Result<T, TensorStoreError>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TensorStoreError {
     NotFound(String),
-    LockError,
 }
 
 impl std::fmt::Display for TensorStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TensorStoreError::NotFound(key) => write!(f, "Key not found: {}", key),
-            TensorStoreError::LockError => write!(f, "Failed to acquire lock"),
         }
     }
 }
 
 impl std::error::Error for TensorStoreError {}
 
-/// Thread-safe key-value store for tensor data. Knows nothing about queries.
+/// Thread-safe key-value store for tensor data using sharded concurrent HashMap.
+///
+/// Uses DashMap internally for lock-free concurrent reads and sharded writes.
+/// This provides better performance under write contention compared to a single RwLock.
+///
+/// # Concurrency Model
+///
+/// - **Reads**: Lock-free, can proceed in parallel with other reads and writes to different shards
+/// - **Writes**: Only block other writes to the same shard (~16 shards by default)
+/// - **No poisoning**: Unlike RwLock, panics don't poison the entire store
 pub struct TensorStore {
-    pub(crate) data: RwLock<HashMap<String, TensorData>>,
+    data: DashMap<String, TensorData>,
 }
 
 impl TensorStore {
     pub fn new() -> Self {
         Self {
-            data: RwLock::new(HashMap::new()),
+            data: DashMap::new(),
+        }
+    }
+
+    /// Create a store with a specific capacity hint for better initial allocation.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            data: DashMap::with_capacity(capacity),
         }
     }
 
     pub fn put(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
-        let mut data = self.data.write().map_err(|_| TensorStoreError::LockError)?;
-        data.insert(key.into(), tensor);
+        self.data.insert(key.into(), tensor);
         Ok(())
     }
 
     /// Returns cloned data to ensure thread safety.
     pub fn get(&self, key: &str) -> Result<TensorData> {
-        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
-        data.get(key)
-            .cloned()
+        self.data
+            .get(key)
+            .map(|r| r.value().clone())
             .ok_or_else(|| TensorStoreError::NotFound(key.to_string()))
     }
 
     pub fn delete(&self, key: &str) -> Result<()> {
-        let mut data = self.data.write().map_err(|_| TensorStoreError::LockError)?;
-        data.remove(key)
+        self.data
+            .remove(key)
             .map(|_| ())
             .ok_or_else(|| TensorStoreError::NotFound(key.to_string()))
     }
 
-    pub fn exists(&self, key: &str) -> Result<bool> {
-        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
-        Ok(data.contains_key(key))
+    pub fn exists(&self, key: &str) -> bool {
+        self.data.contains_key(key)
     }
 
-    pub fn scan(&self, prefix: &str) -> Result<Vec<String>> {
-        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
-        Ok(data
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
-            .collect())
+    pub fn scan(&self, prefix: &str) -> Vec<String> {
+        self.data
+            .iter()
+            .filter(|r| r.key().starts_with(prefix))
+            .map(|r| r.key().clone())
+            .collect()
     }
 
-    pub fn len(&self) -> Result<usize> {
-        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
-        Ok(data.len())
+    pub fn len(&self) -> usize {
+        self.data.len()
     }
 
-    pub fn is_empty(&self) -> Result<bool> {
-        Ok(self.len()? == 0)
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
-    pub fn clear(&self) -> Result<()> {
-        let mut data = self.data.write().map_err(|_| TensorStoreError::LockError)?;
-        data.clear();
-        Ok(())
+    pub fn clear(&self) {
+        self.data.clear();
     }
 
-    pub fn scan_count(&self, prefix: &str) -> Result<usize> {
-        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
-        Ok(data.keys().filter(|k| k.starts_with(prefix)).count())
+    pub fn scan_count(&self, prefix: &str) -> usize {
+        self.data
+            .iter()
+            .filter(|r| r.key().starts_with(prefix))
+            .count()
     }
 }
 
@@ -293,9 +303,9 @@ mod tests {
         let store = TensorStore::new();
         store.put("key1", TensorData::new()).unwrap();
 
-        assert!(store.exists("key1").unwrap());
+        assert!(store.exists("key1"));
         store.delete("key1").unwrap();
-        assert!(!store.exists("key1").unwrap());
+        assert!(!store.exists("key1"));
     }
 
     #[test]
@@ -308,9 +318,9 @@ mod tests {
     #[test]
     fn store_exists() {
         let store = TensorStore::new();
-        assert!(!store.exists("key").unwrap());
+        assert!(!store.exists("key"));
         store.put("key", TensorData::new()).unwrap();
-        assert!(store.exists("key").unwrap());
+        assert!(store.exists("key"));
     }
 
     #[test]
@@ -338,7 +348,7 @@ mod tests {
         store.put("user:2", TensorData::new()).unwrap();
         store.put("post:1", TensorData::new()).unwrap();
 
-        let users = store.scan("user:").unwrap();
+        let users = store.scan("user:");
         assert_eq!(users.len(), 2);
         assert!(users.contains(&"user:1".to_string()));
         assert!(users.contains(&"user:2".to_string()));
@@ -350,7 +360,7 @@ mod tests {
         store.put("a", TensorData::new()).unwrap();
         store.put("b", TensorData::new()).unwrap();
 
-        let all = store.scan("").unwrap();
+        let all = store.scan("");
         assert_eq!(all.len(), 2);
     }
 
@@ -359,19 +369,19 @@ mod tests {
         let store = TensorStore::new();
         store.put("user:1", TensorData::new()).unwrap();
 
-        let results = store.scan("post:").unwrap();
+        let results = store.scan("post:");
         assert!(results.is_empty());
     }
 
     #[test]
     fn store_len_and_is_empty() {
         let store = TensorStore::new();
-        assert!(store.is_empty().unwrap());
-        assert_eq!(store.len().unwrap(), 0);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
 
         store.put("key", TensorData::new()).unwrap();
-        assert!(!store.is_empty().unwrap());
-        assert_eq!(store.len().unwrap(), 1);
+        assert!(!store.is_empty());
+        assert_eq!(store.len(), 1);
     }
 
     #[test]
@@ -385,7 +395,7 @@ mod tests {
             store.put(format!("entity:{}", i), tensor).unwrap();
         }
 
-        assert_eq!(store.len().unwrap(), 10_000);
+        assert_eq!(store.len(), 10_000);
 
         let tensor = store.get("entity:5000").unwrap();
         match tensor.get("id") {
@@ -414,7 +424,7 @@ mod tests {
             handle.join().unwrap();
         }
 
-        assert_eq!(store.len().unwrap(), 4000);
+        assert_eq!(store.len(), 4000);
     }
 
     #[test]
@@ -450,7 +460,35 @@ mod tests {
             handle.join().unwrap();
         }
 
-        assert_eq!(store.len().unwrap(), 300);
+        assert_eq!(store.len(), 300);
+    }
+
+    #[test]
+    fn store_concurrent_writes_same_keys() {
+        // This test verifies DashMap's sharded locking under contention
+        // Multiple threads write to overlapping keys
+        let store = Arc::new(TensorStore::new());
+        let mut handles = vec![];
+
+        for t in 0..8 {
+            let store = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                for i in 0..500 {
+                    let key = format!("key:{}", i % 100); // Only 100 unique keys
+                    let mut tensor = TensorData::new();
+                    tensor.set("thread", TensorValue::Scalar(ScalarValue::Int(t)));
+                    tensor.set("iter", TensorValue::Scalar(ScalarValue::Int(i)));
+                    store.put(key, tensor).unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should have exactly 100 keys (last write wins)
+        assert_eq!(store.len(), 100);
     }
 
     #[test]
@@ -465,29 +503,29 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(store.scan("user:").unwrap().len(), 100);
-        assert_eq!(store.scan("post:").unwrap().len(), 100);
-        assert_eq!(store.scan("comment:").unwrap().len(), 100);
-        assert_eq!(store.scan("").unwrap().len(), 300);
+        assert_eq!(store.scan("user:").len(), 100);
+        assert_eq!(store.scan("post:").len(), 100);
+        assert_eq!(store.scan("comment:").len(), 100);
+        assert_eq!(store.scan("").len(), 300);
     }
 
     #[test]
     fn store_empty_key() {
         let store = TensorStore::new();
         store.put("", TensorData::new()).unwrap();
-        assert!(store.exists("").unwrap());
+        assert!(store.exists(""));
         store.delete("").unwrap();
-        assert!(!store.exists("").unwrap());
+        assert!(!store.exists(""));
     }
 
     #[test]
     fn store_unicode_keys() {
         let store = TensorStore::new();
-        store.put("user:cafe", TensorData::new()).unwrap();
-        store.put("user:tokyo", TensorData::new()).unwrap();
+        store.put("user:café", TensorData::new()).unwrap();
+        store.put("user:東京", TensorData::new()).unwrap();
 
-        assert!(store.exists("user:cafe").unwrap());
-        assert!(store.exists("user:tokyo").unwrap());
+        assert!(store.exists("user:café"));
+        assert!(store.exists("user:東京"));
     }
 
     #[test]
@@ -496,10 +534,10 @@ mod tests {
         store.put("a", TensorData::new()).unwrap();
         store.put("b", TensorData::new()).unwrap();
 
-        assert_eq!(store.len().unwrap(), 2);
-        store.clear().unwrap();
-        assert_eq!(store.len().unwrap(), 0);
-        assert!(store.is_empty().unwrap());
+        assert_eq!(store.len(), 2);
+        store.clear();
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
     }
 
     #[test]
@@ -512,10 +550,21 @@ mod tests {
             store.put(format!("post:{}", i), TensorData::new()).unwrap();
         }
 
-        assert_eq!(store.scan_count("user:").unwrap(), 50);
-        assert_eq!(store.scan_count("post:").unwrap(), 30);
-        assert_eq!(store.scan_count("").unwrap(), 80);
-        assert_eq!(store.scan_count("nonexistent:").unwrap(), 0);
+        assert_eq!(store.scan_count("user:"), 50);
+        assert_eq!(store.scan_count("post:"), 30);
+        assert_eq!(store.scan_count(""), 80);
+        assert_eq!(store.scan_count("nonexistent:"), 0);
+    }
+
+    #[test]
+    fn store_with_capacity() {
+        let store = TensorStore::with_capacity(1000);
+        assert!(store.is_empty());
+
+        for i in 0..1000 {
+            store.put(format!("key:{}", i), TensorData::new()).unwrap();
+        }
+        assert_eq!(store.len(), 1000);
     }
 
     #[test]
@@ -542,13 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn error_display_lock_error() {
-        let err = TensorStoreError::LockError;
-        let msg = format!("{}", err);
-        assert!(msg.contains("lock") || msg.contains("Lock"));
-    }
-
-    #[test]
     fn error_is_error_trait() {
         let err: &dyn std::error::Error = &TensorStoreError::NotFound("x".into());
         assert!(err.to_string().contains("x"));
@@ -557,7 +599,7 @@ mod tests {
     #[test]
     fn store_default_trait() {
         let store = TensorStore::default();
-        assert!(store.is_empty().unwrap());
+        assert!(store.is_empty());
     }
 
     #[test]
@@ -611,11 +653,8 @@ mod tests {
 
     #[test]
     fn tensor_store_error_clone() {
-        let err1 = TensorStoreError::NotFound("key".into());
-        let err2 = TensorStoreError::LockError;
-
-        assert_eq!(err1.clone(), err1);
-        assert_eq!(err2.clone(), err2);
+        let err = TensorStoreError::NotFound("key".into());
+        assert_eq!(err.clone(), err);
     }
 
     #[test]
@@ -637,152 +676,5 @@ mod tests {
         let err = TensorStoreError::NotFound("key".into());
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("NotFound"));
-    }
-
-    // Lock poisoning tests - covers the LockError branches
-    // When a thread panics while holding a lock, the lock becomes poisoned
-
-    #[test]
-    fn poisoned_lock_put_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.put("key", TensorData::new());
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_get_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.get("key");
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_delete_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.delete("key");
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_exists_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.exists("key");
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_scan_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.scan("prefix:");
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_len_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.len();
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_is_empty_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.is_empty();
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_clear_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.clear();
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
-    }
-
-    #[test]
-    fn poisoned_lock_scan_count_returns_lock_error() {
-        let store = Arc::new(TensorStore::new());
-        let store_clone = Arc::clone(&store);
-
-        let handle = thread::spawn(move || {
-            let _guard = store_clone.data.write().unwrap();
-            panic!("intentional panic to poison lock");
-        });
-
-        let _ = handle.join();
-
-        let result = store.scan_count("prefix:");
-        assert!(matches!(result, Err(TensorStoreError::LockError)));
     }
 }

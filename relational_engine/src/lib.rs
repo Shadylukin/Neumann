@@ -262,7 +262,7 @@ impl RelationalEngine {
     pub fn create_table(&self, name: &str, schema: Schema) -> Result<()> {
         let meta_key = Self::table_meta_key(name);
 
-        if self.store.exists(&meta_key)? {
+        if self.store.exists(&meta_key) {
             return Err(RelationalError::TableAlreadyExists(name.to_string()));
         }
 
@@ -421,7 +421,7 @@ impl RelationalEngine {
         let _ = self.get_schema(table)?;
 
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix)?;
+        let keys = self.store.scan(&prefix);
 
         let mut rows = Vec::new();
         for key in keys {
@@ -464,7 +464,7 @@ impl RelationalEngine {
         }
 
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix)?;
+        let keys = self.store.scan(&prefix);
 
         let mut count = 0;
         for key in keys {
@@ -489,7 +489,7 @@ impl RelationalEngine {
         let _ = self.get_schema(table)?;
 
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix)?;
+        let keys = self.store.scan(&prefix);
 
         let mut to_delete = Vec::new();
         for key in keys {
@@ -545,12 +545,12 @@ impl RelationalEngine {
     pub fn drop_table(&self, table: &str) -> Result<()> {
         let meta_key = Self::table_meta_key(table);
 
-        if !self.store.exists(&meta_key)? {
+        if !self.store.exists(&meta_key) {
             return Err(RelationalError::TableNotFound(table.to_string()));
         }
 
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix)?;
+        let keys = self.store.scan(&prefix);
         for key in keys {
             self.store.delete(&key)?;
         }
@@ -563,15 +563,15 @@ impl RelationalEngine {
         Ok(())
     }
 
-    pub fn table_exists(&self, table: &str) -> Result<bool> {
+    pub fn table_exists(&self, table: &str) -> bool {
         let meta_key = Self::table_meta_key(table);
-        Ok(self.store.exists(&meta_key)?)
+        self.store.exists(&meta_key)
     }
 
     pub fn row_count(&self, table: &str) -> Result<usize> {
         let _ = self.get_schema(table)?;
         let prefix = Self::row_prefix(table);
-        Ok(self.store.scan_count(&prefix)?)
+        Ok(self.store.scan_count(&prefix))
     }
 }
 
@@ -890,11 +890,11 @@ mod tests {
         values.insert("age".to_string(), Value::Int(30));
         engine.insert("users", values).unwrap();
 
-        assert!(engine.table_exists("users").unwrap());
+        assert!(engine.table_exists("users"));
 
         engine.drop_table("users").unwrap();
 
-        assert!(!engine.table_exists("users").unwrap());
+        assert!(!engine.table_exists("users"));
 
         let result = engine.select("users", Condition::True);
         assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
@@ -974,14 +974,14 @@ mod tests {
     #[test]
     fn engine_default_trait() {
         let engine = RelationalEngine::default();
-        assert!(!engine.table_exists("any").unwrap());
+        assert!(!engine.table_exists("any"));
     }
 
     #[test]
     fn engine_with_store() {
         let store = TensorStore::new();
         let engine = RelationalEngine::with_store(store);
-        assert!(!engine.table_exists("any").unwrap());
+        assert!(!engine.table_exists("any"));
     }
 
     #[test]

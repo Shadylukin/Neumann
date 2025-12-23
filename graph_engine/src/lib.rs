@@ -172,10 +172,10 @@ impl GraphEngine {
         directed: bool,
     ) -> Result<u64> {
         // Verify both nodes exist
-        if !self.node_exists(from)? {
+        if !self.node_exists(from) {
             return Err(GraphError::NodeNotFound(from));
         }
-        if !self.node_exists(to)? {
+        if !self.node_exists(to) {
             return Err(GraphError::NodeNotFound(to));
         }
 
@@ -249,8 +249,8 @@ impl GraphEngine {
         Ok(edges)
     }
 
-    pub fn node_exists(&self, id: u64) -> Result<bool> {
-        Ok(self.store.exists(&Self::node_key(id))?)
+    pub fn node_exists(&self, id: u64) -> bool {
+        self.store.exists(&Self::node_key(id))
     }
 
     pub fn get_node(&self, id: u64) -> Result<Node> {
@@ -333,7 +333,7 @@ impl GraphEngine {
         edge_type: Option<&str>,
         direction: Direction,
     ) -> Result<Vec<Node>> {
-        if !self.node_exists(node_id)? {
+        if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
         }
 
@@ -390,7 +390,7 @@ impl GraphEngine {
         max_depth: usize,
         edge_type: Option<&str>,
     ) -> Result<Vec<Node>> {
-        if !self.node_exists(start)? {
+        if !self.node_exists(start) {
             return Err(GraphError::NodeNotFound(start));
         }
 
@@ -467,10 +467,10 @@ impl GraphEngine {
     }
 
     pub fn find_path(&self, from: u64, to: u64) -> Result<Path> {
-        if !self.node_exists(from)? {
+        if !self.node_exists(from) {
             return Err(GraphError::NodeNotFound(from));
         }
-        if !self.node_exists(to)? {
+        if !self.node_exists(to) {
             return Err(GraphError::NodeNotFound(to));
         }
 
@@ -541,12 +541,12 @@ impl GraphEngine {
         Path { nodes, edges }
     }
 
-    pub fn node_count(&self) -> Result<usize> {
-        Ok(self.store.scan_count("node:")? - self.store.scan_count("node:")? / 3 * 2)
+    pub fn node_count(&self) -> usize {
+        self.store.scan_count("node:") - self.store.scan_count("node:") / 3 * 2
     }
 
     pub fn delete_node(&self, id: u64) -> Result<()> {
-        if !self.node_exists(id)? {
+        if !self.node_exists(id) {
             return Err(GraphError::NodeNotFound(id));
         }
 
@@ -911,9 +911,9 @@ mod tests {
             .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
             .unwrap();
 
-        assert!(engine.node_exists(n1).unwrap());
+        assert!(engine.node_exists(n1));
         engine.delete_node(n1).unwrap();
-        assert!(!engine.node_exists(n1).unwrap());
+        assert!(!engine.node_exists(n1));
 
         // Edge should also be deleted
         let result = engine.get_edge(1);
@@ -938,7 +938,7 @@ mod tests {
     #[test]
     fn engine_default_trait() {
         let engine = GraphEngine::default();
-        assert!(!engine.node_exists(1).unwrap());
+        assert!(!engine.node_exists(1));
     }
 
     #[test]
@@ -1014,7 +1014,7 @@ mod tests {
     fn with_store_constructor() {
         let store = TensorStore::new();
         let engine = GraphEngine::with_store(store);
-        assert!(!engine.node_exists(1).unwrap());
+        assert!(!engine.node_exists(1));
     }
 
     #[test]
@@ -1064,14 +1064,14 @@ mod tests {
         let engine = GraphEngine::new();
 
         // Empty graph
-        assert_eq!(engine.node_count().unwrap(), 0);
+        assert_eq!(engine.node_count(), 0);
 
         // Add some nodes
         engine.create_node("A", HashMap::new()).unwrap();
         engine.create_node("B", HashMap::new()).unwrap();
         engine.create_node("C", HashMap::new()).unwrap();
 
-        assert_eq!(engine.node_count().unwrap(), 3);
+        assert_eq!(engine.node_count(), 3);
     }
 
     #[test]

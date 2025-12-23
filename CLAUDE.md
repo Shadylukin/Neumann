@@ -78,7 +78,21 @@ The store knows nothing about queries - it only stores and retrieves tensors by 
 
 - `TensorValue`: Scalar, Vector, Pointer, or Pointers
 - `TensorData`: A map of field names to TensorValues
-- `TensorStore`: Thread-safe key-value store using RwLock<HashMap>
+- `TensorStore`: Thread-safe key-value store using DashMap (sharded concurrent HashMap)
+
+## Concurrency Design
+
+TensorStore uses DashMap instead of RwLock<HashMap>:
+
+- **Why**: Better concurrent write performance, no lock poisoning
+- **How**: DashMap uses ~16 shards, writes only block same-shard writes
+- **Trade-off**: Adds dashmap dependency, but eliminates failure modes
+
+When adding new concurrent data structures:
+1. Prefer sharded/partitioned designs over single locks
+2. Avoid lock poisoning by using parking_lot or dashmap
+3. Always add concurrent tests (`store_concurrent_*`)
+4. Document the concurrency model in doc comments
 
 ## Commit Guidelines
 
