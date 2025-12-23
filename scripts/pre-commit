@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+
+source "$HOME/.cargo/env" 2>/dev/null || true
+
+echo "Running pre-commit checks..."
+
+cd "$(git rev-parse --show-toplevel)/tensor_store"
+
+echo "Checking formatting..."
+cargo fmt --check
+
+echo "Running clippy..."
+cargo clippy -- -D warnings
+
+echo "Running tests..."
+cargo test --quiet
+
+echo "Building docs..."
+cargo doc --no-deps --quiet
+
+echo "All checks passed."
