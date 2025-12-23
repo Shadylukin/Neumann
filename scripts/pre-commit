@@ -12,19 +12,19 @@ echo "Running pre-commit checks..."
 for crate in $CRATES; do
     echo ""
     echo "=== Checking $crate ==="
-    cd "$REPO_ROOT/$crate"
+    cd "$REPO_ROOT"
 
     echo "Formatting..."
-    cargo fmt --check
+    cargo fmt --package "$crate" --check
 
     echo "Clippy..."
-    cargo clippy -- -D warnings
+    cargo clippy --package "$crate" -- -D warnings
 
     echo "Testing..."
-    cargo test --quiet
+    cargo test --package "$crate" --quiet
 
     echo "Docs..."
-    cargo doc --no-deps --quiet
+    cargo doc --package "$crate" --no-deps --quiet
 done
 
 # Coverage check (optional - can be slow)
@@ -34,12 +34,12 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
 
     # Check if cargo-llvm-cov is installed
     if command -v cargo-llvm-cov &> /dev/null || cargo llvm-cov --version &> /dev/null 2>&1; then
+        cd "$REPO_ROOT"
         for crate in $CRATES; do
             echo "Checking coverage for $crate..."
-            cd "$REPO_ROOT/$crate"
 
             # Get coverage percentage (field 10 is line coverage %)
-            COVERAGE=$(cargo llvm-cov --quiet 2>&1 | grep "^TOTAL" | awk '{print $10}' | tr -d '%')
+            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep "^TOTAL" | awk '{print $10}' | tr -d '%')
 
             if [ -n "$COVERAGE" ]; then
                 COVERAGE_INT=${COVERAGE%.*}
