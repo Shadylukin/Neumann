@@ -22,6 +22,7 @@ pub enum ScalarValue {
     Int(i64),
     Float(f64),
     String(String),
+    Bytes(Vec<u8>),
 }
 
 /// An entity that can hold scalar properties, vector embeddings, and pointers to other tensors.
@@ -139,6 +140,17 @@ impl TensorStore {
 
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        let mut data = self.data.write().map_err(|_| TensorStoreError::LockError)?;
+        data.clear();
+        Ok(())
+    }
+
+    pub fn scan_count(&self, prefix: &str) -> Result<usize> {
+        let data = self.data.read().map_err(|_| TensorStoreError::LockError)?;
+        Ok(data.keys().filter(|k| k.starts_with(prefix)).count())
     }
 }
 
@@ -476,5 +488,48 @@ mod tests {
 
         assert!(store.exists("user:cafe").unwrap());
         assert!(store.exists("user:tokyo").unwrap());
+    }
+
+    #[test]
+    fn store_clear() {
+        let store = TensorStore::new();
+        store.put("a", TensorData::new()).unwrap();
+        store.put("b", TensorData::new()).unwrap();
+
+        assert_eq!(store.len().unwrap(), 2);
+        store.clear().unwrap();
+        assert_eq!(store.len().unwrap(), 0);
+        assert!(store.is_empty().unwrap());
+    }
+
+    #[test]
+    fn store_scan_count() {
+        let store = TensorStore::new();
+        for i in 0..50 {
+            store.put(format!("user:{}", i), TensorData::new()).unwrap();
+        }
+        for i in 0..30 {
+            store.put(format!("post:{}", i), TensorData::new()).unwrap();
+        }
+
+        assert_eq!(store.scan_count("user:").unwrap(), 50);
+        assert_eq!(store.scan_count("post:").unwrap(), 30);
+        assert_eq!(store.scan_count("").unwrap(), 80);
+        assert_eq!(store.scan_count("nonexistent:").unwrap(), 0);
+    }
+
+    #[test]
+    fn tensor_data_stores_bytes() {
+        let mut tensor = TensorData::new();
+        let data = vec![0x00, 0xFF, 0x42];
+        tensor.set(
+            "binary",
+            TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
+        );
+
+        match tensor.get("binary") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => assert_eq!(b, &data),
+            _ => panic!("expected bytes"),
+        }
     }
 }

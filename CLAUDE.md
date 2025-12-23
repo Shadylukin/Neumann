@@ -62,10 +62,14 @@ All code must pass before commit:
 
 ## Architecture
 
+See `docs/architecture.md` for full system design.
+
 ```
-tensor_store/
-  src/
-    lib.rs       # Core types and TensorStore implementation
+tensor_store/           # Module 1: Storage layer
+  src/lib.rs            # Core types and TensorStore implementation
+docs/
+  architecture.md       # System architecture overview
+  tensor-store.md       # Module 1 API documentation
 ```
 
 The store knows nothing about queries - it only stores and retrieves tensors by key.
