@@ -38,8 +38,9 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
         for crate in $CRATES; do
             echo "Checking coverage for $crate..."
 
-            # Get coverage percentage (field 10 is line coverage %)
-            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep "^TOTAL" | awk '{print $10}' | tr -d '%')
+            # Get coverage percentage from the crate's own source file (not TOTAL which includes deps)
+            # Field 10 is line coverage %. Match both relative and absolute paths.
+            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep "${crate}/src/lib.rs" | awk '{print $10}' | tr -d '%')
 
             if [ -n "$COVERAGE" ]; then
                 COVERAGE_INT=${COVERAGE%.*}
