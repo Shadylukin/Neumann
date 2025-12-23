@@ -89,7 +89,22 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report
-        run: cargo llvm-cov --package ${{ matrix.crate }} --all-features --fail-under-lines ${{ env.MINIMUM_COVERAGE }}
+        run: |
+          # Run coverage and extract only the crate's own coverage (not dependencies)
+          OUTPUT=$(cargo llvm-cov --package ${{ matrix.crate }} --all-features 2>&1)
+          echo "$OUTPUT"
+          # Extract line coverage for this crate's lib.rs (field 10)
+          COVERAGE=$(echo "$OUTPUT" | grep "${{ matrix.crate }}/src/lib.rs" | awk '{print $10}' | tr -d '%')
+          if [ -z "$COVERAGE" ]; then
+            echo "Could not extract coverage for ${{ matrix.crate }}"
+            exit 1
+          fi
+          COVERAGE_INT=${COVERAGE%.*}
+          echo "Coverage for ${{ matrix.crate }}: ${COVERAGE}%"
+          if [ "$COVERAGE_INT" -lt "${{ env.MINIMUM_COVERAGE }}" ]; then
+            echo "ERROR: Coverage ${COVERAGE}% is below minimum ${{ env.MINIMUM_COVERAGE }}%"
+            exit 1
+          fi
       - name: Generate coverage HTML
         run: cargo llvm-cov --package ${{ matrix.crate }} --all-features --html
       - name: Upload coverage report

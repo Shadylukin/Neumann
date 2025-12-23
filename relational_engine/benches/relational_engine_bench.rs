@@ -305,6 +305,128 @@ fn bench_row_count(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_indexed_select(c: &mut Criterion) {
+    let mut group = c.benchmark_group("indexed_select");
+
+    // Setup: 5000 rows with index on age
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..5000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine.create_index("users", "age").unwrap();
+
+    group.bench_function("eq_with_index_2_percent", |b| {
+        b.iter(|| {
+            // age = 25 matches 2% (100 rows out of 5000)
+            black_box(
+                engine
+                    .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Compare without index
+    let engine_no_idx = RelationalEngine::new();
+    engine_no_idx
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..5000 {
+        engine_no_idx
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+
+    group.bench_function("eq_without_index_2_percent", |b| {
+        b.iter(|| {
+            black_box(
+                engine_no_idx
+                    .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_indexed_select_by_id(c: &mut Criterion) {
+    let mut group = c.benchmark_group("indexed_select_by_id");
+
+    // Setup: 5000 rows
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..5000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine.create_index("users", "_id").unwrap();
+
+    group.bench_function("by_id_with_index", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .select("users", Condition::Eq("_id".to_string(), Value::Int(2500)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Compare without index
+    let engine_no_idx = RelationalEngine::new();
+    engine_no_idx
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..5000 {
+        engine_no_idx
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+
+    group.bench_function("by_id_without_index", |b| {
+        b.iter(|| {
+            black_box(
+                engine_no_idx
+                    .select("users", Condition::Eq("_id".to_string(), Value::Int(2500)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_create_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("create_index");
+
+    for size in [100, 1000, 5000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter_batched(
+                || {
+                    let engine = RelationalEngine::new();
+                    engine.create_table("users", create_users_schema()).unwrap();
+                    for i in 0..size {
+                        engine
+                            .insert("users", create_user_values(i as i64))
+                            .unwrap();
+                    }
+                    engine
+                },
+                |engine| {
+                    black_box(engine.create_index("users", "age").unwrap());
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert,
@@ -315,6 +437,9 @@ criterion_group!(
     bench_delete,
     bench_join,
     bench_row_count,
+    bench_indexed_select,
+    bench_indexed_select_by_id,
+    bench_create_index,
 );
 
 criterion_main!(benches);

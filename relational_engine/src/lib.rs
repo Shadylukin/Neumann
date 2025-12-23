@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
@@ -87,6 +88,20 @@ impl Value {
                 | (Value::String(_), ColumnType::String)
                 | (Value::Bool(_), ColumnType::Bool)
         )
+    }
+
+    fn hash_key(&self) -> String {
+        match self {
+            Value::Null => "null".to_string(),
+            Value::Int(v) => format!("i:{}", v),
+            Value::Float(v) => format!("f:{}", v.to_bits()),
+            Value::String(v) => {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                v.hash(&mut hasher);
+                format!("s:{:x}", hasher.finish())
+            },
+            Value::Bool(v) => format!("b:{}", v),
+        }
     }
 }
 
@@ -195,6 +210,14 @@ pub enum RelationalError {
         expected: ColumnType,
     },
     NullNotAllowed(String),
+    IndexAlreadyExists {
+        table: String,
+        column: String,
+    },
+    IndexNotFound {
+        table: String,
+        column: String,
+    },
     StorageError(String),
 }
 
@@ -212,6 +235,12 @@ impl std::fmt::Display for RelationalError {
                 )
             },
             RelationalError::NullNotAllowed(c) => write!(f, "Null not allowed for column: {}", c),
+            RelationalError::IndexAlreadyExists { table, column } => {
+                write!(f, "Index already exists on {}.{}", table, column)
+            },
+            RelationalError::IndexNotFound { table, column } => {
+                write!(f, "Index not found on {}.{}", table, column)
+            },
             RelationalError::StorageError(e) => write!(f, "Storage error: {}", e),
         }
     }
@@ -257,6 +286,22 @@ impl RelationalEngine {
 
     fn row_prefix(table: &str) -> String {
         format!("{}:", table)
+    }
+
+    fn index_meta_key(table: &str, column: &str) -> String {
+        format!("_idx:{}:{}", table, column)
+    }
+
+    fn index_entry_key(table: &str, column: &str, value_hash: &str) -> String {
+        format!("_idx:{}:{}:{}", table, column, value_hash)
+    }
+
+    fn index_prefix(table: &str, column: &str) -> String {
+        format!("_idx:{}:{}:", table, column)
+    }
+
+    fn all_indexes_prefix(table: &str) -> String {
+        format!("_idx:{}:", table)
     }
 
     pub fn create_table(&self, name: &str, schema: Schema) -> Result<()> {
@@ -395,6 +440,17 @@ impl RelationalEngine {
         }
 
         self.store.put(key, tensor)?;
+
+        // Update indexes
+        let indexed_columns = self.get_table_indexes(table);
+        for col in &indexed_columns {
+            if col == "_id" {
+                self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+            } else if let Some(value) = values.get(col) {
+                self.index_add(table, col, value, row_id)?;
+            }
+        }
+
         Ok(row_id)
     }
 
@@ -420,6 +476,26 @@ impl RelationalEngine {
     pub fn select(&self, table: &str, condition: Condition) -> Result<Vec<Row>> {
         let _ = self.get_schema(table)?;
 
+        // Try to use an index for simple equality conditions
+        if let Some(row_ids) = self.try_index_lookup(table, &condition) {
+            // Index hit: fetch only the matching rows
+            let mut rows = Vec::new();
+            for row_id in row_ids {
+                let key = Self::row_key(table, row_id);
+                if let Ok(tensor) = self.store.get(&key) {
+                    if let Some(row) = self.tensor_to_row(&tensor) {
+                        // Still evaluate condition for compound conditions
+                        if condition.evaluate(&row) {
+                            rows.push(row);
+                        }
+                    }
+                }
+            }
+            rows.sort_by_key(|r| r.id);
+            return Ok(rows);
+        }
+
+        // No index available: full table scan
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
@@ -436,6 +512,23 @@ impl RelationalEngine {
 
         rows.sort_by_key(|r| r.id);
         Ok(rows)
+    }
+
+    // Try to use an index for the given condition
+    fn try_index_lookup(&self, table: &str, condition: &Condition) -> Option<Vec<u64>> {
+        match condition {
+            Condition::Eq(column, value) => self.index_lookup(table, column, value),
+            Condition::And(a, b) => {
+                // Try to use index from either side
+                if let Some(ids_a) = self.try_index_lookup(table, a) {
+                    // Filter ids_a by condition b
+                    Some(ids_a)
+                } else {
+                    self.try_index_lookup(table, b)
+                }
+            },
+            _ => None,
+        }
     }
 
     pub fn update(
@@ -463,6 +556,7 @@ impl RelationalEngine {
             }
         }
 
+        let indexed_columns = self.get_table_indexes(table);
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
@@ -471,6 +565,17 @@ impl RelationalEngine {
             if let Ok(tensor) = self.store.get(&key) {
                 if let Some(row) = self.tensor_to_row(&tensor) {
                     if condition.evaluate(&row) {
+                        // Update indexes: remove old values, add new values
+                        for col in &indexed_columns {
+                            if let Some(new_value) = updates.get(col) {
+                                // Column is being updated
+                                if let Some(old_value) = row.get_with_id(col) {
+                                    self.index_remove(table, col, &old_value, row.id)?;
+                                }
+                                self.index_add(table, col, new_value, row.id)?;
+                            }
+                        }
+
                         let mut new_tensor = tensor.clone();
                         for (col_name, value) in &updates {
                             new_tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
@@ -488,6 +593,7 @@ impl RelationalEngine {
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
         let _ = self.get_schema(table)?;
 
+        let indexed_columns = self.get_table_indexes(table);
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
@@ -496,6 +602,12 @@ impl RelationalEngine {
             if let Ok(tensor) = self.store.get(&key) {
                 if let Some(row) = self.tensor_to_row(&tensor) {
                     if condition.evaluate(&row) {
+                        // Remove from indexes
+                        for col in &indexed_columns {
+                            if let Some(value) = row.get_with_id(col) {
+                                self.index_remove(table, col, &value, row.id)?;
+                            }
+                        }
                         to_delete.push(key);
                     }
                 }
@@ -549,9 +661,17 @@ impl RelationalEngine {
             return Err(RelationalError::TableNotFound(table.to_string()));
         }
 
+        // Delete all rows
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
         for key in keys {
+            self.store.delete(&key)?;
+        }
+
+        // Delete all indexes for this table
+        let idx_prefix = Self::all_indexes_prefix(table);
+        let idx_keys = self.store.scan(&idx_prefix);
+        for key in idx_keys {
             self.store.delete(&key)?;
         }
 
@@ -572,6 +692,182 @@ impl RelationalEngine {
         let _ = self.get_schema(table)?;
         let prefix = Self::row_prefix(table);
         Ok(self.store.scan_count(&prefix))
+    }
+
+    /// Create a hash index on a column for fast equality lookups.
+    pub fn create_index(&self, table: &str, column: &str) -> Result<()> {
+        let schema = self.get_schema(table)?;
+
+        // Verify column exists (allow _id as well)
+        if column != "_id" && schema.get_column(column).is_none() {
+            return Err(RelationalError::ColumnNotFound(column.to_string()));
+        }
+
+        let meta_key = Self::index_meta_key(table, column);
+        if self.store.exists(&meta_key) {
+            return Err(RelationalError::IndexAlreadyExists {
+                table: table.to_string(),
+                column: column.to_string(),
+            });
+        }
+
+        // Store index metadata
+        let mut meta = TensorData::new();
+        meta.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("index".into())),
+        );
+        meta.set(
+            "_table",
+            TensorValue::Scalar(ScalarValue::String(table.into())),
+        );
+        meta.set(
+            "_column",
+            TensorValue::Scalar(ScalarValue::String(column.into())),
+        );
+        self.store.put(&meta_key, meta)?;
+
+        // Build index from existing data
+        let prefix = Self::row_prefix(table);
+        let keys = self.store.scan(&prefix);
+
+        for key in keys {
+            if let Ok(tensor) = self.store.get(&key) {
+                if let Some(row) = self.tensor_to_row(&tensor) {
+                    if let Some(value) = row.get_with_id(column) {
+                        self.index_add(table, column, &value, row.id)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Drop an index from a column.
+    pub fn drop_index(&self, table: &str, column: &str) -> Result<()> {
+        let _ = self.get_schema(table)?;
+
+        let meta_key = Self::index_meta_key(table, column);
+        if !self.store.exists(&meta_key) {
+            return Err(RelationalError::IndexNotFound {
+                table: table.to_string(),
+                column: column.to_string(),
+            });
+        }
+
+        // Delete all index entries
+        let prefix = Self::index_prefix(table, column);
+        let keys = self.store.scan(&prefix);
+        for key in keys {
+            self.store.delete(&key)?;
+        }
+
+        // Delete index metadata
+        self.store.delete(&meta_key)?;
+
+        Ok(())
+    }
+
+    /// Check if an index exists on a column.
+    pub fn has_index(&self, table: &str, column: &str) -> bool {
+        let meta_key = Self::index_meta_key(table, column);
+        self.store.exists(&meta_key)
+    }
+
+    /// Get all indexed columns for a table.
+    pub fn get_indexed_columns(&self, table: &str) -> Vec<String> {
+        let prefix = format!("_idx:{}:", table);
+        let mut columns = HashSet::new();
+
+        for key in self.store.scan(&prefix) {
+            // Keys are _idx:{table}:{column} or _idx:{table}:{column}:{value_hash}
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() >= 3 {
+                // Check if this is a meta key (exactly 3 parts) by checking the value
+                let meta_key = Self::index_meta_key(table, parts[2]);
+                if self.store.exists(&meta_key) {
+                    columns.insert(parts[2].to_string());
+                }
+            }
+        }
+
+        columns.into_iter().collect()
+    }
+
+    // Internal: Add a row ID to an index
+    fn index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
+        let value_hash = value.hash_key();
+        let key = Self::index_entry_key(table, column, &value_hash);
+
+        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&key) {
+            self.tensor_to_id_list(&tensor)
+        } else {
+            Vec::new()
+        };
+
+        if !ids.contains(&row_id) {
+            ids.push(row_id);
+            self.store.put(&key, self.id_list_to_tensor(&ids))?;
+        }
+
+        Ok(())
+    }
+
+    // Internal: Remove a row ID from an index
+    fn index_remove(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
+        let value_hash = value.hash_key();
+        let key = Self::index_entry_key(table, column, &value_hash);
+
+        if let Ok(tensor) = self.store.get(&key) {
+            let mut ids = self.tensor_to_id_list(&tensor);
+            ids.retain(|&id| id != row_id);
+
+            if ids.is_empty() {
+                self.store.delete(&key)?;
+            } else {
+                self.store.put(&key, self.id_list_to_tensor(&ids))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Internal: Lookup row IDs from an index
+    fn index_lookup(&self, table: &str, column: &str, value: &Value) -> Option<Vec<u64>> {
+        if !self.has_index(table, column) {
+            return None;
+        }
+
+        let value_hash = value.hash_key();
+        let key = Self::index_entry_key(table, column, &value_hash);
+
+        if let Ok(tensor) = self.store.get(&key) {
+            Some(self.tensor_to_id_list(&tensor))
+        } else {
+            Some(Vec::new()) // Index exists but no entries for this value
+        }
+    }
+
+    fn tensor_to_id_list(&self, tensor: &TensorData) -> Vec<u64> {
+        match tensor.get("ids") {
+            Some(TensorValue::Vector(v)) => v.iter().map(|f| *f as u64).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn id_list_to_tensor(&self, ids: &[u64]) -> TensorData {
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "ids",
+            TensorValue::Vector(ids.iter().map(|&id| id as f32).collect()),
+        );
+        tensor
+    }
+
+    // Get indexed columns for a table (cached list)
+    fn get_table_indexes(&self, table: &str) -> Vec<String> {
+        self.get_indexed_columns(table)
     }
 }
 
@@ -1619,5 +1915,329 @@ mod tests {
         let joined = engine.join("users", "posts", "_id", "user_id").unwrap();
         // Should not match because null != 1
         assert_eq!(joined.len(), 0);
+    }
+
+    // Index tests
+
+    #[test]
+    fn create_and_use_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert some data
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 10)));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index on age
+        engine.create_index("users", "age").unwrap();
+        assert!(engine.has_index("users", "age"));
+
+        // Query using index
+        let rows = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 10); // 10 users with age 25
+    }
+
+    #[test]
+    fn index_accelerates_select() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert 1000 rows
+        for i in 0..1000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 50)));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index
+        engine.create_index("users", "age").unwrap();
+
+        // Query should still work correctly
+        let rows = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 20);
+
+        for row in &rows {
+            assert_eq!(row.get("age"), Some(&Value::Int(25)));
+        }
+    }
+
+    #[test]
+    fn index_on_id_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index on _id
+        engine.create_index("users", "_id").unwrap();
+        assert!(engine.has_index("users", "_id"));
+
+        // Query by _id using index
+        let rows = engine
+            .select("users", Condition::Eq("_id".to_string(), Value::Int(50)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 50);
+    }
+
+    #[test]
+    fn drop_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_index("users", "age").unwrap();
+        assert!(engine.has_index("users", "age"));
+
+        engine.drop_index("users", "age").unwrap();
+        assert!(!engine.has_index("users", "age"));
+    }
+
+    #[test]
+    fn index_already_exists_error() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_index("users", "age").unwrap();
+        let result = engine.create_index("users", "age");
+        assert!(matches!(
+            result,
+            Err(RelationalError::IndexAlreadyExists { .. })
+        ));
+    }
+
+    #[test]
+    fn index_not_found_error() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let result = engine.drop_index("users", "age");
+        assert!(matches!(result, Err(RelationalError::IndexNotFound { .. })));
+    }
+
+    #[test]
+    fn index_on_nonexistent_column_error() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let result = engine.create_index("users", "nonexistent");
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    #[test]
+    fn index_maintained_on_insert() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create index first
+        engine.create_index("users", "age").unwrap();
+
+        // Then insert data
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Query using index should find all rows
+        let rows = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn index_maintained_on_update() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert data
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index
+        engine.create_index("users", "age").unwrap();
+
+        // Update some rows
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(30));
+        engine
+            .update(
+                "users",
+                Condition::Eq("_id".to_string(), Value::Int(5)),
+                updates,
+            )
+            .unwrap();
+
+        // Old value should have 9 rows
+        let rows_25 = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows_25.len(), 9);
+
+        // New value should have 1 row
+        let rows_30 = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(30)))
+            .unwrap();
+        assert_eq!(rows_30.len(), 1);
+    }
+
+    #[test]
+    fn index_maintained_on_delete() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert data
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index
+        engine.create_index("users", "age").unwrap();
+
+        // Delete some rows
+        engine
+            .delete_rows("users", Condition::Lt("_id".to_string(), Value::Int(5)))
+            .unwrap();
+
+        // Should have 6 rows left (ids 5-10)
+        let rows = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 6);
+    }
+
+    #[test]
+    fn get_indexed_columns() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_index("users", "age").unwrap();
+        engine.create_index("users", "name").unwrap();
+
+        let indexed = engine.get_indexed_columns("users");
+        assert_eq!(indexed.len(), 2);
+        assert!(indexed.contains(&"age".to_string()));
+        assert!(indexed.contains(&"name".to_string()));
+    }
+
+    #[test]
+    fn drop_table_cleans_up_indexes() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_index("users", "age").unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(25));
+        engine.insert("users", values).unwrap();
+
+        engine.drop_table("users").unwrap();
+
+        // Recreate table and check no stale index data
+        create_users_table(&engine);
+        assert!(!engine.has_index("users", "age"));
+    }
+
+    #[test]
+    fn index_with_compound_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert data
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 10)));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create index on age
+        engine.create_index("users", "age").unwrap();
+
+        // Query with AND condition - should use index for one side
+        let condition = Condition::Eq("age".to_string(), Value::Int(25))
+            .and(Condition::Lt("_id".to_string(), Value::Int(50)));
+        let rows = engine.select("users", condition).unwrap();
+
+        // Should have 5 rows (ages 5, 15, 25, 35, 45 have age=25 and id < 50)
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn value_hash_key_variants() {
+        // Test hash_key for different Value types
+        assert_eq!(Value::Null.hash_key(), "null");
+        assert_eq!(Value::Int(42).hash_key(), "i:42");
+        assert_eq!(Value::Bool(true).hash_key(), "b:true");
+        assert_eq!(Value::Bool(false).hash_key(), "b:false");
+
+        // Float uses to_bits for stable hashing
+        let float_hash = Value::Float(3.14).hash_key();
+        assert!(float_hash.starts_with("f:"));
+
+        // String uses hasher
+        let str_hash = Value::String("hello".into()).hash_key();
+        assert!(str_hash.starts_with("s:"));
+    }
+
+    #[test]
+    fn index_error_display() {
+        let err1 = RelationalError::IndexAlreadyExists {
+            table: "users".into(),
+            column: "age".into(),
+        };
+        assert_eq!(format!("{}", err1), "Index already exists on users.age");
+
+        let err2 = RelationalError::IndexNotFound {
+            table: "users".into(),
+            column: "age".into(),
+        };
+        assert_eq!(format!("{}", err2), "Index not found on users.age");
+    }
+
+    #[test]
+    fn index_on_string_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("Name{}", i % 5)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_index("users", "name").unwrap();
+
+        let rows = engine
+            .select(
+                "users",
+                Condition::Eq("name".to_string(), Value::String("Name2".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 10);
     }
 }

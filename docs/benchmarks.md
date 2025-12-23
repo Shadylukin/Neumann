@@ -102,56 +102,69 @@ The graph engine stores nodes and edges as tensors, using adjacency lists for ne
 
 ### relational_engine
 
-The relational engine provides SQL-like operations on top of tensor_store.
+The relational engine provides SQL-like operations on top of tensor_store, with optional hash indexes for accelerated equality lookups.
 
 **Row Insertion:**
 | Count | Time | Throughput |
 |-------|------|------------|
-| 100 | 261µs | 383K rows/s |
-| 1,000 | 2.5ms | 396K rows/s |
-| 5,000 | 13.3ms | 375K rows/s |
+| 100 | 420µs | 238K rows/s |
+| 1,000 | 5.9ms | 170K rows/s |
+| 5,000 | 77ms | 65K rows/s |
 
 **Select Full Scan:**
 | Rows | Time | Throughput |
 |------|------|------------|
-| 100 | 98µs | 1.02M rows/s |
-| 1,000 | 969µs | 1.03M rows/s |
-| 5,000 | 5.6ms | 888K rows/s |
+| 100 | 104µs | 960K rows/s |
+| 1,000 | 977µs | 1.02M rows/s |
+| 5,000 | 5.8ms | 857K rows/s |
 
-**Select Filtered (5,000 rows):**
+**Select with Index vs Without (5,000 rows):**
+| Query Type | With Index | Without Index | Speedup |
+|------------|------------|---------------|---------|
+| Equality (2% match) | 126µs | 5.96ms | **47x** |
+| By _id (single row) | 3.5µs | 5.59ms | **1,597x** |
+
+**Select Filtered - No Index (5,000 rows):**
 | Filter Type | Time |
 |-------------|------|
-| Equality (2% match) | 5.6ms |
-| Range (20% match) | 5.8ms |
-| Compound AND | 5.3ms |
-| By _id (single row) | 5.2ms |
+| Range (20% match) | 5.1ms |
+| Compound AND | 5.7ms |
+
+**Index Creation:**
+| Rows | Time |
+|------|------|
+| 100 | 245µs |
+| 1,000 | 2.7ms |
+| 5,000 | 16ms |
 
 **Update/Delete (1,000 rows, 10% affected):**
 | Operation | Time |
 |-----------|------|
-| Update | 1.42ms |
-| Delete | 1.37ms |
+| Update | 2.0ms |
+| Delete | 1.6ms |
 
 **Join Performance (nested loop):**
 | Tables | Result Rows | Time |
 |--------|-------------|------|
 | 50 users × 500 posts | 500 | 1.2ms |
 | 100 users × 1000 posts | 1,000 | 4.0ms |
-| 100 users × 5000 posts | 5,000 | 34ms |
+| 100 users × 5000 posts | 5,000 | 20ms |
 
 **Row Count:**
 | Rows | Time |
 |------|------|
-| 100 | 5.5µs |
-| 1,000 | 12µs |
-| 5,000 | 45µs |
+| 100 | 3.7µs |
+| 1,000 | 9.9µs |
+| 5,000 | 56µs |
 
 #### Analysis
 
-- **Full scan cost**: Currently O(n) for all queries - every row is fetched and evaluated
-- **Filter performance**: Filters don't improve performance (still scans all rows)
-- **By _id lookup**: Same as full scan - no index optimization yet
-- **Join complexity**: O(n×m) nested loop join; 5000 results takes 34ms
+- **Index acceleration**: Hash indexes provide O(1) lookup for equality conditions
+  - 47x speedup for equality queries matching 2% of rows
+  - 1,597x speedup for single-row _id lookups
+- **Full scan cost**: Without index, O(n) for all queries
+- **Index maintenance**: Small overhead on insert/update/delete to maintain indexes
+- **Join complexity**: O(n×m) nested loop join
 - **row_count**: Uses scan_count, much faster than full scan (~100x)
 
 ## Performance Characteristics

@@ -132,18 +132,55 @@ for (user, post) in joined {
 
 Currently implements inner join (rows must match in both tables).
 
+### Indexes
+
+Hash indexes accelerate equality lookups (`Condition::Eq`) by providing O(1) access instead of O(n) table scans.
+
+```rust
+// Create an index on a column
+engine.create_index("users", "age")?;
+
+// Create an index on _id for fast primary key lookups
+engine.create_index("users", "_id")?;
+
+// Check if index exists
+engine.has_index("users", "age");  // -> bool
+
+// Get all indexed columns for a table
+engine.get_indexed_columns("users");  // -> Vec<String>
+
+// Drop an index
+engine.drop_index("users", "age")?;
+```
+
+**Index behavior:**
+- Indexes are automatically maintained on insert, update, and delete
+- Indexes are automatically cleaned up when a table is dropped
+- Only `Condition::Eq` queries benefit from indexes
+- Range conditions (`Lt`, `Gt`, etc.) still require full table scans
+
+**Performance:**
+| Query Type | Without Index | With Index | Speedup |
+|------------|---------------|------------|---------|
+| Equality (2% match on 5K rows) | 5.96ms | 126µs | 47x |
+| Single row by _id (5K rows) | 5.59ms | 3.5µs | 1,597x |
+
 ## Storage Model
 
-Tables and rows are stored in Tensor Store:
+Tables, rows, and indexes are stored in Tensor Store:
 
 | Key Pattern | Content |
 |-------------|---------|
 | `_meta:table:{name}` | Schema metadata |
 | `{table}:{row_id}` | Row data |
+| `_idx:{table}:{column}` | Index metadata |
+| `_idx:{table}:{column}:{hash}` | Index entries (list of row IDs) |
 
 Schema is encoded in the metadata tensor:
 - `_columns`: Comma-separated column names
 - `_col:{name}`: Type and nullability for each column
+
+Index entries map value hashes to lists of row IDs, enabling O(1) lookup.
 
 ## Error Handling
 
@@ -154,22 +191,23 @@ Schema is encoded in the metadata tensor:
 | `ColumnNotFound` | Update references unknown column |
 | `TypeMismatch` | Value type doesn't match column type |
 | `NullNotAllowed` | NULL in non-nullable column |
+| `IndexAlreadyExists` | Creating duplicate index |
+| `IndexNotFound` | Dropping non-existent index |
 | `StorageError` | Underlying Tensor Store error |
 
 ## Performance Characteristics
 
 | Operation | Complexity | Notes |
 |-----------|------------|-------|
-| `insert` | O(1) | Schema validation + store put |
-| `select` | O(n) | Full table scan with filter |
-| `update` | O(n) | Scan + conditional update |
-| `delete_rows` | O(n) | Scan + conditional delete |
+| `insert` | O(1) + O(k) | Schema validation + store put + k index updates |
+| `select` (no index) | O(n) | Full table scan with filter |
+| `select` (with index) | O(1) | Direct lookup via hash index |
+| `update` | O(n) + O(k) | Scan + conditional update + index maintenance |
+| `delete_rows` | O(n) + O(k) | Scan + conditional delete + index removal |
 | `join` | O(n*m) | Nested loop join |
+| `create_index` | O(n) | Scan all rows to build index |
 
-For large datasets, consider:
-- Adding indexes (future work)
-- Hash join for equality joins (future work)
-- Query planning and optimization (future work)
+Where k = number of indexes on the table.
 
 ## Test Coverage
 
@@ -182,19 +220,21 @@ For large datasets, consider:
 | `join_two_tables` | Inner join correctness |
 | `update_modifies_correct_rows` | Conditional updates |
 | `delete_removes_correct_rows` | Conditional deletes |
-| `delete_data_is_gone` | Data actually removed |
-| `table_not_found_error` | Error handling |
-| `type_mismatch_error` | Schema enforcement |
-| `null_not_allowed_error` | Nullability enforcement |
+| `create_and_use_index` | Index creation and query acceleration |
+| `index_maintained_on_insert` | Index updated on new rows |
+| `index_maintained_on_update` | Index updated on row changes |
+| `index_maintained_on_delete` | Index entries removed on delete |
+| `drop_table_cleans_up_indexes` | Indexes cleaned up with table |
 
 ## Future Considerations
 
 Not implemented (out of scope for Module 2):
 
-- **Indexes**: B-tree or hash indexes for faster lookups
+- **B-tree indexes**: Range query acceleration (current indexes only support equality)
 - **Query Optimization**: Cost-based query planning
 - **Transactions**: ACID guarantees
 - **Foreign Keys**: Referential integrity
 - **Aggregations**: COUNT, SUM, AVG, etc.
 - **Sorting**: ORDER BY
 - **Pagination**: LIMIT, OFFSET
+- **Hash joins**: Accelerated joins using indexes
