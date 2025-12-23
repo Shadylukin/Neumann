@@ -38,8 +38,8 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
             echo "Checking coverage for $crate..."
             cd "$REPO_ROOT/$crate"
 
-            # Get coverage percentage
-            COVERAGE=$(cargo llvm-cov --quiet 2>&1 | grep "TOTAL" | awk '{print $NF}' | tr -d '%')
+            # Get coverage percentage (field 10 is line coverage %)
+            COVERAGE=$(cargo llvm-cov --quiet 2>&1 | grep "^TOTAL" | awk '{print $10}' | tr -d '%')
 
             if [ -n "$COVERAGE" ]; then
                 COVERAGE_INT=${COVERAGE%.*}
