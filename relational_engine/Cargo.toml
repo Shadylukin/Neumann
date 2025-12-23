@@ -5,3 +5,10 @@ edition = "2021"
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "relational_engine_bench"
+harness = false
