@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  MINIMUM_COVERAGE: 95
 
 jobs:
   check:
@@ -76,6 +77,34 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: cargo test --all-features
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [tensor_store, relational_engine]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage report
+        working-directory: ${{ matrix.crate }}
+        run: cargo llvm-cov --all-features --fail-under-lines ${{ env.MINIMUM_COVERAGE }}
+      - name: Generate coverage HTML
+        working-directory: ${{ matrix.crate }}
+        run: cargo llvm-cov --all-features --html
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.crate }}
+          path: ${{ matrix.crate }}/target/llvm-cov/html
+
   doc:
     name: Documentation
     runs-on: ubuntu-latest
@@ -94,6 +123,15 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   miri:
     name: Miri (undefined behavior)
     runs-on: ubuntu-latest
@@ -108,3 +146,24 @@ jobs:
       - name: Run Miri on tensor_store
         working-directory: tensor_store
         run: cargo miri test
+
+  # Summary job that depends on all checks
+  ci-success:
+    name: CI Success
+    needs: [check, fmt, clippy, test, coverage, doc, security-audit, miri]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.check.result }}" != "success" ]] || \
+             [[ "${{ needs.fmt.result }}" != "success" ]] || \
+             [[ "${{ needs.clippy.result }}" != "success" ]] || \
+             [[ "${{ needs.test.result }}" != "success" ]] || \
+             [[ "${{ needs.coverage.result }}" != "success" ]] || \
+             [[ "${{ needs.doc.result }}" != "success" ]] || \
+             [[ "${{ needs.miri.result }}" != "success" ]]; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
+          echo "All jobs passed!"

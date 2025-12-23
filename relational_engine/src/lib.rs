@@ -210,7 +210,7 @@ impl std::fmt::Display for RelationalError {
                     "Type mismatch for column {}: expected {:?}",
                     column, expected
                 )
-            }
+            },
             RelationalError::NullNotAllowed(c) => write!(f, "Null not allowed for column: {}", c),
             RelationalError::StorageError(e) => write!(f, "Storage error: {}", e),
         }
@@ -372,7 +372,7 @@ impl RelationalEngine {
                     if !col.nullable {
                         return Err(RelationalError::NullNotAllowed(col.name.clone()));
                     }
-                }
+                },
                 Some(v) => {
                     if !v.matches_type(&col.column_type) {
                         return Err(RelationalError::TypeMismatch {
@@ -380,7 +380,7 @@ impl RelationalEngine {
                             expected: col.column_type.clone(),
                         });
                     }
-                }
+                },
             }
         }
 
@@ -937,5 +937,687 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, 3);
+    }
+
+    // Additional tests for 100% coverage
+
+    #[test]
+    fn error_display_all_variants() {
+        let e1 = RelationalError::TableNotFound("test".into());
+        assert!(format!("{}", e1).contains("test"));
+
+        let e2 = RelationalError::TableAlreadyExists("test".into());
+        assert!(format!("{}", e2).contains("test"));
+
+        let e3 = RelationalError::ColumnNotFound("col".into());
+        assert!(format!("{}", e3).contains("col"));
+
+        let e4 = RelationalError::TypeMismatch {
+            column: "age".into(),
+            expected: ColumnType::Int,
+        };
+        assert!(format!("{}", e4).contains("age"));
+
+        let e5 = RelationalError::NullNotAllowed("name".into());
+        assert!(format!("{}", e5).contains("name"));
+
+        let e6 = RelationalError::StorageError("disk full".into());
+        assert!(format!("{}", e6).contains("disk full"));
+    }
+
+    #[test]
+    fn error_is_error_trait() {
+        let err: &dyn std::error::Error = &RelationalError::TableNotFound("x".into());
+        assert!(err.to_string().contains("x"));
+    }
+
+    #[test]
+    fn engine_default_trait() {
+        let engine = RelationalEngine::default();
+        assert!(!engine.table_exists("any").unwrap());
+    }
+
+    #[test]
+    fn engine_with_store() {
+        let store = TensorStore::new();
+        let engine = RelationalEngine::with_store(store);
+        assert!(!engine.table_exists("any").unwrap());
+    }
+
+    #[test]
+    fn row_get_returns_none_for_id() {
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("test".into()));
+        let row = Row { id: 1, values };
+        assert!(row.get("_id").is_none());
+        assert_eq!(row.get_with_id("_id"), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn condition_ne() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let rows = engine
+            .select("users", Condition::Ne("age".to_string(), Value::Int(2)))
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn condition_le() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let rows = engine
+            .select("users", Condition::Le("age".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 6);
+    }
+
+    #[test]
+    fn condition_gt() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let rows = engine
+            .select("users", Condition::Gt("age".to_string(), Value::Int(7)))
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn float_comparisons() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("score", ColumnType::Float),
+        ]);
+        engine.create_table("scores", schema).unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("score".to_string(), Value::Float(i as f64 * 0.5));
+            engine.insert("scores", values).unwrap();
+        }
+
+        let lt = engine
+            .select(
+                "scores",
+                Condition::Lt("score".to_string(), Value::Float(2.0)),
+            )
+            .unwrap();
+        assert_eq!(lt.len(), 4);
+
+        let le = engine
+            .select(
+                "scores",
+                Condition::Le("score".to_string(), Value::Float(2.0)),
+            )
+            .unwrap();
+        assert_eq!(le.len(), 5);
+
+        let gt = engine
+            .select(
+                "scores",
+                Condition::Gt("score".to_string(), Value::Float(3.5)),
+            )
+            .unwrap();
+        assert_eq!(gt.len(), 2);
+
+        let ge = engine
+            .select(
+                "scores",
+                Condition::Ge("score".to_string(), Value::Float(3.5)),
+            )
+            .unwrap();
+        assert_eq!(ge.len(), 3);
+    }
+
+    #[test]
+    fn string_comparisons() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let names = vec!["Alice", "Bob", "Charlie", "David", "Eve"];
+        for name in &names {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("age".to_string(), Value::Int(30));
+            engine.insert("users", values).unwrap();
+        }
+
+        let lt = engine
+            .select(
+                "users",
+                Condition::Lt("name".to_string(), Value::String("Charlie".into())),
+            )
+            .unwrap();
+        assert_eq!(lt.len(), 2);
+
+        let le = engine
+            .select(
+                "users",
+                Condition::Le("name".to_string(), Value::String("Charlie".into())),
+            )
+            .unwrap();
+        assert_eq!(le.len(), 3);
+
+        let gt = engine
+            .select(
+                "users",
+                Condition::Gt("name".to_string(), Value::String("Charlie".into())),
+            )
+            .unwrap();
+        assert_eq!(gt.len(), 2);
+
+        let ge = engine
+            .select(
+                "users",
+                Condition::Ge("name".to_string(), Value::String("Charlie".into())),
+            )
+            .unwrap();
+        assert_eq!(ge.len(), 3);
+    }
+
+    #[test]
+    fn update_column_not_found() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("nonexistent".to_string(), Value::Int(1));
+
+        let result = engine.update("users", Condition::True, updates);
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    #[test]
+    fn update_type_mismatch() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::String("wrong type".into()));
+
+        let result = engine.update("users", Condition::True, updates);
+        assert!(matches!(result, Err(RelationalError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn update_null_not_allowed() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("name".to_string(), Value::Null);
+
+        let result = engine.update("users", Condition::True, updates);
+        assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
+    }
+
+    #[test]
+    fn drop_nonexistent_table() {
+        let engine = RelationalEngine::new();
+        let result = engine.drop_table("nonexistent");
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn join_no_matches() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_posts_table(&engine);
+
+        let mut user_values = HashMap::new();
+        user_values.insert("name".to_string(), Value::String("Alice".into()));
+        user_values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", user_values).unwrap();
+
+        let mut post_values = HashMap::new();
+        post_values.insert("user_id".to_string(), Value::Int(999));
+        post_values.insert("title".to_string(), Value::String("Orphan".into()));
+        post_values.insert("views".to_string(), Value::Int(0));
+        engine.insert("posts", post_values).unwrap();
+
+        let joined = engine.join("users", "posts", "_id", "user_id").unwrap();
+        assert_eq!(joined.len(), 0);
+    }
+
+    #[test]
+    fn empty_table_select() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn value_clone_and_eq() {
+        let v1 = Value::Null;
+        let v2 = Value::Int(42);
+        let v3 = Value::Float(3.14);
+        let v4 = Value::String("test".into());
+        let v5 = Value::Bool(true);
+
+        assert_eq!(v1.clone(), v1);
+        assert_eq!(v2.clone(), v2);
+        assert_eq!(v3.clone(), v3);
+        assert_eq!(v4.clone(), v4);
+        assert_eq!(v5.clone(), v5);
+    }
+
+    #[test]
+    fn column_type_clone_and_eq() {
+        assert_eq!(ColumnType::Int.clone(), ColumnType::Int);
+        assert_eq!(ColumnType::Float.clone(), ColumnType::Float);
+        assert_eq!(ColumnType::String.clone(), ColumnType::String);
+        assert_eq!(ColumnType::Bool.clone(), ColumnType::Bool);
+    }
+
+    #[test]
+    fn schema_get_column() {
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+
+        assert!(schema.get_column("id").is_some());
+        assert!(schema.get_column("name").is_some());
+        assert!(schema.get_column("nonexistent").is_none());
+    }
+
+    #[test]
+    fn value_from_bytes_scalar() {
+        let bytes_scalar = ScalarValue::Bytes(vec![1, 2, 3]);
+        let value = Value::from_scalar(&bytes_scalar);
+        assert_eq!(value, Value::Null);
+    }
+
+    #[test]
+    fn condition_debug() {
+        let c = Condition::True;
+        let debug_str = format!("{:?}", c);
+        assert!(debug_str.contains("True"));
+    }
+
+    #[test]
+    fn row_debug_and_clone() {
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("test".into()));
+        let row = Row { id: 1, values };
+        let cloned = row.clone();
+        assert_eq!(cloned.id, 1);
+        let debug_str = format!("{:?}", row);
+        assert!(debug_str.contains("Row"));
+    }
+
+    #[test]
+    fn column_debug_and_clone() {
+        let col = Column::new("test", ColumnType::Int);
+        let cloned = col.clone();
+        assert_eq!(cloned.name, "test");
+        let debug_str = format!("{:?}", col);
+        assert!(debug_str.contains("Column"));
+    }
+
+    #[test]
+    fn schema_debug_and_clone() {
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        let cloned = schema.clone();
+        assert_eq!(cloned.columns.len(), 1);
+        let debug_str = format!("{:?}", schema);
+        assert!(debug_str.contains("Schema"));
+    }
+
+    #[test]
+    fn error_clone_and_eq() {
+        let e1 = RelationalError::TableNotFound("test".into());
+        let e2 = RelationalError::TableAlreadyExists("test".into());
+        let e3 = RelationalError::ColumnNotFound("col".into());
+        let e4 = RelationalError::TypeMismatch {
+            column: "age".into(),
+            expected: ColumnType::Int,
+        };
+        let e5 = RelationalError::NullNotAllowed("name".into());
+        let e6 = RelationalError::StorageError("err".into());
+
+        assert_eq!(e1.clone(), e1);
+        assert_eq!(e2.clone(), e2);
+        assert_eq!(e3.clone(), e3);
+        assert_eq!(e4.clone(), e4);
+        assert_eq!(e5.clone(), e5);
+        assert_eq!(e6.clone(), e6);
+    }
+
+    #[test]
+    fn storage_error_from_tensor_store() {
+        use tensor_store::TensorStoreError;
+        let tensor_err = TensorStoreError::NotFound("key".into());
+        let rel_err: RelationalError = tensor_err.into();
+        assert!(matches!(rel_err, RelationalError::StorageError(_)));
+    }
+
+    #[test]
+    fn insert_missing_nullable_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        // email is nullable and not provided
+
+        let id = engine.insert("users", values).unwrap();
+        assert!(id > 0);
+    }
+
+    #[test]
+    fn comparison_with_mismatched_types_returns_false() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        // Compare int column with string value - should match nothing
+        let rows = engine
+            .select(
+                "users",
+                Condition::Lt("age".to_string(), Value::String("30".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn comparison_with_null_column_returns_false() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        values.insert("email".to_string(), Value::Null);
+        engine.insert("users", values).unwrap();
+
+        // Comparing null email with string - should return false
+        let rows = engine
+            .select(
+                "users",
+                Condition::Lt("email".to_string(), Value::String("z".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn bool_column_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("active", ColumnType::Bool),
+        ]);
+        engine.create_table("flags", schema).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("active".to_string(), Value::Bool(true));
+        let id = engine.insert("flags", values).unwrap();
+        assert!(id > 0);
+
+        let rows = engine
+            .select(
+                "flags",
+                Condition::Eq("active".to_string(), Value::Bool(true)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn row_counter_initialization_on_insert() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Drop and recreate to test counter reinitialization path
+        engine.drop_table("users").unwrap();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        let id = engine.insert("users", values).unwrap();
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn value_debug() {
+        let v = Value::Int(42);
+        let debug_str = format!("{:?}", v);
+        assert!(debug_str.contains("Int"));
+    }
+
+    #[test]
+    fn column_type_debug() {
+        let ct = ColumnType::Float;
+        let debug_str = format!("{:?}", ct);
+        assert!(debug_str.contains("Float"));
+    }
+
+    #[test]
+    fn condition_clone() {
+        let c1 = Condition::Eq("col".into(), Value::Int(1));
+        let c2 = Condition::Ne("col".into(), Value::Int(2));
+        let c3 = Condition::Lt("col".into(), Value::Int(3));
+        let c4 = Condition::Le("col".into(), Value::Int(4));
+        let c5 = Condition::Gt("col".into(), Value::Int(5));
+        let c6 = Condition::Ge("col".into(), Value::Int(6));
+        let c7 = Condition::True;
+
+        let _ = c1.clone();
+        let _ = c2.clone();
+        let _ = c3.clone();
+        let _ = c4.clone();
+        let _ = c5.clone();
+        let _ = c6.clone();
+        let _ = c7.clone();
+
+        let c8 = Condition::And(Box::new(Condition::True), Box::new(Condition::True));
+        let c9 = Condition::Or(Box::new(Condition::True), Box::new(Condition::True));
+        let _ = c8.clone();
+        let _ = c9.clone();
+    }
+
+    #[test]
+    fn row_get_nonexistent_column() {
+        let row = Row {
+            id: 1,
+            values: HashMap::new(),
+        };
+        assert!(row.get("nonexistent").is_none());
+        assert!(row.get_with_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn compare_le_mismatched_types_returns_false() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let rows = engine
+            .select(
+                "users",
+                Condition::Le("age".to_string(), Value::String("30".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn compare_gt_mismatched_types_returns_false() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let rows = engine
+            .select(
+                "users",
+                Condition::Gt("age".to_string(), Value::String("30".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn compare_ge_mismatched_types_returns_false() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let rows = engine
+            .select(
+                "users",
+                Condition::Ge("age".to_string(), Value::String("30".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn next_row_id_without_counter_initialized() {
+        // Use with_store to create engine without going through create_table
+        let store = TensorStore::new();
+
+        // Manually insert table metadata without initializing the counter
+        let mut meta = TensorData::new();
+        meta.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("table".into())),
+        );
+        meta.set(
+            "_name",
+            TensorValue::Scalar(ScalarValue::String("manual_table".into())),
+        );
+        meta.set(
+            "_columns",
+            TensorValue::Scalar(ScalarValue::String("name,age".into())),
+        );
+        meta.set(
+            "_col:name",
+            TensorValue::Scalar(ScalarValue::String("string:notnull".into())),
+        );
+        meta.set(
+            "_col:age",
+            TensorValue::Scalar(ScalarValue::String("int:notnull".into())),
+        );
+        store.put("_meta:table:manual_table", meta).unwrap();
+
+        let engine = RelationalEngine::with_store(store);
+
+        // Now insert - this should trigger the else branch in next_row_id
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        let id = engine.insert("manual_table", values).unwrap();
+        assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn update_with_nullable_null_value() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Test".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        values.insert("email".to_string(), Value::String("test@test.com".into()));
+        engine.insert("users", values).unwrap();
+
+        // Update email (nullable) to Null - should succeed
+        let mut updates = HashMap::new();
+        updates.insert("email".to_string(), Value::Null);
+        let count = engine.update("users", Condition::True, updates).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn join_with_null_join_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let schema = Schema::new(vec![
+            Column::new("user_id", ColumnType::Int).nullable(),
+            Column::new("title", ColumnType::String),
+        ]);
+        engine.create_table("posts", schema).unwrap();
+
+        // Insert user
+        let mut user_values = HashMap::new();
+        user_values.insert("name".to_string(), Value::String("Alice".into()));
+        user_values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", user_values).unwrap();
+
+        // Insert post with null user_id
+        let mut post_values = HashMap::new();
+        post_values.insert("user_id".to_string(), Value::Null);
+        post_values.insert("title".to_string(), Value::String("Orphan".into()));
+        engine.insert("posts", post_values).unwrap();
+
+        let joined = engine.join("users", "posts", "_id", "user_id").unwrap();
+        // Should not match because null != 1
+        assert_eq!(joined.len(), 0);
     }
 }

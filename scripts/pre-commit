@@ -5,6 +5,7 @@ source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CRATES="tensor_store relational_engine"
+MINIMUM_COVERAGE=95
 
 echo "Running pre-commit checks..."
 
@@ -25,6 +26,35 @@ for crate in $CRATES; do
     echo "Docs..."
     cargo doc --no-deps --quiet
 done
+
+# Coverage check (optional - can be slow)
+if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
+    echo ""
+    echo "=== Coverage Check ==="
+
+    # Check if cargo-llvm-cov is installed
+    if command -v cargo-llvm-cov &> /dev/null || cargo llvm-cov --version &> /dev/null 2>&1; then
+        for crate in $CRATES; do
+            echo "Checking coverage for $crate..."
+            cd "$REPO_ROOT/$crate"
+
+            # Get coverage percentage
+            COVERAGE=$(cargo llvm-cov --quiet 2>&1 | grep "TOTAL" | awk '{print $NF}' | tr -d '%')
+
+            if [ -n "$COVERAGE" ]; then
+                COVERAGE_INT=${COVERAGE%.*}
+                if [ "$COVERAGE_INT" -lt "$MINIMUM_COVERAGE" ]; then
+                    echo "ERROR: Coverage for $crate is ${COVERAGE}%, minimum required is ${MINIMUM_COVERAGE}%"
+                    exit 1
+                fi
+                echo "Coverage for $crate: ${COVERAGE}% (minimum: ${MINIMUM_COVERAGE}%)"
+            fi
+        done
+    else
+        echo "Skipping coverage check (cargo-llvm-cov not installed)"
+        echo "Install with: cargo install cargo-llvm-cov"
+    fi
+fi
 
 echo ""
 echo "All checks passed."

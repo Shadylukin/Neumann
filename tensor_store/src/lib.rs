@@ -88,7 +88,7 @@ impl std::error::Error for TensorStoreError {}
 
 /// Thread-safe key-value store for tensor data. Knows nothing about queries.
 pub struct TensorStore {
-    data: RwLock<HashMap<String, TensorData>>,
+    pub(crate) data: RwLock<HashMap<String, TensorData>>,
 }
 
 impl TensorStore {
@@ -531,5 +531,258 @@ mod tests {
             Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => assert_eq!(b, &data),
             _ => panic!("expected bytes"),
         }
+    }
+
+    #[test]
+    fn error_display_not_found() {
+        let err = TensorStoreError::NotFound("test_key".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("test_key"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn error_display_lock_error() {
+        let err = TensorStoreError::LockError;
+        let msg = format!("{}", err);
+        assert!(msg.contains("lock") || msg.contains("Lock"));
+    }
+
+    #[test]
+    fn error_is_error_trait() {
+        let err: &dyn std::error::Error = &TensorStoreError::NotFound("x".into());
+        assert!(err.to_string().contains("x"));
+    }
+
+    #[test]
+    fn store_default_trait() {
+        let store = TensorStore::default();
+        assert!(store.is_empty().unwrap());
+    }
+
+    #[test]
+    fn tensor_data_default_trait() {
+        let tensor = TensorData::default();
+        assert!(tensor.is_empty());
+    }
+
+    #[test]
+    fn tensor_data_clone() {
+        let mut original = TensorData::new();
+        original.set("key", TensorValue::Scalar(ScalarValue::Int(42)));
+
+        let cloned = original.clone();
+        assert_eq!(cloned.len(), 1);
+        match cloned.get("key") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => assert_eq!(*v, 42),
+            _ => panic!("expected int"),
+        }
+    }
+
+    #[test]
+    fn tensor_value_clone_all_variants() {
+        let scalar = TensorValue::Scalar(ScalarValue::Int(1));
+        let vector = TensorValue::Vector(vec![1.0, 2.0]);
+        let pointer = TensorValue::Pointer("ref".into());
+        let pointers = TensorValue::Pointers(vec!["a".into(), "b".into()]);
+
+        assert_eq!(scalar.clone(), scalar);
+        assert_eq!(vector.clone(), vector);
+        assert_eq!(pointer.clone(), pointer);
+        assert_eq!(pointers.clone(), pointers);
+    }
+
+    #[test]
+    fn scalar_value_clone_all_variants() {
+        let null = ScalarValue::Null;
+        let bool_val = ScalarValue::Bool(true);
+        let int_val = ScalarValue::Int(42);
+        let float_val = ScalarValue::Float(3.14);
+        let string_val = ScalarValue::String("test".into());
+        let bytes_val = ScalarValue::Bytes(vec![1, 2, 3]);
+
+        assert_eq!(null.clone(), null);
+        assert_eq!(bool_val.clone(), bool_val);
+        assert_eq!(int_val.clone(), int_val);
+        assert_eq!(float_val.clone(), float_val);
+        assert_eq!(string_val.clone(), string_val);
+        assert_eq!(bytes_val.clone(), bytes_val);
+    }
+
+    #[test]
+    fn tensor_store_error_clone() {
+        let err1 = TensorStoreError::NotFound("key".into());
+        let err2 = TensorStoreError::LockError;
+
+        assert_eq!(err1.clone(), err1);
+        assert_eq!(err2.clone(), err2);
+    }
+
+    #[test]
+    fn tensor_data_debug() {
+        let tensor = TensorData::new();
+        let debug_str = format!("{:?}", tensor);
+        assert!(debug_str.contains("TensorData"));
+    }
+
+    #[test]
+    fn tensor_value_debug() {
+        let val = TensorValue::Scalar(ScalarValue::Int(1));
+        let debug_str = format!("{:?}", val);
+        assert!(debug_str.contains("Scalar"));
+    }
+
+    #[test]
+    fn tensor_store_error_debug() {
+        let err = TensorStoreError::NotFound("key".into());
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("NotFound"));
+    }
+
+    // Lock poisoning tests - covers the LockError branches
+    // When a thread panics while holding a lock, the lock becomes poisoned
+
+    #[test]
+    fn poisoned_lock_put_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.put("key", TensorData::new());
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_get_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.get("key");
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_delete_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.delete("key");
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_exists_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.exists("key");
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_scan_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.scan("prefix:");
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_len_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.len();
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_is_empty_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.is_empty();
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_clear_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.clear();
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
+    }
+
+    #[test]
+    fn poisoned_lock_scan_count_returns_lock_error() {
+        let store = Arc::new(TensorStore::new());
+        let store_clone = Arc::clone(&store);
+
+        let handle = thread::spawn(move || {
+            let _guard = store_clone.data.write().unwrap();
+            panic!("intentional panic to poison lock");
+        });
+
+        let _ = handle.join();
+
+        let result = store.scan_count("prefix:");
+        assert!(matches!(result, Err(TensorStoreError::LockError)));
     }
 }

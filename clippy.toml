@@ -1,0 +1,20 @@
+# Clippy configuration for Neumann
+# https://rust-lang.github.io/rust-clippy/
+
+# Complexity thresholds
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+type-complexity-threshold = 250
+
+# Naming
+allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "id", "ok", "db"]
+
+# Documentation
+missing-docs-in-crate-items = true
+
+# Performance
+trivial-copy-size-limit = 16
+
+# Style
+single-char-binding-names-threshold = 4
