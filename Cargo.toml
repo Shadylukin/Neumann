@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "tensor_store",
+    "relational_engine",
+    "graph_engine",
+]

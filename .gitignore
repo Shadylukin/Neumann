@@ -1,6 +1,8 @@
 # Rust
 target/
-Cargo.lock
+# Track root Cargo.lock for reproducible builds and security audit
+# But ignore crate-level locks
+*/Cargo.lock
 
 # IDE
 .idea/

@@ -1058,4 +1058,142 @@ mod tests {
         let err = GraphError::PathNotFound;
         let _ = err.clone();
     }
+
+    #[test]
+    fn node_count() {
+        let engine = GraphEngine::new();
+
+        // Empty graph
+        assert_eq!(engine.node_count().unwrap(), 0);
+
+        // Add some nodes
+        engine.create_node("A", HashMap::new()).unwrap();
+        engine.create_node("B", HashMap::new()).unwrap();
+        engine.create_node("C", HashMap::new()).unwrap();
+
+        assert_eq!(engine.node_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn traverse_incoming_direction() {
+        let engine = GraphEngine::new();
+
+        // Create: n1 -> n2 -> n3
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "NEXT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "NEXT", HashMap::new(), true)
+            .unwrap();
+
+        // Traverse incoming from n3 should find n2 and n1
+        let result = engine.traverse(n3, Direction::Incoming, 10, None).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn neighbors_incoming_with_edge_type() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "WORKS_WITH", HashMap::new(), true)
+            .unwrap();
+
+        // Get only KNOWS incoming neighbors of n3
+        let knows = engine
+            .neighbors(n3, Some("KNOWS"), Direction::Incoming)
+            .unwrap();
+        assert_eq!(knows.len(), 1);
+        assert_eq!(knows[0].id, n1);
+
+        // Get only WORKS_WITH incoming neighbors of n3
+        let works = engine
+            .neighbors(n3, Some("WORKS_WITH"), Direction::Incoming)
+            .unwrap();
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0].id, n2);
+    }
+
+    #[test]
+    fn find_path_through_undirected() {
+        let engine = GraphEngine::new();
+
+        // Create: n1 -- n2 -- n3 (undirected)
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "CONN", HashMap::new(), false)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "CONN", HashMap::new(), false)
+            .unwrap();
+
+        // Should find path n1 -> n2 -> n3
+        let path = engine.find_path(n1, n3).unwrap();
+        assert_eq!(path.nodes, vec![n1, n2, n3]);
+
+        // Should also find reverse path n3 -> n2 -> n1
+        let path_rev = engine.find_path(n3, n1).unwrap();
+        assert_eq!(path_rev.nodes, vec![n3, n2, n1]);
+    }
+
+    #[test]
+    fn delete_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.delete_node(999);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn traverse_incoming_only() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        // n1 -> n2, n3 -> n2 (both point to n2)
+        engine
+            .create_edge(n1, n2, "POINTS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n2, "POINTS", HashMap::new(), true)
+            .unwrap();
+
+        // Traverse incoming from n2 with depth 1
+        let result = engine.traverse(n2, Direction::Incoming, 1, None).unwrap();
+        assert_eq!(result.len(), 3); // n2 + n1 + n3
+    }
+
+    #[test]
+    fn get_neighbor_ids_incoming_undirected() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Undirected edge from n1 to n2
+        engine
+            .create_edge(n1, n2, "LINK", HashMap::new(), false)
+            .unwrap();
+
+        // From n2's perspective with Incoming direction,
+        // should still see n1 via the undirected edge
+        let neighbors = engine.neighbors(n2, None, Direction::Incoming).unwrap();
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].id, n1);
+    }
 }
