@@ -99,7 +99,7 @@ impl Shell {
             "help" | "\\h" | "\\?" => return CommandResult::Help(Self::help_text()),
             "tables" | "\\dt" => return self.list_tables(),
             "clear" | "\\c" => return CommandResult::Output("\x1B[2J\x1B[H".to_string()),
-            _ => {}
+            _ => {},
         }
 
         // Execute as query
@@ -161,6 +161,32 @@ Examples:
         .to_string()
     }
 
+    /// Processes a command result and returns whether to continue the loop.
+    #[must_use]
+    pub fn process_result(result: &CommandResult) -> LoopAction {
+        match result {
+            CommandResult::Output(text) | CommandResult::Help(text) => {
+                println!("{text}");
+                LoopAction::Continue
+            },
+            CommandResult::Error(text) => {
+                eprintln!("{text}");
+                LoopAction::Continue
+            },
+            CommandResult::Exit => {
+                println!("Goodbye!");
+                LoopAction::Exit
+            },
+            CommandResult::Empty => LoopAction::Continue,
+        }
+    }
+
+    /// Returns the shell version string.
+    #[must_use]
+    pub const fn version() -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     /// Runs the interactive shell loop.
     ///
     /// # Errors
@@ -169,63 +195,52 @@ Examples:
     pub fn run(&self) -> Result<(), ShellError> {
         let mut editor: Editor<(), DefaultHistory> =
             DefaultEditor::new().map_err(|e| ShellError::Init(e.to_string()))?;
-
-        // Load history
         if let Some(ref path) = self.config.history_file {
             let _ = editor.load_history(path);
         }
-
-        // Configure history size
         editor
             .history_mut()
             .set_max_len(self.config.history_size)
             .map_err(|e| ShellError::Init(e.to_string()))?;
 
-        println!("Neumann Database Shell v{}", env!("CARGO_PKG_VERSION"));
+        println!("Neumann Database Shell v{}", Self::version());
         println!("Type 'help' for available commands.\n");
 
         loop {
             match editor.readline(&self.config.prompt) {
                 Ok(line) => {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        let _ = editor.add_history_entry(trimmed);
+                    if !line.trim().is_empty() {
+                        let _ = editor.add_history_entry(line.trim());
                     }
-
-                    match self.execute(&line) {
-                        CommandResult::Output(text) | CommandResult::Help(text) => {
-                            println!("{text}");
-                        }
-                        CommandResult::Error(text) => eprintln!("{text}"),
-                        CommandResult::Exit => {
-                            println!("Goodbye!");
-                            break;
-                        }
-                        CommandResult::Empty => {}
+                    if Self::process_result(&self.execute(&line)) == LoopAction::Exit {
+                        break;
                     }
-                }
-                Err(ReadlineError::Interrupted) => {
-                    println!("^C");
-                    // Continue loop on Ctrl+C
-                }
+                },
+                Err(ReadlineError::Interrupted) => println!("^C"),
                 Err(ReadlineError::Eof) => {
                     println!("Goodbye!");
                     break;
-                }
+                },
                 Err(err) => {
                     eprintln!("Error: {err}");
                     break;
-                }
+                },
             }
         }
-
-        // Save history
         if let Some(ref path) = self.config.history_file {
             let _ = editor.save_history(path);
         }
-
         Ok(())
     }
+}
+
+/// Action to take after processing a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopAction {
+    /// Continue the shell loop.
+    Continue,
+    /// Exit the shell.
+    Exit,
 }
 
 impl Default for Shell {
@@ -262,7 +277,7 @@ fn format_result(result: &QueryResult) -> String {
             } else {
                 format!("{n} rows affected")
             }
-        }
+        },
         QueryResult::Ids(ids) => {
             if ids.is_empty() {
                 "(no results)".to_string()
@@ -277,13 +292,13 @@ fn format_result(result: &QueryResult) -> String {
                         .join(", ")
                 )
             }
-        }
+        },
         QueryResult::Rows(rows) => {
             if rows.is_empty() {
                 return "(0 rows)".to_string();
             }
             format_rows(rows)
-        }
+        },
         QueryResult::Nodes(nodes) => {
             if nodes.is_empty() {
                 "(0 nodes)".to_string()
@@ -305,7 +320,7 @@ fn format_result(result: &QueryResult) -> String {
                     .collect();
                 format!("Nodes:\n{}\n({} nodes)", lines.join("\n"), nodes.len())
             }
-        }
+        },
         QueryResult::Edges(edges) => {
             if edges.is_empty() {
                 "(0 edges)".to_string()
@@ -316,7 +331,7 @@ fn format_result(result: &QueryResult) -> String {
                     .collect();
                 format!("Edges:\n{}\n({} edges)", lines.join("\n"), edges.len())
             }
-        }
+        },
         QueryResult::Path(path) => {
             if path.is_empty() {
                 "(no path found)".to_string()
@@ -329,7 +344,7 @@ fn format_result(result: &QueryResult) -> String {
                         .join(" -> ")
                 )
             }
-        }
+        },
         QueryResult::Similar(results) => {
             if results.is_empty() {
                 "(no similar embeddings)".to_string()
@@ -341,7 +356,7 @@ fn format_result(result: &QueryResult) -> String {
                     .collect();
                 format!("Similar:\n{}", lines.join("\n"))
             }
-        }
+        },
         QueryResult::Unified(unified) => unified.description.clone(),
     }
 }
@@ -647,5 +662,454 @@ mod tests {
             format_result(&QueryResult::Path(vec![1, 2, 3])),
             "Path: 1 -> 2 -> 3"
         );
+    }
+
+    #[test]
+    fn test_format_value() {
+        assert_eq!(
+            format_result(&QueryResult::Value("hello".to_string())),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_format_nodes_empty() {
+        assert_eq!(format_result(&QueryResult::Nodes(vec![])), "(0 nodes)");
+    }
+
+    #[test]
+    fn test_format_nodes_with_data() {
+        use query_router::NodeResult;
+        use std::collections::HashMap;
+
+        let nodes = vec![
+            NodeResult {
+                id: 1,
+                label: "person".to_string(),
+                properties: HashMap::new(),
+            },
+            NodeResult {
+                id: 2,
+                label: "person".to_string(),
+                properties: {
+                    let mut m = HashMap::new();
+                    m.insert("name".to_string(), "Alice".to_string());
+                    m
+                },
+            },
+        ];
+        let output = format_result(&QueryResult::Nodes(nodes));
+        assert!(output.contains("Nodes:"));
+        assert!(output.contains("[1] person"));
+        assert!(output.contains("[2] person"));
+        assert!(output.contains("2 nodes"));
+    }
+
+    #[test]
+    fn test_format_edges_empty() {
+        assert_eq!(format_result(&QueryResult::Edges(vec![])), "(0 edges)");
+    }
+
+    #[test]
+    fn test_format_edges_with_data() {
+        use query_router::EdgeResult;
+
+        let edges = vec![EdgeResult {
+            id: 1,
+            from: 1,
+            to: 2,
+            label: "knows".to_string(),
+        }];
+        let output = format_result(&QueryResult::Edges(edges));
+        assert!(output.contains("Edges:"));
+        assert!(output.contains("[1] 1 -> 2 : knows"));
+        assert!(output.contains("1 edges"));
+    }
+
+    #[test]
+    fn test_format_similar_empty() {
+        assert_eq!(
+            format_result(&QueryResult::Similar(vec![])),
+            "(no similar embeddings)"
+        );
+    }
+
+    #[test]
+    fn test_format_similar_with_data() {
+        use query_router::SimilarResult;
+
+        let results = vec![
+            SimilarResult {
+                key: "doc1".to_string(),
+                score: 0.95,
+            },
+            SimilarResult {
+                key: "doc2".to_string(),
+                score: 0.85,
+            },
+        ];
+        let output = format_result(&QueryResult::Similar(results));
+        assert!(output.contains("Similar:"));
+        assert!(output.contains("1. doc1"));
+        assert!(output.contains("2. doc2"));
+        assert!(output.contains("similarity"));
+    }
+
+    #[test]
+    fn test_format_unified() {
+        use query_router::UnifiedResult;
+
+        let unified = UnifiedResult {
+            description: "Combined result".to_string(),
+            items: vec![],
+        };
+        assert_eq!(
+            format_result(&QueryResult::Unified(unified)),
+            "Combined result"
+        );
+    }
+
+    #[test]
+    fn test_format_rows_empty() {
+        assert_eq!(format_result(&QueryResult::Rows(vec![])), "(0 rows)");
+    }
+
+    #[test]
+    fn test_format_rows_with_data() {
+        use relational_engine::{Row, Value};
+        use std::collections::HashMap;
+
+        let rows = vec![
+            Row {
+                id: 1,
+                values: {
+                    let mut m = HashMap::new();
+                    m.insert("name".to_string(), Value::String("Alice".into()));
+                    m.insert("age".to_string(), Value::Int(30));
+                    m
+                },
+            },
+            Row {
+                id: 2,
+                values: {
+                    let mut m = HashMap::new();
+                    m.insert("name".to_string(), Value::String("Bob".into()));
+                    m.insert("age".to_string(), Value::Int(25));
+                    m
+                },
+            },
+        ];
+        let output = format_result(&QueryResult::Rows(rows));
+        assert!(output.contains("2 rows"));
+    }
+
+    #[test]
+    fn test_default_shell() {
+        let shell = Shell::default();
+        assert_eq!(shell.config.prompt, "> ");
+    }
+
+    #[test]
+    fn test_shell_config_no_history() {
+        let config = ShellConfig {
+            history_file: None,
+            history_size: 100,
+            prompt: "$ ".to_string(),
+        };
+        let shell = Shell::with_config(config);
+        assert!(shell.config.history_file.is_none());
+    }
+
+    #[test]
+    fn test_count_zero() {
+        assert_eq!(format_result(&QueryResult::Count(0)), "0 rows affected");
+    }
+
+    #[test]
+    fn test_format_rows_empty_columns() {
+        use relational_engine::Row;
+        use std::collections::HashMap;
+
+        // Row with empty values HashMap
+        let rows = vec![Row {
+            id: 1,
+            values: HashMap::new(),
+        }];
+        assert_eq!(format_rows(&rows), "(0 rows)");
+    }
+
+    #[test]
+    fn test_shell_error_is_error() {
+        use std::error::Error;
+        let err = ShellError::Init("test".to_string());
+        // Verify Error trait is implemented
+        let _: &dyn Error = &err;
+    }
+
+    #[test]
+    fn test_format_rows_missing_column() {
+        use relational_engine::{Row, Value};
+        use std::collections::HashMap;
+
+        // Create rows where second row is missing a column
+        let rows = vec![
+            Row {
+                id: 1,
+                values: {
+                    let mut m = HashMap::new();
+                    m.insert("a".to_string(), Value::Int(1));
+                    m.insert("b".to_string(), Value::Int(2));
+                    m
+                },
+            },
+            Row {
+                id: 2,
+                values: {
+                    let mut m = HashMap::new();
+                    m.insert("a".to_string(), Value::Int(3));
+                    // 'b' is missing - should use default
+                    m
+                },
+            },
+        ];
+        let output = format_rows(&rows);
+        assert!(output.contains("2 rows"));
+    }
+
+    #[test]
+    fn test_format_rows_single_row() {
+        use relational_engine::{Row, Value};
+        use std::collections::HashMap;
+
+        let rows = vec![Row {
+            id: 1,
+            values: {
+                let mut m = HashMap::new();
+                m.insert("x".to_string(), Value::Int(42));
+                m
+            },
+        }];
+        let output = format_rows(&rows);
+        assert!(output.contains("(1 rows)"));
+        assert!(output.contains("x"));
+        assert!(output.contains("Int(42)"));
+    }
+
+    #[test]
+    fn test_dirs_home() {
+        // dirs_home should return Some when HOME is set
+        let result = dirs_home();
+        // HOME is typically set in test environment
+        assert!(result.is_some() || std::env::var_os("HOME").is_none());
+    }
+
+    #[test]
+    fn test_list_tables_empty() {
+        let shell = Shell::new();
+        // Without any tables created, should still return output
+        let result = shell.execute("\\dt");
+        assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_format_nodes_with_properties() {
+        use query_router::NodeResult;
+        use std::collections::HashMap;
+
+        let nodes = vec![NodeResult {
+            id: 1,
+            label: "person".to_string(),
+            properties: {
+                let mut m = HashMap::new();
+                m.insert("name".to_string(), "Alice".to_string());
+                m.insert("age".to_string(), "30".to_string());
+                m
+            },
+        }];
+        let output = format_result(&QueryResult::Nodes(nodes));
+        assert!(output.contains("[1] person"));
+        assert!(output.contains("name:"));
+        assert!(output.contains("(1 nodes)"));
+    }
+
+    #[test]
+    fn test_format_single_id() {
+        assert_eq!(format_result(&QueryResult::Ids(vec![1])), "ID: 1");
+    }
+
+    #[test]
+    fn test_tables_alias() {
+        let shell = Shell::new();
+        // Both "tables" and "\dt" should work
+        let result1 = shell.execute("tables");
+        let result2 = shell.execute("\\dt");
+        assert!(matches!(result1, CommandResult::Output(_)));
+        assert!(matches!(result2, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_case_insensitive_commands() {
+        let shell = Shell::new();
+        assert_eq!(
+            shell.execute("HELP"),
+            CommandResult::Help(Shell::help_text())
+        );
+        assert_eq!(
+            shell.execute("Help"),
+            CommandResult::Help(Shell::help_text())
+        );
+        assert_eq!(
+            shell.execute("CLEAR"),
+            CommandResult::Output("\x1B[2J\x1B[H".to_string())
+        );
+        assert_eq!(
+            shell.execute("TABLES"),
+            CommandResult::Output("No tables found.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_process_result_output() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Output("test".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_process_result_help() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Help("help text".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_process_result_error() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Error("error".to_string())),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_process_result_exit() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Exit),
+            LoopAction::Exit
+        );
+    }
+
+    #[test]
+    fn test_process_result_empty() {
+        assert_eq!(
+            Shell::process_result(&CommandResult::Empty),
+            LoopAction::Continue
+        );
+    }
+
+    #[test]
+    fn test_shell_version() {
+        let version = Shell::version();
+        assert!(!version.is_empty());
+        assert!(version.contains('.'));
+    }
+
+    #[test]
+    fn test_loop_action_eq() {
+        assert_eq!(LoopAction::Continue, LoopAction::Continue);
+        assert_eq!(LoopAction::Exit, LoopAction::Exit);
+        assert_ne!(LoopAction::Continue, LoopAction::Exit);
+    }
+
+    #[test]
+    fn test_loop_action_clone() {
+        let action = LoopAction::Continue;
+        let cloned = action.clone();
+        assert_eq!(action, cloned);
+    }
+
+    #[test]
+    fn test_loop_action_debug() {
+        let action = LoopAction::Exit;
+        let debug_str = format!("{action:?}");
+        assert!(debug_str.contains("Exit"));
+    }
+
+    #[test]
+    fn test_loop_action_copy() {
+        let action = LoopAction::Continue;
+        let copied: LoopAction = action;
+        assert_eq!(action, copied);
+    }
+
+    #[test]
+    fn test_command_result_clone() {
+        let result = CommandResult::Output("test".to_string());
+        let cloned = result.clone();
+        assert_eq!(result, cloned);
+    }
+
+    #[test]
+    fn test_command_result_debug() {
+        let result = CommandResult::Exit;
+        let debug = format!("{result:?}");
+        assert!(debug.contains("Exit"));
+    }
+
+    #[test]
+    fn test_shell_config_clone() {
+        let config = ShellConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.prompt, cloned.prompt);
+    }
+
+    #[test]
+    fn test_shell_error_clone() {
+        let err = ShellError::Init("test".to_string());
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+    }
+
+    #[test]
+    fn test_format_path_single() {
+        assert_eq!(format_result(&QueryResult::Path(vec![1])), "Path: 1");
+    }
+
+    #[test]
+    fn test_format_rows_header_formatting() {
+        use relational_engine::{Row, Value};
+        use std::collections::HashMap;
+
+        let rows = vec![Row {
+            id: 1,
+            values: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "long_column_name".to_string(),
+                    Value::String("short".into()),
+                );
+                m
+            },
+        }];
+        let output = format_rows(&rows);
+        assert!(output.contains("long_column_name"));
+        assert!(output.contains("-+-") || output.contains("---"));
+    }
+
+    #[test]
+    fn test_format_count_large() {
+        assert_eq!(
+            format_result(&QueryResult::Count(1000000)),
+            "1000000 rows affected"
+        );
+    }
+
+    #[test]
+    fn test_format_ids_many() {
+        let ids: Vec<u64> = (1..=10).collect();
+        let output = format_result(&QueryResult::Ids(ids));
+        assert!(output.starts_with("IDs:"));
+        assert!(output.contains("10"));
     }
 }

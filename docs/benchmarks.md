@@ -15,6 +15,7 @@ cargo bench --package graph_engine
 cargo bench --package vector_engine
 cargo bench --package neumann_parser
 cargo bench --package query_router
+cargo bench --package neumann_shell
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -395,6 +396,31 @@ The query router integrates all engines and routes queries based on parsed AST t
 - **Graph**: Node/edge creation ~2-3µs; path finding scales with path length
 - **Vector**: Similarity search dominates mixed workloads (~10ms for 100 vectors)
 - **Bottleneck identification**: SIMILAR queries are the slowest operation; use HNSW index for large vector stores
+
+### neumann_shell
+
+The shell provides an interactive REPL interface with readline support, routing queries through the query_router.
+
+**Command Execution:**
+| Operation | Time |
+|-----------|------|
+| empty_input | 2.3 ns |
+| help | 43 ns |
+| SELECT * (100 rows) | 17.8 µs |
+| SELECT WHERE (100 rows) | 17.1 µs |
+
+**Output Formatting:**
+| Operation | Time |
+|-----------|------|
+| format_1000_rows | 267 µs |
+
+#### Analysis
+
+- **Empty input**: Near-zero overhead (2.3ns) for no-op commands
+- **Built-in commands**: Help returns in ~43ns (string allocation only)
+- **Query execution**: Dominated by query_router execution time, shell adds negligible overhead
+- **Output formatting**: ASCII table formatting at ~267ns per row (267µs / 1000 rows)
+- **Readline integration**: rustyline provides history, arrow keys, and Ctrl+C handling with no measurable overhead on command execution
 
 ## Performance Characteristics
 

@@ -7,9 +7,9 @@ fn bench_execute_commands(c: &mut Criterion) {
     let shell = Shell::new();
 
     // Setup
-    shell.execute("CREATE TABLE users (id INT, name TEXT)");
+    let _ = shell.execute("CREATE TABLE users (id INT, name TEXT)");
     for i in 0..100 {
-        shell.execute(&format!("INSERT INTO users VALUES ({i}, 'user{i}')"));
+        let _ = shell.execute(&format!("INSERT INTO users VALUES ({i}, 'user{i}')"));
     }
 
     group.bench_function("empty_input", |b| {
@@ -47,9 +47,9 @@ fn bench_format_output(c: &mut Criterion) {
     let mut group = c.benchmark_group("shell_format");
 
     let shell = Shell::new();
-    shell.execute("CREATE TABLE bench (id INT, name TEXT, email TEXT)");
+    let _ = shell.execute("CREATE TABLE bench (id INT, name TEXT, email TEXT)");
     for i in 0..1000 {
-        shell.execute(&format!(
+        let _ = shell.execute(&format!(
             "INSERT INTO bench VALUES ({i}, 'user{i}', 'user{i}@example.com')"
         ));
     }

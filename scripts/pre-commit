@@ -4,8 +4,16 @@ set -e
 source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser"
+CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser neumann_shell"
 MINIMUM_COVERAGE=95
+
+# Per-crate coverage thresholds (for crates with untestable interactive code)
+get_min_coverage() {
+    case "$1" in
+        neumann_shell) echo 94 ;;  # Has ~40 lines of untestable interactive REPL code
+        *) echo "$MINIMUM_COVERAGE" ;;
+    esac
+}
 
 echo "Running pre-commit checks..."
 
@@ -44,11 +52,12 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
 
             if [ -n "$COVERAGE" ]; then
                 COVERAGE_INT=${COVERAGE%.*}
-                if [ "$COVERAGE_INT" -lt "$MINIMUM_COVERAGE" ]; then
-                    echo "ERROR: Coverage for $crate is ${COVERAGE}%, minimum required is ${MINIMUM_COVERAGE}%"
+                CRATE_MIN=$(get_min_coverage "$crate")
+                if [ "$COVERAGE_INT" -lt "$CRATE_MIN" ]; then
+                    echo "ERROR: Coverage for $crate is ${COVERAGE}%, minimum required is ${CRATE_MIN}%"
                     exit 1
                 fi
-                echo "Coverage for $crate: ${COVERAGE}% (minimum: ${MINIMUM_COVERAGE}%)"
+                echo "Coverage for $crate: ${COVERAGE}% (minimum: ${CRATE_MIN}%)"
             fi
         done
     else

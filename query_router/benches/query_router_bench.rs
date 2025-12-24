@@ -70,7 +70,10 @@ fn bench_graph_execute(c: &mut Criterion) {
     // Create nodes
     for i in 0..100 {
         router
-            .execute_parsed(&format!("NODE CREATE person {{id: {}, name: 'person{}'}}", i, i))
+            .execute_parsed(&format!(
+                "NODE CREATE person {{id: {}, name: 'person{}'}}",
+                i, i
+            ))
             .unwrap();
     }
 
@@ -112,9 +115,7 @@ fn bench_graph_execute(c: &mut Criterion) {
 
     group.bench_function("path", |b| {
         b.iter(|| {
-            let result = router
-                .execute_parsed(black_box("PATH 1 -> 10"))
-                .unwrap();
+            let result = router.execute_parsed(black_box("PATH 1 -> 10")).unwrap();
             black_box(result);
         });
     });
