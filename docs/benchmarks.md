@@ -100,6 +100,7 @@ The graph engine stores nodes and edges as tensors, using adjacency lists for ne
 - **Undirected edges**: ~50% slower than directed (stores reverse edge internally)
 - **Traversal**: Consistent ~3µs per node visited, good BFS implementation
 - **Path finding**: Near-linear with path length in chains; grid explores more nodes
+- **Parallel delete_node**: Uses rayon for high-degree nodes (>100 edges)
 - **Memory overhead**: Each node/edge is a full TensorData (~5-10 allocations)
 
 ### relational_engine

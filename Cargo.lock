@@ -215,6 +215,7 @@ name = "graph_engine"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "rayon",
  "tensor_store",
 ]
 

@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
@@ -100,6 +101,8 @@ pub struct GraphEngine {
 }
 
 impl GraphEngine {
+    const PARALLEL_THRESHOLD: usize = 100;
+
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
@@ -554,8 +557,18 @@ impl GraphEngine {
         let out_edges = self.get_edge_list(&Self::outgoing_edges_key(id))?;
         let in_edges = self.get_edge_list(&Self::incoming_edges_key(id))?;
 
-        for edge_id in out_edges.iter().chain(in_edges.iter()) {
-            let _ = self.store.delete(&Self::edge_key(*edge_id));
+        // Collect all edge IDs to delete
+        let all_edges: Vec<u64> = out_edges.into_iter().chain(in_edges).collect();
+
+        // Parallel deletion for high-degree nodes
+        if all_edges.len() >= Self::PARALLEL_THRESHOLD {
+            all_edges.par_iter().for_each(|edge_id| {
+                let _ = self.store.delete(&Self::edge_key(*edge_id));
+            });
+        } else {
+            for edge_id in all_edges {
+                let _ = self.store.delete(&Self::edge_key(edge_id));
+            }
         }
 
         self.store.delete(&Self::node_key(id))?;
@@ -1195,5 +1208,31 @@ mod tests {
         let neighbors = engine.neighbors(n2, None, Direction::Incoming).unwrap();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0].id, n1);
+    }
+
+    #[test]
+    fn delete_high_degree_node_parallel() {
+        let engine = GraphEngine::new();
+
+        // Create a hub node with >100 edges to trigger parallel deletion
+        let hub = engine.create_node("hub", HashMap::new()).unwrap();
+
+        // Create 150 leaf nodes connected to the hub
+        for i in 0..150 {
+            let leaf = engine
+                .create_node(&format!("leaf{}", i), HashMap::new())
+                .unwrap();
+            engine
+                .create_edge(hub, leaf, "CONNECTS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        // Verify hub has 150 outgoing edges
+        let neighbors = engine.neighbors(hub, None, Direction::Outgoing).unwrap();
+        assert_eq!(neighbors.len(), 150);
+
+        // Delete hub node (should use parallel edge deletion)
+        engine.delete_node(hub).unwrap();
+        assert!(!engine.node_exists(hub));
     }
 }
