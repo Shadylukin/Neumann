@@ -14,6 +14,9 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 | `relational_engine` | SQL-like tables with indexes | tensor_store |
 | `graph_engine` | Graph nodes and edges | tensor_store |
 | `vector_engine` | Embeddings and similarity search | tensor_store |
+| `neumann_parser` | Query tokenization and parsing | - |
+| `query_router` | Unified query execution | all engines, parser |
+| `neumann_shell` | Interactive CLI interface | query_router |
 
 ## Code Style
 
@@ -59,7 +62,7 @@ All code must pass before commit:
 - `cargo clippy -- -D warnings` - lints as errors
 - `cargo test` - all tests pass
 - `cargo doc --no-deps` - documentation builds
-- 95% minimum line coverage per crate
+- 95% minimum line coverage per crate (94% for shell due to interactive REPL)
 
 ## Testing Philosophy
 
@@ -83,12 +86,22 @@ graph_engine/           # Module 3: Graph operations
   src/lib.rs            # Nodes, edges, traversals
 vector_engine/          # Module 4: Vector operations
   src/lib.rs            # Embeddings, similarity search
+neumann_parser/         # Module 5: Query parsing
+  src/lib.rs            # Tokenization, parsing, AST
+query_router/           # Module 6: Query execution
+  src/lib.rs            # Unified query routing
+neumann_shell/          # Module 7: CLI interface
+  src/lib.rs            # Shell implementation
+  src/main.rs           # Binary entry point
 docs/
   architecture.md       # System architecture overview
   tensor-store.md       # Module 1 API documentation
   relational-engine.md  # Module 2 API documentation
   graph-engine.md       # Module 3 API documentation
   vector-engine.md      # Module 4 API documentation
+  query-router.md       # Module 5 API documentation
+  neumann-parser.md     # Module 6 API documentation
+  neumann-shell.md      # Module 7 API documentation
   benchmarks.md         # Performance benchmarks
 ```
 
@@ -113,6 +126,11 @@ docs/
 ### Vector Engine
 - `SearchResult`: Key and similarity score
 - `VectorEngine`: Embedding storage and k-NN search
+
+### Neumann Shell
+- `Shell`: Interactive REPL with query execution
+- `ShellConfig`: Configuration (history, prompt)
+- `CommandResult`: Output, Exit, Help, Empty, Error
 
 ## Concurrency Design
 

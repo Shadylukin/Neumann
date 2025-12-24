@@ -6,7 +6,10 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 
 ```
 +--------------------------------------------------+
-|                    Shell (CLI)                    |
+|                 Shell (CLI) [DONE]                |
+|   - Interactive REPL                             |
+|   - Command history                              |
+|   - Formatted output                             |
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
@@ -156,14 +159,26 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Graph: NODE, EDGE, PATH, NEIGHBORS, FIND NODE/EDGE
 - Vector: EMBED STORE/GET/DELETE, SIMILAR
 
-### Module 7: Shell (Planned)
+### Module 7: Shell (Complete)
 
-**Responsibility**: User interface.
+**Responsibility**: Interactive command-line interface.
 
-**Will Provide**:
-- CLI commands
-- REPL
-- Script execution
+**Interface**:
+- `Shell::new()` - Create shell with default config
+- `Shell::with_config(config)` - Create with custom config
+- `shell.execute(command)` - Execute single command
+- `shell.run()` - Start interactive REPL loop
+
+**Features**:
+- Readline support (history, arrow keys, Ctrl+C)
+- ASCII table output formatting
+- Built-in commands (help, exit, tables, clear)
+- Persistent command history
+
+**Does Not**:
+- Parse queries directly (delegates to Query Router)
+- Implement syntax highlighting
+- Support multi-line queries
 
 ## Data Flow
 
@@ -277,6 +292,8 @@ Neumann/
     vector-engine.md         # Module 4 documentation
     query-router.md          # Module 5 documentation
     neumann-parser.md        # Module 6 documentation
+    neumann-shell.md         # Module 7 documentation
+    benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
     src/lib.rs               # Module 1: Storage layer
@@ -303,6 +320,13 @@ Neumann/
       expr.rs                # Expression parsing
       span.rs                # Source locations
       error.rs               # Error types
+  neumann_shell/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 7: Shell implementation
+      main.rs                # CLI entry point
+    benches/
+      neumann_shell_bench.rs # Performance benchmarks
 ```
 
 ## Quality Gates
@@ -314,7 +338,7 @@ Runs before every commit for all crates:
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (minimum 95%)
+5. `cargo llvm-cov` - Coverage check (95% minimum, 94% for shell)
 
 ### CI Pipeline
 
@@ -323,7 +347,7 @@ Runs on every PR:
 2. Format check - Code style
 3. Clippy lints - Static analysis
 4. Tests - Unit and integration tests
-5. Coverage - Minimum 95% per crate
+5. Coverage - Minimum 95% per crate (94% for shell)
 6. Documentation build - Doc generation
 7. Security audit - Dependency vulnerabilities
 8. Miri - Undefined behavior detection (tensor_store)

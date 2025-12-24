@@ -69,7 +69,7 @@ The shell is the primary interface. Everything is a command. State lives in the 
 | Vector Engine | Complete | Embeddings, cosine similarity search |
 | Query Router | Complete | Unified query execution across all engines |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
-| Shell | Planned | CLI interface |
+| Shell | Complete | Interactive CLI with readline, history, formatted output |
 | Persistence | Planned | Durability and backup |
 
 ## What Neumann Is Not (For Now)
@@ -93,6 +93,8 @@ Neumann finishes the thought.
 - [Vector Engine API](docs/vector-engine.md)
 - [Query Router API](docs/query-router.md)
 - [Neumann Parser](docs/neumann-parser.md)
+- [Shell](docs/neumann-shell.md)
+- [Benchmarks](docs/benchmarks.md)
 
 ## License
 
