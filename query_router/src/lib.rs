@@ -119,6 +119,8 @@ pub enum QueryResult {
     Similar(Vec<SimilarResult>),
     /// Combined results from unified query
     Unified(UnifiedResult),
+    /// List of table names
+    TableList(Vec<String>),
 }
 
 /// Node result from graph query.
@@ -296,6 +298,10 @@ impl QueryRouter {
                     "DROP INDEX not yet supported".to_string(),
                 ))
             },
+            StatementKind::ShowTables => {
+                let tables = self.relational.list_tables();
+                Ok(QueryResult::TableList(tables))
+            },
 
             // Graph statements
             StatementKind::Node(node) => self.exec_node(node),
@@ -351,7 +357,14 @@ impl QueryRouter {
                     let mut values = HashMap::new();
                     // Match columns to values
                     if let Some(ref cols) = insert.columns {
+                        // Explicit columns specified
                         for (col, val) in cols.iter().zip(row_values.iter()) {
+                            values.insert(col.name.clone(), self.expr_to_value(val)?);
+                        }
+                    } else {
+                        // No columns specified - use table schema order
+                        let schema = self.relational.get_schema(&insert.table.name)?;
+                        for (col, val) in schema.columns.iter().zip(row_values.iter()) {
                             values.insert(col.name.clone(), self.expr_to_value(val)?);
                         }
                     }
@@ -3972,5 +3985,71 @@ mod tests {
         // Complex expression as property value - tests properties_to_map error
         let result = router.execute_parsed("NODE CREATE test { val: (1+2) }");
         assert!(result.is_err());
+    }
+
+    // ========== SHOW TABLES Tests ==========
+
+    #[test]
+    fn show_tables_empty() {
+        let router = QueryRouter::new();
+        let result = router.execute_parsed("SHOW TABLES").unwrap();
+        match result {
+            QueryResult::TableList(tables) => {
+                assert!(tables.is_empty());
+            },
+            _ => panic!("Expected TableList"),
+        }
+    }
+
+    #[test]
+    fn show_tables_with_tables() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE users (id INT)")
+            .unwrap();
+        router
+            .execute_parsed("CREATE TABLE products (id INT)")
+            .unwrap();
+
+        let result = router.execute_parsed("SHOW TABLES").unwrap();
+        match result {
+            QueryResult::TableList(tables) => {
+                assert_eq!(tables.len(), 2);
+                assert!(tables.contains(&"users".to_string()));
+                assert!(tables.contains(&"products".to_string()));
+            },
+            _ => panic!("Expected TableList"),
+        }
+    }
+
+    #[test]
+    fn show_without_tables_error() {
+        let router = QueryRouter::new();
+        let result = router.execute_parsed("SHOW");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn insert_without_columns() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE users (id INT, name TEXT)")
+            .unwrap();
+
+        // INSERT without explicit column names - should use schema order
+        router
+            .execute_parsed("INSERT INTO users VALUES (1, 'Alice')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO users VALUES (2, 'Bob')")
+            .unwrap();
+
+        let result = router.execute_parsed("SELECT * FROM users").unwrap();
+        match result {
+            QueryResult::Rows(rows) => {
+                assert_eq!(rows.len(), 2);
+            },
+            _ => panic!("Expected Rows"),
+        }
     }
 }

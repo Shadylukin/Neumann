@@ -401,7 +401,8 @@ impl RelationalEngine {
         Ok(())
     }
 
-    fn get_schema(&self, table: &str) -> Result<Schema> {
+    /// Gets the schema for a table.
+    pub fn get_schema(&self, table: &str) -> Result<Schema> {
         let meta_key = Self::table_meta_key(table);
         let meta = self
             .store
@@ -440,6 +441,15 @@ impl RelationalEngine {
         }
 
         Ok(Schema::new(columns))
+    }
+
+    /// Lists all tables in the database.
+    pub fn list_tables(&self) -> Vec<String> {
+        self.store
+            .scan("_meta:table:")
+            .into_iter()
+            .filter_map(|key| key.strip_prefix("_meta:table:").map(String::from))
+            .collect()
     }
 
     fn next_row_id(&self, table: &str) -> u64 {
@@ -3155,5 +3165,34 @@ mod tests {
 
         let result = engine.batch_insert("users", rows);
         assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
+    }
+
+    #[test]
+    fn list_tables_empty() {
+        let engine = RelationalEngine::new();
+        let tables = engine.list_tables();
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn list_tables_with_tables() {
+        let engine = RelationalEngine::new();
+        engine
+            .create_table(
+                "users",
+                Schema::new(vec![Column::new("id", ColumnType::Int)]),
+            )
+            .unwrap();
+        engine
+            .create_table(
+                "products",
+                Schema::new(vec![Column::new("id", ColumnType::Int)]),
+            )
+            .unwrap();
+
+        let tables = engine.list_tables();
+        assert_eq!(tables.len(), 2);
+        assert!(tables.contains(&"users".to_string()));
+        assert!(tables.contains(&"products".to_string()));
     }
 }

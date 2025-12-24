@@ -271,93 +271,123 @@ fn format_result(result: &QueryResult) -> String {
     match result {
         QueryResult::Empty => "OK".to_string(),
         QueryResult::Value(s) => s.clone(),
-        QueryResult::Count(n) => {
-            if *n == 1 {
-                "1 row affected".to_string()
-            } else {
-                format!("{n} rows affected")
-            }
-        },
-        QueryResult::Ids(ids) => {
-            if ids.is_empty() {
-                "(no results)".to_string()
-            } else if ids.len() == 1 {
-                format!("ID: {}", ids[0])
-            } else {
-                format!(
-                    "IDs: {}",
-                    ids.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        },
-        QueryResult::Rows(rows) => {
-            if rows.is_empty() {
-                return "(0 rows)".to_string();
-            }
-            format_rows(rows)
-        },
-        QueryResult::Nodes(nodes) => {
-            if nodes.is_empty() {
-                "(0 nodes)".to_string()
-            } else {
-                let lines: Vec<String> = nodes
-                    .iter()
-                    .map(|n| {
-                        let props: Vec<String> = n
-                            .properties
-                            .iter()
-                            .map(|(k, v)| format!("{k}: {v}"))
-                            .collect();
-                        if props.is_empty() {
-                            format!("  [{}] {} {{}}", n.id, n.label)
-                        } else {
-                            format!("  [{}] {} {{{}}}", n.id, n.label, props.join(", "))
-                        }
-                    })
-                    .collect();
-                format!("Nodes:\n{}\n({} nodes)", lines.join("\n"), nodes.len())
-            }
-        },
-        QueryResult::Edges(edges) => {
-            if edges.is_empty() {
-                "(0 edges)".to_string()
-            } else {
-                let lines: Vec<String> = edges
-                    .iter()
-                    .map(|e| format!("  [{}] {} -> {} : {}", e.id, e.from, e.to, e.label))
-                    .collect();
-                format!("Edges:\n{}\n({} edges)", lines.join("\n"), edges.len())
-            }
-        },
-        QueryResult::Path(path) => {
-            if path.is_empty() {
-                "(no path found)".to_string()
-            } else {
-                format!(
-                    "Path: {}",
-                    path.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(" -> ")
-                )
-            }
-        },
-        QueryResult::Similar(results) => {
-            if results.is_empty() {
-                "(no similar embeddings)".to_string()
-            } else {
-                let lines: Vec<String> = results
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| format!("  {}. {} (similarity: {:.4})", i + 1, r.key, r.score))
-                    .collect();
-                format!("Similar:\n{}", lines.join("\n"))
-            }
-        },
+        QueryResult::Count(n) => format_count(*n),
+        QueryResult::Ids(ids) => format_ids(ids),
+        QueryResult::Rows(rows) => format_rows(rows),
+        QueryResult::Nodes(nodes) => format_nodes(nodes),
+        QueryResult::Edges(edges) => format_edges(edges),
+        QueryResult::Path(path) => format_path(path),
+        QueryResult::Similar(results) => format_similar(results),
         QueryResult::Unified(unified) => unified.description.clone(),
+        QueryResult::TableList(tables) => format_table_list(tables),
+    }
+}
+
+/// Formats a count result.
+fn format_count(n: usize) -> String {
+    if n == 1 {
+        "1 row affected".to_string()
+    } else {
+        format!("{n} rows affected")
+    }
+}
+
+/// Formats a list of IDs.
+fn format_ids(ids: &[u64]) -> String {
+    if ids.is_empty() {
+        "(no results)".to_string()
+    } else if ids.len() == 1 {
+        format!("ID: {}", ids[0])
+    } else {
+        format!(
+            "IDs: {}",
+            ids.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// Formats graph nodes.
+fn format_nodes(nodes: &[query_router::NodeResult]) -> String {
+    if nodes.is_empty() {
+        "(0 nodes)".to_string()
+    } else {
+        let lines: Vec<String> = nodes
+            .iter()
+            .map(|n| {
+                let props: Vec<String> = n
+                    .properties
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect();
+                if props.is_empty() {
+                    format!("  [{}] {} {{}}", n.id, n.label)
+                } else {
+                    format!("  [{}] {} {{{}}}", n.id, n.label, props.join(", "))
+                }
+            })
+            .collect();
+        format!("Nodes:\n{}\n({} nodes)", lines.join("\n"), nodes.len())
+    }
+}
+
+/// Formats graph edges.
+fn format_edges(edges: &[query_router::EdgeResult]) -> String {
+    if edges.is_empty() {
+        "(0 edges)".to_string()
+    } else {
+        let lines: Vec<String> = edges
+            .iter()
+            .map(|e| format!("  [{}] {} -> {} : {}", e.id, e.from, e.to, e.label))
+            .collect();
+        format!("Edges:\n{}\n({} edges)", lines.join("\n"), edges.len())
+    }
+}
+
+/// Formats a graph path.
+fn format_path(path: &[u64]) -> String {
+    if path.is_empty() {
+        "(no path found)".to_string()
+    } else {
+        format!(
+            "Path: {}",
+            path.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        )
+    }
+}
+
+/// Formats similar embedding results.
+fn format_similar(results: &[query_router::SimilarResult]) -> String {
+    if results.is_empty() {
+        "(no similar embeddings)".to_string()
+    } else {
+        let lines: Vec<String> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format!("  {}. {} (similarity: {:.4})", i + 1, r.key, r.score))
+            .collect();
+        format!("Similar:\n{}", lines.join("\n"))
+    }
+}
+
+/// Formats a list of table names.
+fn format_table_list(tables: &[String]) -> String {
+    if tables.is_empty() {
+        "No tables found.".to_string()
+    } else {
+        format!(
+            "Tables:\n{}",
+            tables
+                .iter()
+                .map(|t| format!("  {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     }
 }
 
@@ -1111,5 +1141,20 @@ mod tests {
         let output = format_result(&QueryResult::Ids(ids));
         assert!(output.starts_with("IDs:"));
         assert!(output.contains("10"));
+    }
+
+    #[test]
+    fn test_format_table_list_empty() {
+        let output = format_result(&QueryResult::TableList(vec![]));
+        assert_eq!(output, "No tables found.");
+    }
+
+    #[test]
+    fn test_format_table_list_with_tables() {
+        let tables = vec!["users".to_string(), "products".to_string()];
+        let output = format_result(&QueryResult::TableList(tables));
+        assert!(output.starts_with("Tables:"));
+        assert!(output.contains("users"));
+        assert!(output.contains("products"));
     }
 }

@@ -7,7 +7,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser neumann_shell"
 MINIMUM_COVERAGE=95
 
-# Per-crate coverage thresholds (for crates with untestable interactive code)
+# Per-crate coverage thresholds
 get_min_coverage() {
     case "$1" in
         neumann_shell) echo 94 ;;  # Has ~40 lines of untestable interactive REPL code
@@ -46,11 +46,30 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
         for crate in $CRATES; do
             echo "Checking coverage for $crate..."
 
-            # Get coverage percentage from the crate's own source file (not TOTAL which includes deps)
-            # Field 10 is line coverage %. Match the specific crate's lib.rs (handles various path formats)
-            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep -E "${crate}(/src)?/lib\.rs|^lib\.rs\s" | head -1 | awk '{print $10}' | tr -d '%')
+            # Get coverage for the crate's own source files only (excluding dependencies)
+            # Files appear as either "crate_name/src/file.rs" or just "file.rs" (for main crate)
+            # Dependencies always have their path prefix, so we match:
+            # 1. Lines starting with the crate name (e.g., "relational_engine/src/lib.rs")
+            # 2. Lines starting with just a filename (e.g., "lib.rs ", "parser.rs ") - these are main crate files
+            COV_OUTPUT=$(cargo llvm-cov --package "$crate" --summary-only 2>&1)
 
-            if [ -n "$COVERAGE" ]; then
+            # Sum lines (field 8) and missed lines (field 9) for crate's own files
+            # Match files that belong to this crate (various path formats):
+            # - "file.rs" (just filename for main crate)
+            # - "crate_name/src/file.rs" (relative path)
+            # - "/full/path/crate_name/src/file.rs" (absolute path)
+            TOTAL_LINES=$(echo "$COV_OUTPUT" | awk -v crate="$crate" '
+                /^[a-z_]+\.rs[[:space:]]/ { lines += $8; missed += $9 }
+                $0 ~ "^"crate"/" { lines += $8; missed += $9 }
+                $0 ~ "/"crate"/src/" { lines += $8; missed += $9 }
+                END { print lines, missed }
+            ')
+            LINES=$(echo "$TOTAL_LINES" | awk '{print $1}')
+            MISSED=$(echo "$TOTAL_LINES" | awk '{print $2}')
+
+            if [ -n "$LINES" ] && [ "$LINES" -gt 0 ]; then
+                COVERED=$((LINES - MISSED))
+                COVERAGE=$(awk "BEGIN {printf \"%.2f\", ($COVERED / $LINES) * 100}")
                 COVERAGE_INT=${COVERAGE%.*}
                 CRATE_MIN=$(get_min_coverage "$crate")
                 if [ "$COVERAGE_INT" -lt "$CRATE_MIN" ]; then
