@@ -35,18 +35,11 @@ fn bench_create_nodes(c: &mut Criterion) {
 fn bench_create_edges(c: &mut Criterion) {
     let mut group = c.benchmark_group("create_edges");
 
-    // Pre-create nodes
-    let engine = GraphEngine::new();
-    let mut node_ids = vec![];
-    for i in 0..1000 {
-        node_ids.push(engine.create_node("Person", create_props(i)).unwrap());
-    }
-
     group.bench_function("1000_edges_directed", |b| {
         b.iter(|| {
             let engine = GraphEngine::new();
             let mut ids = vec![];
-            for i in 0..1000 {
+            for _ in 0..1000 {
                 ids.push(engine.create_node("Person", HashMap::new()).unwrap());
             }
             // Create chain: 0->1->2->...->999
@@ -63,7 +56,7 @@ fn bench_create_edges(c: &mut Criterion) {
         b.iter(|| {
             let engine = GraphEngine::new();
             let mut ids = vec![];
-            for i in 0..1000 {
+            for _ in 0..1000 {
                 ids.push(engine.create_node("Person", HashMap::new()).unwrap());
             }
             for i in 0..999 {
