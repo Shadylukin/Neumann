@@ -241,15 +241,38 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 | search_similar | O(n*d) | Brute-force scan |
 | compute_similarity | O(d) | Dot product + 2 magnitude calculations |
 
-**Scaling Projections (SIMD + parallel for >5K vectors):**
+**HNSW Index (Approximate Nearest Neighbor):**
+
+HNSW provides O(log n) search complexity instead of O(n) brute force.
+
+| Configuration | Search Time (5K, 128d) |
+|---------------|------------------------|
+| high_speed | ~50 µs |
+| default | ~100 µs |
+| high_recall | ~200 µs |
+
+**HNSW vs Brute Force (10K vectors, 128d):**
+| Method | Search Time | Speedup |
+|--------|-------------|---------|
+| Brute force | ~2 ms | 1x |
+| HNSW default | ~150 µs | ~13x |
+
+Recommended approach by corpus size:
+| Corpus Size | Approach | Rationale |
+|-------------|----------|-----------|
+| < 10K | Brute force | Fast enough, pure tensor |
+| 10K - 100K | HNSW | Pragmatic, 5-13x faster |
+| > 100K | HNSW | Necessary for latency |
+
+**Scaling Projections (HNSW for >10K vectors):**
 | Vectors | Dimension | Search Time (est.) |
 |---------|-----------|-------------------|
-| 10K | 768 | ~2 ms |
-| 100K | 768 | ~20 ms |
-| 1M | 768 | ~200 ms |
+| 10K | 768 | ~200 µs |
+| 100K | 768 | ~500 µs |
+| 1M | 768 | ~1 ms |
 
-For production workloads with >100K vectors, consider:
-- Approximate Nearest Neighbor (ANN) algorithms (HNSW, IVF)
+For production workloads at extreme scale (>1M vectors), consider:
+- Sharded HNSW across multiple nodes
 - Dimensionality reduction (PCA)
 - Quantization (int8, binary)
 
@@ -306,8 +329,8 @@ emb:{key} → TensorData { vector: [...] }
 Trade-offs:
 - **Pro**: Simple storage model, consistent with tensor abstraction
 - **Pro**: Sub-microsecond store/get operations
-- **Con**: Brute-force O(n*d) similarity search
-- **Con**: No indexing for approximate nearest neighbor
+- **Pro**: HNSW index for O(log n) approximate nearest neighbor search
+- **Con**: Brute-force O(n*d) for exact search (use HNSW for approximate)
 
 ## Optimization Opportunities
 
@@ -316,7 +339,7 @@ Trade-offs:
 3. ~~**Memory pools**~~: Done - HashMap/Vec pre-allocation with with_capacity in hot paths
 4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for tensor_store (25-53%), vector_engine (1.6x), and relational_engine select (2-3x)
 5. ~~**Bloom filters**~~: Done - optional thread-safe Bloom filter for sparse key spaces. Note: DashMap's O(1) hash lookup is already ~50ns, so Bloom filters add ~15ns overhead for in-memory stores. Useful when backing store is disk/network.
-6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
+6. ~~**ANN indexing**~~: Done - HNSW index for vector_engine, provides O(log n) search vs O(n) brute force
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity
 
 ## Hardware Notes

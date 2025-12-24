@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use rand::Rng;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use vector_engine::VectorEngine;
+use vector_engine::{HNSWConfig, HNSWIndex, VectorEngine};
 
 fn random_vector(dim: usize) -> Vec<f32> {
     let mut rng = rand::thread_rng();
@@ -94,6 +94,117 @@ fn bench_delete_embedding(c: &mut Criterion) {
     });
 }
 
+fn bench_hnsw_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_insert");
+
+    for dim in [128, 768] {
+        group.bench_with_input(BenchmarkId::new("dim", dim), &dim, |b, &dim| {
+            let index = HNSWIndex::new();
+            b.iter(|| {
+                index.insert(black_box(random_vector(dim)));
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_hnsw_search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_search");
+    let dim = 128;
+
+    // Benchmark different corpus sizes
+    for count in [1000, 10000] {
+        let index = HNSWIndex::new();
+        for _ in 0..count {
+            index.insert(random_vector(dim));
+        }
+
+        let query = random_vector(dim);
+        let label = format!("{}x{}", count, dim);
+
+        group.bench_with_input(BenchmarkId::new("top10", &label), &query, |b, query| {
+            b.iter(|| index.search(black_box(query), 10));
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_hnsw_vs_brute_force(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_vs_brute");
+    let dim = 128;
+    let count = 10000;
+
+    // Setup brute force engine
+    let engine = VectorEngine::new();
+    for i in 0..count {
+        engine
+            .store_embedding(&format!("v{}", i), random_vector(dim))
+            .unwrap();
+    }
+
+    // Setup HNSW index
+    let hnsw = HNSWIndex::new();
+    for _ in 0..count {
+        hnsw.insert(random_vector(dim));
+    }
+
+    let query = random_vector(dim);
+
+    group.bench_with_input(
+        BenchmarkId::new("brute_force", count),
+        &query,
+        |b, query| {
+            b.iter(|| engine.search_similar(black_box(query), 10).unwrap());
+        },
+    );
+
+    group.bench_with_input(BenchmarkId::new("hnsw", count), &query, |b, query| {
+        b.iter(|| hnsw.search(black_box(query), 10));
+    });
+
+    group.finish();
+}
+
+fn bench_hnsw_configs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw_configs");
+    let dim = 128;
+    let count = 5000;
+
+    // Build indices with different configs
+    let index_default = HNSWIndex::with_config(HNSWConfig::default());
+    let index_speed = HNSWIndex::with_config(HNSWConfig::high_speed());
+    let index_recall = HNSWIndex::with_config(HNSWConfig::high_recall());
+
+    for _ in 0..count {
+        let v = random_vector(dim);
+        index_default.insert(v.clone());
+        index_speed.insert(v.clone());
+        index_recall.insert(v);
+    }
+
+    let query = random_vector(dim);
+
+    group.bench_with_input(BenchmarkId::new("default", count), &query, |b, query| {
+        b.iter(|| index_default.search(black_box(query), 10));
+    });
+
+    group.bench_with_input(BenchmarkId::new("high_speed", count), &query, |b, query| {
+        b.iter(|| index_speed.search(black_box(query), 10));
+    });
+
+    group.bench_with_input(
+        BenchmarkId::new("high_recall", count),
+        &query,
+        |b, query| {
+            b.iter(|| index_recall.search(black_box(query), 10));
+        },
+    );
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_store_embedding,
@@ -101,5 +212,9 @@ criterion_group!(
     bench_compute_similarity,
     bench_get_embedding,
     bench_delete_embedding,
+    bench_hnsw_insert,
+    bench_hnsw_search,
+    bench_hnsw_vs_brute_force,
+    bench_hnsw_configs,
 );
 criterion_main!(benches);
