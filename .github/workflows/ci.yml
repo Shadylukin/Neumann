@@ -96,15 +96,29 @@ jobs:
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 
-          # Run coverage and extract only the crate's own coverage (not dependencies)
-          OUTPUT=$(cargo llvm-cov --package ${{ matrix.crate }} --all-features 2>&1)
+          # Run coverage with summary-only to get clean output
+          OUTPUT=$(cargo llvm-cov --package ${{ matrix.crate }} --all-features --summary-only 2>&1)
           echo "$OUTPUT"
-          # Extract line coverage for this crate's lib.rs (field 10)
-          COVERAGE=$(echo "$OUTPUT" | grep "${{ matrix.crate }}/src/lib.rs" | awk '{print $10}' | tr -d '%')
-          if [ -z "$COVERAGE" ]; then
+
+          # Extract coverage from the crate's own source files
+          # Files appear as "file.rs" (without path prefix for main crate files)
+          CRATE="${{ matrix.crate }}"
+          TOTAL_LINES=$(echo "$OUTPUT" | awk -v crate="$CRATE" '
+            /^[a-z_]+\.rs[[:space:]]/ { lines += $8; missed += $9 }
+            $0 ~ "^"crate"/" { lines += $8; missed += $9 }
+            $0 ~ "/"crate"/src/" { lines += $8; missed += $9 }
+            END { print lines, missed }
+          ')
+          LINES=$(echo "$TOTAL_LINES" | awk '{print $1}')
+          MISSED=$(echo "$TOTAL_LINES" | awk '{print $2}')
+
+          if [ -z "$LINES" ] || [ "$LINES" -eq 0 ]; then
             echo "Could not extract coverage for ${{ matrix.crate }}"
             exit 1
           fi
+
+          COVERED=$((LINES - MISSED))
+          COVERAGE=$(awk "BEGIN {printf \"%.2f\", ($COVERED / $LINES) * 100}")
           COVERAGE_INT=${COVERAGE%.*}
           echo "Coverage for ${{ matrix.crate }}: ${COVERAGE}% (minimum: ${MIN_COV}%)"
           if [ "$COVERAGE_INT" -lt "$MIN_COV" ]; then
