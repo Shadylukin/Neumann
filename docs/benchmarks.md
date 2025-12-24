@@ -189,12 +189,12 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 |-----------|------|
 | delete | 806 ns |
 
-**Similarity Search (top 10, SIMD-accelerated):**
-| Dataset | Time | Per Vector |
-|---------|------|------------|
-| 1,000 x 128d | 249 µs | 249 ns |
-| 1,000 x 768d | 357 µs | 357 ns |
-| 10,000 x 128d | 3.14 ms | 314 ns |
+**Similarity Search (top 10, SIMD + adaptive parallel):**
+| Dataset | Time | Per Vector | Mode |
+|---------|------|------------|------|
+| 1,000 x 128d | 242 µs | 242 ns | Sequential |
+| 1,000 x 768d | 367 µs | 367 ns | Sequential |
+| 10,000 x 128d | 1.93 ms | 193 ns | Parallel |
 
 **Cosine Similarity Computation (SIMD-accelerated):**
 | Dimension | Time |
@@ -206,6 +206,7 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 #### Analysis
 
 - **SIMD acceleration**: 8-wide f32 SIMD (via `wide` crate) provides 3-9x speedup for cosine similarity
+- **Adaptive parallelism**: Uses rayon for parallel search when >5000 vectors (1.6x speedup at 10K)
 - **Linear scaling with dimension**: Cosine similarity is O(d) where d is vector dimension
 - **Linear scaling with dataset size**: Brute-force search is O(n*d) for n vectors
 - **Memory bound**: For 768d vectors, ~3 KB per embedding (768 * 4 bytes)
@@ -221,12 +222,12 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 | search_similar | O(n*d) | Brute-force scan |
 | compute_similarity | O(d) | Dot product + 2 magnitude calculations |
 
-**Scaling Projections (with SIMD):**
+**Scaling Projections (SIMD + parallel for >5K vectors):**
 | Vectors | Dimension | Search Time (est.) |
 |---------|-----------|-------------------|
-| 10K | 768 | ~3.6 ms |
-| 100K | 768 | ~36 ms |
-| 1M | 768 | ~360 ms |
+| 10K | 768 | ~2 ms |
+| 100K | 768 | ~20 ms |
+| 1M | 768 | ~200 ms |
 
 For production workloads with >100K vectors, consider:
 - Approximate Nearest Neighbor (ANN) algorithms (HNSW, IVF)
@@ -294,7 +295,7 @@ Trade-offs:
 1. **Batch operations**: Add bulk insert/update APIs to reduce per-operation overhead
 2. **B-tree indexes**: Range query acceleration for relational_engine (hash indexes done)
 3. **Memory pools**: Reuse TensorData allocations in hot paths
-4. **Parallel scans**: Use rayon for parallel query execution
+4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for vector_engine (1.6x at 10K vectors)
 5. **Bloom filters**: Quick negative lookups for sparse key spaces
 6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity

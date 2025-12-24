@@ -2,6 +2,7 @@
 //!
 //! Provides embeddings storage and similarity search functionality.
 
+use rayon::prelude::*;
 use tensor_store::{TensorData, TensorStore, TensorStoreError, TensorValue};
 
 /// SIMD-accelerated vector operations for cosine similarity.
@@ -207,10 +208,14 @@ impl VectorEngine {
         self.store.scan_count(Self::embedding_prefix())
     }
 
+    /// Threshold for parallel search (below this, sequential is faster)
+    const PARALLEL_THRESHOLD: usize = 5000;
+
     /// Search for the top_k most similar embeddings to the query vector.
     ///
     /// Returns results sorted by similarity score (highest first).
-    /// Uses cosine similarity: score = dot(a,b) / (|a| * |b|)
+    /// Uses cosine similarity with SIMD acceleration.
+    /// Automatically uses parallel iteration for large datasets (>5000 vectors).
     pub fn search_similar(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
@@ -227,28 +232,13 @@ impl VectorEngine {
         }
 
         let keys = self.store.scan(Self::embedding_prefix());
-        let mut results: Vec<SearchResult> = Vec::with_capacity(keys.len());
 
-        for storage_key in keys {
-            if let Ok(tensor) = self.store.get(&storage_key) {
-                if let Some(TensorValue::Vector(stored_vec)) = tensor.get("vector") {
-                    // Skip if dimensions don't match
-                    if stored_vec.len() != query.len() {
-                        continue;
-                    }
-
-                    let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
-
-                    // Extract the original key (remove "emb:" prefix)
-                    let key = storage_key
-                        .strip_prefix(Self::embedding_prefix())
-                        .unwrap_or(&storage_key)
-                        .to_string();
-
-                    results.push(SearchResult::new(key, score));
-                }
-            }
-        }
+        // Use parallel iteration for large datasets, sequential for small
+        let mut results: Vec<SearchResult> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            Self::search_parallel(&self.store, &keys, query, query_magnitude)
+        } else {
+            Self::search_sequential(&self.store, &keys, query, query_magnitude)
+        };
 
         // Sort by score descending
         results.sort_by(|a, b| {
@@ -261,6 +251,66 @@ impl VectorEngine {
         results.truncate(top_k);
 
         Ok(results)
+    }
+
+    /// Sequential similarity search (faster for small datasets)
+    fn search_sequential(
+        store: &TensorStore,
+        keys: &[String],
+        query: &[f32],
+        query_magnitude: f32,
+    ) -> Vec<SearchResult> {
+        keys.iter()
+            .filter_map(|storage_key| {
+                let tensor = store.get(storage_key).ok()?;
+                let stored_vec = match tensor.get("vector") {
+                    Some(TensorValue::Vector(v)) => v,
+                    _ => return None,
+                };
+
+                if stored_vec.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                let key = storage_key
+                    .strip_prefix(Self::embedding_prefix())
+                    .unwrap_or(storage_key)
+                    .to_string();
+
+                Some(SearchResult::new(key, score))
+            })
+            .collect()
+    }
+
+    /// Parallel similarity search (faster for large datasets)
+    fn search_parallel(
+        store: &TensorStore,
+        keys: &[String],
+        query: &[f32],
+        query_magnitude: f32,
+    ) -> Vec<SearchResult> {
+        keys.par_iter()
+            .filter_map(|storage_key| {
+                let tensor = store.get(storage_key).ok()?;
+                let stored_vec = match tensor.get("vector") {
+                    Some(TensorValue::Vector(v)) => v,
+                    _ => return None,
+                };
+
+                if stored_vec.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                let key = storage_key
+                    .strip_prefix(Self::embedding_prefix())
+                    .unwrap_or(storage_key)
+                    .to_string();
+
+                Some(SearchResult::new(key, score))
+            })
+            .collect()
     }
 
     /// Compute cosine similarity between two vectors using SIMD.
