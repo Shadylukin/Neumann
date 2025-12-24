@@ -28,11 +28,11 @@ The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe key-v
 | **put** | 40µs (2.5M/s) | 447µs (2.2M/s) | 7ms (1.4M/s) |
 | **get** | 33µs (3.0M/s) | 320µs (3.1M/s) | 3ms (3.3M/s) |
 
-**Scan Operations (10k total items):**
+**Scan Operations (10k total items, parallel):**
 | Operation | Time |
 |-----------|------|
-| scan 1k keys | 256µs |
-| scan_count 1k keys | 88µs |
+| scan 1k keys | 191µs |
+| scan_count 1k keys | 41µs |
 
 **Concurrent Write Performance:**
 | Threads | Disjoint Keys | High Contention (100 keys) |
@@ -52,7 +52,8 @@ The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe key-v
 - **Scaling**: Near-linear scaling up to 10k items; slight degradation at scale due to hash table growth
 - **Concurrency**: DashMap's 16-shard design provides excellent concurrent performance
 - **Contention**: Under high contention, performance actually improves at 8 threads vs 4 (lock sharding distributes load)
-- **scan_count vs scan**: Count-only is 3x faster (avoids string cloning)
+- **Parallel scans**: Uses rayon for >1000 keys (25-53% faster)
+- **scan_count vs scan**: Count-only is ~5x faster (avoids string cloning)
 
 ### graph_engine
 
@@ -295,7 +296,7 @@ Trade-offs:
 1. **Batch operations**: Add bulk insert/update APIs to reduce per-operation overhead
 2. **B-tree indexes**: Range query acceleration for relational_engine (hash indexes done)
 3. **Memory pools**: Reuse TensorData allocations in hot paths
-4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for vector_engine (1.6x) and relational_engine select (2-3x)
+4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for tensor_store (25-53%), vector_engine (1.6x), and relational_engine select (2-3x)
 5. **Bloom filters**: Quick negative lookups for sparse key spaces
 6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity

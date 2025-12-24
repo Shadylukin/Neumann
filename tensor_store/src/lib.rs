@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// Represents different types of values a tensor can hold
@@ -99,6 +100,8 @@ pub struct TensorStore {
 }
 
 impl TensorStore {
+    const PARALLEL_THRESHOLD: usize = 1000;
+
     pub fn new() -> Self {
         Self {
             data: DashMap::new(),
@@ -137,11 +140,19 @@ impl TensorStore {
     }
 
     pub fn scan(&self, prefix: &str) -> Vec<String> {
-        self.data
-            .iter()
-            .filter(|r| r.key().starts_with(prefix))
-            .map(|r| r.key().clone())
-            .collect()
+        if self.data.len() >= Self::PARALLEL_THRESHOLD {
+            self.data
+                .par_iter()
+                .filter(|r| r.key().starts_with(prefix))
+                .map(|r| r.key().clone())
+                .collect()
+        } else {
+            self.data
+                .iter()
+                .filter(|r| r.key().starts_with(prefix))
+                .map(|r| r.key().clone())
+                .collect()
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -157,10 +168,17 @@ impl TensorStore {
     }
 
     pub fn scan_count(&self, prefix: &str) -> usize {
-        self.data
-            .iter()
-            .filter(|r| r.key().starts_with(prefix))
-            .count()
+        if self.data.len() >= Self::PARALLEL_THRESHOLD {
+            self.data
+                .par_iter()
+                .filter(|r| r.key().starts_with(prefix))
+                .count()
+        } else {
+            self.data
+                .iter()
+                .filter(|r| r.key().starts_with(prefix))
+                .count()
+        }
     }
 }
 
@@ -676,5 +694,31 @@ mod tests {
         let err = TensorStoreError::NotFound("key".into());
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("NotFound"));
+    }
+
+    #[test]
+    fn store_parallel_scan_large_dataset() {
+        let store = TensorStore::new();
+
+        // Insert enough entries to trigger parallel scan (>1000)
+        for i in 0..1500 {
+            store.put(format!("user:{}", i), TensorData::new()).unwrap();
+        }
+        for i in 0..500 {
+            store.put(format!("post:{}", i), TensorData::new()).unwrap();
+        }
+
+        assert_eq!(store.len(), 2000);
+
+        // These should use parallel iteration
+        let users = store.scan("user:");
+        assert_eq!(users.len(), 1500);
+
+        let posts = store.scan("post:");
+        assert_eq!(posts.len(), 500);
+
+        assert_eq!(store.scan_count("user:"), 1500);
+        assert_eq!(store.scan_count("post:"), 500);
+        assert_eq!(store.scan_count(""), 2000);
     }
 }

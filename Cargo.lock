@@ -190,6 +190,7 @@ dependencies = [
  "lock_api",
  "once_cell",
  "parking_lot_core",
+ "rayon",
 ]
 
 [[package]]
@@ -579,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "dashmap",
+ "rayon",
 ]
 
 [[package]]

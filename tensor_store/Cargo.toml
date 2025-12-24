@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dashmap = "6"
+dashmap = { version = "6", features = ["rayon"] }
+rayon = "1.10"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
