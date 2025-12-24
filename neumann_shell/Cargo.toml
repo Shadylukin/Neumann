@@ -1,0 +1,30 @@
+[package]
+name = "neumann_shell"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive CLI shell for Neumann database"
+license = "MIT"
+
+[dependencies]
+query_router = { path = "../query_router" }
+relational_engine = { path = "../relational_engine" }
+rustyline = "15"
+
+[[bin]]
+name = "neumann"
+path = "src/main.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "neumann_shell_bench"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
