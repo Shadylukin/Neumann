@@ -104,6 +104,38 @@ impl Value {
             Value::Bool(v) => format!("b:{}", v),
         }
     }
+
+    /// Returns a key that sorts lexicographically in the same order as the value.
+    /// Used for B-tree indexes to enable range queries via prefix scans.
+    fn sortable_key(&self) -> String {
+        match self {
+            Value::Null => "0".to_string(),
+            Value::Int(v) => {
+                // Encode i64 as hex with offset to handle negative numbers
+                // Add i64::MAX + 1 to shift range from [-2^63, 2^63-1] to [0, 2^64-1]
+                let unsigned = (*v as i128 + (i64::MAX as i128) + 1) as u64;
+                format!("i{:016x}", unsigned)
+            },
+            Value::Float(v) => {
+                // IEEE 754 float bit encoding with sign handling for correct ordering
+                let bits = v.to_bits();
+                let sortable = if *v >= 0.0 {
+                    bits ^ 0x8000_0000_0000_0000 // Flip sign bit for positive
+                } else {
+                    !bits // Flip all bits for negative
+                };
+                format!("f{:016x}", sortable)
+            },
+            Value::String(v) => format!("s{}", v),
+            Value::Bool(v) => {
+                if *v {
+                    "b1".to_string()
+                } else {
+                    "b0".to_string()
+                }
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +340,19 @@ impl RelationalEngine {
         format!("_idx:{}:", table)
     }
 
+    // B-tree index key functions
+    fn btree_meta_key(table: &str, column: &str) -> String {
+        format!("_btree:{}:{}", table, column)
+    }
+
+    fn btree_entry_key(table: &str, column: &str, sortable_value: &str) -> String {
+        format!("_btree:{}:{}:{}", table, column, sortable_value)
+    }
+
+    fn btree_prefix(table: &str, column: &str) -> String {
+        format!("_btree:{}:{}:", table, column)
+    }
+
     pub fn create_table(&self, name: &str, schema: Schema) -> Result<()> {
         let meta_key = Self::table_meta_key(name);
 
@@ -445,13 +490,23 @@ impl RelationalEngine {
 
         self.store.put(key, tensor)?;
 
-        // Update indexes
+        // Update hash indexes
         let indexed_columns = self.get_table_indexes(table);
         for col in &indexed_columns {
             if col == "_id" {
                 self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
             } else if let Some(value) = values.get(col) {
                 self.index_add(table, col, value, row_id)?;
+            }
+        }
+
+        // Update B-tree indexes
+        let btree_columns = self.get_table_btree_indexes(table);
+        for col in &btree_columns {
+            if col == "_id" {
+                self.btree_index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+            } else if let Some(value) = values.get(col) {
+                self.btree_index_add(table, col, value, row_id)?;
             }
         }
 
@@ -538,6 +593,18 @@ impl RelationalEngine {
     fn try_index_lookup(&self, table: &str, condition: &Condition) -> Option<Vec<u64>> {
         match condition {
             Condition::Eq(column, value) => self.index_lookup(table, column, value),
+            Condition::Lt(column, value) => {
+                self.btree_range_lookup(table, column, value, RangeOp::Lt)
+            },
+            Condition::Le(column, value) => {
+                self.btree_range_lookup(table, column, value, RangeOp::Le)
+            },
+            Condition::Gt(column, value) => {
+                self.btree_range_lookup(table, column, value, RangeOp::Gt)
+            },
+            Condition::Ge(column, value) => {
+                self.btree_range_lookup(table, column, value, RangeOp::Ge)
+            },
             Condition::And(a, b) => {
                 // Try to use index from either side
                 if let Some(ids_a) = self.try_index_lookup(table, a) {
@@ -577,6 +644,7 @@ impl RelationalEngine {
         }
 
         let indexed_columns = self.get_table_indexes(table);
+        let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
@@ -610,12 +678,23 @@ impl RelationalEngine {
 
         // Sequential: update indexes and store (index ops are not thread-safe)
         for (key, tensor, row) in &matching_rows {
+            // Update hash indexes
             for col in &indexed_columns {
                 if let Some(new_value) = updates.get(col) {
                     if let Some(old_value) = row.get_with_id(col) {
                         self.index_remove(table, col, &old_value, row.id)?;
                     }
                     self.index_add(table, col, new_value, row.id)?;
+                }
+            }
+
+            // Update B-tree indexes
+            for col in &btree_columns {
+                if let Some(new_value) = updates.get(col) {
+                    if let Some(old_value) = row.get_with_id(col) {
+                        self.btree_index_remove(table, col, &old_value, row.id)?;
+                    }
+                    self.btree_index_add(table, col, new_value, row.id)?;
                 }
             }
 
@@ -633,6 +712,7 @@ impl RelationalEngine {
         let _ = self.get_schema(table)?;
 
         let indexed_columns = self.get_table_indexes(table);
+        let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
@@ -665,9 +745,16 @@ impl RelationalEngine {
 
         // Sequential: remove from indexes (index ops are not thread-safe)
         for (_, row) in &to_delete {
+            // Remove from hash indexes
             for col in &indexed_columns {
                 if let Some(value) = row.get_with_id(col) {
                     self.index_remove(table, col, &value, row.id)?;
+                }
+            }
+            // Remove from B-tree indexes
+            for col in &btree_columns {
+                if let Some(value) = row.get_with_id(col) {
+                    self.btree_index_remove(table, col, &value, row.id)?;
                 }
             }
         }
@@ -775,10 +862,17 @@ impl RelationalEngine {
             self.store.delete(&key)?;
         }
 
-        // Delete all indexes for this table
+        // Delete all hash indexes for this table
         let idx_prefix = Self::all_indexes_prefix(table);
         let idx_keys = self.store.scan(&idx_prefix);
         for key in idx_keys {
+            self.store.delete(&key)?;
+        }
+
+        // Delete all B-tree indexes for this table
+        let btree_prefix = format!("_btree:{}:", table);
+        let btree_keys = self.store.scan(&btree_prefix);
+        for key in btree_keys {
             self.store.delete(&key)?;
         }
 
@@ -865,6 +959,124 @@ impl RelationalEngine {
         }
 
         Ok(())
+    }
+
+    /// Create a B-tree index on a column for fast range queries.
+    /// B-tree indexes accelerate Lt, Le, Gt, Ge conditions with O(log n) lookup.
+    pub fn create_btree_index(&self, table: &str, column: &str) -> Result<()> {
+        let schema = self.get_schema(table)?;
+
+        // Verify column exists (allow _id as well)
+        if column != "_id" && schema.get_column(column).is_none() {
+            return Err(RelationalError::ColumnNotFound(column.to_string()));
+        }
+
+        let meta_key = Self::btree_meta_key(table, column);
+        if self.store.exists(&meta_key) {
+            return Err(RelationalError::IndexAlreadyExists {
+                table: table.to_string(),
+                column: column.to_string(),
+            });
+        }
+
+        // Store B-tree index metadata
+        let mut meta = TensorData::new();
+        meta.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("btree".into())),
+        );
+        meta.set(
+            "_table",
+            TensorValue::Scalar(ScalarValue::String(table.into())),
+        );
+        meta.set(
+            "_column",
+            TensorValue::Scalar(ScalarValue::String(column.into())),
+        );
+        self.store.put(&meta_key, meta)?;
+
+        // Build index from existing data
+        let prefix = Self::row_prefix(table);
+        let keys = self.store.scan(&prefix);
+
+        // Parallel: collect all (value, row_id) pairs
+        let entries: Vec<(Value, u64)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            keys.par_iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    let value = row.get_with_id(column)?;
+                    Some((value, row.id))
+                })
+                .collect()
+        } else {
+            keys.iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    let value = row.get_with_id(column)?;
+                    Some((value, row.id))
+                })
+                .collect()
+        };
+
+        // Sequential: add to B-tree index
+        for (value, row_id) in entries {
+            self.btree_index_add(table, column, &value, row_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Check if a B-tree index exists on a column.
+    pub fn has_btree_index(&self, table: &str, column: &str) -> bool {
+        let meta_key = Self::btree_meta_key(table, column);
+        self.store.exists(&meta_key)
+    }
+
+    /// Drop a B-tree index from a column.
+    pub fn drop_btree_index(&self, table: &str, column: &str) -> Result<()> {
+        let _ = self.get_schema(table)?;
+
+        let meta_key = Self::btree_meta_key(table, column);
+        if !self.store.exists(&meta_key) {
+            return Err(RelationalError::IndexNotFound {
+                table: table.to_string(),
+                column: column.to_string(),
+            });
+        }
+
+        // Delete all B-tree index entries
+        let prefix = Self::btree_prefix(table, column);
+        let keys = self.store.scan(&prefix);
+        for key in keys {
+            self.store.delete(&key)?;
+        }
+
+        // Delete metadata
+        self.store.delete(&meta_key)?;
+
+        Ok(())
+    }
+
+    /// Get all B-tree indexed columns for a table.
+    pub fn get_btree_indexed_columns(&self, table: &str) -> Vec<String> {
+        let prefix = "_btree:".to_string() + table + ":";
+        self.store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|key| {
+                // Keys are _btree:{table}:{column} for metadata
+                // or _btree:{table}:{column}:{value} for entries
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() == 3 {
+                    // This is metadata key
+                    Some(parts[2].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Drop an index from a column.
@@ -992,6 +1204,108 @@ impl RelationalEngine {
     fn get_table_indexes(&self, table: &str) -> Vec<String> {
         self.get_indexed_columns(table)
     }
+
+    // Get B-tree indexed columns for a table
+    fn get_table_btree_indexes(&self, table: &str) -> Vec<String> {
+        self.get_btree_indexed_columns(table)
+    }
+
+    // Internal: Add a row ID to a B-tree index
+    fn btree_index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
+        let sortable = value.sortable_key();
+        let key = Self::btree_entry_key(table, column, &sortable);
+
+        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&key) {
+            self.tensor_to_id_list(&tensor)
+        } else {
+            Vec::new()
+        };
+
+        if !ids.contains(&row_id) {
+            ids.push(row_id);
+            self.store.put(&key, self.id_list_to_tensor(&ids))?;
+        }
+
+        Ok(())
+    }
+
+    // Internal: Remove a row ID from a B-tree index
+    fn btree_index_remove(
+        &self,
+        table: &str,
+        column: &str,
+        value: &Value,
+        row_id: u64,
+    ) -> Result<()> {
+        let sortable = value.sortable_key();
+        let key = Self::btree_entry_key(table, column, &sortable);
+
+        if let Ok(tensor) = self.store.get(&key) {
+            let mut ids = self.tensor_to_id_list(&tensor);
+            ids.retain(|&id| id != row_id);
+
+            if ids.is_empty() {
+                self.store.delete(&key)?;
+            } else {
+                self.store.put(&key, self.id_list_to_tensor(&ids))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// B-tree range lookup: returns row IDs matching the range condition.
+    /// Uses sortable keys to scan the appropriate range.
+    fn btree_range_lookup(
+        &self,
+        table: &str,
+        column: &str,
+        value: &Value,
+        op: RangeOp,
+    ) -> Option<Vec<u64>> {
+        if !self.has_btree_index(table, column) {
+            return None;
+        }
+
+        let prefix = Self::btree_prefix(table, column);
+        let target_key = value.sortable_key();
+        let all_keys = self.store.scan(&prefix);
+
+        // Sort keys to ensure correct ordering
+        let mut sorted_keys: Vec<_> = all_keys.into_iter().collect();
+        sorted_keys.sort();
+
+        let mut result_ids = Vec::new();
+
+        for key in sorted_keys {
+            // Extract the sortable value part from the key
+            let entry_sortable = key.strip_prefix(&prefix)?;
+
+            let matches = match op {
+                RangeOp::Lt => entry_sortable < target_key.as_str(),
+                RangeOp::Le => entry_sortable <= target_key.as_str(),
+                RangeOp::Gt => entry_sortable > target_key.as_str(),
+                RangeOp::Ge => entry_sortable >= target_key.as_str(),
+            };
+
+            if matches {
+                if let Ok(tensor) = self.store.get(&key) {
+                    result_ids.extend(self.tensor_to_id_list(&tensor));
+                }
+            }
+        }
+
+        Some(result_ids)
+    }
+}
+
+/// Range operation for B-tree index lookups
+#[derive(Debug, Clone, Copy)]
+enum RangeOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 impl Default for RelationalEngine {
@@ -2362,5 +2676,258 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn btree_index_accelerates_range_query() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert 100 rows
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i as i64));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create B-tree index on age
+        engine.create_btree_index("users", "age").unwrap();
+        assert!(engine.has_btree_index("users", "age"));
+
+        // Range query: age >= 50 (should use B-tree index)
+        let rows = engine
+            .select("users", Condition::Ge("age".to_string(), Value::Int(50)))
+            .unwrap();
+        assert_eq!(rows.len(), 50);
+
+        // Range query: age < 25
+        let rows = engine
+            .select("users", Condition::Lt("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 25);
+
+        // Range query: age > 90
+        let rows = engine
+            .select("users", Condition::Gt("age".to_string(), Value::Int(90)))
+            .unwrap();
+        assert_eq!(rows.len(), 9);
+
+        // Range query: age <= 10
+        let rows = engine
+            .select("users", Condition::Le("age".to_string(), Value::Int(10)))
+            .unwrap();
+        assert_eq!(rows.len(), 11);
+    }
+
+    #[test]
+    fn btree_index_maintained_on_insert() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create B-tree index first
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Insert rows after index creation
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i as i64));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Verify index is used for range query
+        let rows = engine
+            .select("users", Condition::Lt("age".to_string(), Value::Int(10)))
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn btree_index_maintained_on_update() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert initial data
+        for i in 0..20 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i as i64));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create B-tree index
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Update ages: set all ages < 10 to 100
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(100));
+        engine
+            .update(
+                "users",
+                Condition::Lt("age".to_string(), Value::Int(10)),
+                updates,
+            )
+            .unwrap();
+
+        // Now age < 10 should return 0 rows
+        let rows = engine
+            .select("users", Condition::Lt("age".to_string(), Value::Int(10)))
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+
+        // age >= 100 should return 10 rows (the updated ones)
+        let rows = engine
+            .select("users", Condition::Ge("age".to_string(), Value::Int(100)))
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn btree_index_maintained_on_delete() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert data
+        for i in 0..30 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i as i64));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create B-tree index
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Delete rows where age < 10
+        engine
+            .delete_rows("users", Condition::Lt("age".to_string(), Value::Int(10)))
+            .unwrap();
+
+        // Verify age < 15 now returns only 5 rows (ages 10-14)
+        let rows = engine
+            .select("users", Condition::Lt("age".to_string(), Value::Int(15)))
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn btree_index_drop() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_btree_index("users", "age").unwrap();
+        assert!(engine.has_btree_index("users", "age"));
+
+        engine.drop_btree_index("users", "age").unwrap();
+        assert!(!engine.has_btree_index("users", "age"));
+    }
+
+    #[test]
+    fn btree_index_with_negative_numbers() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert with negative ages
+        for i in -50..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Query age < 0 should return 50 rows
+        let rows = engine
+            .select("users", Condition::Lt("age".to_string(), Value::Int(0)))
+            .unwrap();
+        assert_eq!(rows.len(), 50);
+
+        // Query age >= -25 should return 75 rows
+        let rows = engine
+            .select("users", Condition::Ge("age".to_string(), Value::Int(-25)))
+            .unwrap();
+        assert_eq!(rows.len(), 75);
+    }
+
+    #[test]
+    fn drop_table_cleans_up_btree_indexes() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        engine.create_btree_index("users", "age").unwrap();
+        assert!(engine.has_btree_index("users", "age"));
+
+        engine.drop_table("users").unwrap();
+
+        // Recreate and verify no index exists
+        create_users_table(&engine);
+        assert!(!engine.has_btree_index("users", "age"));
+    }
+
+    #[test]
+    fn sortable_key_ordering() {
+        // Test that sortable keys maintain correct ordering
+        let v1 = Value::Int(-100);
+        let v2 = Value::Int(-1);
+        let v3 = Value::Int(0);
+        let v4 = Value::Int(1);
+        let v5 = Value::Int(100);
+
+        assert!(v1.sortable_key() < v2.sortable_key());
+        assert!(v2.sortable_key() < v3.sortable_key());
+        assert!(v3.sortable_key() < v4.sortable_key());
+        assert!(v4.sortable_key() < v5.sortable_key());
+
+        // Test floats
+        let f1 = Value::Float(-100.5);
+        let f2 = Value::Float(-0.1);
+        let f3 = Value::Float(0.0);
+        let f4 = Value::Float(0.1);
+        let f5 = Value::Float(100.5);
+
+        assert!(f1.sortable_key() < f2.sortable_key());
+        assert!(f2.sortable_key() < f3.sortable_key());
+        assert!(f3.sortable_key() < f4.sortable_key());
+        assert!(f4.sortable_key() < f5.sortable_key());
+
+        // Test strings
+        let s1 = Value::String("aaa".into());
+        let s2 = Value::String("bbb".into());
+        let s3 = Value::String("zzz".into());
+
+        assert!(s1.sortable_key() < s2.sortable_key());
+        assert!(s2.sortable_key() < s3.sortable_key());
+
+        // Test null and bool
+        let null = Value::Null;
+        let bool_false = Value::Bool(false);
+        let bool_true = Value::Bool(true);
+
+        // Null should have a sortable key
+        assert_eq!(null.sortable_key(), "0");
+        // Bool false < Bool true
+        assert!(bool_false.sortable_key() < bool_true.sortable_key());
+        assert_eq!(bool_false.sortable_key(), "b0");
+        assert_eq!(bool_true.sortable_key(), "b1");
+    }
+
+    #[test]
+    fn get_btree_indexed_columns_returns_columns() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Initially no B-tree indexes
+        let cols = engine.get_btree_indexed_columns("users");
+        assert!(cols.is_empty());
+
+        // Create B-tree index
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Now should have one indexed column
+        let cols = engine.get_btree_indexed_columns("users");
+        assert_eq!(cols.len(), 1);
+        assert!(cols.contains(&"age".to_string()));
     }
 }

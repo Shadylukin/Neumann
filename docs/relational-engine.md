@@ -153,17 +153,41 @@ engine.get_indexed_columns("users");  // -> Vec<String>
 engine.drop_index("users", "age")?;
 ```
 
-**Index behavior:**
-- Indexes are automatically maintained on insert, update, and delete
-- Indexes are automatically cleaned up when a table is dropped
-- Only `Condition::Eq` queries benefit from indexes
-- Range conditions (`Lt`, `Gt`, etc.) still require full table scans
+**Hash index behavior:**
+- Hash indexes are automatically maintained on insert, update, and delete
+- Hash indexes are automatically cleaned up when a table is dropped
+- Only `Condition::Eq` queries benefit from hash indexes
 
-**Performance:**
+**Hash index performance:**
 | Query Type | Without Index | With Index | Speedup |
 |------------|---------------|------------|---------|
 | Equality (2% match on 5K rows) | 5.96ms | 126µs | 47x |
 | Single row by _id (5K rows) | 5.59ms | 3.5µs | 1,597x |
+
+### B-Tree Indexes
+
+B-tree indexes accelerate range queries (`Lt`, `Le`, `Gt`, `Ge`) by storing values in sorted order.
+
+```rust
+// Create a B-tree index on a column
+engine.create_btree_index("users", "age")?;
+
+// Check if B-tree index exists
+engine.has_btree_index("users", "age");  // -> bool
+
+// Drop a B-tree index
+engine.drop_btree_index("users", "age")?;
+
+// Range queries now use the index
+engine.select("users", Condition::Ge("age".into(), Value::Int(18)))?;
+engine.select("users", Condition::Lt("age".into(), Value::Int(65)))?;
+```
+
+**B-tree index behavior:**
+- B-tree indexes are automatically maintained on insert, update, and delete
+- B-tree indexes are automatically cleaned up when a table is dropped
+- Range conditions (`Lt`, `Le`, `Gt`, `Ge`) benefit from B-tree indexes
+- Uses sortable key encoding for correct ordering of integers, floats, and strings
 
 ## Storage Model
 
@@ -173,8 +197,10 @@ Tables, rows, and indexes are stored in Tensor Store:
 |-------------|---------|
 | `_meta:table:{name}` | Schema metadata |
 | `{table}:{row_id}` | Row data |
-| `_idx:{table}:{column}` | Index metadata |
-| `_idx:{table}:{column}:{hash}` | Index entries (list of row IDs) |
+| `_idx:{table}:{column}` | Hash index metadata |
+| `_idx:{table}:{column}:{hash}` | Hash index entries (list of row IDs) |
+| `_btree:{table}:{column}` | B-tree index metadata |
+| `_btree:{table}:{column}:{sortable_key}` | B-tree index entries (list of row IDs) |
 
 Schema is encoded in the metadata tensor:
 - `_columns`: Comma-separated column names
@@ -225,12 +251,20 @@ Where k = number of indexes on the table.
 | `index_maintained_on_update` | Index updated on row changes |
 | `index_maintained_on_delete` | Index entries removed on delete |
 | `drop_table_cleans_up_indexes` | Indexes cleaned up with table |
+| `btree_index_accelerates_range_queries` | B-tree index speeds up Lt/Le/Gt/Ge |
+| `btree_index_maintained_on_insert` | B-tree updated on new rows |
+| `btree_index_maintained_on_update` | B-tree updated on row changes |
+| `btree_index_maintained_on_delete` | B-tree entries removed on delete |
+| `btree_index_handles_negative_numbers` | Correct ordering of negative ints |
+| `btree_index_handles_floats` | Correct ordering of floats |
+| `btree_index_handles_strings` | Correct ordering of strings |
+| `drop_btree_index` | B-tree index removal |
 
 ## Future Considerations
 
 Not implemented (out of scope for Module 2):
 
-- **B-tree indexes**: Range query acceleration (current indexes only support equality)
+- ~~**B-tree indexes**~~: Implemented - range query acceleration for Lt, Le, Gt, Ge conditions
 - **Query Optimization**: Cost-based query planning
 - **Transactions**: ACID guarantees
 - **Foreign Keys**: Referential integrity

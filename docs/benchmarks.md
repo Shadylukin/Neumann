@@ -296,7 +296,7 @@ Trade-offs:
 ## Optimization Opportunities
 
 1. **Batch operations**: Add bulk insert/update APIs to reduce per-operation overhead
-2. **B-tree indexes**: Range query acceleration for relational_engine (hash indexes done)
+2. ~~**B-tree indexes**~~: Done - range query acceleration for relational_engine
 3. **Memory pools**: Reuse TensorData allocations in hot paths
 4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for tensor_store (25-53%), vector_engine (1.6x), and relational_engine select (2-3x)
 5. **Bloom filters**: Quick negative lookups for sparse key spaces
