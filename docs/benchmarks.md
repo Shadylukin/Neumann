@@ -295,7 +295,7 @@ Trade-offs:
 1. **Batch operations**: Add bulk insert/update APIs to reduce per-operation overhead
 2. **B-tree indexes**: Range query acceleration for relational_engine (hash indexes done)
 3. **Memory pools**: Reuse TensorData allocations in hot paths
-4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for vector_engine (1.6x at 10K vectors)
+4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for vector_engine (1.6x) and relational_engine select (2-3x)
 5. **Bloom filters**: Quick negative lookups for sparse key spaces
 6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity

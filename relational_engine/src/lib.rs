@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -262,6 +263,9 @@ pub struct RelationalEngine {
 }
 
 impl RelationalEngine {
+    /// Threshold for parallel operations (below this, sequential is faster)
+    const PARALLEL_THRESHOLD: usize = 1000;
+
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
@@ -499,16 +503,32 @@ impl RelationalEngine {
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
-        let mut rows = Vec::new();
-        for key in keys {
-            if let Ok(tensor) = self.store.get(&key) {
-                if let Some(row) = self.tensor_to_row(&tensor) {
+        // Use parallel iteration for large tables
+        let mut rows: Vec<Row> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            keys.par_iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
                     if condition.evaluate(&row) {
-                        rows.push(row);
+                        Some(row)
+                    } else {
+                        None
                     }
-                }
-            }
-        }
+                })
+                .collect()
+        } else {
+            keys.iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    if condition.evaluate(&row) {
+                        Some(row)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
 
         rows.sort_by_key(|r| r.id);
         Ok(rows)
@@ -635,21 +655,47 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        let mut results = Vec::new();
-
-        for row_a in &rows_a {
-            let val_a = row_a.get_with_id(on_a);
-            if let Some(ref va) = val_a {
-                for row_b in &rows_b {
-                    let val_b = row_b.get_with_id(on_b);
-                    if let Some(ref vb) = val_b {
-                        if va == vb {
-                            results.push((row_a.clone(), row_b.clone()));
+        // Use parallel join for large tables
+        let results = if rows_a.len() >= Self::PARALLEL_THRESHOLD {
+            rows_a
+                .par_iter()
+                .flat_map(|row_a| {
+                    let val_a = row_a.get_with_id(on_a);
+                    if let Some(ref va) = val_a {
+                        rows_b
+                            .iter()
+                            .filter_map(|row_b| {
+                                let val_b = row_b.get_with_id(on_b);
+                                if let Some(ref vb) = val_b {
+                                    if va == vb {
+                                        return Some((row_a.clone(), row_b.clone()));
+                                    }
+                                }
+                                None
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect()
+        } else {
+            let mut results = Vec::new();
+            for row_a in &rows_a {
+                let val_a = row_a.get_with_id(on_a);
+                if let Some(ref va) = val_a {
+                    for row_b in &rows_b {
+                        let val_b = row_b.get_with_id(on_b);
+                        if let Some(ref vb) = val_b {
+                            if va == vb {
+                                results.push((row_a.clone(), row_b.clone()));
+                            }
                         }
                     }
                 }
             }
-        }
+            results
+        };
 
         Ok(results)
     }
