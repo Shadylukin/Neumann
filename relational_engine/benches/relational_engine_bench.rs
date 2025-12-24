@@ -427,6 +427,146 @@ fn bench_create_index(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_btree_indexed_range(c: &mut Criterion) {
+    let mut group = c.benchmark_group("btree_range_query");
+
+    // Setup: 5000 rows with B-tree index on age
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..5000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine.create_btree_index("users", "age").unwrap();
+
+    group.bench_function("ge_with_btree_20_percent", |b| {
+        b.iter(|| {
+            // age >= 60 matches 20% (ages 60-69 out of 20-69)
+            black_box(
+                engine
+                    .select("users", Condition::Ge("age".to_string(), Value::Int(60)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("lt_with_btree_10_percent", |b| {
+        b.iter(|| {
+            // age < 25 matches 10% (ages 20-24 out of 20-69)
+            black_box(
+                engine
+                    .select("users", Condition::Lt("age".to_string(), Value::Int(25)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Compare without B-tree index
+    let engine_no_idx = RelationalEngine::new();
+    engine_no_idx
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..5000 {
+        engine_no_idx
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+
+    group.bench_function("ge_without_btree_20_percent", |b| {
+        b.iter(|| {
+            black_box(
+                engine_no_idx
+                    .select("users", Condition::Ge("age".to_string(), Value::Int(60)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("lt_without_btree_10_percent", |b| {
+        b.iter(|| {
+            black_box(
+                engine_no_idx
+                    .select("users", Condition::Lt("age".to_string(), Value::Int(25)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_btree_compound_range(c: &mut Criterion) {
+    let mut group = c.benchmark_group("btree_compound_range");
+
+    // Setup: 5000 rows with B-tree index on age
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..5000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine.create_btree_index("users", "age").unwrap();
+
+    group.bench_function("range_and_with_btree", |b| {
+        b.iter(|| {
+            // age >= 30 AND age < 40 (20% of rows)
+            let condition = Condition::Ge("age".to_string(), Value::Int(30))
+                .and(Condition::Lt("age".to_string(), Value::Int(40)));
+            black_box(engine.select("users", condition).unwrap());
+        });
+    });
+
+    // Compare without B-tree index
+    let engine_no_idx = RelationalEngine::new();
+    engine_no_idx
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..5000 {
+        engine_no_idx
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+
+    group.bench_function("range_and_without_btree", |b| {
+        b.iter(|| {
+            let condition = Condition::Ge("age".to_string(), Value::Int(30))
+                .and(Condition::Lt("age".to_string(), Value::Int(40)));
+            black_box(engine_no_idx.select("users", condition).unwrap());
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_create_btree_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("create_btree_index");
+
+    for size in [100, 1000, 5000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter_batched(
+                || {
+                    let engine = RelationalEngine::new();
+                    engine.create_table("users", create_users_schema()).unwrap();
+                    for i in 0..size {
+                        engine
+                            .insert("users", create_user_values(i as i64))
+                            .unwrap();
+                    }
+                    engine
+                },
+                |engine| {
+                    black_box(engine.create_btree_index("users", "age").unwrap());
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert,
@@ -440,6 +580,9 @@ criterion_group!(
     bench_indexed_select,
     bench_indexed_select_by_id,
     bench_create_index,
+    bench_btree_indexed_range,
+    bench_btree_compound_range,
+    bench_create_btree_index,
 );
 
 criterion_main!(benches);
