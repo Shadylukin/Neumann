@@ -302,6 +302,9 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 [[package]]
 name = "neumann_parser"
 version = "0.1.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "num-traits"
@@ -387,6 +390,7 @@ dependencies = [
 name = "query_router"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "graph_engine",
  "neumann_parser",
  "relational_engine",

@@ -339,16 +339,16 @@ pub struct NodeStmt {
 /// NODE operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeOp {
-    /// Create a node: NODE CREATE <label> { properties }
+    /// Create a node: `NODE label { properties }`
     Create {
         label: Ident,
         properties: Vec<Property>,
     },
-    /// Get a node: NODE GET <id>
+    /// Get a node: `NODE GET id`
     Get { id: Expr },
-    /// Delete a node: NODE DELETE <id>
+    /// Delete a node: `NODE DELETE id`
     Delete { id: Expr },
-    /// List nodes: NODE LIST [label]
+    /// List nodes: `NODE LIST`
     List { label: Option<Ident> },
 }
 
@@ -361,18 +361,18 @@ pub struct EdgeStmt {
 /// EDGE operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EdgeOp {
-    /// Create an edge: EDGE CREATE <from> -> <to> : <type> { properties }
+    /// Create an edge: `EDGE from_ref edge_type to_ref { properties }`
     Create {
         from_id: Expr,
         to_id: Expr,
         edge_type: Ident,
         properties: Vec<Property>,
     },
-    /// Get an edge: EDGE GET <id>
+    /// Get an edge: `EDGE GET id`
     Get { id: Expr },
-    /// Delete an edge: EDGE DELETE <id>
+    /// Delete an edge: `EDGE DELETE id`
     Delete { id: Expr },
-    /// List edges: EDGE LIST \[type\]
+    /// List edges: `EDGE LIST`
     List { edge_type: Option<Ident> },
 }
 
@@ -430,11 +430,11 @@ pub struct EmbedStmt {
 /// EMBED operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EmbedOp {
-    /// Store embedding: EMBED STORE <key> <vector>
+    /// Store embedding: `EMBED STORE 'key' [vector]`
     Store { key: Expr, vector: Vec<Expr> },
-    /// Get embedding: EMBED GET <key>
+    /// Get embedding: `EMBED GET 'key'`
     Get { key: Expr },
-    /// Delete embedding: EMBED DELETE <key>
+    /// Delete embedding: `EMBED DELETE 'key'`
     Delete { key: Expr },
 }
 

@@ -139,7 +139,7 @@ impl Span {
         self.start.0 < other.end.0 && other.start.0 < self.end.0
     }
 
-    /// Converts to a Range<usize> for slicing.
+    /// Converts to a `Range<usize>` for slicing.
     #[inline]
     pub const fn as_range(&self) -> Range<usize> {
         self.start.as_usize()..self.end.as_usize()

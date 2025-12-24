@@ -10,3 +10,10 @@ graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
 neumann_parser = { path = "../neumann_parser" }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "query_router_bench"
+harness = false
+
