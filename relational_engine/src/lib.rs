@@ -642,6 +642,8 @@ impl RelationalEngine {
         Ok(count)
     }
 
+    /// Hash join: O(n+m) instead of O(n*m) nested loop join.
+    /// Builds a hash index on the right table, then probes from the left.
     pub fn join(
         &self,
         table_a: &str,
@@ -655,39 +657,52 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Use parallel join for large tables
+        // Build hash index on right table (rows_b)
+        let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, row) in rows_b.iter().enumerate() {
+            if let Some(val) = row.get_with_id(on_b) {
+                let hash = val.hash_key();
+                index.entry(hash).or_default().push(i);
+            }
+        }
+
+        // Probe from left table - parallelize for large tables
         let results = if rows_a.len() >= Self::PARALLEL_THRESHOLD {
             rows_a
                 .par_iter()
                 .flat_map(|row_a| {
-                    let val_a = row_a.get_with_id(on_a);
-                    if let Some(ref va) = val_a {
-                        rows_b
-                            .iter()
-                            .filter_map(|row_b| {
-                                let val_b = row_b.get_with_id(on_b);
-                                if let Some(ref vb) = val_b {
-                                    if va == vb {
-                                        return Some((row_a.clone(), row_b.clone()));
-                                    }
-                                }
-                                None
+                    row_a
+                        .get_with_id(on_a)
+                        .and_then(|val| {
+                            let hash = val.hash_key();
+                            index.get(&hash).map(|indices| {
+                                indices
+                                    .iter()
+                                    .filter_map(|&i| {
+                                        let row_b = &rows_b[i];
+                                        // Verify actual equality (handle hash collisions)
+                                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                                            Some((row_a.clone(), row_b.clone()))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
                             })
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    }
+                        })
+                        .unwrap_or_default()
                 })
                 .collect()
         } else {
             let mut results = Vec::new();
             for row_a in &rows_a {
-                let val_a = row_a.get_with_id(on_a);
-                if let Some(ref va) = val_a {
-                    for row_b in &rows_b {
-                        let val_b = row_b.get_with_id(on_b);
-                        if let Some(ref vb) = val_b {
-                            if va == vb {
+                if let Some(val) = row_a.get_with_id(on_a) {
+                    let hash = val.hash_key();
+                    if let Some(indices) = index.get(&hash) {
+                        for &i in indices {
+                            let row_b = &rows_b[i];
+                            // Verify actual equality (handle hash collisions)
+                            if row_b.get_with_id(on_b) == Some(val.clone()) {
                                 results.push((row_a.clone(), row_b.clone()));
                             }
                         }

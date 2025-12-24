@@ -130,7 +130,7 @@ for (user, post) in joined {
 }
 ```
 
-Currently implements inner join (rows must match in both tables).
+Uses hash join algorithm: O(n+m) instead of O(n*m) nested loop. Currently implements inner join (rows must match in both tables).
 
 ### Indexes
 
@@ -204,7 +204,7 @@ Index entries map value hashes to lists of row IDs, enabling O(1) lookup.
 | `select` (with index) | O(1) | Direct lookup via hash index |
 | `update` | O(n) + O(k) | Scan + conditional update + index maintenance |
 | `delete_rows` | O(n) + O(k) | Scan + conditional delete + index removal |
-| `join` | O(n*m) | Nested loop join |
+| `join` | O(n+m) | Hash join |
 | `create_index` | O(n) | Scan all rows to build index |
 
 Where k = number of indexes on the table.
@@ -237,4 +237,4 @@ Not implemented (out of scope for Module 2):
 - **Aggregations**: COUNT, SUM, AVG, etc.
 - **Sorting**: ORDER BY
 - **Pagination**: LIMIT, OFFSET
-- **Hash joins**: Accelerated joins using indexes
+- ~~**Hash joins**~~: Implemented - O(n+m) hash join algorithm

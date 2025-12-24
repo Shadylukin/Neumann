@@ -144,12 +144,12 @@ The relational engine provides SQL-like operations on top of tensor_store, with 
 | Update | 2.0ms |
 | Delete | 1.6ms |
 
-**Join Performance (nested loop):**
+**Join Performance (hash join):**
 | Tables | Result Rows | Time |
 |--------|-------------|------|
-| 50 users × 500 posts | 500 | 1.2ms |
-| 100 users × 1000 posts | 1,000 | 4.0ms |
-| 100 users × 5000 posts | 5,000 | 20ms |
+| 50 users × 500 posts | 500 | 630µs |
+| 100 users × 1000 posts | 1,000 | 2.1ms |
+| 100 users × 5000 posts | 5,000 | 3.6ms |
 
 **Row Count:**
 | Rows | Time |
@@ -165,7 +165,7 @@ The relational engine provides SQL-like operations on top of tensor_store, with 
   - 1,597x speedup for single-row _id lookups
 - **Full scan cost**: Without index, O(n) for all queries
 - **Index maintenance**: Small overhead on insert/update/delete to maintain indexes
-- **Join complexity**: O(n×m) nested loop join
+- **Join complexity**: O(n+m) hash join (2-5x faster than nested loop)
 - **row_count**: Uses scan_count, much faster than full scan (~100x)
 
 ### vector_engine
