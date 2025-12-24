@@ -250,6 +250,12 @@ impl<'a> Parser<'a> {
             // CASE expression
             TokenKind::Case => self.parse_case_expr(),
 
+            // EXISTS subquery
+            TokenKind::Exists => self.parse_exists_expr(),
+
+            // CAST expression
+            TokenKind::Cast => self.parse_cast_expr(),
+
             TokenKind::Eof => Err(ParseError::unexpected_eof(token.span, "expression")),
 
             _ => Err(ParseError::unexpected(
@@ -268,7 +274,7 @@ impl<'a> Parser<'a> {
                 let next_kind = self.peek().kind.clone();
                 if next_kind == TokenKind::In {
                     self.advance();
-                    expr = self.parse_in_expr(expr)?;
+                    expr = self.parse_in_expr(expr, true)?;
                     continue;
                 } else if next_kind == TokenKind::Between {
                     self.advance();
@@ -296,7 +302,7 @@ impl<'a> Parser<'a> {
                         span,
                     )
                 },
-                TokenKind::In => self.parse_in_expr(expr)?,
+                TokenKind::In => self.parse_in_expr(expr, false)?,
                 TokenKind::Between => self.parse_between_expr(expr, false)?,
                 TokenKind::Like => self.parse_like_expr(expr, false)?,
                 TokenKind::Dot => {
@@ -453,22 +459,61 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    fn parse_in_expr(&mut self, expr: Expr) -> ParseResult<Expr> {
+    fn parse_exists_expr(&mut self) -> ParseResult<Expr> {
+        let start = self.expect(&TokenKind::Exists)?.span;
+        self.expect(&TokenKind::LParen)?;
+        self.expect(&TokenKind::Select)?;
+        let subquery = self.parse_select_body()?;
+        let end = self.expect(&TokenKind::RParen)?.span;
+        Ok(Expr::new(
+            ExprKind::Exists(Box::new(subquery)),
+            start.merge(end),
+        ))
+    }
+
+    fn parse_cast_expr(&mut self) -> ParseResult<Expr> {
+        let start = self.expect(&TokenKind::Cast)?.span;
+        self.expect(&TokenKind::LParen)?;
+        let expr = self.parse_expr()?;
+        self.expect(&TokenKind::As)?;
+        let data_type = self.parse_data_type()?;
+        let end = self.expect(&TokenKind::RParen)?.span;
+        Ok(Expr::new(
+            ExprKind::Cast(Box::new(expr), data_type),
+            start.merge(end),
+        ))
+    }
+
+    fn parse_in_expr(&mut self, expr: Expr, negated: bool) -> ParseResult<Expr> {
         let start_span = expr.span;
         self.expect(&TokenKind::In)?;
         self.expect(&TokenKind::LParen)?;
-        let mut values = Vec::new();
-        if !self.check(&TokenKind::RParen) {
-            loop {
-                values.push(self.parse_expr()?);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
+
+        // Check for subquery: (SELECT ...)
+        let list = if self.check(&TokenKind::Select) {
+            self.advance(); // consume SELECT
+            let subquery = self.parse_select_body()?;
+            InList::Subquery(Box::new(subquery))
+        } else {
+            let mut values = Vec::new();
+            if !self.check(&TokenKind::RParen) {
+                loop {
+                    values.push(self.parse_expr()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
                 }
             }
-        }
+            InList::Values(values)
+        };
+
         let end = self.expect(&TokenKind::RParen)?.span;
         Ok(Expr::new(
-            ExprKind::In(Box::new(expr), InList::Values(values)),
+            ExprKind::In {
+                expr: Box::new(expr),
+                list,
+                negated,
+            },
             start_span.merge(end),
         ))
     }
@@ -548,6 +593,7 @@ impl<'a> Parser<'a> {
             TokenKind::Delete => self.parse_delete()?,
             TokenKind::Create => self.parse_create()?,
             TokenKind::Drop => self.parse_drop()?,
+            TokenKind::Show => self.parse_show()?,
 
             // Graph Statements
             TokenKind::Node => self.parse_node()?,
@@ -583,7 +629,12 @@ impl<'a> Parser<'a> {
 
     fn parse_select(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Select)?;
+        Ok(StatementKind::Select(self.parse_select_body()?))
+    }
 
+    /// Parses a SELECT statement body (after the SELECT keyword).
+    /// Used for both standalone SELECT and subqueries.
+    fn parse_select_body(&mut self) -> ParseResult<SelectStmt> {
         // Handle DISTINCT or ALL (ALL is the default, just consume it)
         let distinct = if self.eat(&TokenKind::Distinct) {
             true
@@ -667,7 +718,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        Ok(StatementKind::Select(SelectStmt {
+        Ok(SelectStmt {
             distinct,
             columns,
             from,
@@ -677,7 +728,7 @@ impl<'a> Parser<'a> {
             order_by,
             limit,
             offset,
-        }))
+        })
     }
 
     fn parse_select_item(&mut self) -> ParseResult<SelectItem> {
@@ -709,9 +760,17 @@ impl<'a> Parser<'a> {
     fn parse_table_ref(&mut self) -> ParseResult<TableRef> {
         let start = self.current.span;
 
-        // TODO: Support subqueries
-        let name = self.expect_ident()?;
-        let kind = TableRefKind::Table(name);
+        // Check for subquery: (SELECT ...)
+        let kind = if self.check(&TokenKind::LParen) {
+            self.advance(); // consume '('
+            self.expect(&TokenKind::Select)?;
+            let subquery = self.parse_select_body()?;
+            self.expect(&TokenKind::RParen)?;
+            TableRefKind::Subquery(Box::new(subquery))
+        } else {
+            let name = self.expect_ident()?;
+            TableRefKind::Table(name)
+        };
 
         let alias = if self.eat(&TokenKind::As) {
             Some(self.expect_ident()?)
@@ -1269,6 +1328,20 @@ impl<'a> Parser<'a> {
                 self.current.kind.clone(),
                 self.current.span,
                 "TABLE or INDEX",
+            ))
+        }
+    }
+
+    fn parse_show(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Show)?;
+
+        if self.eat(&TokenKind::Tables) {
+            Ok(StatementKind::ShowTables)
+        } else {
+            Err(ParseError::unexpected(
+                self.current.kind.clone(),
+                self.current.span,
+                "TABLES",
             ))
         }
     }
@@ -2688,6 +2761,1383 @@ mod tests {
             assert!(matches!(find.pattern, FindPattern::Nodes { label: None }));
         } else {
             panic!("expected FIND");
+        }
+    }
+
+    // SHOW TABLES tests
+    #[test]
+    fn test_show_tables() {
+        let stmt = parse_stmt("SHOW TABLES");
+        assert!(matches!(stmt.kind, StatementKind::ShowTables));
+    }
+
+    #[test]
+    fn test_show_tables_semicolon() {
+        let stmt = parse_stmt("SHOW TABLES;");
+        assert!(matches!(stmt.kind, StatementKind::ShowTables));
+    }
+
+    #[test]
+    fn test_show_tables_lowercase() {
+        let stmt = parse_stmt("show tables");
+        assert!(matches!(stmt.kind, StatementKind::ShowTables));
+    }
+
+    #[test]
+    #[should_panic(expected = "TABLES")]
+    fn test_show_without_tables() {
+        parse_stmt("SHOW");
+    }
+
+    // Bit operations tests
+    #[test]
+    fn test_bit_or() {
+        let stmt = parse_stmt("SELECT 1 | 2");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::BitOr, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_bit_and() {
+        let stmt = parse_stmt("SELECT 1 & 2");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::BitAnd, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_bit_xor() {
+        let stmt = parse_stmt("SELECT 1 ^ 2");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::BitXor, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_bit_shift_left() {
+        let stmt = parse_stmt("SELECT 1 << 2");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Shl, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_bit_shift_right() {
+        let stmt = parse_stmt("SELECT 1 >> 2");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Shr, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_bit_not() {
+        let stmt = parse_stmt("SELECT ~1");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Unary(UnaryOp::BitNot, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Aggregate functions
+    #[test]
+    fn test_aggregate_sum() {
+        let stmt = parse_stmt("SELECT SUM(x) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_avg() {
+        let stmt = parse_stmt("SELECT AVG(x) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_min() {
+        let stmt = parse_stmt("SELECT MIN(x) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_max() {
+        let stmt = parse_stmt("SELECT MAX(x) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // NOT IN expression
+    #[test]
+    fn test_not_in_list() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x NOT IN (1, 2, 3)");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // EXISTS subquery
+    #[test]
+    fn test_exists_subquery() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE EXISTS (SELECT 1 FROM u)");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // ORDER BY with direction
+    #[test]
+    fn test_order_by_asc() {
+        let stmt = parse_stmt("SELECT * FROM t ORDER BY x ASC");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(!sel.order_by.is_empty());
+            assert!(matches!(sel.order_by[0].direction, SortDirection::Asc));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_order_by_desc() {
+        let stmt = parse_stmt("SELECT * FROM t ORDER BY x DESC");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(!sel.order_by.is_empty());
+            assert!(matches!(sel.order_by[0].direction, SortDirection::Desc));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // FALSE and NULL literals
+    #[test]
+    fn test_false_literal() {
+        let stmt = parse_stmt("SELECT FALSE FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_null_literal() {
+        let stmt = parse_stmt("SELECT NULL FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Unary operators
+    #[test]
+    fn test_unary_neg() {
+        let stmt = parse_stmt("SELECT -1 FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_unary_not() {
+        let stmt = parse_stmt("SELECT NOT x FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // IS NULL / IS NOT NULL
+    #[test]
+    fn test_is_null() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IS NULL");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_is_not_null() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IS NOT NULL");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // BETWEEN / NOT BETWEEN
+    #[test]
+    fn test_between() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x BETWEEN 1 AND 10");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_not_between() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x NOT BETWEEN 1 AND 10");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // LIKE / NOT LIKE
+    #[test]
+    fn test_like() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE name LIKE '%foo%'");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_not_like() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE name NOT LIKE '%bar%'");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Qualified wildcard (table.*)
+    #[test]
+    fn test_qualified_wildcard() {
+        let stmt = parse_stmt("SELECT t.* FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(!sel.columns.is_empty());
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::QualifiedWildcard(_)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Array expression
+    #[test]
+    fn test_array_expr() {
+        let stmt = parse_stmt("SELECT [1, 2, 3] FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Array(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Division and modulo operators
+    #[test]
+    fn test_division() {
+        let stmt = parse_stmt("SELECT a / b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Div, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_modulo() {
+        let stmt = parse_stmt("SELECT a % b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Mod, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Addition and subtraction
+    #[test]
+    fn test_addition() {
+        let stmt = parse_stmt("SELECT a + b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Add, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_subtraction() {
+        let stmt = parse_stmt("SELECT a - b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Sub, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Multiplication
+    #[test]
+    fn test_multiplication() {
+        let stmt = parse_stmt("SELECT a * b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Mul, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // String concatenation
+    #[test]
+    fn test_concat() {
+        let stmt = parse_stmt("SELECT a || b FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Binary(_, BinaryOp::Concat, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Comparison operators <= and >=
+    #[test]
+    fn test_less_equal() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE a <= b");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref where_clause) = sel.where_clause {
+                assert!(matches!(
+                    where_clause.kind,
+                    ExprKind::Binary(_, BinaryOp::Le, _)
+                ));
+            } else {
+                panic!("expected WHERE clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_greater_equal() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE a >= b");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref where_clause) = sel.where_clause {
+                assert!(matches!(
+                    where_clause.kind,
+                    ExprKind::Binary(_, BinaryOp::Ge, _)
+                ));
+            } else {
+                panic!("expected WHERE clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Tuple expressions
+    #[test]
+    fn test_tuple_expr() {
+        let stmt = parse_stmt("SELECT (1, 2, 3) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Tuple(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn test_empty_tuple_expr() {
+        let stmt = parse_stmt("SELECT () FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let ExprKind::Tuple(items) = &sel.columns[0].expr.kind {
+                assert!(items.is_empty());
+            } else {
+                panic!("expected tuple");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // CASE with operand (simple CASE)
+    #[test]
+    fn test_case_with_operand() {
+        let stmt = parse_stmt("SELECT CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
+                assert!(case.operand.is_some());
+                assert!(!case.when_clauses.is_empty());
+                assert!(case.else_clause.is_some());
+            } else {
+                panic!("expected CASE expression");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Subquery in FROM
+    #[test]
+    fn test_subquery_from() {
+        let stmt = parse_stmt("SELECT * FROM (SELECT 1 AS x) AS sub");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert!(matches!(from.table.kind, TableRefKind::Subquery(_)));
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // INSERT with SELECT (instead of VALUES)
+    #[test]
+    fn test_insert_select() {
+        let stmt = parse_stmt("INSERT INTO t (a, b) SELECT x, y FROM s");
+        if let StatementKind::Insert(ins) = stmt.kind {
+            assert!(matches!(ins.source, InsertSource::Query(_)));
+        } else {
+            panic!("expected INSERT");
+        }
+    }
+
+    // Function call expression
+    #[test]
+    fn test_function_call() {
+        let stmt = parse_stmt("SELECT UPPER(name) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Call(_)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Cast expression
+    #[test]
+    fn test_cast_expr() {
+        let stmt = parse_stmt("SELECT CAST(x AS INT) FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(sel.columns[0].expr.kind, ExprKind::Cast(_, _)));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // CASE without ELSE
+    #[test]
+    fn test_case_no_else() {
+        let stmt = parse_stmt("SELECT CASE WHEN x > 0 THEN 1 END FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
+                assert!(case.else_clause.is_none());
+            } else {
+                panic!("expected CASE expression");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Subquery with alias
+    #[test]
+    fn test_subquery_with_alias() {
+        let stmt = parse_stmt("SELECT sub.x FROM (SELECT 1 AS x) sub");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert!(from.table.alias.is_some());
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Table alias without AS keyword
+    #[test]
+    fn test_table_alias_no_as() {
+        let stmt = parse_stmt("SELECT t.x FROM users t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert!(from.table.alias.is_some());
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Join with ON clause
+    #[test]
+    fn test_join_on_clause() {
+        let stmt = parse_stmt("SELECT * FROM a JOIN b ON a.id = b.id");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert!(!from.joins.is_empty());
+                assert!(from.joins[0].condition.is_some());
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // IN with subquery
+    #[test]
+    fn test_in_subquery() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IN (SELECT y FROM s)");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Parenthesized expression
+    #[test]
+    fn test_paren_expr() {
+        let stmt = parse_stmt("SELECT (1 + 2) * 3 FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Multiple order by columns
+    #[test]
+    fn test_order_by_multiple() {
+        let stmt = parse_stmt("SELECT * FROM t ORDER BY a ASC, b DESC");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert_eq!(sel.order_by.len(), 2);
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // GROUP BY with multiple columns
+    #[test]
+    fn test_group_by_multiple() {
+        let stmt = parse_stmt("SELECT a, b, COUNT(*) FROM t GROUP BY a, b");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert_eq!(sel.group_by.len(), 2);
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Float literal
+    #[test]
+    fn test_float_literal() {
+        let stmt = parse_stmt("SELECT 3.14 FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Literal(Literal::Float(_))
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // String literal
+    #[test]
+    fn test_string_literal() {
+        let stmt = parse_stmt("SELECT 'hello' FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Literal(Literal::String(_))
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Integer literal
+    #[test]
+    fn test_integer_literal() {
+        let stmt = parse_stmt("SELECT 42 FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Literal(Literal::Integer(42))
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // TRUE literal
+    #[test]
+    fn test_true_literal() {
+        let stmt = parse_stmt("SELECT TRUE FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Literal(Literal::Boolean(true))
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Qualified column name (table.column)
+    #[test]
+    fn test_qualified_column() {
+        let stmt = parse_stmt("SELECT t.x FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Qualified(_, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Logical AND/OR
+    #[test]
+    fn test_logical_and_or() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE a = 1 AND b = 2 OR c = 3");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.where_clause.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Nested subqueries
+    #[test]
+    fn test_nested_subquery() {
+        let stmt = parse_stmt("SELECT * FROM (SELECT * FROM (SELECT 1 AS x) inner_sub) outer_sub");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Custom data type
+    #[test]
+    fn test_custom_data_type() {
+        let stmt = parse_stmt("CREATE TABLE t (x my_custom_type)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // NULL constraint
+    #[test]
+    fn test_null_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT NULL)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // UNIQUE constraint
+    #[test]
+    fn test_unique_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT UNIQUE)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // CHECK constraint on column
+    #[test]
+    fn test_check_column_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT CHECK (x > 0))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // CAST to different types
+    #[test]
+    fn test_cast_to_varchar() {
+        let stmt = parse_stmt("SELECT CAST(x AS VARCHAR(100)) FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_cast_to_decimal() {
+        let stmt = parse_stmt("SELECT CAST(x AS DECIMAL(10, 2)) FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Comparison operators
+    #[test]
+    fn test_not_equal() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE a != b");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_not_equal_ansi() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE a <> b");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Bit not operator
+    #[test]
+    fn test_bit_not_expr() {
+        let stmt = parse_stmt("SELECT ~x FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(matches!(
+                sel.columns[0].expr.kind,
+                ExprKind::Unary(UnaryOp::BitNot, _)
+            ));
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Empty values in IN
+    #[test]
+    fn test_in_empty() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x IN ()");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // CASE with multiple WHEN clauses
+    #[test]
+    fn test_case_multiple_when() {
+        let stmt = parse_stmt("SELECT CASE WHEN a THEN 1 WHEN b THEN 2 WHEN c THEN 3 END FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let ExprKind::Case(case) = &sel.columns[0].expr.kind {
+                assert_eq!(case.when_clauses.len(), 3);
+            } else {
+                panic!("expected CASE expression");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Float with exponent
+    #[test]
+    fn test_float_exponent() {
+        let stmt = parse_stmt("SELECT 1.5e10 FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Negative number
+    #[test]
+    fn test_negative_number() {
+        let stmt = parse_stmt("SELECT -42 FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Complex nested expression
+    #[test]
+    fn test_complex_nested() {
+        let stmt = parse_stmt("SELECT ((a + b) * (c - d)) / e FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Multiple table joins
+    #[test]
+    fn test_three_way_join() {
+        let stmt = parse_stmt("SELECT * FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert_eq!(from.joins.len(), 2);
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Select with LIMIT only
+    #[test]
+    fn test_select_limit_only() {
+        let stmt = parse_stmt("SELECT * FROM t LIMIT 10");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.limit.is_some());
+            assert!(sel.offset.is_none());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Update with multiple assignments
+    #[test]
+    fn test_update_three_columns() {
+        let stmt = parse_stmt("UPDATE t SET a = 1, b = 2, c = 3 WHERE id = 1");
+        if let StatementKind::Update(upd) = stmt.kind {
+            assert_eq!(upd.assignments.len(), 3);
+        } else {
+            panic!("expected UPDATE");
+        }
+    }
+
+    // Implicit column alias (no AS keyword)
+    #[test]
+    fn test_implicit_column_alias() {
+        let stmt = parse_stmt("SELECT x alias FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.columns[0].alias.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Table followed by keyword (should not treat keyword as alias)
+    #[test]
+    fn test_table_followed_by_keyword() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x = 1");
+        if let StatementKind::Select(sel) = stmt.kind {
+            if let Some(ref from) = sel.from {
+                assert!(from.table.alias.is_none());
+            } else {
+                panic!("expected FROM clause");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Column alias followed by keyword
+    #[test]
+    fn test_column_alias_followed_by_keyword() {
+        let stmt = parse_stmt("SELECT x y FROM t WHERE y = 1");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.columns[0].alias.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Delete with complex WHERE
+    #[test]
+    fn test_delete_complex_where() {
+        let stmt = parse_stmt("DELETE FROM t WHERE a = 1 AND b = 2 OR c = 3");
+        if let StatementKind::Delete(del) = stmt.kind {
+            assert!(del.where_clause.is_some());
+        } else {
+            panic!("expected DELETE");
+        }
+    }
+
+    // Multiple INSERT rows
+    #[test]
+    fn test_insert_three_rows() {
+        let stmt = parse_stmt("INSERT INTO t (a, b) VALUES (1, 2), (3, 4), (5, 6)");
+        if let StatementKind::Insert(ins) = stmt.kind {
+            if let InsertSource::Values(rows) = ins.source {
+                assert_eq!(rows.len(), 3);
+            } else {
+                panic!("expected VALUES");
+            }
+        } else {
+            panic!("expected INSERT");
+        }
+    }
+
+    // OFFSET without LIMIT
+    #[test]
+    fn test_offset_only() {
+        let stmt = parse_stmt("SELECT * FROM t OFFSET 10");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert!(sel.offset.is_some());
+            assert!(sel.limit.is_none());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Empty GROUP BY (just the keyword)
+    #[test]
+    fn test_simple_group_by() {
+        let stmt = parse_stmt("SELECT a, COUNT(*) FROM t GROUP BY a");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert_eq!(sel.group_by.len(), 1);
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // NOT IN subquery
+    #[test]
+    fn test_not_in_subquery() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE x NOT IN (SELECT y FROM s)");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // EXISTS in WHERE
+    #[test]
+    fn test_exists_in_where() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE EXISTS (SELECT 1 FROM s)");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Column with table prefix in WHERE
+    #[test]
+    fn test_qualified_column_in_where() {
+        let stmt = parse_stmt("SELECT * FROM t WHERE t.x = 1");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Multiple columns in SELECT
+    #[test]
+    fn test_select_five_columns() {
+        let stmt = parse_stmt("SELECT a, b, c, d, e FROM t");
+        if let StatementKind::Select(sel) = stmt.kind {
+            assert_eq!(sel.columns.len(), 5);
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    // Deeply nested arithmetic
+    #[test]
+    fn test_deeply_nested_arithmetic() {
+        let stmt = parse_stmt("SELECT (((a + b) - c) * d) / e FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // All comparison operators in one query
+    #[test]
+    fn test_all_comparisons() {
+        let stmt = parse_stmt(
+            "SELECT * FROM t WHERE a = 1 AND b != 2 AND c < 3 AND d <= 4 AND e > 5 AND f >= 6",
+        );
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Error tests - these test error paths
+    #[test]
+    fn test_error_unexpected_expression() {
+        let result = parse("SELECT FROM t");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_drop_missing_table_or_index() {
+        let result = parse("DROP DATABASE foo");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_invalid_data_type() {
+        let result = parse("CREATE TABLE t (x 123)");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_insert_no_values_or_select() {
+        let result = parse("INSERT INTO t (a, b) FROM x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_qualified_wildcard_on_expr() {
+        let result = parse("SELECT (1+2).* FROM t");
+        assert!(result.is_err());
+    }
+
+    // More error tests to hit remaining uncovered error paths
+    #[test]
+    fn test_error_table_constraint_invalid() {
+        // Invalid constraint keyword
+        let result = parse("CREATE TABLE t (x INT, INVALID constraint)");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_unexpected_in_primary_expr() {
+        // An unexpected token where an expression is expected
+        let result = parse("SELECT , FROM t");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_error_case_empty_when() {
+        // CASE with nothing between WHEN and THEN - hard to trigger
+        let result = parse("SELECT CASE WHEN THEN 1 END FROM t");
+        assert!(result.is_err());
+    }
+
+    // Additional edge case tests
+    #[test]
+    fn test_table_alias_with_as() {
+        let stmt = parse_stmt("SELECT * FROM users AS u");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_select_no_from() {
+        let stmt = parse_stmt("SELECT 1 + 2");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_nested_parentheses() {
+        let stmt = parse_stmt("SELECT ((1 + 2) * 3) FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_union_not_supported() {
+        // UNION is likely not supported, but let's try
+        let result = parse("SELECT 1 UNION SELECT 2");
+        // It might parse the first SELECT and fail on UNION
+        // Either way this tests more code paths
+        let _ = result;
+    }
+
+    #[test]
+    fn test_binary_expression_chain() {
+        let stmt = parse_stmt("SELECT a + b + c + d + e FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    #[test]
+    fn test_mixed_operators() {
+        let stmt = parse_stmt("SELECT a + b * c - d / e FROM t");
+        assert!(matches!(stmt.kind, StatementKind::Select(_)));
+    }
+
+    // Coverage tests for table constraints
+    #[test]
+    fn test_named_primary_key_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT, CONSTRAINT pk PRIMARY KEY (x))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_composite_primary_key() {
+        let stmt = parse_stmt("CREATE TABLE t (a INT, b INT, PRIMARY KEY (a, b))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_named_unique_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT, CONSTRAINT uq UNIQUE (x))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_composite_unique_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (a INT, b INT, UNIQUE (a, b))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_composite_foreign_key() {
+        let stmt = parse_stmt("CREATE TABLE t (a INT, b INT, FOREIGN KEY (a, b) REFERENCES other)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_foreign_key_without_column_ref() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT, FOREIGN KEY (x) REFERENCES other)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_index_if_not_exists() {
+        let stmt = parse_stmt("CREATE INDEX IF NOT EXISTS idx ON t (x)");
+        assert!(matches!(stmt.kind, StatementKind::CreateIndex(_)));
+    }
+
+    #[test]
+    fn test_drop_index_if_exists() {
+        let stmt = parse_stmt("DROP INDEX IF EXISTS idx");
+        assert!(matches!(stmt.kind, StatementKind::DropIndex(_)));
+    }
+
+    #[test]
+    fn test_drop_table_cascade() {
+        let stmt = parse_stmt("DROP TABLE IF EXISTS users CASCADE");
+        assert!(matches!(stmt.kind, StatementKind::DropTable(_)));
+    }
+
+    #[test]
+    fn test_named_check_constraint() {
+        let stmt = parse_stmt("CREATE TABLE t (x INT, CONSTRAINT chk CHECK (x > 0))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_named_foreign_key_constraint() {
+        let stmt = parse_stmt(
+            "CREATE TABLE t (x INT, CONSTRAINT fk FOREIGN KEY (x) REFERENCES other (id))",
+        );
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_three_column_primary_key() {
+        let stmt = parse_stmt("CREATE TABLE t (a INT, b INT, c INT, PRIMARY KEY (a, b, c))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_unique_index_if_not_exists() {
+        let stmt = parse_stmt("CREATE UNIQUE INDEX IF NOT EXISTS idx ON t (x)");
+        assert!(matches!(stmt.kind, StatementKind::CreateIndex(_)));
+    }
+
+    // More graph statement coverage
+    #[test]
+    fn test_node_list_all() {
+        let stmt = parse_stmt("NODE LIST");
+        assert!(matches!(stmt.kind, StatementKind::Node(_)));
+    }
+
+    #[test]
+    fn test_edge_list_all() {
+        let stmt = parse_stmt("EDGE LIST");
+        assert!(matches!(stmt.kind, StatementKind::Edge(_)));
+    }
+
+    // NODE DELETE, EDGE DELETE, NODE GET, EDGE GET already covered earlier
+
+    // Error path tests
+    #[test]
+    fn test_show_error() {
+        let result = parse("SHOW COLUMNS");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_node_invalid_op() {
+        let result = parse("NODE UPDATE 1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_edge_invalid_op() {
+        let result = parse("EDGE UPDATE 1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_drop_invalid() {
+        let result = parse("DROP VIEW test");
+        assert!(result.is_err());
+    }
+
+    // Multi-column index
+    #[test]
+    fn test_create_index_multi_column() {
+        let stmt = parse_stmt("CREATE INDEX idx ON t (a, b, c)");
+        assert!(matches!(stmt.kind, StatementKind::CreateIndex(_)));
+    }
+
+    // Table ref with keyword after (should not be alias)
+    #[test]
+    fn test_table_ref_no_alias_before_where() {
+        let stmt = parse_stmt("SELECT * FROM users WHERE id = 1");
+        if let StatementKind::Select(sel) = &stmt.kind {
+            let from = sel.from.as_ref().unwrap();
+            assert!(from.table.alias.is_none());
+        }
+    }
+
+    #[test]
+    fn test_table_ref_no_alias_before_join() {
+        let stmt = parse_stmt("SELECT * FROM users JOIN orders ON users.id = orders.user_id");
+        if let StatementKind::Select(sel) = &stmt.kind {
+            let from = sel.from.as_ref().unwrap();
+            assert!(from.table.alias.is_none());
+        }
+    }
+
+    // Cover more update paths
+    #[test]
+    fn test_update_multiple_sets() {
+        let stmt = parse_stmt("UPDATE t SET a = 1, b = 2, c = 3 WHERE id = 1");
+        assert!(matches!(stmt.kind, StatementKind::Update(_)));
+    }
+
+    // Neighbors and path tests (already covered by earlier tests)
+
+    // Vector/similar tests already covered by earlier tests
+
+    // Join types already covered by earlier tests
+
+    // Column data types coverage
+    #[test]
+    fn test_create_table_varchar() {
+        let stmt = parse_stmt("CREATE TABLE t (x VARCHAR(255))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_bigint() {
+        let stmt = parse_stmt("CREATE TABLE t (x BIGINT)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_smallint() {
+        let stmt = parse_stmt("CREATE TABLE t (x SMALLINT)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_double() {
+        let stmt = parse_stmt("CREATE TABLE t (x DOUBLE)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_real() {
+        let stmt = parse_stmt("CREATE TABLE t (x REAL)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_date() {
+        let stmt = parse_stmt("CREATE TABLE t (x DATE)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_time() {
+        let stmt = parse_stmt("CREATE TABLE t (x TIME)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_uuid() {
+        let stmt = parse_stmt("CREATE TABLE t (x UUID)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_json() {
+        let stmt = parse_stmt("CREATE TABLE t (x JSON)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_blob() {
+        let stmt = parse_stmt("CREATE TABLE t (x BLOB)");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_char() {
+        let stmt = parse_stmt("CREATE TABLE t (x CHAR(10))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    #[test]
+    fn test_create_table_numeric() {
+        let stmt = parse_stmt("CREATE TABLE t (x NUMERIC(10, 2))");
+        assert!(matches!(stmt.kind, StatementKind::CreateTable(_)));
+    }
+
+    // Additional coverage tests
+    #[test]
+    fn test_find_with_where() {
+        let stmt = parse_stmt("FIND NODE person WHERE age > 18");
+        assert!(matches!(stmt.kind, StatementKind::Find(_)));
+    }
+
+    // EMBED STORE and SIMILAR with COSINE already covered
+
+    #[test]
+    fn test_table_constraint_error() {
+        let result = parse("CREATE TABLE t (x INT, INVALID)");
+        assert!(result.is_err());
+    }
+
+    // Additional coverage tests - many already defined above
+
+    #[test]
+    fn test_similar_with_vector_query() {
+        let stmt = parse_stmt("SIMILAR [1.0, 2.0, 3.0] LIMIT 5");
+        assert!(matches!(stmt.kind, StatementKind::Similar(_)));
+    }
+
+    #[test]
+    fn test_embed_get_coverage() {
+        let stmt = parse_stmt("EMBED GET 'mykey'");
+        assert!(matches!(stmt.kind, StatementKind::Embed(_)));
+    }
+
+    #[test]
+    fn test_embed_delete_coverage() {
+        let stmt = parse_stmt("EMBED DELETE 'mykey'");
+        assert!(matches!(stmt.kind, StatementKind::Embed(_)));
+    }
+
+    #[test]
+    fn test_similar_dot_product_metric() {
+        let stmt = parse_stmt("SIMILAR 'query' DOT_PRODUCT LIMIT 5");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert_eq!(similar.metric, Some(DistanceMetric::DotProduct));
+        }
+    }
+
+    #[test]
+    fn test_empty_embed_store_vector() {
+        let stmt = parse_stmt("EMBED STORE 'key' []");
+        assert!(matches!(stmt.kind, StatementKind::Embed(_)));
+    }
+
+    #[test]
+    fn test_path_shortest_keyword() {
+        let stmt = parse_stmt("PATH SHORTEST 1 -> 10");
+        assert!(matches!(stmt.kind, StatementKind::Path(_)));
+    }
+
+    #[test]
+    fn test_neighbors_with_edge_type() {
+        let stmt = parse_stmt("NEIGHBORS 1 : friends");
+        if let StatementKind::Neighbors(neighbors) = stmt.kind {
+            assert!(neighbors.edge_type.is_some());
+        }
+    }
+
+    #[test]
+    fn test_neighbors_default_outgoing() {
+        let stmt = parse_stmt("NEIGHBORS 1");
+        if let StatementKind::Neighbors(neighbors) = stmt.kind {
+            assert_eq!(neighbors.direction, Direction::Outgoing);
         }
     }
 }

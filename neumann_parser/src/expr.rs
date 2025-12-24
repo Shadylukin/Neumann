@@ -519,7 +519,7 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Parses an IN expression.
-    fn parse_in_expr(&mut self, expr: Expr, _negated: bool) -> ParseResult<Expr> {
+    fn parse_in_expr(&mut self, expr: Expr, negated: bool) -> ParseResult<Expr> {
         self.expect(&TokenKind::In)?;
         self.expect(&TokenKind::LParen)?;
 
@@ -539,7 +539,11 @@ impl<'a> ExprParser<'a> {
         let span = expr.span.merge(end);
 
         Ok(Expr::new(
-            ExprKind::In(Box::new(expr), InList::Values(values)),
+            ExprKind::In {
+                expr: Box::new(expr),
+                list: InList::Values(values),
+                negated,
+            },
             span,
         ))
     }
@@ -884,8 +888,14 @@ mod tests {
     #[test]
     fn test_in_list() {
         let expr = parse("x IN (1, 2, 3)");
-        if let ExprKind::In(_, InList::Values(values)) = expr.kind {
+        if let ExprKind::In {
+            list: InList::Values(values),
+            negated,
+            ..
+        } = expr.kind
+        {
             assert_eq!(values.len(), 3);
+            assert!(!negated);
         } else {
             panic!("expected IN expression");
         }
@@ -1090,5 +1100,185 @@ mod tests {
         }
         let err = parse_expr(&expr).expect_err("should fail with too deep");
         assert!(matches!(err.kind, crate::error::ParseErrorKind::TooDeep));
+    }
+
+    // Bit operations
+    #[test]
+    fn test_expr_bit_or() {
+        let expr = parse("1 | 2");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::BitOr, _)));
+    }
+
+    #[test]
+    fn test_expr_bit_and() {
+        let expr = parse("1 & 2");
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Binary(_, BinaryOp::BitAnd, _)
+        ));
+    }
+
+    #[test]
+    fn test_expr_bit_xor() {
+        let expr = parse("1 ^ 2");
+        assert!(matches!(
+            expr.kind,
+            ExprKind::Binary(_, BinaryOp::BitXor, _)
+        ));
+    }
+
+    #[test]
+    fn test_expr_shift_left() {
+        let expr = parse("1 << 2");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Shl, _)));
+    }
+
+    #[test]
+    fn test_expr_shift_right() {
+        let expr = parse("1 >> 2");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Shr, _)));
+    }
+
+    #[test]
+    fn test_expr_bit_not() {
+        let expr = parse("~1");
+        assert!(matches!(expr.kind, ExprKind::Unary(UnaryOp::BitNot, _)));
+    }
+
+    // NOT IN expression
+    #[test]
+    fn test_expr_not_in() {
+        let expr = parse("x NOT IN (1, 2, 3)");
+        if let ExprKind::In {
+            list: InList::Values(values),
+            negated,
+            ..
+        } = expr.kind
+        {
+            assert!(negated);
+            assert_eq!(values.len(), 3);
+        } else {
+            panic!("expected IN expression");
+        }
+    }
+
+    // from_lexer constructor
+    #[test]
+    fn test_from_lexer() {
+        use crate::lexer::Lexer;
+        let mut lexer = Lexer::new("1 + 2");
+        let current = lexer.next_token();
+        let mut parser = ExprParser::from_lexer(lexer, current);
+        let expr = parser.parse_expr().unwrap();
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Add, _)));
+    }
+
+    // expect error case
+    #[test]
+    fn test_expect_wrong_token() {
+        let mut parser = ExprParser::new("1 + 2");
+        let result = parser.expect(&TokenKind::String(String::new()));
+        assert!(result.is_err());
+    }
+
+    // EXISTS expression
+    #[test]
+    fn test_expr_exists() {
+        let err = parse_err("EXISTS (SELECT 1)");
+        // EXISTS returns an error since ExprParser doesn't have full SQL support
+        assert!(err
+            .to_string()
+            .contains("EXISTS subqueries not yet implemented"));
+    }
+
+    // Empty tuple
+    #[test]
+    fn test_empty_tuple() {
+        let expr = parse("()");
+        if let ExprKind::Tuple(items) = expr.kind {
+            assert!(items.is_empty());
+        } else {
+            panic!("expected tuple");
+        }
+    }
+
+    // Division and modulo
+    #[test]
+    fn test_expr_division() {
+        let expr = parse("a / b");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Div, _)));
+    }
+
+    #[test]
+    fn test_expr_modulo() {
+        let expr = parse("a % b");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Mod, _)));
+    }
+
+    // Aggregate functions
+    #[test]
+    fn test_expr_sum() {
+        let expr = parse("SUM(x)");
+        if let ExprKind::Call(call) = expr.kind {
+            assert_eq!(call.name.name, "SUM");
+        } else {
+            panic!("expected function call");
+        }
+    }
+
+    #[test]
+    fn test_expr_avg() {
+        let expr = parse("AVG(x)");
+        if let ExprKind::Call(call) = expr.kind {
+            assert_eq!(call.name.name, "AVG");
+        } else {
+            panic!("expected function call");
+        }
+    }
+
+    #[test]
+    fn test_expr_min() {
+        let expr = parse("MIN(x)");
+        if let ExprKind::Call(call) = expr.kind {
+            assert_eq!(call.name.name, "MIN");
+        } else {
+            panic!("expected function call");
+        }
+    }
+
+    #[test]
+    fn test_expr_max() {
+        let expr = parse("MAX(x)");
+        if let ExprKind::Call(call) = expr.kind {
+            assert_eq!(call.name.name, "MAX");
+        } else {
+            panic!("expected function call");
+        }
+    }
+
+    // Error: CASE with missing parts
+    #[test]
+    fn test_case_missing_then_error() {
+        let err = parse_err("CASE WHEN x END");
+        assert!(err.to_string().contains("THEN"));
+    }
+
+    // Error: qualified wildcard requires identifier
+    #[test]
+    fn test_qualified_wildcard_error() {
+        let err = parse_err("(1 + 2).*");
+        assert!(err.to_string().contains("identifier"));
+    }
+
+    // Test deeply nested expressions that might hit depth limit
+    #[test]
+    fn test_too_deep_expression() {
+        // Create a deeply nested expression that exceeds MAX_DEPTH (64)
+        let mut expr = "x".to_string();
+        for _ in 0..70 {
+            expr = format!("({})", expr);
+        }
+        let result = ExprParser::new(&expr).parse_expr();
+        assert!(result.is_err());
     }
 }

@@ -43,6 +43,8 @@ pub enum StatementKind {
     CreateIndex(CreateIndexStmt),
     /// DROP INDEX statement
     DropIndex(DropIndexStmt),
+    /// SHOW TABLES statement
+    ShowTables,
 
     // === Graph Statements ===
     /// NODE command
@@ -536,8 +538,12 @@ pub enum ExprKind {
     Subquery(Box<SelectStmt>),
     /// EXISTS subquery
     Exists(Box<SelectStmt>),
-    /// IN expression
-    In(Box<Expr>, InList),
+    /// IN / NOT IN expression
+    In {
+        expr: Box<Expr>,
+        list: InList,
+        negated: bool,
+    },
     /// BETWEEN expression
     Between {
         expr: Box<Expr>,
@@ -1042,5 +1048,18 @@ mod tests {
         let u = ColumnConstraint::Unique;
         assert_ne!(pk, nn);
         assert_ne!(nn, u);
+    }
+
+    #[test]
+    fn test_join_kind_display_all() {
+        assert!(format!("{}", JoinKind::Cross).contains("CROSS"));
+        assert!(format!("{}", JoinKind::Natural).contains("NATURAL"));
+        assert!(format!("{}", JoinKind::Full).contains("FULL"));
+    }
+
+    #[test]
+    fn test_literal_display_all() {
+        assert_eq!(format!("{}", Literal::Float(3.14)), "3.14");
+        assert_eq!(format!("{}", Literal::Boolean(false)), "FALSE");
     }
 }

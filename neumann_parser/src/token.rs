@@ -100,6 +100,7 @@ pub enum TokenKind {
     Intersect,
     Except,
     Exists,
+    Cast,
     Any,
     Insert,
     Into,
@@ -125,6 +126,8 @@ pub enum TokenKind {
     Cascade,
     Restrict,
     If,
+    Show,
+    Tables,
 
     // === Type Keywords ===
     Int,
@@ -323,6 +326,7 @@ impl TokenKind {
                 | Intersect
                 | Except
                 | Exists
+                | Cast
                 | Any
                 | Insert
                 | Into
@@ -348,6 +352,8 @@ impl TokenKind {
                 | Cascade
                 | Restrict
                 | If
+                | Show
+                | Tables
                 | True
                 | False
                 | Null
@@ -480,6 +486,7 @@ impl TokenKind {
             "INTERSECT" => TokenKind::Intersect,
             "EXCEPT" => TokenKind::Except,
             "EXISTS" => TokenKind::Exists,
+            "CAST" => TokenKind::Cast,
             "ANY" => TokenKind::Any,
             "INSERT" => TokenKind::Insert,
             "INTO" => TokenKind::Into,
@@ -505,6 +512,8 @@ impl TokenKind {
             "CASCADE" => TokenKind::Cascade,
             "RESTRICT" => TokenKind::Restrict,
             "IF" => TokenKind::If,
+            "SHOW" => TokenKind::Show,
+            "TABLES" => TokenKind::Tables,
             "TRUE" => TokenKind::True,
             "FALSE" => TokenKind::False,
             "NULL" => TokenKind::Null,
@@ -628,6 +637,7 @@ impl TokenKind {
             Intersect => "INTERSECT",
             Except => "EXCEPT",
             Exists => "EXISTS",
+            Cast => "CAST",
             Any => "ANY",
             Insert => "INSERT",
             Into => "INTO",
@@ -653,6 +663,8 @@ impl TokenKind {
             Cascade => "CASCADE",
             Restrict => "RESTRICT",
             If => "IF",
+            Show => "SHOW",
+            Tables => "TABLES",
             Int => "INT",
             Integer_ => "INTEGER",
             Bigint => "BIGINT",
