@@ -513,6 +513,92 @@ impl RelationalEngine {
         Ok(row_id)
     }
 
+    /// Batch insert multiple rows at once.
+    ///
+    /// More efficient than multiple single inserts due to:
+    /// - Single schema lookup
+    /// - Upfront validation of all rows (fail-fast)
+    /// - Batched index updates
+    ///
+    /// Returns the IDs of all inserted rows.
+    pub fn batch_insert(&self, table: &str, rows: Vec<HashMap<String, Value>>) -> Result<Vec<u64>> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Single schema lookup for all rows
+        let schema = self.get_schema(table)?;
+
+        // Validate all rows upfront (fail-fast)
+        for (row_idx, values) in rows.iter().enumerate() {
+            for col in &schema.columns {
+                let value = values.get(&col.name);
+                match value {
+                    None | Some(Value::Null) => {
+                        if !col.nullable {
+                            return Err(RelationalError::NullNotAllowed(format!(
+                                "{} (row {})",
+                                col.name, row_idx
+                            )));
+                        }
+                    },
+                    Some(v) => {
+                        if !v.matches_type(&col.column_type) {
+                            return Err(RelationalError::TypeMismatch {
+                                column: format!("{} (row {})", col.name, row_idx),
+                                expected: col.column_type.clone(),
+                            });
+                        }
+                    },
+                }
+            }
+        }
+
+        // Get indexed columns once
+        let indexed_columns = self.get_table_indexes(table);
+        let btree_columns = self.get_table_btree_indexes(table);
+
+        // Pre-allocate result vector
+        let mut row_ids = Vec::with_capacity(rows.len());
+
+        // Insert all rows
+        for values in rows {
+            let row_id = self.next_row_id(table);
+            let key = Self::row_key(table, row_id);
+
+            let mut tensor = TensorData::new();
+            tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(row_id as i64)));
+
+            for (col_name, value) in &values {
+                tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
+            }
+
+            self.store.put(key, tensor)?;
+
+            // Update hash indexes
+            for col in &indexed_columns {
+                if col == "_id" {
+                    self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+                } else if let Some(value) = values.get(col) {
+                    self.index_add(table, col, value, row_id)?;
+                }
+            }
+
+            // Update B-tree indexes
+            for col in &btree_columns {
+                if col == "_id" {
+                    self.btree_index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+                } else if let Some(value) = values.get(col) {
+                    self.btree_index_add(table, col, value, row_id)?;
+                }
+            }
+
+            row_ids.push(row_id);
+        }
+
+        Ok(row_ids)
+    }
+
     fn tensor_to_row(&self, tensor: &TensorData) -> Option<Row> {
         let id = match tensor.get("_id") {
             Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
@@ -2930,5 +3016,144 @@ mod tests {
         let cols = engine.get_btree_indexed_columns("users");
         assert_eq!(cols.len(), 1);
         assert!(cols.contains(&"age".to_string()));
+    }
+
+    #[test]
+    fn batch_insert_multiple_rows() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let rows: Vec<HashMap<String, Value>> = (0..100)
+            .map(|i| {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String(format!("User{}", i)));
+                values.insert("age".to_string(), Value::Int(20 + i));
+                values
+            })
+            .collect();
+
+        let ids = engine.batch_insert("users", rows).unwrap();
+
+        assert_eq!(ids.len(), 100);
+        assert_eq!(engine.row_count("users").unwrap(), 100);
+
+        // Verify data was inserted correctly
+        let all_rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(all_rows.len(), 100);
+    }
+
+    #[test]
+    fn batch_insert_empty() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let ids = engine.batch_insert("users", Vec::new()).unwrap();
+        assert!(ids.is_empty());
+        assert_eq!(engine.row_count("users").unwrap(), 0);
+    }
+
+    #[test]
+    fn batch_insert_validates_all_rows_upfront() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Row 0 is valid, row 1 has type mismatch
+        let rows: Vec<HashMap<String, Value>> = vec![
+            {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String("Alice".into()));
+                values.insert("age".to_string(), Value::Int(30));
+                values
+            },
+            {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String("Bob".into()));
+                values.insert("age".to_string(), Value::String("not a number".into())); // Invalid
+                values
+            },
+        ];
+
+        let result = engine.batch_insert("users", rows);
+        assert!(result.is_err());
+
+        // No rows should have been inserted (fail-fast)
+        assert_eq!(engine.row_count("users").unwrap(), 0);
+    }
+
+    #[test]
+    fn batch_insert_with_indexes() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create index before batch insert
+        engine.create_index("users", "age").unwrap();
+
+        let rows: Vec<HashMap<String, Value>> = (0..50)
+            .map(|i| {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String(format!("User{}", i)));
+                values.insert("age".to_string(), Value::Int(25)); // All same age
+                values
+            })
+            .collect();
+
+        let ids = engine.batch_insert("users", rows).unwrap();
+        assert_eq!(ids.len(), 50);
+
+        // Index should work correctly
+        let rows = engine
+            .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(rows.len(), 50);
+    }
+
+    #[test]
+    fn batch_insert_with_btree_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create B-tree index before batch insert
+        engine.create_btree_index("users", "age").unwrap();
+
+        let rows: Vec<HashMap<String, Value>> = (0..100)
+            .map(|i| {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String(format!("User{}", i)));
+                values.insert("age".to_string(), Value::Int(i as i64));
+                values
+            })
+            .collect();
+
+        engine.batch_insert("users", rows).unwrap();
+
+        // B-tree index should work for range query
+        let rows = engine
+            .select("users", Condition::Ge("age".to_string(), Value::Int(50)))
+            .unwrap();
+        assert_eq!(rows.len(), 50);
+    }
+
+    #[test]
+    fn batch_insert_null_not_allowed() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let rows: Vec<HashMap<String, Value>> = vec![
+            {
+                let mut values = HashMap::new();
+                values.insert("name".to_string(), Value::String("Alice".into()));
+                values.insert("age".to_string(), Value::Int(30));
+                values
+            },
+            {
+                let mut values = HashMap::new();
+                // Missing required 'name' field
+                values.insert("age".to_string(), Value::Int(25));
+                values
+            },
+        ];
+
+        let result = engine.batch_insert("users", rows);
+        assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
     }
 }

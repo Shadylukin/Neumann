@@ -46,6 +46,27 @@ fn bench_insert(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_batch_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_insert");
+
+    for size in [100, 1000, 5000].iter() {
+        group.throughput(Throughput::Elements(*size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            // Pre-create the rows vector outside the benchmark loop
+            let rows: Vec<_> = (0..size).map(|i| create_user_values(i as i64)).collect();
+
+            b.iter(|| {
+                let engine = RelationalEngine::new();
+                engine.create_table("users", create_users_schema()).unwrap();
+                engine.batch_insert("users", rows.clone()).unwrap();
+                black_box(&engine);
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_select_full_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("select_full_scan");
 
@@ -570,6 +591,7 @@ fn bench_create_btree_index(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_insert,
+    bench_batch_insert,
     bench_select_full_scan,
     bench_select_filtered,
     bench_select_by_id,
