@@ -380,6 +380,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "query_router"
+version = "0.1.0"
+dependencies = [
+ "graph_engine",
+ "relational_engine",
+ "tensor_store",
+ "vector_engine",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
