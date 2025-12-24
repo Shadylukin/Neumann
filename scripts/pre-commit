@@ -4,7 +4,7 @@ set -e
 source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CRATES="tensor_store relational_engine graph_engine vector_engine query_router"
+CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser"
 MINIMUM_COVERAGE=95
 
 echo "Running pre-commit checks..."
@@ -39,8 +39,8 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
             echo "Checking coverage for $crate..."
 
             # Get coverage percentage from the crate's own source file (not TOTAL which includes deps)
-            # Field 10 is line coverage %. Match both relative and absolute paths.
-            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep "${crate}/src/lib.rs" | awk '{print $10}' | tr -d '%')
+            # Field 10 is line coverage %. Match the specific crate's lib.rs (handles various path formats)
+            COVERAGE=$(cargo llvm-cov --package "$crate" --quiet 2>&1 | grep -E "${crate}(/src)?/lib\.rs|^lib\.rs\s" | head -1 | awk '{print $10}' | tr -d '%')
 
             if [ -n "$COVERAGE" ]; then
                 COVERAGE_INT=${COVERAGE%.*}

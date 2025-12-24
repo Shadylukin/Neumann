@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -118,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
