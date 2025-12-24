@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::Arc;
 use std::thread;
-use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
+use tensor_store::{BloomFilter, ScalarValue, TensorData, TensorStore, TensorValue};
 
 fn create_test_tensor(id: i64) -> TensorData {
     let mut tensor = TensorData::new();
@@ -221,6 +221,141 @@ fn bench_mixed_read_write(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_bloom_filter(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bloom_filter");
+
+    // Benchmark Bloom filter operations directly
+    let filter = BloomFilter::new(10000, 0.01);
+    for i in 0..10000 {
+        filter.add(&format!("key:{}", i));
+    }
+
+    group.bench_function("add", |b| {
+        let filter = BloomFilter::new(10000, 0.01);
+        let mut i = 0u64;
+        b.iter(|| {
+            filter.add(&format!("key:{}", i));
+            i = i.wrapping_add(1);
+        });
+    });
+
+    group.bench_function("might_contain_hit", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let result = filter.might_contain(&format!("key:{}", i % 10000));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.bench_function("might_contain_miss", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            // Keys 10000+ were never added
+            let result = filter.might_contain(&format!("key:{}", 10000 + i));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_sparse_lookups(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_lookups");
+
+    // Sparse key space: only 1000 keys exist out of potential millions
+    let num_existing = 1000;
+
+    // Store WITHOUT Bloom filter
+    let store_no_bloom = TensorStore::new();
+    for i in 0..num_existing {
+        store_no_bloom
+            .put(format!("key:{}", i), create_test_tensor(i as i64))
+            .unwrap();
+    }
+
+    // Store WITH Bloom filter
+    let store_bloom = TensorStore::with_bloom_filter(num_existing, 0.01);
+    for i in 0..num_existing {
+        store_bloom
+            .put(format!("key:{}", i), create_test_tensor(i as i64))
+            .unwrap();
+    }
+
+    // Benchmark: Looking up keys that DON'T exist (sparse negative lookups)
+    group.bench_function("negative_lookup_no_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            // Keys starting at 1M definitely don't exist
+            let result = store_no_bloom.exists(&format!("key:{}", 1_000_000 + i));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.bench_function("negative_lookup_with_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let result = store_bloom.exists(&format!("key:{}", 1_000_000 + i));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    // Benchmark: Looking up keys that DO exist (positive lookups)
+    group.bench_function("positive_lookup_no_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let result = store_no_bloom.exists(&format!("key:{}", i % num_existing as u64));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.bench_function("positive_lookup_with_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let result = store_bloom.exists(&format!("key:{}", i % num_existing as u64));
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    // Benchmark: 90% misses, 10% hits (typical sparse workload)
+    group.bench_function("sparse_workload_no_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let key = if i % 10 == 0 {
+                // 10% hits
+                format!("key:{}", i % num_existing as u64)
+            } else {
+                // 90% misses
+                format!("key:{}", 1_000_000 + i)
+            };
+            let result = store_no_bloom.exists(&key);
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.bench_function("sparse_workload_with_bloom", |b| {
+        let mut i = 0u64;
+        b.iter(|| {
+            let key = if i % 10 == 0 {
+                format!("key:{}", i % num_existing as u64)
+            } else {
+                format!("key:{}", 1_000_000 + i)
+            };
+            let result = store_bloom.exists(&key);
+            i = i.wrapping_add(1);
+            black_box(result);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_put,
@@ -229,6 +364,8 @@ criterion_group!(
     bench_concurrent_writes,
     bench_concurrent_writes_contention,
     bench_mixed_read_write,
+    bench_bloom_filter,
+    bench_sparse_lookups,
 );
 
 criterion_main!(benches);

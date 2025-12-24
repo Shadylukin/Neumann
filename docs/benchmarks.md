@@ -55,6 +55,22 @@ The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe key-v
 - **Parallel scans**: Uses rayon for >1000 keys (25-53% faster)
 - **scan_count vs scan**: Count-only is ~5x faster (avoids string cloning)
 
+**Bloom Filter (optional):**
+| Operation | Time |
+|-----------|------|
+| add | 68 ns |
+| might_contain (hit) | 46 ns |
+| might_contain (miss) | 63 ns |
+
+**Sparse Lookups (1K keys in store):**
+| Query Type | Without Bloom | With Bloom |
+|------------|---------------|------------|
+| Negative lookup | 52 ns | 68 ns |
+| Positive lookup | 45 ns | 60 ns |
+| Sparse workload (90% miss) | 52 ns | 67 ns |
+
+Note: Bloom filter adds ~15ns overhead for in-memory DashMap stores. It's designed for scenarios where the backing store is slower (disk, network, remote database), where the early rejection of non-existent keys avoids expensive I/O.
+
 ### graph_engine
 
 The graph engine stores nodes and edges as tensors, using adjacency lists for neighbor lookups.
@@ -299,7 +315,7 @@ Trade-offs:
 2. ~~**B-tree indexes**~~: Done - range query acceleration for relational_engine
 3. ~~**Memory pools**~~: Done - HashMap/Vec pre-allocation with with_capacity in hot paths
 4. ~~**Parallel scans**~~: Done - adaptive rayon parallelism for tensor_store (25-53%), vector_engine (1.6x), and relational_engine select (2-3x)
-5. **Bloom filters**: Quick negative lookups for sparse key spaces
+5. ~~**Bloom filters**~~: Done - optional thread-safe Bloom filter for sparse key spaces. Note: DashMap's O(1) hash lookup is already ~50ns, so Bloom filters add ~15ns overhead for in-memory stores. Useful when backing store is disk/network.
 6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity
 

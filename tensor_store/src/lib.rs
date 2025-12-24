@@ -1,6 +1,136 @@
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Thread-safe Bloom filter for fast negative lookups.
+///
+/// A Bloom filter is a probabilistic data structure that can quickly tell you:
+/// - Definitely NOT in set (no false negatives)
+/// - POSSIBLY in set (may have false positives)
+///
+/// This is useful for avoiding expensive lookups when the key doesn't exist.
+pub struct BloomFilter {
+    bits: Box<[AtomicU64]>,
+    num_bits: usize,
+    num_hashes: usize,
+}
+
+impl BloomFilter {
+    /// Create a new Bloom filter with the given expected number of items and false positive rate.
+    ///
+    /// # Arguments
+    /// * `expected_items` - Expected number of items to insert
+    /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
+    pub fn new(expected_items: usize, false_positive_rate: f64) -> Self {
+        // Calculate optimal size: m = -n*ln(p) / (ln(2)^2)
+        let ln2_squared = std::f64::consts::LN_2 * std::f64::consts::LN_2;
+        let num_bits =
+            (-(expected_items as f64) * false_positive_rate.ln() / ln2_squared).ceil() as usize;
+        let num_bits = num_bits.max(64); // Minimum 64 bits
+
+        // Calculate optimal number of hash functions: k = (m/n) * ln(2)
+        let num_hashes =
+            ((num_bits as f64 / expected_items as f64) * std::f64::consts::LN_2).ceil() as usize;
+        let num_hashes = num_hashes.clamp(1, 16); // Between 1 and 16 hash functions
+
+        // Allocate bit array (using u64 blocks)
+        let num_blocks = num_bits.div_ceil(64);
+        let bits: Vec<AtomicU64> = (0..num_blocks).map(|_| AtomicU64::new(0)).collect();
+
+        Self {
+            bits: bits.into_boxed_slice(),
+            num_bits,
+            num_hashes,
+        }
+    }
+
+    /// Create a Bloom filter with default parameters for typical key-value usage.
+    /// Expects ~10,000 items with 1% false positive rate.
+    pub fn with_defaults() -> Self {
+        Self::new(10_000, 0.01)
+    }
+
+    /// Add a key to the Bloom filter.
+    pub fn add<K: Hash>(&self, key: &K) {
+        for i in 0..self.num_hashes {
+            let bit_index = self.hash_index(key, i);
+            let block_index = bit_index / 64;
+            let bit_offset = bit_index % 64;
+            self.bits[block_index].fetch_or(1 << bit_offset, Ordering::Relaxed);
+        }
+    }
+
+    /// Check if a key might be in the set.
+    /// Returns false if the key is definitely NOT in the set.
+    /// Returns true if the key MIGHT be in the set (could be false positive).
+    #[inline]
+    pub fn might_contain<K: Hash>(&self, key: &K) -> bool {
+        for i in 0..self.num_hashes {
+            let bit_index = self.hash_index(key, i);
+            let block_index = bit_index / 64;
+            let bit_offset = bit_index % 64;
+            if (self.bits[block_index].load(Ordering::Relaxed) & (1 << bit_offset)) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Clear all bits in the filter.
+    pub fn clear(&self) {
+        for block in self.bits.iter() {
+            block.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Compute hash index for a key with a given seed.
+    #[inline]
+    fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
+        let mut hasher = SipHasher::new_with_seed(seed as u64);
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.num_bits
+    }
+
+    /// Get the number of bits in the filter.
+    pub fn num_bits(&self) -> usize {
+        self.num_bits
+    }
+
+    /// Get the number of hash functions used.
+    pub fn num_hashes(&self) -> usize {
+        self.num_hashes
+    }
+}
+
+// Simple SipHash-like hasher with configurable seed
+struct SipHasher {
+    state: u64,
+    seed: u64,
+}
+
+impl SipHasher {
+    fn new_with_seed(seed: u64) -> Self {
+        Self {
+            state: seed ^ 0x736f_6d65_7073_6575,
+            seed,
+        }
+    }
+}
+
+impl Hasher for SipHasher {
+    fn finish(&self) -> u64 {
+        self.state
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.state = self.state.wrapping_mul(31).wrapping_add(*byte as u64);
+            self.state ^= self.seed;
+        }
+    }
+}
 
 /// Represents different types of values a tensor can hold
 #[derive(Debug, Clone, PartialEq)]
@@ -95,8 +225,15 @@ impl std::error::Error for TensorStoreError {}
 /// - **Reads**: Lock-free, can proceed in parallel with other reads and writes to different shards
 /// - **Writes**: Only block other writes to the same shard (~16 shards by default)
 /// - **No poisoning**: Unlike RwLock, panics don't poison the entire store
+///
+/// # Bloom Filter
+///
+/// An optional Bloom filter can be enabled to accelerate negative lookups for sparse key spaces.
+/// When enabled, `get()` and `exists()` will first check the Bloom filter and return immediately
+/// if the key is definitely not present, avoiding the HashMap lookup.
 pub struct TensorStore {
     data: DashMap<String, TensorData>,
+    bloom_filter: Option<BloomFilter>,
 }
 
 impl TensorStore {
@@ -105,6 +242,7 @@ impl TensorStore {
     pub fn new() -> Self {
         Self {
             data: DashMap::new(),
+            bloom_filter: None,
         }
     }
 
@@ -112,16 +250,60 @@ impl TensorStore {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             data: DashMap::with_capacity(capacity),
+            bloom_filter: None,
         }
     }
 
+    /// Create a store with a Bloom filter for fast negative lookups.
+    ///
+    /// This is useful for sparse key spaces where most lookups are misses.
+    /// The Bloom filter provides O(1) rejection of non-existent keys.
+    ///
+    /// # Arguments
+    /// * `expected_items` - Expected number of items to store
+    /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
+    pub fn with_bloom_filter(expected_items: usize, false_positive_rate: f64) -> Self {
+        Self {
+            data: DashMap::new(),
+            bloom_filter: Some(BloomFilter::new(expected_items, false_positive_rate)),
+        }
+    }
+
+    /// Create a store with default Bloom filter settings.
+    ///
+    /// Uses defaults: 10,000 expected items, 1% false positive rate.
+    pub fn with_default_bloom_filter() -> Self {
+        Self {
+            data: DashMap::new(),
+            bloom_filter: Some(BloomFilter::with_defaults()),
+        }
+    }
+
+    /// Check if the store has a Bloom filter enabled.
+    pub fn has_bloom_filter(&self) -> bool {
+        self.bloom_filter.is_some()
+    }
+
     pub fn put(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
-        self.data.insert(key.into(), tensor);
+        let key = key.into();
+        if let Some(ref filter) = self.bloom_filter {
+            filter.add(&key);
+        }
+        self.data.insert(key, tensor);
         Ok(())
     }
 
     /// Returns cloned data to ensure thread safety.
+    ///
+    /// If a Bloom filter is enabled, this will first check the filter and return
+    /// `NotFound` immediately if the key is definitely not present.
     pub fn get(&self, key: &str) -> Result<TensorData> {
+        // Fast path: check Bloom filter first
+        if let Some(ref filter) = self.bloom_filter {
+            if !filter.might_contain(&key) {
+                return Err(TensorStoreError::NotFound(key.to_string()));
+            }
+        }
         self.data
             .get(key)
             .map(|r| r.value().clone())
@@ -135,7 +317,17 @@ impl TensorStore {
             .ok_or_else(|| TensorStoreError::NotFound(key.to_string()))
     }
 
+    /// Check if a key exists in the store.
+    ///
+    /// If a Bloom filter is enabled, this will first check the filter and return
+    /// `false` immediately if the key is definitely not present.
     pub fn exists(&self, key: &str) -> bool {
+        // Fast path: check Bloom filter first
+        if let Some(ref filter) = self.bloom_filter {
+            if !filter.might_contain(&key) {
+                return false;
+            }
+        }
         self.data.contains_key(key)
     }
 
@@ -165,6 +357,9 @@ impl TensorStore {
 
     pub fn clear(&self) {
         self.data.clear();
+        if let Some(ref filter) = self.bloom_filter {
+            filter.clear();
+        }
     }
 
     pub fn scan_count(&self, prefix: &str) -> usize {
@@ -721,5 +916,178 @@ mod tests {
         assert_eq!(store.scan_count("user:"), 1500);
         assert_eq!(store.scan_count("post:"), 500);
         assert_eq!(store.scan_count(""), 2000);
+    }
+
+    // Bloom filter tests
+
+    #[test]
+    fn bloom_filter_basic() {
+        let filter = BloomFilter::new(100, 0.01);
+
+        filter.add(&"key1");
+        filter.add(&"key2");
+        filter.add(&"key3");
+
+        // Added keys should be found (no false negatives)
+        assert!(filter.might_contain(&"key1"));
+        assert!(filter.might_contain(&"key2"));
+        assert!(filter.might_contain(&"key3"));
+
+        // Non-added keys should likely not be found (may have false positives)
+        // We check multiple to reduce chance of false positive affecting test
+        let mut misses = 0;
+        for i in 100..200 {
+            if !filter.might_contain(&format!("nonexistent{}", i)) {
+                misses += 1;
+            }
+        }
+        // With 1% false positive rate, should have ~99% misses
+        assert!(
+            misses > 90,
+            "Too many false positives: {} misses out of 100",
+            misses
+        );
+    }
+
+    #[test]
+    fn bloom_filter_clear() {
+        let filter = BloomFilter::new(100, 0.01);
+
+        filter.add(&"key1");
+        assert!(filter.might_contain(&"key1"));
+
+        filter.clear();
+
+        // After clear, key should not be found
+        assert!(!filter.might_contain(&"key1"));
+    }
+
+    #[test]
+    fn bloom_filter_defaults() {
+        let filter = BloomFilter::with_defaults();
+
+        // Should be able to add items
+        filter.add(&"test_key");
+        assert!(filter.might_contain(&"test_key"));
+
+        // Check configuration (10k items, 1% FP rate)
+        assert!(filter.num_bits() > 0);
+        assert!(filter.num_hashes() > 0);
+    }
+
+    #[test]
+    fn bloom_filter_many_items() {
+        let filter = BloomFilter::new(1000, 0.01);
+
+        // Add 1000 items
+        for i in 0..1000 {
+            filter.add(&format!("item{}", i));
+        }
+
+        // All added items should be found
+        for i in 0..1000 {
+            assert!(filter.might_contain(&format!("item{}", i)));
+        }
+    }
+
+    #[test]
+    fn store_with_bloom_filter() {
+        let store = TensorStore::with_bloom_filter(100, 0.01);
+        assert!(store.has_bloom_filter());
+
+        let mut tensor = TensorData::new();
+        tensor.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("key1", tensor).unwrap();
+
+        // Key should be found
+        assert!(store.exists("key1"));
+        assert!(store.get("key1").is_ok());
+
+        // Non-existent key should return not found
+        assert!(!store.exists("nonexistent"));
+        assert!(store.get("nonexistent").is_err());
+    }
+
+    #[test]
+    fn store_with_default_bloom_filter() {
+        let store = TensorStore::with_default_bloom_filter();
+        assert!(store.has_bloom_filter());
+
+        store.put("key", TensorData::new()).unwrap();
+        assert!(store.exists("key"));
+    }
+
+    #[test]
+    fn store_bloom_filter_accelerates_negative_lookups() {
+        let store = TensorStore::with_bloom_filter(100, 0.01);
+
+        // Add some keys
+        for i in 0..50 {
+            store
+                .put(format!("existing:{}", i), TensorData::new())
+                .unwrap();
+        }
+
+        // Existing keys should be found
+        for i in 0..50 {
+            assert!(store.exists(&format!("existing:{}", i)));
+        }
+
+        // Non-existing keys should not be found
+        // The Bloom filter will reject most of these without HashMap lookup
+        for i in 1000..1050 {
+            assert!(!store.exists(&format!("missing:{}", i)));
+        }
+    }
+
+    #[test]
+    fn store_bloom_filter_clear() {
+        let store = TensorStore::with_bloom_filter(100, 0.01);
+
+        store.put("key1", TensorData::new()).unwrap();
+        assert!(store.exists("key1"));
+
+        store.clear();
+
+        // After clear, key should not be found
+        assert!(!store.exists("key1"));
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn store_without_bloom_filter() {
+        let store = TensorStore::new();
+        assert!(!store.has_bloom_filter());
+
+        store.put("key", TensorData::new()).unwrap();
+        assert!(store.exists("key"));
+        assert!(!store.exists("missing"));
+    }
+
+    #[test]
+    fn bloom_filter_concurrent_access() {
+        let filter = Arc::new(BloomFilter::new(10000, 0.01));
+        let mut handles = vec![];
+
+        // Multiple threads adding keys
+        for t in 0..4 {
+            let filter = Arc::clone(&filter);
+            handles.push(thread::spawn(move || {
+                for i in 0..100 {
+                    filter.add(&format!("thread{}:key{}", t, i));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All keys should be found
+        for t in 0..4 {
+            for i in 0..100 {
+                assert!(filter.might_contain(&format!("thread{}:key{}", t, i)));
+            }
+        }
     }
 }
