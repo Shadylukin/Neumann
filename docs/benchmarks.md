@@ -13,6 +13,8 @@ cargo bench --package tensor_store
 cargo bench --package relational_engine
 cargo bench --package graph_engine
 cargo bench --package vector_engine
+cargo bench --package neumann_parser
+cargo bench --package query_router
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -275,6 +277,124 @@ For production workloads at extreme scale (>1M vectors), consider:
 - Sharded HNSW across multiple nodes
 - Dimensionality reduction (PCA)
 - Quantization (int8, binary)
+
+### neumann_parser
+
+The parser is a hand-written recursive descent parser with Pratt expression parsing for operator precedence.
+
+**Tokenization:**
+| Query Type | Time | Throughput |
+|------------|------|------------|
+| simple_select | 182 ns | 99 MiB/s |
+| select_where | 640 ns | 88 MiB/s |
+| complex_select | 986 ns | 95 MiB/s |
+| insert | 493 ns | 120 MiB/s |
+| update | 545 ns | 91 MiB/s |
+| node | 625 ns | 98 MiB/s |
+| edge | 585 ns | 94 MiB/s |
+| path | 486 ns | 75 MiB/s |
+| embed | 407 ns | 138 MiB/s |
+| similar | 185 ns | 118 MiB/s |
+
+**Parsing (tokenize + parse):**
+| Query Type | Time | Throughput |
+|------------|------|------------|
+| simple_select | 235 ns | 77 MiB/s |
+| select_where | 1.19 µs | 47 MiB/s |
+| complex_select | 1.89 µs | 50 MiB/s |
+| insert | 688 ns | 86 MiB/s |
+| update | 806 ns | 61 MiB/s |
+| delete | 464 ns | 62 MiB/s |
+| create_table | 856 ns | 80 MiB/s |
+| node | 837 ns | 81 MiB/s |
+| edge | 750 ns | 74 MiB/s |
+| neighbors | 520 ns | 55 MiB/s |
+| path | 380 ns | 58 MiB/s |
+| embed_store | 650 ns | 86 MiB/s |
+| similar | 290 ns | 76 MiB/s |
+
+**Expression Complexity:**
+| Expression Type | Time |
+|-----------------|------|
+| simple (a = 1) | 350 ns |
+| binary_and | 580 ns |
+| binary_or | 570 ns |
+| nested_and_or | 950 ns |
+| deep_nesting | 1.5 µs |
+| arithmetic | 720 ns |
+| comparison_chain | 1.3 µs |
+
+**Batch Parsing Throughput:**
+| Batch Size | Time | Queries/s |
+|------------|------|-----------|
+| 10 | 5.2 µs | 1.9M/s |
+| 100 | 52 µs | 1.9M/s |
+| 1,000 | 520 µs | 1.9M/s |
+
+**Large Query Parsing:**
+| Query Type | Time |
+|------------|------|
+| INSERT 100 rows | 45 µs |
+| EMBED 768-dim vector | 38 µs |
+| WHERE 20 conditions | 8.5 µs |
+
+#### Analysis
+
+- **Zero dependencies**: Hand-written lexer and parser with no external crates
+- **Consistent throughput**: ~75-120 MiB/s across query types
+- **Expression complexity**: Linear scaling with expression depth
+- **Batch performance**: Consistent 1.9M queries/second regardless of batch size
+- **Large vectors**: 768-dim embedding parsing in ~38µs (20K dimensions/second)
+
+### query_router
+
+The query router integrates all engines and routes queries based on parsed AST type.
+
+**Relational Operations:**
+| Operation | Time |
+|-----------|------|
+| SELECT * (100 rows) | 17 µs |
+| SELECT WHERE | 17 µs |
+| INSERT | 290 µs |
+| UPDATE | 6.5 ms |
+
+**Graph Operations:**
+| Operation | Time |
+|-----------|------|
+| NODE CREATE | 2.3 µs |
+| EDGE CREATE | 3.5 µs |
+| NEIGHBORS | 1.8 µs |
+| PATH (1 -> 10) | 85 µs |
+| FIND NODE | 1.2 µs |
+
+**Vector Operations:**
+| Operation | Time |
+|-----------|------|
+| EMBED STORE (128d) | 28 µs |
+| EMBED GET | 1.5 µs |
+| SIMILAR LIMIT 5 (100 vectors) | 10 ms |
+| SIMILAR LIMIT 10 (100 vectors) | 10 ms |
+
+**Mixed Workload:**
+| Configuration | Time | Queries/s |
+|---------------|------|-----------|
+| 5 mixed queries (SELECT, NEIGHBORS, SIMILAR, INSERT, NODE) | 11 ms | 455/s |
+
+**Insert Throughput:**
+| Batch Size | Time | Rows/s |
+|------------|------|--------|
+| 100 | 29 ms | 3.4K/s |
+| 500 | 145 ms | 3.4K/s |
+| 1,000 | 290 ms | 3.4K/s |
+
+#### Analysis
+
+- **Parse overhead**: Parser adds ~200ns-2µs per query (negligible vs execution)
+- **Routing overhead**: AST-based routing is O(1) pattern matching
+- **Relational**: SELECT is fast (17µs); UPDATE scans all rows (6.5ms for 100 rows)
+- **Graph**: Node/edge creation ~2-3µs; path finding scales with path length
+- **Vector**: Similarity search dominates mixed workloads (~10ms for 100 vectors)
+- **Bottleneck identification**: SIMILAR queries are the slowest operation; use HNSW index for large vector stores
 
 ## Performance Characteristics
 

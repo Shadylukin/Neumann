@@ -6,7 +6,7 @@ fn bench_relational_execute(c: &mut Criterion) {
 
     let router = QueryRouter::new();
     router
-        .execute_parsed("CREATE TABLE users (id, name, email)")
+        .execute_parsed("CREATE TABLE users (id INT, name TEXT, email TEXT)")
         .unwrap();
 
     // Insert some data
@@ -70,21 +70,21 @@ fn bench_graph_execute(c: &mut Criterion) {
     // Create nodes
     for i in 0..100 {
         router
-            .execute_parsed(&format!("NODE person {{id: {}, name: 'person{}'}}", i, i))
+            .execute_parsed(&format!("NODE CREATE person {{id: {}, name: 'person{}'}}", i, i))
             .unwrap();
     }
 
     // Create edges
     for i in 0..99 {
         router
-            .execute_parsed(&format!("EDGE person:{} friend person:{}", i + 1, i + 2))
+            .execute_parsed(&format!("EDGE CREATE {} -> {} : friend", i + 1, i + 2))
             .unwrap();
     }
 
     group.bench_function("node_create", |b| {
         let mut i = 1000;
         b.iter(|| {
-            let query = format!("NODE person {{id: {}, name: 'person{}'}}", i, i);
+            let query = format!("NODE CREATE person {{id: {}, name: 'person{}'}}", i, i);
             let result = router.execute_parsed(black_box(&query)).unwrap();
             i += 1;
             black_box(result);
@@ -94,7 +94,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     group.bench_function("edge_create", |b| {
         let mut i = 1000;
         b.iter(|| {
-            let query = format!("EDGE person:{} knows person:{}", i, i + 1);
+            let query = format!("EDGE CREATE {} -> {} : knows", i, i + 1);
             let result = router.execute_parsed(black_box(&query)).unwrap();
             i += 1;
             black_box(result);
@@ -104,7 +104,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     group.bench_function("neighbors", |b| {
         b.iter(|| {
             let result = router
-                .execute_parsed(black_box("NEIGHBORS person:50"))
+                .execute_parsed(black_box("NEIGHBORS 50 OUTGOING"))
                 .unwrap();
             black_box(result);
         });
@@ -113,7 +113,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     group.bench_function("path", |b| {
         b.iter(|| {
             let result = router
-                .execute_parsed(black_box("PATH person:1 TO person:10"))
+                .execute_parsed(black_box("PATH 1 -> 10"))
                 .unwrap();
             black_box(result);
         });
@@ -122,7 +122,7 @@ fn bench_graph_execute(c: &mut Criterion) {
     group.bench_function("find_node", |b| {
         b.iter(|| {
             let result = router
-                .execute_parsed(black_box("FIND NODE WHERE label = 'person'"))
+                .execute_parsed(black_box("FIND NODE WHERE id > 0"))
                 .unwrap();
             black_box(result);
         });
@@ -202,14 +202,14 @@ fn bench_mixed_workload(c: &mut Criterion) {
 
     // Setup: tables, nodes, embeddings
     router
-        .execute_parsed("CREATE TABLE users (id, name)")
+        .execute_parsed("CREATE TABLE users (id INT, name TEXT)")
         .unwrap();
     for i in 0..50 {
         router
             .execute_parsed(&format!("INSERT INTO users VALUES ({}, 'user{}')", i, i))
             .unwrap();
         router
-            .execute_parsed(&format!("NODE person {{id: {}}}", i))
+            .execute_parsed(&format!("NODE CREATE person {{id: {}}}", i))
             .unwrap();
         let vector: Vec<f64> = (0..64).map(|j| (i * 64 + j) as f64 / 1000.0).collect();
         let vector_str = vector
@@ -224,10 +224,10 @@ fn bench_mixed_workload(c: &mut Criterion) {
 
     let queries = [
         "SELECT * FROM users WHERE id = 25",
-        "NEIGHBORS person:25",
+        "NEIGHBORS 25 OUTGOING",
         "SIMILAR 'doc25' LIMIT 5",
         "INSERT INTO users VALUES (1000, 'newuser')",
-        "NODE person {id: 1000}",
+        "NODE CREATE person {id: 1000}",
     ];
 
     group.throughput(Throughput::Elements(queries.len() as u64));
@@ -248,7 +248,7 @@ fn bench_parse_vs_execute(c: &mut Criterion) {
 
     let router = QueryRouter::new();
     router
-        .execute_parsed("CREATE TABLE users (id, name)")
+        .execute_parsed("CREATE TABLE users (id INT, name TEXT)")
         .unwrap();
     for i in 0..100 {
         router
@@ -258,16 +258,17 @@ fn bench_parse_vs_execute(c: &mut Criterion) {
 
     let query = "SELECT * FROM users WHERE id = 50";
 
-    group.bench_function("execute_parsed", |b| {
+    group.bench_function("select_where", |b| {
         b.iter(|| {
             let result = router.execute_parsed(black_box(query)).unwrap();
             black_box(result);
         });
     });
 
-    group.bench_function("execute_legacy", |b| {
+    let simple_query = "SELECT * FROM users";
+    group.bench_function("select_all", |b| {
         b.iter(|| {
-            let result = router.execute(black_box(query)).unwrap();
+            let result = router.execute_parsed(black_box(simple_query)).unwrap();
             black_box(result);
         });
     });
@@ -281,7 +282,7 @@ fn bench_throughput(c: &mut Criterion) {
     for count in [100, 500, 1000].iter() {
         let router = QueryRouter::new();
         router
-            .execute_parsed("CREATE TABLE bench (id, value)")
+            .execute_parsed("CREATE TABLE bench (id INT, value TEXT)")
             .unwrap();
 
         group.throughput(Throughput::Elements(*count as u64));
