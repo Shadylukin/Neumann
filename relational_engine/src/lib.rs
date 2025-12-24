@@ -580,34 +580,53 @@ impl RelationalEngine {
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
-        let mut count = 0;
-        for key in keys {
-            if let Ok(tensor) = self.store.get(&key) {
-                if let Some(row) = self.tensor_to_row(&tensor) {
-                    if condition.evaluate(&row) {
-                        // Update indexes: remove old values, add new values
-                        for col in &indexed_columns {
-                            if let Some(new_value) = updates.get(col) {
-                                // Column is being updated
-                                if let Some(old_value) = row.get_with_id(col) {
-                                    self.index_remove(table, col, &old_value, row.id)?;
-                                }
-                                self.index_add(table, col, new_value, row.id)?;
-                            }
+        // Parallel: identify rows that match condition
+        let matching_rows: Vec<(String, TensorData, Row)> =
+            if keys.len() >= Self::PARALLEL_THRESHOLD {
+                keys.par_iter()
+                    .filter_map(|key| {
+                        let tensor = self.store.get(key).ok()?;
+                        let row = self.tensor_to_row(&tensor)?;
+                        if condition.evaluate(&row) {
+                            Some((key.clone(), tensor, row))
+                        } else {
+                            None
                         }
+                    })
+                    .collect()
+            } else {
+                keys.iter()
+                    .filter_map(|key| {
+                        let tensor = self.store.get(key).ok()?;
+                        let row = self.tensor_to_row(&tensor)?;
+                        if condition.evaluate(&row) {
+                            Some((key.clone(), tensor, row))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
 
-                        let mut new_tensor = tensor.clone();
-                        for (col_name, value) in &updates {
-                            new_tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
-                        }
-                        self.store.put(&key, new_tensor)?;
-                        count += 1;
+        // Sequential: update indexes and store (index ops are not thread-safe)
+        for (key, tensor, row) in &matching_rows {
+            for col in &indexed_columns {
+                if let Some(new_value) = updates.get(col) {
+                    if let Some(old_value) = row.get_with_id(col) {
+                        self.index_remove(table, col, &old_value, row.id)?;
                     }
+                    self.index_add(table, col, new_value, row.id)?;
                 }
             }
+
+            let mut new_tensor = tensor.clone();
+            for (col_name, value) in &updates {
+                new_tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
+            }
+            self.store.put(key, new_tensor)?;
         }
 
-        Ok(count)
+        Ok(matching_rows.len())
     }
 
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
@@ -617,26 +636,53 @@ impl RelationalEngine {
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
-        let mut to_delete = Vec::new();
-        for key in keys {
-            if let Ok(tensor) = self.store.get(&key) {
-                if let Some(row) = self.tensor_to_row(&tensor) {
+        // Parallel: identify rows to delete
+        let to_delete: Vec<(String, Row)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            keys.par_iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
                     if condition.evaluate(&row) {
-                        // Remove from indexes
-                        for col in &indexed_columns {
-                            if let Some(value) = row.get_with_id(col) {
-                                self.index_remove(table, col, &value, row.id)?;
-                            }
-                        }
-                        to_delete.push(key);
+                        Some((key.clone(), row))
+                    } else {
+                        None
                     }
+                })
+                .collect()
+        } else {
+            keys.iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    if condition.evaluate(&row) {
+                        Some((key.clone(), row))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        // Sequential: remove from indexes (index ops are not thread-safe)
+        for (_, row) in &to_delete {
+            for col in &indexed_columns {
+                if let Some(value) = row.get_with_id(col) {
+                    self.index_remove(table, col, &value, row.id)?;
                 }
             }
         }
 
         let count = to_delete.len();
-        for key in to_delete {
-            self.store.delete(&key)?;
+
+        // Parallel: delete rows (store is thread-safe)
+        if count >= Self::PARALLEL_THRESHOLD {
+            to_delete.par_iter().for_each(|(key, _)| {
+                let _ = self.store.delete(key);
+            });
+        } else {
+            for (key, _) in to_delete {
+                self.store.delete(&key)?;
+            }
         }
 
         Ok(count)
@@ -792,14 +838,30 @@ impl RelationalEngine {
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
-        for key in keys {
-            if let Ok(tensor) = self.store.get(&key) {
-                if let Some(row) = self.tensor_to_row(&tensor) {
-                    if let Some(value) = row.get_with_id(column) {
-                        self.index_add(table, column, &value, row.id)?;
-                    }
-                }
-            }
+        // Parallel: collect all (value, row_id) pairs
+        let entries: Vec<(Value, u64)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            keys.par_iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    let value = row.get_with_id(column)?;
+                    Some((value, row.id))
+                })
+                .collect()
+        } else {
+            keys.iter()
+                .filter_map(|key| {
+                    let tensor = self.store.get(key).ok()?;
+                    let row = self.tensor_to_row(&tensor)?;
+                    let value = row.get_with_id(column)?;
+                    Some((value, row.id))
+                })
+                .collect()
+        };
+
+        // Sequential: add to index (index_add is not thread-safe)
+        for (value, row_id) in entries {
+            self.index_add(table, column, &value, row_id)?;
         }
 
         Ok(())

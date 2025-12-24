@@ -132,12 +132,12 @@ The relational engine provides SQL-like operations on top of tensor_store, with 
 | Range (20% match) | 5.1ms |
 | Compound AND | 5.7ms |
 
-**Index Creation:**
+**Index Creation (parallel):**
 | Rows | Time |
 |------|------|
-| 100 | 245µs |
-| 1,000 | 2.7ms |
-| 5,000 | 16ms |
+| 100 | 200µs |
+| 1,000 | 1.3ms |
+| 5,000 | 9.6ms |
 
 **Update/Delete (1,000 rows, 10% affected):**
 | Operation | Time |
@@ -164,7 +164,8 @@ The relational engine provides SQL-like operations on top of tensor_store, with 
 - **Index acceleration**: Hash indexes provide O(1) lookup for equality conditions
   - 47x speedup for equality queries matching 2% of rows
   - 1,597x speedup for single-row _id lookups
-- **Full scan cost**: Without index, O(n) for all queries
+- **Full scan cost**: Without index, O(n) for all queries (parallelized for >1000 rows)
+- **Parallel operations**: update/delete/create_index use rayon for condition evaluation (28-45% faster)
 - **Index maintenance**: Small overhead on insert/update/delete to maintain indexes
 - **Join complexity**: O(n+m) hash join (2-5x faster than nested loop)
 - **row_count**: Uses scan_count, much faster than full scan (~100x)
