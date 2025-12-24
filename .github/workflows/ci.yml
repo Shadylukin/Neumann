@@ -97,7 +97,7 @@ jobs:
           esac
 
           # Run coverage with summary-only to get clean output
-          OUTPUT=$(cargo llvm-cov --package ${{ matrix.crate }} --all-features --summary-only 2>&1)
+          OUTPUT=$(cargo llvm-cov --package ${{ matrix.crate }} --summary-only 2>&1)
           echo "$OUTPUT"
 
           # Extract coverage from the crate's own source files
@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
       - name: Generate coverage HTML
-        run: cargo llvm-cov --package ${{ matrix.crate }} --all-features --html
+        run: cargo llvm-cov --package ${{ matrix.crate }} --html
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
