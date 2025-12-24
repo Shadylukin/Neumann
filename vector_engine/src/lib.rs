@@ -4,6 +4,74 @@
 
 use tensor_store::{TensorData, TensorStore, TensorStoreError, TensorValue};
 
+/// SIMD-accelerated vector operations for cosine similarity.
+mod simd {
+    use wide::f32x8;
+
+    /// Compute dot product using SIMD (8-wide f32 lanes).
+    #[inline]
+    pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+        let chunks = a.len() / 8;
+        let remainder = a.len() % 8;
+
+        let mut sum = f32x8::ZERO;
+
+        // Process 8 elements at a time
+        for i in 0..chunks {
+            let offset = i * 8;
+            let va = f32x8::from(&a[offset..offset + 8]);
+            let vb = f32x8::from(&b[offset..offset + 8]);
+            sum += va * vb;
+        }
+
+        // Sum the SIMD lanes
+        let arr: [f32; 8] = sum.into();
+        let mut result: f32 = arr.iter().sum();
+
+        // Handle remainder with scalar operations
+        let start = chunks * 8;
+        for i in 0..remainder {
+            result += a[start + i] * b[start + i];
+        }
+
+        result
+    }
+
+    /// Compute sum of squares using SIMD (for magnitude calculation).
+    #[inline]
+    pub fn sum_of_squares(v: &[f32]) -> f32 {
+        let chunks = v.len() / 8;
+        let remainder = v.len() % 8;
+
+        let mut sum = f32x8::ZERO;
+
+        // Process 8 elements at a time
+        for i in 0..chunks {
+            let offset = i * 8;
+            let vec = f32x8::from(&v[offset..offset + 8]);
+            sum += vec * vec;
+        }
+
+        // Sum the SIMD lanes
+        let arr: [f32; 8] = sum.into();
+        let mut result: f32 = arr.iter().sum();
+
+        // Handle remainder with scalar operations
+        let start = chunks * 8;
+        for i in 0..remainder {
+            result += v[start + i] * v[start + i];
+        }
+
+        result
+    }
+
+    /// Compute magnitude (L2 norm) using SIMD.
+    #[inline]
+    pub fn magnitude(v: &[f32]) -> f32 {
+        sum_of_squares(v).sqrt()
+    }
+}
+
 /// Error types for vector operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VectorError {
@@ -195,11 +263,11 @@ impl VectorEngine {
         Ok(results)
     }
 
-    /// Compute cosine similarity between two vectors.
+    /// Compute cosine similarity between two vectors using SIMD.
     /// Optimized version that accepts pre-computed query magnitude.
     fn cosine_similarity(a: &[f32], b: &[f32], a_magnitude: f32) -> f32 {
-        let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-        let b_magnitude = Self::magnitude(b);
+        let dot_product = simd::dot_product(a, b);
+        let b_magnitude = simd::magnitude(b);
 
         if b_magnitude == 0.0 {
             return 0.0;
@@ -208,9 +276,9 @@ impl VectorEngine {
         dot_product / (a_magnitude * b_magnitude)
     }
 
-    /// Compute the magnitude (L2 norm) of a vector.
+    /// Compute the magnitude (L2 norm) of a vector using SIMD.
     fn magnitude(v: &[f32]) -> f32 {
-        v.iter().map(|x| x * x).sum::<f32>().sqrt()
+        simd::magnitude(v)
     }
 
     /// Compute cosine similarity between two vectors (public helper).

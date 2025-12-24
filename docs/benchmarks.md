@@ -189,26 +189,27 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 |-----------|------|
 | delete | 806 ns |
 
-**Similarity Search (top 10):**
+**Similarity Search (top 10, SIMD-accelerated):**
 | Dataset | Time | Per Vector |
 |---------|------|------------|
-| 1,000 x 128d | 366 µs | 366 ns |
-| 1,000 x 768d | 1.09 ms | 1.09 µs |
-| 10,000 x 128d | 4.51 ms | 451 ns |
+| 1,000 x 128d | 249 µs | 249 ns |
+| 1,000 x 768d | 357 µs | 357 ns |
+| 10,000 x 128d | 3.14 ms | 314 ns |
 
-**Cosine Similarity Computation:**
+**Cosine Similarity Computation (SIMD-accelerated):**
 | Dimension | Time |
 |-----------|------|
-| 128 | 87 ns |
-| 768 | 1.47 µs |
-| 1536 | 2.60 µs |
+| 128 | 26 ns |
+| 768 | 165 ns |
+| 1536 | 369 ns |
 
 #### Analysis
 
+- **SIMD acceleration**: 8-wide f32 SIMD (via `wide` crate) provides 3-9x speedup for cosine similarity
 - **Linear scaling with dimension**: Cosine similarity is O(d) where d is vector dimension
 - **Linear scaling with dataset size**: Brute-force search is O(n*d) for n vectors
 - **Memory bound**: For 768d vectors, ~3 KB per embedding (768 * 4 bytes)
-- **Search throughput**: ~2.2M vector comparisons/second at 128d
+- **Search throughput**: ~4M vector comparisons/second at 128d (with SIMD)
 - **Store/Get performance**: Sub-microsecond for typical embedding sizes
 
 **Complexity:**
@@ -220,12 +221,12 @@ The vector engine stores embeddings and performs k-nearest neighbor search using
 | search_similar | O(n*d) | Brute-force scan |
 | compute_similarity | O(d) | Dot product + 2 magnitude calculations |
 
-**Scaling Projections:**
+**Scaling Projections (with SIMD):**
 | Vectors | Dimension | Search Time (est.) |
 |---------|-----------|-------------------|
-| 10K | 768 | ~11 ms |
-| 100K | 768 | ~110 ms |
-| 1M | 768 | ~1.1 s |
+| 10K | 768 | ~3.6 ms |
+| 100K | 768 | ~36 ms |
+| 1M | 768 | ~360 ms |
 
 For production workloads with >100K vectors, consider:
 - Approximate Nearest Neighbor (ANN) algorithms (HNSW, IVF)
@@ -296,7 +297,7 @@ Trade-offs:
 4. **Parallel scans**: Use rayon for parallel query execution
 5. **Bloom filters**: Quick negative lookups for sparse key spaces
 6. **ANN indexing**: HNSW or IVF for vector_engine similarity search at scale
-7. **SIMD acceleration**: Vectorized cosine similarity for high-dimensional embeddings
+7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity
 
 ## Hardware Notes
 
