@@ -519,7 +519,8 @@ impl RelationalEngine {
             _ => return None,
         };
 
-        let mut values = HashMap::new();
+        // Pre-allocate HashMap based on tensor field count (minus internal fields)
+        let mut values = HashMap::with_capacity(tensor.len().saturating_sub(1));
         for key in tensor.keys() {
             if key.starts_with('_') {
                 continue;
@@ -537,8 +538,8 @@ impl RelationalEngine {
 
         // Try to use an index for simple equality conditions
         if let Some(row_ids) = self.try_index_lookup(table, &condition) {
-            // Index hit: fetch only the matching rows
-            let mut rows = Vec::new();
+            // Index hit: fetch only the matching rows with pre-allocated capacity
+            let mut rows = Vec::with_capacity(row_ids.len());
             for row_id in row_ids {
                 let key = Self::row_key(table, row_id);
                 if let Ok(tensor) = self.store.get(&key) {

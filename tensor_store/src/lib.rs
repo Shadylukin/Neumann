@@ -697,6 +697,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // crossbeam-epoch has known Miri issues with stacked borrows
     fn store_parallel_scan_large_dataset() {
         let store = TensorStore::new();
 
