@@ -1,0 +1,15 @@
+[package]
+name = "vector_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tensor_store = { path = "../tensor_store" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+
+[[bench]]
+name = "vector_engine_bench"
+harness = false

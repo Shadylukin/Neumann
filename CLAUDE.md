@@ -4,7 +4,16 @@ This file provides guidance for Claude Code when working on this project.
 
 ## Project Overview
 
-Neumann is a unified tensor-based runtime that stores relational data, graph relationships, and vector embeddings in a single mathematical structure. This is the tensor_store module - the foundational storage layer.
+Neumann is a unified tensor-based runtime that stores relational data, graph relationships, and vector embeddings in a single mathematical structure.
+
+## Modules
+
+| Module | Purpose | Depends On |
+|--------|---------|------------|
+| `tensor_store` | Key-value storage layer | - |
+| `relational_engine` | SQL-like tables with indexes | tensor_store |
+| `graph_engine` | Graph nodes and edges | tensor_store |
+| `vector_engine` | Embeddings and similarity search | tensor_store |
 
 ## Code Style
 
@@ -50,6 +59,7 @@ All code must pass before commit:
 - `cargo clippy -- -D warnings` - lints as errors
 - `cargo test` - all tests pass
 - `cargo doc --no-deps` - documentation builds
+- 95% minimum line coverage per crate
 
 ## Testing Philosophy
 
@@ -67,22 +77,46 @@ See `docs/architecture.md` for full system design.
 ```
 tensor_store/           # Module 1: Storage layer
   src/lib.rs            # Core types and TensorStore implementation
+relational_engine/      # Module 2: Relational operations
+  src/lib.rs            # Tables, schemas, conditions, indexes
+graph_engine/           # Module 3: Graph operations
+  src/lib.rs            # Nodes, edges, traversals
+vector_engine/          # Module 4: Vector operations
+  src/lib.rs            # Embeddings, similarity search
 docs/
   architecture.md       # System architecture overview
   tensor-store.md       # Module 1 API documentation
+  relational-engine.md  # Module 2 API documentation
+  graph-engine.md       # Module 3 API documentation
+  vector-engine.md      # Module 4 API documentation
+  benchmarks.md         # Performance benchmarks
 ```
-
-The store knows nothing about queries - it only stores and retrieves tensors by key.
 
 ## Key Types
 
+### Tensor Store
 - `TensorValue`: Scalar, Vector, Pointer, or Pointers
 - `TensorData`: A map of field names to TensorValues
-- `TensorStore`: Thread-safe key-value store using DashMap (sharded concurrent HashMap)
+- `TensorStore`: Thread-safe key-value store using DashMap
+
+### Relational Engine
+- `Schema`, `Column`, `ColumnType`: Table structure
+- `Value`: Typed values (Int, Float, String, Bool, Null)
+- `Condition`: Composable predicates for filtering
+- `RelationalEngine`: Table operations with index support
+
+### Graph Engine
+- `NodeData`, `EdgeData`: Graph element properties
+- `Direction`: Edge traversal direction
+- `GraphEngine`: Node/edge CRUD and traversals
+
+### Vector Engine
+- `SearchResult`: Key and similarity score
+- `VectorEngine`: Embedding storage and k-NN search
 
 ## Concurrency Design
 
-TensorStore uses DashMap instead of RwLock<HashMap>:
+All engines inherit thread safety from TensorStore's DashMap:
 
 - **Why**: Better concurrent write performance, no lock poisoning
 - **How**: DashMap uses ~16 shards, writes only block same-shard writes
