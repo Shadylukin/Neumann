@@ -6,8 +6,9 @@ The foundational storage layer for Neumann. Holds all data in a unified tensor s
 
 1. **Single Responsibility**: Store and retrieve tensors by key. No query logic.
 2. **Concurrent by Design**: Uses DashMap for sharded concurrent access.
-3. **Minimal Dependencies**: Only DashMap for concurrent HashMap.
-4. **Predictable Memory**: Standard collections with no hidden allocations.
+3. **Shareable Storage**: TensorStore clones share the same underlying data via Arc.
+4. **Minimal Dependencies**: Only DashMap for concurrent HashMap.
+5. **Predictable Memory**: Standard collections with no hidden allocations.
 
 ## Concurrency Model
 
@@ -56,6 +57,25 @@ comment:100
 ```
 
 This enables efficient prefix scanning: `scan("user:")` returns all user keys.
+
+### Reserved Field Names
+
+For unified entity support, certain field names are reserved:
+
+| Field | Purpose | Used By |
+|-------|---------|---------|
+| `_out` | Outgoing graph edge pointers | GraphEngine |
+| `_in` | Incoming graph edge pointers | GraphEngine |
+| `_embedding` | Vector embedding | VectorEngine |
+| `_label` | Entity type/label | GraphEngine |
+| `_type` | Discriminator field | All engines |
+| `_from` | Edge source | GraphEngine |
+| `_to` | Edge target | GraphEngine |
+| `_edge_type` | Edge relationship type | GraphEngine |
+| `_directed` | Edge direction flag | GraphEngine |
+| `_table` | Table membership | RelationalEngine |
+
+These are defined in `tensor_store::fields` and should not be used for application data.
 
 ## API Reference
 
@@ -208,6 +228,29 @@ for h in handles {
     h.join().unwrap();
 }
 // DashMap handles contention efficiently via sharding
+```
+
+### Shared Storage Across Engines
+
+TensorStore clones share the same underlying data, enabling unified entity storage:
+
+```rust
+let store = TensorStore::new();
+
+// Clone shares the same underlying Arc<DashMap>
+let store_clone = store.clone();
+
+// Writes via one clone are visible to the other
+store.put("user:1", user_data)?;
+assert!(store_clone.exists("user:1"));
+
+// Use with engines for cross-engine queries
+let vector_engine = VectorEngine::with_store(store.clone());
+let graph_engine = GraphEngine::with_store(store.clone());
+
+// Both engines operate on the same entity storage
+vector_engine.set_entity_embedding("user:1", vec![0.1, 0.2, 0.3])?;
+graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 ```
 
 ## Test Coverage

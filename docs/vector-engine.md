@@ -6,8 +6,10 @@ Module 4 of Neumann. Provides embeddings storage and similarity search.
 
 1. **Layered Architecture**: Depends only on Tensor Store for persistence
 2. **Cosine Similarity**: Standard metric for embedding similarity
-3. **Brute-Force Search**: O(n) k-NN for correctness (optimizations deferred)
-4. **Thread Safety**: Inherits from Tensor Store
+3. **SIMD Acceleration**: 8-wide SIMD for dot products and magnitudes
+4. **Dual Search Modes**: Brute-force O(n) or HNSW O(log n)
+5. **Unified Entities**: Embeddings can be attached to shared entities
+6. **Thread Safety**: Inherits from Tensor Store
 
 ## API Reference
 
@@ -77,6 +79,28 @@ engine.list_keys();  // -> Vec<String>
 // Clear all embeddings
 engine.clear()?;
 ```
+
+### Unified Entity API
+
+Attach embeddings directly to entities for cross-engine queries:
+
+```rust
+// Create engine with shared store
+let store = TensorStore::new();
+let engine = VectorEngine::with_store(store.clone());
+
+// Set embedding on an existing entity (e.g., user:1)
+engine.set_entity_embedding("user:1", vec![0.1, 0.2, 0.3])?;
+
+// Get embedding from an entity
+let embedding = engine.get_entity_embedding("user:1")?;
+
+// Search for entities with embeddings similar to another entity's neighbors
+// (Used by QueryRouter for cross-engine queries)
+engine.search_entity_neighbors_by_similarity(neighbor_keys, &query_vec, 5)?;
+```
+
+Unified entity embeddings are stored in the `_embedding` field of the entity's TensorData, enabling the same entity key to have relational fields, graph connections, and a vector embedding.
 
 ## Error Handling
 

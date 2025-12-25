@@ -8,7 +8,8 @@ Module 3 of Neumann. Provides graph operations on top of the Tensor Store.
 2. **Direction-Aware**: Supports both directed and undirected edges
 3. **BFS Traversal**: Breadth-first search for shortest paths
 4. **Cycle-Safe**: Handles cyclic graphs without infinite loops
-5. **Thread Safety**: Inherits from Tensor Store
+5. **Unified Entities**: Edges can connect shared entities across engines
+6. **Thread Safety**: Inherits from Tensor Store
 
 ## Data Model
 
@@ -102,6 +103,25 @@ let path = engine.find_path(from_id, to_id)?;
 | `Outgoing` | Follow edges away from the node |
 | `Incoming` | Follow edges toward the node |
 | `Both` | Follow edges in either direction |
+
+### Unified Entity API
+
+Connect any shared entities (not just graph nodes) for cross-engine queries:
+
+```rust
+// Create engine with shared store
+let store = TensorStore::new();
+let engine = GraphEngine::with_store(store.clone());
+
+// Add an edge between any entities (e.g., user:1 and user:2)
+engine.add_entity_edge("user:1", "user:2", "follows")?;
+
+// Get neighbors of an entity
+let neighbors = engine.get_entity_neighbors("user:1")?;
+// Returns ["user:2"]
+```
+
+Entity edges use the `_out` and `_in` reserved fields in TensorData. This enables the same entity key to have relational fields, graph connections, and a vector embedding.
 
 ## Storage Model
 

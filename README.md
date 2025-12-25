@@ -42,6 +42,30 @@ The interface. Simple CLI commands to create, query, and manipulate data. Design
 
 All three operate on the same underlying tensor. A node in your graph can have relational properties and a vector embedding. A row in your table can have graph relationships. The boundaries dissolve.
 
+### Unified Entities
+
+The core insight: **one key, one entity, three perspectives**.
+
+```
+user:1 = {
+    // Relational fields
+    name: "Alice",
+    email: "alice@example.com",
+
+    // Graph connections
+    _out: ["edge:follows:1", "edge:follows:2"],
+    _in: ["edge:follows:3"],
+
+    // Vector embedding
+    _embedding: [0.1, 0.2, 0.3, ...]
+}
+```
+
+This enables cross-engine queries:
+- "Find users similar to Alice who are also friends with Bob" (vector + graph)
+- "Get all products in the 'electronics' category that are similar to this description" (relational + vector)
+- "Find the shortest path between users who have similar embeddings" (graph + vector)
+
 ### Code as Data
 
 When you point Neumann at a codebase, it doesn't just store files — it understands structure. Functions, dependencies, call graphs. This enables queries like "what would break if I changed this?" without leaving the same system that holds your application data.
@@ -59,15 +83,36 @@ $ neumann query "users connected to posts similar to X"  # unified
 
 The shell is the primary interface. Everything is a command. State lives in the tensor.
 
+### Using the Unified Entity API (Rust)
+
+```rust
+use query_router::QueryRouter;
+use tensor_store::TensorStore;
+
+// Create a router with shared storage
+let store = TensorStore::new();
+let router = QueryRouter::with_shared_store(store);
+
+// Create entities with embeddings
+router.vector().set_entity_embedding("user:1", vec![0.1, 0.2, 0.3])?;
+router.vector().set_entity_embedding("user:2", vec![0.15, 0.25, 0.35])?;
+
+// Connect entities via graph edges
+router.connect_entities("user:1", "user:2", "follows")?;
+
+// Cross-engine query: find neighbors sorted by similarity
+let results = router.find_neighbors_by_similarity("user:1", &query_vec, 10)?;
+```
+
 ## Project Status
 
 | Module | Status | Description |
 |--------|--------|-------------|
-| Tensor Store | Complete | Key-value storage for tensor data |
+| Tensor Store | Complete | Key-value storage with shared entity support |
 | Relational Engine | Complete | Tables, schemas, SQL-like operations |
-| Graph Engine | Complete | Nodes, edges, traversals, path-finding |
-| Vector Engine | Complete | Embeddings, cosine similarity search |
-| Query Router | Complete | Unified query execution across all engines |
+| Graph Engine | Complete | Nodes, edges, traversals, unified entity edges |
+| Vector Engine | Complete | Embeddings, similarity search, unified entity embeddings |
+| Query Router | Complete | Cross-engine queries on unified entities |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
 | Persistence | Planned | Durability and backup |

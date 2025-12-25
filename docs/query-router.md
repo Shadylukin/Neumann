@@ -8,6 +8,8 @@ Module 5 of Neumann. Provides unified query execution across all engines.
 2. **Engine Dispatch**: Routes queries to appropriate engine based on statement type
 3. **AST-Based Execution**: Uses Neumann Parser for structured query handling
 4. **Result Aggregation**: Consistent QueryResult type across all operations
+5. **Shared Storage**: All engines share the same TensorStore for unified entities
+6. **Cross-Engine Queries**: Combine graph connections with vector similarity
 
 ## API Reference
 
@@ -15,8 +17,14 @@ Module 5 of Neumann. Provides unified query execution across all engines.
 
 ```rust
 use query_router::QueryRouter;
+use tensor_store::TensorStore;
 
+// Create with independent engines
 let router = QueryRouter::new();
+
+// Create with shared storage (enables unified entities)
+let store = TensorStore::new();
+let router = QueryRouter::with_shared_store(store);
 ```
 
 ### Query Execution
@@ -118,6 +126,45 @@ EMBED DELETE 'doc1'
 SIMILAR 'doc1' LIMIT 5
 ```
 
+### Cross-Engine Queries (Rust API)
+
+The QueryRouter provides methods for queries that span multiple engines:
+
+```rust
+use query_router::QueryRouter;
+use tensor_store::TensorStore;
+
+let store = TensorStore::new();
+let router = QueryRouter::with_shared_store(store);
+
+// Set up entities with embeddings
+router.vector().set_entity_embedding("user:1", vec![0.1, 0.2, 0.3])?;
+router.vector().set_entity_embedding("user:2", vec![0.15, 0.25, 0.35])?;
+router.vector().set_entity_embedding("user:3", vec![0.9, 0.8, 0.7])?;
+
+// Connect entities via graph edges
+router.connect_entities("user:1", "user:2", "follows")?;
+
+// Cross-engine query: find neighbors of an entity sorted by similarity
+let query_vec = vec![0.1, 0.2, 0.3];
+let results = router.find_neighbors_by_similarity("user:1", &query_vec, 10)?;
+// Returns neighbors of user:1 ranked by cosine similarity to query_vec
+
+// Cross-engine query: find entities that are both similar AND connected
+let results = router.find_similar_connected(
+    "user:1",           // seed entity
+    &query_vec,         // similarity query
+    5,                  // top_k
+)?;
+// Returns intersection of similar entities and graph neighbors
+```
+
+| Method | Description |
+|--------|-------------|
+| `connect_entities(from, to, edge_type)` | Add a graph edge between entities |
+| `find_neighbors_by_similarity(key, query, k)` | Get neighbors sorted by vector similarity |
+| `find_similar_connected(key, query, k)` | Find entities that are similar AND connected |
+
 ## Error Handling
 
 | Error | Cause |
@@ -197,7 +244,7 @@ let similar = router.execute_parsed("SIMILAR 'alice' LIMIT 1")?;
 
 Not implemented (out of scope):
 
-- **Cross-engine joins**: Joining relational rows with graph nodes
+- **Cross-engine SQL joins**: SQL syntax for joining relational rows with graph/vector results
 - **Transactions**: Multi-statement atomic operations
 - **Query planning**: Cost-based optimization
 - **Caching**: Query result caching
