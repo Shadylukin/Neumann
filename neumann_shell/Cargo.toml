@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 query_router = { path = "../query_router" }
 relational_engine = { path = "../relational_engine" }
+tensor_store = { path = "../tensor_store" }
 rustyline = "15"
 
 [[bin]]

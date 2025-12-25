@@ -10,6 +10,7 @@ use rustyline::history::{DefaultHistory, History};
 use rustyline::{DefaultEditor, Editor};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use tensor_store::TensorStore;
 
 /// Shell configuration options.
 #[derive(Debug, Clone)]
@@ -84,8 +85,7 @@ impl Shell {
     }
 
     /// Executes a single command and returns the result.
-    #[must_use]
-    pub fn execute(&self, input: &str) -> CommandResult {
+    pub fn execute(&mut self, input: &str) -> CommandResult {
         let trimmed = input.trim();
 
         if trimmed.is_empty() {
@@ -102,11 +102,77 @@ impl Shell {
             _ => {},
         }
 
+        // Handle SAVE command
+        if lower.starts_with("save ") {
+            return self.handle_save(trimmed);
+        }
+
+        // Handle LOAD command
+        if lower.starts_with("load ") {
+            return self.handle_load(trimmed);
+        }
+
         // Execute as query
         self.router.execute_parsed(trimmed).map_or_else(
             |e| CommandResult::Error(format!("Error: {e}")),
             |result| CommandResult::Output(format_result(&result)),
         )
+    }
+
+    /// Handles the SAVE command.
+    fn handle_save(&self, input: &str) -> CommandResult {
+        Self::extract_path(input, "save").map_or_else(
+            || {
+                CommandResult::Error(
+                    "Usage: SAVE 'path/to/file.bin' or SAVE path/to/file.bin".to_string(),
+                )
+            },
+            |p| {
+                let store = self.router.vector().store();
+                store.save_snapshot(&p).map_or_else(
+                    |e| CommandResult::Error(format!("Failed to save: {e}")),
+                    |()| CommandResult::Output(format!("Saved snapshot to: {p}")),
+                )
+            },
+        )
+    }
+
+    /// Handles the LOAD command.
+    fn handle_load(&mut self, input: &str) -> CommandResult {
+        let Some(p) = Self::extract_path(input, "load") else {
+            return CommandResult::Error(
+                "Usage: LOAD 'path/to/file.bin' or LOAD path/to/file.bin".to_string(),
+            );
+        };
+
+        match TensorStore::load_snapshot(&p) {
+            Ok(store) => {
+                self.router = QueryRouter::with_shared_store(store);
+                CommandResult::Output(format!("Loaded snapshot from: {p}"))
+            },
+            Err(e) => CommandResult::Error(format!("Failed to load: {e}")),
+        }
+    }
+
+    /// Extracts the path from a SAVE or LOAD command.
+    fn extract_path(input: &str, command: &str) -> Option<String> {
+        let rest = input[command.len()..].trim();
+        if rest.is_empty() {
+            return None;
+        }
+
+        // Handle quoted path
+        if (rest.starts_with('\'') && rest.ends_with('\''))
+            || (rest.starts_with('"') && rest.ends_with('"'))
+        {
+            if rest.len() > 2 {
+                return Some(rest[1..rest.len() - 1].to_string());
+            }
+            return None;
+        }
+
+        // Handle unquoted path
+        Some(rest.to_string())
     }
 
     /// Lists all tables in the database.
@@ -128,6 +194,8 @@ Commands:
   exit, quit, \\q  Exit the shell
   tables, \\dt     List all tables
   clear, \\c       Clear the screen
+  save 'path'     Save database snapshot to file
+  load 'path'     Load database snapshot from file
 
 Query Types:
   Relational (SQL):
@@ -157,6 +225,8 @@ Examples:
   > SELECT * FROM users
   > NODE CREATE person {name: 'Bob', age: 30}
   > EMBED STORE 'doc1' [0.1, 0.2, 0.3]
+  > SAVE 'backup.bin'
+  > LOAD 'backup.bin'
 "
         .to_string()
     }
@@ -192,7 +262,7 @@ Examples:
     /// # Errors
     ///
     /// Returns an error if readline initialization fails.
-    pub fn run(&self) -> Result<(), ShellError> {
+    pub fn run(&mut self) -> Result<(), ShellError> {
         let mut editor: Editor<(), DefaultHistory> =
             DefaultEditor::new().map_err(|e| ShellError::Init(e.to_string()))?;
         if let Some(ref path) = self.config.history_file {
@@ -484,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         assert_eq!(shell.execute(""), CommandResult::Empty);
         assert_eq!(shell.execute("   "), CommandResult::Empty);
         assert_eq!(shell.execute("\t\n"), CommandResult::Empty);
@@ -492,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_exit_commands() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         assert_eq!(shell.execute("exit"), CommandResult::Exit);
         assert_eq!(shell.execute("quit"), CommandResult::Exit);
         assert_eq!(shell.execute("\\q"), CommandResult::Exit);
@@ -502,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_help_commands() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
 
         let result = shell.execute("help");
         assert!(matches!(result, CommandResult::Help(_)));
@@ -526,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_clear_command() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let result = shell.execute("clear");
         assert!(matches!(result, CommandResult::Output(_)));
 
@@ -536,14 +606,14 @@ mod tests {
 
     #[test]
     fn test_create_table() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let result = shell.execute("CREATE TABLE users (id INT, name TEXT)");
         assert!(matches!(result, CommandResult::Output(_)));
     }
 
     #[test]
     fn test_insert_and_select() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
 
         let _ = shell.execute("CREATE TABLE test (id INT, value TEXT)");
         let _ = shell.execute("INSERT INTO test VALUES (1, 'hello')");
@@ -556,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_select_empty_table() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let _ = shell.execute("CREATE TABLE empty (id INT)");
 
         let result = shell.execute("SELECT * FROM empty");
@@ -569,14 +639,14 @@ mod tests {
 
     #[test]
     fn test_node_create() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let result = shell.execute("NODE CREATE person {name: 'Alice', age: 30}");
         assert!(matches!(result, CommandResult::Output(_)));
     }
 
     #[test]
     fn test_edge_create() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let _ = shell.execute("NODE CREATE person {name: 'Alice'}");
         let _ = shell.execute("NODE CREATE person {name: 'Bob'}");
 
@@ -586,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_neighbors() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let _ = shell.execute("NODE CREATE person {name: 'Alice'}");
         let _ = shell.execute("NODE CREATE person {name: 'Bob'}");
         let _ = shell.execute("EDGE CREATE 1 -> 2 : knows");
@@ -597,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_embed_store_and_get() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
 
         let result = shell.execute("EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4]");
         assert!(matches!(result, CommandResult::Output(_)));
@@ -612,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_similar_search() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
 
         let _ = shell.execute("EMBED STORE 'a' [1.0, 0.0, 0.0]");
         let _ = shell.execute("EMBED STORE 'b' [0.9, 0.1, 0.0]");
@@ -628,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_invalid_query() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let result = shell.execute("INVALID QUERY SYNTAX");
         assert!(matches!(result, CommandResult::Error(_)));
     }
@@ -648,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_tables_command() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         let _ = shell.execute("CREATE TABLE foo (id INT)");
         let _ = shell.execute("CREATE TABLE bar (id INT)");
 
@@ -935,7 +1005,7 @@ mod tests {
 
     #[test]
     fn test_list_tables_empty() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         // Without any tables created, should still return output
         let result = shell.execute("\\dt");
         assert!(matches!(result, CommandResult::Output(_)));
@@ -969,7 +1039,7 @@ mod tests {
 
     #[test]
     fn test_tables_alias() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         // Both "tables" and "\dt" should work
         let result1 = shell.execute("tables");
         let result2 = shell.execute("\\dt");
@@ -979,7 +1049,7 @@ mod tests {
 
     #[test]
     fn test_case_insensitive_commands() {
-        let shell = Shell::new();
+        let mut shell = Shell::new();
         assert_eq!(
             shell.execute("HELP"),
             CommandResult::Help(Shell::help_text())
@@ -1156,5 +1226,164 @@ mod tests {
         assert!(output.starts_with("Tables:"));
         assert!(output.contains("users"));
         assert!(output.contains("products"));
+    }
+
+    // Save and Load command tests
+
+    #[test]
+    fn test_save_command() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0]");
+
+        let path = std::env::temp_dir().join("test_shell_save.bin");
+        let result = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Saved snapshot"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_command() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0]");
+
+        let path = std::env::temp_dir().join("test_shell_load.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load into a fresh shell
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Loaded snapshot"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Verify the data is accessible
+        let result = shell2.execute("EMBED GET 'test_key'");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_without_path() {
+        let mut shell = Shell::new();
+        let result = shell.execute("SAVE");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_load_without_path() {
+        let mut shell = Shell::new();
+        let result = shell.execute("LOAD");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let mut shell = Shell::new();
+        let result = shell.execute("LOAD '/nonexistent/path/file.bin'");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_save_unquoted_path() {
+        let mut shell = Shell::new();
+        let path = std::env::temp_dir().join("test_shell_unquoted.bin");
+        let result = shell.execute(&format!("SAVE {}", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Saved snapshot"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_double_quoted_path() {
+        let mut shell = Shell::new();
+        let path = std::env::temp_dir().join("test_shell_dblquote.bin");
+        let result = shell.execute(&format!("SAVE \"{}\"", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Saved snapshot"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_extract_path_quoted() {
+        assert_eq!(
+            Shell::extract_path("save 'foo.bin'", "save"),
+            Some("foo.bin".to_string())
+        );
+        assert_eq!(
+            Shell::extract_path("LOAD \"bar.bin\"", "LOAD"),
+            Some("bar.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_path_unquoted() {
+        assert_eq!(
+            Shell::extract_path("save /path/to/file.bin", "save"),
+            Some("/path/to/file.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_path_empty() {
+        assert_eq!(Shell::extract_path("save ", "save"), None);
+        assert_eq!(Shell::extract_path("save", "save"), None);
+    }
+
+    #[test]
+    fn test_extract_path_empty_quotes() {
+        assert_eq!(Shell::extract_path("save ''", "save"), None);
+        assert_eq!(Shell::extract_path("save \"\"", "save"), None);
+    }
+
+    #[test]
+    fn test_help_contains_save_load() {
+        let help = Shell::help_text();
+        assert!(help.contains("save"));
+        assert!(help.contains("load"));
+        assert!(help.contains("snapshot"));
+    }
+
+    #[test]
+    fn test_save_load_case_insensitive() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0]");
+
+        let path = std::env::temp_dir().join("test_shell_case.bin");
+
+        // Test uppercase SAVE
+        let result = shell.execute(&format!("SAVE '{}'", path.display()));
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Test lowercase load
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("load '{}'", path.display()));
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
     }
 }

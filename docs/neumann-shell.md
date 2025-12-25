@@ -80,6 +80,8 @@ pub enum CommandResult {
 | `exit` | `quit`, `\q` | Exit the shell |
 | `tables` | `\dt` | List all tables |
 | `clear` | `\c` | Clear the screen |
+| `save 'path'` | - | Save database snapshot to file |
+| `load 'path'` | - | Load database snapshot from file |
 
 ## Query Support
 
@@ -143,6 +145,41 @@ Similar:
   2. doc2 (similarity: 0.9500)
   3. doc3 (similarity: 0.8700)
 ```
+
+### Persistence Commands
+
+Save and load database snapshots:
+
+```sql
+> CREATE TABLE users (id INT, name TEXT)
+OK
+
+> INSERT INTO users VALUES (1, 'Alice')
+1 row affected
+
+> EMBED STORE 'doc1' [0.1, 0.2, 0.3]
+OK
+
+> SAVE 'backup.bin'
+Saved snapshot to: backup.bin
+
+> -- Later, or in a new session:
+> LOAD 'backup.bin'
+Loaded snapshot from: backup.bin
+
+> SELECT * FROM users
+id | name
+---+------
+1  | Alice
+(1 rows)
+```
+
+The snapshot includes all data from the TensorStore:
+- Relational tables and rows
+- Graph nodes and edges
+- Vector embeddings
+
+Path can be quoted (`'path'` or `"path"`) or unquoted.
 
 ## Configuration
 
@@ -259,6 +296,7 @@ Coverage: 94.81% (94% minimum due to untestable interactive REPL code)
 
 - `query_router`: Query execution
 - `relational_engine`: Row type for formatting
+- `tensor_store`: Snapshot persistence (save/load)
 - `rustyline`: Readline functionality (history, shortcuts, Ctrl+C)
 
 ## Future Considerations
