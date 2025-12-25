@@ -203,7 +203,7 @@ impl QueryRouter {
     /// Create a query router with a shared TensorStore for unified entity access.
     ///
     /// All engines share the same store, enabling cross-engine queries on unified entities.
-    /// Cloning TensorStore shares the underlying storage (via Arc<DashMap>).
+    /// Cloning TensorStore shares the underlying storage (via `Arc<DashMap>`).
     pub fn with_shared_store(store: TensorStore) -> Self {
         Self {
             relational: Arc::new(RelationalEngine::with_store(store.clone())),

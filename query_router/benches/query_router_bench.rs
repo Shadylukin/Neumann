@@ -300,6 +300,164 @@ fn bench_throughput(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_cross_engine(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cross_engine");
+
+    // Setup: shared store with entities having both embeddings and graph connections
+    let store = tensor_store::TensorStore::new();
+    let router = QueryRouter::with_shared_store(store);
+
+    // Create 200 entities with embeddings (reduced from 1000 for faster benchmarks)
+    for i in 0..200 {
+        let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+        router
+            .vector()
+            .set_entity_embedding(&format!("user:{}", i), embedding)
+            .unwrap();
+    }
+
+    // Connect entities in a graph (each entity connects to ~5 neighbors)
+    for i in 0..200 {
+        for offset in 1..=5 {
+            let target = (i + offset) % 200;
+            router
+                .connect_entities(&format!("user:{}", i), &format!("user:{}", target), "follows")
+                .unwrap();
+        }
+    }
+
+    let query_vec: Vec<f32> = (0..128).map(|j| (50 * 128 + j) as f32 / 100000.0).collect();
+
+    group.bench_function("connect_entities", |b| {
+        let mut i = 2000;
+        b.iter(|| {
+            let from = format!("user:{}", i);
+            let to = format!("user:{}", i + 1);
+            // First create entities with embeddings
+            let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+            router
+                .vector()
+                .set_entity_embedding(&from, embedding.clone())
+                .unwrap();
+            router.vector().set_entity_embedding(&to, embedding).unwrap();
+            // Then connect them
+            let result = router.connect_entities(black_box(&from), black_box(&to), "follows");
+            i += 2;
+            let _ = black_box(result);
+        });
+    });
+
+    group.bench_function("find_neighbors_by_similarity", |b| {
+        b.iter(|| {
+            let result = router.find_neighbors_by_similarity(
+                black_box("user:50"),
+                black_box(&query_vec),
+                black_box(10),
+            );
+            let _ = black_box(result);
+        });
+    });
+
+    group.bench_function("find_similar_connected", |b| {
+        b.iter(|| {
+            let result = router.find_similar_connected(
+                black_box("user:50"),
+                black_box("user:100"),
+                black_box(10),
+            );
+            let _ = black_box(result);
+        });
+    });
+
+    // Benchmark with varying top_k values
+    for k in [5, 10, 20, 50].iter() {
+        group.bench_with_input(
+            BenchmarkId::new("find_neighbors_by_similarity_k", k),
+            k,
+            |b, &k| {
+                b.iter(|| {
+                    let result = router.find_neighbors_by_similarity(
+                        black_box("user:50"),
+                        black_box(&query_vec),
+                        black_box(k),
+                    );
+                    let _ = black_box(result);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_cross_engine_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cross_engine_scale");
+    group.sample_size(50); // Fewer samples for expensive benchmarks
+
+    for entity_count in [100, 500, 1000].iter() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create entities with embeddings
+        for i in 0..*entity_count {
+            let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+            router
+                .vector()
+                .set_entity_embedding(&format!("user:{}", i), embedding)
+                .unwrap();
+        }
+
+        // Connect entities
+        for i in 0..*entity_count {
+            for offset in 1..=5 {
+                let target = (i + offset) % entity_count;
+                router
+                    .connect_entities(
+                        &format!("user:{}", i),
+                        &format!("user:{}", target),
+                        "follows",
+                    )
+                    .unwrap();
+            }
+        }
+
+        let query_vec: Vec<f32> = (0..128).map(|j| j as f32 / 100000.0).collect();
+
+        group.throughput(Throughput::Elements(*entity_count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("find_neighbors_by_similarity", entity_count),
+            entity_count,
+            |b, _| {
+                b.iter(|| {
+                    let result = router.find_neighbors_by_similarity(
+                        black_box("user:0"),
+                        black_box(&query_vec),
+                        black_box(10),
+                    );
+                    let _ = black_box(result);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("find_similar_connected", entity_count),
+            entity_count,
+            |b, _| {
+                b.iter(|| {
+                    let result = router.find_similar_connected(
+                        black_box("user:0"),
+                        black_box("user:50"),
+                        black_box(10),
+                    );
+                    let _ = black_box(result);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_relational_execute,
@@ -308,6 +466,8 @@ criterion_group!(
     bench_mixed_workload,
     bench_parse_vs_execute,
     bench_throughput,
+    bench_cross_engine,
+    bench_cross_engine_scale,
 );
 
 criterion_main!(benches);

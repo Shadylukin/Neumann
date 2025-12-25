@@ -10,11 +10,11 @@ use std::sync::Arc;
 /// These prefixes are used by the different engines to store their data
 /// within a single TensorData entity, enabling cross-engine queries.
 pub mod fields {
-    /// Graph: outgoing edge pointers (Vec<String>)
+    /// Graph: outgoing edge pointers (`Vec<String>`)
     pub const OUT: &str = "_out";
-    /// Graph: incoming edge pointers (Vec<String>)
+    /// Graph: incoming edge pointers (`Vec<String>`)
     pub const IN: &str = "_in";
-    /// Vector: embedding vector (Vec<f32>)
+    /// Vector: embedding vector (`Vec<f32>`)
     pub const EMBEDDING: &str = "_embedding";
     /// Graph/Relational: entity type/label
     pub const LABEL: &str = "_label";
