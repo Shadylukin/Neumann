@@ -4,7 +4,7 @@ use neumann_shell::Shell;
 fn bench_execute_commands(c: &mut Criterion) {
     let mut group = c.benchmark_group("shell_execute");
 
-    let shell = Shell::new();
+    let mut shell = Shell::new();
 
     // Setup
     let _ = shell.execute("CREATE TABLE users (id INT, name TEXT)");
@@ -46,7 +46,7 @@ fn bench_execute_commands(c: &mut Criterion) {
 fn bench_format_output(c: &mut Criterion) {
     let mut group = c.benchmark_group("shell_format");
 
-    let shell = Shell::new();
+    let mut shell = Shell::new();
     let _ = shell.execute("CREATE TABLE bench (id INT, name TEXT, email TEXT)");
     for i in 0..1000 {
         let _ = shell.execute(&format!(
