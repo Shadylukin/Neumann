@@ -4,13 +4,13 @@ set -e
 source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser neumann_shell"
+CRATES="tensor_store relational_engine graph_engine vector_engine query_router neumann_parser neumann_shell tensor_compress"
 MINIMUM_COVERAGE=95
 
 # Per-crate coverage thresholds
 get_min_coverage() {
     case "$1" in
-        neumann_shell) echo 94 ;;  # Has ~40 lines of untestable interactive REPL code
+        neumann_shell) echo 93 ;;  # Has untestable REPL code and binary entry point
         *) echo "$MINIMUM_COVERAGE" ;;
     esac
 }

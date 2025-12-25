@@ -652,6 +652,131 @@ impl TensorStore {
             bloom_filter: Some(Arc::new(bloom)),
         })
     }
+
+    /// Save a compressed snapshot using bespoke tensor compression.
+    ///
+    /// Compression includes:
+    /// - Vector quantization (int8 or binary) for embeddings
+    /// - Delta + varint encoding for sorted ID lists
+    /// - Run-length encoding for repeated values
+    ///
+    /// # Errors
+    /// Returns error if file creation or serialization fails.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn save_snapshot_compressed<P: AsRef<Path>>(
+        &self,
+        path: P,
+        config: tensor_compress::CompressionConfig,
+    ) -> std::result::Result<(), SnapshotError> {
+        use tensor_compress::format::{
+            compress_vector, CompressedEntry, CompressedScalar, CompressedSnapshot,
+            CompressedValue, Header,
+        };
+
+        let path = path.as_ref();
+        let temp_path = path.with_extension("tmp");
+
+        let mut entries = Vec::with_capacity(self.data.len());
+
+        for entry in self.data.iter() {
+            let key = entry.key().clone();
+            let tensor = entry.value();
+
+            let mut fields = HashMap::new();
+            for (field_name, value) in tensor.iter() {
+                let compressed = match value {
+                    TensorValue::Scalar(s) => CompressedValue::Scalar(match s {
+                        ScalarValue::Null => CompressedScalar::Null,
+                        ScalarValue::Bool(b) => CompressedScalar::Bool(*b),
+                        ScalarValue::Int(i) => CompressedScalar::Int(*i),
+                        ScalarValue::Float(f) => CompressedScalar::Float(*f),
+                        ScalarValue::String(s) => CompressedScalar::String(s.clone()),
+                        ScalarValue::Bytes(b) => {
+                            CompressedScalar::String(format!("bytes:{}", b.len()))
+                        },
+                    }),
+                    TensorValue::Vector(v) => compress_vector(v, &key, field_name, &config),
+                    TensorValue::Pointer(p) => CompressedValue::Pointer(p.clone()),
+                    TensorValue::Pointers(ps) => CompressedValue::Pointers(ps.clone()),
+                };
+                fields.insert(field_name.to_string(), compressed);
+            }
+
+            entries.push(CompressedEntry { key, fields });
+        }
+
+        let header = Header::new(config, entries.len() as u64);
+        let snapshot = CompressedSnapshot { header, entries };
+
+        let file = File::create(&temp_path)?;
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, &snapshot)?;
+
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+
+    /// Load a compressed snapshot.
+    ///
+    /// # Errors
+    /// Returns error if file read or deserialization fails.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn load_snapshot_compressed<P: AsRef<Path>>(
+        path: P,
+    ) -> std::result::Result<Self, SnapshotError> {
+        use tensor_compress::format::{decompress_vector, CompressedSnapshot, CompressedValue};
+
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let snapshot: CompressedSnapshot = bincode::deserialize_from(reader)?;
+
+        snapshot
+            .header
+            .validate()
+            .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
+
+        let store = TensorStore::new();
+
+        for entry in snapshot.entries {
+            let mut tensor = TensorData::new();
+
+            for (field_name, value) in entry.fields {
+                let tensor_value = match value {
+                    CompressedValue::Scalar(s) => {
+                        use tensor_compress::format::CompressedScalar;
+                        TensorValue::Scalar(match s {
+                            CompressedScalar::Null => ScalarValue::Null,
+                            CompressedScalar::Bool(b) => ScalarValue::Bool(b),
+                            CompressedScalar::Int(i) => ScalarValue::Int(i),
+                            CompressedScalar::Float(f) => ScalarValue::Float(f),
+                            CompressedScalar::String(s) => ScalarValue::String(s),
+                        })
+                    },
+                    CompressedValue::VectorRaw(v) => TensorValue::Vector(v),
+                    CompressedValue::VectorInt8 { .. }
+                    | CompressedValue::VectorBinary { .. }
+                    | CompressedValue::IdList(_) => {
+                        let v = decompress_vector(&value)
+                            .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
+                        TensorValue::Vector(v)
+                    },
+                    CompressedValue::RleInt(encoded) => {
+                        let ints = tensor_compress::rle_decode(&encoded);
+                        TensorValue::Vector(ints.iter().map(|&i| i as f32).collect())
+                    },
+                    CompressedValue::Pointer(p) => TensorValue::Pointer(p),
+                    CompressedValue::Pointers(ps) => TensorValue::Pointers(ps),
+                };
+
+                tensor.set(&field_name, tensor_value);
+            }
+
+            store.data.insert(entry.key, tensor);
+        }
+
+        Ok(store)
+    }
 }
 
 impl Default for TensorStore {
@@ -2073,5 +2198,99 @@ mod tests {
 
         let ser_err = SnapshotError::SerializationError("test".into());
         assert!(ser_err.source().is_none());
+    }
+
+    #[test]
+    fn snapshot_compressed_roundtrip() {
+        let store = TensorStore::new();
+
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("test".into())),
+        );
+        tensor.set("count", TensorValue::Scalar(ScalarValue::Int(42)));
+        tensor.set("vector", TensorValue::Vector(vec![0.1, 0.2, 0.3, 0.4]));
+        store.put("emb:test1", tensor).unwrap();
+
+        let mut tensor2 = TensorData::new();
+        tensor2.set("value", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        store.put("other", tensor2).unwrap();
+
+        let config = tensor_compress::CompressionConfig {
+            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            delta_encoding: true,
+            rle_encoding: true,
+        };
+
+        let temp = std::env::temp_dir().join("test_compressed.bin");
+        store.save_snapshot_compressed(&temp, config).unwrap();
+
+        let loaded = TensorStore::load_snapshot_compressed(&temp).unwrap();
+        assert_eq!(loaded.len(), 2);
+
+        let t1 = loaded.get("emb:test1").unwrap();
+        assert!(t1.has("name"));
+        assert!(t1.has("vector"));
+
+        let t2 = loaded.get("other").unwrap();
+        assert!(t2.has("value"));
+
+        std::fs::remove_file(&temp).ok();
+    }
+
+    #[test]
+    fn snapshot_compressed_with_quantization() {
+        let store = TensorStore::new();
+
+        let embedding: Vec<f32> = (0..768).map(|i| (i as f32 / 768.0) - 0.5).collect();
+        let mut tensor = TensorData::new();
+        tensor.set("_embedding", TensorValue::Vector(embedding.clone()));
+        store.put("emb:doc1", tensor).unwrap();
+
+        let config = tensor_compress::CompressionConfig {
+            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            ..Default::default()
+        };
+
+        let temp = std::env::temp_dir().join("test_quant.bin");
+        store.save_snapshot_compressed(&temp, config).unwrap();
+
+        let file_size = std::fs::metadata(&temp).unwrap().len();
+
+        let loaded = TensorStore::load_snapshot_compressed(&temp).unwrap();
+        let restored = loaded.get("emb:doc1").unwrap();
+        let restored_vec = restored.get("_embedding").unwrap();
+
+        if let TensorValue::Vector(v) = restored_vec {
+            assert_eq!(v.len(), 768);
+            for (orig, rest) in embedding.iter().zip(v) {
+                assert!((orig - rest).abs() < 0.02, "Quantization error too large");
+            }
+        } else {
+            panic!("Expected vector");
+        }
+
+        let uncompressed_size = 768 * 4;
+        assert!(
+            file_size < uncompressed_size as u64,
+            "Compressed file should be smaller"
+        );
+
+        std::fs::remove_file(&temp).ok();
+    }
+
+    #[test]
+    fn snapshot_compressed_empty_store() {
+        let store = TensorStore::new();
+        let config = tensor_compress::CompressionConfig::default();
+
+        let temp = std::env::temp_dir().join("test_empty_compressed.bin");
+        store.save_snapshot_compressed(&temp, config).unwrap();
+
+        let loaded = TensorStore::load_snapshot_compressed(&temp).unwrap();
+        assert!(loaded.is_empty());
+
+        std::fs::remove_file(&temp).ok();
     }
 }

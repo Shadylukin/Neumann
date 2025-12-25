@@ -43,11 +43,19 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|         Tensor Compress (Module 8) [DONE]         |
+|   - Vector quantization (int8, binary)           |
+|   - Delta encoding for sorted IDs                |
+|   - Run-length encoding                          |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |           Persistence Layer [BASIC]               |
 |   - Snapshot save/load (bincode)                 |
+|   - Compressed snapshots (tensor_compress)       |
 |   - Atomic writes (temp file + rename)           |
 |   - Bloom filter rebuild on load                 |
-|   [Future: WAL, incremental, compression]        |
+|   [Future: WAL, incremental, streaming]          |
 +--------------------------------------------------+
 ```
 
@@ -68,6 +76,8 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `len() -> usize`
 - `save_snapshot(path) -> Result<(), SnapshotError>`
 - `load_snapshot(path) -> Result<TensorStore, SnapshotError>`
+- `save_snapshot_compressed(path, config) -> Result<(), SnapshotError>`
+- `load_snapshot_compressed(path) -> Result<TensorStore, SnapshotError>`
 
 **Serialization**: All core types (`TensorData`, `TensorValue`, `ScalarValue`) implement `serde::Serialize` and `serde::Deserialize`.
 
@@ -186,6 +196,31 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Implement syntax highlighting
 - Support multi-line queries
 
+### Module 8: Tensor Compress (Complete)
+
+**Responsibility**: Compression algorithms for tensor data.
+
+**Interface**:
+- `quantize_int8(vector) -> QuantizedInt8` - Compress f32 to int8 (4x)
+- `dequantize_int8(quantized) -> Vec<f32>` - Restore from int8
+- `quantize_binary(vector) -> QuantizedBinary` - Compress to binary (32x)
+- `dequantize_binary(quantized, len) -> Vec<f32>` - Restore from binary
+- `compress_ids(ids) -> Vec<u8>` - Delta + varint encoding
+- `decompress_ids(bytes) -> Vec<u64>` - Restore IDs
+- `rle_encode(data) -> RleEncoded<T>` - Run-length encoding
+- `rle_decode(encoded) -> Vec<T>` - Restore from RLE
+
+**Features**:
+- Vector quantization with ~1% error bound (int8)
+- Lossless delta encoding for sorted sequences
+- Lossless RLE for repeated values
+- Snapshot format v2 with magic bytes "NEUM"
+
+**Does Not**:
+- Handle persistence directly (used by TensorStore)
+- Implement product quantization (future)
+- Support streaming compression (future)
+
 ## Data Flow
 
 ### Write Path
@@ -302,6 +337,7 @@ Neumann/
     query-router.md          # Module 5 documentation
     neumann-parser.md        # Module 6 documentation
     neumann-shell.md         # Module 7 documentation
+    tensor-compress.md       # Module 8 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
@@ -336,6 +372,16 @@ Neumann/
       main.rs                # CLI entry point
     benches/
       neumann_shell_bench.rs # Performance benchmarks
+  tensor_compress/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 8: Public API
+      quantize.rs            # Vector quantization
+      delta.rs               # Delta + varint encoding
+      rle.rs                 # Run-length encoding
+      format.rs              # Snapshot format v2
+    benches/
+      tensor_compress_bench.rs # Compression benchmarks
 ```
 
 ## Quality Gates
@@ -347,7 +393,7 @@ Runs before every commit for all crates:
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (95% minimum, 94% for shell)
+5. `cargo llvm-cov` - Coverage check (95% minimum, 93% for shell)
 
 ### CI Pipeline
 
@@ -356,7 +402,7 @@ Runs on every PR:
 2. Format check - Code style
 3. Clippy lints - Static analysis
 4. Tests - Unit and integration tests
-5. Coverage - Minimum 95% per crate (94% for shell)
+5. Coverage - Minimum 95% per crate (93% for shell)
 6. Documentation build - Doc generation
 7. Security audit - Dependency vulnerabilities
 8. Miri - Undefined behavior detection (tensor_store)

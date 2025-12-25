@@ -305,6 +305,9 @@ graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 | `snapshot_with_bloom_filter` | Load with bloom filter rebuild |
 | `snapshot_load_nonexistent_file` | Error handling for missing file |
 | `snapshot_error_*` | Error type coverage |
+| `snapshot_compressed_roundtrip` | Compressed snapshot save/load |
+| `snapshot_compressed_with_quantization` | Int8 quantization works |
+| `snapshot_compressed_empty_store` | Empty store compression works |
 
 ## Architectural Decision: DashMap
 
@@ -356,6 +359,18 @@ let store = TensorStore::load_snapshot_with_bloom_filter(
     10_000,   // expected items
     0.01      // false positive rate
 )?;
+
+// Save with compression (see tensor_compress crate)
+use tensor_compress::{CompressionConfig, QuantMode};
+let config = CompressionConfig {
+    vector_quantization: Some(QuantMode::Int8),  // 4x compression
+    delta_encoding: true,                        // For sorted IDs
+    rle_encoding: true,                          // For repeated values
+};
+store.save_snapshot_compressed("data.bin", config)?;
+
+// Load compressed snapshot (auto-detects format)
+let store = TensorStore::load_snapshot_compressed("data.bin")?;
 ```
 
 ### Implementation Details
@@ -363,9 +378,21 @@ let store = TensorStore::load_snapshot_with_bloom_filter(
 | Feature | Description |
 |---------|-------------|
 | Format | bincode (compact binary) |
+| Compressed Format | Magic bytes "NEUM" + version header + compressed data |
 | Atomicity | Writes to `.tmp` file, then atomic rename |
 | Bloom Filter | Rebuilt on load if requested |
 | HNSW Index | Not persisted (rebuild required) |
+
+### Compression Options
+
+| Technique | Compression | Lossless | Best For |
+|-----------|-------------|----------|----------|
+| Int8 Quantization | 4x | No (~1% error) | Embeddings |
+| Binary Quantization | 32x | No (lossy) | High-dimensional similarity |
+| Delta Encoding | 4-8x | Yes | Sorted ID lists |
+| RLE | 2-100x | Yes | Repeated values |
+
+See [tensor_compress documentation](tensor-compress.md) for details.
 
 ### Usage Example
 
@@ -399,9 +426,9 @@ Not yet implemented:
 
 - **Write-Ahead Log (WAL)**: For durability between snapshots
 - **Incremental snapshots**: Only save changes since last snapshot
-- **Compression**: Reduce snapshot file size
 - **Transactions**: Atomic multi-key operations
 - **TTL**: Automatic expiration
 - **Background snapshots**: Async save without blocking
+- **Streaming Compression**: Process without loading full snapshot
 
 These belong in higher layers or future modules.

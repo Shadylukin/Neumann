@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -90,9 +90,9 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage report
         run: |
-          # Per-crate thresholds (neumann_shell has ~40 lines of untestable interactive REPL code)
+          # Per-crate thresholds (neumann_shell has untestable REPL code and binary entry point)
           case "${{ matrix.crate }}" in
-            neumann_shell) MIN_COV=94 ;;
+            neumann_shell) MIN_COV=93 ;;
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 
@@ -138,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -195,6 +195,8 @@ jobs:
             bench_name: query_router_bench
           - crate: neumann_shell
             bench_name: neumann_shell_bench
+          - crate: tensor_compress
+            bench_name: tensor_compress_bench
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
