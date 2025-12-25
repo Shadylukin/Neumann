@@ -38,6 +38,7 @@ use relational_engine::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use tensor_store::TensorStore;
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
 
 /// Error types for query routing.
@@ -199,6 +200,19 @@ impl QueryRouter {
         }
     }
 
+    /// Create a query router with a shared TensorStore for unified entity access.
+    ///
+    /// All engines share the same store, enabling cross-engine queries on unified entities.
+    /// Cloning TensorStore shares the underlying storage (via Arc<DashMap>).
+    pub fn with_shared_store(store: TensorStore) -> Self {
+        Self {
+            relational: Arc::new(RelationalEngine::with_store(store.clone())),
+            graph: Arc::new(GraphEngine::with_store(store.clone())),
+            vector: Arc::new(VectorEngine::with_store(store)),
+            hnsw_index: None,
+        }
+    }
+
     /// Get reference to relational engine.
     pub fn relational(&self) -> &RelationalEngine {
         &self.relational
@@ -219,6 +233,146 @@ impl QueryRouter {
         let (index, keys) = self.vector.build_hnsw_index_default()?;
         self.hnsw_index = Some((index, keys));
         Ok(())
+    }
+
+    // ========== Cross-Engine Query Methods ==========
+    // These methods enable queries that span multiple engines using unified entities.
+
+    /// Find entities similar to a query entity that are also connected via graph edges.
+    ///
+    /// Returns entities that:
+    /// 1. Have similar embeddings to the query entity
+    /// 2. Are connected (directly or indirectly) to the specified connected_to entity
+    pub fn find_similar_connected(
+        &self,
+        query_key: &str,
+        connected_to: &str,
+        top_k: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        let query_embedding = self
+            .vector
+            .get_entity_embedding(query_key)
+            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+
+        let similar = self
+            .vector
+            .search_entities(&query_embedding, top_k * 2)
+            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+
+        let connected_neighbors: std::collections::HashSet<String> = self
+            .graph
+            .get_entity_neighbors(connected_to)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let mut items: Vec<UnifiedItem> = similar
+            .into_iter()
+            .filter(|s| connected_neighbors.contains(&s.key))
+            .take(top_k)
+            .map(|s| UnifiedItem {
+                source: "vector+graph".to_string(),
+                id: s.key,
+                data: HashMap::new(),
+                score: Some(s.score),
+            })
+            .collect();
+
+        items.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(items)
+    }
+
+    /// Find graph neighbors of an entity that have embeddings, sorted by similarity to a query.
+    pub fn find_neighbors_by_similarity(
+        &self,
+        entity_key: &str,
+        query: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        let neighbors = self
+            .graph
+            .get_entity_neighbors(entity_key)
+            .map_err(|e| RouterError::GraphError(e.to_string()))?;
+
+        let mut items: Vec<UnifiedItem> = neighbors
+            .into_iter()
+            .filter_map(|neighbor_key| {
+                let embedding = self.vector.get_entity_embedding(&neighbor_key).ok()?;
+                if embedding.len() != query.len() {
+                    return None;
+                }
+
+                let score =
+                    vector_engine::VectorEngine::compute_similarity(query, &embedding).ok()?;
+
+                Some(UnifiedItem {
+                    source: "graph+vector".to_string(),
+                    id: neighbor_key,
+                    data: HashMap::new(),
+                    score: Some(score),
+                })
+            })
+            .collect();
+
+        items.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        items.truncate(top_k);
+
+        Ok(items)
+    }
+
+    /// Store a unified entity with relational, graph, and vector data.
+    pub fn create_unified_entity(
+        &self,
+        key: &str,
+        fields: HashMap<String, String>,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<()> {
+        if let Some(emb) = embedding {
+            self.vector
+                .set_entity_embedding(key, emb)
+                .map_err(|e| RouterError::VectorError(e.to_string()))?;
+        }
+
+        for (field_name, field_value) in fields {
+            let mut tensor = self
+                .vector
+                .store()
+                .get(key)
+                .unwrap_or_else(|_| tensor_store::TensorData::new());
+            tensor.set(
+                &field_name,
+                tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(field_value)),
+            );
+            self.vector
+                .store()
+                .put(key, tensor)
+                .map_err(|e: tensor_store::TensorStoreError| {
+                    RouterError::VectorError(e.to_string())
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Connect two entities with an edge.
+    pub fn connect_entities(
+        &self,
+        from_key: &str,
+        to_key: &str,
+        edge_type: &str,
+    ) -> Result<String> {
+        self.graph
+            .add_entity_edge(from_key, to_key, edge_type)
+            .map_err(|e| RouterError::GraphError(e.to_string()))
     }
 
     /// Execute a command string using the legacy string-based parser.
@@ -4102,5 +4256,227 @@ mod tests {
             },
             _ => panic!("Expected Rows"),
         }
+    }
+
+    // ========== Cross-Engine Tests ==========
+
+    #[test]
+    fn with_shared_store_creates_unified_router() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Verify all engines are accessible
+        assert!(router.relational().list_tables().is_empty());
+    }
+
+    #[test]
+    fn create_unified_entity_stores_embedding() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        let fields = HashMap::from([("name".to_string(), "Alice".to_string())]);
+        let embedding = vec![1.0, 0.0, 0.0];
+
+        router
+            .create_unified_entity("user:1", fields, Some(embedding.clone()))
+            .unwrap();
+
+        let retrieved = router.vector().get_entity_embedding("user:1").unwrap();
+        assert_eq!(retrieved, embedding);
+    }
+
+    #[test]
+    fn create_unified_entity_without_embedding() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        let fields = HashMap::from([("name".to_string(), "Alice".to_string())]);
+
+        router
+            .create_unified_entity("user:1", fields, None)
+            .unwrap();
+
+        // Should not have embedding
+        assert!(!router.vector().entity_has_embedding("user:1"));
+    }
+
+    #[test]
+    fn connect_entities_creates_edge() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        let edge_key = router
+            .connect_entities("user:1", "user:2", "follows")
+            .unwrap();
+
+        assert!(edge_key.starts_with("edge:follows:"));
+
+        let neighbors = router.graph().get_entity_neighbors_out("user:1").unwrap();
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0], "user:2");
+    }
+
+    #[test]
+    fn find_similar_connected_returns_intersection() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create entities with embeddings
+        router
+            .vector()
+            .set_entity_embedding("query", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:1", vec![0.9, 0.1, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:2", vec![0.8, 0.2, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:3", vec![0.0, 1.0, 0.0])
+            .unwrap();
+
+        // Connect users to hub
+        router
+            .graph()
+            .add_entity_edge("hub", "user:1", "connects")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("hub", "user:2", "connects")
+            .unwrap();
+        // user:3 is NOT connected to hub
+
+        let results = router.find_similar_connected("query", "hub", 5).unwrap();
+
+        // Should find user:1 and user:2 (similar AND connected), not user:3
+        assert!(results.len() <= 2);
+        for item in &results {
+            assert!(item.id == "user:1" || item.id == "user:2");
+            assert!(item.score.is_some());
+            assert_eq!(item.source, "vector+graph");
+        }
+    }
+
+    #[test]
+    fn find_similar_connected_no_embedding() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        let result = router.find_similar_connected("nonexistent", "hub", 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_neighbors_by_similarity() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create entities with embeddings
+        router
+            .vector()
+            .set_entity_embedding("user:1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:2", vec![0.0, 1.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:3", vec![0.5, 0.5, 0.0])
+            .unwrap();
+
+        // Create graph edges from center to others
+        router
+            .graph()
+            .add_entity_edge("center", "user:1", "knows")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "user:2", "knows")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "user:3", "knows")
+            .unwrap();
+
+        // Query similar to [1, 0, 0]
+        let query = vec![1.0, 0.0, 0.0];
+        let results = router
+            .find_neighbors_by_similarity("center", &query, 3)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // user:1 should be first (most similar)
+        assert_eq!(results[0].id, "user:1");
+        assert_eq!(results[0].source, "graph+vector");
+    }
+
+    #[test]
+    fn find_neighbors_by_similarity_no_entity() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        let result = router.find_neighbors_by_similarity("nonexistent", &[1.0, 0.0], 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_neighbors_by_similarity_filters_dimension_mismatch() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create entities with different dimensions
+        router
+            .vector()
+            .set_entity_embedding("user:1", vec![1.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:2", vec![1.0, 0.0, 0.0])
+            .unwrap(); // Different dim
+
+        router
+            .graph()
+            .add_entity_edge("center", "user:1", "knows")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "user:2", "knows")
+            .unwrap();
+
+        let query = vec![1.0, 0.0]; // 2D query
+        let results = router
+            .find_neighbors_by_similarity("center", &query, 5)
+            .unwrap();
+
+        // Should only find user:1 (matching dimension)
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "user:1");
+    }
+
+    #[test]
+    fn shared_store_engines_share_data() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Write via vector engine
+        router
+            .vector()
+            .set_entity_embedding("entity:1", vec![1.0, 2.0])
+            .unwrap();
+
+        // Add graph edges via graph engine
+        router
+            .graph()
+            .add_entity_edge("entity:1", "entity:2", "relates")
+            .unwrap();
+
+        // Verify both are accessible via unified entity
+        assert!(router.vector().entity_has_embedding("entity:1"));
+        assert!(router.graph().entity_has_edges("entity:1"));
     }
 }

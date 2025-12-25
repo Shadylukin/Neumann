@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
+use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropertyValue {
@@ -576,6 +576,252 @@ impl GraphEngine {
         self.store.delete(&Self::incoming_edges_key(id))?;
 
         Ok(())
+    }
+
+    // ========== Unified Entity Mode ==========
+    // These methods work with entity keys directly (e.g., "user:1") and use
+    // _out/_in fields for graph edges, enabling cross-engine queries.
+
+    /// Get or create an entity for graph operations.
+    fn get_or_create_entity(&self, key: &str) -> TensorData {
+        self.store.get(key).unwrap_or_else(|_| TensorData::new())
+    }
+
+    /// Add an outgoing edge to an entity's _out field.
+    pub fn add_entity_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<String> {
+        let edge_id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let edge_key = format!("edge:{}:{}", edge_type, edge_id);
+
+        let mut edge_data = TensorData::new();
+        edge_data.set(
+            fields::TYPE,
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        edge_data.set(
+            fields::FROM,
+            TensorValue::Scalar(ScalarValue::String(from_key.into())),
+        );
+        edge_data.set(
+            fields::TO,
+            TensorValue::Scalar(ScalarValue::String(to_key.into())),
+        );
+        edge_data.set(
+            fields::EDGE_TYPE,
+            TensorValue::Scalar(ScalarValue::String(edge_type.into())),
+        );
+        edge_data.set(
+            fields::DIRECTED,
+            TensorValue::Scalar(ScalarValue::Bool(true)),
+        );
+
+        self.store.put(&edge_key, edge_data)?;
+
+        let mut from_entity = self.get_or_create_entity(from_key);
+        from_entity.add_outgoing_edge(edge_key.clone());
+        self.store.put(from_key, from_entity)?;
+
+        let mut to_entity = self.get_or_create_entity(to_key);
+        to_entity.add_incoming_edge(edge_key.clone());
+        self.store.put(to_key, to_entity)?;
+
+        Ok(edge_key)
+    }
+
+    /// Add an undirected edge between two entities.
+    pub fn add_entity_edge_undirected(
+        &self,
+        key1: &str,
+        key2: &str,
+        edge_type: &str,
+    ) -> Result<String> {
+        let edge_id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let edge_key = format!("edge:{}:{}", edge_type, edge_id);
+
+        let mut edge_data = TensorData::new();
+        edge_data.set(
+            fields::TYPE,
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        edge_data.set(
+            fields::FROM,
+            TensorValue::Scalar(ScalarValue::String(key1.into())),
+        );
+        edge_data.set(
+            fields::TO,
+            TensorValue::Scalar(ScalarValue::String(key2.into())),
+        );
+        edge_data.set(
+            fields::EDGE_TYPE,
+            TensorValue::Scalar(ScalarValue::String(edge_type.into())),
+        );
+        edge_data.set(
+            fields::DIRECTED,
+            TensorValue::Scalar(ScalarValue::Bool(false)),
+        );
+
+        self.store.put(&edge_key, edge_data)?;
+
+        let mut entity1 = self.get_or_create_entity(key1);
+        entity1.add_outgoing_edge(edge_key.clone());
+        entity1.add_incoming_edge(edge_key.clone());
+        self.store.put(key1, entity1)?;
+
+        let mut entity2 = self.get_or_create_entity(key2);
+        entity2.add_outgoing_edge(edge_key.clone());
+        entity2.add_incoming_edge(edge_key.clone());
+        self.store.put(key2, entity2)?;
+
+        Ok(edge_key)
+    }
+
+    /// Get outgoing edge keys for an entity.
+    pub fn get_entity_outgoing(&self, key: &str) -> Result<Vec<String>> {
+        let entity = self
+            .store
+            .get(key)
+            .map_err(|_| GraphError::StorageError(format!("Entity not found: {}", key)))?;
+
+        Ok(entity.outgoing_edges().cloned().unwrap_or_default())
+    }
+
+    /// Get incoming edge keys for an entity.
+    pub fn get_entity_incoming(&self, key: &str) -> Result<Vec<String>> {
+        let entity = self
+            .store
+            .get(key)
+            .map_err(|_| GraphError::StorageError(format!("Entity not found: {}", key)))?;
+
+        Ok(entity.incoming_edges().cloned().unwrap_or_default())
+    }
+
+    /// Get edge data by edge key.
+    pub fn get_entity_edge(&self, edge_key: &str) -> Result<(String, String, String, bool)> {
+        let edge = self
+            .store
+            .get(edge_key)
+            .map_err(|_| GraphError::StorageError(format!("Edge not found: {}", edge_key)))?;
+
+        let from = match edge.get(fields::FROM) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.clone(),
+            _ => String::new(),
+        };
+        let to = match edge.get(fields::TO) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.clone(),
+            _ => String::new(),
+        };
+        let edge_type = match edge.get(fields::EDGE_TYPE) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.clone(),
+            _ => String::new(),
+        };
+        let directed = match edge.get(fields::DIRECTED) {
+            Some(TensorValue::Scalar(ScalarValue::Bool(b))) => *b,
+            _ => true,
+        };
+
+        Ok((from, to, edge_type, directed))
+    }
+
+    /// Get outgoing neighbor entity keys.
+    pub fn get_entity_neighbors_out(&self, key: &str) -> Result<Vec<String>> {
+        let edges = self.get_entity_outgoing(key)?;
+        let mut neighbors = Vec::new();
+
+        for edge_key in edges {
+            if let Ok((from, to, _, _)) = self.get_entity_edge(&edge_key) {
+                if from == key {
+                    neighbors.push(to);
+                } else {
+                    neighbors.push(from);
+                }
+            }
+        }
+
+        Ok(neighbors)
+    }
+
+    /// Get incoming neighbor entity keys.
+    pub fn get_entity_neighbors_in(&self, key: &str) -> Result<Vec<String>> {
+        let edges = self.get_entity_incoming(key)?;
+        let mut neighbors = Vec::new();
+
+        for edge_key in edges {
+            if let Ok((from, to, _, _)) = self.get_entity_edge(&edge_key) {
+                if to == key {
+                    neighbors.push(from);
+                } else {
+                    neighbors.push(to);
+                }
+            }
+        }
+
+        Ok(neighbors)
+    }
+
+    /// Get all neighbor entity keys (both directions).
+    pub fn get_entity_neighbors(&self, key: &str) -> Result<Vec<String>> {
+        let mut neighbors = HashSet::new();
+
+        for n in self.get_entity_neighbors_out(key)? {
+            neighbors.insert(n);
+        }
+        for n in self.get_entity_neighbors_in(key)? {
+            neighbors.insert(n);
+        }
+
+        neighbors.remove(key);
+        Ok(neighbors.into_iter().collect())
+    }
+
+    /// Check if an entity has graph edges.
+    pub fn entity_has_edges(&self, key: &str) -> bool {
+        self.store.get(key).map(|e| e.has_edges()).unwrap_or(false)
+    }
+
+    /// Delete an edge by key, updating connected entities.
+    pub fn delete_entity_edge(&self, edge_key: &str) -> Result<()> {
+        let (from, to, _, _) = self.get_entity_edge(edge_key)?;
+
+        if let Ok(mut from_entity) = self.store.get(&from) {
+            if let Some(edges) = from_entity.outgoing_edges() {
+                let filtered: Vec<String> =
+                    edges.iter().filter(|e| *e != edge_key).cloned().collect();
+                from_entity.set_outgoing_edges(filtered);
+            }
+            if let Some(edges) = from_entity.incoming_edges() {
+                let filtered: Vec<String> =
+                    edges.iter().filter(|e| *e != edge_key).cloned().collect();
+                from_entity.set_incoming_edges(filtered);
+            }
+            self.store.put(&from, from_entity)?;
+        }
+
+        if from != to {
+            if let Ok(mut to_entity) = self.store.get(&to) {
+                if let Some(edges) = to_entity.outgoing_edges() {
+                    let filtered: Vec<String> =
+                        edges.iter().filter(|e| *e != edge_key).cloned().collect();
+                    to_entity.set_outgoing_edges(filtered);
+                }
+                if let Some(edges) = to_entity.incoming_edges() {
+                    let filtered: Vec<String> =
+                        edges.iter().filter(|e| *e != edge_key).cloned().collect();
+                    to_entity.set_incoming_edges(filtered);
+                }
+                self.store.put(&to, to_entity)?;
+            }
+        }
+
+        self.store.delete(edge_key)?;
+        Ok(())
+    }
+
+    /// Scan for entities with graph edges.
+    pub fn scan_entities_with_edges(&self) -> Vec<String> {
+        self.store
+            .scan("")
+            .into_iter()
+            .filter(|key| self.entity_has_edges(key))
+            .collect()
     }
 }
 
@@ -1234,5 +1480,189 @@ mod tests {
         // Delete hub node (should use parallel edge deletion)
         engine.delete_node(hub).unwrap();
         assert!(!engine.node_exists(hub));
+    }
+
+    // Unified Entity Mode tests
+
+    #[test]
+    fn entity_edge_directed() {
+        let engine = GraphEngine::new();
+
+        let edge_key = engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+
+        assert!(edge_key.starts_with("edge:follows:"));
+
+        let outgoing = engine.get_entity_outgoing("user:1").unwrap();
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0], edge_key);
+
+        let incoming = engine.get_entity_incoming("user:2").unwrap();
+        assert_eq!(incoming.len(), 1);
+        assert_eq!(incoming[0], edge_key);
+    }
+
+    #[test]
+    fn entity_edge_undirected() {
+        let engine = GraphEngine::new();
+
+        let edge_key = engine
+            .add_entity_edge_undirected("user:1", "user:2", "friend")
+            .unwrap();
+
+        let out1 = engine.get_entity_outgoing("user:1").unwrap();
+        let in1 = engine.get_entity_incoming("user:1").unwrap();
+        let out2 = engine.get_entity_outgoing("user:2").unwrap();
+        let in2 = engine.get_entity_incoming("user:2").unwrap();
+
+        assert!(out1.contains(&edge_key));
+        assert!(in1.contains(&edge_key));
+        assert!(out2.contains(&edge_key));
+        assert!(in2.contains(&edge_key));
+    }
+
+    #[test]
+    fn entity_get_edge() {
+        let engine = GraphEngine::new();
+
+        let edge_key = engine
+            .add_entity_edge("user:1", "post:1", "created")
+            .unwrap();
+
+        let (from, to, edge_type, directed) = engine.get_entity_edge(&edge_key).unwrap();
+        assert_eq!(from, "user:1");
+        assert_eq!(to, "post:1");
+        assert_eq!(edge_type, "created");
+        assert!(directed);
+    }
+
+    #[test]
+    fn entity_neighbors_out() {
+        let engine = GraphEngine::new();
+
+        engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+        engine
+            .add_entity_edge("user:1", "user:3", "follows")
+            .unwrap();
+
+        let neighbors = engine.get_entity_neighbors_out("user:1").unwrap();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&"user:2".to_string()));
+        assert!(neighbors.contains(&"user:3".to_string()));
+    }
+
+    #[test]
+    fn entity_neighbors_in() {
+        let engine = GraphEngine::new();
+
+        engine
+            .add_entity_edge("user:1", "user:3", "follows")
+            .unwrap();
+        engine
+            .add_entity_edge("user:2", "user:3", "follows")
+            .unwrap();
+
+        let neighbors = engine.get_entity_neighbors_in("user:3").unwrap();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&"user:1".to_string()));
+        assert!(neighbors.contains(&"user:2".to_string()));
+    }
+
+    #[test]
+    fn entity_neighbors_both() {
+        let engine = GraphEngine::new();
+
+        engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+        engine
+            .add_entity_edge("user:3", "user:2", "follows")
+            .unwrap();
+
+        let neighbors = engine.get_entity_neighbors("user:2").unwrap();
+        assert_eq!(neighbors.len(), 2);
+    }
+
+    #[test]
+    fn entity_has_edges() {
+        let engine = GraphEngine::new();
+
+        assert!(!engine.entity_has_edges("user:1"));
+
+        engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+        assert!(engine.entity_has_edges("user:1"));
+        assert!(engine.entity_has_edges("user:2"));
+    }
+
+    #[test]
+    fn entity_delete_edge() {
+        let engine = GraphEngine::new();
+
+        let edge_key = engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+
+        engine.delete_entity_edge(&edge_key).unwrap();
+
+        let outgoing = engine.get_entity_outgoing("user:1").unwrap();
+        assert!(outgoing.is_empty());
+
+        let incoming = engine.get_entity_incoming("user:2").unwrap();
+        assert!(incoming.is_empty());
+    }
+
+    #[test]
+    fn entity_preserves_other_fields() {
+        let store = TensorStore::new();
+
+        let mut user = TensorData::new();
+        user.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Alice".into())),
+        );
+        store.put("user:1", user).unwrap();
+
+        let engine = GraphEngine::with_store(store);
+        engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+
+        let entity = engine.store.get("user:1").unwrap();
+        assert!(entity.has("name"));
+        assert!(entity.has(fields::OUT));
+    }
+
+    #[test]
+    fn entity_scan_with_edges() {
+        let engine = GraphEngine::new();
+
+        engine
+            .add_entity_edge("user:1", "user:2", "follows")
+            .unwrap();
+        engine
+            .add_entity_edge("user:3", "user:4", "follows")
+            .unwrap();
+
+        let with_edges = engine.scan_entities_with_edges();
+        assert_eq!(with_edges.len(), 4);
+    }
+
+    #[test]
+    fn entity_edge_nonexistent_returns_error() {
+        let engine = GraphEngine::new();
+        let result = engine.get_entity_edge("nonexistent:edge");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn entity_outgoing_nonexistent_returns_error() {
+        let engine = GraphEngine::new();
+        let result = engine.get_entity_outgoing("nonexistent:entity");
+        assert!(result.is_err());
     }
 }

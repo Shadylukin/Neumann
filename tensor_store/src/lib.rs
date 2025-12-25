@@ -3,6 +3,36 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+/// Reserved field prefixes for unified entity storage.
+///
+/// These prefixes are used by the different engines to store their data
+/// within a single TensorData entity, enabling cross-engine queries.
+pub mod fields {
+    /// Graph: outgoing edge pointers (Vec<String>)
+    pub const OUT: &str = "_out";
+    /// Graph: incoming edge pointers (Vec<String>)
+    pub const IN: &str = "_in";
+    /// Vector: embedding vector (Vec<f32>)
+    pub const EMBEDDING: &str = "_embedding";
+    /// Graph/Relational: entity type/label
+    pub const LABEL: &str = "_label";
+    /// System: entity type discriminator ("node", "edge", "row")
+    pub const TYPE: &str = "_type";
+    /// System: entity ID
+    pub const ID: &str = "_id";
+    /// Graph: edge source node
+    pub const FROM: &str = "_from";
+    /// Graph: edge target node
+    pub const TO: &str = "_to";
+    /// Graph: edge type
+    pub const EDGE_TYPE: &str = "_edge_type";
+    /// Graph: whether edge is directed
+    pub const DIRECTED: &str = "_directed";
+    /// Relational: table name for row entities
+    pub const TABLE: &str = "_table";
+}
 
 /// Thread-safe Bloom filter for fast negative lookups.
 ///
@@ -196,6 +226,119 @@ impl TensorData {
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
+
+    pub fn entity_type(&self) -> Option<&str> {
+        match self.get(fields::TYPE) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn entity_id(&self) -> Option<i64> {
+        match self.get(fields::ID) {
+            Some(TensorValue::Scalar(ScalarValue::Int(id))) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        match self.get(fields::LABEL) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn embedding(&self) -> Option<&Vec<f32>> {
+        match self.get(fields::EMBEDDING) {
+            Some(TensorValue::Vector(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn outgoing_edges(&self) -> Option<&Vec<String>> {
+        match self.get(fields::OUT) {
+            Some(TensorValue::Pointers(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn incoming_edges(&self) -> Option<&Vec<String>> {
+        match self.get(fields::IN) {
+            Some(TensorValue::Pointers(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn set_entity_type(&mut self, entity_type: &str) {
+        self.set(
+            fields::TYPE,
+            TensorValue::Scalar(ScalarValue::String(entity_type.to_string())),
+        );
+    }
+
+    pub fn set_entity_id(&mut self, id: i64) {
+        self.set(fields::ID, TensorValue::Scalar(ScalarValue::Int(id)));
+    }
+
+    pub fn set_label(&mut self, label: &str) {
+        self.set(
+            fields::LABEL,
+            TensorValue::Scalar(ScalarValue::String(label.to_string())),
+        );
+    }
+
+    pub fn set_embedding(&mut self, embedding: Vec<f32>) {
+        self.set(fields::EMBEDDING, TensorValue::Vector(embedding));
+    }
+
+    pub fn set_outgoing_edges(&mut self, edges: Vec<String>) {
+        self.set(fields::OUT, TensorValue::Pointers(edges));
+    }
+
+    pub fn set_incoming_edges(&mut self, edges: Vec<String>) {
+        self.set(fields::IN, TensorValue::Pointers(edges));
+    }
+
+    /// Adds edge if not already present.
+    pub fn add_outgoing_edge(&mut self, edge_key: String) {
+        let mut edges = match self.get(fields::OUT) {
+            Some(TensorValue::Pointers(p)) => p.clone(),
+            _ => Vec::new(),
+        };
+        if !edges.contains(&edge_key) {
+            edges.push(edge_key);
+        }
+        self.set(fields::OUT, TensorValue::Pointers(edges));
+    }
+
+    /// Adds edge if not already present.
+    pub fn add_incoming_edge(&mut self, edge_key: String) {
+        let mut edges = match self.get(fields::IN) {
+            Some(TensorValue::Pointers(p)) => p.clone(),
+            _ => Vec::new(),
+        };
+        if !edges.contains(&edge_key) {
+            edges.push(edge_key);
+        }
+        self.set(fields::IN, TensorValue::Pointers(edges));
+    }
+
+    pub fn has_embedding(&self) -> bool {
+        self.has(fields::EMBEDDING)
+    }
+
+    pub fn has_edges(&self) -> bool {
+        self.has(fields::OUT) || self.has(fields::IN)
+    }
+
+    /// Returns fields that don't start with underscore.
+    pub fn user_fields(&self) -> impl Iterator<Item = (&String, &TensorValue)> {
+        self.fields.iter().filter(|(k, _)| !k.starts_with('_'))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &TensorValue)> {
+        self.fields.iter()
+    }
 }
 
 pub type Result<T> = std::result::Result<T, TensorStoreError>;
@@ -231,9 +374,11 @@ impl std::error::Error for TensorStoreError {}
 /// An optional Bloom filter can be enabled to accelerate negative lookups for sparse key spaces.
 /// When enabled, `get()` and `exists()` will first check the Bloom filter and return immediately
 /// if the key is definitely not present, avoiding the HashMap lookup.
+/// Clone creates a shared reference to the same underlying storage.
+#[derive(Clone)]
 pub struct TensorStore {
-    data: DashMap<String, TensorData>,
-    bloom_filter: Option<BloomFilter>,
+    data: Arc<DashMap<String, TensorData>>,
+    bloom_filter: Option<Arc<BloomFilter>>,
 }
 
 impl TensorStore {
@@ -241,7 +386,7 @@ impl TensorStore {
 
     pub fn new() -> Self {
         Self {
-            data: DashMap::new(),
+            data: Arc::new(DashMap::new()),
             bloom_filter: None,
         }
     }
@@ -249,7 +394,7 @@ impl TensorStore {
     /// Create a store with a specific capacity hint for better initial allocation.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            data: DashMap::with_capacity(capacity),
+            data: Arc::new(DashMap::with_capacity(capacity)),
             bloom_filter: None,
         }
     }
@@ -264,8 +409,11 @@ impl TensorStore {
     /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
     pub fn with_bloom_filter(expected_items: usize, false_positive_rate: f64) -> Self {
         Self {
-            data: DashMap::new(),
-            bloom_filter: Some(BloomFilter::new(expected_items, false_positive_rate)),
+            data: Arc::new(DashMap::new()),
+            bloom_filter: Some(Arc::new(BloomFilter::new(
+                expected_items,
+                false_positive_rate,
+            ))),
         }
     }
 
@@ -274,8 +422,8 @@ impl TensorStore {
     /// Uses defaults: 10,000 expected items, 1% false positive rate.
     pub fn with_default_bloom_filter() -> Self {
         Self {
-            data: DashMap::new(),
-            bloom_filter: Some(BloomFilter::with_defaults()),
+            data: Arc::new(DashMap::new()),
+            bloom_filter: Some(Arc::new(BloomFilter::with_defaults())),
         }
     }
 
@@ -378,6 +526,196 @@ impl TensorStore {
 }
 
 impl Default for TensorStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Unified entity store that provides a shared storage layer for all engines.
+///
+/// EntityStore wraps a TensorStore and provides entity-oriented access patterns
+/// that enable cross-engine queries. All engines can share the same EntityStore
+/// to enable unified entity access.
+///
+/// # Entity Key Format
+///
+/// Entities use the format `{type}:{id}`, for example:
+/// - `user:1` - A user entity
+/// - `post:42` - A post entity
+/// - `edge:123` - An edge entity
+///
+/// # Unified Entity Model
+///
+/// A single entity can have:
+/// - Relational fields (scalars like name, age, email)
+/// - Graph connections (outgoing/incoming edge pointers)
+/// - Vector embeddings (for similarity search)
+///
+/// ```text
+/// user:1
+/// ├── Relational: name="Alice", age=30, email="..."
+/// ├── Graph: _out=["edge:1", "edge:2"], _in=["edge:3"]
+/// └── Vector: _embedding=[0.1, 0.2, 0.3, ...]
+/// ```
+#[derive(Clone)]
+pub struct EntityStore {
+    store: Arc<TensorStore>,
+}
+
+impl EntityStore {
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(TensorStore::new()),
+        }
+    }
+
+    pub fn with_store(store: TensorStore) -> Self {
+        Self {
+            store: Arc::new(store),
+        }
+    }
+
+    pub fn with_arc(store: Arc<TensorStore>) -> Self {
+        Self { store }
+    }
+
+    pub fn store(&self) -> &TensorStore {
+        &self.store
+    }
+
+    pub fn store_arc(&self) -> Arc<TensorStore> {
+        Arc::clone(&self.store)
+    }
+
+    pub fn entity_key(entity_type: &str, id: u64) -> String {
+        format!("{}:{}", entity_type, id)
+    }
+
+    pub fn parse_key(key: &str) -> Option<(&str, u64)> {
+        let parts: Vec<&str> = key.splitn(2, ':').collect();
+        if parts.len() == 2 {
+            parts[1].parse().ok().map(|id| (parts[0], id))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Result<TensorData> {
+        self.store.get(key)
+    }
+
+    pub fn put(&self, key: impl Into<String>, data: TensorData) -> Result<()> {
+        self.store.put(key, data)
+    }
+
+    pub fn delete(&self, key: &str) -> Result<()> {
+        self.store.delete(key)
+    }
+
+    pub fn exists(&self, key: &str) -> bool {
+        self.store.exists(key)
+    }
+
+    /// Returns existing entity or creates empty TensorData if not found.
+    pub fn get_or_create(&self, key: &str) -> TensorData {
+        self.store.get(key).unwrap_or_else(|_| TensorData::new())
+    }
+
+    /// Atomically read-modify-write an entity.
+    pub fn update<F>(&self, key: &str, updater: F) -> Result<()>
+    where
+        F: FnOnce(&mut TensorData),
+    {
+        let mut data = self.get_or_create(key);
+        updater(&mut data);
+        self.store.put(key, data)
+    }
+
+    pub fn scan_type(&self, entity_type: &str) -> Vec<String> {
+        self.store.scan(&format!("{}:", entity_type))
+    }
+
+    pub fn scan_with_embeddings(&self) -> Vec<String> {
+        self.store
+            .scan("")
+            .into_iter()
+            .filter(|key| {
+                if let Ok(data) = self.store.get(key) {
+                    data.has_embedding()
+                } else {
+                    false
+                }
+            })
+            .collect()
+    }
+
+    pub fn scan_with_edges(&self) -> Vec<String> {
+        self.store
+            .scan("")
+            .into_iter()
+            .filter(|key| {
+                if let Ok(data) = self.store.get(key) {
+                    data.has_edges()
+                } else {
+                    false
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_embedding(&self, key: &str) -> Option<Vec<f32>> {
+        self.store
+            .get(key)
+            .ok()
+            .and_then(|data| data.embedding().cloned())
+    }
+
+    /// Creates entity if it doesn't exist.
+    pub fn set_embedding(&self, key: &str, embedding: Vec<f32>) -> Result<()> {
+        self.update(key, |data| {
+            data.set_embedding(embedding);
+        })
+    }
+
+    /// Updates both from and to nodes with edge pointers.
+    pub fn add_edge(&self, from_key: &str, to_key: &str, edge_key: &str) -> Result<()> {
+        self.update(from_key, |data| {
+            data.add_outgoing_edge(edge_key.to_string());
+        })?;
+
+        self.update(to_key, |data| {
+            data.add_incoming_edge(edge_key.to_string());
+        })
+    }
+
+    pub fn outgoing_neighbors(&self, key: &str) -> Result<Vec<String>> {
+        let data = self.get(key)?;
+        Ok(data.outgoing_edges().cloned().unwrap_or_default())
+    }
+
+    pub fn incoming_neighbors(&self, key: &str) -> Result<Vec<String>> {
+        let data = self.get(key)?;
+        Ok(data.incoming_edges().cloned().unwrap_or_default())
+    }
+
+    pub fn clear(&self) {
+        self.store.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.store.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.store.is_empty()
+    }
+
+    pub fn count_type(&self, entity_type: &str) -> usize {
+        self.store.scan_count(&format!("{}:", entity_type))
+    }
+}
+
+impl Default for EntityStore {
     fn default() -> Self {
         Self::new()
     }
@@ -1089,5 +1427,296 @@ mod tests {
                 assert!(filter.might_contain(&format!("thread{}:key{}", t, i)));
             }
         }
+    }
+
+    // TensorData entity helper tests
+
+    #[test]
+    fn tensor_data_entity_type_accessors() {
+        let mut tensor = TensorData::new();
+        assert!(tensor.entity_type().is_none());
+
+        tensor.set_entity_type("node");
+        assert_eq!(tensor.entity_type(), Some("node"));
+
+        tensor.set_entity_id(42);
+        assert_eq!(tensor.entity_id(), Some(42));
+
+        tensor.set_label("Person");
+        assert_eq!(tensor.label(), Some("Person"));
+    }
+
+    #[test]
+    fn tensor_data_embedding_accessors() {
+        let mut tensor = TensorData::new();
+        assert!(tensor.embedding().is_none());
+        assert!(!tensor.has_embedding());
+
+        tensor.set_embedding(vec![0.1, 0.2, 0.3]);
+        assert!(tensor.has_embedding());
+        assert_eq!(tensor.embedding(), Some(&vec![0.1, 0.2, 0.3]));
+    }
+
+    #[test]
+    fn tensor_data_edge_accessors() {
+        let mut tensor = TensorData::new();
+        assert!(tensor.outgoing_edges().is_none());
+        assert!(tensor.incoming_edges().is_none());
+        assert!(!tensor.has_edges());
+
+        tensor.set_outgoing_edges(vec!["edge:1".to_string()]);
+        tensor.set_incoming_edges(vec!["edge:2".to_string()]);
+        assert!(tensor.has_edges());
+
+        assert_eq!(tensor.outgoing_edges(), Some(&vec!["edge:1".to_string()]));
+        assert_eq!(tensor.incoming_edges(), Some(&vec!["edge:2".to_string()]));
+    }
+
+    #[test]
+    fn tensor_data_add_edges_deduplicates() {
+        let mut tensor = TensorData::new();
+
+        tensor.add_outgoing_edge("edge:1".to_string());
+        tensor.add_outgoing_edge("edge:1".to_string());
+        tensor.add_outgoing_edge("edge:2".to_string());
+
+        let edges = tensor.outgoing_edges().unwrap();
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&"edge:1".to_string()));
+        assert!(edges.contains(&"edge:2".to_string()));
+    }
+
+    #[test]
+    fn tensor_data_user_fields() {
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Alice".into())),
+        );
+        tensor.set("age", TensorValue::Scalar(ScalarValue::Int(30)));
+        tensor.set_entity_type("user");
+        tensor.set_entity_id(1);
+
+        let user_fields: Vec<_> = tensor.user_fields().collect();
+        assert_eq!(user_fields.len(), 2);
+
+        let all_fields: Vec<_> = tensor.iter().collect();
+        assert_eq!(all_fields.len(), 4);
+    }
+
+    // EntityStore tests
+
+    #[test]
+    fn entity_store_basic_operations() {
+        let store = EntityStore::new();
+        assert!(store.is_empty());
+
+        let mut data = TensorData::new();
+        data.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Alice".into())),
+        );
+        store.put("user:1", data).unwrap();
+
+        assert!(store.exists("user:1"));
+        assert_eq!(store.len(), 1);
+
+        let retrieved = store.get("user:1").unwrap();
+        match retrieved.get("name") {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => assert_eq!(s, "Alice"),
+            _ => panic!("expected string"),
+        }
+
+        store.delete("user:1").unwrap();
+        assert!(!store.exists("user:1"));
+    }
+
+    #[test]
+    fn entity_store_entity_key() {
+        assert_eq!(EntityStore::entity_key("user", 42), "user:42");
+        assert_eq!(EntityStore::entity_key("post", 1), "post:1");
+    }
+
+    #[test]
+    fn entity_store_parse_key() {
+        assert_eq!(EntityStore::parse_key("user:42"), Some(("user", 42)));
+        assert_eq!(EntityStore::parse_key("post:1"), Some(("post", 1)));
+        assert_eq!(EntityStore::parse_key("invalid"), None);
+        assert_eq!(EntityStore::parse_key("user:abc"), None);
+    }
+
+    #[test]
+    fn entity_store_get_or_create() {
+        let store = EntityStore::new();
+
+        let data = store.get_or_create("user:1");
+        assert!(data.is_empty());
+
+        let mut existing = TensorData::new();
+        existing.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Bob".into())),
+        );
+        store.put("user:2", existing).unwrap();
+
+        let data2 = store.get_or_create("user:2");
+        assert!(!data2.is_empty());
+    }
+
+    #[test]
+    fn entity_store_update() {
+        let store = EntityStore::new();
+
+        store
+            .update("user:1", |data| {
+                data.set(
+                    "name",
+                    TensorValue::Scalar(ScalarValue::String("Alice".into())),
+                );
+            })
+            .unwrap();
+
+        store
+            .update("user:1", |data| {
+                data.set("age", TensorValue::Scalar(ScalarValue::Int(30)));
+            })
+            .unwrap();
+
+        let data = store.get("user:1").unwrap();
+        assert!(data.has("name"));
+        assert!(data.has("age"));
+    }
+
+    #[test]
+    fn entity_store_embeddings() {
+        let store = EntityStore::new();
+
+        store.set_embedding("user:1", vec![0.1, 0.2, 0.3]).unwrap();
+        store.set_embedding("user:2", vec![0.4, 0.5, 0.6]).unwrap();
+
+        assert_eq!(store.get_embedding("user:1"), Some(vec![0.1, 0.2, 0.3]));
+        assert_eq!(store.get_embedding("user:3"), None);
+
+        let with_embeddings = store.scan_with_embeddings();
+        assert_eq!(with_embeddings.len(), 2);
+    }
+
+    #[test]
+    fn entity_store_edges() {
+        let store = EntityStore::new();
+
+        let mut user1 = TensorData::new();
+        user1.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Alice".into())),
+        );
+        store.put("user:1", user1).unwrap();
+
+        let mut user2 = TensorData::new();
+        user2.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Bob".into())),
+        );
+        store.put("user:2", user2).unwrap();
+
+        store.add_edge("user:1", "user:2", "edge:1").unwrap();
+
+        let outgoing = store.outgoing_neighbors("user:1").unwrap();
+        assert_eq!(outgoing, vec!["edge:1"]);
+
+        let incoming = store.incoming_neighbors("user:2").unwrap();
+        assert_eq!(incoming, vec!["edge:1"]);
+
+        let with_edges = store.scan_with_edges();
+        assert_eq!(with_edges.len(), 2);
+    }
+
+    #[test]
+    fn entity_store_scan_type() {
+        let store = EntityStore::new();
+
+        store.put("user:1", TensorData::new()).unwrap();
+        store.put("user:2", TensorData::new()).unwrap();
+        store.put("post:1", TensorData::new()).unwrap();
+
+        let users = store.scan_type("user");
+        assert_eq!(users.len(), 2);
+
+        let posts = store.scan_type("post");
+        assert_eq!(posts.len(), 1);
+
+        assert_eq!(store.count_type("user"), 2);
+        assert_eq!(store.count_type("post"), 1);
+    }
+
+    #[test]
+    fn entity_store_with_arc() {
+        let tensor_store = Arc::new(TensorStore::new());
+        let store1 = EntityStore::with_arc(Arc::clone(&tensor_store));
+        let store2 = EntityStore::with_arc(Arc::clone(&tensor_store));
+
+        store1.put("shared:1", TensorData::new()).unwrap();
+        assert!(store2.exists("shared:1"));
+    }
+
+    #[test]
+    fn entity_store_clone() {
+        let store1 = EntityStore::new();
+        store1.put("key:1", TensorData::new()).unwrap();
+
+        let store2 = store1.clone();
+        assert!(store2.exists("key:1"));
+
+        store2.put("key:2", TensorData::new()).unwrap();
+        assert!(store1.exists("key:2"));
+    }
+
+    #[test]
+    fn entity_store_default() {
+        let store = EntityStore::default();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn entity_store_clear() {
+        let store = EntityStore::new();
+        store.put("a", TensorData::new()).unwrap();
+        store.put("b", TensorData::new()).unwrap();
+
+        assert_eq!(store.len(), 2);
+        store.clear();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn entity_store_unified_entity() {
+        let store = EntityStore::new();
+
+        store
+            .update("user:1", |data| {
+                data.set_entity_type("user");
+                data.set_entity_id(1);
+                data.set(
+                    "name",
+                    TensorValue::Scalar(ScalarValue::String("Alice".into())),
+                );
+                data.set("age", TensorValue::Scalar(ScalarValue::Int(30)));
+            })
+            .unwrap();
+
+        store.set_embedding("user:1", vec![0.1, 0.2, 0.3]).unwrap();
+
+        store
+            .add_edge("user:1", "user:2", "edge:follows:1")
+            .unwrap();
+
+        let data = store.get("user:1").unwrap();
+        assert_eq!(data.entity_type(), Some("user"));
+        assert_eq!(data.entity_id(), Some(1));
+        assert!(data.has_embedding());
+        assert!(data.has_edges());
+
+        let user_fields: Vec<_> = data.user_fields().collect();
+        assert_eq!(user_fields.len(), 2);
     }
 }

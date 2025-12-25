@@ -3,7 +3,7 @@
 //! Provides embeddings storage and similarity search functionality.
 
 use rayon::prelude::*;
-use tensor_store::{TensorData, TensorStore, TensorStoreError, TensorValue};
+use tensor_store::{fields, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 // Re-export HNSW types for public use
 pub use hnsw::{HNSWConfig, HNSWIndex};
@@ -623,6 +623,11 @@ impl VectorEngine {
         Self { store }
     }
 
+    /// Get a reference to the underlying TensorStore.
+    pub fn store(&self) -> &TensorStore {
+        &self.store
+    }
+
     /// Key prefix for embeddings.
     fn embedding_key(key: &str) -> String {
         format!("emb:{}", key)
@@ -892,8 +897,6 @@ impl VectorEngine {
         self.build_hnsw_index(HNSWConfig::default())
     }
 
-    /// Search using an existing HNSW index.
-    ///
     /// This is a convenience method that converts node IDs back to SearchResults.
     pub fn search_with_hnsw(
         &self,
@@ -919,6 +922,119 @@ impl VectorEngine {
                 })
             })
             .collect())
+    }
+
+    // ========== Unified Entity Mode ==========
+    // These methods work with entity keys directly (e.g., "user:1") and use the
+    // _embedding field, enabling cross-engine queries on shared entities.
+
+    /// Store embedding in an entity's _embedding field. Creates entity if needed.
+    pub fn set_entity_embedding(&self, entity_key: &str, vector: Vec<f32>) -> Result<()> {
+        if vector.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+
+        let mut tensor = self
+            .store
+            .get(entity_key)
+            .unwrap_or_else(|_| TensorData::new());
+        tensor.set(fields::EMBEDDING, TensorValue::Vector(vector));
+        self.store.put(entity_key, tensor)?;
+        Ok(())
+    }
+
+    /// Get embedding from an entity's _embedding field.
+    pub fn get_entity_embedding(&self, entity_key: &str) -> Result<Vec<f32>> {
+        let tensor = self
+            .store
+            .get(entity_key)
+            .map_err(|_| VectorError::NotFound(entity_key.to_string()))?;
+
+        match tensor.get(fields::EMBEDDING) {
+            Some(TensorValue::Vector(v)) => Ok(v.clone()),
+            _ => Err(VectorError::NotFound(entity_key.to_string())),
+        }
+    }
+
+    /// Check if an entity has an embedding.
+    pub fn entity_has_embedding(&self, entity_key: &str) -> bool {
+        self.store
+            .get(entity_key)
+            .map(|t| t.has(fields::EMBEDDING))
+            .unwrap_or(false)
+    }
+
+    /// Remove embedding from an entity (keeps other entity data).
+    pub fn remove_entity_embedding(&self, entity_key: &str) -> Result<()> {
+        let mut tensor = self
+            .store
+            .get(entity_key)
+            .map_err(|_| VectorError::NotFound(entity_key.to_string()))?;
+
+        if tensor.remove(fields::EMBEDDING).is_none() {
+            return Err(VectorError::NotFound(entity_key.to_string()));
+        }
+
+        self.store.put(entity_key, tensor)?;
+        Ok(())
+    }
+
+    /// Search for similar entities using _embedding field.
+    pub fn search_entities(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        let query_magnitude = Self::magnitude(query);
+        if query_magnitude == 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let keys = self.store.scan("");
+
+        let mut results: Vec<SearchResult> = keys
+            .iter()
+            .filter_map(|key| {
+                let tensor = self.store.get(key).ok()?;
+                let stored_vec = match tensor.get(fields::EMBEDDING) {
+                    Some(TensorValue::Vector(v)) => v,
+                    _ => return None,
+                };
+
+                if stored_vec.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                Some(SearchResult::new(key.clone(), score))
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+
+        Ok(results)
+    }
+
+    /// Scan for all entity keys that have embeddings.
+    pub fn scan_entities_with_embeddings(&self) -> Vec<String> {
+        self.store
+            .scan("")
+            .into_iter()
+            .filter(|key| self.entity_has_embedding(key))
+            .collect()
+    }
+
+    /// Count entities with embeddings (unified mode).
+    pub fn count_entities_with_embeddings(&self) -> usize {
+        self.scan_entities_with_embeddings().len()
     }
 }
 
@@ -1579,5 +1695,182 @@ mod tests {
 
         let result = engine.search_with_hnsw(&index, &key_mapping, &[1.0], 0);
         assert!(matches!(result, Err(VectorError::InvalidTopK)));
+    }
+
+    // Unified Entity Mode tests
+
+    #[test]
+    fn entity_embedding_store_and_retrieve() {
+        let engine = VectorEngine::new();
+        let vector = vec![1.0, 2.0, 3.0];
+
+        engine
+            .set_entity_embedding("user:1", vector.clone())
+            .unwrap();
+
+        let retrieved = engine.get_entity_embedding("user:1").unwrap();
+        assert_eq!(retrieved, vector);
+    }
+
+    #[test]
+    fn entity_embedding_preserves_other_fields() {
+        let store = TensorStore::new();
+
+        let mut data = TensorData::new();
+        data.set(
+            "name",
+            TensorValue::Scalar(tensor_store::ScalarValue::String("Alice".into())),
+        );
+        store.put("user:1", data).unwrap();
+
+        let engine = VectorEngine::with_store(store);
+        engine
+            .set_entity_embedding("user:1", vec![0.1, 0.2])
+            .unwrap();
+
+        let tensor = engine.store.get("user:1").unwrap();
+        assert!(tensor.has("name"));
+        assert!(tensor.has(fields::EMBEDDING));
+    }
+
+    #[test]
+    fn entity_has_embedding_check() {
+        let engine = VectorEngine::new();
+
+        assert!(!engine.entity_has_embedding("user:1"));
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 2.0])
+            .unwrap();
+        assert!(engine.entity_has_embedding("user:1"));
+    }
+
+    #[test]
+    fn entity_embedding_remove() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 2.0])
+            .unwrap();
+        assert!(engine.entity_has_embedding("user:1"));
+
+        engine.remove_entity_embedding("user:1").unwrap();
+        assert!(!engine.entity_has_embedding("user:1"));
+    }
+
+    #[test]
+    fn entity_embedding_remove_nonexistent_error() {
+        let engine = VectorEngine::new();
+        let result = engine.remove_entity_embedding("user:999");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn entity_embedding_get_nonexistent_error() {
+        let engine = VectorEngine::new();
+        let result = engine.get_entity_embedding("user:999");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn entity_embedding_empty_vector_error() {
+        let engine = VectorEngine::new();
+        let result = engine.set_entity_embedding("user:1", vec![]);
+        assert!(matches!(result, Err(VectorError::EmptyVector)));
+    }
+
+    #[test]
+    fn search_entities_basic() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        engine
+            .set_entity_embedding("user:2", vec![0.0, 1.0, 0.0])
+            .unwrap();
+        engine
+            .set_entity_embedding("user:3", vec![1.0, 1.0, 0.0])
+            .unwrap();
+
+        let results = engine.search_entities(&[1.0, 0.0, 0.0], 3).unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].key, "user:1");
+        assert!((results[0].score - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn search_entities_filters_non_embeddings() {
+        let store = TensorStore::new();
+
+        let mut user1 = TensorData::new();
+        user1.set(fields::EMBEDDING, TensorValue::Vector(vec![1.0, 0.0]));
+        store.put("user:1", user1).unwrap();
+
+        let mut user2 = TensorData::new();
+        user2.set(
+            "name",
+            TensorValue::Scalar(tensor_store::ScalarValue::String("Bob".into())),
+        );
+        store.put("user:2", user2).unwrap();
+
+        let engine = VectorEngine::with_store(store);
+        let results = engine.search_entities(&[1.0, 0.0], 10).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "user:1");
+    }
+
+    #[test]
+    fn scan_entities_with_embeddings() {
+        let engine = VectorEngine::new();
+
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 2.0])
+            .unwrap();
+        engine
+            .set_entity_embedding("user:2", vec![3.0, 4.0])
+            .unwrap();
+
+        let keys = engine.scan_entities_with_embeddings();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn count_entities_with_embeddings() {
+        let engine = VectorEngine::new();
+
+        assert_eq!(engine.count_entities_with_embeddings(), 0);
+
+        engine.set_entity_embedding("user:1", vec![1.0]).unwrap();
+        engine.set_entity_embedding("user:2", vec![2.0]).unwrap();
+
+        assert_eq!(engine.count_entities_with_embeddings(), 2);
+    }
+
+    #[test]
+    fn search_entities_empty_query_error() {
+        let engine = VectorEngine::new();
+        let result = engine.search_entities(&[], 5);
+        assert!(matches!(result, Err(VectorError::EmptyVector)));
+    }
+
+    #[test]
+    fn search_entities_zero_top_k_error() {
+        let engine = VectorEngine::new();
+        let result = engine.search_entities(&[1.0], 0);
+        assert!(matches!(result, Err(VectorError::InvalidTopK)));
+    }
+
+    #[test]
+    fn search_entities_zero_query_returns_empty() {
+        let engine = VectorEngine::new();
+        engine
+            .set_entity_embedding("user:1", vec![1.0, 0.0])
+            .unwrap();
+
+        let results = engine.search_entities(&[0.0, 0.0], 5).unwrap();
+        assert!(results.is_empty());
     }
 }
