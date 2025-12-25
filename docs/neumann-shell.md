@@ -81,7 +81,8 @@ pub enum CommandResult {
 | `tables` | `\dt` | List all tables |
 | `clear` | `\c` | Clear the screen |
 | `save 'path'` | - | Save database snapshot to file |
-| `load 'path'` | - | Load database snapshot from file |
+| `save compressed 'path'` | - | Save compressed snapshot (int8 quantization) |
+| `load 'path'` | - | Load database snapshot from file (auto-detects format) |
 
 ## Query Support
 
@@ -163,6 +164,10 @@ OK
 > SAVE 'backup.bin'
 Saved snapshot to: backup.bin
 
+> -- Save with compression (4x smaller for embeddings)
+> SAVE COMPRESSED 'backup_compressed.bin'
+Saved compressed snapshot to: backup_compressed.bin
+
 > -- Later, or in a new session:
 > LOAD 'backup.bin'
 Loaded snapshot from: backup.bin
@@ -178,6 +183,11 @@ The snapshot includes all data from the TensorStore:
 - Relational tables and rows
 - Graph nodes and edges
 - Vector embeddings
+
+**Compression Options:**
+- `SAVE`: Uncompressed bincode format
+- `SAVE COMPRESSED`: Uses int8 quantization (4x smaller), delta encoding, and RLE
+- `LOAD`: Auto-detects format (works with both compressed and uncompressed)
 
 Path can be quoted (`'path'` or `"path"`) or unquoted.
 
@@ -297,6 +307,7 @@ Coverage: 94.81% (94% minimum due to untestable interactive REPL code)
 - `query_router`: Query execution
 - `relational_engine`: Row type for formatting
 - `tensor_store`: Snapshot persistence (save/load)
+- `tensor_compress`: Compressed snapshot support
 - `rustyline`: Readline functionality (history, shortcuts, Ctrl+C)
 
 ## Future Considerations

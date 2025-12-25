@@ -393,6 +393,7 @@ dependencies = [
  "query_router",
  "relational_engine",
  "rustyline",
+ "tensor_compress",
  "tensor_store",
 ]
 

@@ -9,6 +9,7 @@ license = "MIT"
 query_router = { path = "../query_router" }
 relational_engine = { path = "../relational_engine" }
 tensor_store = { path = "../tensor_store" }
+tensor_compress = { path = "../tensor_compress" }
 rustyline = "15"
 
 [[bin]]

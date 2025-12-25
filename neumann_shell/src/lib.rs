@@ -102,6 +102,11 @@ impl Shell {
             _ => {},
         }
 
+        // Handle SAVE COMPRESSED command
+        if lower.starts_with("save compressed") {
+            return self.handle_save_compressed(trimmed);
+        }
+
         // Handle SAVE command
         if lower.starts_with("save ") {
             return self.handle_save(trimmed);
@@ -137,6 +142,25 @@ impl Shell {
         )
     }
 
+    /// Handles the SAVE COMPRESSED command.
+    fn handle_save_compressed(&self, input: &str) -> CommandResult {
+        Self::extract_path(input, "save compressed").map_or_else(
+            || CommandResult::Error("Usage: SAVE COMPRESSED 'path/to/file.bin'".to_string()),
+            |p| {
+                let store = self.router.vector().store();
+                let config = tensor_compress::CompressionConfig {
+                    vector_quantization: Some(tensor_compress::QuantMode::Int8),
+                    delta_encoding: true,
+                    rle_encoding: true,
+                };
+                store.save_snapshot_compressed(&p, config).map_or_else(
+                    |e| CommandResult::Error(format!("Failed to save compressed: {e}")),
+                    |()| CommandResult::Output(format!("Saved compressed snapshot to: {p}")),
+                )
+            },
+        )
+    }
+
     /// Handles the LOAD command.
     fn handle_load(&mut self, input: &str) -> CommandResult {
         let Some(p) = Self::extract_path(input, "load") else {
@@ -145,7 +169,11 @@ impl Shell {
             );
         };
 
-        match TensorStore::load_snapshot(&p) {
+        // Try compressed format first (auto-detects via magic bytes), fall back to legacy
+        let result =
+            TensorStore::load_snapshot_compressed(&p).or_else(|_| TensorStore::load_snapshot(&p));
+
+        match result {
             Ok(store) => {
                 self.router = QueryRouter::with_shared_store(store);
                 CommandResult::Output(format!("Loaded snapshot from: {p}"))
@@ -194,8 +222,9 @@ Commands:
   exit, quit, \\q  Exit the shell
   tables, \\dt     List all tables
   clear, \\c       Clear the screen
-  save 'path'     Save database snapshot to file
-  load 'path'     Load database snapshot from file
+  save 'path'            Save database snapshot to file
+  save compressed 'path' Save compressed snapshot (int8 quantization)
+  load 'path'            Load database snapshot from file
 
 Query Types:
   Relational (SQL):
@@ -226,6 +255,7 @@ Examples:
   > NODE CREATE person {name: 'Bob', age: 30}
   > EMBED STORE 'doc1' [0.1, 0.2, 0.3]
   > SAVE 'backup.bin'
+  > SAVE COMPRESSED 'backup.bin'
   > LOAD 'backup.bin'
 "
         .to_string()
@@ -1385,5 +1415,73 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_compressed_command() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0, 4.0]");
+
+        let path = std::env::temp_dir().join("test_shell_save_compressed.bin");
+        let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Saved compressed snapshot"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_compressed_without_path() {
+        let mut shell = Shell::new();
+        let result = shell.execute("SAVE COMPRESSED");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_save_compressed_and_load() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'compressed_key' [0.1, 0.2, 0.3, 0.4]");
+
+        let path = std::env::temp_dir().join("test_shell_compressed_load.bin");
+        let _ = shell.execute(&format!("SAVE COMPRESSED '{}'", path.display()));
+
+        // Load into a fresh shell
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Verify the data is accessible (embedding restored from int8 quantization)
+        let result = shell2.execute("EMBED GET 'compressed_key'");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_save_compressed_case_insensitive() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0, 2.0]");
+
+        let path = std::env::temp_dir().join("test_shell_compressed_case.bin");
+
+        // Test lowercase
+        let result = shell.execute(&format!("save compressed '{}'", path.display()));
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_help_contains_save_compressed() {
+        let help = Shell::help_text();
+        assert!(help.contains("save compressed"));
+        assert!(help.contains("SAVE COMPRESSED"));
     }
 }

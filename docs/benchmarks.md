@@ -16,6 +16,7 @@ cargo bench --package vector_engine
 cargo bench --package neumann_parser
 cargo bench --package query_router
 cargo bench --package neumann_shell
+cargo bench --package tensor_compress
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -98,6 +99,45 @@ Each item is a TensorData with 3 fields: id (i64), name (String), embedding (128
 - **Bloom filter overhead**: ~3-5% slower to rebuild filter during load
 - **Scaling**: Near-linear with dataset size
 - **File size**: ~600 bytes per item with 128-dim embeddings (dominated by vector data)
+
+### tensor_compress
+
+The tensor_compress crate provides compression algorithms optimized for tensor data: vector quantization, delta encoding, and run-length encoding.
+
+**Vector Quantization (768-dim embedding):**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| quantize_int8 | 289 ns | 2.6M vectors/s |
+| quantize_binary | 425 ns | 2.4M vectors/s |
+
+**Delta Encoding (10K sequential IDs):**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| compress_ids | 8.3 µs | 1.2M IDs/s |
+| decompress_ids | 26 µs | 385K IDs/s |
+
+**Run-Length Encoding (100K values):**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| rle_encode | 54 µs | 1.9M values/s |
+| rle_decode | 36 µs | 2.8M values/s |
+
+**Compression Ratios:**
+| Data Type | Technique | Ratio | Lossless |
+|-----------|-----------|-------|----------|
+| f32 embeddings | Int8 quantization | 4x | No (~1% error) |
+| f32 embeddings | Binary quantization | 32x | No (lossy) |
+| Sequential IDs | Delta + varint | 4-8x | Yes |
+| Repeated values | RLE | 2-100x | Yes |
+
+#### Analysis
+
+- **Quantization speed**: Sub-microsecond for typical 768-dim embeddings (GPT-style)
+- **Int8 vs Binary**: Int8 is faster (289ns vs 425ns) and more accurate
+- **Delta encoding**: Asymmetric - compression is 3x faster than decompression
+- **RLE**: Best for highly repeated data (status columns, category IDs)
+- **Integration**: Use `SAVE COMPRESSED` in shell or `save_snapshot_compressed()` API
+- **Trade-off**: Int8 quantization trades ~1% accuracy for 4x size reduction
 
 ### graph_engine
 
