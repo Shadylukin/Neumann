@@ -309,7 +309,9 @@ fn bench_cross_engine(c: &mut Criterion) {
 
     // Create 200 entities with embeddings (reduced from 1000 for faster benchmarks)
     for i in 0..200 {
-        let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+        let embedding: Vec<f32> = (0..128)
+            .map(|j| ((i * 128 + j) as f32) / 100000.0)
+            .collect();
         router
             .vector()
             .set_entity_embedding(&format!("user:{}", i), embedding)
@@ -321,7 +323,11 @@ fn bench_cross_engine(c: &mut Criterion) {
         for offset in 1..=5 {
             let target = (i + offset) % 200;
             router
-                .connect_entities(&format!("user:{}", i), &format!("user:{}", target), "follows")
+                .connect_entities(
+                    &format!("user:{}", i),
+                    &format!("user:{}", target),
+                    "follows",
+                )
                 .unwrap();
         }
     }
@@ -337,12 +343,17 @@ fn bench_cross_engine(c: &mut Criterion) {
             let from = format!("user:{}", i);
             let to = format!("user:{}", i + 1);
             // First create entities with embeddings
-            let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+            let embedding: Vec<f32> = (0..128)
+                .map(|j| ((i * 128 + j) as f32) / 100000.0)
+                .collect();
             router
                 .vector()
                 .set_entity_embedding(&from, embedding.clone())
                 .unwrap();
-            router.vector().set_entity_embedding(&to, embedding).unwrap();
+            router
+                .vector()
+                .set_entity_embedding(&to, embedding)
+                .unwrap();
             // Then connect them
             let result = router.connect_entities(black_box(&from), black_box(&to), "follows");
             i += 2;
@@ -403,7 +414,9 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
 
         // Create entities with embeddings
         for i in 0..*entity_count {
-            let embedding: Vec<f32> = (0..128).map(|j| ((i * 128 + j) as f32) / 100000.0).collect();
+            let embedding: Vec<f32> = (0..128)
+                .map(|j| ((i * 128 + j) as f32) / 100000.0)
+                .collect();
             router
                 .vector()
                 .set_entity_embedding(&format!("user:{}", i), embedding)
