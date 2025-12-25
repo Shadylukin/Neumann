@@ -74,6 +74,31 @@ The tensor store uses DashMap (sharded concurrent HashMap) for thread-safe key-v
 
 Note: Bloom filter adds ~15ns overhead for in-memory DashMap stores. It's designed for scenarios where the backing store is slower (disk, network, remote database), where the early rejection of non-existent keys avoids expensive I/O.
 
+**Snapshot Persistence (bincode):**
+
+| Operation | 100 items | 1,000 items | 10,000 items |
+|-----------|-----------|-------------|--------------|
+| **save** | 100 µs (1.0M/s) | 927 µs (1.08M/s) | 12.6 ms (791K/s) |
+| **load** | 74 µs (1.35M/s) | 826 µs (1.21M/s) | 10.7 ms (936K/s) |
+| **load_with_bloom** | 81 µs (1.23M/s) | 840 µs (1.19M/s) | 11.0 ms (908K/s) |
+
+Each item is a TensorData with 3 fields: id (i64), name (String), embedding (128-dim Vec<f32>).
+
+**Snapshot File Sizes:**
+| Items | File Size | Per Item |
+|-------|-----------|----------|
+| 100 | ~60 KB | ~600 bytes |
+| 1,000 | ~600 KB | ~600 bytes |
+| 10,000 | ~6 MB | ~600 bytes |
+
+#### Snapshot Analysis
+
+- **Throughput**: ~1M items/second for both save and load
+- **Atomicity**: Uses temp file + rename for crash-safe writes
+- **Bloom filter overhead**: ~3-5% slower to rebuild filter during load
+- **Scaling**: Near-linear with dataset size
+- **File size**: ~600 bytes per item with 128-dim embeddings (dominated by vector data)
+
 ### graph_engine
 
 The graph engine stores nodes and edges as tensors, using adjacency lists for neighbor lookups.

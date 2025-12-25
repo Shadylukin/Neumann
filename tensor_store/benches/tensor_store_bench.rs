@@ -356,6 +356,56 @@ fn bench_sparse_lookups(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_snapshot(c: &mut Criterion) {
+    let mut group = c.benchmark_group("snapshot");
+
+    // Create test stores of different sizes
+    for size in [100, 1000, 10000].iter() {
+        let store = TensorStore::new();
+        for i in 0..*size {
+            store
+                .put(format!("key:{}", i), create_test_tensor(i as i64))
+                .unwrap();
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join(format!("bench_snapshot_{}.bin", size));
+
+        // Benchmark save
+        group.throughput(Throughput::Elements(*size as u64));
+        group.bench_with_input(BenchmarkId::new("save", size), size, |b, _| {
+            b.iter(|| {
+                store.save_snapshot(&path).unwrap();
+            });
+        });
+
+        // Save once for load benchmark
+        store.save_snapshot(&path).unwrap();
+
+        // Benchmark load
+        group.bench_with_input(BenchmarkId::new("load", size), size, |b, _| {
+            b.iter(|| {
+                let loaded = TensorStore::load_snapshot(&path).unwrap();
+                black_box(loaded);
+            });
+        });
+
+        // Benchmark load with bloom filter
+        group.bench_with_input(BenchmarkId::new("load_with_bloom", size), size, |b, _| {
+            b.iter(|| {
+                let loaded =
+                    TensorStore::load_snapshot_with_bloom_filter(&path, *size * 2, 0.01).unwrap();
+                black_box(loaded);
+            });
+        });
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_put,
@@ -366,6 +416,7 @@ criterion_group!(
     bench_mixed_read_write,
     bench_bloom_filter,
     bench_sparse_lookups,
+    bench_snapshot,
 );
 
 criterion_main!(benches);
