@@ -180,7 +180,21 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, neumann_parser, query_router, neumann_shell]
+        include:
+          - crate: tensor_store
+            bench_name: tensor_store_bench
+          - crate: relational_engine
+            bench_name: relational_engine_bench
+          - crate: graph_engine
+            bench_name: graph_engine_bench
+          - crate: vector_engine
+            bench_name: vector_engine_bench
+          - crate: neumann_parser
+            bench_name: neumann_parser_bench
+          - crate: query_router
+            bench_name: query_router_bench
+          - crate: neumann_shell
+            bench_name: neumann_shell_bench
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -189,7 +203,7 @@ jobs:
           workspaces: ${{ matrix.crate }}
       - name: Run benchmarks
         working-directory: ${{ matrix.crate }}
-        run: cargo bench --no-fail-fast -- --noplot
+        run: cargo bench --bench ${{ matrix.bench_name }} -- --noplot
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
