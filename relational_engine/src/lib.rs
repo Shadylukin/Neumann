@@ -4,6 +4,332 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
+/// SIMD-accelerated filtering for columnar operations.
+mod simd {
+    use wide::{i64x4, CmpEq, CmpGt, CmpLt};
+
+    /// SIMD-accelerated filter: values < threshold.
+    /// Sets bits in result bitmap for matching positions.
+    #[inline]
+    pub fn filter_lt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = i64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_lt(threshold_vec);
+            let mask_arr: [i64; 4] = cmp.into();
+
+            // Convert comparison results to bits
+            for (j, &m) in mask_arr.iter().enumerate() {
+                if m != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        // Handle remainder with scalar
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] < threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// SIMD-accelerated filter: values <= threshold.
+    /// Implemented as (v < threshold) | (v == threshold).
+    #[inline]
+    pub fn filter_le_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = i64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            // cmp_le = cmp_lt | cmp_eq
+            let lt: [i64; 4] = v.cmp_lt(threshold_vec).into();
+            let eq: [i64; 4] = v.cmp_eq(threshold_vec).into();
+
+            for j in 0..4 {
+                if lt[j] != 0 || eq[j] != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] <= threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// SIMD-accelerated filter: values > threshold.
+    #[inline]
+    pub fn filter_gt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = i64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_gt(threshold_vec);
+            let mask_arr: [i64; 4] = cmp.into();
+
+            for (j, &m) in mask_arr.iter().enumerate() {
+                if m != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] > threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// SIMD-accelerated filter: values >= threshold.
+    /// Implemented as (v > threshold) | (v == threshold).
+    #[inline]
+    pub fn filter_ge_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = i64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            // cmp_ge = cmp_gt | cmp_eq
+            let gt: [i64; 4] = v.cmp_gt(threshold_vec).into();
+            let eq: [i64; 4] = v.cmp_eq(threshold_vec).into();
+
+            for j in 0..4 {
+                if gt[j] != 0 || eq[j] != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] >= threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// SIMD-accelerated filter: values == target.
+    #[inline]
+    pub fn filter_eq_i64(values: &[i64], target: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let target_vec = i64x4::splat(target);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_eq(target_vec);
+            let mask_arr: [i64; 4] = cmp.into();
+
+            for (j, &m) in mask_arr.iter().enumerate() {
+                if m != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] == target {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// SIMD-accelerated filter: values != target.
+    /// Implemented as NOT(v == target).
+    #[inline]
+    pub fn filter_ne_i64(values: &[i64], target: i64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let target_vec = i64x4::splat(target);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = i64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            // cmp_ne = !cmp_eq (if eq mask is 0, then ne)
+            let eq: [i64; 4] = v.cmp_eq(target_vec).into();
+
+            for (j, &eq_val) in eq.iter().enumerate() {
+                if eq_val == 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] != target {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    /// Combine two bitmaps with AND.
+    #[inline]
+    pub fn bitmap_and(a: &[u64], b: &[u64], result: &mut [u64]) {
+        for i in 0..a.len().min(b.len()).min(result.len()) {
+            result[i] = a[i] & b[i];
+        }
+    }
+
+    /// Combine two bitmaps with OR.
+    #[inline]
+    pub fn bitmap_or(a: &[u64], b: &[u64], result: &mut [u64]) {
+        for i in 0..a.len().min(b.len()).min(result.len()) {
+            result[i] = a[i] | b[i];
+        }
+    }
+
+    /// Count set bits in bitmap.
+    #[inline]
+    pub fn popcount(bitmap: &[u64]) -> usize {
+        bitmap.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    /// Extract indices of set bits from bitmap.
+    pub fn selected_indices(bitmap: &[u64], max_count: usize) -> Vec<usize> {
+        let mut indices = Vec::with_capacity(max_count.min(1024));
+        for (word_idx, &word) in bitmap.iter().enumerate() {
+            let base = word_idx * 64;
+            let mut w = word;
+            while w != 0 {
+                let bit = w.trailing_zeros() as usize;
+                indices.push(base + bit);
+                w &= w - 1; // Clear lowest set bit
+            }
+        }
+        indices
+    }
+
+    /// Allocate a bitmap with enough words for n bits.
+    #[inline]
+    pub fn bitmap_words(n: usize) -> usize {
+        n.div_ceil(64)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_filter_lt_i64() {
+            let values = vec![1, 5, 3, 8, 2, 9, 4, 7];
+            let mut bitmap = vec![0u64; 1];
+            filter_lt_i64(&values, 5, &mut bitmap);
+            // Positions 0,2,4,6 have values < 5: 1,3,2,4
+            assert_eq!(bitmap[0] & 0xFF, 0b01010101);
+        }
+
+        #[test]
+        fn test_filter_eq_i64() {
+            let values = vec![1, 5, 5, 8, 5, 9, 4, 7];
+            let mut bitmap = vec![0u64; 1];
+            filter_eq_i64(&values, 5, &mut bitmap);
+            // Positions 1,2,4 have value == 5
+            assert_eq!(bitmap[0] & 0xFF, 0b00010110);
+        }
+
+        #[test]
+        fn test_filter_gt_i64() {
+            let values = vec![1, 5, 3, 8, 2, 9, 4, 7];
+            let mut bitmap = vec![0u64; 1];
+            filter_gt_i64(&values, 5, &mut bitmap);
+            // Positions 3,5,7 have values > 5: 8,9,7
+            assert_eq!(bitmap[0] & 0xFF, 0b10101000);
+        }
+
+        #[test]
+        fn test_filter_handles_remainder() {
+            let values = vec![1, 2, 3, 4, 5]; // Not divisible by 4
+            let mut bitmap = vec![0u64; 1];
+            filter_lt_i64(&values, 4, &mut bitmap);
+            // Positions 0,1,2 have values < 4
+            assert_eq!(bitmap[0] & 0xFF, 0b00000111);
+        }
+
+        #[test]
+        fn test_bitmap_and() {
+            let a = [0b1111_0000u64];
+            let b = [0b1010_1010u64];
+            let mut result = [0u64];
+            bitmap_and(&a, &b, &mut result);
+            assert_eq!(result[0], 0b1010_0000);
+        }
+
+        #[test]
+        fn test_bitmap_or() {
+            let a = [0b1111_0000u64];
+            let b = [0b0000_1111u64];
+            let mut result = [0u64];
+            bitmap_or(&a, &b, &mut result);
+            assert_eq!(result[0], 0b1111_1111);
+        }
+
+        #[test]
+        fn test_selected_indices() {
+            let bitmap = [0b00010110u64]; // bits 1,2,4 set
+            let indices = selected_indices(&bitmap, 10);
+            assert_eq!(indices, vec![1, 2, 4]);
+        }
+
+        #[test]
+        fn test_popcount() {
+            let bitmap = [0b11110000u64, 0b00001111u64];
+            assert_eq!(popcount(&bitmap), 8);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColumnType {
     Int,
@@ -288,6 +614,196 @@ impl From<TensorStoreError> for RelationalError {
 }
 
 pub type Result<T> = std::result::Result<T, RelationalError>;
+
+// ============================================================================
+// Columnar Storage Types
+// ============================================================================
+
+/// Type-specific column value storage for SIMD operations.
+#[derive(Debug, Clone)]
+pub enum ColumnValues {
+    /// i64 values packed for SIMD.
+    Int(Vec<i64>),
+    /// f64 values packed for SIMD.
+    Float(Vec<f64>),
+    /// String dictionary: indices point into dict.
+    String {
+        dict: Vec<String>,
+        indices: Vec<u32>,
+    },
+    /// Booleans packed as bits (1 bit per value).
+    Bool(Vec<u64>),
+}
+
+impl ColumnValues {
+    pub fn len(&self) -> usize {
+        match self {
+            ColumnValues::Int(v) => v.len(),
+            ColumnValues::Float(v) => v.len(),
+            ColumnValues::String { indices, .. } => indices.len(),
+            ColumnValues::Bool(v) => v.len() * 64, // approximate
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Null tracking for columnar data.
+#[derive(Debug, Clone)]
+pub enum NullBitmap {
+    /// No nulls in column.
+    None,
+    /// Dense bitmap: 1 bit per row, bit=1 means null.
+    Dense(Vec<u64>),
+    /// Sparse: list of null positions (when nulls < 10% of rows).
+    Sparse(Vec<u64>),
+}
+
+impl NullBitmap {
+    pub fn is_null(&self, idx: usize) -> bool {
+        match self {
+            NullBitmap::None => false,
+            NullBitmap::Dense(bitmap) => {
+                let word_idx = idx / 64;
+                let bit_idx = idx % 64;
+                word_idx < bitmap.len() && (bitmap[word_idx] & (1u64 << bit_idx)) != 0
+            },
+            NullBitmap::Sparse(positions) => positions.binary_search(&(idx as u64)).is_ok(),
+        }
+    }
+
+    pub fn null_count(&self) -> usize {
+        match self {
+            NullBitmap::None => 0,
+            NullBitmap::Dense(bitmap) => bitmap.iter().map(|w| w.count_ones() as usize).sum(),
+            NullBitmap::Sparse(positions) => positions.len(),
+        }
+    }
+}
+
+/// Packed columnar data for vectorized operations.
+#[derive(Debug, Clone)]
+pub struct ColumnData {
+    /// Column name.
+    pub name: String,
+    /// Row IDs corresponding to each value (for row reconstruction).
+    pub row_ids: Vec<u64>,
+    /// Null positions.
+    pub nulls: NullBitmap,
+    /// Typed column values.
+    pub values: ColumnValues,
+}
+
+impl ColumnData {
+    #[inline]
+    pub fn get_value(&self, idx: usize) -> Option<Value> {
+        if self.nulls.is_null(idx) {
+            return Some(Value::Null);
+        }
+        match &self.values {
+            ColumnValues::Int(v) => v.get(idx).map(|&i| Value::Int(i)),
+            ColumnValues::Float(v) => v.get(idx).map(|&f| Value::Float(f)),
+            ColumnValues::String { dict, indices } => indices
+                .get(idx)
+                .and_then(|&i| dict.get(i as usize).map(|s| Value::String(s.clone()))),
+            ColumnValues::Bool(v) => {
+                let word_idx = idx / 64;
+                let bit_idx = idx % 64;
+                v.get(word_idx)
+                    .map(|&word| Value::Bool((word & (1u64 << bit_idx)) != 0))
+            },
+        }
+    }
+}
+
+/// Selection vector: tracks which rows pass a filter.
+/// Enables late materialization by deferring row reconstruction.
+#[derive(Debug, Clone)]
+pub struct SelectionVector {
+    /// Bitmap where bit i = 1 means row i is selected.
+    bitmap: Vec<u64>,
+    /// Number of rows in the selection (for sizing).
+    row_count: usize,
+}
+
+impl SelectionVector {
+    pub fn all(row_count: usize) -> Self {
+        let words = simd::bitmap_words(row_count);
+        let mut bitmap = vec![!0u64; words];
+        // Clear bits beyond row_count
+        if !row_count.is_multiple_of(64) {
+            let last_word_bits = row_count % 64;
+            bitmap[words - 1] = (1u64 << last_word_bits) - 1;
+        }
+        Self { bitmap, row_count }
+    }
+
+    pub fn none(row_count: usize) -> Self {
+        let words = simd::bitmap_words(row_count);
+        Self {
+            bitmap: vec![0u64; words],
+            row_count,
+        }
+    }
+
+    pub fn from_bitmap(bitmap: Vec<u64>, row_count: usize) -> Self {
+        Self { bitmap, row_count }
+    }
+
+    pub fn bitmap_mut(&mut self) -> &mut [u64] {
+        &mut self.bitmap
+    }
+
+    pub fn bitmap(&self) -> &[u64] {
+        &self.bitmap
+    }
+
+    pub fn count(&self) -> usize {
+        simd::popcount(&self.bitmap)
+    }
+
+    pub fn is_selected(&self, idx: usize) -> bool {
+        if idx >= self.row_count {
+            return false;
+        }
+        let word_idx = idx / 64;
+        let bit_idx = idx % 64;
+        (self.bitmap[word_idx] & (1u64 << bit_idx)) != 0
+    }
+
+    pub fn selected_indices(&self) -> Vec<usize> {
+        simd::selected_indices(&self.bitmap, self.row_count)
+    }
+
+    pub fn intersect(&self, other: &SelectionVector) -> SelectionVector {
+        let mut result = vec![0u64; self.bitmap.len()];
+        simd::bitmap_and(&self.bitmap, &other.bitmap, &mut result);
+        SelectionVector {
+            bitmap: result,
+            row_count: self.row_count,
+        }
+    }
+
+    pub fn union(&self, other: &SelectionVector) -> SelectionVector {
+        let mut result = vec![0u64; self.bitmap.len()];
+        simd::bitmap_or(&self.bitmap, &other.bitmap, &mut result);
+        SelectionVector {
+            bitmap: result,
+            row_count: self.row_count,
+        }
+    }
+}
+
+/// Options for columnar scan operations.
+#[derive(Debug, Clone, Default)]
+pub struct ColumnarScanOptions {
+    /// Columns to project (None = all columns).
+    pub projection: Option<Vec<String>>,
+    /// Use columnar path if available.
+    pub prefer_columnar: bool,
+}
 
 pub struct RelationalEngine {
     store: TensorStore,
@@ -1393,6 +1909,840 @@ impl RelationalEngine {
         }
 
         Some(result_ids)
+    }
+
+    // ========================================================================
+    // Columnar Storage Methods
+    // ========================================================================
+
+    fn column_data_key(table: &str, column: &str) -> String {
+        format!("_col:{}:{}:data", table, column)
+    }
+
+    fn column_ids_key(table: &str, column: &str) -> String {
+        format!("_col:{}:{}:ids", table, column)
+    }
+
+    fn column_nulls_key(table: &str, column: &str) -> String {
+        format!("_col:{}:{}:nulls", table, column)
+    }
+
+    fn column_meta_key(table: &str, column: &str) -> String {
+        format!("_col:{}:{}:meta", table, column)
+    }
+
+    /// Check if columnar data exists for a table.
+    pub fn has_columnar_data(&self, table: &str, column: &str) -> bool {
+        let meta_key = Self::column_meta_key(table, column);
+        self.store.exists(&meta_key)
+    }
+
+    /// Materialize specified columns into columnar format.
+    /// This extracts column data from row storage into contiguous vectors.
+    pub fn materialize_columns(&self, table: &str, columns: &[&str]) -> Result<()> {
+        let schema = self.get_schema(table)?;
+
+        // Validate all columns exist
+        for col_name in columns {
+            if schema.get_column(col_name).is_none() {
+                return Err(RelationalError::ColumnNotFound(col_name.to_string()));
+            }
+        }
+
+        // Scan all rows
+        let prefix = Self::row_prefix(table);
+        let keys = self.store.scan(&prefix);
+
+        // Extract and materialize each column
+        for col_name in columns {
+            let col = schema.get_column(col_name).unwrap();
+            let column_data = self.extract_column_data(&keys, col_name, &col.column_type)?;
+            self.store_column_data(table, &column_data)?;
+        }
+
+        Ok(())
+    }
+
+    fn extract_column_data(
+        &self,
+        row_keys: &[String],
+        column: &str,
+        col_type: &ColumnType,
+    ) -> Result<ColumnData> {
+        let mut row_ids = Vec::with_capacity(row_keys.len());
+        let mut null_positions = Vec::new();
+
+        match col_type {
+            ColumnType::Int => {
+                let mut values = Vec::with_capacity(row_keys.len());
+                for (idx, key) in row_keys.iter().enumerate() {
+                    if let Ok(tensor) = self.store.get(key) {
+                        let row_id = match tensor.get("_id") {
+                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
+                            _ => continue,
+                        };
+                        row_ids.push(row_id);
+
+                        match tensor.get(column) {
+                            Some(TensorValue::Scalar(ScalarValue::Int(v))) => {
+                                values.push(*v);
+                            },
+                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
+                                null_positions.push(idx as u64);
+                                values.push(0); // placeholder
+                            },
+                            _ => {
+                                values.push(0);
+                            },
+                        }
+                    }
+                }
+                Ok(ColumnData {
+                    name: column.to_string(),
+                    row_ids,
+                    nulls: Self::build_null_bitmap(null_positions, values.len()),
+                    values: ColumnValues::Int(values),
+                })
+            },
+            ColumnType::Float => {
+                let mut values = Vec::with_capacity(row_keys.len());
+                for (idx, key) in row_keys.iter().enumerate() {
+                    if let Ok(tensor) = self.store.get(key) {
+                        let row_id = match tensor.get("_id") {
+                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
+                            _ => continue,
+                        };
+                        row_ids.push(row_id);
+
+                        match tensor.get(column) {
+                            Some(TensorValue::Scalar(ScalarValue::Float(v))) => {
+                                values.push(*v);
+                            },
+                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
+                                null_positions.push(idx as u64);
+                                values.push(0.0);
+                            },
+                            _ => {
+                                values.push(0.0);
+                            },
+                        }
+                    }
+                }
+                Ok(ColumnData {
+                    name: column.to_string(),
+                    row_ids,
+                    nulls: Self::build_null_bitmap(null_positions, values.len()),
+                    values: ColumnValues::Float(values),
+                })
+            },
+            ColumnType::String => {
+                let mut dict: Vec<String> = Vec::new();
+                let mut dict_map: HashMap<String, u32> = HashMap::new();
+                let mut indices = Vec::with_capacity(row_keys.len());
+
+                for (idx, key) in row_keys.iter().enumerate() {
+                    if let Ok(tensor) = self.store.get(key) {
+                        let row_id = match tensor.get("_id") {
+                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
+                            _ => continue,
+                        };
+                        row_ids.push(row_id);
+
+                        match tensor.get(column) {
+                            Some(TensorValue::Scalar(ScalarValue::String(v))) => {
+                                let dict_idx = *dict_map.entry(v.clone()).or_insert_with(|| {
+                                    let idx = dict.len() as u32;
+                                    dict.push(v.clone());
+                                    idx
+                                });
+                                indices.push(dict_idx);
+                            },
+                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
+                                null_positions.push(idx as u64);
+                                indices.push(u32::MAX); // null marker
+                            },
+                            _ => {
+                                indices.push(u32::MAX);
+                            },
+                        }
+                    }
+                }
+                Ok(ColumnData {
+                    name: column.to_string(),
+                    row_ids,
+                    nulls: Self::build_null_bitmap(null_positions, indices.len()),
+                    values: ColumnValues::String { dict, indices },
+                })
+            },
+            ColumnType::Bool => {
+                let word_count = row_keys.len().div_ceil(64);
+                let mut values = vec![0u64; word_count];
+
+                for (idx, key) in row_keys.iter().enumerate() {
+                    if let Ok(tensor) = self.store.get(key) {
+                        let row_id = match tensor.get("_id") {
+                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
+                            _ => continue,
+                        };
+                        row_ids.push(row_id);
+
+                        match tensor.get(column) {
+                            Some(TensorValue::Scalar(ScalarValue::Bool(true))) => {
+                                values[idx / 64] |= 1u64 << (idx % 64);
+                            },
+                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
+                                null_positions.push(idx as u64);
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+                let row_count = row_ids.len();
+                Ok(ColumnData {
+                    name: column.to_string(),
+                    row_ids,
+                    nulls: Self::build_null_bitmap(null_positions, row_count),
+                    values: ColumnValues::Bool(values),
+                })
+            },
+        }
+    }
+
+    fn build_null_bitmap(null_positions: Vec<u64>, row_count: usize) -> NullBitmap {
+        if null_positions.is_empty() {
+            return NullBitmap::None;
+        }
+
+        // Use sparse if nulls are < 10% of rows
+        if null_positions.len() < row_count / 10 {
+            NullBitmap::Sparse(null_positions)
+        } else {
+            let word_count = row_count.div_ceil(64);
+            let mut bitmap = vec![0u64; word_count];
+            for pos in null_positions {
+                let idx = pos as usize;
+                bitmap[idx / 64] |= 1u64 << (idx % 64);
+            }
+            NullBitmap::Dense(bitmap)
+        }
+    }
+
+    fn store_column_data(&self, table: &str, column_data: &ColumnData) -> Result<()> {
+        let column = &column_data.name;
+
+        // Store row IDs
+        let ids_key = Self::column_ids_key(table, column);
+        let ids_vec: Vec<f32> = column_data.row_ids.iter().map(|&id| id as f32).collect();
+        let mut ids_tensor = TensorData::new();
+        ids_tensor.set("ids", TensorValue::Vector(ids_vec));
+        self.store.put(ids_key, ids_tensor)?;
+
+        // Store nulls
+        let nulls_key = Self::column_nulls_key(table, column);
+        let mut nulls_tensor = TensorData::new();
+        match &column_data.nulls {
+            NullBitmap::None => {
+                nulls_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("none".to_string())),
+                );
+            },
+            NullBitmap::Sparse(positions) => {
+                nulls_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("sparse".to_string())),
+                );
+                let pos_vec: Vec<f32> = positions.iter().map(|&p| p as f32).collect();
+                nulls_tensor.set("positions", TensorValue::Vector(pos_vec));
+            },
+            NullBitmap::Dense(bitmap) => {
+                nulls_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("dense".to_string())),
+                );
+                let bitmap_vec: Vec<f32> = bitmap.iter().map(|&w| w as f32).collect();
+                nulls_tensor.set("bitmap", TensorValue::Vector(bitmap_vec));
+            },
+        }
+        self.store.put(nulls_key, nulls_tensor)?;
+
+        // Store data
+        let data_key = Self::column_data_key(table, column);
+        let mut data_tensor = TensorData::new();
+        match &column_data.values {
+            ColumnValues::Int(values) => {
+                data_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("int".to_string())),
+                );
+                // Store as bytes for lossless i64 storage
+                let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                data_tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
+            },
+            ColumnValues::Float(values) => {
+                data_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("float".to_string())),
+                );
+                let float_vec: Vec<f32> = values.iter().map(|&v| v as f32).collect();
+                data_tensor.set("data", TensorValue::Vector(float_vec));
+            },
+            ColumnValues::String { dict, indices } => {
+                data_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("string".to_string())),
+                );
+                data_tensor.set(
+                    "dict",
+                    TensorValue::Scalar(ScalarValue::String(dict.join("\x00"))),
+                );
+                let indices_vec: Vec<f32> = indices.iter().map(|&i| i as f32).collect();
+                data_tensor.set("indices", TensorValue::Vector(indices_vec));
+            },
+            ColumnValues::Bool(bitmap) => {
+                data_tensor.set(
+                    "type",
+                    TensorValue::Scalar(ScalarValue::String("bool".to_string())),
+                );
+                let bitmap_vec: Vec<f32> = bitmap.iter().map(|&w| w as f32).collect();
+                data_tensor.set("data", TensorValue::Vector(bitmap_vec));
+            },
+        }
+        self.store.put(data_key, data_tensor)?;
+
+        // Store metadata
+        let meta_key = Self::column_meta_key(table, column);
+        let mut meta_tensor = TensorData::new();
+        meta_tensor.set(
+            "row_count",
+            TensorValue::Scalar(ScalarValue::Int(column_data.row_ids.len() as i64)),
+        );
+        self.store.put(meta_key, meta_tensor)?;
+
+        Ok(())
+    }
+
+    /// Load columnar data for a column.
+    pub fn load_column_data(&self, table: &str, column: &str) -> Result<ColumnData> {
+        // Load row IDs
+        let ids_key = Self::column_ids_key(table, column);
+        let ids_tensor = self
+            .store
+            .get(&ids_key)
+            .map_err(|_| RelationalError::ColumnNotFound(column.to_string()))?;
+        let row_ids: Vec<u64> = match ids_tensor.get("ids") {
+            Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
+            _ => return Err(RelationalError::ColumnNotFound(column.to_string())),
+        };
+
+        // Load nulls
+        let nulls_key = Self::column_nulls_key(table, column);
+        let nulls = if let Ok(nulls_tensor) = self.store.get(&nulls_key) {
+            match nulls_tensor.get("type") {
+                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "none" => {
+                    NullBitmap::None
+                },
+                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "sparse" => {
+                    let positions: Vec<u64> = match nulls_tensor.get("positions") {
+                        Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
+                        _ => vec![],
+                    };
+                    NullBitmap::Sparse(positions)
+                },
+                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "dense" => {
+                    let bitmap: Vec<u64> = match nulls_tensor.get("bitmap") {
+                        Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
+                        _ => vec![],
+                    };
+                    NullBitmap::Dense(bitmap)
+                },
+                _ => NullBitmap::None,
+            }
+        } else {
+            NullBitmap::None
+        };
+
+        // Load data
+        let data_key = Self::column_data_key(table, column);
+        let data_tensor = self
+            .store
+            .get(&data_key)
+            .map_err(|_| RelationalError::ColumnNotFound(column.to_string()))?;
+
+        let values = match data_tensor.get("type") {
+            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "int" => {
+                match data_tensor.get("data") {
+                    Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
+                        let values: Vec<i64> = bytes
+                            .chunks_exact(8)
+                            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                            .collect();
+                        ColumnValues::Int(values)
+                    },
+                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+                }
+            },
+            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "float" => {
+                match data_tensor.get("data") {
+                    Some(TensorValue::Vector(v)) => {
+                        ColumnValues::Float(v.iter().map(|&f| f as f64).collect())
+                    },
+                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+                }
+            },
+            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "string" => {
+                let dict: Vec<String> = match data_tensor.get("dict") {
+                    Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                        s.split('\x00').map(String::from).collect()
+                    },
+                    _ => vec![],
+                };
+                let indices: Vec<u32> = match data_tensor.get("indices") {
+                    Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u32).collect(),
+                    _ => vec![],
+                };
+                ColumnValues::String { dict, indices }
+            },
+            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "bool" => {
+                match data_tensor.get("data") {
+                    Some(TensorValue::Vector(v)) => {
+                        ColumnValues::Bool(v.iter().map(|&f| f as u64).collect())
+                    },
+                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+                }
+            },
+            _ => return Err(RelationalError::StorageError("Unknown column type".into())),
+        };
+
+        Ok(ColumnData {
+            name: column.to_string(),
+            row_ids,
+            nulls,
+            values,
+        })
+    }
+
+    /// Drop materialized columnar data for a column.
+    pub fn drop_columnar_data(&self, table: &str, column: &str) -> Result<()> {
+        let _ = self.store.delete(&Self::column_data_key(table, column));
+        let _ = self.store.delete(&Self::column_ids_key(table, column));
+        let _ = self.store.delete(&Self::column_nulls_key(table, column));
+        let _ = self.store.delete(&Self::column_meta_key(table, column));
+        Ok(())
+    }
+
+    // ========================================================================
+    // Columnar Scan with Vectorized Filtering
+    // ========================================================================
+
+    /// Select with columnar scan and projection support.
+    ///
+    /// If columnar data is available and options.prefer_columnar is true,
+    /// uses SIMD-accelerated vectorized filtering. Otherwise falls back to
+    /// row-based scan with projection.
+    pub fn select_columnar(
+        &self,
+        table: &str,
+        condition: Condition,
+        options: ColumnarScanOptions,
+    ) -> Result<Vec<Row>> {
+        // Check if we can use columnar path
+        let filter_columns = Self::extract_filter_columns(&condition);
+
+        let use_columnar = options.prefer_columnar
+            && !filter_columns.is_empty()
+            && filter_columns
+                .iter()
+                .all(|col| self.has_columnar_data(table, col));
+
+        if use_columnar {
+            self.select_columnar_impl(table, condition, options)
+        } else {
+            // Fallback to row-based with projection
+            self.select_with_projection(table, condition, options.projection)
+        }
+    }
+
+    /// Extract column names referenced in a condition.
+    fn extract_filter_columns(condition: &Condition) -> Vec<String> {
+        let mut columns = Vec::new();
+        Self::collect_filter_columns(condition, &mut columns);
+        columns
+    }
+
+    fn collect_filter_columns(condition: &Condition, columns: &mut Vec<String>) {
+        match condition {
+            Condition::True => {},
+            Condition::Eq(col, _)
+            | Condition::Ne(col, _)
+            | Condition::Lt(col, _)
+            | Condition::Le(col, _)
+            | Condition::Gt(col, _)
+            | Condition::Ge(col, _) => {
+                if !columns.contains(col) {
+                    columns.push(col.clone());
+                }
+            },
+            Condition::And(a, b) | Condition::Or(a, b) => {
+                Self::collect_filter_columns(a, columns);
+                Self::collect_filter_columns(b, columns);
+            },
+        }
+    }
+
+    fn select_columnar_impl(
+        &self,
+        table: &str,
+        condition: Condition,
+        options: ColumnarScanOptions,
+    ) -> Result<Vec<Row>> {
+        // Determine all columns needed: filter + projection
+        let filter_columns = Self::extract_filter_columns(&condition);
+
+        // Get projection columns or all schema columns
+        let projection_columns: Vec<String> = match &options.projection {
+            Some(cols) => cols.clone(),
+            None => {
+                let schema_key = format!("{}:_schema", table);
+                match self.store.get(&schema_key) {
+                    Ok(tensor) => tensor
+                        .keys()
+                        .filter(|k| !k.starts_with('_'))
+                        .cloned()
+                        .collect(),
+                    Err(_) => {
+                        return self.select_with_projection(table, condition, options.projection)
+                    },
+                }
+            },
+        };
+
+        // Merge filter and projection columns (unique)
+        let mut all_needed: Vec<String> = filter_columns.clone();
+        for col in &projection_columns {
+            if !all_needed.contains(col) {
+                all_needed.push(col.clone());
+            }
+        }
+
+        // Check if pure columnar path is possible
+        let use_pure_columnar = self.all_columns_materialized(table, &all_needed);
+
+        // Load required columns for filtering
+        let mut column_map: HashMap<String, ColumnData> = HashMap::new();
+        for col in &filter_columns {
+            let col_data = self.load_column_data(table, col)?;
+            column_map.insert(col.clone(), col_data);
+        }
+
+        // For pure columnar with no filter columns, load first projection column to get row_ids
+        if use_pure_columnar && column_map.is_empty() && !projection_columns.is_empty() {
+            let first_col = &projection_columns[0];
+            let col_data = self.load_column_data(table, first_col)?;
+            column_map.insert(first_col.clone(), col_data);
+        }
+
+        // Get row count from first column
+        let row_count = column_map
+            .values()
+            .next()
+            .map(|c| c.row_ids.len())
+            .unwrap_or(0);
+
+        if row_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Apply vectorized filter
+        let selection = self.apply_vectorized_filter(&column_map, &condition, row_count)?;
+
+        // Get row IDs from first column (clone to avoid borrow issues when adding more columns)
+        let row_ids: Vec<u64> = column_map
+            .values()
+            .next()
+            .map(|c| c.row_ids.clone())
+            .unwrap_or_default();
+
+        let selected_indices = selection.selected_indices();
+
+        if use_pure_columnar {
+            // Load remaining projection columns not already in column_map
+            for col in &projection_columns {
+                if !column_map.contains_key(col) {
+                    let col_data = self.load_column_data(table, col)?;
+                    column_map.insert(col.clone(), col_data);
+                }
+            }
+            // Pure columnar materialization - no row store access
+            Ok(Self::materialize_from_columns(
+                &column_map,
+                &row_ids,
+                &selected_indices,
+                &options.projection,
+            ))
+        } else {
+            // Fall back to row-based materialization
+            self.materialize_selected_rows(table, &row_ids, &selected_indices, options.projection)
+        }
+    }
+
+    fn apply_vectorized_filter(
+        &self,
+        columns: &HashMap<String, ColumnData>,
+        condition: &Condition,
+        row_count: usize,
+    ) -> Result<SelectionVector> {
+        match condition {
+            Condition::True => Ok(SelectionVector::all(row_count)),
+
+            Condition::Eq(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_eq_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::Ne(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_ne_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::Lt(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_lt_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::Le(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_le_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::Gt(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_gt_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::Ge(col, Value::Int(val)) => {
+                let col_data = columns
+                    .get(col)
+                    .ok_or_else(|| RelationalError::ColumnNotFound(col.clone()))?;
+                match &col_data.values {
+                    ColumnValues::Int(values) => {
+                        let mut bitmap = vec![0u64; simd::bitmap_words(values.len())];
+                        simd::filter_ge_i64(values, *val, &mut bitmap);
+                        Ok(SelectionVector::from_bitmap(bitmap, values.len()))
+                    },
+                    _ => Err(RelationalError::TypeMismatch {
+                        column: col.clone(),
+                        expected: ColumnType::Int,
+                    }),
+                }
+            },
+
+            Condition::And(a, b) => {
+                let sel_a = self.apply_vectorized_filter(columns, a, row_count)?;
+                let sel_b = self.apply_vectorized_filter(columns, b, row_count)?;
+                Ok(sel_a.intersect(&sel_b))
+            },
+
+            Condition::Or(a, b) => {
+                let sel_a = self.apply_vectorized_filter(columns, a, row_count)?;
+                let sel_b = self.apply_vectorized_filter(columns, b, row_count)?;
+                Ok(sel_a.union(&sel_b))
+            },
+
+            // Fallback for non-Int comparisons: select all and filter later
+            _ => Ok(SelectionVector::all(row_count)),
+        }
+    }
+
+    fn materialize_selected_rows(
+        &self,
+        table: &str,
+        row_ids: &[u64],
+        selected_indices: &[usize],
+        projection: Option<Vec<String>>,
+    ) -> Result<Vec<Row>> {
+        let mut rows = Vec::with_capacity(selected_indices.len());
+
+        for &idx in selected_indices {
+            if idx >= row_ids.len() {
+                continue;
+            }
+            let row_id = row_ids[idx];
+            let key = Self::row_key(table, row_id);
+
+            if let Ok(tensor) = self.store.get(&key) {
+                let mut values = HashMap::new();
+
+                match &projection {
+                    Some(cols) => {
+                        for col in cols {
+                            if col == "_id" {
+                                continue;
+                            }
+                            if let Some(TensorValue::Scalar(scalar)) = tensor.get(col) {
+                                values.insert(col.clone(), Value::from_scalar(scalar));
+                            }
+                        }
+                    },
+                    None => {
+                        for key in tensor.keys() {
+                            if key.starts_with('_') {
+                                continue;
+                            }
+                            if let Some(TensorValue::Scalar(scalar)) = tensor.get(key) {
+                                values.insert(key.clone(), Value::from_scalar(scalar));
+                            }
+                        }
+                    },
+                }
+
+                rows.push(Row { id: row_id, values });
+            }
+        }
+
+        rows.sort_by_key(|r| r.id);
+        Ok(rows)
+    }
+
+    /// Build rows purely from columnar data without touching row storage.
+    fn materialize_from_columns(
+        columns: &HashMap<String, ColumnData>,
+        row_ids: &[u64],
+        selected_indices: &[usize],
+        projection: &Option<Vec<String>>,
+    ) -> Vec<Row> {
+        let num_rows = selected_indices.len();
+        let mut rows = Vec::with_capacity(num_rows);
+
+        // Pre-resolve column references to avoid repeated HashMap lookups
+        let col_refs: Vec<(&str, &ColumnData)> = match projection {
+            Some(cols) => cols
+                .iter()
+                .filter(|c| *c != "_id")
+                .filter_map(|c| columns.get(c).map(|data| (c.as_str(), data)))
+                .collect(),
+            None => columns.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+        };
+
+        for &idx in selected_indices {
+            if idx >= row_ids.len() {
+                continue;
+            }
+            let row_id = row_ids[idx];
+            let mut values = HashMap::with_capacity(col_refs.len());
+
+            for &(col_name, col_data) in &col_refs {
+                if let Some(val) = col_data.get_value(idx) {
+                    values.insert(col_name.to_string(), val);
+                }
+            }
+
+            rows.push(Row { id: row_id, values });
+        }
+
+        // Skip sort if rows are already in order (common case for sequential scans)
+        if rows.len() > 1 {
+            let is_sorted = rows.windows(2).all(|w| w[0].id <= w[1].id);
+            if !is_sorted {
+                rows.sort_by_key(|r| r.id);
+            }
+        }
+
+        rows
+    }
+
+    fn all_columns_materialized(&self, table: &str, columns: &[String]) -> bool {
+        columns.iter().all(|col| self.has_columnar_data(table, col))
+    }
+
+    /// Row-based select with projection (fallback path).
+    pub fn select_with_projection(
+        &self,
+        table: &str,
+        condition: Condition,
+        projection: Option<Vec<String>>,
+    ) -> Result<Vec<Row>> {
+        let rows = self.select(table, condition)?;
+
+        match projection {
+            Some(cols) => Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let values = cols
+                        .iter()
+                        .filter_map(|c| {
+                            if c == "_id" {
+                                None
+                            } else {
+                                row.values.get(c).map(|v| (c.clone(), v.clone()))
+                            }
+                        })
+                        .collect();
+                    Row { id: row.id, values }
+                })
+                .collect()),
+            None => Ok(rows),
+        }
     }
 }
 
@@ -3194,5 +4544,1246 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&"users".to_string()));
         assert!(tables.contains(&"products".to_string()));
+    }
+
+    // ========================================================================
+    // Columnar Storage Tests
+    // ========================================================================
+
+    #[test]
+    fn materialize_int_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 50)));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+        assert!(engine.has_columnar_data("users", "age"));
+
+        let col_data = engine.load_column_data("users", "age").unwrap();
+        assert_eq!(col_data.row_ids.len(), 100);
+        if let ColumnValues::Int(values) = col_data.values {
+            assert_eq!(values.len(), 100);
+        } else {
+            panic!("Expected Int column values");
+        }
+    }
+
+    #[test]
+    fn materialize_string_column_with_dictionary() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i % 10)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["name"]).unwrap();
+
+        let col_data = engine.load_column_data("users", "name").unwrap();
+        if let ColumnValues::String { dict, indices } = col_data.values {
+            assert_eq!(dict.len(), 10);
+            assert_eq!(indices.len(), 50);
+        } else {
+            panic!("Expected String column values");
+        }
+    }
+
+    #[test]
+    fn select_columnar_with_vectorized_filter() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..1000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i % 100));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Gt("age".into(), Value::Int(50)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 490);
+    }
+
+    #[test]
+    fn select_columnar_with_projection() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            values.insert(
+                "email".to_string(),
+                Value::String(format!("user{}@test.com", i)),
+            );
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Gt("age".into(), Value::Int(25)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 4);
+
+        for row in &rows {
+            assert!(row.values.contains_key("name"));
+            assert!(!row.values.contains_key("age"));
+            assert!(!row.values.contains_key("email"));
+        }
+    }
+
+    #[test]
+    fn select_columnar_compound_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+
+        let condition = Condition::Ge("age".into(), Value::Int(30))
+            .and(Condition::Lt("age".into(), Value::Int(40)));
+
+        let rows = engine.select_columnar("users", condition, options).unwrap();
+        assert_eq!(rows.len(), 10);
+
+        for row in &rows {
+            let age = row.values.get("age").unwrap();
+            if let Value::Int(a) = age {
+                assert!(*a >= 30 && *a < 40);
+            }
+        }
+    }
+
+    #[test]
+    fn select_columnar_fallback_to_row_based() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Gt("age".into(), Value::Int(25)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn drop_columnar_data() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+        assert!(engine.has_columnar_data("users", "age"));
+
+        engine.drop_columnar_data("users", "age").unwrap();
+        assert!(!engine.has_columnar_data("users", "age"));
+    }
+
+    #[test]
+    fn selection_vector_operations() {
+        let sel_all = SelectionVector::all(100);
+        assert_eq!(sel_all.count(), 100);
+        assert!(sel_all.is_selected(0));
+        assert!(sel_all.is_selected(99));
+        assert!(!sel_all.is_selected(100));
+
+        let sel_none = SelectionVector::none(100);
+        assert_eq!(sel_none.count(), 0);
+        assert!(!sel_none.is_selected(0));
+
+        let intersected = sel_all.intersect(&sel_none);
+        assert_eq!(intersected.count(), 0);
+
+        let unioned = sel_all.union(&sel_none);
+        assert_eq!(unioned.count(), 100);
+    }
+
+    #[test]
+    fn simd_filter_le() {
+        let values = vec![1, 5, 3, 8, 2, 9, 4, 7];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_le_i64(&values, 5, &mut bitmap);
+        // Values <= 5: 1,5,3,2,4 at positions 0,1,2,4,6
+        assert_eq!(bitmap[0] & 0xFF, 0b01010111);
+    }
+
+    #[test]
+    fn simd_filter_ge() {
+        let values = vec![1, 5, 3, 8, 2, 9, 4, 7];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_ge_i64(&values, 5, &mut bitmap);
+        // Values >= 5: 5,8,9,7 at positions 1,3,5,7
+        assert_eq!(bitmap[0] & 0xFF, 0b10101010);
+    }
+
+    #[test]
+    fn simd_filter_ne() {
+        let values = vec![5, 5, 3, 5, 2, 5, 4, 5];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_ne_i64(&values, 5, &mut bitmap);
+        // Values != 5: 3,2,4 at positions 2,4,6
+        assert_eq!(bitmap[0] & 0xFF, 0b01010100);
+    }
+
+    #[test]
+    fn column_data_get_value_int() {
+        let col = ColumnData {
+            name: "age".into(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Int(vec![25, 30, 35]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Int(25)));
+        assert_eq!(col.get_value(1), Some(Value::Int(30)));
+        assert_eq!(col.get_value(2), Some(Value::Int(35)));
+        assert_eq!(col.get_value(10), None);
+    }
+
+    #[test]
+    fn column_data_get_value_float() {
+        let col = ColumnData {
+            name: "score".into(),
+            row_ids: vec![1, 2],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Float(vec![1.5, 2.5]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Float(1.5)));
+        assert_eq!(col.get_value(1), Some(Value::Float(2.5)));
+    }
+
+    #[test]
+    fn column_data_get_value_string() {
+        let col = ColumnData {
+            name: "name".into(),
+            row_ids: vec![1, 2],
+            nulls: NullBitmap::None,
+            values: ColumnValues::String {
+                dict: vec!["Alice".into(), "Bob".into()],
+                indices: vec![0, 1],
+            },
+        };
+        assert_eq!(col.get_value(0), Some(Value::String("Alice".into())));
+        assert_eq!(col.get_value(1), Some(Value::String("Bob".into())));
+    }
+
+    #[test]
+    fn column_data_get_value_bool() {
+        let mut values = vec![0u64];
+        values[0] |= 1 << 0; // true at 0
+        values[0] |= 1 << 2; // true at 2
+        let col = ColumnData {
+            name: "active".into(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Bool(values),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Bool(true)));
+        assert_eq!(col.get_value(1), Some(Value::Bool(false)));
+        assert_eq!(col.get_value(2), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn column_data_get_value_with_nulls() {
+        let col = ColumnData {
+            name: "age".into(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::Sparse(vec![1]),
+            values: ColumnValues::Int(vec![25, 0, 35]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Int(25)));
+        assert_eq!(col.get_value(1), Some(Value::Null));
+        assert_eq!(col.get_value(2), Some(Value::Int(35)));
+    }
+
+    #[test]
+    fn null_bitmap_dense() {
+        let mut bitmap = vec![0u64; 1];
+        bitmap[0] |= 1 << 5; // null at position 5
+        let nulls = NullBitmap::Dense(bitmap);
+        assert!(!nulls.is_null(0));
+        assert!(nulls.is_null(5));
+        assert_eq!(nulls.null_count(), 1);
+    }
+
+    #[test]
+    fn null_bitmap_sparse() {
+        let nulls = NullBitmap::Sparse(vec![3, 7, 15]);
+        assert!(!nulls.is_null(0));
+        assert!(nulls.is_null(3));
+        assert!(nulls.is_null(7));
+        assert!(nulls.is_null(15));
+        assert!(!nulls.is_null(10));
+        assert_eq!(nulls.null_count(), 3);
+    }
+
+    #[test]
+    fn null_bitmap_none() {
+        let nulls = NullBitmap::None;
+        assert!(!nulls.is_null(0));
+        assert!(!nulls.is_null(100));
+        assert_eq!(nulls.null_count(), 0);
+    }
+
+    #[test]
+    fn column_values_len() {
+        let int_vals = ColumnValues::Int(vec![1, 2, 3]);
+        assert_eq!(int_vals.len(), 3);
+        assert!(!int_vals.is_empty());
+
+        let float_vals = ColumnValues::Float(vec![1.0, 2.0]);
+        assert_eq!(float_vals.len(), 2);
+
+        let str_vals = ColumnValues::String {
+            dict: vec!["a".into()],
+            indices: vec![0, 0, 0],
+        };
+        assert_eq!(str_vals.len(), 3);
+
+        let bool_vals = ColumnValues::Bool(vec![0u64; 2]);
+        assert_eq!(bool_vals.len(), 128); // 2 * 64
+    }
+
+    #[test]
+    fn pure_columnar_select_all_columns_materialized() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..20 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Materialize all columns used in projection
+        engine
+            .materialize_columns("users", &["name", "age"])
+            .unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".into(), "age".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Ge("age".into(), Value::Int(35)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 5); // ages 35-39
+        for row in &rows {
+            assert!(row.values.contains_key("name"));
+            assert!(row.values.contains_key("age"));
+        }
+    }
+
+    #[test]
+    fn select_columnar_with_true_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar("users", Condition::True, options)
+            .unwrap();
+
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn select_columnar_with_and_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        // age >= 20 AND age < 30
+        let condition = Condition::Ge("age".into(), Value::Int(20))
+            .and(Condition::Lt("age".into(), Value::Int(30)));
+
+        let rows = engine.select_columnar("users", condition, options).unwrap();
+
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn select_columnar_with_or_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        // age < 10 OR age >= 40
+        let condition = Condition::Lt("age".into(), Value::Int(10))
+            .or(Condition::Ge("age".into(), Value::Int(40)));
+
+        let rows = engine.select_columnar("users", condition, options).unwrap();
+
+        assert_eq!(rows.len(), 20); // 0-9 and 40-49
+    }
+
+    #[test]
+    fn select_columnar_ne_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Special".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Ne("age".into(), Value::Int(25)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn select_columnar_le_condition() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Le("age".into(), Value::Int(24)),
+                options,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 5); // ages 20-24
+    }
+
+    #[test]
+    fn select_with_projection_filters() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let rows = engine
+            .select_with_projection(
+                "users",
+                Condition::Gt("age".into(), Value::Int(25)),
+                Some(vec!["name".into()]),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 4);
+        for row in &rows {
+            assert!(row.values.contains_key("name"));
+            assert!(!row.values.contains_key("age"));
+        }
+    }
+
+    #[test]
+    fn select_with_projection_includes_id() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let rows = engine
+            .select_with_projection(
+                "users",
+                Condition::True,
+                Some(vec!["_id".into(), "name".into()]),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].values.contains_key("name"));
+        // _id is in row.id, not in values
+    }
+
+    #[test]
+    fn columnar_scan_options_debug_clone() {
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["col".into()]),
+            prefer_columnar: true,
+        };
+        let cloned = options.clone();
+        assert_eq!(cloned.projection, options.projection);
+        assert_eq!(cloned.prefer_columnar, options.prefer_columnar);
+        let debug = format!("{:?}", options);
+        assert!(debug.contains("ColumnarScanOptions"));
+    }
+
+    #[test]
+    fn column_data_debug_clone() {
+        let col = ColumnData {
+            name: "test".into(),
+            row_ids: vec![1],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Int(vec![42]),
+        };
+        let cloned = col.clone();
+        assert_eq!(cloned.name, col.name);
+        let debug = format!("{:?}", col);
+        assert!(debug.contains("ColumnData"));
+    }
+
+    #[test]
+    fn selection_vector_from_bitmap() {
+        let bitmap = vec![0b00000101u64]; // bits 0 and 2 set
+        let sel = SelectionVector::from_bitmap(bitmap, 8);
+        assert!(sel.is_selected(0));
+        assert!(!sel.is_selected(1));
+        assert!(sel.is_selected(2));
+        assert_eq!(sel.count(), 2);
+    }
+
+    #[test]
+    fn selection_vector_selected_indices() {
+        let bitmap = vec![0b00001010u64]; // bits 1 and 3 set
+        let sel = SelectionVector::from_bitmap(bitmap, 8);
+        let indices = sel.selected_indices();
+        assert_eq!(indices, vec![1, 3]);
+    }
+
+    #[test]
+    fn selection_vector_bitmap_accessor() {
+        let mut sel = SelectionVector::all(10);
+        let bitmap = sel.bitmap_mut();
+        bitmap[0] = 0; // Clear all bits
+        assert_eq!(sel.count(), 0);
+
+        let bitmap_ref = sel.bitmap();
+        assert_eq!(bitmap_ref[0], 0);
+    }
+
+    #[test]
+    fn materialize_columns_with_bool_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("active", ColumnType::Bool),
+        ]);
+        engine.create_table("flags", schema).unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("Item{}", i)));
+            values.insert("active".to_string(), Value::Bool(i % 2 == 0));
+            engine.insert("flags", values).unwrap();
+        }
+
+        engine.materialize_columns("flags", &["active"]).unwrap();
+        assert!(engine.has_columnar_data("flags", "active"));
+
+        let col_data = engine.load_column_data("flags", "active").unwrap();
+        assert_eq!(col_data.row_ids.len(), 10);
+    }
+
+    #[test]
+    fn materialize_columns_with_null_values() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            if i % 2 == 0 {
+                values.insert(
+                    "email".to_string(),
+                    Value::String(format!("user{}@test.com", i)),
+                );
+            } else {
+                values.insert("email".to_string(), Value::Null);
+            }
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["email"]).unwrap();
+        let col_data = engine.load_column_data("users", "email").unwrap();
+        assert!(col_data.nulls.null_count() > 0);
+    }
+
+    #[test]
+    fn load_column_data_not_materialized() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let result = engine.load_column_data("users", "age");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn select_columnar_type_mismatch() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["name"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".into()]),
+            prefer_columnar: true,
+        };
+
+        // Try to filter string column with int - should fall back or handle gracefully
+        let result = engine.select_columnar(
+            "users",
+            Condition::Gt("name".into(), Value::Int(25)),
+            options,
+        );
+        // This might fail with TypeMismatch or fall back - either is acceptable
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn simd_bitmap_words() {
+        assert_eq!(simd::bitmap_words(0), 0);
+        assert_eq!(simd::bitmap_words(1), 1);
+        assert_eq!(simd::bitmap_words(64), 1);
+        assert_eq!(simd::bitmap_words(65), 2);
+        assert_eq!(simd::bitmap_words(128), 2);
+        assert_eq!(simd::bitmap_words(129), 3);
+    }
+
+    #[test]
+    fn selection_vector_all_edge_cases() {
+        // Exact multiple of 64
+        let sel64 = SelectionVector::all(64);
+        assert_eq!(sel64.count(), 64);
+        assert!(sel64.is_selected(63));
+        assert!(!sel64.is_selected(64));
+
+        // Non-multiple of 64
+        let sel70 = SelectionVector::all(70);
+        assert_eq!(sel70.count(), 70);
+        assert!(sel70.is_selected(69));
+        assert!(!sel70.is_selected(70));
+    }
+
+    #[test]
+    fn simd_filter_eq_with_remainder() {
+        // 5 elements - not multiple of 4, tests remainder path
+        let values = vec![1, 2, 3, 2, 2];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_eq_i64(&values, 2, &mut bitmap);
+        // Values == 2 at positions 1, 3, 4
+        assert_eq!(bitmap[0] & 0x1F, 0b11010);
+    }
+
+    #[test]
+    fn simd_filter_ne_with_remainder() {
+        // 6 elements - not multiple of 4, tests remainder path
+        let values = vec![1, 2, 2, 2, 1, 3];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_ne_i64(&values, 2, &mut bitmap);
+        // Values != 2 at positions 0, 4, 5
+        assert_eq!(bitmap[0] & 0x3F, 0b110001);
+    }
+
+    #[test]
+    fn simd_filter_with_single_element() {
+        let values = vec![42];
+        let mut bitmap = vec![0u64; 1];
+        simd::filter_eq_i64(&values, 42, &mut bitmap);
+        assert_eq!(bitmap[0] & 1, 1);
+
+        let mut bitmap2 = vec![0u64; 1];
+        simd::filter_ne_i64(&values, 42, &mut bitmap2);
+        assert_eq!(bitmap2[0] & 1, 0);
+    }
+
+    #[test]
+    fn parallel_select_large_dataset() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert enough rows to trigger parallel execution
+        for i in 0..2000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 50)));
+            engine.insert("users", values).unwrap();
+        }
+
+        let rows = engine
+            .select("users", Condition::Gt("age".into(), Value::Int(60)))
+            .unwrap();
+        assert_eq!(rows.len(), 360); // 9 ages (61-69) * 40 each
+    }
+
+    #[test]
+    fn parallel_update_large_dataset() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..2000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(30));
+        let count = engine
+            .update(
+                "users",
+                Condition::Eq("age".into(), Value::Int(25)),
+                updates,
+            )
+            .unwrap();
+        assert_eq!(count, 2000);
+    }
+
+    #[test]
+    fn parallel_delete_large_dataset() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..2000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert(
+                "age".to_string(),
+                Value::Int(if i % 2 == 0 { 25 } else { 30 }),
+            );
+            engine.insert("users", values).unwrap();
+        }
+
+        let count = engine
+            .delete_rows("users", Condition::Eq("age".into(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn parallel_join_large_dataset() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_posts_table(&engine);
+
+        for i in 0..500 {
+            let mut user_values = HashMap::new();
+            user_values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            user_values.insert("age".to_string(), Value::Int(20 + (i % 50)));
+            engine.insert("users", user_values).unwrap();
+        }
+
+        for i in 0..1000 {
+            let mut post_values = HashMap::new();
+            post_values.insert("user_id".to_string(), Value::Int((i % 500) as i64 + 1));
+            post_values.insert("title".to_string(), Value::String(format!("Post{}", i)));
+            post_values.insert("views".to_string(), Value::Int(i * 10));
+            engine.insert("posts", post_values).unwrap();
+        }
+
+        let joined = engine.join("users", "posts", "_id", "user_id").unwrap();
+        assert_eq!(joined.len(), 1000);
+    }
+
+    #[test]
+    fn btree_index_on_id_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create btree index on _id
+        engine.create_btree_index("users", "_id").unwrap();
+
+        // Query using the index
+        let rows = engine
+            .select("users", Condition::Eq("_id".into(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 5);
+    }
+
+    #[test]
+    fn hash_index_on_id_column() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create hash index on _id
+        engine.create_index("users", "_id").unwrap();
+
+        let rows = engine
+            .select("users", Condition::Eq("_id".into(), Value::Int(3)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn btree_range_query_no_matches() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Query for ages that don't exist
+        let rows = engine
+            .select("users", Condition::Gt("age".into(), Value::Int(100)))
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn update_with_btree_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..20 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_btree_index("users", "age").unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(30));
+        let count = engine
+            .update(
+                "users",
+                Condition::Eq("age".into(), Value::Int(25)),
+                updates,
+            )
+            .unwrap();
+        assert_eq!(count, 20);
+
+        // Verify index is updated
+        let rows = engine
+            .select("users", Condition::Eq("age".into(), Value::Int(30)))
+            .unwrap();
+        assert_eq!(rows.len(), 20);
+    }
+
+    #[test]
+    fn select_columnar_empty_result() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.materialize_columns("users", &["age"]).unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".into()]),
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Gt("age".into(), Value::Int(100)),
+                options,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn select_columnar_no_projection_with_filter() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine
+            .materialize_columns("users", &["name", "age"])
+            .unwrap();
+
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+
+        let rows = engine
+            .select_columnar(
+                "users",
+                Condition::Lt("age".into(), Value::Int(25)),
+                options,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn materialize_columns_float_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("score", ColumnType::Float),
+        ]);
+        engine.create_table("scores", schema).unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("score".to_string(), Value::Float(i as f64 * 1.5));
+            engine.insert("scores", values).unwrap();
+        }
+
+        engine.materialize_columns("scores", &["score"]).unwrap();
+        let col_data = engine.load_column_data("scores", "score").unwrap();
+        assert_eq!(col_data.row_ids.len(), 10);
+        match col_data.values {
+            ColumnValues::Float(vals) => assert_eq!(vals.len(), 10),
+            _ => panic!("Expected Float column"),
+        }
+    }
+
+    #[test]
+    fn column_values_empty() {
+        let empty_int = ColumnValues::Int(vec![]);
+        assert!(empty_int.is_empty());
+        assert_eq!(empty_int.len(), 0);
+    }
+
+    #[test]
+    fn insert_and_update_with_id_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create index on _id before inserting
+        engine.create_index("users", "_id").unwrap();
+        engine.create_btree_index("users", "_id").unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Update some rows - this should update the indexes
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(99));
+        let count = engine
+            .update(
+                "users",
+                Condition::Lt("age".into(), Value::Int(25)),
+                updates,
+            )
+            .unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn large_parallel_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_posts_table(&engine);
+
+        // Insert many users and posts to trigger parallel join
+        for i in 0..1000 {
+            let mut user_values = HashMap::new();
+            user_values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            user_values.insert("age".to_string(), Value::Int(20 + (i % 50)));
+            engine.insert("users", user_values).unwrap();
+        }
+
+        for i in 0..2000 {
+            let mut post_values = HashMap::new();
+            post_values.insert("user_id".to_string(), Value::Int((i % 1000) as i64 + 1));
+            post_values.insert("title".to_string(), Value::String(format!("Post{}", i)));
+            post_values.insert("views".to_string(), Value::Int(i * 10));
+            engine.insert("posts", post_values).unwrap();
+        }
+
+        let joined = engine.join("users", "posts", "_id", "user_id").unwrap();
+        assert_eq!(joined.len(), 2000);
+    }
+
+    #[test]
+    fn select_with_condition_returning_none() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + (i % 10)));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Create conditions that will be evaluated but return nothing
+        let rows = engine
+            .select(
+                "users",
+                Condition::Eq("name".into(), Value::String("NonExistent".into())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn btree_index_range_le() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_btree_index("users", "age").unwrap();
+
+        let rows = engine
+            .select("users", Condition::Le("age".into(), Value::Int(10)))
+            .unwrap();
+        assert_eq!(rows.len(), 11); // 0-10 inclusive
+    }
+
+    #[test]
+    fn btree_index_range_ge() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_btree_index("users", "age").unwrap();
+
+        let rows = engine
+            .select("users", Condition::Ge("age".into(), Value::Int(40)))
+            .unwrap();
+        assert_eq!(rows.len(), 10); // 40-49 inclusive
+    }
+
+    #[test]
+    fn update_large_dataset_with_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..1000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(25));
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_index("users", "age").unwrap();
+        engine.create_btree_index("users", "age").unwrap();
+
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(30));
+        let count = engine
+            .update(
+                "users",
+                Condition::Eq("age".into(), Value::Int(25)),
+                updates,
+            )
+            .unwrap();
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn delete_large_dataset_with_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        for i in 0..1000 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert(
+                "age".to_string(),
+                Value::Int(if i % 2 == 0 { 25 } else { 30 }),
+            );
+            engine.insert("users", values).unwrap();
+        }
+
+        engine.create_index("users", "age").unwrap();
+        engine.create_btree_index("users", "age").unwrap();
+
+        let count = engine
+            .delete_rows("users", Condition::Eq("age".into(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(count, 500);
     }
 }

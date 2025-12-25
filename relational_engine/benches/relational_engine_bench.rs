@@ -1,5 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use relational_engine::{Column, ColumnType, Condition, RelationalEngine, Schema, Value};
+use relational_engine::{
+    Column, ColumnType, ColumnarScanOptions, Condition, RelationalEngine, Schema, Value,
+};
 use std::collections::HashMap;
 
 fn create_users_schema() -> Schema {
@@ -588,6 +590,324 @@ fn bench_create_btree_index(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_columnar_vs_row_full_scan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("columnar_vs_row_full_scan");
+
+    for size in [1000, 5000, 10000].iter() {
+        let engine = RelationalEngine::new();
+        engine.create_table("users", create_users_schema()).unwrap();
+        for i in 0..*size {
+            engine
+                .insert("users", create_user_values(i as i64))
+                .unwrap();
+        }
+        // Materialize columns for columnar scan
+        engine
+            .materialize_columns("users", &["name", "age", "email", "score"])
+            .unwrap();
+
+        group.throughput(Throughput::Elements(*size as u64));
+
+        group.bench_with_input(BenchmarkId::new("row_based", size), size, |b, _| {
+            b.iter(|| {
+                black_box(engine.select("users", Condition::True).unwrap());
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("columnar", size), size, |b, _| {
+            let options = ColumnarScanOptions {
+                projection: None,
+                prefer_columnar: true,
+            };
+            b.iter(|| {
+                black_box(
+                    engine
+                        .select_columnar("users", Condition::True, options.clone())
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_columnar_vs_row_filtered(c: &mut Criterion) {
+    let mut group = c.benchmark_group("columnar_vs_row_filtered");
+
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..10000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine.materialize_columns("users", &["age"]).unwrap();
+
+    // age >= 60 matches 20%
+    group.bench_function("row_ge_20_percent", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .select("users", Condition::Ge("age".to_string(), Value::Int(60)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("columnar_ge_20_percent", |b| {
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_columnar(
+                        "users",
+                        Condition::Ge("age".to_string(), Value::Int(60)),
+                        options.clone(),
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
+    // age = 25 matches 2%
+    group.bench_function("row_eq_2_percent", |b| {
+        b.iter(|| {
+            black_box(
+                engine
+                    .select("users", Condition::Eq("age".to_string(), Value::Int(25)))
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("columnar_eq_2_percent", |b| {
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_columnar(
+                        "users",
+                        Condition::Eq("age".to_string(), Value::Int(25)),
+                        options.clone(),
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Compound: age >= 30 AND age < 40 (20%)
+    group.bench_function("row_compound_and", |b| {
+        b.iter(|| {
+            let condition = Condition::Ge("age".to_string(), Value::Int(30))
+                .and(Condition::Lt("age".to_string(), Value::Int(40)));
+            black_box(engine.select("users", condition).unwrap());
+        });
+    });
+
+    group.bench_function("columnar_compound_and", |b| {
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            let condition = Condition::Ge("age".to_string(), Value::Int(30))
+                .and(Condition::Lt("age".to_string(), Value::Int(40)));
+            black_box(
+                engine
+                    .select_columnar("users", condition, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_columnar_projection(c: &mut Criterion) {
+    let mut group = c.benchmark_group("columnar_projection");
+
+    let engine = RelationalEngine::new();
+    engine.create_table("users", create_users_schema()).unwrap();
+    for i in 0..10000 {
+        engine
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine
+        .materialize_columns("users", &["name", "age", "email", "score"])
+        .unwrap();
+
+    // Full row fetch (all columns)
+    group.bench_function("all_columns", |b| {
+        let options = ColumnarScanOptions {
+            projection: None,
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_columnar("users", Condition::True, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Single column projection
+    group.bench_function("single_column", |b| {
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".to_string()]),
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_columnar("users", Condition::True, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Two columns
+    group.bench_function("two_columns", |b| {
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".to_string(), "age".to_string()]),
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine
+                    .select_columnar("users", Condition::True, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_materialize_columns(c: &mut Criterion) {
+    let mut group = c.benchmark_group("materialize_columns");
+
+    for size in [1000, 5000, 10000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            b.iter_batched(
+                || {
+                    let engine = RelationalEngine::new();
+                    engine.create_table("users", create_users_schema()).unwrap();
+                    for i in 0..size {
+                        engine
+                            .insert("users", create_user_values(i as i64))
+                            .unwrap();
+                    }
+                    engine
+                },
+                |engine| {
+                    black_box(
+                        engine
+                            .materialize_columns("users", &["name", "age", "email", "score"])
+                            .unwrap(),
+                    );
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_pure_columnar_vs_row(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pure_columnar_vs_row");
+
+    // Setup with materialized columns
+    let engine_columnar = RelationalEngine::new();
+    engine_columnar
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..10000 {
+        engine_columnar
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+    engine_columnar
+        .materialize_columns("users", &["name", "age", "email", "score"])
+        .unwrap();
+
+    // Setup without materialized columns (row-based only)
+    let engine_row = RelationalEngine::new();
+    engine_row
+        .create_table("users", create_users_schema())
+        .unwrap();
+    for i in 0..10000 {
+        engine_row
+            .insert("users", create_user_values(i as i64))
+            .unwrap();
+    }
+
+    // Compare single column projection
+    let proj_single = Some(vec!["age".to_string()]);
+
+    group.bench_function("row_single_col", |b| {
+        b.iter(|| {
+            black_box(
+                engine_row
+                    .select_with_projection("users", Condition::True, proj_single.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("columnar_single_col", |b| {
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["age".to_string()]),
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine_columnar
+                    .select_columnar("users", Condition::True, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    // Compare two columns
+    let proj_two = Some(vec!["name".to_string(), "age".to_string()]);
+
+    group.bench_function("row_two_cols", |b| {
+        b.iter(|| {
+            black_box(
+                engine_row
+                    .select_with_projection("users", Condition::True, proj_two.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.bench_function("columnar_two_cols", |b| {
+        let options = ColumnarScanOptions {
+            projection: Some(vec!["name".to_string(), "age".to_string()]),
+            prefer_columnar: true,
+        };
+        b.iter(|| {
+            black_box(
+                engine_columnar
+                    .select_columnar("users", Condition::True, options.clone())
+                    .unwrap(),
+            );
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert,
@@ -605,6 +925,11 @@ criterion_group!(
     bench_btree_indexed_range,
     bench_btree_compound_range,
     bench_create_btree_index,
+    bench_columnar_vs_row_full_scan,
+    bench_columnar_vs_row_filtered,
+    bench_columnar_projection,
+    bench_materialize_columns,
+    bench_pure_columnar_vs_row,
 );
 
 criterion_main!(benches);

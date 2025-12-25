@@ -33,7 +33,9 @@ use neumann_parser::{
     NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery, SimilarStmt,
     Statement, StatementKind, TableRefKind, UpdateStmt,
 };
-use relational_engine::{Condition, RelationalEngine, RelationalError, Row, Value};
+use relational_engine::{
+    ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
@@ -324,7 +326,6 @@ impl QueryRouter {
     // ========== AST-Based Execution Methods ==========
 
     fn exec_select(&self, select: &SelectStmt) -> Result<QueryResult> {
-        // Get table name from FROM clause
         let from = select
             .from
             .as_ref()
@@ -345,8 +346,58 @@ impl QueryRouter {
             Condition::True
         };
 
-        let rows = self.relational.select(table_name, condition)?;
+        // Extract column projection from SELECT clause
+        let projection = self.extract_projection(&select.columns)?;
+
+        let options = ColumnarScanOptions {
+            projection,
+            prefer_columnar: true,
+        };
+
+        let rows = self
+            .relational
+            .select_columnar(table_name, condition, options)?;
         Ok(QueryResult::Rows(rows))
+    }
+
+    fn extract_projection(
+        &self,
+        items: &[neumann_parser::SelectItem],
+    ) -> Result<Option<Vec<String>>> {
+        // Check for SELECT *
+        if items.len() == 1 {
+            if let ExprKind::Wildcard = &items[0].expr.kind {
+                return Ok(None);
+            }
+        }
+
+        // Check if any item is a wildcard
+        for item in items {
+            if matches!(
+                &item.expr.kind,
+                ExprKind::Wildcard | ExprKind::QualifiedWildcard(_)
+            ) {
+                return Ok(None);
+            }
+        }
+
+        let mut columns = Vec::with_capacity(items.len());
+        for item in items {
+            match &item.expr.kind {
+                ExprKind::Ident(ident) => {
+                    columns.push(ident.name.clone());
+                },
+                ExprKind::Qualified(_, name) => {
+                    columns.push(name.name.clone());
+                },
+                _ => {
+                    // For expressions (COUNT(*), a+b, etc.), fall back to all columns
+                    return Ok(None);
+                },
+            }
+        }
+
+        Ok(Some(columns))
     }
 
     fn exec_insert(&self, insert: &InsertStmt) -> Result<QueryResult> {

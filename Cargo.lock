@@ -612,6 +612,7 @@ dependencies = [
  "criterion",
  "rayon",
  "tensor_store",
+ "wide",
 ]
 
 [[package]]
