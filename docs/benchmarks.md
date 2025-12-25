@@ -105,22 +105,22 @@ Each item is a TensorData with 3 fields: id (i64), name (String), embedding (128
 The tensor_compress crate provides compression algorithms optimized for tensor data: vector quantization, delta encoding, and run-length encoding.
 
 **Vector Quantization (768-dim embedding):**
-| Operation | Time | Throughput |
-|-----------|------|------------|
-| quantize_int8 | 289 ns | 2.6M vectors/s |
-| quantize_binary | 425 ns | 2.4M vectors/s |
+| Operation | Time | Throughput | Peak RAM |
+|-----------|------|------------|----------|
+| quantize_int8 | 286 ns | 3.5M vectors/s | ~4 KB |
+| quantize_binary | 430 ns | 2.3M vectors/s | ~4 KB |
 
 **Delta Encoding (10K sequential IDs):**
-| Operation | Time | Throughput |
-|-----------|------|------------|
-| compress_ids | 8.3 µs | 1.2M IDs/s |
-| decompress_ids | 26 µs | 385K IDs/s |
+| Operation | Time | Throughput | Peak RAM |
+|-----------|------|------------|----------|
+| compress_ids | 8.0 µs | 1.25M IDs/s | ~100 KB |
+| decompress_ids | 33 µs | 303K IDs/s | ~100 KB |
 
 **Run-Length Encoding (100K values):**
-| Operation | Time | Throughput |
-|-----------|------|------------|
-| rle_encode | 54 µs | 1.9M values/s |
-| rle_decode | 36 µs | 2.8M values/s |
+| Operation | Time | Throughput | Peak RAM |
+|-----------|------|------------|----------|
+| rle_encode | 29 µs | 3.4M values/s | ~400 KB |
+| rle_decode | 38 µs | 2.6M values/s | ~400 KB |
 
 **Compression Ratios:**
 | Data Type | Technique | Ratio | Lossless |
@@ -133,9 +133,10 @@ The tensor_compress crate provides compression algorithms optimized for tensor d
 #### Analysis
 
 - **Quantization speed**: Sub-microsecond for typical 768-dim embeddings (GPT-style)
-- **Int8 vs Binary**: Int8 is faster (289ns vs 425ns) and more accurate
-- **Delta encoding**: Asymmetric - compression is 3x faster than decompression
+- **Int8 vs Binary**: Int8 is faster (286ns vs 430ns) and more accurate
+- **Delta encoding**: Asymmetric - compression is 4x faster than decompression
 - **RLE**: Best for highly repeated data (status columns, category IDs)
+- **Memory efficiency**: All operations use < 500 KB for typical data sizes
 - **Integration**: Use `SAVE COMPRESSED` in shell or `save_snapshot_compressed()` API
 - **Trade-off**: Int8 quantization trades ~1% accuracy for 4x size reduction
 
@@ -466,26 +467,33 @@ The query router integrates all engines and routes queries based on parsed AST t
 
 The shell provides an interactive REPL interface with readline support, routing queries through the query_router.
 
-**Command Execution:**
-| Operation | Time |
-|-----------|------|
-| empty_input | 2.3 ns |
-| help | 43 ns |
-| SELECT * (100 rows) | 17.8 µs |
-| SELECT WHERE (100 rows) | 17.1 µs |
+**Command Execution (with fresh shell per iteration):**
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| empty_input | 2.4 µs | ~0.4 KB |
+| help | 2.4 µs | ~0.5 KB |
+| SELECT * (100 rows) | 129 µs | ~67 KB |
+| SELECT WHERE (100 rows) | 86 µs | ~67 KB |
 
 **Output Formatting:**
-| Operation | Time |
-|-----------|------|
-| format_1000_rows | 267 µs |
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| format_1000_rows | 3.2 ms | ~1.3 MB |
+
+**Insert Scaling:**
+| Rows | Time | Peak RAM |
+|------|------|----------|
+| 100 | ~30 ms | ~180 KB |
+| 500 | ~150 ms | ~600 KB |
+| 1000 | ~300 ms | ~1.2 MB |
 
 #### Analysis
 
-- **Empty input**: Near-zero overhead (2.3ns) for no-op commands
-- **Built-in commands**: Help returns in ~43ns (string allocation only)
-- **Query execution**: Dominated by query_router execution time, shell adds negligible overhead
-- **Output formatting**: ASCII table formatting at ~267ns per row (267µs / 1000 rows)
-- **Readline integration**: rustyline provides history, arrow keys, and Ctrl+C handling with no measurable overhead on command execution
+- **Shell creation**: ~2.4µs overhead for creating a fresh shell instance
+- **Query execution**: Dominated by relational_engine execution time
+- **Output formatting**: ASCII table formatting at ~3.2µs per row (3.2ms / 1000 rows)
+- **Memory scaling**: ~1.2 KB per row for typical data
+- **Readline integration**: rustyline provides history, arrow keys, and Ctrl+C handling with no measurable overhead
 
 ## Performance Characteristics
 
