@@ -39,13 +39,15 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 |   - Key-value storage                            |
 |   - Scalars, vectors, pointers                   |
 |   - Thread-safe, in-memory                       |
+|   - Snapshot persistence (bincode)               |
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
-|           Persistence Layer (Future)              |
-|   - File backend                                 |
-|   - S3/cloud storage                             |
-|   - WAL for durability                           |
+|           Persistence Layer [BASIC]               |
+|   - Snapshot save/load (bincode)                 |
+|   - Atomic writes (temp file + rename)           |
+|   - Bloom filter rebuild on load                 |
+|   [Future: WAL, incremental, compression]        |
 +--------------------------------------------------+
 ```
 
@@ -53,23 +55,27 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 
 ### Module 1: Tensor Store (Complete)
 
-**Responsibility**: Hold data. Know nothing about queries.
+**Responsibility**: Hold data. Know nothing about queries. Provide persistence.
 
 **Interface**:
 - `put(key, tensor) -> Result<()>`
 - `get(key) -> Result<TensorData>`
 - `delete(key) -> Result<()>`
-- `exists(key) -> Result<bool>`
-- `scan(prefix) -> Result<Vec<String>>`
-- `scan_count(prefix) -> Result<usize>`
-- `clear() -> Result<()>`
-- `len() -> Result<usize>`
+- `exists(key) -> bool`
+- `scan(prefix) -> Vec<String>`
+- `scan_count(prefix) -> usize`
+- `clear()`
+- `len() -> usize`
+- `save_snapshot(path) -> Result<(), SnapshotError>`
+- `load_snapshot(path) -> Result<TensorStore, SnapshotError>`
+
+**Serialization**: All core types (`TensorData`, `TensorValue`, `ScalarValue`) implement `serde::Serialize` and `serde::Deserialize`.
 
 **Does Not**:
 - Parse queries
 - Validate schemas
 - Enforce relationships
-- Handle persistence
+- Provide WAL or incremental persistence (future)
 
 ### Module 2: Relational Engine (Complete)
 
@@ -235,11 +241,14 @@ Shell formats output
 
 ## Key Design Decisions
 
-### 1. In-Memory First
+### 1. In-Memory First with Snapshot Persistence
 
-The README states: "Single-node, in-memory first. Durability and clustering come later."
+The system is designed for in-memory operation with optional snapshot persistence:
 
-This simplifies Module 1 and allows focus on correctness. Persistence is a separate concern.
+- **Primary storage**: DashMap in memory for fast concurrent access
+- **Persistence**: Snapshot-based save/load using bincode serialization
+- **Atomicity**: Snapshots write to temp file, then atomic rename
+- **Future**: WAL and incremental persistence planned for production durability
 
 ### 2. Clone on Read
 

@@ -1,9 +1,10 @@
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
     Null,
     Int(i64),
@@ -35,21 +36,21 @@ impl PropertyValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Direction {
     Outgoing,
     Incoming,
     Both,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: u64,
     pub label: String,
     pub properties: HashMap<String, PropertyValue>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub id: u64,
     pub from: u64,
@@ -59,13 +60,13 @@ pub struct Edge {
     pub directed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Path {
     pub nodes: Vec<u64>,
     pub edges: Vec<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GraphError {
     NodeNotFound(u64),
     EdgeNotFound(u64),

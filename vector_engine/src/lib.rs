@@ -3,6 +3,7 @@
 //! Provides embeddings storage and similarity search functionality.
 
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use tensor_store::{fields, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 // Re-export HNSW types for public use
@@ -87,6 +88,7 @@ mod simd {
 /// - Configurable recall/speed tradeoff via ef_search parameter
 pub mod hnsw {
     use super::simd;
+    use serde::{Deserialize, Serialize};
     use std::cmp::Ordering;
     use std::collections::{BinaryHeap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -174,7 +176,7 @@ pub mod hnsw {
     }
 
     /// Configuration for HNSW index.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct HNSWConfig {
         /// Maximum number of connections per node per layer (default: 16)
         pub m: usize,
@@ -550,7 +552,7 @@ pub mod hnsw {
 }
 
 /// Error types for vector operations.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VectorError {
     /// The requested embedding was not found.
     NotFound(String),
@@ -589,7 +591,7 @@ impl From<TensorStoreError> for VectorError {
 pub type Result<T> = std::result::Result<T, VectorError>;
 
 /// Result of a similarity search.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchResult {
     /// The key of the matching embedding.
     pub key: String,

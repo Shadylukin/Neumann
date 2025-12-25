@@ -1,7 +1,11 @@
 use dashmap::DashMap;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::hash::{Hash, Hasher};
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -163,7 +167,7 @@ impl Hasher for SipHasher {
 }
 
 /// Represents different types of values a tensor can hold
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TensorValue {
     /// Scalar values (properties): integers, floats, strings, booleans
     Scalar(ScalarValue),
@@ -176,7 +180,7 @@ pub enum TensorValue {
 }
 
 /// Scalar value types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScalarValue {
     Null,
     Bool(bool),
@@ -187,7 +191,7 @@ pub enum ScalarValue {
 }
 
 /// An entity that can hold scalar properties, vector embeddings, and pointers to other tensors.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TensorData {
     fields: HashMap<String, TensorValue>,
 }
@@ -343,7 +347,7 @@ impl TensorData {
 
 pub type Result<T> = std::result::Result<T, TensorStoreError>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TensorStoreError {
     NotFound(String),
 }
@@ -357,6 +361,45 @@ impl std::fmt::Display for TensorStoreError {
 }
 
 impl std::error::Error for TensorStoreError {}
+
+/// Errors that can occur during snapshot operations.
+#[derive(Debug)]
+pub enum SnapshotError {
+    /// Failed to create or open the file.
+    IoError(std::io::Error),
+    /// Failed to serialize or deserialize data.
+    SerializationError(String),
+}
+
+impl std::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnapshotError::IoError(e) => write!(f, "I/O error: {}", e),
+            SnapshotError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SnapshotError::IoError(e) => Some(e),
+            SnapshotError::SerializationError(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for SnapshotError {
+    fn from(e: std::io::Error) -> Self {
+        SnapshotError::IoError(e)
+    }
+}
+
+impl From<bincode::Error> for SnapshotError {
+    fn from(e: bincode::Error) -> Self {
+        SnapshotError::SerializationError(e.to_string())
+    }
+}
 
 /// Thread-safe key-value store for tensor data using sharded concurrent HashMap.
 ///
@@ -522,6 +565,92 @@ impl TensorStore {
                 .filter(|r| r.key().starts_with(prefix))
                 .count()
         }
+    }
+
+    /// Save a snapshot of the store to a file.
+    ///
+    /// The snapshot is written atomically by first writing to a temporary file
+    /// and then renaming it to the target path.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let store = TensorStore::new();
+    /// store.put("key", tensor).unwrap();
+    /// store.save_snapshot("data.bin")?;
+    /// ```
+    pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> std::result::Result<(), SnapshotError> {
+        let path = path.as_ref();
+
+        // Create temp file in same directory for atomic rename
+        let temp_path = path.with_extension("tmp");
+
+        // Collect all data into a HashMap for serialization
+        let snapshot: HashMap<String, TensorData> = self
+            .data
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        // Write to temp file
+        let file = File::create(&temp_path)?;
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, &snapshot)?;
+
+        // Atomic rename
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+
+    /// Load a store from a snapshot file.
+    ///
+    /// Returns a new TensorStore with the data from the snapshot.
+    /// Note: Bloom filter state is not persisted and will be rebuilt if enabled.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let store = TensorStore::load_snapshot("data.bin")?;
+    /// let tensor = store.get("key")?;
+    /// ```
+    pub fn load_snapshot<P: AsRef<Path>>(path: P) -> std::result::Result<Self, SnapshotError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let snapshot: HashMap<String, TensorData> = bincode::deserialize_from(reader)?;
+
+        let store = TensorStore::new();
+        for (key, value) in snapshot {
+            store.data.insert(key, value);
+        }
+
+        Ok(store)
+    }
+
+    /// Load a store from a snapshot file with a Bloom filter.
+    ///
+    /// The Bloom filter is rebuilt from the loaded keys.
+    pub fn load_snapshot_with_bloom_filter<P: AsRef<Path>>(
+        path: P,
+        expected_items: usize,
+        false_positive_rate: f64,
+    ) -> std::result::Result<Self, SnapshotError> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let snapshot: HashMap<String, TensorData> = bincode::deserialize_from(reader)?;
+
+        let bloom = BloomFilter::new(expected_items, false_positive_rate);
+        let data = DashMap::new();
+
+        for (key, value) in snapshot {
+            bloom.add(&key);
+            data.insert(key, value);
+        }
+
+        Ok(Self {
+            data: Arc::new(data),
+            bloom_filter: Some(Arc::new(bloom)),
+        })
     }
 }
 
@@ -1718,5 +1847,231 @@ mod tests {
 
         let user_fields: Vec<_> = data.user_fields().collect();
         assert_eq!(user_fields.len(), 2);
+    }
+
+    // Snapshot tests
+
+    #[test]
+    fn snapshot_save_and_load() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_basic.bin");
+
+        // Create and populate store
+        let store = TensorStore::new();
+        let mut tensor1 = TensorData::new();
+        tensor1.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String("Alice".into())),
+        );
+        tensor1.set("age", TensorValue::Scalar(ScalarValue::Int(30)));
+        store.put("user:1", tensor1).unwrap();
+
+        let mut tensor2 = TensorData::new();
+        tensor2.set("embedding", TensorValue::Vector(vec![0.1, 0.2, 0.3]));
+        store.put("user:2", tensor2).unwrap();
+
+        // Save snapshot
+        store.save_snapshot(&path).unwrap();
+
+        // Load into new store
+        let loaded = TensorStore::load_snapshot(&path).unwrap();
+
+        // Verify data
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.exists("user:1"));
+        assert!(loaded.exists("user:2"));
+
+        let user1 = loaded.get("user:1").unwrap();
+        match user1.get("name") {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => assert_eq!(s, "Alice"),
+            _ => panic!("expected string"),
+        }
+
+        let user2 = loaded.get("user:2").unwrap();
+        match user2.get("embedding") {
+            Some(TensorValue::Vector(v)) => assert_eq!(v, &vec![0.1, 0.2, 0.3]),
+            _ => panic!("expected vector"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_empty_store() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_empty.bin");
+
+        let store = TensorStore::new();
+        store.save_snapshot(&path).unwrap();
+
+        let loaded = TensorStore::load_snapshot(&path).unwrap();
+        assert!(loaded.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_all_scalar_types() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_scalars.bin");
+
+        let store = TensorStore::new();
+        let mut tensor = TensorData::new();
+        tensor.set("null", TensorValue::Scalar(ScalarValue::Null));
+        tensor.set("bool", TensorValue::Scalar(ScalarValue::Bool(true)));
+        tensor.set("int", TensorValue::Scalar(ScalarValue::Int(-42)));
+        tensor.set("float", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        tensor.set(
+            "string",
+            TensorValue::Scalar(ScalarValue::String("hello".into())),
+        );
+        tensor.set(
+            "bytes",
+            TensorValue::Scalar(ScalarValue::Bytes(vec![0xFF, 0x00, 0xAB])),
+        );
+        store.put("test", tensor).unwrap();
+
+        store.save_snapshot(&path).unwrap();
+        let loaded = TensorStore::load_snapshot(&path).unwrap();
+
+        let t = loaded.get("test").unwrap();
+        assert_eq!(t.get("null"), Some(&TensorValue::Scalar(ScalarValue::Null)));
+        assert_eq!(
+            t.get("bool"),
+            Some(&TensorValue::Scalar(ScalarValue::Bool(true)))
+        );
+        assert_eq!(
+            t.get("int"),
+            Some(&TensorValue::Scalar(ScalarValue::Int(-42)))
+        );
+        assert_eq!(
+            t.get("float"),
+            Some(&TensorValue::Scalar(ScalarValue::Float(3.14)))
+        );
+        assert_eq!(
+            t.get("string"),
+            Some(&TensorValue::Scalar(ScalarValue::String("hello".into())))
+        );
+        assert_eq!(
+            t.get("bytes"),
+            Some(&TensorValue::Scalar(ScalarValue::Bytes(vec![
+                0xFF, 0x00, 0xAB
+            ])))
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_pointers() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_pointers.bin");
+
+        let store = TensorStore::new();
+        let mut tensor = TensorData::new();
+        tensor.set("single", TensorValue::Pointer("ref:1".into()));
+        tensor.set(
+            "multi",
+            TensorValue::Pointers(vec!["ref:2".into(), "ref:3".into()]),
+        );
+        store.put("test", tensor).unwrap();
+
+        store.save_snapshot(&path).unwrap();
+        let loaded = TensorStore::load_snapshot(&path).unwrap();
+
+        let t = loaded.get("test").unwrap();
+        assert_eq!(t.get("single"), Some(&TensorValue::Pointer("ref:1".into())));
+        assert_eq!(
+            t.get("multi"),
+            Some(&TensorValue::Pointers(vec!["ref:2".into(), "ref:3".into()]))
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_large_dataset() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_large.bin");
+
+        let store = TensorStore::new();
+        for i in 0..1000 {
+            let mut tensor = TensorData::new();
+            tensor.set("id", TensorValue::Scalar(ScalarValue::Int(i)));
+            tensor.set("embedding", TensorValue::Vector(vec![i as f32; 128]));
+            store.put(format!("entity:{}", i), tensor).unwrap();
+        }
+
+        store.save_snapshot(&path).unwrap();
+        let loaded = TensorStore::load_snapshot(&path).unwrap();
+
+        assert_eq!(loaded.len(), 1000);
+
+        // Verify a few entries
+        for i in [0, 500, 999] {
+            let t = loaded.get(&format!("entity:{}", i)).unwrap();
+            match t.get("id") {
+                Some(TensorValue::Scalar(ScalarValue::Int(id))) => assert_eq!(*id, i),
+                _ => panic!("expected int"),
+            }
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_with_bloom_filter() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_snapshot_bloom.bin");
+
+        let store = TensorStore::new();
+        for i in 0..100 {
+            store.put(format!("key:{}", i), TensorData::new()).unwrap();
+        }
+
+        store.save_snapshot(&path).unwrap();
+
+        // Load with bloom filter
+        let loaded = TensorStore::load_snapshot_with_bloom_filter(&path, 200, 0.01).unwrap();
+
+        assert!(loaded.has_bloom_filter());
+        assert_eq!(loaded.len(), 100);
+
+        // Bloom filter should work
+        assert!(loaded.exists("key:50"));
+        assert!(!loaded.exists("nonexistent"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_load_nonexistent_file() {
+        let result = TensorStore::load_snapshot("/nonexistent/path/file.bin");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn snapshot_error_display() {
+        let io_err = SnapshotError::IoError(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+        assert!(format!("{}", io_err).contains("I/O error"));
+
+        let ser_err = SnapshotError::SerializationError("bad data".into());
+        assert!(format!("{}", ser_err).contains("Serialization error"));
+    }
+
+    #[test]
+    fn snapshot_error_source() {
+        use std::error::Error;
+
+        let io_err =
+            SnapshotError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        assert!(io_err.source().is_some());
+
+        let ser_err = SnapshotError::SerializationError("test".into());
+        assert!(ser_err.source().is_none());
     }
 }

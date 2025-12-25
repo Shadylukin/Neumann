@@ -10,6 +10,7 @@ Module 5 of Neumann. Provides unified query execution across all engines.
 4. **Result Aggregation**: Consistent QueryResult type across all operations
 5. **Shared Storage**: All engines share the same TensorStore for unified entities
 6. **Cross-Engine Queries**: Combine graph connections with vector similarity
+7. **Serializable Results**: All result types implement `serde::Serialize`/`Deserialize`
 
 ## API Reference
 

@@ -100,6 +100,11 @@ store.scan_count("user:");         // Count keys with prefix -> usize
 store.len();                       // Total tensor count -> usize
 store.is_empty();                  // Check if store is empty -> bool
 store.clear();                     // Remove all tensors
+
+// Persistence (returns Result<_, SnapshotError>)
+store.save_snapshot("data.bin")?;  // Save to file (atomic)
+TensorStore::load_snapshot("data.bin")?;  // Load from file
+TensorStore::load_snapshot_with_bloom_filter("data.bin", 10000, 0.01)?;  // Load with bloom filter
 ```
 
 ### TensorData
@@ -125,6 +130,8 @@ tensor.is_empty();                 // bool
 
 ## Error Handling
 
+### TensorStoreError
+
 Only `get` and `delete` can fail:
 
 | Error | Cause |
@@ -132,6 +139,17 @@ Only `get` and `delete` can fail:
 | `NotFound(key)` | `get` or `delete` on nonexistent key |
 
 Note: Unlike the previous RwLock-based implementation, there is no `LockError`. DashMap's sharded design eliminates lock poisoning concerns.
+
+### SnapshotError
+
+Snapshot operations can fail:
+
+| Error | Cause |
+|-------|-------|
+| `IoError(std::io::Error)` | File not found, permission denied, disk full |
+| `SerializationError(String)` | Corrupted file, incompatible format |
+
+Both error types implement `std::error::Error` for use with `?` operator.
 
 ## Performance Characteristics
 
@@ -279,6 +297,14 @@ graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 | `store_concurrent_read_write` | Mixed read/write safety |
 | `store_empty_key` | Empty string as key works |
 | `store_unicode_keys` | Unicode in keys works |
+| `snapshot_save_and_load` | Basic snapshot round-trip |
+| `snapshot_empty_store` | Empty store snapshot works |
+| `snapshot_all_scalar_types` | All scalar types serialize correctly |
+| `snapshot_pointers` | Pointer types serialize correctly |
+| `snapshot_large_dataset` | 1000 entities with embeddings |
+| `snapshot_with_bloom_filter` | Load with bloom filter rebuild |
+| `snapshot_load_nonexistent_file` | Error handling for missing file |
+| `snapshot_error_*` | Error type coverage |
 
 ## Architectural Decision: DashMap
 
@@ -294,14 +320,88 @@ graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 
 For infrastructure code where concurrent writes are expected and reliability is critical, DashMap provides better performance and eliminates the poisoning failure mode.
 
+## Serialization
+
+All core types implement `serde::Serialize` and `serde::Deserialize`:
+
+| Type | Serializable |
+|------|--------------|
+| `TensorData` | Yes |
+| `TensorValue` | Yes |
+| `ScalarValue` | Yes |
+| `TensorStoreError` | Yes |
+
+This enables:
+- Snapshot persistence (built-in)
+- Custom serialization formats (JSON, MessagePack, etc.)
+- Network transfer of tensor data
+- Integration with other systems
+
+## Persistence
+
+### Snapshot API
+
+Save and load the entire store atomically:
+
+```rust
+// Save entire store to a file
+store.save_snapshot("data.bin")?;
+
+// Load from a snapshot file
+let store = TensorStore::load_snapshot("data.bin")?;
+
+// Load with Bloom filter (rebuilds filter from keys)
+let store = TensorStore::load_snapshot_with_bloom_filter(
+    "data.bin",
+    10_000,   // expected items
+    0.01      // false positive rate
+)?;
+```
+
+### Implementation Details
+
+| Feature | Description |
+|---------|-------------|
+| Format | bincode (compact binary) |
+| Atomicity | Writes to `.tmp` file, then atomic rename |
+| Bloom Filter | Rebuilt on load if requested |
+| HNSW Index | Not persisted (rebuild required) |
+
+### Usage Example
+
+```rust
+use tensor_store::{TensorStore, TensorData, TensorValue, ScalarValue};
+
+// Create and populate store
+let store = TensorStore::new();
+let mut user = TensorData::new();
+user.set("name", TensorValue::Scalar(ScalarValue::String("Alice".into())));
+user.set("embedding", TensorValue::Vector(vec![0.1, 0.2, 0.3]));
+store.put("user:1", user)?;
+
+// Save snapshot
+store.save_snapshot("/path/to/data.bin")?;
+
+// Later: restore from snapshot
+let restored = TensorStore::load_snapshot("/path/to/data.bin")?;
+assert!(restored.exists("user:1"));
+```
+
+### Best Practices
+
+1. **Atomic saves**: `save_snapshot` writes to a temp file first, so interrupted saves don't corrupt data
+2. **Backup strategy**: Keep multiple snapshots with timestamps for point-in-time recovery
+3. **Bloom filter on load**: Use `load_snapshot_with_bloom_filter` for read-heavy workloads with sparse key access
+
 ## Future Considerations
 
-Not implemented (out of scope for Module 1):
+Not yet implemented:
 
-- **Persistence**: File/S3 backend for durability
+- **Write-Ahead Log (WAL)**: For durability between snapshots
+- **Incremental snapshots**: Only save changes since last snapshot
+- **Compression**: Reduce snapshot file size
 - **Transactions**: Atomic multi-key operations
 - **TTL**: Automatic expiration
-- **Compression**: For large vectors/bytes
-- **Snapshots**: Point-in-time backups
+- **Background snapshots**: Async save without blocking
 
 These belong in higher layers or future modules.

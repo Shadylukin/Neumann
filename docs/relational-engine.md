@@ -8,6 +8,7 @@ Module 2 of Neumann. Provides SQL-like operations on top of the Tensor Store.
 2. **Schema Enforcement**: Type checking on insert/update
 3. **Condition Evaluation**: Composable predicates for filtering
 4. **Thread Safety**: Inherits from Tensor Store
+5. **Serializable Types**: All types implement `serde::Serialize`/`Deserialize`
 
 ## Data Model
 

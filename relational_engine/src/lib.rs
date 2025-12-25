@@ -1,4 +1,5 @@
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -330,7 +331,7 @@ mod simd {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColumnType {
     Int,
     Float,
@@ -338,7 +339,7 @@ pub enum ColumnType {
     Bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     pub column_type: ColumnType,
@@ -360,7 +361,7 @@ impl Column {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
     pub columns: Vec<Column>,
 }
@@ -375,7 +376,7 @@ impl Schema {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Null,
     Int(i64),
@@ -464,7 +465,7 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Row {
     pub id: u64,
     pub values: HashMap<String, Value>,
@@ -486,7 +487,7 @@ impl Row {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Condition {
     Eq(String, Value),
     Ne(String, Value),
@@ -559,7 +560,7 @@ impl Condition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RelationalError {
     TableNotFound(String),
     TableAlreadyExists(String),

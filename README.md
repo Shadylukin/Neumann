@@ -104,6 +104,28 @@ router.connect_entities("user:1", "user:2", "follows")?;
 let results = router.find_neighbors_by_similarity("user:1", &query_vec, 10)?;
 ```
 
+### Persistence
+
+Save and load the entire store to disk:
+
+```rust
+use tensor_store::TensorStore;
+
+// Create and populate store
+let store = TensorStore::new();
+store.put("user:1", user_data)?;
+store.put("user:2", user_data)?;
+
+// Save snapshot to file (atomic write)
+store.save_snapshot("data.bin")?;
+
+// Later: load from snapshot
+let store = TensorStore::load_snapshot("data.bin")?;
+assert!(store.exists("user:1"));
+```
+
+Snapshots use bincode for compact binary serialization. All core types (`TensorData`, `TensorValue`, `ScalarValue`) are serializable.
+
 ## Project Status
 
 | Module | Status | Description |
@@ -115,7 +137,7 @@ let results = router.find_neighbors_by_similarity("user:1", &query_vec, 10)?;
 | Query Router | Complete | Cross-engine queries on unified entities |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
-| Persistence | Planned | Durability and backup |
+| Persistence | Basic | Snapshot-based save/load with bincode serialization |
 
 ## What Neumann Is Not (For Now)
 

@@ -36,13 +36,14 @@ use neumann_parser::{
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tensor_store::TensorStore;
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
 
 /// Error types for query routing.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RouterError {
     /// Failed to parse the command.
     ParseError(String),
@@ -100,7 +101,7 @@ impl From<VectorError> for RouterError {
 pub type Result<T> = std::result::Result<T, RouterError>;
 
 /// Result of a query execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryResult {
     /// No result (e.g., CREATE, INSERT)
     Empty,
@@ -127,7 +128,7 @@ pub enum QueryResult {
 }
 
 /// Node result from graph query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeResult {
     pub id: u64,
     pub label: String,
@@ -135,7 +136,7 @@ pub struct NodeResult {
 }
 
 /// Edge result from graph query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeResult {
     pub id: u64,
     pub from: u64,
@@ -144,21 +145,21 @@ pub struct EdgeResult {
 }
 
 /// Similarity search result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimilarResult {
     pub key: String,
     pub score: f32,
 }
 
 /// Result from unified cross-engine query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedResult {
     pub description: String,
     pub items: Vec<UnifiedItem>,
 }
 
 /// Single item in unified result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedItem {
     pub source: String,
     pub id: String,

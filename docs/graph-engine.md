@@ -10,6 +10,7 @@ Module 3 of Neumann. Provides graph operations on top of the Tensor Store.
 4. **Cycle-Safe**: Handles cyclic graphs without infinite loops
 5. **Unified Entities**: Edges can connect shared entities across engines
 6. **Thread Safety**: Inherits from Tensor Store
+7. **Serializable Types**: All types implement `serde::Serialize`/`Deserialize`
 
 ## Data Model
 

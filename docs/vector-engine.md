@@ -10,6 +10,7 @@ Module 4 of Neumann. Provides embeddings storage and similarity search.
 4. **Dual Search Modes**: Brute-force O(n) or HNSW O(log n)
 5. **Unified Entities**: Embeddings can be attached to shared entities
 6. **Thread Safety**: Inherits from Tensor Store
+7. **Serializable Types**: All types implement `serde::Serialize`/`Deserialize`
 
 ## API Reference
 
