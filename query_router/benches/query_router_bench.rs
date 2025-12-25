@@ -305,7 +305,7 @@ fn bench_cross_engine(c: &mut Criterion) {
 
     // Setup: shared store with entities having both embeddings and graph connections
     let store = tensor_store::TensorStore::new();
-    let router = QueryRouter::with_shared_store(store);
+    let mut router = QueryRouter::with_shared_store(store);
 
     // Create 200 entities with embeddings (reduced from 1000 for faster benchmarks)
     for i in 0..200 {
@@ -327,6 +327,9 @@ fn bench_cross_engine(c: &mut Criterion) {
     }
 
     let query_vec: Vec<f32> = (0..128).map(|j| (50 * 128 + j) as f32 / 100000.0).collect();
+
+    // Build HNSW index for fast similarity search
+    router.build_vector_index().unwrap();
 
     group.bench_function("connect_entities", |b| {
         let mut i = 2000;
@@ -396,7 +399,7 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
 
     for entity_count in [100, 500, 1000].iter() {
         let store = tensor_store::TensorStore::new();
-        let router = QueryRouter::with_shared_store(store);
+        let mut router = QueryRouter::with_shared_store(store);
 
         // Create entities with embeddings
         for i in 0..*entity_count {
@@ -422,6 +425,9 @@ fn bench_cross_engine_scale(c: &mut Criterion) {
         }
 
         let query_vec: Vec<f32> = (0..128).map(|j| j as f32 / 100000.0).collect();
+
+        // Build HNSW index for fast similarity search
+        router.build_vector_index().unwrap();
 
         group.throughput(Throughput::Elements(*entity_count as u64));
         group.bench_with_input(

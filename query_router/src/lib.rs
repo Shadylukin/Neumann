@@ -254,10 +254,16 @@ impl QueryRouter {
             .get_entity_embedding(query_key)
             .map_err(|e| RouterError::VectorError(e.to_string()))?;
 
-        let similar = self
-            .vector
-            .search_entities(&query_embedding, top_k * 2)
-            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+        // Use HNSW index if available, otherwise fall back to brute-force
+        let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
+            self.vector
+                .search_with_hnsw(index, keys, &query_embedding, top_k * 2)
+                .map_err(|e| RouterError::VectorError(e.to_string()))?
+        } else {
+            self.vector
+                .search_entities(&query_embedding, top_k * 2)
+                .map_err(|e| RouterError::VectorError(e.to_string()))?
+        };
 
         let connected_neighbors: std::collections::HashSet<String> = self
             .graph
