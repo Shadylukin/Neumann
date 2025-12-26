@@ -986,6 +986,7 @@ dependencies = [
  "base64",
  "criterion",
  "graph_engine",
+ "peak_alloc",
  "rand",
  "serde",
  "tensor_store",

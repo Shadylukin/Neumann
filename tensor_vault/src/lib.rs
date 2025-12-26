@@ -367,6 +367,11 @@ impl Vault {
         }
     }
 
+    /// Access the underlying graph engine (for testing/benchmarking).
+    pub fn graph(&self) -> &Arc<GraphEngine> {
+        &self.graph
+    }
+
     fn check_access(&self, requester: &str, key: &str) -> Result<()> {
         if self.has_access(requester, key) {
             Ok(())

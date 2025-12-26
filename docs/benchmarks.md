@@ -17,6 +17,7 @@ cargo bench --package neumann_parser
 cargo bench --package query_router
 cargo bench --package neumann_shell
 cargo bench --package tensor_compress
+cargo bench --package tensor_vault
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -139,6 +140,54 @@ The tensor_compress crate provides compression algorithms optimized for tensor d
 - **Memory efficiency**: All operations use < 500 KB for typical data sizes
 - **Integration**: Use `SAVE COMPRESSED` in shell or `save_snapshot_compressed()` API
 - **Trade-off**: Int8 quantization trades ~1% accuracy for 4x size reduction
+
+### tensor_vault
+
+The tensor_vault crate provides AES-256-GCM encrypted secret storage with graph-based access control.
+
+**Key Derivation (Argon2id):**
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| argon2id_derivation | 115 ms | ~64 MB |
+
+Note: Argon2id is intentionally slow to resist brute-force attacks. The 64MB memory cost is configurable via `VaultConfig`.
+
+**Encryption/Decryption (AES-256-GCM):**
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| set_1kb | 13 µs | ~3 KB |
+| get_1kb | 41 µs | ~3 KB |
+| set_10kb | 82 µs | ~25 KB |
+| get_10kb | 118 µs | ~25 KB |
+
+**Access Control (Graph Path Verification):**
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| check_shallow (1 hop) | 55 µs | ~2 KB |
+| check_deep (10 hops) | 54 µs | ~3 KB |
+| grant | 17 µs | ~1 KB |
+| revoke | 1.16 ms | ~1 KB |
+
+**Secret Listing:**
+| Operation | Time | Peak RAM |
+|-----------|------|----------|
+| list_100_secrets | 11 µs | ~4 KB |
+| list_1000_secrets | 466 µs | ~40 KB |
+
+#### Analysis
+
+- **Key derivation**: Argon2id dominates vault initialization (~115ms). This is by design for security.
+- **Encryption speed**: AES-256-GCM is fast (~13µs for 1KB). Throughput: ~75 MB/s for encryption.
+- **Access check**: BFS path verification is O(edges traversed). Shallow and deep paths have similar latency due to small graph size.
+- **Revoke performance**: Slower than grant due to edge deletion and graph traversal.
+- **List scaling**: Near-linear with number of secrets (~4.7µs per secret at 1000).
+
+**Security vs Performance Trade-offs:**
+| Configuration | Key Derivation | Security |
+|---------------|----------------|----------|
+| Default (64MB, 3 iter) | ~115 ms | High |
+| Fast (16MB, 1 iter) | ~30 ms | Medium |
+| Paranoid (256MB, 10 iter) | ~1 s | Very High |
 
 ### graph_engine
 
