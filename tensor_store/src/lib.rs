@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub mod hnsw;
 pub mod sparse_vector;
 
-pub use hnsw::{HNSWConfig, HNSWIndex};
+pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
 pub use sparse_vector::SparseVector;
 
 /// Reserved field prefixes for unified entity storage.
@@ -188,6 +188,147 @@ pub enum TensorValue {
     Pointer(String),
     /// List of pointers (multiple relationships)
     Pointers(Vec<String>),
+}
+
+/// Default sparsity threshold for auto-sparsification (70%)
+pub const DEFAULT_SPARSITY_THRESHOLD: f32 = 0.7;
+
+/// Default value threshold for pruning small values
+pub const DEFAULT_VALUE_THRESHOLD: f32 = 0.01;
+
+impl TensorValue {
+    /// Create an embedding value, automatically choosing sparse or dense representation.
+    ///
+    /// If the vector has sparsity above `sparsity_threshold` after pruning values
+    /// below `value_threshold`, stores as `Sparse`. Otherwise stores as `Vector`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tensor_store::TensorValue;
+    ///
+    /// // Dense embedding - stored as Vector
+    /// let dense = vec![0.5, 0.3, 0.8, 0.2];
+    /// let val = TensorValue::from_embedding(dense.clone(), 0.01, 0.7);
+    /// assert!(matches!(val, TensorValue::Vector(_)));
+    ///
+    /// // Sparse embedding - stored as Sparse
+    /// let sparse = vec![0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0];
+    /// let val = TensorValue::from_embedding(sparse, 0.01, 0.7);
+    /// assert!(matches!(val, TensorValue::Sparse(_)));
+    /// ```
+    pub fn from_embedding(dense: Vec<f32>, value_threshold: f32, sparsity_threshold: f32) -> Self {
+        let sparse = SparseVector::from_dense_with_threshold(&dense, value_threshold);
+
+        if sparse.sparsity() >= sparsity_threshold {
+            TensorValue::Sparse(sparse)
+        } else {
+            TensorValue::Vector(dense)
+        }
+    }
+
+    /// Create an embedding with default thresholds (0.01 value, 0.7 sparsity).
+    pub fn from_embedding_auto(dense: Vec<f32>) -> Self {
+        Self::from_embedding(dense, DEFAULT_VALUE_THRESHOLD, DEFAULT_SPARSITY_THRESHOLD)
+    }
+
+    /// Convert to dense vector representation (for compatibility with dense operations).
+    ///
+    /// Returns `Some(Vec<f32>)` for Vector or Sparse variants, `None` otherwise.
+    pub fn to_dense(&self) -> Option<Vec<f32>> {
+        match self {
+            TensorValue::Vector(v) => Some(v.clone()),
+            TensorValue::Sparse(s) => Some(s.to_dense()),
+            _ => None,
+        }
+    }
+
+    /// Get the dimension of the vector (if this is a vector type).
+    pub fn dimension(&self) -> Option<usize> {
+        match self {
+            TensorValue::Vector(v) => Some(v.len()),
+            TensorValue::Sparse(s) => Some(s.dimension()),
+            _ => None,
+        }
+    }
+
+    /// Compute dot product between two tensor values (if both are vectors).
+    ///
+    /// Optimizes for sparse-sparse and sparse-dense cases.
+    pub fn dot(&self, other: &TensorValue) -> Option<f32> {
+        match (self, other) {
+            (TensorValue::Sparse(a), TensorValue::Sparse(b)) => Some(a.dot(b)),
+            (TensorValue::Sparse(s), TensorValue::Vector(d))
+            | (TensorValue::Vector(d), TensorValue::Sparse(s)) => Some(s.dot_dense(d)),
+            (TensorValue::Vector(a), TensorValue::Vector(b)) => {
+                if a.len() != b.len() {
+                    return None;
+                }
+                Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+            },
+            _ => None,
+        }
+    }
+
+    /// Compute cosine similarity between two tensor values.
+    pub fn cosine_similarity(&self, other: &TensorValue) -> Option<f32> {
+        match (self, other) {
+            (TensorValue::Sparse(a), TensorValue::Sparse(b)) => Some(a.cosine_similarity(b)),
+            (TensorValue::Sparse(s), TensorValue::Vector(d))
+            | (TensorValue::Vector(d), TensorValue::Sparse(s)) => {
+                let dot = s.dot_dense(d);
+                let mag_s = s.magnitude();
+                let mag_d: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if mag_s == 0.0 || mag_d == 0.0 {
+                    Some(0.0)
+                } else {
+                    Some(dot / (mag_s * mag_d))
+                }
+            },
+            (TensorValue::Vector(a), TensorValue::Vector(b)) => {
+                if a.len() != b.len() {
+                    return None;
+                }
+                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if mag_a == 0.0 || mag_b == 0.0 {
+                    Some(0.0)
+                } else {
+                    Some(dot / (mag_a * mag_b))
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// Check if this is a vector type (Vector or Sparse).
+    pub fn is_vector(&self) -> bool {
+        matches!(self, TensorValue::Vector(_) | TensorValue::Sparse(_))
+    }
+
+    /// Check if this is a sparse vector.
+    pub fn is_sparse(&self) -> bool {
+        matches!(self, TensorValue::Sparse(_))
+    }
+
+    /// Get memory usage in bytes (approximate).
+    pub fn memory_bytes(&self) -> usize {
+        match self {
+            TensorValue::Scalar(s) => match s {
+                ScalarValue::Null => 0,
+                ScalarValue::Bool(_) => 1,
+                ScalarValue::Int(_) => 8,
+                ScalarValue::Float(_) => 8,
+                ScalarValue::String(s) => s.len(),
+                ScalarValue::Bytes(b) => b.len(),
+            },
+            TensorValue::Vector(v) => v.len() * 4,
+            TensorValue::Sparse(s) => s.memory_bytes(),
+            TensorValue::Pointer(p) => p.len(),
+            TensorValue::Pointers(ps) => ps.iter().map(|p| p.len()).sum(),
+        }
+    }
 }
 
 /// Scalar value types

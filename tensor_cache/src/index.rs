@@ -1,4 +1,6 @@
 //! HNSW index wrapper for cache semantic search.
+//!
+//! Supports both dense and sparse embeddings for memory-efficient caching.
 
 #![allow(dead_code)]
 
@@ -6,7 +8,7 @@ use crate::error::{CacheError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
-use tensor_store::{HNSWConfig, HNSWIndex};
+use tensor_store::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats, SparseVector};
 
 /// Cache-specific HNSW index wrapper.
 ///
@@ -54,7 +56,7 @@ impl CacheIndex {
         }
     }
 
-    /// Insert an embedding for a cache key.
+    /// Insert a dense embedding for a cache key.
     pub fn insert(&self, key: &str, embedding: &[f32]) -> Result<usize> {
         if embedding.len() != self.dimension {
             return Err(CacheError::DimensionMismatch {
@@ -81,7 +83,52 @@ impl CacheIndex {
         Ok(node_id)
     }
 
-    /// Search for similar embeddings.
+    /// Insert a sparse embedding for a cache key.
+    ///
+    /// Sparse embeddings use less memory when vectors have high sparsity (>70% zeros).
+    pub fn insert_sparse(&self, key: &str, embedding: &SparseVector) -> Result<usize> {
+        if embedding.dimension() != self.dimension {
+            return Err(CacheError::DimensionMismatch {
+                expected: self.dimension,
+                got: embedding.dimension(),
+            });
+        }
+
+        // Check if key already exists
+        if self.key_to_node.contains_key(key) {
+            self.key_to_node.remove(key);
+        }
+
+        let index = self.index.read().unwrap();
+        let node_id = index.insert_sparse(embedding.clone());
+        drop(index);
+
+        self.key_to_node.insert(key.to_string(), node_id);
+        self.node_to_key.insert(node_id, key.to_string());
+        self.entry_count.fetch_add(1, Ordering::Relaxed);
+
+        Ok(node_id)
+    }
+
+    /// Insert an embedding (dense or sparse) for a cache key.
+    ///
+    /// Automatically selects optimal storage based on sparsity.
+    pub fn insert_auto(
+        &self,
+        key: &str,
+        embedding: &[f32],
+        sparsity_threshold: f32,
+    ) -> Result<usize> {
+        let sparse = SparseVector::from_dense(embedding);
+
+        if sparse.sparsity() >= sparsity_threshold {
+            self.insert_sparse(key, &sparse)
+        } else {
+            self.insert(key, embedding)
+        }
+    }
+
+    /// Search for similar embeddings using a dense query.
     ///
     /// Returns results above the similarity threshold, sorted by similarity (highest first).
     pub fn search(
@@ -103,6 +150,42 @@ impl CacheIndex {
         }
 
         let results = index.search(query, k);
+        drop(index);
+
+        Ok(results
+            .into_iter()
+            .filter(|(_, similarity)| *similarity >= threshold)
+            .filter_map(|(node_id, similarity)| {
+                self.node_to_key.get(&node_id).map(|key| IndexSearchResult {
+                    key: key.clone(),
+                    similarity,
+                })
+            })
+            .collect())
+    }
+
+    /// Search for similar embeddings using a sparse query.
+    ///
+    /// More efficient when the query is sparse (>70% zeros).
+    pub fn search_sparse(
+        &self,
+        query: &SparseVector,
+        k: usize,
+        threshold: f32,
+    ) -> Result<Vec<IndexSearchResult>> {
+        if query.dimension() != self.dimension {
+            return Err(CacheError::DimensionMismatch {
+                expected: self.dimension,
+                got: query.dimension(),
+            });
+        }
+
+        let index = self.index.read().unwrap();
+        if index.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let results = index.search_sparse(query, k);
         drop(index);
 
         Ok(results
@@ -168,6 +251,19 @@ impl CacheIndex {
     /// Get all keys in the index.
     pub fn keys(&self) -> Vec<String> {
         self.key_to_node.iter().map(|e| e.key().clone()).collect()
+    }
+
+    /// Get memory usage statistics for the index.
+    pub fn memory_stats(&self) -> HNSWMemoryStats {
+        let index = self.index.read().unwrap();
+        index.memory_stats()
+    }
+
+    /// Get the embedding storage for a key.
+    pub fn get_embedding(&self, key: &str) -> Option<EmbeddingStorage> {
+        let node_id = self.key_to_node.get(key)?;
+        let index = self.index.read().unwrap();
+        index.get_embedding(*node_id)
     }
 }
 
@@ -316,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut index = CacheIndex::new(3);
+        let index = CacheIndex::new(3);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         index.insert("key2", &[0.0, 1.0, 0.0]).unwrap();
@@ -364,5 +460,122 @@ mod tests {
         let cloned = result.clone();
         assert_eq!(cloned.key, "test");
         assert_eq!(cloned.similarity, 0.95);
+    }
+
+    #[test]
+    fn test_insert_sparse_and_search() {
+        let index = CacheIndex::new(3);
+
+        let sparse1 = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let sparse2 = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+
+        index.insert_sparse("key1", &sparse1).unwrap();
+        index.insert_sparse("key2", &sparse2).unwrap();
+
+        // Search with sparse query
+        let results = index.search_sparse(&sparse1, 2, 0.0).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].key, "key1");
+        assert!((results[0].similarity - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_insert_auto_dense() {
+        let index = CacheIndex::new(3);
+
+        // Dense vector (no zeros) should be stored as dense
+        let embedding = [0.5, 0.5, 0.5];
+        index.insert_auto("key1", &embedding, 0.7).unwrap();
+
+        // Should be searchable
+        let results = index.search(&embedding, 1, 0.0).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].key, "key1");
+    }
+
+    #[test]
+    fn test_insert_auto_sparse() {
+        let index = CacheIndex::new(10);
+
+        // Sparse vector (80% zeros) should be stored as sparse
+        let embedding = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+        index.insert_auto("key1", &embedding, 0.7).unwrap();
+
+        // Should be searchable
+        let results = index.search(&embedding, 1, 0.0).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].key, "key1");
+    }
+
+    #[test]
+    fn test_sparse_dimension_mismatch() {
+        let index = CacheIndex::new(3);
+
+        let sparse = SparseVector::from_dense(&[1.0, 0.0]); // dimension 2
+        let result = index.insert_sparse("key1", &sparse);
+        assert!(matches!(result, Err(CacheError::DimensionMismatch { .. })));
+    }
+
+    #[test]
+    fn test_search_sparse_dimension_mismatch() {
+        let index = CacheIndex::new(3);
+        index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
+
+        let query = SparseVector::from_dense(&[1.0, 0.0]); // dimension 2
+        let result = index.search_sparse(&query, 1, 0.0);
+        assert!(matches!(result, Err(CacheError::DimensionMismatch { .. })));
+    }
+
+    #[test]
+    fn test_memory_stats() {
+        let index = CacheIndex::new(3);
+
+        index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
+        let sparse = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+        index.insert_sparse("key2", &sparse).unwrap();
+
+        let stats = index.memory_stats();
+        assert_eq!(stats.dense_count, 1);
+        assert_eq!(stats.sparse_count, 1);
+        assert!(stats.embedding_bytes > 0);
+    }
+
+    #[test]
+    fn test_get_embedding() {
+        let index = CacheIndex::new(3);
+
+        index.insert("dense_key", &[1.0, 0.0, 0.0]).unwrap();
+        let sparse = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+        index.insert_sparse("sparse_key", &sparse).unwrap();
+
+        // Check dense embedding retrieval
+        let dense_emb = index.get_embedding("dense_key");
+        assert!(matches!(dense_emb, Some(EmbeddingStorage::Dense(_))));
+
+        // Check sparse embedding retrieval
+        let sparse_emb = index.get_embedding("sparse_key");
+        assert!(matches!(sparse_emb, Some(EmbeddingStorage::Sparse(_))));
+
+        // Check missing key
+        assert!(index.get_embedding("missing").is_none());
+    }
+
+    #[test]
+    fn test_mixed_dense_sparse_search() {
+        let index = CacheIndex::new(3);
+
+        // Insert mix of dense and sparse
+        index.insert("dense1", &[1.0, 0.0, 0.0]).unwrap();
+        let sparse = SparseVector::from_dense(&[0.9, 0.1, 0.0]);
+        index.insert_sparse("sparse1", &sparse).unwrap();
+
+        // Dense query should find both
+        let results = index.search(&[1.0, 0.0, 0.0], 2, 0.0).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Sparse query should find both too
+        let sparse_query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let results = index.search_sparse(&sparse_query, 2, 0.0).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

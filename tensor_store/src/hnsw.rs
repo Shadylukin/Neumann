@@ -7,7 +7,9 @@
 //! - O(log n) search complexity vs O(n) for brute force
 //! - 5-8x speedup for 10K-100K vectors
 //! - Configurable recall/speed tradeoff via ef_search parameter
+//! - Supports both dense and sparse vectors
 
+use crate::SparseVector;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
@@ -82,19 +84,148 @@ pub mod simd {
     }
 }
 
+/// Storage for embeddings - can be dense or sparse.
+///
+/// Sparse storage is used when vectors have high sparsity (>70% zeros),
+/// providing memory savings and faster operations.
+#[derive(Debug, Clone)]
+pub enum EmbeddingStorage {
+    /// Dense vector storage (traditional)
+    Dense(Vec<f32>),
+    /// Sparse vector storage (only non-zero values)
+    Sparse(SparseVector),
+}
+
+impl EmbeddingStorage {
+    /// Get the dimension of the embedding.
+    pub fn dimension(&self) -> usize {
+        match self {
+            EmbeddingStorage::Dense(v) => v.len(),
+            EmbeddingStorage::Sparse(s) => s.dimension(),
+        }
+    }
+
+    /// Convert to dense representation.
+    pub fn to_dense(&self) -> Vec<f32> {
+        match self {
+            EmbeddingStorage::Dense(v) => v.clone(),
+            EmbeddingStorage::Sparse(s) => s.to_dense(),
+        }
+    }
+
+    /// Get as dense slice (only works for Dense variant).
+    pub fn as_dense(&self) -> Option<&[f32]> {
+        match self {
+            EmbeddingStorage::Dense(v) => Some(v),
+            EmbeddingStorage::Sparse(_) => None,
+        }
+    }
+
+    /// Get as sparse reference (only works for Sparse variant).
+    pub fn as_sparse(&self) -> Option<&SparseVector> {
+        match self {
+            EmbeddingStorage::Dense(_) => None,
+            EmbeddingStorage::Sparse(s) => Some(s),
+        }
+    }
+
+    /// Check if this is sparse storage.
+    pub fn is_sparse(&self) -> bool {
+        matches!(self, EmbeddingStorage::Sparse(_))
+    }
+
+    /// Compute dot product with a dense query vector.
+    #[inline]
+    pub fn dot_with_dense(&self, query: &[f32]) -> f32 {
+        match self {
+            EmbeddingStorage::Dense(v) => simd::dot_product(v, query),
+            EmbeddingStorage::Sparse(s) => s.dot_dense(query),
+        }
+    }
+
+    /// Compute dot product with a sparse query vector.
+    #[inline]
+    pub fn dot_with_sparse(&self, query: &SparseVector) -> f32 {
+        match self {
+            EmbeddingStorage::Dense(v) => query.dot_dense(v),
+            EmbeddingStorage::Sparse(s) => s.dot(query),
+        }
+    }
+
+    /// Compute magnitude (L2 norm).
+    #[inline]
+    pub fn magnitude(&self) -> f32 {
+        match self {
+            EmbeddingStorage::Dense(v) => simd::magnitude(v),
+            EmbeddingStorage::Sparse(s) => s.magnitude(),
+        }
+    }
+
+    /// Compute cosine distance (1 - similarity) with a dense query.
+    #[inline]
+    pub fn cosine_distance_dense(&self, query: &[f32]) -> f32 {
+        let dot = self.dot_with_dense(query);
+        let mag_self = self.magnitude();
+        let mag_query = simd::magnitude(query);
+
+        if mag_self == 0.0 || mag_query == 0.0 {
+            return 1.0; // Maximum distance
+        }
+
+        1.0 - (dot / (mag_self * mag_query))
+    }
+
+    /// Compute cosine distance (1 - similarity) with a sparse query.
+    #[inline]
+    pub fn cosine_distance_sparse(&self, query: &SparseVector) -> f32 {
+        let dot = self.dot_with_sparse(query);
+        let mag_self = self.magnitude();
+        let mag_query = query.magnitude();
+
+        if mag_self == 0.0 || mag_query == 0.0 {
+            return 1.0; // Maximum distance
+        }
+
+        1.0 - (dot / (mag_self * mag_query))
+    }
+
+    /// Memory usage in bytes.
+    pub fn memory_bytes(&self) -> usize {
+        match self {
+            EmbeddingStorage::Dense(v) => v.len() * 4,
+            EmbeddingStorage::Sparse(s) => s.memory_bytes(),
+        }
+    }
+}
+
+impl From<Vec<f32>> for EmbeddingStorage {
+    fn from(v: Vec<f32>) -> Self {
+        EmbeddingStorage::Dense(v)
+    }
+}
+
+impl From<SparseVector> for EmbeddingStorage {
+    fn from(s: SparseVector) -> Self {
+        EmbeddingStorage::Sparse(s)
+    }
+}
+
 /// A node in the HNSW graph, representing a vector with connections at each layer.
 #[derive(Debug)]
 struct HNSWNode {
-    /// The embedding vector
-    vector: Vec<f32>,
+    /// The embedding (dense or sparse)
+    embedding: EmbeddingStorage,
     /// Connections at each layer (layer -> list of neighbor IDs)
     neighbors: Vec<RwLock<Vec<usize>>>,
 }
 
 impl HNSWNode {
-    fn new(vector: Vec<f32>, max_layer: usize) -> Self {
+    fn new(embedding: EmbeddingStorage, max_layer: usize) -> Self {
         let neighbors = (0..=max_layer).map(|_| RwLock::new(Vec::new())).collect();
-        Self { vector, neighbors }
+        Self {
+            embedding,
+            neighbors,
+        }
     }
 }
 
@@ -191,6 +322,19 @@ impl Default for HNSWConfig {
     }
 }
 
+/// Memory usage statistics for HNSW index.
+#[derive(Debug, Clone)]
+pub struct HNSWMemoryStats {
+    /// Total number of nodes in the index
+    pub total_nodes: usize,
+    /// Number of nodes using dense storage
+    pub dense_count: usize,
+    /// Number of nodes using sparse storage
+    pub sparse_count: usize,
+    /// Total bytes used for embeddings
+    pub embedding_bytes: usize,
+}
+
 impl HNSWConfig {
     /// Create a config optimized for high recall (slower but more accurate)
     pub fn high_recall() -> Self {
@@ -278,6 +422,16 @@ impl HNSWIndex {
 
     /// Insert a vector into the index. Returns the assigned node ID.
     pub fn insert(&self, vector: Vec<f32>) -> usize {
+        self.insert_embedding(EmbeddingStorage::Dense(vector))
+    }
+
+    /// Insert a sparse vector into the index. Returns the assigned node ID.
+    pub fn insert_sparse(&self, sparse: SparseVector) -> usize {
+        self.insert_embedding(EmbeddingStorage::Sparse(sparse))
+    }
+
+    /// Insert an embedding (dense or sparse) into the index.
+    pub fn insert_embedding(&self, embedding: EmbeddingStorage) -> usize {
         let node_level = self.random_level();
         let node_id;
 
@@ -285,7 +439,7 @@ impl HNSWIndex {
         {
             let mut nodes = self.nodes.write().unwrap();
             node_id = nodes.len();
-            nodes.push(HNSWNode::new(vector, node_level));
+            nodes.push(HNSWNode::new(embedding, node_level));
         }
 
         let current_max = self.max_layer.load(AtomicOrdering::Relaxed);
@@ -298,16 +452,16 @@ impl HNSWIndex {
             return node_id;
         }
 
-        // Get the vector we just inserted
+        // Get the embedding we just inserted (as dense for internal operations)
         let nodes = self.nodes.read().unwrap();
-        let query = &nodes[node_id].vector;
+        let query = nodes[node_id].embedding.to_dense();
 
         // Find entry point at the top layer and descend
         let mut current_node = entry_id;
 
         // Descend from top layer to node_level + 1 (greedy search)
         for layer in (node_level + 1..=current_max).rev() {
-            current_node = self.search_layer_greedy(&nodes, query, current_node, layer);
+            current_node = self.search_layer_greedy(&nodes, &query, current_node, layer);
         }
 
         // For layers from min(node_level, current_max) down to 0, do full search and connect
@@ -315,7 +469,7 @@ impl HNSWIndex {
         for layer in (0..=connect_from).rev() {
             let neighbors = self.search_layer(
                 &nodes,
-                query,
+                &query,
                 current_node,
                 self.config.ef_construction,
                 layer,
@@ -342,10 +496,15 @@ impl HNSWIndex {
                 // Prune if over capacity
                 if neighbor_neighbors.len() > m {
                     // Keep the closest M neighbors
-                    let neighbor_vec = &nodes[neighbor_id].vector;
+                    let neighbor_embedding = &nodes[neighbor_id].embedding;
                     let mut with_dist: Vec<_> = neighbor_neighbors
                         .iter()
-                        .map(|&id| (id, self.distance(neighbor_vec, &nodes[id].vector)))
+                        .map(|&id| {
+                            (
+                                id,
+                                self.distance_embeddings(neighbor_embedding, &nodes[id].embedding),
+                            )
+                        })
                         .collect();
                     with_dist.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
                     *neighbor_neighbors = with_dist.into_iter().take(m).map(|(id, _)| id).collect();
@@ -371,6 +530,11 @@ impl HNSWIndex {
     /// Search for k nearest neighbors of the query vector.
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(usize, f32)> {
         self.search_with_ef(query, k, self.config.ef_search)
+    }
+
+    /// Search for k nearest neighbors using a sparse query.
+    pub fn search_sparse(&self, query: &SparseVector, k: usize) -> Vec<(usize, f32)> {
+        self.search_sparse_with_ef(query, k, self.config.ef_search)
     }
 
     /// Search with custom ef parameter (higher = better recall, slower)
@@ -400,6 +564,38 @@ impl HNSWIndex {
             .collect()
     }
 
+    /// Search with sparse query and custom ef parameter.
+    pub fn search_sparse_with_ef(
+        &self,
+        query: &SparseVector,
+        k: usize,
+        ef: usize,
+    ) -> Vec<(usize, f32)> {
+        let entry_id = self.entry_point.load(AtomicOrdering::Relaxed);
+        if entry_id == usize::MAX {
+            return Vec::new();
+        }
+
+        let nodes = self.nodes.read().unwrap();
+        let max_layer = self.max_layer.load(AtomicOrdering::Relaxed);
+
+        // Descend from top layer to layer 1 (greedy search)
+        let mut current_node = entry_id;
+        for layer in (1..=max_layer).rev() {
+            current_node = self.search_layer_greedy_sparse(&nodes, query, current_node, layer);
+        }
+
+        // At layer 0, do full search
+        let candidates = self.search_layer_sparse(&nodes, query, current_node, ef.max(k), 0);
+
+        // Return top k with similarity scores (converted from distance)
+        candidates
+            .into_iter()
+            .take(k)
+            .map(|n| (n.id, 1.0 - n.distance))
+            .collect()
+    }
+
     /// Greedy search in a layer - find the closest node to query
     fn search_layer_greedy(
         &self,
@@ -409,14 +605,46 @@ impl HNSWIndex {
         layer: usize,
     ) -> usize {
         let mut current = entry_id;
-        let mut current_dist = self.distance(query, &nodes[current].vector);
+        let mut current_dist = nodes[current].embedding.cosine_distance_dense(query);
 
         loop {
             let neighbors = nodes[current].neighbors[layer].read().unwrap();
             let mut changed = false;
 
             for &neighbor_id in neighbors.iter() {
-                let dist = self.distance(query, &nodes[neighbor_id].vector);
+                let dist = nodes[neighbor_id].embedding.cosine_distance_dense(query);
+                if dist < current_dist {
+                    current = neighbor_id;
+                    current_dist = dist;
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        current
+    }
+
+    /// Greedy search with sparse query
+    fn search_layer_greedy_sparse(
+        &self,
+        nodes: &[HNSWNode],
+        query: &SparseVector,
+        entry_id: usize,
+        layer: usize,
+    ) -> usize {
+        let mut current = entry_id;
+        let mut current_dist = nodes[current].embedding.cosine_distance_sparse(query);
+
+        loop {
+            let neighbors = nodes[current].neighbors[layer].read().unwrap();
+            let mut changed = false;
+
+            for &neighbor_id in neighbors.iter() {
+                let dist = nodes[neighbor_id].embedding.cosine_distance_sparse(query);
                 if dist < current_dist {
                     current = neighbor_id;
                     current_dist = dist;
@@ -445,7 +673,7 @@ impl HNSWIndex {
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new(); // min-heap (closest first)
         let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new(); // max-heap (furthest first)
 
-        let entry_dist = self.distance(query, &nodes[entry_id].vector);
+        let entry_dist = nodes[entry_id].embedding.cosine_distance_dense(query);
         visited.insert(entry_id);
         candidates.push(Neighbor::new(entry_id, entry_dist));
         results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
@@ -464,7 +692,7 @@ impl HNSWIndex {
             let neighbors = nodes[current.id].neighbors[layer].read().unwrap();
             for &neighbor_id in neighbors.iter() {
                 if visited.insert(neighbor_id) {
-                    let dist = self.distance(query, &nodes[neighbor_id].vector);
+                    let dist = nodes[neighbor_id].embedding.cosine_distance_dense(query);
 
                     // Add to results if closer than worst, or if we don't have ef results yet
                     let should_add = results.len() < ef || {
@@ -498,25 +726,124 @@ impl HNSWIndex {
         result_vec
     }
 
-    /// Compute distance between two vectors (1 - cosine similarity for distance metric)
-    #[inline]
-    fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        let dot = simd::dot_product(a, b);
-        let mag_a = simd::magnitude(a);
-        let mag_b = simd::magnitude(b);
+    /// Search in a layer with sparse query
+    fn search_layer_sparse(
+        &self,
+        nodes: &[HNSWNode],
+        query: &SparseVector,
+        entry_id: usize,
+        ef: usize,
+        layer: usize,
+    ) -> Vec<Neighbor> {
+        let mut visited = HashSet::new();
+        let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new();
+        let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new();
 
-        if mag_a == 0.0 || mag_b == 0.0 {
-            return 1.0; // Maximum distance for zero vectors
+        let entry_dist = nodes[entry_id].embedding.cosine_distance_sparse(query);
+        visited.insert(entry_id);
+        candidates.push(Neighbor::new(entry_id, entry_dist));
+        results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
+
+        while let Some(current) = candidates.pop() {
+            if results.len() >= ef {
+                if let Some(worst) = results.peek() {
+                    if current.distance > worst.0.distance {
+                        break;
+                    }
+                }
+            }
+
+            let neighbors = nodes[current.id].neighbors[layer].read().unwrap();
+            for &neighbor_id in neighbors.iter() {
+                if visited.insert(neighbor_id) {
+                    let dist = nodes[neighbor_id].embedding.cosine_distance_sparse(query);
+
+                    let should_add = results.len() < ef || {
+                        if let Some(worst) = results.peek() {
+                            dist < worst.0.distance
+                        } else {
+                            true
+                        }
+                    };
+
+                    if should_add {
+                        candidates.push(Neighbor::new(neighbor_id, dist));
+                        results.push(MaxNeighbor(Neighbor::new(neighbor_id, dist)));
+
+                        while results.len() > ef {
+                            results.pop();
+                        }
+                    }
+                }
+            }
         }
 
-        let similarity = dot / (mag_a * mag_b);
-        1.0 - similarity // Convert similarity to distance
+        let mut result_vec: Vec<_> = results.into_iter().map(|m| m.0).collect();
+        result_vec.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(Ordering::Equal)
+        });
+        result_vec
     }
 
-    /// Get the vector for a node ID
+    /// Compute distance between two embeddings
+    #[inline]
+    fn distance_embeddings(&self, a: &EmbeddingStorage, b: &EmbeddingStorage) -> f32 {
+        match (a, b) {
+            (EmbeddingStorage::Dense(va), EmbeddingStorage::Dense(vb)) => {
+                let dot = simd::dot_product(va, vb);
+                let mag_a = simd::magnitude(va);
+                let mag_b = simd::magnitude(vb);
+                if mag_a == 0.0 || mag_b == 0.0 {
+                    1.0
+                } else {
+                    1.0 - (dot / (mag_a * mag_b))
+                }
+            },
+            (EmbeddingStorage::Sparse(sa), EmbeddingStorage::Sparse(sb)) => {
+                1.0 - sa.cosine_similarity(sb)
+            },
+            (EmbeddingStorage::Dense(v), EmbeddingStorage::Sparse(s))
+            | (EmbeddingStorage::Sparse(s), EmbeddingStorage::Dense(v)) => {
+                s.cosine_distance_dense(v)
+            },
+        }
+    }
+
+    /// Get the vector for a node ID (as dense, for compatibility)
     pub fn get_vector(&self, id: usize) -> Option<Vec<f32>> {
         let nodes = self.nodes.read().unwrap();
-        nodes.get(id).map(|n| n.vector.clone())
+        nodes.get(id).map(|n| n.embedding.to_dense())
+    }
+
+    /// Get the embedding storage for a node ID
+    pub fn get_embedding(&self, id: usize) -> Option<EmbeddingStorage> {
+        let nodes = self.nodes.read().unwrap();
+        nodes.get(id).map(|n| n.embedding.clone())
+    }
+
+    /// Get memory usage statistics
+    pub fn memory_stats(&self) -> HNSWMemoryStats {
+        let nodes = self.nodes.read().unwrap();
+        let mut dense_count = 0usize;
+        let mut sparse_count = 0usize;
+        let mut total_bytes = 0usize;
+
+        for node in nodes.iter() {
+            match &node.embedding {
+                EmbeddingStorage::Dense(_) => dense_count += 1,
+                EmbeddingStorage::Sparse(_) => sparse_count += 1,
+            }
+            total_bytes += node.embedding.memory_bytes();
+        }
+
+        HNSWMemoryStats {
+            total_nodes: nodes.len(),
+            dense_count,
+            sparse_count,
+            embedding_bytes: total_bytes,
+        }
     }
 
     /// Get configuration

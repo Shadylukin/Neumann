@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut cache = create_test_cache();
+        let cache = create_test_cache();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache

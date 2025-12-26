@@ -366,6 +366,19 @@ impl SparseVector {
         }
     }
 
+    /// Cosine distance with a dense vector (1 - similarity).
+    pub fn cosine_distance_dense(&self, dense: &[f32]) -> f32 {
+        let dot = self.dot_dense(dense);
+        let mag_sparse = self.magnitude();
+        let mag_dense: f32 = dense.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        if mag_sparse == 0.0 || mag_dense == 0.0 {
+            1.0 // Maximum distance
+        } else {
+            1.0 - (dot / (mag_sparse * mag_dense))
+        }
+    }
+
     /// Memory usage in bytes (approximate).
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()

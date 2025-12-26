@@ -9,6 +9,7 @@ use crate::stats::{CacheLayer, CacheStats};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tensor_store::{EmbeddingStorage, HNSWMemoryStats, SparseVector};
 use uuid::Uuid;
 
 /// Entry in the semantic cache.
@@ -176,6 +177,153 @@ impl SemanticCache {
         }
 
         Ok(id)
+    }
+
+    /// Look up a semantically similar entry using a sparse query.
+    pub fn get_sparse(
+        &self,
+        embedding: &SparseVector,
+        threshold: Option<f32>,
+    ) -> Option<SemanticHit> {
+        let threshold = threshold.unwrap_or(self.threshold);
+
+        match self.index.search_sparse(embedding, 1, threshold) {
+            Ok(results) if !results.is_empty() => {
+                let result = &results[0];
+                if let Some(mut entry) = self.entries.get_mut(&result.key) {
+                    if entry.is_expired() {
+                        drop(entry);
+                        self.remove(&result.key);
+                        self.stats.record_miss(CacheLayer::Semantic);
+                        return None;
+                    }
+                    entry.record_access();
+                    self.stats.record_hit(CacheLayer::Semantic);
+                    Some(SemanticHit {
+                        response: entry.response.clone(),
+                        query: entry.query.clone(),
+                        similarity: result.similarity,
+                        input_tokens: entry.input_tokens,
+                        output_tokens: entry.output_tokens,
+                        model: entry.model.clone(),
+                    })
+                } else {
+                    self.stats.record_miss(CacheLayer::Semantic);
+                    None
+                }
+            },
+            _ => {
+                self.stats.record_miss(CacheLayer::Semantic);
+                None
+            },
+        }
+    }
+
+    /// Insert an entry with a sparse embedding.
+    pub fn insert_sparse(
+        &self,
+        query: String,
+        embedding: &SparseVector,
+        response: String,
+        input_tokens: usize,
+        output_tokens: usize,
+        model: String,
+        ttl: Duration,
+        version: Option<String>,
+    ) -> Result<String> {
+        if self.entries.len() >= self.capacity {
+            return Err(CacheError::CacheFull {
+                current: self.entries.len(),
+                capacity: self.capacity,
+            });
+        }
+
+        let id = format!("_cache:sem:{}", Uuid::new_v4());
+        let now = Instant::now();
+
+        let entry = SemanticEntry {
+            id: id.clone(),
+            query,
+            response,
+            input_tokens,
+            output_tokens,
+            model,
+            created_at: now,
+            expires_at: now + ttl,
+            access_count: 0,
+            last_accessed: now,
+            version,
+        };
+
+        // Insert into HNSW index
+        self.index.insert_sparse(&id, embedding)?;
+
+        // Insert into entry storage
+        let is_new = self.entries.insert(id.clone(), entry).is_none();
+        if is_new {
+            self.stats.increment_size(CacheLayer::Semantic);
+        }
+
+        Ok(id)
+    }
+
+    /// Insert with automatic sparse/dense selection based on sparsity.
+    pub fn insert_auto(
+        &self,
+        query: String,
+        embedding: &[f32],
+        sparsity_threshold: f32,
+        response: String,
+        input_tokens: usize,
+        output_tokens: usize,
+        model: String,
+        ttl: Duration,
+        version: Option<String>,
+    ) -> Result<String> {
+        if self.entries.len() >= self.capacity {
+            return Err(CacheError::CacheFull {
+                current: self.entries.len(),
+                capacity: self.capacity,
+            });
+        }
+
+        let id = format!("_cache:sem:{}", Uuid::new_v4());
+        let now = Instant::now();
+
+        let entry = SemanticEntry {
+            id: id.clone(),
+            query,
+            response,
+            input_tokens,
+            output_tokens,
+            model,
+            created_at: now,
+            expires_at: now + ttl,
+            access_count: 0,
+            last_accessed: now,
+            version,
+        };
+
+        // Insert into HNSW index with auto-sparsification
+        self.index.insert_auto(&id, embedding, sparsity_threshold)?;
+
+        // Insert into entry storage
+        let is_new = self.entries.insert(id.clone(), entry).is_none();
+        if is_new {
+            self.stats.increment_size(CacheLayer::Semantic);
+        }
+
+        Ok(id)
+    }
+
+    /// Get memory statistics for the HNSW index.
+    pub fn memory_stats(&self) -> HNSWMemoryStats {
+        self.index.memory_stats()
+    }
+
+    /// Get the embedding storage for a cache entry.
+    pub fn get_embedding(&self, id: &str) -> Option<EmbeddingStorage> {
+        self.index.get_embedding(id)
     }
 
     /// Remove an entry by ID.
@@ -458,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut cache = create_test_cache();
+        let cache = create_test_cache();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
@@ -755,5 +903,187 @@ mod tests {
 
         // No entries, should miss
         assert!(cache.get(&embedding, None).is_none());
+    }
+
+    #[test]
+    fn test_insert_sparse_and_get() {
+        let cache = create_test_cache();
+        let dense = normalize(&[1.0, 0.0, 0.0]);
+        let sparse = SparseVector::from_dense(&dense);
+
+        cache
+            .insert_sparse(
+                "What is 2+2?".into(),
+                &sparse,
+                "4".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Search with sparse query
+        let hit = cache.get_sparse(&sparse, None).unwrap();
+        assert_eq!(hit.response, "4");
+        assert_eq!(hit.query, "What is 2+2?");
+        assert!(hit.similarity > 0.99);
+    }
+
+    #[test]
+    fn test_insert_auto_selects_sparse() {
+        // Use 10-dim for better sparsity control
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 10;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        // 80% zeros - should be stored as sparse
+        let embedding = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+
+        let id = cache
+            .insert_auto(
+                "sparse query".into(),
+                &embedding,
+                0.7,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Verify it's stored as sparse
+        let stored = cache.get_embedding(&id);
+        assert!(matches!(stored, Some(EmbeddingStorage::Sparse(_))));
+    }
+
+    #[test]
+    fn test_insert_auto_selects_dense() {
+        let cache = create_test_cache();
+
+        // No zeros - should be stored as dense
+        let embedding = normalize(&[0.5, 0.5, 0.5]);
+
+        let id = cache
+            .insert_auto(
+                "dense query".into(),
+                &embedding,
+                0.7,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Verify it's stored as dense
+        let stored = cache.get_embedding(&id);
+        assert!(matches!(stored, Some(EmbeddingStorage::Dense(_))));
+    }
+
+    #[test]
+    fn test_memory_stats() {
+        let cache = create_test_cache();
+
+        let dense = normalize(&[1.0, 0.0, 0.0]);
+        cache
+            .insert(
+                "q1".into(),
+                &dense,
+                "r1".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let stats = cache.memory_stats();
+        assert_eq!(stats.dense_count, 1);
+        assert!(stats.embedding_bytes > 0);
+    }
+
+    #[test]
+    fn test_sparse_cache_full() {
+        let mut config = CacheConfig::default();
+        config.semantic_capacity = 1;
+        config.embedding_dim = 3;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        let sparse = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+
+        cache
+            .insert_sparse(
+                "q1".into(),
+                &sparse,
+                "r1".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Second insert should fail
+        let result = cache.insert_sparse(
+            "q2".into(),
+            &sparse,
+            "r2".into(),
+            10,
+            5,
+            "gpt-4".into(),
+            Duration::from_secs(60),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mixed_dense_sparse_retrieval() {
+        let cache = create_test_cache();
+
+        // Insert dense
+        let dense = normalize(&[1.0, 0.0, 0.0]);
+        cache
+            .insert(
+                "dense".into(),
+                &dense,
+                "dense response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Insert sparse (similar vector)
+        let sparse = SparseVector::from_dense(&normalize(&[0.9, 0.1, 0.0]));
+        cache
+            .insert_sparse(
+                "sparse".into(),
+                &sparse,
+                "sparse response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Dense query should find both
+        let hit = cache.get(&dense, Some(0.5)).unwrap();
+        // Should find the most similar (itself)
+        assert_eq!(hit.response, "dense response");
     }
 }

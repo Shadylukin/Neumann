@@ -1228,6 +1228,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
+ "blake2",
  "criterion",
  "graph_engine",
  "peak_alloc",

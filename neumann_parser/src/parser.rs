@@ -4324,7 +4324,10 @@ mod tests {
         let stmt = parse_stmt("CACHE EVICT 100");
         if let StatementKind::Cache(cache) = stmt.kind {
             if let CacheOp::Evict { count: Some(expr) } = cache.operation {
-                assert!(matches!(expr.kind, ExprKind::Literal(Literal::Integer(100))));
+                assert!(matches!(
+                    expr.kind,
+                    ExprKind::Literal(Literal::Integer(100))
+                ));
             } else {
                 panic!("expected EVICT with count");
             }
