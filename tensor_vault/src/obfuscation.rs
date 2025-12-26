@@ -6,10 +6,11 @@
 //! - Padding for length hiding
 //! - Pointer indirection for storage pattern hiding
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use crate::key::MasterKey;
 use crate::{Result, VaultError};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// Padding block sizes for length hiding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +114,7 @@ impl Obfuscator {
         self.obfuscate_metadata(obfuscated)
     }
 
-    /// HMAC-like hash construction.
+    /// HMAC construction using BLAKE2b (cryptographically secure).
     fn hmac_hash(&self, data: &[u8], domain: &[u8]) -> [u8; 32] {
         // Inner hash: H((key XOR ipad) || domain || data)
         let mut inner_key = self.obfuscation_key;
@@ -121,11 +122,11 @@ impl Obfuscator {
             *byte ^= 0x36; // ipad
         }
 
-        let mut hasher = DefaultHasher::new();
-        inner_key.hash(&mut hasher);
-        domain.hash(&mut hasher);
-        data.hash(&mut hasher);
-        let inner_hash = hasher.finish();
+        let mut inner_hasher = Blake2b::<U32>::new();
+        inner_hasher.update(inner_key);
+        inner_hasher.update(domain);
+        inner_hasher.update(data);
+        let inner_hash = inner_hasher.finalize();
 
         // Outer hash: H((key XOR opad) || inner_hash)
         let mut outer_key = self.obfuscation_key;
@@ -133,22 +134,12 @@ impl Obfuscator {
             *byte ^= 0x5C; // opad
         }
 
-        let mut hasher = DefaultHasher::new();
-        outer_key.hash(&mut hasher);
-        inner_hash.hash(&mut hasher);
-        let outer_hash = hasher.finish();
+        let mut outer_hasher = Blake2b::<U32>::new();
+        outer_hasher.update(outer_key);
+        outer_hasher.update(inner_hash);
+        let result = outer_hasher.finalize();
 
-        // Expand to 32 bytes by hashing again with counter
-        let mut result = [0u8; 32];
-        for i in 0..4 {
-            let mut hasher = DefaultHasher::new();
-            outer_hash.hash(&mut hasher);
-            (i as u64).hash(&mut hasher);
-            let block = hasher.finish().to_le_bytes();
-            result[i * 8..(i + 1) * 8].copy_from_slice(&block);
-        }
-
-        result
+        result.into()
     }
 }
 

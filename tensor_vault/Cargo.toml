@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 # Cryptography
 aes-gcm = "0.10"
 argon2 = "0.5"
+blake2 = "0.10"
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
