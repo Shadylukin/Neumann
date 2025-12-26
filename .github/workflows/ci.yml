@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -138,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, query_router, neumann_parser, neumann_shell, tensor_compress]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -189,14 +189,18 @@ jobs:
             bench_name: graph_engine_bench
           - crate: vector_engine
             bench_name: vector_engine_bench
+          - crate: tensor_compress
+            bench_name: tensor_compress_bench
+          - crate: tensor_vault
+            bench_name: tensor_vault_bench
+          - crate: tensor_cache
+            bench_name: cache_bench
           - crate: neumann_parser
             bench_name: neumann_parser_bench
           - crate: query_router
             bench_name: query_router_bench
           - crate: neumann_shell
             bench_name: neumann_shell_bench
-          - crate: tensor_compress
-            bench_name: tensor_compress_bench
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

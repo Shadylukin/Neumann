@@ -16,8 +16,9 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 | `vector_engine` | Embeddings and similarity search | tensor_store |
 | `tensor_compress` | Compression algorithms | tensor_store |
 | `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
+| `tensor_cache` | Semantic LLM response caching | tensor_store |
 | `neumann_parser` | Query tokenization and parsing | - |
-| `query_router` | Unified query execution | all engines, parser, vault |
+| `query_router` | Unified query execution | all engines, parser, vault, cache |
 | `neumann_shell` | Interactive CLI interface | query_router |
 
 ## Code Style
@@ -95,6 +96,13 @@ tensor_vault/           # Module 9: Secret storage
   src/encryption.rs     # AES-256-GCM
   src/key.rs            # Argon2id key derivation
   src/access.rs         # Graph path verification
+tensor_cache/           # Module 10: LLM response cache
+  src/lib.rs            # Cache API, multi-layer lookup
+  src/exact.rs          # O(1) hash-based cache
+  src/semantic.rs       # O(log n) HNSW-based cache
+  src/embedding.rs      # Embedding cache
+  src/eviction.rs       # Background eviction
+  src/tokenizer.rs      # tiktoken token counting
 neumann_parser/         # Module 5: Query parsing
   src/lib.rs            # Tokenization, parsing, AST
 query_router/           # Module 6: Query execution
@@ -113,6 +121,7 @@ docs/
   neumann-shell.md      # Module 7 API documentation
   tensor-compress.md    # Module 8 API documentation
   tensor-vault.md       # Module 9 API documentation
+  tensor-cache.md       # Module 10 API documentation
   benchmarks.md         # Performance benchmarks
 ```
 

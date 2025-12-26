@@ -507,6 +507,11 @@ Query Types:
     VAULT GRANT 'entity' ON 'key'  Grant access to entity
     VAULT REVOKE 'entity' ON 'key' Revoke access from entity
 
+  Cache (LLM Responses):
+    CACHE INIT                     Initialize semantic cache
+    CACHE STATS                    Show cache statistics
+    CACHE CLEAR                    Clear all cache entries
+
 Examples:
   > CREATE TABLE users (id INT, name TEXT)
   > INSERT INTO users VALUES (1, 'Alice')

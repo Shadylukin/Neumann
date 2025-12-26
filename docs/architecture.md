@@ -24,6 +24,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 |   - Unified query execution                      |
 |   - Engine dispatch                              |
 |   - Result aggregation                           |
+|   - LLM cache integration                        |
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
@@ -35,11 +36,27 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|            Tensor Cache (Module 10) [DONE]        |
+|   - LLM response caching (exact + semantic)      |
+|   - Token counting (tiktoken)                    |
+|   - Cost tracking and savings estimation         |
+|   - Background eviction (LRU/LFU/Cost/Hybrid)    |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
+|            Tensor Vault (Module 9) [DONE]         |
+|   - AES-256-GCM encrypted secrets                |
+|   - Argon2id key derivation                      |
+|   - Graph-based access control                   |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |           Tensor Store (Module 1) [DONE]          |
 |   - Key-value storage                            |
 |   - Scalars, vectors, pointers                   |
 |   - Thread-safe, in-memory                       |
 |   - Snapshot persistence (bincode)               |
+|   - HNSW index for similarity search             |
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
@@ -222,6 +239,53 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Implement product quantization (future)
 - Support streaming compression (future)
 
+### Module 9: Tensor Vault (Complete)
+
+**Responsibility**: Encrypted secret storage with graph-based access control.
+
+**Interface**:
+- `store_secret(key, value, master_password) -> Result<()>`
+- `retrieve_secret(key, master_password) -> Result<String>`
+- `grant_access(secret_key, entity_id) -> Result<()>`
+- `revoke_access(secret_key, entity_id) -> Result<()>`
+- `can_access(secret_key, entity_id) -> bool`
+
+**Features**:
+- AES-256-GCM encryption for secrets
+- Argon2id key derivation with configurable parameters
+- Graph-based access control via edges
+- Secure key zeroization on drop
+
+**Does Not**:
+- Implement key rotation (planned)
+- Support secret versioning (planned)
+- Provide audit logging (planned)
+
+### Module 10: Tensor Cache (Complete)
+
+**Responsibility**: Semantic caching for LLM responses.
+
+**Interface**:
+- `get(prompt, embedding) -> Option<CacheHit>` - Look up cached response
+- `put(prompt, embedding, response, model, params) -> Result<()>` - Store response
+- `get_embedding(source, content) -> Option<Vec<f32>>` - Get cached embedding
+- `put_embedding(source, content, embedding, model) -> Result<()>` - Store embedding
+- `invalidate(prompt, model, params) -> bool` - Remove entry
+- `evict(count) -> usize` - Manually evict entries
+- `stats() -> &CacheStats` - Get statistics
+
+**Features**:
+- Three-layer caching: Exact O(1), Semantic O(log n), Embedding O(1)
+- Token counting via tiktoken (cl100k_base encoding)
+- Cost tracking and savings estimation
+- Background eviction with LRU/LFU/Cost/Hybrid strategies
+- TTL-based expiration with min-heap tracking
+
+**Does Not**:
+- Persist cache to disk (in-memory only)
+- Implement distributed caching (single-node)
+- Support cache warming (manual only)
+
 ## Data Flow
 
 ### Write Path
@@ -340,10 +404,14 @@ Neumann/
     neumann-parser.md        # Module 6 documentation
     neumann-shell.md         # Module 7 documentation
     tensor-compress.md       # Module 8 documentation
+    tensor-vault.md          # Module 9 documentation
+    tensor-cache.md          # Module 10 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
-    src/lib.rs               # Module 1: Storage layer
+    src/
+      lib.rs                 # Module 1: Storage layer
+      hnsw.rs                # HNSW index (shared with vector_engine)
   relational_engine/
     Cargo.toml
     src/lib.rs               # Module 2: SQL-like operations
@@ -353,6 +421,41 @@ Neumann/
   vector_engine/
     Cargo.toml
     src/lib.rs               # Module 4: Similarity search
+  tensor_compress/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 8: Public API
+      quantize.rs            # Vector quantization
+      delta.rs               # Delta + varint encoding
+      rle.rs                 # Run-length encoding
+      format.rs              # Snapshot format v2
+    benches/
+      tensor_compress_bench.rs # Compression benchmarks
+  tensor_vault/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 9: Vault API
+      encryption.rs          # AES-256-GCM encryption
+      key.rs                 # Argon2id key derivation
+      access.rs              # Graph-based access control
+    benches/
+      tensor_vault_bench.rs  # Vault benchmarks
+  tensor_cache/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 10: Cache public API
+      config.rs              # Configuration and presets
+      error.rs               # Error types
+      stats.rs               # Statistics tracking
+      tokenizer.rs           # tiktoken wrapper
+      exact.rs               # Exact cache (O(1))
+      semantic.rs            # Semantic cache (O(log n))
+      embedding.rs           # Embedding cache (O(1))
+      index.rs               # HNSW index wrapper
+      eviction.rs            # Background eviction
+      ttl.rs                 # TTL tracking
+    benches/
+      cache_bench.rs         # Cache benchmarks
   query_router/
     Cargo.toml
     src/lib.rs               # Module 5: Query execution
@@ -374,16 +477,6 @@ Neumann/
       main.rs                # CLI entry point
     benches/
       neumann_shell_bench.rs # Performance benchmarks
-  tensor_compress/
-    Cargo.toml
-    src/
-      lib.rs                 # Module 8: Public API
-      quantize.rs            # Vector quantization
-      delta.rs               # Delta + varint encoding
-      rle.rs                 # Run-length encoding
-      format.rs              # Snapshot format v2
-    benches/
-      tensor_compress_bench.rs # Compression benchmarks
 ```
 
 ## Quality Gates

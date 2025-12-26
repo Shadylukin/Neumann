@@ -10,4 +10,5 @@ members = [
     "neumann_shell",
     "tensor_compress",
     "tensor_vault",
+    "tensor_cache",
 ]

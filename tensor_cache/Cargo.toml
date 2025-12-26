@@ -1,0 +1,46 @@
+[package]
+name = "tensor_cache"
+version = "0.1.0"
+edition = "2021"
+description = "Semantic caching for LLM responses with cost tracking and background eviction"
+
+[dependencies]
+# Internal
+tensor_store = { path = "../tensor_store" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Token counting
+tiktoken-rs = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Data structures
+dashmap = "6"
+uuid = { version = "1", features = ["v4"] }
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+tokio-test = "0.4"
+serde_json = "1"
+
+[[bench]]
+name = "cache_bench"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

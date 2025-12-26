@@ -39,6 +39,7 @@ use relational_engine::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tensor_cache::{Cache, CacheConfig, CacheError};
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
@@ -58,6 +59,8 @@ pub enum RouterError {
     VectorError(String),
     /// Error from vault.
     VaultError(String),
+    /// Error from cache.
+    CacheError(String),
     /// Invalid argument provided.
     InvalidArgument(String),
     /// Missing required argument.
@@ -75,6 +78,7 @@ impl std::fmt::Display for RouterError {
             RouterError::GraphError(msg) => write!(f, "Graph error: {}", msg),
             RouterError::VectorError(msg) => write!(f, "Vector error: {}", msg),
             RouterError::VaultError(msg) => write!(f, "Vault error: {}", msg),
+            RouterError::CacheError(msg) => write!(f, "Cache error: {}", msg),
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
@@ -105,6 +109,12 @@ impl From<VectorError> for RouterError {
 impl From<VaultError> for RouterError {
     fn from(e: VaultError) -> Self {
         RouterError::VaultError(e.to_string())
+    }
+}
+
+impl From<CacheError> for RouterError {
+    fn from(e: CacheError) -> Self {
+        RouterError::CacheError(e.to_string())
     }
 }
 
@@ -184,6 +194,8 @@ pub struct QueryRouter {
     vector: Arc<VectorEngine>,
     /// Optional vault for secure secret storage (requires initialization)
     vault: Option<Arc<Vault>>,
+    /// Optional cache for LLM response caching (requires initialization)
+    cache: Option<Arc<Cache>>,
     /// Current identity for vault access control
     current_identity: String,
     /// Optional HNSW index for faster vector search
@@ -198,6 +210,7 @@ impl QueryRouter {
             graph: Arc::new(GraphEngine::new()),
             vector: Arc::new(VectorEngine::new()),
             vault: None,
+            cache: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -214,6 +227,7 @@ impl QueryRouter {
             graph,
             vector,
             vault: None,
+            cache: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -229,6 +243,7 @@ impl QueryRouter {
             graph: Arc::new(GraphEngine::with_store(store.clone())),
             vector: Arc::new(VectorEngine::with_store(store)),
             vault: None,
+            cache: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -264,6 +279,21 @@ impl QueryRouter {
         )?;
         self.vault = Some(Arc::new(vault));
         Ok(())
+    }
+
+    /// Get reference to cache (if initialized).
+    pub fn cache(&self) -> Option<&Cache> {
+        self.cache.as_deref()
+    }
+
+    /// Initialize the LLM response cache with default configuration.
+    pub fn init_cache(&mut self) {
+        self.cache = Some(Arc::new(Cache::new()));
+    }
+
+    /// Initialize the LLM response cache with custom configuration.
+    pub fn init_cache_with_config(&mut self, config: CacheConfig) {
+        self.cache = Some(Arc::new(Cache::with_config(config)));
     }
 
     /// Set the current identity for vault access control.

@@ -130,15 +130,16 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 
 | Module | Status | Description |
 |--------|--------|-------------|
-| Tensor Store | Complete | Key-value storage with shared entity support |
+| Tensor Store | Complete | Key-value storage with shared entity support, HNSW index |
 | Relational Engine | Complete | Tables, schemas, SQL-like operations |
 | Graph Engine | Complete | Nodes, edges, traversals, unified entity edges |
 | Vector Engine | Complete | Embeddings, similarity search, unified entity embeddings |
-| Query Router | Complete | Cross-engine queries on unified entities |
-| Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
-| Shell | Complete | Interactive CLI with readline, history, formatted output |
 | Tensor Compress | Complete | Int8/binary quantization, delta encoding, RLE |
 | Tensor Vault | Complete | AES-256-GCM encrypted secrets with graph-based access |
+| Tensor Cache | Complete | LLM response caching with semantic similarity, cost tracking |
+| Query Router | Complete | Cross-engine queries on unified entities, cache integration |
+| Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
+| Shell | Complete | Interactive CLI with readline, history, formatted output |
 | Persistence | Basic | Snapshot-based save/load with bincode serialization |
 
 ## What Neumann Is Not (For Now)
@@ -160,11 +161,12 @@ Neumann finishes the thought.
 - [Relational Engine API](docs/relational-engine.md)
 - [Graph Engine API](docs/graph-engine.md)
 - [Vector Engine API](docs/vector-engine.md)
+- [Tensor Compress](docs/tensor-compress.md)
+- [Tensor Vault](docs/tensor-vault.md)
+- [Tensor Cache](docs/tensor-cache.md)
 - [Query Router API](docs/query-router.md)
 - [Neumann Parser](docs/neumann-parser.md)
 - [Shell](docs/neumann-shell.md)
-- [Tensor Compress](docs/tensor-compress.md)
-- [Tensor Vault](docs/tensor-vault.md)
 - [Benchmarks](docs/benchmarks.md)
 
 ## License

@@ -9,6 +9,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+pub mod hnsw;
+pub use hnsw::{HNSWConfig, HNSWIndex};
+
 /// Reserved field prefixes for unified entity storage.
 ///
 /// These prefixes are used by the different engines to store their data

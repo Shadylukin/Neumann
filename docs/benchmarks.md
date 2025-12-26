@@ -18,6 +18,7 @@ cargo bench --package query_router
 cargo bench --package neumann_shell
 cargo bench --package tensor_compress
 cargo bench --package tensor_vault
+cargo bench --package tensor_cache
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -394,6 +395,66 @@ For production workloads at extreme scale (>1M vectors), consider:
 - Dimensionality reduction (PCA)
 - Quantization (int8, binary)
 
+### tensor_cache
+
+The tensor_cache crate provides LLM response caching with exact, semantic (HNSW), and embedding caches.
+
+**Exact Cache (Hash-based O(1)):**
+| Operation | Time |
+|-----------|------|
+| lookup_hit | 208 ns |
+| lookup_miss | 102 ns |
+
+**Semantic Cache (HNSW-based O(log n)):**
+| Operation | Time |
+|-----------|------|
+| lookup_hit | 21 µs |
+
+**Put (Exact + Semantic + HNSW insert):**
+| Entries | Time |
+|---------|------|
+| 100 | 49 µs |
+| 1,000 | 47 µs |
+| 10,000 | 53 µs |
+
+**Embedding Cache:**
+| Operation | Time |
+|-----------|------|
+| lookup_hit | 230 ns |
+| lookup_miss | 110 ns |
+
+**Eviction (batch processing):**
+| Entries in Cache | Time |
+|------------------|------|
+| 1,000 | 5.1 µs |
+| 5,000 | 4.3 µs |
+| 10,000 | 8.1 µs |
+
+#### Analysis
+
+- **Exact cache**: Hash-based O(1) lookup provides sub-microsecond hit/miss detection
+- **Semantic cache**: HNSW index provides O(log n) similarity search (~21µs for hit)
+- **Embedding cache**: Fast O(1) lookup for precomputed embeddings
+- **Put performance**: Consistent ~50µs regardless of cache size (HNSW insert is O(log n))
+- **Eviction**: Efficient batch eviction with LRU/LFU/Cost/Hybrid strategies
+- **Token counting**: tiktoken cl100k_base encoding for accurate GPT-4 token counts
+- **Cost tracking**: Estimates cost savings based on model pricing tables
+
+**Cache Layers:**
+| Layer | Complexity | Use Case |
+|-------|------------|----------|
+| Exact | O(1) | Identical prompts |
+| Semantic | O(log n) | Similar prompts |
+| Embedding | O(1) | Precomputed embeddings |
+
+**Eviction Strategies:**
+| Strategy | Description |
+|----------|-------------|
+| LRU | Evict least recently accessed |
+| LFU | Evict least frequently accessed |
+| CostBased | Evict lowest cost efficiency |
+| Hybrid | Weighted combination (recommended) |
+
 ### neumann_parser
 
 The parser is a hand-written recursive descent parser with Pratt expression parsing for operator precedence.
@@ -609,6 +670,7 @@ Trade-offs:
 5. ~~**Bloom filters**~~: Done - optional thread-safe Bloom filter for sparse key spaces. Note: DashMap's O(1) hash lookup is already ~50ns, so Bloom filters add ~15ns overhead for in-memory stores. Useful when backing store is disk/network.
 6. ~~**ANN indexing**~~: Done - HNSW index for vector_engine, provides O(log n) search vs O(n) brute force
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity
+8. ~~**LLM caching**~~: Done - tensor_cache provides multi-layer caching (exact O(1), semantic O(log n)) with cost tracking and background eviction
 
 ## Hardware Notes
 
