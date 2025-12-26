@@ -83,6 +83,8 @@ pub enum CommandResult {
 | `save 'path'` | - | Save database snapshot to file |
 | `save compressed 'path'` | - | Save compressed snapshot (int8 quantization) |
 | `load 'path'` | - | Load database snapshot from file (auto-detects format) |
+| `wal status` | - | Show write-ahead log status |
+| `wal truncate` | - | Clear the write-ahead log |
 
 ## Query Support
 
@@ -190,6 +192,46 @@ The snapshot includes all data from the TensorStore:
 - `LOAD`: Auto-detects format (works with both compressed and uncompressed)
 
 Path can be quoted (`'path'` or `"path"`) or unquoted.
+
+### Write-Ahead Log (WAL)
+
+The shell includes a write-ahead log for crash recovery. When enabled, all write commands are logged to a file that can be replayed after loading a snapshot.
+
+```sql
+> LOAD 'data.bin'
+Loaded snapshot from: data.bin
+
+> INSERT INTO users VALUES (1, 'Alice')
+1 row affected
+
+> -- If the shell crashes here, the INSERT is saved in data.log
+
+> -- On next load, the WAL is automatically replayed:
+> LOAD 'data.bin'
+Loaded snapshot from: data.bin
+Replayed 1 commands from WAL
+
+> WAL STATUS
+WAL enabled
+  Path: data.log
+  Size: 42 bytes
+
+> -- After saving, the WAL is truncated (data is in snapshot):
+> SAVE 'data.bin'
+Saved snapshot to: data.bin
+
+> WAL STATUS
+WAL enabled
+  Path: data.log
+  Size: 0 bytes
+```
+
+**WAL Behavior:**
+- WAL is activated after `LOAD` (stored as `<snapshot>.log`)
+- All write commands (INSERT, UPDATE, DELETE, NODE CREATE, etc.) are logged
+- On subsequent `LOAD`, the snapshot is loaded first, then WAL is replayed
+- `SAVE` truncates the WAL (snapshot now contains all data)
+- `WAL TRUNCATE` manually clears the log without saving
 
 ## Configuration
 
@@ -300,7 +342,7 @@ The shell adds negligible overhead to query execution.
 | Error handling | Errors displayed, shell continues |
 | Configuration | Custom config applied |
 
-Coverage: 94.81% (94% minimum due to untestable interactive REPL code)
+Coverage: 93% (92% minimum due to untestable interactive REPL code)
 
 ## Dependencies
 

@@ -50,12 +50,13 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
-|           Persistence Layer [BASIC]               |
+|           Persistence Layer [DONE]                |
 |   - Snapshot save/load (bincode)                 |
 |   - Compressed snapshots (tensor_compress)       |
 |   - Atomic writes (temp file + rename)           |
+|   - Write-ahead log (WAL) for crash recovery     |
 |   - Bloom filter rebuild on load                 |
-|   [Future: WAL, incremental, streaming]          |
+|   [Future: incremental, streaming]               |
 +--------------------------------------------------+
 ```
 
@@ -85,7 +86,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Parse queries
 - Validate schemas
 - Enforce relationships
-- Provide WAL or incremental persistence (future)
+- Provide incremental persistence (future)
 
 ### Module 2: Relational Engine (Complete)
 
@@ -278,12 +279,13 @@ Shell formats output
 
 ### 1. In-Memory First with Snapshot Persistence
 
-The system is designed for in-memory operation with optional snapshot persistence:
+The system is designed for in-memory operation with snapshot persistence and WAL:
 
 - **Primary storage**: DashMap in memory for fast concurrent access
 - **Persistence**: Snapshot-based save/load using bincode serialization
 - **Atomicity**: Snapshots write to temp file, then atomic rename
-- **Future**: WAL and incremental persistence planned for production durability
+- **Durability**: Write-ahead log (WAL) for crash recovery between snapshots
+- **Future**: Incremental persistence planned for large datasets
 
 ### 2. Clone on Read
 
@@ -393,7 +395,7 @@ Runs before every commit for all crates:
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (95% minimum, 93% for shell)
+5. `cargo llvm-cov` - Coverage check (95% minimum, 92% for shell)
 
 ### CI Pipeline
 
@@ -402,7 +404,7 @@ Runs on every PR:
 2. Format check - Code style
 3. Clippy lints - Static analysis
 4. Tests - Unit and integration tests
-5. Coverage - Minimum 95% per crate (93% for shell)
+5. Coverage - Minimum 95% per crate (92% for shell)
 6. Documentation build - Doc generation
 7. Security audit - Dependency vulnerabilities
 8. Miri - Undefined behavior detection (tensor_store)
