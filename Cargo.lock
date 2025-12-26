@@ -891,6 +891,7 @@ dependencies = [
  "neumann_parser",
  "relational_engine",
  "serde",
+ "serde_json",
  "tensor_cache",
  "tensor_store",
  "tensor_vault",

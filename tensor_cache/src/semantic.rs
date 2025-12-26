@@ -204,8 +204,8 @@ impl SemanticCache {
         self.entries.is_empty()
     }
 
-    /// Clear all entries.
-    pub fn clear(&mut self) {
+    /// Clear all entries (thread-safe).
+    pub fn clear(&self) {
         let count = self.entries.len();
         self.entries.clear();
         self.index.clear();

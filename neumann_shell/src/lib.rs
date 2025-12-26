@@ -525,6 +525,9 @@ Query Types:
     CACHE INIT                     Initialize semantic cache
     CACHE STATS                    Show cache statistics
     CACHE CLEAR                    Clear all cache entries
+    CACHE EVICT [n]                Evict n entries (default: 100)
+    CACHE GET 'key'                Get cached response
+    CACHE PUT 'key' 'value'        Store cache entry
 
 Examples:
   > CREATE TABLE users (id INT, name TEXT)

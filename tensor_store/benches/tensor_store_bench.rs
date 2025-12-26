@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::Arc;
 use std::thread;
-use tensor_store::{BloomFilter, ScalarValue, TensorData, TensorStore, TensorValue};
+use tensor_store::{BloomFilter, ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
 fn create_test_tensor(id: i64) -> TensorData {
     let mut tensor = TensorData::new();
@@ -406,6 +406,363 @@ fn bench_snapshot(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// SparseVector Benchmarks
+// ============================================================================
+
+/// Generate a dense vector with given sparsity (fraction of zeros)
+fn generate_dense_vector(dimension: usize, sparsity: f32, seed: u64) -> Vec<f32> {
+    let mut rng_state = seed;
+    let mut dense = Vec::with_capacity(dimension);
+
+    for _ in 0..dimension {
+        // Simple LCG random number generator
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let rand_float = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
+
+        if rand_float < sparsity {
+            dense.push(0.0);
+        } else {
+            // Generate non-zero value
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let val = ((rng_state >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0;
+            dense.push(if val == 0.0 { 0.001 } else { val });
+        }
+    }
+
+    dense
+}
+
+fn bench_sparse_vector_construction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/construction");
+
+    for dim in [128, 768, 1536].iter() {
+        for sparsity in [0.5, 0.9, 0.99].iter() {
+            let dense = generate_dense_vector(*dim, *sparsity, 42);
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("from_dense_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &dense,
+                |b, dense| {
+                    b.iter(|| {
+                        black_box(SparseVector::from_dense(dense));
+                    });
+                },
+            );
+        }
+    }
+
+    // Benchmark threshold-based construction
+    let dense_768 = generate_dense_vector(768, 0.0, 42); // No zeros initially
+    for threshold in [0.01, 0.1, 0.3].iter() {
+        group.bench_with_input(
+            BenchmarkId::new("from_dense_threshold_768d", format!("{}", threshold)),
+            threshold,
+            |b, &threshold| {
+                b.iter(|| {
+                    black_box(SparseVector::from_dense_with_threshold(
+                        &dense_768, threshold,
+                    ));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_lookup(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/lookup");
+
+    for dim in [128, 768, 1536].iter() {
+        let dense = generate_dense_vector(*dim, 0.9, 42);
+        let sparse = SparseVector::from_dense(&dense);
+
+        // Benchmark sparse lookup
+        group.bench_with_input(
+            BenchmarkId::new("sparse_get", format!("{}d_90%", dim)),
+            &sparse,
+            |b, sparse| {
+                let mut i = 0usize;
+                b.iter(|| {
+                    let idx = i % sparse.dimension();
+                    black_box(sparse.get(idx));
+                    i = i.wrapping_add(1);
+                });
+            },
+        );
+
+        // Benchmark dense lookup for comparison
+        group.bench_with_input(
+            BenchmarkId::new("dense_get", format!("{}d", dim)),
+            &dense,
+            |b, dense| {
+                let mut i = 0usize;
+                b.iter(|| {
+                    let idx = i % dense.len();
+                    black_box(dense[idx]);
+                    i = i.wrapping_add(1);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_dot_product(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/dot_product");
+
+    for dim in [128, 768, 1536].iter() {
+        for sparsity in [0.5, 0.9, 0.99].iter() {
+            let dense_a = generate_dense_vector(*dim, *sparsity, 42);
+            let dense_b = generate_dense_vector(*dim, *sparsity, 43);
+            let sparse_a = SparseVector::from_dense(&dense_a);
+            let sparse_b = SparseVector::from_dense(&dense_b);
+
+            // Sparse-sparse dot product
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("sparse_sparse_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&sparse_a, &sparse_b),
+                |bench, (va, vb)| {
+                    bench.iter(|| {
+                        black_box(va.dot(vb));
+                    });
+                },
+            );
+
+            // Sparse-dense dot product
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("sparse_dense_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&sparse_a, &dense_b),
+                |bench, (sparse, dense)| {
+                    bench.iter(|| {
+                        black_box(sparse.dot_dense(dense));
+                    });
+                },
+            );
+
+            // Dense-dense dot product for comparison
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("dense_dense_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&dense_a, &dense_b),
+                |bench, (va, vb)| {
+                    bench.iter(|| {
+                        let result: f32 = va.iter().zip(vb.iter()).map(|(x, y)| x * y).sum();
+                        black_box(result);
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_cosine(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/cosine_similarity");
+
+    for dim in [128, 768].iter() {
+        for sparsity in [0.5, 0.9].iter() {
+            let dense_a = generate_dense_vector(*dim, *sparsity, 42);
+            let dense_b = generate_dense_vector(*dim, *sparsity, 43);
+            let sparse_a = SparseVector::from_dense(&dense_a);
+            let sparse_b = SparseVector::from_dense(&dense_b);
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("sparse_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&sparse_a, &sparse_b),
+                |bench, (va, vb)| {
+                    bench.iter(|| {
+                        black_box(va.cosine_similarity(vb));
+                    });
+                },
+            );
+
+            // Dense cosine for comparison
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("dense_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&dense_a, &dense_b),
+                |bench, (va, vb)| {
+                    bench.iter(|| {
+                        let dot: f32 = va.iter().zip(vb.iter()).map(|(x, y)| x * y).sum();
+                        let mag_a: f32 = va.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        let mag_b: f32 = vb.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        black_box(dot / (mag_a * mag_b));
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_add(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/addition");
+
+    for dim in [128, 768].iter() {
+        for sparsity in [0.5, 0.9].iter() {
+            let dense_a = generate_dense_vector(*dim, *sparsity, 42);
+            let dense_b = generate_dense_vector(*dim, *sparsity, 43);
+            let sparse_a = SparseVector::from_dense(&dense_a);
+            let sparse_b = SparseVector::from_dense(&dense_b);
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("sparse_{}d", dim),
+                    format!("{:.0}%", sparsity * 100.0),
+                ),
+                &(&sparse_a, &sparse_b),
+                |bench, (va, vb)| {
+                    bench.iter(|| {
+                        black_box(va.add(vb));
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_memory(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/memory");
+    group.sample_size(10); // Memory isn't timing-sensitive
+
+    for dim in [128, 768, 1536].iter() {
+        for sparsity in [0.5, 0.9, 0.99].iter() {
+            let dense = generate_dense_vector(*dim, *sparsity, 42);
+            let sparse = SparseVector::from_dense(&dense);
+
+            let dense_bytes = dense.len() * std::mem::size_of::<f32>();
+            let sparse_bytes = sparse.memory_bytes();
+            let ratio = dense_bytes as f64 / sparse_bytes as f64;
+
+            // This benchmark just reports the memory ratio via throughput
+            group.throughput(Throughput::Bytes(sparse_bytes as u64));
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}d_{:.0}%_sparse", dim, sparsity * 100.0),
+                    format!("ratio_{:.2}x", ratio),
+                ),
+                &sparse,
+                |b, sparse| {
+                    b.iter(|| {
+                        black_box(sparse.memory_bytes());
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_prune(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/prune");
+
+    // Start with dense vector, prune to various thresholds
+    let dense = generate_dense_vector(768, 0.0, 42);
+    let sparse = SparseVector::from_dense(&dense);
+
+    for threshold in [0.01, 0.1, 0.3, 0.5].iter() {
+        group.bench_with_input(
+            BenchmarkId::new("768d", format!("threshold_{}", threshold)),
+            &(&sparse, *threshold),
+            |b, (sparse, threshold)| {
+                b.iter(|| {
+                    black_box(sparse.pruned(*threshold));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_sparse_vector_batch_dot(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sparse_vector/batch_dot");
+
+    // Benchmark: query vector against many stored vectors (typical similarity search)
+    let dim = 768;
+    let num_vectors = 1000;
+
+    for sparsity in [0.5, 0.9].iter() {
+        let query_dense = generate_dense_vector(dim, *sparsity, 0);
+        let query_sparse = SparseVector::from_dense(&query_dense);
+
+        // Generate corpus
+        let corpus_dense: Vec<Vec<f32>> = (0..num_vectors)
+            .map(|i| generate_dense_vector(dim, *sparsity, i as u64 + 100))
+            .collect();
+        let corpus_sparse: Vec<SparseVector> = corpus_dense
+            .iter()
+            .map(|v| SparseVector::from_dense(v))
+            .collect();
+
+        // Sparse query vs sparse corpus
+        group.throughput(Throughput::Elements(num_vectors as u64));
+        group.bench_with_input(
+            BenchmarkId::new("sparse_corpus", format!("{:.0}%", sparsity * 100.0)),
+            &(&query_sparse, &corpus_sparse),
+            |b, (query, corpus)| {
+                b.iter(|| {
+                    let scores: Vec<f32> = corpus.iter().map(|v| query.dot(v)).collect();
+                    black_box(scores);
+                });
+            },
+        );
+
+        // Sparse query vs dense corpus
+        group.bench_with_input(
+            BenchmarkId::new("dense_corpus", format!("{:.0}%", sparsity * 100.0)),
+            &(&query_sparse, &corpus_dense),
+            |b, (query, corpus)| {
+                b.iter(|| {
+                    let scores: Vec<f32> = corpus.iter().map(|v| query.dot_dense(v)).collect();
+                    black_box(scores);
+                });
+            },
+        );
+
+        // Dense query vs dense corpus (baseline)
+        group.bench_with_input(
+            BenchmarkId::new("dense_baseline", format!("{:.0}%", sparsity * 100.0)),
+            &(&query_dense, &corpus_dense),
+            |b, (query, corpus)| {
+                b.iter(|| {
+                    let scores: Vec<f32> = corpus
+                        .iter()
+                        .map(|v| query.iter().zip(v.iter()).map(|(a, b)| a * b).sum())
+                        .collect();
+                    black_box(scores);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_put,
@@ -419,4 +776,16 @@ criterion_group!(
     bench_snapshot,
 );
 
-criterion_main!(benches);
+criterion_group!(
+    sparse_vector_benches,
+    bench_sparse_vector_construction,
+    bench_sparse_vector_lookup,
+    bench_sparse_vector_dot_product,
+    bench_sparse_vector_cosine,
+    bench_sparse_vector_add,
+    bench_sparse_vector_memory,
+    bench_sparse_vector_prune,
+    bench_sparse_vector_batch_dot,
+);
+
+criterion_main!(benches, sparse_vector_benches);

@@ -10,7 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub mod hnsw;
+pub mod sparse_vector;
+
 pub use hnsw::{HNSWConfig, HNSWIndex};
+pub use sparse_vector::SparseVector;
 
 /// Reserved field prefixes for unified entity storage.
 ///
@@ -176,6 +179,11 @@ pub enum TensorValue {
     Scalar(ScalarValue),
     /// Vector values (embeddings): f32 arrays for similarity search
     Vector(Vec<f32>),
+    /// Sparse vector values: only non-zero positions stored
+    ///
+    /// Philosophy: Zero represents absence of information, not a stored value.
+    /// The dimension defines the boundary/shell of meaningful space.
+    Sparse(SparseVector),
     /// Pointer to another tensor (relationships)
     Pointer(String),
     /// List of pointers (multiple relationships)
@@ -699,6 +707,11 @@ impl TensorStore {
                         },
                     }),
                     TensorValue::Vector(v) => compress_vector(v, &key, field_name, &config),
+                    TensorValue::Sparse(sv) => {
+                        // Convert sparse to dense for compression, then compress
+                        // Future: add native sparse compression format
+                        compress_vector(&sv.to_dense(), &key, field_name, &config)
+                    },
                     TensorValue::Pointer(p) => CompressedValue::Pointer(p.clone()),
                     TensorValue::Pointers(ps) => CompressedValue::Pointers(ps.clone()),
                 };

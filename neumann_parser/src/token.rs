@@ -201,6 +201,8 @@ pub enum TokenKind {
     Init,
     Stats,
     Clear,
+    Evict,
+    Put,
 
     // === Operators ===
     /// `+`
@@ -428,6 +430,8 @@ impl TokenKind {
                 | Init
                 | Stats
                 | Clear
+                | Evict
+                | Put
         )
     }
 
@@ -610,6 +614,8 @@ impl TokenKind {
             "INIT" => TokenKind::Init,
             "STATS" => TokenKind::Stats,
             "CLEAR" => TokenKind::Clear,
+            "EVICT" => TokenKind::Evict,
+            "PUT" => TokenKind::Put,
 
             _ => return None,
         })
@@ -756,6 +762,8 @@ impl TokenKind {
             Init => "INIT",
             Stats => "STATS",
             Clear => "CLEAR",
+            Evict => "EVICT",
+            Put => "PUT",
             Plus => "+",
             Minus => "-",
             Star => "*",
@@ -1070,6 +1078,8 @@ mod tests {
         assert_eq!(TokenKind::Init.as_str(), "INIT");
         assert_eq!(TokenKind::Stats.as_str(), "STATS");
         assert_eq!(TokenKind::Clear.as_str(), "CLEAR");
+        assert_eq!(TokenKind::Evict.as_str(), "EVICT");
+        assert_eq!(TokenKind::Put.as_str(), "PUT");
 
         // Operators
         assert_eq!(TokenKind::Minus.as_str(), "-");
@@ -1175,6 +1185,8 @@ mod tests {
             ("INIT", TokenKind::Init),
             ("STATS", TokenKind::Stats),
             ("CLEAR", TokenKind::Clear),
+            ("EVICT", TokenKind::Evict),
+            ("PUT", TokenKind::Put),
         ];
 
         for (s, expected) in keywords {

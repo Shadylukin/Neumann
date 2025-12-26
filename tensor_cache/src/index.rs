@@ -5,14 +5,18 @@
 use crate::error::{CacheError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
 use tensor_store::{HNSWConfig, HNSWIndex};
 
 /// Cache-specific HNSW index wrapper.
 ///
 /// Provides key-to-node mapping on top of the shared HNSW implementation.
+/// Uses RwLock for the HNSW index to support clearing (which requires replacement).
 pub struct CacheIndex {
-    /// The underlying HNSW index.
-    index: HNSWIndex,
+    /// The underlying HNSW index (wrapped for clear support).
+    index: RwLock<HNSWIndex>,
+    /// HNSW configuration for recreation on clear.
+    config: HNSWConfig,
     /// Map from cache key to HNSW node ID.
     key_to_node: DashMap<String, usize>,
     /// Map from node ID to cache key.
@@ -41,7 +45,8 @@ impl CacheIndex {
     /// Create a new cache index with custom HNSW configuration.
     pub fn with_config(dimension: usize, config: HNSWConfig) -> Self {
         Self {
-            index: HNSWIndex::with_config(config),
+            index: RwLock::new(HNSWIndex::with_config(config.clone())),
+            config,
             key_to_node: DashMap::new(),
             node_to_key: DashMap::new(),
             dimension,
@@ -65,7 +70,10 @@ impl CacheIndex {
             self.key_to_node.remove(key);
         }
 
-        let node_id = self.index.insert(embedding.to_vec());
+        let index = self.index.read().unwrap();
+        let node_id = index.insert(embedding.to_vec());
+        drop(index);
+
         self.key_to_node.insert(key.to_string(), node_id);
         self.node_to_key.insert(node_id, key.to_string());
         self.entry_count.fetch_add(1, Ordering::Relaxed);
@@ -89,11 +97,13 @@ impl CacheIndex {
             });
         }
 
-        if self.index.is_empty() {
+        let index = self.index.read().unwrap();
+        if index.is_empty() {
             return Ok(Vec::new());
         }
 
-        let results = self.index.search(query, k);
+        let results = index.search(query, k);
+        drop(index);
 
         Ok(results
             .into_iter()
@@ -142,11 +152,14 @@ impl CacheIndex {
         self.dimension
     }
 
-    /// Clear the index.
+    /// Clear the index (thread-safe).
     ///
     /// Note: This creates a new HNSW index since HNSW doesn't support clearing.
-    pub fn clear(&mut self) {
-        self.index = HNSWIndex::with_config(self.index.config().clone());
+    pub fn clear(&self) {
+        let mut index = self.index.write().unwrap();
+        *index = HNSWIndex::with_config(self.config.clone());
+        drop(index);
+
         self.key_to_node.clear();
         self.node_to_key.clear();
         self.entry_count.store(0, Ordering::Relaxed);

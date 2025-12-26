@@ -1731,11 +1731,32 @@ impl<'a> Parser<'a> {
                 self.advance();
                 CacheOp::Clear
             },
+            TokenKind::Evict => {
+                self.advance();
+                let count = if !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                CacheOp::Evict { count }
+            },
+            TokenKind::Get => {
+                self.advance();
+                let key = self.parse_expr()?;
+                CacheOp::Get { key }
+            },
+            TokenKind::Put => {
+                self.advance();
+                let key = self.parse_expr()?;
+                let value = self.parse_expr()?;
+                CacheOp::Put { key, value }
+            },
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnexpectedToken {
                         found: self.current.kind.clone(),
-                        expected: "CACHE operation (INIT, STATS, CLEAR)".to_string(),
+                        expected: "CACHE operation (INIT, STATS, CLEAR, EVICT, GET, PUT)"
+                            .to_string(),
                     },
                     self.current.span,
                 ));
@@ -4286,6 +4307,59 @@ mod tests {
     fn test_cache_with_semicolon() {
         let stmt = parse_stmt("CACHE STATS;");
         assert!(matches!(stmt.kind, StatementKind::Cache(_)));
+    }
+
+    #[test]
+    fn test_cache_evict() {
+        let stmt = parse_stmt("CACHE EVICT");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            assert!(matches!(cache.operation, CacheOp::Evict { count: None }));
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_evict_with_count() {
+        let stmt = parse_stmt("CACHE EVICT 100");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::Evict { count: Some(expr) } = cache.operation {
+                assert!(matches!(expr.kind, ExprKind::Literal(Literal::Integer(100))));
+            } else {
+                panic!("expected EVICT with count");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_get() {
+        let stmt = parse_stmt("CACHE GET 'mykey'");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::Get { key } = cache.operation {
+                assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
+            } else {
+                panic!("expected GET");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_put() {
+        let stmt = parse_stmt("CACHE PUT 'mykey' 'myvalue'");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::Put { key, value } = cache.operation {
+                assert!(matches!(key.kind, ExprKind::Literal(Literal::String(_))));
+                assert!(matches!(value.kind, ExprKind::Literal(Literal::String(_))));
+            } else {
+                panic!("expected PUT");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
     }
 
     #[test]

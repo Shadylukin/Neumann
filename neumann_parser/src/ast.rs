@@ -550,6 +550,12 @@ pub enum CacheOp {
     Stats,
     /// Clear all cache entries: `CACHE CLEAR`
     Clear,
+    /// Evict entries: `CACHE EVICT [n]`
+    Evict { count: Option<Expr> },
+    /// Get cached response: `CACHE GET 'key'`
+    Get { key: Expr },
+    /// Store cache entry: `CACHE PUT 'key' 'value'`
+    Put { key: Expr, value: Expr },
 }
 
 // =============================================================================

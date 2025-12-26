@@ -509,11 +509,33 @@ impl QueryRouter {
     ///
     /// This method uses the neumann_parser crate to parse the command into an AST,
     /// then dispatches to the appropriate engine based on the statement type.
+    /// Cacheable queries (SELECT, SIMILAR, NEIGHBORS, PATH) are cached if a cache is configured.
+    /// Write operations (INSERT, UPDATE, DELETE) invalidate the cache.
     pub fn execute_parsed(&self, command: &str) -> Result<QueryResult> {
         let stmt = parser::parse(command)
             .map_err(|e| RouterError::ParseError(e.format_with_source(command)))?;
 
-        self.execute_statement(&stmt)
+        // Check cache for cacheable statements
+        if Self::is_cacheable_statement(&stmt) {
+            if let Some(cached) = self.try_cache_get(command) {
+                return Ok(cached);
+            }
+        }
+
+        // Execute the statement
+        let result = self.execute_statement(&stmt)?;
+
+        // Cache the result for cacheable statements
+        if Self::is_cacheable_statement(&stmt) {
+            self.try_cache_put(command, &result);
+        }
+
+        // Invalidate cache on write operations
+        if Self::is_write_statement(&stmt) {
+            self.invalidate_cache_on_write();
+        }
+
+        Ok(result)
     }
 
     /// Execute a parsed statement.
@@ -609,13 +631,83 @@ impl QueryRouter {
                 Ok(QueryResult::Value(output))
             },
             CacheOp::Clear => {
-                // Note: Cache clear requires exclusive access which is not available through Arc
-                // This would need to be called at the application level with mutable access
-                Err(RouterError::CacheError(
-                    "CACHE CLEAR requires exclusive access - use application-level reset"
-                        .to_string(),
-                ))
+                cache.clear();
+                Ok(QueryResult::Value("Cache cleared".to_string()))
             },
+            CacheOp::Evict { count } => {
+                let count_val = match count {
+                    Some(expr) => self.expr_to_usize(expr)?,
+                    None => 100, // Default eviction count
+                };
+                let evicted = cache.evict(count_val);
+                Ok(QueryResult::Value(format!("Evicted {} entries", evicted)))
+            },
+            CacheOp::Get { key } => {
+                let key_str = self.expr_to_string(key)?;
+                match cache.get_simple(&key_str) {
+                    Some(value) => Ok(QueryResult::Value(value)),
+                    None => Ok(QueryResult::Value("(not found)".to_string())),
+                }
+            },
+            CacheOp::Put { key, value } => {
+                let key_str = self.expr_to_string(key)?;
+                let value_str = self.expr_to_string(value)?;
+                cache.put_simple(&key_str, &value_str);
+                Ok(QueryResult::Value("OK".to_string()))
+            },
+        }
+    }
+
+    // ========== Query Cache Integration ==========
+
+    fn is_cacheable_statement(stmt: &Statement) -> bool {
+        matches!(
+            &stmt.kind,
+            StatementKind::Select(_)
+                | StatementKind::Similar(_)
+                | StatementKind::Neighbors(_)
+                | StatementKind::Path(_)
+        )
+    }
+
+    fn is_write_statement(stmt: &Statement) -> bool {
+        matches!(
+            &stmt.kind,
+            StatementKind::Insert(_)
+                | StatementKind::Update(_)
+                | StatementKind::Delete(_)
+                | StatementKind::CreateTable(_)
+                | StatementKind::DropTable(_)
+                | StatementKind::CreateIndex(_)
+                | StatementKind::DropIndex(_)
+        )
+    }
+
+    fn cache_key_for_query(command: &str) -> String {
+        format!("query:{}", command.trim().to_lowercase())
+    }
+
+    fn try_cache_get(&self, command: &str) -> Option<QueryResult> {
+        let cache = self.cache.as_ref()?;
+        let key = Self::cache_key_for_query(command);
+        let json = cache.get_simple(&key)?;
+        serde_json::from_str(&json).ok()
+    }
+
+    fn try_cache_put(&self, command: &str, result: &QueryResult) {
+        if let Some(cache) = self.cache.as_ref() {
+            let key = Self::cache_key_for_query(command);
+            if let Ok(json) = serde_json::to_string(result) {
+                cache.put_simple(&key, &json);
+            }
+        }
+    }
+
+    fn invalidate_cache_on_write(&self) {
+        if let Some(cache) = self.cache.as_ref() {
+            // For now, clear the entire cache on writes
+            // A more sophisticated approach would track table dependencies
+            cache.clear();
         }
     }
 
@@ -4723,12 +4815,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_clear_returns_error() {
+    fn test_cache_clear() {
         let mut router = QueryRouter::new();
         router.init_cache();
         let result = router.execute_parsed("CACHE CLEAR");
-        // CACHE CLEAR returns an error because it requires exclusive access
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert!(output.contains("Cache cleared"));
+        } else {
+            panic!("Expected Value result");
+        }
     }
 
     #[test]
@@ -4736,5 +4832,156 @@ mod tests {
         let router = QueryRouter::new();
         let result = router.execute_parsed("CACHE STATS");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cache_evict() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        let result = router.execute_parsed("CACHE EVICT");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert!(output.contains("Evicted"));
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_cache_evict_with_count() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        let result = router.execute_parsed("CACHE EVICT 50");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert!(output.contains("Evicted"));
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_cache_put_get() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        // Put a value
+        let result = router.execute_parsed("CACHE PUT 'testkey' 'testvalue'");
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryResult::Value(s) if s == "OK"));
+
+        // Get the value
+        let result = router.execute_parsed("CACHE GET 'testkey'");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert_eq!(output, "testvalue");
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_cache_get_not_found() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        let result = router.execute_parsed("CACHE GET 'nonexistent'");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert_eq!(output, "(not found)");
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_query_cache_select() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        // Create table and insert data
+        router
+            .execute_parsed("CREATE TABLE cached_test (id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO cached_test (id, name) VALUES (1, 'Alice')")
+            .unwrap();
+
+        // First query - should hit the database
+        let result1 = router.execute_parsed("SELECT * FROM cached_test").unwrap();
+        assert!(matches!(result1, QueryResult::Rows(_)));
+
+        // Second query - should hit cache (same result)
+        let result2 = router.execute_parsed("SELECT * FROM cached_test").unwrap();
+        assert!(matches!(result2, QueryResult::Rows(_)));
+
+        // Check stats to verify cache was used
+        let stats = router.cache.as_ref().unwrap().stats();
+        assert!(stats.hits(CacheLayer::Exact) > 0);
+    }
+
+    #[test]
+    fn test_query_cache_invalidation() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        // Create table and insert data
+        router
+            .execute_parsed("CREATE TABLE invalidate_test (id INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO invalidate_test (id) VALUES (1)")
+            .unwrap();
+
+        // Query to populate cache
+        let _ = router.execute_parsed("SELECT * FROM invalidate_test");
+
+        // Get cache stats before write
+        let _hits_before = router
+            .cache
+            .as_ref()
+            .unwrap()
+            .stats()
+            .hits(CacheLayer::Exact);
+
+        // Insert more data - should invalidate cache
+        router
+            .execute_parsed("INSERT INTO invalidate_test (id) VALUES (2)")
+            .unwrap();
+
+        // Query again - should miss cache since it was invalidated
+        let _ = router.execute_parsed("SELECT * FROM invalidate_test");
+
+        // The first post-invalidation query should have missed
+        // (though it will now be cached for subsequent queries)
+        let misses_after = router
+            .cache
+            .as_ref()
+            .unwrap()
+            .stats()
+            .misses(CacheLayer::Exact);
+        assert!(misses_after > 0);
+    }
+
+    #[test]
+    fn test_query_cache_case_insensitive() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        router
+            .execute_parsed("CREATE TABLE case_test (id INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO case_test (id) VALUES (1)")
+            .unwrap();
+
+        // Query with uppercase
+        let _ = router.execute_parsed("SELECT * FROM case_test");
+
+        // Query with mixed case - should hit cache (keys are lowercased)
+        let _ = router.execute_parsed("select * from case_test");
+
+        let stats = router.cache.as_ref().unwrap().stats();
+        assert!(stats.hits(CacheLayer::Exact) > 0);
     }
 }

@@ -338,6 +338,30 @@ impl Cache {
             .get_or_compute(source, content, model, None, compute)
     }
 
+    /// Simple key-value get for CLI interface.
+    ///
+    /// Returns the cached response for the given key, if present and not expired.
+    pub fn get_simple(&self, key: &str) -> Option<String> {
+        let cache_key = exact::generate_prompt_key(key);
+        self.exact.get(&cache_key).map(|e| e.response)
+    }
+
+    /// Simple key-value put for CLI interface.
+    ///
+    /// Stores a response with default token counts (0) and TTL.
+    pub fn put_simple(&self, key: &str, value: &str) {
+        let cache_key = exact::generate_prompt_key(key);
+        // Ignore capacity errors for simple puts
+        let _ = self.exact.insert(
+            cache_key,
+            value.to_string(),
+            0,
+            0,
+            "cli".to_string(),
+            self.config.default_ttl,
+        );
+    }
+
     /// Invalidate entries by exact key.
     ///
     /// Note: model and `params_hash` are accepted for API compatibility but
@@ -421,8 +445,8 @@ impl Cache {
         exact + semantic + embedding
     }
 
-    /// Clear all cache entries.
-    pub fn clear(&mut self) {
+    /// Clear all cache entries (thread-safe).
+    pub fn clear(&self) {
         self.exact.clear();
         self.semantic.clear();
         self.embedding.clear();
