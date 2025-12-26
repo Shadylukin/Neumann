@@ -253,10 +253,10 @@ The vault implements multiple obfuscation layers to hide patterns:
 
 | Layer | Purpose | Implementation |
 |-------|---------|----------------|
-| **Key Obfuscation** | Hide secret names | HMAC-based hash of key name |
+| **Key Obfuscation** | Hide secret names | HMAC-BLAKE2b hash of key name |
 | **Pointer Indirection** | Hide storage patterns | Ciphertext in separate blob |
 | **Length Padding** | Hide plaintext size | Pad to fixed sizes (256B/1K/4K/16K) |
-| **Metadata Encryption** | Hide creator/timestamps | XOR with derived keystream |
+| **Metadata Encryption** | Hide creator/timestamps | XOR with BLAKE2b-derived keystream |
 
 ### Padding Sizes
 
@@ -299,6 +299,7 @@ The vault leverages tensor store features for security:
 
 - `aes-gcm`: AES-256-GCM encryption
 - `argon2`: Key derivation
+- `blake2`: HMAC and obfuscation hashing
 - `rand`: Nonce generation
 - `zeroize`: Secure memory cleanup
 - `base64`: Environment variable encoding
