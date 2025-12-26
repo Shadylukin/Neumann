@@ -70,6 +70,10 @@ pub enum StatementKind {
     /// VAULT command
     Vault(VaultStmt),
 
+    // === Cache Statements ===
+    /// CACHE command
+    Cache(CacheStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -525,6 +529,27 @@ pub enum VaultOp {
     Grant { entity: Expr, key: Expr },
     /// Revoke access: `VAULT REVOKE 'entity' ON 'key'`
     Revoke { entity: Expr, key: Expr },
+}
+
+// =============================================================================
+// Cache Statements
+// =============================================================================
+
+/// CACHE command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CacheStmt {
+    pub operation: CacheOp,
+}
+
+/// CACHE operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CacheOp {
+    /// Initialize cache: `CACHE INIT`
+    Init,
+    /// Show cache statistics: `CACHE STATS`
+    Stats,
+    /// Clear all cache entries: `CACHE CLEAR`
+    Clear,
 }
 
 // =============================================================================

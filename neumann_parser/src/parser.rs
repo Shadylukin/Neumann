@@ -611,6 +611,9 @@ impl<'a> Parser<'a> {
             // Vault Statements
             TokenKind::Vault => self.parse_vault()?,
 
+            // Cache Statements
+            TokenKind::Cache => self.parse_cache()?,
+
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnknownCommand(format!("{}", self.current.kind)),
@@ -1710,6 +1713,36 @@ impl<'a> Parser<'a> {
         };
 
         Ok(StatementKind::Vault(VaultStmt { operation }))
+    }
+
+    fn parse_cache(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Cache)?;
+
+        let operation = match &self.current.kind {
+            TokenKind::Init => {
+                self.advance();
+                CacheOp::Init
+            },
+            TokenKind::Stats => {
+                self.advance();
+                CacheOp::Stats
+            },
+            TokenKind::Clear => {
+                self.advance();
+                CacheOp::Clear
+            },
+            _ => {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        found: self.current.kind.clone(),
+                        expected: "CACHE operation (INIT, STATS, CLEAR)".to_string(),
+                    },
+                    self.current.span,
+                ));
+            },
+        };
+
+        Ok(StatementKind::Cache(CacheStmt { operation }))
     }
 }
 
@@ -4210,5 +4243,54 @@ mod tests {
         if let StatementKind::Neighbors(neighbors) = stmt.kind {
             assert_eq!(neighbors.direction, Direction::Outgoing);
         }
+    }
+
+    // CACHE command tests
+    #[test]
+    fn test_cache_init() {
+        let stmt = parse_stmt("CACHE INIT");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            assert!(matches!(cache.operation, CacheOp::Init));
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let stmt = parse_stmt("CACHE STATS");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            assert!(matches!(cache.operation, CacheOp::Stats));
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let stmt = parse_stmt("CACHE CLEAR");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            assert!(matches!(cache.operation, CacheOp::Clear));
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_lowercase() {
+        let stmt = parse_stmt("cache init");
+        assert!(matches!(stmt.kind, StatementKind::Cache(_)));
+    }
+
+    #[test]
+    fn test_cache_with_semicolon() {
+        let stmt = parse_stmt("CACHE STATS;");
+        assert!(matches!(stmt.kind, StatementKind::Cache(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "CACHE operation")]
+    fn test_cache_invalid_operation() {
+        parse_stmt("CACHE INVALID");
     }
 }

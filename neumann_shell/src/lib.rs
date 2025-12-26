@@ -143,6 +143,7 @@ impl Shell {
                     || upper.contains("VAULT GRANT")
                     || upper.contains("VAULT REVOKE")
             },
+            "CACHE" => upper.contains("CACHE CLEAR"),
             _ => false,
         }
     }
@@ -213,6 +214,11 @@ impl Shell {
         // Handle VAULT IDENTITY command
         if lower.starts_with("vault identity") {
             return self.handle_vault_identity(trimmed);
+        }
+
+        // Handle CACHE INIT command
+        if lower == "cache init" {
+            return self.handle_cache_init();
         }
 
         // Execute as query
@@ -445,6 +451,14 @@ impl Shell {
 
         self.router.set_identity(identity);
         CommandResult::Output(format!("Identity set to: {identity}"))
+    }
+
+    /// Initialize the cache with default configuration.
+    fn handle_cache_init(&mut self) -> CommandResult {
+        match self.router.init_cache_default() {
+            Ok(()) => CommandResult::Output("Cache initialized".to_string()),
+            Err(e) => CommandResult::Error(format!("Failed to initialize cache: {e}")),
+        }
     }
 
     /// Lists all tables in the database.
@@ -2173,5 +2187,47 @@ mod tests {
         assert!(!Shell::is_write_command("VAULT LIST '*'"));
         assert!(!Shell::is_write_command("VAULT INIT"));
         assert!(!Shell::is_write_command("VAULT IDENTITY 'node:alice'"));
+    }
+
+    #[test]
+    fn test_is_write_command_cache() {
+        // Write command for cache
+        assert!(Shell::is_write_command("CACHE CLEAR"));
+
+        // Read-only commands for cache
+        assert!(!Shell::is_write_command("CACHE INIT"));
+        assert!(!Shell::is_write_command("CACHE STATS"));
+    }
+
+    #[test]
+    fn test_cache_init() {
+        let mut shell = Shell::new();
+        let result = shell.execute("CACHE INIT");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Cache initialized"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let mut shell = Shell::new();
+        // Initialize cache first
+        shell.execute("CACHE INIT");
+        let result = shell.execute("CACHE STATS");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Cache Statistics"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_help_contains_cache() {
+        let help = Shell::help_text();
+        assert!(help.contains("CACHE INIT"));
+        assert!(help.contains("CACHE STATS"));
+        assert!(help.contains("CACHE CLEAR"));
     }
 }

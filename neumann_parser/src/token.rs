@@ -196,6 +196,12 @@ pub enum TokenKind {
     Revoke,
     Rotate,
 
+    // === Cache Keywords ===
+    Cache,
+    Init,
+    Stats,
+    Clear,
+
     // === Operators ===
     /// `+`
     Plus,
@@ -418,6 +424,10 @@ impl TokenKind {
                 | Grant
                 | Revoke
                 | Rotate
+                | Cache
+                | Init
+                | Stats
+                | Clear
         )
     }
 
@@ -595,6 +605,12 @@ impl TokenKind {
             "REVOKE" => TokenKind::Revoke,
             "ROTATE" => TokenKind::Rotate,
 
+            // Cache keywords
+            "CACHE" => TokenKind::Cache,
+            "INIT" => TokenKind::Init,
+            "STATS" => TokenKind::Stats,
+            "CLEAR" => TokenKind::Clear,
+
             _ => return None,
         })
     }
@@ -736,6 +752,10 @@ impl TokenKind {
             Grant => "GRANT",
             Revoke => "REVOKE",
             Rotate => "ROTATE",
+            Cache => "CACHE",
+            Init => "INIT",
+            Stats => "STATS",
+            Clear => "CLEAR",
             Plus => "+",
             Minus => "-",
             Star => "*",
@@ -1045,6 +1065,12 @@ mod tests {
         assert_eq!(TokenKind::Return.as_str(), "RETURN");
         assert_eq!(TokenKind::Match.as_str(), "MATCH");
 
+        // Cache
+        assert_eq!(TokenKind::Cache.as_str(), "CACHE");
+        assert_eq!(TokenKind::Init.as_str(), "INIT");
+        assert_eq!(TokenKind::Stats.as_str(), "STATS");
+        assert_eq!(TokenKind::Clear.as_str(), "CLEAR");
+
         // Operators
         assert_eq!(TokenKind::Minus.as_str(), "-");
         assert_eq!(TokenKind::Star.as_str(), "*");
@@ -1144,6 +1170,11 @@ mod tests {
             ("FIND", TokenKind::Find),
             ("MATCH", TokenKind::Match),
             ("RETURN", TokenKind::Return),
+            // Cache
+            ("CACHE", TokenKind::Cache),
+            ("INIT", TokenKind::Init),
+            ("STATS", TokenKind::Stats),
+            ("CLEAR", TokenKind::Clear),
         ];
 
         for (s, expected) in keywords {

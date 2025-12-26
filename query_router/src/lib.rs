@@ -28,10 +28,10 @@
 
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
-    self as parser, BinaryOp, DeleteStmt, Direction as ParsedDirection, EdgeOp, EdgeStmt, EmbedOp,
-    EmbedStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt, Literal,
-    NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery, SimilarStmt,
-    Statement, StatementKind, TableRefKind, UpdateStmt, VaultOp, VaultStmt,
+    self as parser, BinaryOp, CacheOp, CacheStmt, DeleteStmt, Direction as ParsedDirection, EdgeOp,
+    EdgeStmt, EmbedOp, EmbedStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt,
+    Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery,
+    SimilarStmt, Statement, StatementKind, TableRefKind, UpdateStmt, VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -39,7 +39,7 @@ use relational_engine::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tensor_cache::{Cache, CacheConfig, CacheError};
+use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
@@ -289,6 +289,12 @@ impl QueryRouter {
     /// Initialize the LLM response cache with default configuration.
     pub fn init_cache(&mut self) {
         self.cache = Some(Arc::new(Cache::new()));
+    }
+
+    /// Initialize the LLM response cache with default configuration (returns Result).
+    pub fn init_cache_default(&mut self) -> Result<()> {
+        self.cache = Some(Arc::new(Cache::new()));
+        Ok(())
     }
 
     /// Initialize the LLM response cache with custom configuration.
@@ -559,8 +565,57 @@ impl QueryRouter {
             // Vault statements
             StatementKind::Vault(vault) => self.exec_vault(vault),
 
+            // Cache statements
+            StatementKind::Cache(cache) => self.exec_cache(cache),
+
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
+        }
+    }
+
+    // ========== Cache Execution ==========
+
+    fn exec_cache(&self, stmt: &CacheStmt) -> Result<QueryResult> {
+        let cache = self
+            .cache
+            .as_ref()
+            .ok_or_else(|| RouterError::CacheError("Cache not initialized".to_string()))?;
+
+        match &stmt.operation {
+            CacheOp::Init => {
+                // Cache is already initialized if we got here
+                Ok(QueryResult::Value("Cache initialized".to_string()))
+            },
+            CacheOp::Stats => {
+                let stats = cache.stats();
+                let (tokens_in, tokens_out) = stats.tokens_saved();
+                let output = format!(
+                    "Cache Statistics:\n\
+                     Exact: {} hits, {} misses\n\
+                     Semantic: {} hits, {} misses\n\
+                     Embedding: {} hits, {} misses\n\
+                     Tokens saved: {} in, {} out\n\
+                     Evictions: {}",
+                    stats.hits(CacheLayer::Exact),
+                    stats.misses(CacheLayer::Exact),
+                    stats.hits(CacheLayer::Semantic),
+                    stats.misses(CacheLayer::Semantic),
+                    stats.hits(CacheLayer::Embedding),
+                    stats.misses(CacheLayer::Embedding),
+                    tokens_in,
+                    tokens_out,
+                    stats.evictions(),
+                );
+                Ok(QueryResult::Value(output))
+            },
+            CacheOp::Clear => {
+                // Note: Cache clear requires exclusive access which is not available through Arc
+                // This would need to be called at the application level with mutable access
+                Err(RouterError::CacheError(
+                    "CACHE CLEAR requires exclusive access - use application-level reset"
+                        .to_string(),
+                ))
+            },
         }
     }
 
@@ -4632,5 +4687,54 @@ mod tests {
         // Verify both are accessible via unified entity
         assert!(router.vector().entity_has_embedding("entity:1"));
         assert!(router.graph().entity_has_edges("entity:1"));
+    }
+
+    #[test]
+    fn test_cache_init() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        assert!(router.cache().is_some());
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        let result = router.execute_parsed("CACHE STATS");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert!(output.contains("Cache Statistics"));
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_cache_init_command() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        let result = router.execute_parsed("CACHE INIT");
+        assert!(result.is_ok());
+        if let QueryResult::Value(output) = result.unwrap() {
+            assert!(output.contains("Cache initialized"));
+        } else {
+            panic!("Expected Value result");
+        }
+    }
+
+    #[test]
+    fn test_cache_clear_returns_error() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+        let result = router.execute_parsed("CACHE CLEAR");
+        // CACHE CLEAR returns an error because it requires exclusive access
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cache_without_init() {
+        let router = QueryRouter::new();
+        let result = router.execute_parsed("CACHE STATS");
+        assert!(result.is_err());
     }
 }
