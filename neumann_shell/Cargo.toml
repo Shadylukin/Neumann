@@ -11,6 +11,7 @@ relational_engine = { path = "../relational_engine" }
 tensor_store = { path = "../tensor_store" }
 tensor_compress = { path = "../tensor_compress" }
 rustyline = "15"
+base64 = "0.22"
 
 [[bin]]
 name = "neumann"

@@ -190,6 +190,12 @@ pub enum TokenKind {
     Return,
     Match,
 
+    // === Vault Keywords ===
+    Vault,
+    Grant,
+    Revoke,
+    Rotate,
+
     // === Operators ===
     /// `+`
     Plus,
@@ -408,6 +414,10 @@ impl TokenKind {
                 | With
                 | Return
                 | Match
+                | Vault
+                | Grant
+                | Revoke
+                | Rotate
         )
     }
 
@@ -579,6 +589,12 @@ impl TokenKind {
             "RETURN" => TokenKind::Return,
             "MATCH" => TokenKind::Match,
 
+            // Vault keywords
+            "VAULT" => TokenKind::Vault,
+            "GRANT" => TokenKind::Grant,
+            "REVOKE" => TokenKind::Revoke,
+            "ROTATE" => TokenKind::Rotate,
+
             _ => return None,
         })
     }
@@ -716,6 +732,10 @@ impl TokenKind {
             With => "WITH",
             Return => "RETURN",
             Match => "MATCH",
+            Vault => "VAULT",
+            Grant => "GRANT",
+            Revoke => "REVOKE",
+            Rotate => "ROTATE",
             Plus => "+",
             Minus => "-",
             Star => "*",

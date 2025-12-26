@@ -8,6 +8,7 @@ tensor_store = { path = "../tensor_store" }
 relational_engine = { path = "../relational_engine" }
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
+tensor_vault = { path = "../tensor_vault" }
 neumann_parser = { path = "../neumann_parser" }
 serde = { version = "1", features = ["derive"] }
 

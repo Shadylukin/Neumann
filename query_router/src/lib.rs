@@ -31,7 +31,7 @@ use neumann_parser::{
     self as parser, BinaryOp, DeleteStmt, Direction as ParsedDirection, EdgeOp, EdgeStmt, EmbedOp,
     EmbedStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt, Literal,
     NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery, SimilarStmt,
-    Statement, StatementKind, TableRefKind, UpdateStmt,
+    Statement, StatementKind, TableRefKind, UpdateStmt, VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tensor_store::TensorStore;
+use tensor_vault::{Vault, VaultConfig, VaultError};
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
 
 /// Error types for query routing.
@@ -55,6 +56,8 @@ pub enum RouterError {
     GraphError(String),
     /// Error from vector engine.
     VectorError(String),
+    /// Error from vault.
+    VaultError(String),
     /// Invalid argument provided.
     InvalidArgument(String),
     /// Missing required argument.
@@ -71,6 +74,7 @@ impl std::fmt::Display for RouterError {
             RouterError::RelationalError(msg) => write!(f, "Relational error: {}", msg),
             RouterError::GraphError(msg) => write!(f, "Graph error: {}", msg),
             RouterError::VectorError(msg) => write!(f, "Vector error: {}", msg),
+            RouterError::VaultError(msg) => write!(f, "Vault error: {}", msg),
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
@@ -95,6 +99,12 @@ impl From<GraphError> for RouterError {
 impl From<VectorError> for RouterError {
     fn from(e: VectorError) -> Self {
         RouterError::VectorError(e.to_string())
+    }
+}
+
+impl From<VaultError> for RouterError {
+    fn from(e: VaultError) -> Self {
+        RouterError::VaultError(e.to_string())
     }
 }
 
@@ -172,6 +182,10 @@ pub struct QueryRouter {
     relational: Arc<RelationalEngine>,
     graph: Arc<GraphEngine>,
     vector: Arc<VectorEngine>,
+    /// Optional vault for secure secret storage (requires initialization)
+    vault: Option<Arc<Vault>>,
+    /// Current identity for vault access control
+    current_identity: String,
     /// Optional HNSW index for faster vector search
     hnsw_index: Option<(HNSWIndex, Vec<String>)>,
 }
@@ -183,6 +197,8 @@ impl QueryRouter {
             relational: Arc::new(RelationalEngine::new()),
             graph: Arc::new(GraphEngine::new()),
             vector: Arc::new(VectorEngine::new()),
+            vault: None,
+            current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
     }
@@ -197,6 +213,8 @@ impl QueryRouter {
             relational,
             graph,
             vector,
+            vault: None,
+            current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
     }
@@ -210,6 +228,8 @@ impl QueryRouter {
             relational: Arc::new(RelationalEngine::with_store(store.clone())),
             graph: Arc::new(GraphEngine::with_store(store.clone())),
             vector: Arc::new(VectorEngine::with_store(store)),
+            vault: None,
+            current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
     }
@@ -227,6 +247,33 @@ impl QueryRouter {
     /// Get reference to vector engine.
     pub fn vector(&self) -> &VectorEngine {
         &self.vector
+    }
+
+    /// Get reference to vault (if initialized).
+    pub fn vault(&self) -> Option<&Vault> {
+        self.vault.as_deref()
+    }
+
+    /// Initialize the vault with a master key.
+    pub fn init_vault(&mut self, master_key: &[u8]) -> Result<()> {
+        let vault = Vault::new(
+            master_key,
+            Arc::clone(&self.graph),
+            self.vector.store().clone(),
+            VaultConfig::default(),
+        )?;
+        self.vault = Some(Arc::new(vault));
+        Ok(())
+    }
+
+    /// Set the current identity for vault access control.
+    pub fn set_identity(&mut self, identity: &str) {
+        self.current_identity = identity.to_string();
+    }
+
+    /// Get the current identity.
+    pub fn current_identity(&self) -> &str {
+        &self.current_identity
     }
 
     /// Build HNSW index for faster vector similarity search.
@@ -479,8 +526,78 @@ impl QueryRouter {
             // Unified queries
             StatementKind::Find(find) => self.exec_find(find),
 
+            // Vault statements
+            StatementKind::Vault(vault) => self.exec_vault(vault),
+
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
+        }
+    }
+
+    // ========== Vault Execution ==========
+
+    fn exec_vault(&self, stmt: &VaultStmt) -> Result<QueryResult> {
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or_else(|| RouterError::VaultError("Vault not initialized".to_string()))?;
+
+        let identity = &self.current_identity;
+
+        match &stmt.operation {
+            VaultOp::Set { key, value } => {
+                let key_str = self.eval_string_expr(key)?;
+                let value_str = self.eval_string_expr(value)?;
+                vault.set(identity, &key_str, &value_str)?;
+                Ok(QueryResult::Empty)
+            },
+            VaultOp::Get { key } => {
+                let key_str = self.eval_string_expr(key)?;
+                let value = vault.get(identity, &key_str)?;
+                Ok(QueryResult::Value(value))
+            },
+            VaultOp::Delete { key } => {
+                let key_str = self.eval_string_expr(key)?;
+                vault.delete(identity, &key_str)?;
+                Ok(QueryResult::Empty)
+            },
+            VaultOp::List { pattern } => {
+                let pat = pattern
+                    .as_ref()
+                    .map(|p| self.eval_string_expr(p))
+                    .transpose()?
+                    .unwrap_or_else(|| "*".to_string());
+                let keys = vault.list(identity, &pat)?;
+                Ok(QueryResult::Value(keys.join("\n")))
+            },
+            VaultOp::Rotate { key, new_value } => {
+                let key_str = self.eval_string_expr(key)?;
+                let new_value_str = self.eval_string_expr(new_value)?;
+                vault.rotate(identity, &key_str, &new_value_str)?;
+                Ok(QueryResult::Empty)
+            },
+            VaultOp::Grant { entity, key } => {
+                let entity_str = self.eval_string_expr(entity)?;
+                let key_str = self.eval_string_expr(key)?;
+                vault.grant(identity, &entity_str, &key_str)?;
+                Ok(QueryResult::Empty)
+            },
+            VaultOp::Revoke { entity, key } => {
+                let entity_str = self.eval_string_expr(entity)?;
+                let key_str = self.eval_string_expr(key)?;
+                vault.revoke(identity, &entity_str, &key_str)?;
+                Ok(QueryResult::Empty)
+            },
+        }
+    }
+
+    fn eval_string_expr(&self, expr: &Expr) -> Result<String> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::String(s)) => Ok(s.clone()),
+            ExprKind::Ident(ident) => Ok(ident.name.clone()),
+            _ => Err(RouterError::InvalidArgument(
+                "Expected string literal or identifier".to_string(),
+            )),
         }
     }
 

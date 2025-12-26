@@ -1,0 +1,32 @@
+[package]
+name = "tensor_vault"
+version = "0.1.0"
+edition = "2021"
+description = "Secure secret storage with graph-based access control"
+
+[dependencies]
+tensor_store = { path = "../tensor_store" }
+graph_engine = { path = "../graph_engine" }
+serde = { version = "1", features = ["derive"] }
+
+# Cryptography
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "tensor_vault_bench"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

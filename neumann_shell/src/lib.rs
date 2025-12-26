@@ -136,6 +136,13 @@ impl Shell {
             "NODE" => !upper.contains("NODE GET"),
             "EDGE" => !upper.contains("EDGE GET"),
             "EMBED" => upper.contains("EMBED STORE") || upper.contains("EMBED DELETE"),
+            "VAULT" => {
+                upper.contains("VAULT SET")
+                    || upper.contains("VAULT DELETE")
+                    || upper.contains("VAULT ROTATE")
+                    || upper.contains("VAULT GRANT")
+                    || upper.contains("VAULT REVOKE")
+            },
             _ => false,
         }
     }
@@ -196,6 +203,16 @@ impl Shell {
         // Handle LOAD command
         if lower.starts_with("load ") {
             return self.handle_load(trimmed);
+        }
+
+        // Handle VAULT INIT command
+        if lower == "vault init" {
+            return self.handle_vault_init();
+        }
+
+        // Handle VAULT IDENTITY command
+        if lower.starts_with("vault identity") {
+            return self.handle_vault_identity(trimmed);
         }
 
         // Execute as query
@@ -377,6 +394,59 @@ impl Shell {
         )
     }
 
+    /// Initialize vault from environment variable.
+    fn handle_vault_init(&mut self) -> CommandResult {
+        match std::env::var("NEUMANN_VAULT_KEY") {
+            Ok(key) => {
+                let decoded = match base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &key,
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return CommandResult::Error(format!(
+                            "Invalid base64 in NEUMANN_VAULT_KEY: {e}"
+                        ))
+                    },
+                };
+
+                match self.router.init_vault(&decoded) {
+                    Ok(()) => CommandResult::Output("Vault initialized".to_string()),
+                    Err(e) => CommandResult::Error(format!("Failed to initialize vault: {e}")),
+                }
+            },
+            Err(_) => CommandResult::Error(
+                "Set NEUMANN_VAULT_KEY environment variable (base64 encoded 32-byte key)"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Set current identity for vault access control.
+    fn handle_vault_identity(&mut self, input: &str) -> CommandResult {
+        let rest = input
+            .to_lowercase()
+            .strip_prefix("vault identity")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        // Extract identity from quoted string
+        let identity = if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() > 2 {
+            &rest[1..rest.len() - 1]
+        } else if !rest.is_empty() {
+            &rest
+        } else {
+            return CommandResult::Output(format!(
+                "Current identity: {}",
+                self.router.current_identity()
+            ));
+        };
+
+        self.router.set_identity(identity);
+        CommandResult::Output(format!("Identity set to: {identity}"))
+    }
+
     /// Lists all tables in the database.
     fn list_tables(&self) -> CommandResult {
         self.router.execute_parsed("SHOW TABLES").map_or_else(
@@ -425,6 +495,17 @@ Query Types:
     EMBED GET 'key'
     EMBED DELETE 'key'
     SIMILAR 'key' LIMIT n
+
+  Vault (Secrets):
+    VAULT INIT                     Initialize vault from NEUMANN_VAULT_KEY
+    VAULT IDENTITY 'node:name'     Set current identity for access control
+    VAULT SET 'key' 'value'        Store encrypted secret
+    VAULT GET 'key'                Retrieve secret (requires access)
+    VAULT DELETE 'key'             Delete secret
+    VAULT LIST 'pattern'           List accessible secrets
+    VAULT ROTATE 'key' 'new'       Rotate secret value
+    VAULT GRANT 'entity' ON 'key'  Grant access to entity
+    VAULT REVOKE 'entity' ON 'key' Revoke access from entity
 
 Examples:
   > CREATE TABLE users (id INT, name TEXT)
@@ -2019,5 +2100,73 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&wal_path);
+    }
+
+    // Vault tests
+
+    #[test]
+    fn test_help_contains_vault() {
+        let help = Shell::help_text();
+        assert!(help.contains("VAULT INIT"));
+        assert!(help.contains("VAULT IDENTITY"));
+        assert!(help.contains("VAULT SET"));
+        assert!(help.contains("VAULT GET"));
+        assert!(help.contains("VAULT DELETE"));
+        assert!(help.contains("VAULT LIST"));
+        assert!(help.contains("VAULT ROTATE"));
+        assert!(help.contains("VAULT GRANT"));
+        assert!(help.contains("VAULT REVOKE"));
+    }
+
+    #[test]
+    fn test_vault_init_without_env() {
+        let mut shell = Shell::new();
+        // Ensure NEUMANN_VAULT_KEY is not set
+        std::env::remove_var("NEUMANN_VAULT_KEY");
+
+        let result = shell.execute("VAULT INIT");
+        if let CommandResult::Error(msg) = result {
+            assert!(msg.contains("NEUMANN_VAULT_KEY"));
+        } else {
+            panic!("Expected Error, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_vault_identity_show_current() {
+        let mut shell = Shell::new();
+        let result = shell.execute("VAULT IDENTITY");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Current identity:"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_vault_identity_set() {
+        let mut shell = Shell::new();
+        let result = shell.execute("VAULT IDENTITY 'node:alice'");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Identity set to:"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_is_write_command_vault() {
+        // Write commands for vault
+        assert!(Shell::is_write_command("VAULT SET 'key' 'value'"));
+        assert!(Shell::is_write_command("VAULT DELETE 'key'"));
+        assert!(Shell::is_write_command("VAULT ROTATE 'key' 'new'"));
+        assert!(Shell::is_write_command("VAULT GRANT 'entity' ON 'key'"));
+        assert!(Shell::is_write_command("VAULT REVOKE 'entity' ON 'key'"));
+
+        // Read-only commands for vault
+        assert!(!Shell::is_write_command("VAULT GET 'key'"));
+        assert!(!Shell::is_write_command("VAULT LIST '*'"));
+        assert!(!Shell::is_write_command("VAULT INIT"));
+        assert!(!Shell::is_write_command("VAULT IDENTITY 'node:alice'"));
     }
 }

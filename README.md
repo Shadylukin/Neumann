@@ -137,6 +137,8 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Query Router | Complete | Cross-engine queries on unified entities |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
+| Tensor Compress | Complete | Int8/binary quantization, delta encoding, RLE |
+| Tensor Vault | Complete | AES-256-GCM encrypted secrets with graph-based access |
 | Persistence | Basic | Snapshot-based save/load with bincode serialization |
 
 ## What Neumann Is Not (For Now)
@@ -161,6 +163,8 @@ Neumann finishes the thought.
 - [Query Router API](docs/query-router.md)
 - [Neumann Parser](docs/neumann-parser.md)
 - [Shell](docs/neumann-shell.md)
+- [Tensor Compress](docs/tensor-compress.md)
+- [Tensor Vault](docs/tensor-vault.md)
 - [Benchmarks](docs/benchmarks.md)
 
 ## License

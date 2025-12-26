@@ -608,6 +608,9 @@ impl<'a> Parser<'a> {
             // Unified Statements
             TokenKind::Find => self.parse_find()?,
 
+            // Vault Statements
+            TokenKind::Vault => self.parse_vault()?,
+
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnknownCommand(format!("{}", self.current.kind)),
@@ -1639,6 +1642,74 @@ impl<'a> Parser<'a> {
             return_items,
             limit,
         }))
+    }
+
+    // =========================================================================
+    // Vault Statement Parsers
+    // =========================================================================
+
+    fn parse_vault(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Vault)?;
+
+        let operation = match &self.current.kind {
+            TokenKind::Set => {
+                self.advance();
+                let key = self.parse_expr()?;
+                let value = self.parse_expr()?;
+                VaultOp::Set { key, value }
+            },
+            TokenKind::Get => {
+                self.advance();
+                let key = self.parse_expr()?;
+                VaultOp::Get { key }
+            },
+            TokenKind::Delete => {
+                self.advance();
+                let key = self.parse_expr()?;
+                VaultOp::Delete { key }
+            },
+            TokenKind::List => {
+                self.advance();
+                let pattern = if !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                VaultOp::List { pattern }
+            },
+            TokenKind::Rotate => {
+                self.advance();
+                let key = self.parse_expr()?;
+                let new_value = self.parse_expr()?;
+                VaultOp::Rotate { key, new_value }
+            },
+            TokenKind::Grant => {
+                self.advance();
+                let entity = self.parse_expr()?;
+                self.expect(&TokenKind::On)?;
+                let key = self.parse_expr()?;
+                VaultOp::Grant { entity, key }
+            },
+            TokenKind::Revoke => {
+                self.advance();
+                let entity = self.parse_expr()?;
+                self.expect(&TokenKind::On)?;
+                let key = self.parse_expr()?;
+                VaultOp::Revoke { entity, key }
+            },
+            _ => {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        found: self.current.kind.clone(),
+                        expected: "VAULT operation (SET, GET, DELETE, LIST, ROTATE, GRANT, REVOKE)"
+                            .to_string(),
+                    },
+                    self.current.span,
+                ));
+            },
+        };
+
+        Ok(StatementKind::Vault(VaultStmt { operation }))
     }
 }
 

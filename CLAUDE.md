@@ -14,8 +14,10 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 | `relational_engine` | SQL-like tables with indexes | tensor_store |
 | `graph_engine` | Graph nodes and edges | tensor_store |
 | `vector_engine` | Embeddings and similarity search | tensor_store |
+| `tensor_compress` | Compression algorithms | tensor_store |
+| `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
 | `neumann_parser` | Query tokenization and parsing | - |
-| `query_router` | Unified query execution | all engines, parser |
+| `query_router` | Unified query execution | all engines, parser, vault |
 | `neumann_shell` | Interactive CLI interface | query_router |
 
 ## Code Style
@@ -86,6 +88,13 @@ graph_engine/           # Module 3: Graph operations
   src/lib.rs            # Nodes, edges, traversals
 vector_engine/          # Module 4: Vector operations
   src/lib.rs            # Embeddings, similarity search
+tensor_compress/        # Module 8: Compression algorithms
+  src/lib.rs            # Quantization, delta, RLE encoding
+tensor_vault/           # Module 9: Secret storage
+  src/lib.rs            # Vault API, access control
+  src/encryption.rs     # AES-256-GCM
+  src/key.rs            # Argon2id key derivation
+  src/access.rs         # Graph path verification
 neumann_parser/         # Module 5: Query parsing
   src/lib.rs            # Tokenization, parsing, AST
 query_router/           # Module 6: Query execution
@@ -102,6 +111,8 @@ docs/
   query-router.md       # Module 5 API documentation
   neumann-parser.md     # Module 6 API documentation
   neumann-shell.md      # Module 7 API documentation
+  tensor-compress.md    # Module 8 API documentation
+  tensor-vault.md       # Module 9 API documentation
   benchmarks.md         # Performance benchmarks
 ```
 
@@ -131,6 +142,13 @@ docs/
 - `Shell`: Interactive REPL with query execution
 - `ShellConfig`: Configuration (history, prompt)
 - `CommandResult`: Output, Exit, Help, Empty, Error
+
+### Tensor Vault
+- `Vault`: Encrypted secret storage with graph-based access
+- `VaultConfig`: Argon2id parameters for key derivation
+- `VaultError`: Access denied, not found, crypto errors
+- `Cipher`: AES-256-GCM encryption wrapper
+- `MasterKey`: Derived key with zeroize on drop
 
 ## Concurrency Design
 

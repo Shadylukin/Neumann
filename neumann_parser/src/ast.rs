@@ -66,6 +66,10 @@ pub enum StatementKind {
     /// FIND unified query
     Find(FindStmt),
 
+    // === Vault Statements ===
+    /// VAULT command
+    Vault(VaultStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -492,6 +496,35 @@ pub enum FindPattern {
         edge: Option<Ident>,
         to: Option<Ident>,
     },
+}
+
+// =============================================================================
+// Vault Statements
+// =============================================================================
+
+/// VAULT command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VaultStmt {
+    pub operation: VaultOp,
+}
+
+/// VAULT operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VaultOp {
+    /// Set a secret: `VAULT SET 'key' 'value'`
+    Set { key: Expr, value: Expr },
+    /// Get a secret: `VAULT GET 'key'`
+    Get { key: Expr },
+    /// Delete a secret: `VAULT DELETE 'key'`
+    Delete { key: Expr },
+    /// List secrets: `VAULT LIST 'pattern'`
+    List { pattern: Option<Expr> },
+    /// Rotate a secret: `VAULT ROTATE 'key' 'new_value'`
+    Rotate { key: Expr, new_value: Expr },
+    /// Grant access: `VAULT GRANT 'entity' ON 'key'`
+    Grant { entity: Expr, key: Expr },
+    /// Revoke access: `VAULT REVOKE 'entity' ON 'key'`
+    Revoke { entity: Expr, key: Expr },
 }
 
 // =============================================================================
