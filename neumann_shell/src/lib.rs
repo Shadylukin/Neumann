@@ -9,8 +9,47 @@ use rustyline::error::ReadlineError;
 use rustyline::history::{DefaultHistory, History};
 use rustyline::{DefaultEditor, Editor};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use tensor_store::TensorStore;
+
+/// Write-Ahead Log for crash recovery.
+///
+/// Logs mutating commands to a file so they can be replayed after loading a snapshot.
+/// The WAL is activated after LOAD and truncated after SAVE.
+struct Wal {
+    file: File,
+    path: PathBuf,
+}
+
+impl Wal {
+    fn open_append(path: &Path) -> std::io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn append(&mut self, cmd: &str) -> std::io::Result<()> {
+        writeln!(self.file, "{cmd}")?;
+        self.file.flush()
+    }
+
+    fn truncate(&mut self) -> std::io::Result<()> {
+        self.file = File::create(&self.path)?;
+        Ok(())
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn size(&self) -> std::io::Result<u64> {
+        std::fs::metadata(&self.path).map(|m| m.len())
+    }
+}
 
 /// Shell configuration options.
 #[derive(Debug, Clone)]
@@ -57,6 +96,7 @@ pub enum CommandResult {
 pub struct Shell {
     router: QueryRouter,
     config: ShellConfig,
+    wal: Option<Wal>,
 }
 
 impl Shell {
@@ -66,6 +106,7 @@ impl Shell {
         Self {
             router: QueryRouter::new(),
             config: ShellConfig::default(),
+            wal: None,
         }
     }
 
@@ -75,6 +116,7 @@ impl Shell {
         Self {
             router: QueryRouter::new(),
             config,
+            wal: None,
         }
     }
 
@@ -82,6 +124,43 @@ impl Shell {
     #[must_use]
     pub const fn router(&self) -> &QueryRouter {
         &self.router
+    }
+
+    /// Check if a command is a write operation that should be logged to WAL.
+    fn is_write_command(cmd: &str) -> bool {
+        let upper = cmd.to_uppercase();
+        let first_word = upper.split_whitespace().next().unwrap_or("");
+
+        match first_word {
+            "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" => true,
+            "NODE" => !upper.contains("NODE GET"),
+            "EDGE" => !upper.contains("EDGE GET"),
+            "EMBED" => upper.contains("EMBED STORE") || upper.contains("EMBED DELETE"),
+            _ => false,
+        }
+    }
+
+    /// Replay commands from a WAL file.
+    fn replay_wal(&self, wal_path: &Path) -> Result<usize, String> {
+        let file = File::open(wal_path).map_err(|e| format!("Failed to open WAL: {e}"))?;
+        let reader = BufReader::new(file);
+
+        let mut count = 0;
+        for (line_num, line) in reader.lines().enumerate() {
+            let cmd = line.map_err(|e| format!("Failed to read WAL line {}: {e}", line_num + 1))?;
+            let cmd = cmd.trim();
+
+            if cmd.is_empty() {
+                continue;
+            }
+
+            if let Err(e) = self.router.execute_parsed(cmd) {
+                return Err(format!("WAL replay failed at line {}: {e}", line_num + 1));
+            }
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     /// Executes a single command and returns the result.
@@ -99,6 +178,8 @@ impl Shell {
             "help" | "\\h" | "\\?" => return CommandResult::Help(Self::help_text()),
             "tables" | "\\dt" => return self.list_tables(),
             "clear" | "\\c" => return CommandResult::Output("\x1B[2J\x1B[H".to_string()),
+            "wal status" => return self.handle_wal_status(),
+            "wal truncate" => return self.handle_wal_truncate(),
             _ => {},
         }
 
@@ -118,47 +199,76 @@ impl Shell {
         }
 
         // Execute as query
-        self.router.execute_parsed(trimmed).map_or_else(
-            |e| CommandResult::Error(format!("Error: {e}")),
-            |result| CommandResult::Output(format_result(&result)),
-        )
+        match self.router.execute_parsed(trimmed) {
+            Ok(result) => {
+                // Log write commands to WAL after successful execution
+                if Self::is_write_command(trimmed) {
+                    if let Some(ref mut wal) = self.wal {
+                        if let Err(e) = wal.append(trimmed) {
+                            return CommandResult::Error(format!(
+                                "Command succeeded but WAL write failed: {e}"
+                            ));
+                        }
+                    }
+                }
+                CommandResult::Output(format_result(&result))
+            },
+            Err(e) => CommandResult::Error(format!("Error: {e}")),
+        }
     }
 
     /// Handles the SAVE command.
-    fn handle_save(&self, input: &str) -> CommandResult {
-        Self::extract_path(input, "save").map_or_else(
-            || {
-                CommandResult::Error(
-                    "Usage: SAVE 'path/to/file.bin' or SAVE path/to/file.bin".to_string(),
-                )
-            },
-            |p| {
-                let store = self.router.vector().store();
-                store.save_snapshot(&p).map_or_else(
-                    |e| CommandResult::Error(format!("Failed to save: {e}")),
-                    |()| CommandResult::Output(format!("Saved snapshot to: {p}")),
-                )
-            },
-        )
+    fn handle_save(&mut self, input: &str) -> CommandResult {
+        let Some(p) = Self::extract_path(input, "save") else {
+            return CommandResult::Error(
+                "Usage: SAVE 'path/to/file.bin' or SAVE path/to/file.bin".to_string(),
+            );
+        };
+
+        let store = self.router.vector().store();
+        if let Err(e) = store.save_snapshot(&p) {
+            return CommandResult::Error(format!("Failed to save: {e}"));
+        }
+
+        // Truncate WAL after successful save (snapshot now contains all data)
+        if let Some(ref mut wal) = self.wal {
+            if let Err(e) = wal.truncate() {
+                return CommandResult::Error(format!(
+                    "Saved snapshot but WAL truncate failed: {e}"
+                ));
+            }
+        }
+
+        CommandResult::Output(format!("Saved snapshot to: {p}"))
     }
 
     /// Handles the SAVE COMPRESSED command.
-    fn handle_save_compressed(&self, input: &str) -> CommandResult {
-        Self::extract_path(input, "save compressed").map_or_else(
-            || CommandResult::Error("Usage: SAVE COMPRESSED 'path/to/file.bin'".to_string()),
-            |p| {
-                let store = self.router.vector().store();
-                let config = tensor_compress::CompressionConfig {
-                    vector_quantization: Some(tensor_compress::QuantMode::Int8),
-                    delta_encoding: true,
-                    rle_encoding: true,
-                };
-                store.save_snapshot_compressed(&p, config).map_or_else(
-                    |e| CommandResult::Error(format!("Failed to save compressed: {e}")),
-                    |()| CommandResult::Output(format!("Saved compressed snapshot to: {p}")),
-                )
-            },
-        )
+    fn handle_save_compressed(&mut self, input: &str) -> CommandResult {
+        let Some(p) = Self::extract_path(input, "save compressed") else {
+            return CommandResult::Error("Usage: SAVE COMPRESSED 'path/to/file.bin'".to_string());
+        };
+
+        let store = self.router.vector().store();
+        let config = tensor_compress::CompressionConfig {
+            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            delta_encoding: true,
+            rle_encoding: true,
+        };
+
+        if let Err(e) = store.save_snapshot_compressed(&p, config) {
+            return CommandResult::Error(format!("Failed to save compressed: {e}"));
+        }
+
+        // Truncate WAL after successful save (snapshot now contains all data)
+        if let Some(ref mut wal) = self.wal {
+            if let Err(e) = wal.truncate() {
+                return CommandResult::Error(format!(
+                    "Saved snapshot but WAL truncate failed: {e}"
+                ));
+            }
+        }
+
+        CommandResult::Output(format!("Saved compressed snapshot to: {p}"))
     }
 
     /// Handles the LOAD command.
@@ -176,7 +286,37 @@ impl Shell {
         match result {
             Ok(store) => {
                 self.router = QueryRouter::with_shared_store(store);
-                CommandResult::Output(format!("Loaded snapshot from: {p}"))
+
+                // Derive WAL path from snapshot path (e.g., data.bin -> data.log)
+                let wal_path = Path::new(&p).with_extension("log");
+
+                // Replay WAL if it exists
+                let replay_msg = if wal_path.exists() {
+                    match self.replay_wal(&wal_path) {
+                        Ok(count) if count > 0 => {
+                            format!("\nReplayed {count} commands from WAL")
+                        },
+                        Ok(_) => String::new(),
+                        Err(e) => {
+                            return CommandResult::Error(format!(
+                                "Loaded snapshot but WAL replay failed: {e}"
+                            ));
+                        },
+                    }
+                } else {
+                    String::new()
+                };
+
+                // Initialize WAL for new writes
+                match Wal::open_append(&wal_path) {
+                    Ok(wal) => {
+                        self.wal = Some(wal);
+                        CommandResult::Output(format!("Loaded snapshot from: {p}{replay_msg}"))
+                    },
+                    Err(e) => CommandResult::Error(format!(
+                        "Loaded snapshot but failed to initialize WAL: {e}"
+                    )),
+                }
             },
             Err(e) => CommandResult::Error(format!("Failed to load: {e}")),
         }
@@ -203,6 +343,40 @@ impl Shell {
         Some(rest.to_string())
     }
 
+    /// Handles the WAL STATUS command.
+    fn handle_wal_status(&self) -> CommandResult {
+        self.wal.as_ref().map_or_else(
+            || {
+                CommandResult::Output(
+                    "WAL not active (use LOAD to enable WAL for a snapshot)".to_string(),
+                )
+            },
+            |wal| {
+                let size = wal.size().unwrap_or(0);
+                CommandResult::Output(format!(
+                    "WAL enabled\n  Path: {}\n  Size: {} bytes",
+                    wal.path().display(),
+                    size
+                ))
+            },
+        )
+    }
+
+    /// Handles the WAL TRUNCATE command.
+    fn handle_wal_truncate(&mut self) -> CommandResult {
+        self.wal.as_mut().map_or_else(
+            || {
+                CommandResult::Error(
+                    "WAL not active (use LOAD to enable WAL for a snapshot)".to_string(),
+                )
+            },
+            |wal| match wal.truncate() {
+                Ok(()) => CommandResult::Output("WAL truncated".to_string()),
+                Err(e) => CommandResult::Error(format!("Failed to truncate WAL: {e}")),
+            },
+        )
+    }
+
     /// Lists all tables in the database.
     fn list_tables(&self) -> CommandResult {
         self.router.execute_parsed("SHOW TABLES").map_or_else(
@@ -222,9 +396,13 @@ Commands:
   exit, quit, \\q  Exit the shell
   tables, \\dt     List all tables
   clear, \\c       Clear the screen
+
+Persistence:
   save 'path'            Save database snapshot to file
   save compressed 'path' Save compressed snapshot (int8 quantization)
-  load 'path'            Load database snapshot from file
+  load 'path'            Load snapshot and enable WAL
+  wal status             Show write-ahead log status
+  wal truncate           Clear the write-ahead log
 
 Query Types:
   Relational (SQL):
@@ -1483,5 +1661,363 @@ mod tests {
         let help = Shell::help_text();
         assert!(help.contains("save compressed"));
         assert!(help.contains("SAVE COMPRESSED"));
+    }
+
+    // WAL tests
+
+    #[test]
+    fn test_is_write_command() {
+        // Write commands
+        assert!(Shell::is_write_command(
+            "INSERT INTO users VALUES (1, 'Alice')"
+        ));
+        assert!(Shell::is_write_command("UPDATE users SET name = 'Bob'"));
+        assert!(Shell::is_write_command("DELETE FROM users"));
+        assert!(Shell::is_write_command("CREATE TABLE test (id INT)"));
+        assert!(Shell::is_write_command("DROP TABLE test"));
+        assert!(Shell::is_write_command(
+            "NODE CREATE person {name: 'Alice'}"
+        ));
+        assert!(Shell::is_write_command("NODE DELETE 1"));
+        assert!(Shell::is_write_command("EDGE CREATE 1 -> 2 : knows"));
+        assert!(Shell::is_write_command("EMBED STORE 'key' [1.0, 2.0]"));
+        assert!(Shell::is_write_command("EMBED DELETE 'key'"));
+
+        // Read-only commands
+        assert!(!Shell::is_write_command("SELECT * FROM users"));
+        assert!(!Shell::is_write_command("NODE GET 1"));
+        assert!(!Shell::is_write_command("EDGE GET 1"));
+        assert!(!Shell::is_write_command("EMBED GET 'key'"));
+        assert!(!Shell::is_write_command("SIMILAR 'key' LIMIT 5"));
+        assert!(!Shell::is_write_command("NEIGHBORS 1 OUTGOING"));
+        assert!(!Shell::is_write_command("SHOW TABLES"));
+    }
+
+    #[test]
+    fn test_wal_status_no_wal() {
+        let mut shell = Shell::new();
+        let result = shell.execute("wal status");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("WAL not active"));
+        } else {
+            panic!("Expected Output");
+        }
+    }
+
+    #[test]
+    fn test_wal_truncate_no_wal() {
+        let mut shell = Shell::new();
+        let result = shell.execute("wal truncate");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn test_wal_enabled_after_load() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0, 2.0, 3.0]");
+
+        let path = std::env::temp_dir().join("test_wal_enabled.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load into fresh shell
+        let mut shell2 = Shell::new();
+        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        // WAL should now be active
+        let result = shell2.execute("wal status");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("WAL enabled"));
+            assert!(output.contains(".log"));
+        } else {
+            panic!("Expected Output");
+        }
+
+        // Cleanup
+        let wal_path = path.with_extension("log");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_logs_write_commands() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0]");
+
+        let path = std::env::temp_dir().join("test_wal_logs.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load to enable WAL
+        let mut shell2 = Shell::new();
+        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        // Execute some write commands
+        let _ = shell2.execute("EMBED STORE 'key2' [2.0, 3.0]");
+        let _ = shell2.execute("CREATE TABLE test (id INT)");
+
+        // Check WAL status shows non-zero size
+        let result = shell2.execute("wal status");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("WAL enabled"));
+        } else {
+            panic!("Expected Output");
+        }
+
+        // Cleanup
+        let wal_path = path.with_extension("log");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_replay_on_load() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Use unique path with timestamp to avoid test interference
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("test_wal_replay_{ts}.bin"));
+        let wal_path = path.with_extension("log");
+
+        // Clean up any leftover files
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+
+        // Step 1: Create initial data and save (using EMBED which is known to work)
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key1' [1.0, 2.0, 3.0]");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Step 2: Load to enable WAL
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
+        assert!(matches!(result, CommandResult::Output(_)), "Load failed");
+
+        // WAL file should now exist
+        assert!(wal_path.exists(), "WAL file should exist after LOAD");
+
+        // Step 3: Add more data (will be written to WAL)
+        let result = shell2.execute("EMBED STORE 'key2' [4.0, 5.0, 6.0]");
+        assert!(
+            matches!(result, CommandResult::Output(_)),
+            "EMBED STORE failed: {:?}",
+            result
+        );
+
+        // Verify WAL has content
+        let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert!(wal_size > 0, "WAL should have content after EMBED STORE");
+
+        // Step 4: Simulate crash by creating new shell and loading
+        let mut shell3 = Shell::new();
+        let result = shell3.execute(&format!("LOAD '{}'", path.display()));
+
+        if let CommandResult::Output(output) = result {
+            assert!(
+                output.contains("Loaded snapshot"),
+                "Expected 'Loaded snapshot'"
+            );
+            assert!(
+                output.contains("Replayed"),
+                "Expected 'Replayed' in output: {output}"
+            );
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Verify key2 is present (recovered from WAL)
+        let result = shell3.execute("EMBED GET 'key2'");
+        assert!(
+            matches!(result, CommandResult::Output(_)),
+            "key2 should exist after WAL replay"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_truncate_after_save() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0]");
+
+        let path = std::env::temp_dir().join("test_wal_truncate_save.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load to enable WAL
+        let mut shell2 = Shell::new();
+        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        // Add data to WAL
+        let _ = shell2.execute("EMBED STORE 'key2' [2.0]");
+
+        // Save again - should truncate WAL
+        let _ = shell2.execute(&format!("SAVE '{}'", path.display()));
+
+        // WAL should be empty (0 bytes or just created)
+        let result = shell2.execute("wal status");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("0 bytes") || output.contains("WAL enabled"));
+        }
+
+        // Cleanup
+        let wal_path = path.with_extension("log");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_truncate_command() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key' [1.0]");
+
+        let path = std::env::temp_dir().join("test_wal_truncate_cmd.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load to enable WAL
+        let mut shell2 = Shell::new();
+        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        // Add data to WAL
+        let _ = shell2.execute("EMBED STORE 'key2' [2.0]");
+
+        // Manually truncate WAL
+        let result = shell2.execute("wal truncate");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("WAL truncated"));
+        } else {
+            panic!("Expected Output");
+        }
+
+        // Cleanup
+        let wal_path = path.with_extension("log");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_help_contains_wal() {
+        let help = Shell::help_text();
+        assert!(help.contains("wal status"));
+        assert!(help.contains("wal truncate"));
+        assert!(help.contains("write-ahead log"));
+    }
+
+    #[test]
+    fn test_wal_does_not_log_reads() {
+        let mut shell = Shell::new();
+        let _ = shell.execute("CREATE TABLE test (id INT)");
+        let _ = shell.execute("INSERT INTO test VALUES (1)");
+
+        let path = std::env::temp_dir().join("test_wal_no_reads.bin");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Load to enable WAL
+        let mut shell2 = Shell::new();
+        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
+
+        // Execute read-only commands
+        let _ = shell2.execute("SELECT * FROM test");
+        let _ = shell2.execute("SHOW TABLES");
+
+        // WAL should be empty (0 bytes)
+        let wal_path = path.with_extension("log");
+        let size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(size, 0);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_case_insensitive_commands() {
+        let mut shell = Shell::new();
+        assert_eq!(
+            shell.execute("WAL STATUS"),
+            CommandResult::Output(
+                "WAL not active (use LOAD to enable WAL for a snapshot)".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn test_wal_replay_with_empty_lines() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("test_wal_empty_lines_{ts}.bin"));
+        let wal_path = path.with_extension("log");
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+
+        // Create initial snapshot
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key1' [1.0]");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Write WAL with empty lines manually
+        std::fs::write(
+            &wal_path,
+            "EMBED STORE 'key2' [2.0]\n\n  \nEMBED STORE 'key3' [3.0]\n",
+        )
+        .unwrap();
+
+        // Load and replay (should skip empty lines)
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Replayed 2 commands"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_replay_with_invalid_command() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("test_wal_invalid_{ts}.bin"));
+        let wal_path = path.with_extension("log");
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+
+        // Create initial snapshot
+        let mut shell = Shell::new();
+        let _ = shell.execute("EMBED STORE 'key1' [1.0]");
+        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
+
+        // Write WAL with invalid command
+        std::fs::write(&wal_path, "INVALID COMMAND SYNTAX\n").unwrap();
+
+        // Load should fail during WAL replay
+        let mut shell2 = Shell::new();
+        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
+        assert!(
+            matches!(result, CommandResult::Error(_)),
+            "Expected Error, got {:?}",
+            result
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
     }
 }

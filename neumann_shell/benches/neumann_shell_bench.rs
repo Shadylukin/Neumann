@@ -19,7 +19,10 @@ fn bench_execute_commands(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         );
     });
-    println!("\n  empty_input peak RAM: {:.1} KB", PEAK_ALLOC.peak_usage_as_kb());
+    println!(
+        "\n  empty_input peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
 
     PEAK_ALLOC.reset_peak_usage();
     group.bench_function("help", |b| {
@@ -52,7 +55,10 @@ fn bench_execute_commands(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         );
     });
-    println!("  select_all peak RAM: {:.1} KB", PEAK_ALLOC.peak_usage_as_kb());
+    println!(
+        "  select_all peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
 
     PEAK_ALLOC.reset_peak_usage();
     group.bench_function("select_where", |b| {
@@ -72,7 +78,10 @@ fn bench_execute_commands(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         );
     });
-    println!("  select_where peak RAM: {:.1} KB", PEAK_ALLOC.peak_usage_as_kb());
+    println!(
+        "  select_where peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
 
     group.finish();
 }
@@ -104,7 +113,10 @@ fn bench_format_output(c: &mut Criterion) {
             );
         },
     );
-    println!("\n  format_1000_rows peak RAM: {:.1} KB", PEAK_ALLOC.peak_usage_as_kb());
+    println!(
+        "\n  format_1000_rows peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
 
     group.finish();
 }
@@ -126,11 +138,20 @@ fn bench_insert_scaling(c: &mut Criterion) {
                 criterion::BatchSize::SmallInput,
             );
         });
-        println!("\n  insert_{} peak RAM: {:.1} KB", size, PEAK_ALLOC.peak_usage_as_kb());
+        println!(
+            "\n  insert_{} peak RAM: {:.1} KB",
+            size,
+            PEAK_ALLOC.peak_usage_as_kb()
+        );
     }
 
     group.finish();
 }
 
-criterion_group!(benches, bench_execute_commands, bench_format_output, bench_insert_scaling);
+criterion_group!(
+    benches,
+    bench_execute_commands,
+    bench_format_output,
+    bench_insert_scaling
+);
 criterion_main!(benches);
