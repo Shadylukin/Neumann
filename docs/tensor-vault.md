@@ -9,6 +9,7 @@ Module 9 of Neumann. Secure secret storage with AES-256-GCM encryption and graph
 3. **Zero Trust**: No bypass mode; `node:root` is the only universal accessor
 4. **Memory Safety**: Keys zeroized on drop via `zeroize` crate
 5. **Permanent Audit Trail**: Access logged as graph edges
+6. **Defense in Depth**: Multiple obfuscation layers hide patterns
 
 ## Quick Start
 
@@ -175,20 +176,36 @@ let plaintext = cipher.decrypt(&ciphertext, &nonce)?;
 
 ## Storage Format
 
-Secrets stored as `TensorData`:
+Secrets use a two-tier storage model for security:
+
+### Metadata Tensor (pointer indirection)
+
+Storage key: `_vk:{HMAC(key)}` - key name is obfuscated via HMAC
 
 ```
-_vault:{key} -> {
-    _ciphertext: Bytes,
-    _nonce: Bytes,
-    _created_by: String,
-    _created_at: Int (timestamp),
-    _rotated_by: String (optional),
-    _rotated_at: Int (optional),
+_vk:{obfuscated} -> {
+    _blob: Pointer -> ciphertext blob storage key
+    _nonce: Bytes (12 bytes)
+    _key_enc: Bytes (encrypted original key name)
+    _key_nonce: Bytes (nonce for key encryption)
+    _creator_obf: Bytes (XOR-obfuscated creator)
+    _created_obf: Bytes (XOR-obfuscated timestamp)
+    _rotator_obf: Bytes (optional, obfuscated)
+    _rotated_obf: Bytes (optional, obfuscated)
 }
 ```
 
-Access control nodes:
+### Ciphertext Blob (indirection target)
+
+Storage key: `_vs:{HMAC(key, nonce)}` - random-looking storage ID
+
+```
+_vs:{storage_id} -> {
+    _data: Bytes (padded + encrypted secret)
+}
+```
+
+### Access Control Nodes
 
 ```
 vault_secret:{key} -> {
@@ -222,11 +239,41 @@ let vault = Vault::from_env(graph, store)?;
 
 ## Security Considerations
 
+### Core Security
+
 1. **Master Key**: Only held in RAM, never persisted
 2. **Nonce**: Random 12 bytes per encryption (never reused)
 3. **Zeroize**: Keys overwritten on drop
 4. **No Bypass**: Every operation checks graph path (except `node:root`)
 5. **Audit**: Access logged permanently in graph
+
+### Obfuscation Layers
+
+The vault implements multiple obfuscation layers to hide patterns:
+
+| Layer | Purpose | Implementation |
+|-------|---------|----------------|
+| **Key Obfuscation** | Hide secret names | HMAC-based hash of key name |
+| **Pointer Indirection** | Hide storage patterns | Ciphertext in separate blob |
+| **Length Padding** | Hide plaintext size | Pad to fixed sizes (256B/1K/4K/16K) |
+| **Metadata Encryption** | Hide creator/timestamps | XOR with derived keystream |
+
+### Padding Sizes
+
+| Plaintext Size | Padded Size |
+|----------------|-------------|
+| 0-240 bytes | 256 bytes |
+| 241-1000 bytes | 1 KB |
+| 1001-4000 bytes | 4 KB |
+| 4001+ bytes | 16 KB |
+
+### Tensor Structure Usage
+
+The vault leverages tensor store features for security:
+
+- **TensorValue::Pointer**: Indirection to ciphertext blobs
+- **TensorValue::Bytes**: Binary storage for ciphertext/nonces
+- **Separate tensors**: Metadata and ciphertext stored separately
 
 ## Performance
 
@@ -242,10 +289,11 @@ let vault = Vault::from_env(graph, store)?;
 
 | Module | Coverage |
 |--------|----------|
-| lib.rs | 97.31% |
+| lib.rs | 95.88% |
+| obfuscation.rs | 98.94% |
+| access.rs | 98.68% |
+| key.rs | 97.26% |
 | encryption.rs | 96.59% |
-| key.rs | 97.14% |
-| access.rs | 98.66% |
 
 ## Dependencies
 

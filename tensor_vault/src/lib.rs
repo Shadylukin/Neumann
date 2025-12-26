@@ -2,14 +2,35 @@
 //!
 //! Secrets are encrypted at rest using AES-256-GCM. Access is controlled
 //! by graph topology - a requester must have a path to the secret node.
+//!
+//! Security features:
+//! - AES-256-GCM authenticated encryption
+//! - Argon2id key derivation (GPU/ASIC resistant)
+//! - Key obfuscation via HMAC (hides secret names in storage)
+//! - Metadata encryption (hides creator, timestamps)
+//! - Length padding (hides plaintext size)
+//! - Pointer indirection (hides storage patterns)
+//! - Graph-based access control (topological authorization)
+
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::format_collect)]
 
 mod access;
 mod encryption;
 mod key;
+mod obfuscation;
 
 pub use access::AccessController;
 pub use encryption::{Cipher, NONCE_SIZE};
 pub use key::{MasterKey, KEY_SIZE};
+pub use obfuscation::{Obfuscator, PaddingSize};
 
 use graph_engine::GraphEngine;
 use serde::{Deserialize, Serialize};
@@ -81,13 +102,14 @@ impl Default for VaultConfig {
 /// Secure secret storage with graph-based access control.
 pub struct Vault {
     store: TensorStore,
-    graph: Arc<GraphEngine>,
+    pub graph: Arc<GraphEngine>,
     cipher: Cipher,
+    obfuscator: Obfuscator,
 }
 
 impl Vault {
-    /// Storage key prefix for vault secrets.
-    const PREFIX: &'static str = "_vault:";
+    /// Storage key prefix for vault secrets (obfuscated).
+    const PREFIX: &'static str = "_vk:";
     /// Node ID for the root entity with universal access.
     pub const ROOT: &'static str = "node:root";
     /// Edge type for access grants.
@@ -103,12 +125,14 @@ impl Vault {
         config: VaultConfig,
     ) -> Result<Self> {
         let derived = MasterKey::derive(master_key, &config)?;
+        let obfuscator = Obfuscator::new(&derived);
         let cipher = Cipher::new(derived);
 
         let vault = Self {
             store,
             graph,
             cipher,
+            obfuscator,
         };
 
         vault.ensure_root_exists()?;
@@ -146,8 +170,15 @@ impl Vault {
         Ok(())
     }
 
-    fn vault_key(secret_key: &str) -> String {
-        format!("{}{}", Self::PREFIX, secret_key)
+    fn vault_key(&self, secret_key: &str) -> String {
+        // Obfuscate the key using HMAC to hide the original key name
+        let obfuscated = self.obfuscator.obfuscate_key(secret_key);
+        format!("{}{}", Self::PREFIX, obfuscated)
+    }
+
+    fn blob_key(&self, secret_key: &str, nonce: &[u8]) -> String {
+        // Generate storage ID for the ciphertext blob (pointer indirection)
+        self.obfuscator.generate_storage_id(secret_key, nonce)
     }
 
     fn secret_node_key(secret_key: &str) -> String {
@@ -173,28 +204,54 @@ impl Vault {
             ));
         }
 
-        let (ciphertext, nonce) = self.cipher.encrypt(value.as_bytes())?;
+        // Pad plaintext to hide length, then encrypt
+        let padded = obfuscation::pad_plaintext(value.as_bytes());
+        let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
 
+        // Store ciphertext in separate blob for pointer indirection
+        let blob_storage_key = self.blob_key(key, &nonce);
+        let mut blob_tensor = TensorData::new();
+        blob_tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(ciphertext)));
+        self.store
+            .put(&blob_storage_key, blob_tensor)
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Encrypt the original key name for list() to work
+        let (encrypted_key, key_nonce) = self.cipher.encrypt(key.as_bytes())?;
+
+        // Obfuscate metadata
+        let creator_bytes = requester.as_bytes();
+        let obfuscated_creator = self.obfuscator.obfuscate_metadata(creator_bytes);
+        let timestamp = Self::current_timestamp();
+        let timestamp_bytes = timestamp.to_le_bytes();
+        let obfuscated_timestamp = self.obfuscator.obfuscate_metadata(&timestamp_bytes);
+
+        // Create metadata tensor with pointer to blob
         let mut tensor = TensorData::new();
-        tensor.set(
-            "_ciphertext",
-            TensorValue::Scalar(ScalarValue::Bytes(ciphertext)),
-        );
+        tensor.set("_blob", TensorValue::Pointer(blob_storage_key));
         tensor.set(
             "_nonce",
             TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
         );
         tensor.set(
-            "_created_by",
-            TensorValue::Scalar(ScalarValue::String(requester.to_string())),
+            "_key_enc",
+            TensorValue::Scalar(ScalarValue::Bytes(encrypted_key)),
         );
         tensor.set(
-            "_created_at",
-            TensorValue::Scalar(ScalarValue::Int(Self::current_timestamp())),
+            "_key_nonce",
+            TensorValue::Scalar(ScalarValue::Bytes(key_nonce.to_vec())),
+        );
+        tensor.set(
+            "_creator_obf",
+            TensorValue::Scalar(ScalarValue::Bytes(obfuscated_creator)),
+        );
+        tensor.set(
+            "_created_obf",
+            TensorValue::Scalar(ScalarValue::Bytes(obfuscated_timestamp)),
         );
 
         self.store
-            .put(Self::vault_key(key), tensor)
+            .put(self.vault_key(key), tensor)
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         // Create secret node for access control if it doesn't exist
@@ -227,12 +284,23 @@ impl Vault {
 
         let tensor = self
             .store
-            .get(&Self::vault_key(key))
+            .get(&self.vault_key(key))
             .map_err(|_| VaultError::NotFound(key.to_string()))?;
 
-        let ciphertext = match tensor.get("_ciphertext") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
+        // Follow pointer indirection to get ciphertext blob
+        let blob_key = match tensor.get("_blob") {
+            Some(TensorValue::Pointer(p)) => p.clone(),
             _ => return Err(VaultError::NotFound(key.to_string())),
+        };
+
+        let blob_tensor = self
+            .store
+            .get(&blob_key)
+            .map_err(|_| VaultError::CryptoError("Blob not found".to_string()))?;
+
+        let ciphertext = match blob_tensor.get("_data") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
+            _ => return Err(VaultError::CryptoError("Blob data missing".to_string())),
         };
 
         let nonce = match tensor.get("_nonce") {
@@ -240,7 +308,9 @@ impl Vault {
             _ => return Err(VaultError::CryptoError("Missing nonce".to_string())),
         };
 
-        let plaintext = self.cipher.decrypt(&ciphertext, &nonce)?;
+        // Decrypt and unpad
+        let padded = self.cipher.decrypt(&ciphertext, &nonce)?;
+        let plaintext = obfuscation::unpad_plaintext(&padded)?;
 
         // Log access (create audit edge)
         self.log_access(requester, key);
@@ -293,8 +363,18 @@ impl Vault {
     pub fn delete(&self, requester: &str, key: &str) -> Result<()> {
         self.check_access(requester, key)?;
 
+        let vault_storage_key = self.vault_key(key);
+
+        // Get the blob pointer before deleting metadata
+        if let Ok(tensor) = self.store.get(&vault_storage_key) {
+            if let Some(TensorValue::Pointer(blob_key)) = tensor.get("_blob") {
+                // Delete the ciphertext blob
+                let _ = self.store.delete(blob_key);
+            }
+        }
+
         self.store
-            .delete(&Self::vault_key(key))
+            .delete(&vault_storage_key)
             .map_err(|_| VaultError::NotFound(key.to_string()))?;
 
         // Also clean up the secret node
@@ -308,36 +388,58 @@ impl Vault {
     pub fn rotate(&self, requester: &str, key: &str, new_value: &str) -> Result<()> {
         self.check_access(requester, key)?;
 
-        if !self.store.exists(&Self::vault_key(key)) {
+        let vault_storage_key = self.vault_key(key);
+
+        if !self.store.exists(&vault_storage_key) {
             return Err(VaultError::NotFound(key.to_string()));
         }
 
-        let (ciphertext, nonce) = self.cipher.encrypt(new_value.as_bytes())?;
+        // Pad and encrypt new value
+        let padded = obfuscation::pad_plaintext(new_value.as_bytes());
+        let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
 
+        // Get current tensor
         let mut tensor = self
             .store
-            .get(&Self::vault_key(key))
+            .get(&vault_storage_key)
             .map_err(|_| VaultError::NotFound(key.to_string()))?;
 
-        tensor.set(
-            "_ciphertext",
-            TensorValue::Scalar(ScalarValue::Bytes(ciphertext)),
-        );
+        // Delete old blob
+        if let Some(TensorValue::Pointer(old_blob_key)) = tensor.get("_blob") {
+            let _ = self.store.delete(old_blob_key);
+        }
+
+        // Store new ciphertext blob
+        let new_blob_key = self.blob_key(key, &nonce);
+        let mut blob_tensor = TensorData::new();
+        blob_tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(ciphertext)));
+        self.store
+            .put(&new_blob_key, blob_tensor)
+            .map_err(|e| VaultError::StorageError(e.to_string()))?;
+
+        // Update metadata with new blob pointer and nonce
+        tensor.set("_blob", TensorValue::Pointer(new_blob_key));
         tensor.set(
             "_nonce",
             TensorValue::Scalar(ScalarValue::Bytes(nonce.to_vec())),
         );
+
+        // Obfuscate rotation metadata
+        let rotator_obf = self.obfuscator.obfuscate_metadata(requester.as_bytes());
+        let timestamp = Self::current_timestamp();
+        let timestamp_obf = self.obfuscator.obfuscate_metadata(&timestamp.to_le_bytes());
+
         tensor.set(
-            "_rotated_by",
-            TensorValue::Scalar(ScalarValue::String(requester.to_string())),
+            "_rotator_obf",
+            TensorValue::Scalar(ScalarValue::Bytes(rotator_obf)),
         );
         tensor.set(
-            "_rotated_at",
-            TensorValue::Scalar(ScalarValue::Int(Self::current_timestamp())),
+            "_rotated_obf",
+            TensorValue::Scalar(ScalarValue::Bytes(timestamp_obf)),
         );
 
         self.store
-            .put(Self::vault_key(key), tensor)
+            .put(vault_storage_key, tensor)
             .map_err(|e| VaultError::StorageError(e.to_string()))?;
 
         Ok(())
@@ -349,14 +451,34 @@ impl Vault {
 
         let mut accessible = Vec::new();
         for vault_key in all_keys {
-            let key = vault_key.strip_prefix(Self::PREFIX).unwrap_or(&vault_key);
-
-            if Self::matches_pattern(key, pattern) && self.has_access(requester, key) {
-                accessible.push(key.to_string());
+            // Decrypt the original key name from stored metadata
+            if let Ok(tensor) = self.store.get(&vault_key) {
+                let original_key = self.decrypt_key_name(&tensor);
+                if let Some(key) = original_key {
+                    if Self::matches_pattern(&key, pattern) && self.has_access(requester, &key) {
+                        accessible.push(key);
+                    }
+                }
             }
         }
 
         Ok(accessible)
+    }
+
+    fn decrypt_key_name(&self, tensor: &TensorData) -> Option<String> {
+        let encrypted_key = match tensor.get("_key_enc") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
+            _ => return None,
+        };
+        let key_nonce = match tensor.get("_key_nonce") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b.clone(),
+            _ => return None,
+        };
+
+        self.cipher
+            .decrypt(&encrypted_key, &key_nonce)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     /// Create a scoped vault view for a specific entity.
@@ -881,5 +1003,147 @@ mod tests {
         // Root can revoke on non-existent secret (succeeds but does nothing)
         let result = vault.revoke(Vault::ROOT, "user:alice", "nonexistent");
         assert!(result.is_ok());
+    }
+
+    // === Security feature tests ===
+
+    #[test]
+    fn test_storage_key_is_obfuscated() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "api_key", "secret").unwrap();
+
+        // The original key should NOT appear in storage keys
+        let all_keys = vault.store.scan("_vk:");
+        for key in &all_keys {
+            assert!(!key.contains("api_key"), "Key should be obfuscated");
+        }
+        // But we should have at least one vault entry
+        assert_eq!(all_keys.len(), 1);
+    }
+
+    #[test]
+    fn test_pointer_indirection_creates_blob() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "my_secret", "value").unwrap();
+
+        // Check that blob storage was created with _vs: prefix
+        let blob_keys = vault.store.scan("_vs:");
+        assert_eq!(blob_keys.len(), 1, "Should have one blob");
+
+        // The blob should contain encrypted data
+        let blob = vault.store.get(&blob_keys[0]).unwrap();
+        assert!(blob.get("_data").is_some(), "Blob should have _data field");
+    }
+
+    #[test]
+    fn test_metadata_is_obfuscated() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "secret", "value").unwrap();
+
+        // Get the metadata tensor
+        let all_keys = vault.store.scan("_vk:");
+        let tensor = vault.store.get(&all_keys[0]).unwrap();
+
+        // Creator should be obfuscated, not plaintext
+        assert!(
+            tensor.get("_creator_obf").is_some(),
+            "Should have obfuscated creator"
+        );
+        assert!(
+            tensor.get("_created_by").is_none(),
+            "Should NOT have plaintext creator"
+        );
+
+        // Timestamp should be obfuscated
+        assert!(
+            tensor.get("_created_obf").is_some(),
+            "Should have obfuscated timestamp"
+        );
+        assert!(
+            tensor.get("_created_at").is_none(),
+            "Should NOT have plaintext timestamp"
+        );
+    }
+
+    #[test]
+    fn test_encrypted_key_name_stored_for_listing() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "list_test_key", "value").unwrap();
+
+        // The encrypted key name should be stored for list() to work
+        let all_keys = vault.store.scan("_vk:");
+        let tensor = vault.store.get(&all_keys[0]).unwrap();
+
+        assert!(
+            tensor.get("_key_enc").is_some(),
+            "Should have encrypted key"
+        );
+        assert!(tensor.get("_key_nonce").is_some(), "Should have key nonce");
+
+        // Verify list() can still find it
+        let found = vault.list(Vault::ROOT, "list_test_*").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], "list_test_key");
+    }
+
+    #[test]
+    fn test_delete_removes_blob() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "temp", "data").unwrap();
+
+        // Verify blob exists
+        let blobs_before = vault.store.scan("_vs:");
+        assert_eq!(blobs_before.len(), 1);
+
+        vault.delete(Vault::ROOT, "temp").unwrap();
+
+        // Blob should be deleted
+        let blobs_after = vault.store.scan("_vs:");
+        assert_eq!(blobs_after.len(), 0, "Blob should be deleted");
+    }
+
+    #[test]
+    fn test_rotate_creates_new_blob() {
+        let vault = create_test_vault();
+
+        vault.set(Vault::ROOT, "rotatable", "old_value").unwrap();
+
+        let blobs_before = vault.store.scan("_vs:");
+        assert_eq!(blobs_before.len(), 1);
+
+        vault.rotate(Vault::ROOT, "rotatable", "new_value").unwrap();
+
+        // Old blob deleted, new blob created
+        let blobs_after = vault.store.scan("_vs:");
+        assert_eq!(blobs_after.len(), 1);
+
+        // But it should be a different blob (different nonce)
+        assert_ne!(blobs_before[0], blobs_after[0], "Should be a new blob");
+
+        // Value should be updated
+        let value = vault.get(Vault::ROOT, "rotatable").unwrap();
+        assert_eq!(value, "new_value");
+    }
+
+    #[test]
+    fn test_padding_hides_length() {
+        // Short values should be padded to same size
+        let short1 = obfuscation::pad_plaintext(b"a");
+        let short2 = obfuscation::pad_plaintext(b"abc");
+        let short3 = obfuscation::pad_plaintext(b"hello world!");
+
+        // All short values pad to Small (256 bytes)
+        assert_eq!(short1.len(), 256);
+        assert_eq!(short2.len(), 256);
+        assert_eq!(short3.len(), 256);
+
+        // Unpad should recover original
+        assert_eq!(obfuscation::unpad_plaintext(&short1).unwrap(), b"a");
+        assert_eq!(obfuscation::unpad_plaintext(&short2).unwrap(), b"abc");
     }
 }
