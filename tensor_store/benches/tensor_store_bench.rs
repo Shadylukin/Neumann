@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use tensor_store::{
     ArchetypeRegistry, BloomFilter, DeltaVector, KMeans, KMeansConfig, KMeansInit, ScalarValue,
-    SparseVector, TensorData, TensorStore, TensorValue,
+    SparseVector, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore,
 };
 
 fn create_test_tensor(id: i64) -> TensorData {
@@ -1229,9 +1230,254 @@ criterion_group!(
     bench_full_clustering_pipeline,
 );
 
+// ============================================================================
+// Tiered Store Benchmarks
+// ============================================================================
+
+fn setup_tiered_test_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(format!("/tmp/tiered_bench_{}", name));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn bench_tiered_vs_inmemory_put(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tiered/put");
+
+    for size in [1000, 10000].iter() {
+        // Benchmark pure in-memory TensorStore
+        group.throughput(Throughput::Elements(*size as u64));
+        group.bench_with_input(BenchmarkId::new("inmemory", size), size, |b, &size| {
+            b.iter(|| {
+                let store = TensorStore::new();
+                for i in 0..size {
+                    store
+                        .put(format!("key:{}", i), create_test_tensor(i as i64))
+                        .unwrap();
+                }
+                black_box(&store);
+            });
+        });
+
+        // Benchmark TieredStore (hot tier only)
+        let dir = setup_tiered_test_dir(&format!("put_{}", size));
+        group.bench_with_input(BenchmarkId::new("tiered_hot", size), size, |b, &size| {
+            b.iter(|| {
+                let config = TieredConfig {
+                    cold_dir: dir.clone(),
+                    cold_capacity: 64 * 1024 * 1024,
+                    sample_rate: 100,
+                };
+                let mut store = TieredStore::new(config).unwrap();
+                for i in 0..size {
+                    store.put(format!("key:{}", i), create_test_tensor(i as i64));
+                }
+                black_box(&store);
+            });
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    group.finish();
+}
+
+fn bench_tiered_vs_inmemory_get(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tiered/get");
+
+    for size in [1000, 10000].iter() {
+        // Setup in-memory store
+        let inmem_store = TensorStore::new();
+        for i in 0..*size {
+            inmem_store
+                .put(format!("key:{}", i), create_test_tensor(i as i64))
+                .unwrap();
+        }
+
+        // Setup tiered store
+        let dir = setup_tiered_test_dir(&format!("get_{}", size));
+        let config = TieredConfig {
+            cold_dir: dir.clone(),
+            cold_capacity: 64 * 1024 * 1024,
+            sample_rate: 100,
+        };
+        let mut tiered_store = TieredStore::new(config).unwrap();
+        for i in 0..*size {
+            tiered_store.put(format!("key:{}", i), create_test_tensor(i as i64));
+        }
+
+        group.throughput(Throughput::Elements(*size as u64));
+
+        // Benchmark in-memory get
+        group.bench_with_input(BenchmarkId::new("inmemory", size), size, |b, &size| {
+            b.iter(|| {
+                for i in 0..size {
+                    black_box(inmem_store.get(&format!("key:{}", i)).unwrap());
+                }
+            });
+        });
+
+        // Benchmark tiered get (all hot)
+        group.bench_with_input(BenchmarkId::new("tiered_hot", size), size, |b, &size| {
+            b.iter(|| {
+                for i in 0..size {
+                    black_box(tiered_store.get(&format!("key:{}", i)).unwrap());
+                }
+            });
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    group.finish();
+}
+
+fn bench_tiered_cold_access(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tiered/cold_access");
+    let size = 1000;
+
+    let dir = setup_tiered_test_dir("cold_access");
+    let config = TieredConfig {
+        cold_dir: dir.clone(),
+        cold_capacity: 64 * 1024 * 1024,
+        sample_rate: 1, // Track every access
+    };
+    let mut store = TieredStore::new(config).unwrap();
+
+    // Insert data
+    for i in 0..size {
+        store.put(format!("key:{}", i), create_test_tensor(i as i64));
+    }
+
+    // Access first 100 to make them hot
+    for i in 0..100 {
+        let _ = store.get(&format!("key:{}", i));
+    }
+
+    // Wait for cold threshold
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Migrate cold data
+    let migrated = store.migrate_cold(10).unwrap();
+
+    group.throughput(Throughput::Elements(100));
+
+    // Benchmark cold reads (with promotion)
+    if migrated > 0 {
+        group.bench_function("cold_read_with_promotion", |b| {
+            b.iter(|| {
+                // Read some cold keys (they get promoted)
+                for i in 100..200 {
+                    if store.exists(&format!("key:{}", i)) {
+                        black_box(store.get(&format!("key:{}", i)).ok());
+                    }
+                }
+            });
+        });
+    }
+
+    // Benchmark hot reads (after promotion)
+    group.bench_function("hot_read_after_promotion", |b| {
+        b.iter(|| {
+            for i in 0..100 {
+                black_box(store.get(&format!("key:{}", i)).unwrap());
+            }
+        });
+    });
+
+    let _ = std::fs::remove_dir_all(&dir);
+    group.finish();
+}
+
+fn bench_tiered_migration(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tiered/migration");
+
+    for size in [1000, 5000].iter() {
+        let dir = setup_tiered_test_dir(&format!("migration_{}", size));
+
+        group.throughput(Throughput::Elements(*size as u64));
+        group.bench_with_input(BenchmarkId::new("migrate_all", size), size, |b, &size| {
+            b.iter_with_setup(
+                || {
+                    // Setup: create store with data
+                    let config = TieredConfig {
+                        cold_dir: dir.clone(),
+                        cold_capacity: 64 * 1024 * 1024,
+                        sample_rate: 1,
+                    };
+                    let mut store = TieredStore::new(config).unwrap();
+                    for i in 0..size {
+                        store.put(format!("key:{}", i), create_test_tensor(i as i64));
+                    }
+                    // Wait for all to be "cold"
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    store
+                },
+                |mut store| {
+                    // Benchmark: migrate all cold data
+                    let migrated = store.migrate_cold(1).unwrap();
+                    black_box(migrated);
+                },
+            );
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    group.finish();
+}
+
+fn bench_tiered_preload(c: &mut Criterion) {
+    let mut group = c.benchmark_group("tiered/preload");
+
+    // We can't easily benchmark preload without accessing private fields
+    // Instead, benchmark cold-to-hot promotion via get()
+    let dir = setup_tiered_test_dir("preload");
+
+    group.throughput(Throughput::Elements(100));
+    group.bench_function("cold_promotion_via_get", |b| {
+        b.iter_with_setup(
+            || {
+                // Setup: create store, insert data, migrate to cold
+                let config = TieredConfig {
+                    cold_dir: dir.clone(),
+                    cold_capacity: 64 * 1024 * 1024,
+                    sample_rate: 1,
+                };
+                let mut store = TieredStore::new(config).unwrap();
+                for i in 0..100 {
+                    store.put(format!("key:{}", i), create_test_tensor(i as i64));
+                }
+                // Wait then migrate all to cold
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let _ = store.migrate_cold(1);
+                store
+            },
+            |mut store| {
+                // Benchmark: read all cold keys (promotes them)
+                for i in 0..100 {
+                    black_box(store.get(&format!("key:{}", i)).ok());
+                }
+            },
+        );
+    });
+
+    let _ = std::fs::remove_dir_all(&dir);
+    group.finish();
+}
+
+criterion_group!(
+    tiered_benches,
+    bench_tiered_vs_inmemory_put,
+    bench_tiered_vs_inmemory_get,
+    bench_tiered_cold_access,
+    bench_tiered_migration,
+    bench_tiered_preload,
+);
+
 criterion_main!(
     benches,
     sparse_vector_benches,
     delta_vector_benches,
-    kmeans_benches
+    kmeans_benches,
+    tiered_benches
 );
