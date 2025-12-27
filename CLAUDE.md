@@ -17,8 +17,9 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 | `tensor_compress` | Compression algorithms | tensor_store |
 | `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
 | `tensor_cache` | Semantic LLM response caching | tensor_store |
+| `tensor_blob` | S3-style chunked blob storage | tensor_store |
 | `neumann_parser` | Query tokenization and parsing | - |
-| `query_router` | Unified query execution | all engines, parser, vault, cache |
+| `query_router` | Unified query execution | all engines, parser, vault, cache, blob |
 | `neumann_shell` | Interactive CLI interface | query_router |
 
 ## Code Style
@@ -103,6 +104,12 @@ tensor_cache/           # Module 10: LLM response cache
   src/embedding.rs      # Embedding cache
   src/eviction.rs       # Background eviction
   src/tokenizer.rs      # tiktoken token counting
+tensor_blob/            # Module 11: Blob storage
+  src/lib.rs            # BlobStore API
+  src/chunker.rs        # SHA-256 content-addressable chunking
+  src/streaming.rs      # BlobWriter, BlobReader
+  src/gc.rs             # Background garbage collection
+  src/integrity.rs      # Checksum verification, repair
 neumann_parser/         # Module 5: Query parsing
   src/lib.rs            # Tokenization, parsing, AST
 query_router/           # Module 6: Query execution
@@ -122,6 +129,7 @@ docs/
   tensor-compress.md    # Module 8 API documentation
   tensor-vault.md       # Module 9 API documentation
   tensor-cache.md       # Module 10 API documentation
+  tensor-blob.md        # Module 11 API documentation
   benchmarks.md         # Performance benchmarks
 ```
 

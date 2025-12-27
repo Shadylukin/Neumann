@@ -1,0 +1,28 @@
+[package]
+name = "tensor_blob"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tensor_store = { path = "../tensor_store" }
+graph_engine = { path = "../graph_engine", optional = true }
+vector_engine = { path = "../vector_engine", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+sha2 = "0.10"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = []
+graph = ["graph_engine"]
+vector = ["vector_engine"]
+full = ["graph", "vector"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "blob_bench"
+harness = false

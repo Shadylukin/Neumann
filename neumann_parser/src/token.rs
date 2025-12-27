@@ -204,6 +204,22 @@ pub enum TokenKind {
     Evict,
     Put,
 
+    // === Blob Storage Keywords ===
+    Blobs,
+    Info,
+    Link,
+    Unlink,
+    Links,
+    Tag,
+    Untag,
+    Verify,
+    Gc,
+    Repair,
+    To,
+    For,
+    Meta,
+    Artifacts,
+
     // === Operators ===
     /// `+`
     Plus,
@@ -432,6 +448,20 @@ impl TokenKind {
                 | Clear
                 | Evict
                 | Put
+                | Blobs
+                | Info
+                | Link
+                | Unlink
+                | Links
+                | Tag
+                | Untag
+                | Verify
+                | Gc
+                | Repair
+                | To
+                | For
+                | Meta
+                | Artifacts
         )
     }
 
@@ -617,6 +647,22 @@ impl TokenKind {
             "EVICT" => TokenKind::Evict,
             "PUT" => TokenKind::Put,
 
+            // Blob storage keywords
+            "BLOBS" => TokenKind::Blobs,
+            "INFO" => TokenKind::Info,
+            "LINK" => TokenKind::Link,
+            "UNLINK" => TokenKind::Unlink,
+            "LINKS" => TokenKind::Links,
+            "TAG" => TokenKind::Tag,
+            "UNTAG" => TokenKind::Untag,
+            "VERIFY" => TokenKind::Verify,
+            "GC" => TokenKind::Gc,
+            "REPAIR" => TokenKind::Repair,
+            "TO" => TokenKind::To,
+            "FOR" => TokenKind::For,
+            "META" => TokenKind::Meta,
+            "ARTIFACTS" => TokenKind::Artifacts,
+
             _ => return None,
         })
     }
@@ -764,6 +810,20 @@ impl TokenKind {
             Clear => "CLEAR",
             Evict => "EVICT",
             Put => "PUT",
+            Blobs => "BLOBS",
+            Info => "INFO",
+            Link => "LINK",
+            Unlink => "UNLINK",
+            Links => "LINKS",
+            Tag => "TAG",
+            Untag => "UNTAG",
+            Verify => "VERIFY",
+            Gc => "GC",
+            Repair => "REPAIR",
+            To => "TO",
+            For => "FOR",
+            Meta => "META",
+            Artifacts => "ARTIFACTS",
             Plus => "+",
             Minus => "-",
             Star => "*",

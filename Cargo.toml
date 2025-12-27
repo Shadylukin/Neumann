@@ -11,4 +11,5 @@ members = [
     "tensor_compress",
     "tensor_vault",
     "tensor_cache",
+    "tensor_blob",
 ]

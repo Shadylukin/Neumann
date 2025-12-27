@@ -452,6 +452,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
 name = "fd-lock"
 version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -901,9 +907,11 @@ dependencies = [
  "relational_engine",
  "serde",
  "serde_json",
+ "tensor_blob",
  "tensor_cache",
  "tensor_store",
  "tensor_vault",
+ "tokio",
  "vector_engine",
 ]
 
@@ -1146,6 +1154,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1189,6 +1208,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfile"
+version = "3.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "655da9c7eb6305c55742045d5a8d2037996d61d8de95806335c7c86ce0f82e9c"
+dependencies = [
+ "fastrand",
+ "getrandom 0.3.4",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tensor_blob"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "graph_engine",
+ "sha2",
+ "tempfile",
+ "tensor_store",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+ "vector_engine",
+]
+
+[[package]]
 name = "tensor_cache"
 version = "0.1.0"
 dependencies = [
@@ -1198,7 +1245,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tensor_store",
- "thiserror",
+ "thiserror 2.0.17",
  "tiktoken-rs",
  "tokio",
  "tokio-test",
@@ -1214,7 +1261,7 @@ dependencies = [
  "criterion",
  "peak_alloc",
  "serde",
- "thiserror",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -1251,11 +1298,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f63587ca0f12b72a0600bcba1d40081f830876000bb46dd2337a3051618f4fc8"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.17",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -144,6 +144,17 @@ impl Shell {
                     || upper.contains("VAULT REVOKE")
             },
             "CACHE" => upper.contains("CACHE CLEAR"),
+            "BLOB" => {
+                upper.contains("BLOB PUT")
+                    || upper.contains("BLOB DELETE")
+                    || upper.contains("BLOB LINK")
+                    || upper.contains("BLOB UNLINK")
+                    || upper.contains("BLOB TAG")
+                    || upper.contains("BLOB UNTAG")
+                    || upper.contains("BLOB GC")
+                    || upper.contains("BLOB REPAIR")
+                    || upper.contains("BLOB META SET")
+            },
             _ => false,
         }
     }
@@ -661,6 +672,10 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::Similar(results) => format_similar(results),
         QueryResult::Unified(unified) => unified.description.clone(),
         QueryResult::TableList(tables) => format_table_list(tables),
+        QueryResult::Blob(data) => format_blob(data),
+        QueryResult::ArtifactInfo(info) => format_artifact_info(info),
+        QueryResult::ArtifactList(ids) => format_artifact_list(ids),
+        QueryResult::BlobStats(stats) => format_blob_stats(stats),
     }
 }
 
@@ -770,6 +785,81 @@ fn format_table_list(tables: &[String]) -> String {
                 .join("\n")
         )
     }
+}
+
+/// Formats blob data for display.
+fn format_blob(data: &[u8]) -> String {
+    let size = data.len();
+    if size <= 256 {
+        // Try to display as UTF-8 if valid, otherwise show hex
+        if let Ok(s) = std::str::from_utf8(data) {
+            if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') {
+                return s.to_string();
+            }
+        }
+    }
+    // Show summary for binary/large data
+    format!("<binary data: {} bytes>", size)
+}
+
+/// Formats artifact info for display.
+fn format_artifact_info(info: &query_router::ArtifactInfoResult) -> String {
+    let mut lines = vec![
+        format!("Artifact: {}", info.id),
+        format!("  Filename: {}", info.filename),
+        format!("  Type: {}", info.content_type),
+        format!("  Size: {} bytes", info.size),
+        format!("  Checksum: {}", info.checksum),
+        format!("  Chunks: {}", info.chunk_count),
+        format!("  Created: {}", info.created),
+        format!("  Modified: {}", info.modified),
+        format!("  Creator: {}", info.created_by),
+    ];
+
+    if !info.tags.is_empty() {
+        lines.push(format!("  Tags: {}", info.tags.join(", ")));
+    }
+
+    if !info.linked_to.is_empty() {
+        lines.push(format!("  Links: {}", info.linked_to.join(", ")));
+    }
+
+    if !info.custom.is_empty() {
+        lines.push("  Metadata:".to_string());
+        for (k, v) in &info.custom {
+            lines.push(format!("    {k}: {v}"));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Formats artifact list for display.
+fn format_artifact_list(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "(no artifacts)".to_string()
+    } else {
+        ids.join("\n")
+    }
+}
+
+/// Formats blob statistics for display.
+fn format_blob_stats(stats: &query_router::BlobStatsResult) -> String {
+    format!(
+        "Blob Storage Statistics:\n\
+         Artifacts: {}\n\
+         Chunks: {}\n\
+         Total bytes: {}\n\
+         Unique bytes: {}\n\
+         Dedup ratio: {:.1}%\n\
+         Orphaned chunks: {}",
+        stats.artifact_count,
+        stats.chunk_count,
+        stats.total_bytes,
+        stats.unique_bytes,
+        stats.dedup_ratio * 100.0,
+        stats.orphaned_chunks
+    )
 }
 
 /// Formats rows as an ASCII table.

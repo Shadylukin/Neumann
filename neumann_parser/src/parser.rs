@@ -614,6 +614,10 @@ impl<'a> Parser<'a> {
             // Cache Statements
             TokenKind::Cache => self.parse_cache()?,
 
+            // Blob Storage Statements
+            TokenKind::Blob => self.parse_blob()?,
+            TokenKind::Blobs => self.parse_blobs()?,
+
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnknownCommand(format!("{}", self.current.kind)),
@@ -1764,6 +1768,208 @@ impl<'a> Parser<'a> {
         };
 
         Ok(StatementKind::Cache(CacheStmt { operation }))
+    }
+
+    // =========================================================================
+    // Blob Storage Statement Parsers
+    // =========================================================================
+
+    fn parse_blob(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Blob)?;
+
+        let operation = match &self.current.kind {
+            TokenKind::Put => {
+                self.advance();
+                let filename = self.parse_expr()?;
+                // Check for FROM 'path' or inline data
+                let (from_path, data) = if self.eat(&TokenKind::From) {
+                    (Some(self.parse_expr()?), None)
+                } else if !self.current.is_eof()
+                    && !self.check(&TokenKind::Semicolon)
+                    && !self.check(&TokenKind::Link)
+                    && !self.check(&TokenKind::Tag)
+                {
+                    (None, Some(self.parse_expr()?))
+                } else {
+                    (None, None)
+                };
+                // Parse options: LINK entity, TAG tag
+                let mut options = BlobOptions::default();
+                while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+                    if self.eat(&TokenKind::Link) {
+                        options.link.push(self.parse_expr()?);
+                    } else if self.eat(&TokenKind::Tag) {
+                        options.tag.push(self.parse_expr()?);
+                    } else {
+                        break;
+                    }
+                }
+                BlobOp::Put {
+                    filename,
+                    data,
+                    from_path,
+                    options,
+                }
+            },
+            TokenKind::Get => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                let to_path = if self.eat(&TokenKind::To) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                BlobOp::Get {
+                    artifact_id,
+                    to_path,
+                }
+            },
+            TokenKind::Delete => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                BlobOp::Delete { artifact_id }
+            },
+            TokenKind::Info => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                BlobOp::Info { artifact_id }
+            },
+            TokenKind::Link => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                self.expect(&TokenKind::To)?;
+                let entity = self.parse_expr()?;
+                BlobOp::Link {
+                    artifact_id,
+                    entity,
+                }
+            },
+            TokenKind::Unlink => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                self.expect(&TokenKind::From)?;
+                let entity = self.parse_expr()?;
+                BlobOp::Unlink {
+                    artifact_id,
+                    entity,
+                }
+            },
+            TokenKind::Links => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                BlobOp::Links { artifact_id }
+            },
+            TokenKind::Tag => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                let tag = self.parse_expr()?;
+                BlobOp::Tag { artifact_id, tag }
+            },
+            TokenKind::Untag => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                let tag = self.parse_expr()?;
+                BlobOp::Untag { artifact_id, tag }
+            },
+            TokenKind::Verify => {
+                self.advance();
+                let artifact_id = self.parse_expr()?;
+                BlobOp::Verify { artifact_id }
+            },
+            TokenKind::Gc => {
+                self.advance();
+                let full = self.eat(&TokenKind::Full);
+                BlobOp::Gc { full }
+            },
+            TokenKind::Repair => {
+                self.advance();
+                BlobOp::Repair
+            },
+            TokenKind::Stats => {
+                self.advance();
+                BlobOp::Stats
+            },
+            TokenKind::Meta => {
+                self.advance();
+                if self.eat(&TokenKind::Set) {
+                    let artifact_id = self.parse_expr()?;
+                    let key = self.parse_expr()?;
+                    let value = self.parse_expr()?;
+                    BlobOp::MetaSet {
+                        artifact_id,
+                        key,
+                        value,
+                    }
+                } else if self.eat(&TokenKind::Get) {
+                    let artifact_id = self.parse_expr()?;
+                    let key = self.parse_expr()?;
+                    BlobOp::MetaGet { artifact_id, key }
+                } else {
+                    return Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "META operation (SET, GET)".to_string(),
+                        },
+                        self.current.span,
+                    ));
+                }
+            },
+            _ => {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        found: self.current.kind.clone(),
+                        expected: "BLOB operation (PUT, GET, DELETE, INFO, LINK, UNLINK, LINKS, TAG, UNTAG, VERIFY, GC, REPAIR, STATS, META)"
+                            .to_string(),
+                    },
+                    self.current.span,
+                ));
+            },
+        };
+
+        Ok(StatementKind::Blob(BlobStmt { operation }))
+    }
+
+    fn parse_blobs(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Blobs)?;
+
+        let operation = if self.current.is_eof() || self.check(&TokenKind::Semicolon) {
+            // Just BLOBS - list all
+            BlobsOp::List { pattern: None }
+        } else if self.eat(&TokenKind::For) {
+            // BLOBS FOR entity
+            let entity = self.parse_expr()?;
+            BlobsOp::For { entity }
+        } else if self.eat(&TokenKind::By) {
+            // BLOBS BY TAG 'tag'
+            self.expect(&TokenKind::Tag)?;
+            let tag = self.parse_expr()?;
+            BlobsOp::ByTag { tag }
+        } else if self.eat(&TokenKind::Where) {
+            // BLOBS WHERE TYPE = 'type'
+            // Expect TYPE or an identifier
+            if self.check(&TokenKind::Ident("TYPE".to_string())) || self.check(&TokenKind::Ident("type".to_string())) {
+                self.advance();
+            }
+            self.expect(&TokenKind::Eq)?;
+            let content_type = self.parse_expr()?;
+            BlobsOp::ByType { content_type }
+        } else if self.eat(&TokenKind::Similar) {
+            // BLOBS SIMILAR TO 'artifact_id' LIMIT n
+            self.expect(&TokenKind::To)?;
+            let artifact_id = self.parse_expr()?;
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            BlobsOp::Similar { artifact_id, limit }
+        } else {
+            // BLOBS 'pattern'
+            let pattern = Some(self.parse_expr()?);
+            BlobsOp::List { pattern }
+        };
+
+        Ok(StatementKind::Blobs(BlobsStmt { operation }))
     }
 }
 

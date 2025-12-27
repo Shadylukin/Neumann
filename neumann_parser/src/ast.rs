@@ -74,6 +74,12 @@ pub enum StatementKind {
     /// CACHE command
     Cache(CacheStmt),
 
+    // === Blob Storage Statements ===
+    /// BLOB command
+    Blob(BlobStmt),
+    /// BLOBS command (list/query blobs)
+    Blobs(BlobsStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -556,6 +562,97 @@ pub enum CacheOp {
     Get { key: Expr },
     /// Store cache entry: `CACHE PUT 'key' 'value'`
     Put { key: Expr, value: Expr },
+}
+
+// =============================================================================
+// Blob Storage Statements
+// =============================================================================
+
+/// BLOB command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlobStmt {
+    pub operation: BlobOp,
+}
+
+/// BLOB operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlobOp {
+    /// Store blob: `BLOB PUT 'filename' DATA` or `BLOB PUT 'filename' FROM 'path'`
+    Put {
+        filename: Expr,
+        data: Option<Expr>,
+        from_path: Option<Expr>,
+        options: BlobOptions,
+    },
+    /// Get blob: `BLOB GET 'artifact_id'` or `BLOB GET 'artifact_id' TO 'path'`
+    Get {
+        artifact_id: Expr,
+        to_path: Option<Expr>,
+    },
+    /// Delete blob: `BLOB DELETE 'artifact_id'`
+    Delete { artifact_id: Expr },
+    /// Show blob info: `BLOB INFO 'artifact_id'`
+    Info { artifact_id: Expr },
+    /// Link blob to entity: `BLOB LINK 'artifact_id' TO entity`
+    Link { artifact_id: Expr, entity: Expr },
+    /// Unlink blob from entity: `BLOB UNLINK 'artifact_id' FROM entity`
+    Unlink { artifact_id: Expr, entity: Expr },
+    /// Get links: `BLOB LINKS 'artifact_id'`
+    Links { artifact_id: Expr },
+    /// Add tag: `BLOB TAG 'artifact_id' 'tag'`
+    Tag { artifact_id: Expr, tag: Expr },
+    /// Remove tag: `BLOB UNTAG 'artifact_id' 'tag'`
+    Untag { artifact_id: Expr, tag: Expr },
+    /// Verify integrity: `BLOB VERIFY 'artifact_id'`
+    Verify { artifact_id: Expr },
+    /// Run garbage collection: `BLOB GC` or `BLOB GC FULL`
+    Gc { full: bool },
+    /// Repair blob storage: `BLOB REPAIR`
+    Repair,
+    /// Show blob statistics: `BLOB STATS`
+    Stats,
+    /// Set metadata: `BLOB META SET 'artifact_id' 'key' 'value'`
+    MetaSet {
+        artifact_id: Expr,
+        key: Expr,
+        value: Expr,
+    },
+    /// Get metadata: `BLOB META GET 'artifact_id' 'key'`
+    MetaGet { artifact_id: Expr, key: Expr },
+}
+
+/// Options for BLOB PUT.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct BlobOptions {
+    /// Content type
+    pub content_type: Option<Expr>,
+    /// Creator
+    pub created_by: Option<Expr>,
+    /// Entities to link
+    pub link: Vec<Expr>,
+    /// Tags to apply
+    pub tag: Vec<Expr>,
+}
+
+/// BLOBS command (list/query blobs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlobsStmt {
+    pub operation: BlobsOp,
+}
+
+/// BLOBS operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlobsOp {
+    /// List all blobs: `BLOBS`
+    List { pattern: Option<Expr> },
+    /// Find blobs for entity: `BLOBS FOR entity`
+    For { entity: Expr },
+    /// Find blobs by tag: `BLOBS BY TAG 'tag'`
+    ByTag { tag: Expr },
+    /// Find blobs by content type: `BLOBS WHERE TYPE = 'type'`
+    ByType { content_type: Expr },
+    /// Find similar blobs: `BLOBS SIMILAR TO 'artifact_id' LIMIT n`
+    Similar { artifact_id: Expr, limit: Option<Expr> },
 }
 
 // =============================================================================

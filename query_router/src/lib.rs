@@ -28,10 +28,11 @@
 
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
-    self as parser, BinaryOp, CacheOp, CacheStmt, DeleteStmt, Direction as ParsedDirection, EdgeOp,
-    EdgeStmt, EmbedOp, EmbedStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt,
-    Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery,
-    SimilarStmt, Statement, StatementKind, TableRefKind, UpdateStmt, VaultOp, VaultStmt,
+    self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp, CacheStmt,
+    DeleteStmt, Direction as ParsedDirection, EdgeOp, EdgeStmt, EmbedOp, EmbedStmt, Expr, ExprKind,
+    FindPattern, FindStmt, InsertSource, InsertStmt, Literal, NeighborsStmt, NodeOp, NodeStmt,
+    PathStmt, Property, SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind,
+    TableRefKind, UpdateStmt, VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -39,9 +40,11 @@ use relational_engine::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig, VaultError};
+use tokio::runtime::Runtime;
 use vector_engine::{HNSWIndex, VectorEngine, VectorError};
 
 /// Error types for query routing.
@@ -61,6 +64,8 @@ pub enum RouterError {
     VaultError(String),
     /// Error from cache.
     CacheError(String),
+    /// Error from blob storage.
+    BlobError(String),
     /// Invalid argument provided.
     InvalidArgument(String),
     /// Missing required argument.
@@ -79,6 +84,7 @@ impl std::fmt::Display for RouterError {
             RouterError::VectorError(msg) => write!(f, "Vector error: {}", msg),
             RouterError::VaultError(msg) => write!(f, "Vault error: {}", msg),
             RouterError::CacheError(msg) => write!(f, "Cache error: {}", msg),
+            RouterError::BlobError(msg) => write!(f, "Blob error: {}", msg),
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
@@ -118,6 +124,12 @@ impl From<CacheError> for RouterError {
     }
 }
 
+impl From<BlobError> for RouterError {
+    fn from(e: BlobError) -> Self {
+        RouterError::BlobError(e.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, RouterError>;
 
 /// Result of a query execution.
@@ -145,6 +157,14 @@ pub enum QueryResult {
     Unified(UnifiedResult),
     /// List of table names
     TableList(Vec<String>),
+    /// Blob data (bytes)
+    Blob(Vec<u8>),
+    /// Artifact metadata
+    ArtifactInfo(ArtifactInfoResult),
+    /// List of artifact IDs
+    ArtifactList(Vec<String>),
+    /// Blob storage statistics
+    BlobStats(BlobStatsResult),
 }
 
 /// Node result from graph query.
@@ -187,6 +207,34 @@ pub struct UnifiedItem {
     pub score: Option<f32>,
 }
 
+/// Artifact info result from blob query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactInfoResult {
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: usize,
+    pub checksum: String,
+    pub chunk_count: usize,
+    pub created: u64,
+    pub modified: u64,
+    pub created_by: String,
+    pub tags: Vec<String>,
+    pub linked_to: Vec<String>,
+    pub custom: HashMap<String, String>,
+}
+
+/// Blob storage statistics result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobStatsResult {
+    pub artifact_count: usize,
+    pub chunk_count: usize,
+    pub total_bytes: usize,
+    pub unique_bytes: usize,
+    pub dedup_ratio: f64,
+    pub orphaned_chunks: usize,
+}
+
 /// Query Router that orchestrates queries across engines.
 pub struct QueryRouter {
     relational: Arc<RelationalEngine>,
@@ -196,6 +244,10 @@ pub struct QueryRouter {
     vault: Option<Arc<Vault>>,
     /// Optional cache for LLM response caching (requires initialization)
     cache: Option<Arc<Cache>>,
+    /// Optional blob storage (requires initialization)
+    blob: Option<Arc<tokio::sync::Mutex<BlobStore>>>,
+    /// Tokio runtime for async blob operations
+    blob_runtime: Option<Arc<Runtime>>,
     /// Current identity for vault access control
     current_identity: String,
     /// Optional HNSW index for faster vector search
@@ -211,6 +263,8 @@ impl QueryRouter {
             vector: Arc::new(VectorEngine::new()),
             vault: None,
             cache: None,
+            blob: None,
+            blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -228,6 +282,8 @@ impl QueryRouter {
             vector,
             vault: None,
             cache: None,
+            blob: None,
+            blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -244,6 +300,8 @@ impl QueryRouter {
             vector: Arc::new(VectorEngine::with_store(store)),
             vault: None,
             cache: None,
+            blob: None,
+            blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
         }
@@ -300,6 +358,62 @@ impl QueryRouter {
     /// Initialize the LLM response cache with custom configuration.
     pub fn init_cache_with_config(&mut self, config: CacheConfig) {
         self.cache = Some(Arc::new(Cache::with_config(config)));
+    }
+
+    /// Get reference to blob store (if initialized).
+    pub fn blob(&self) -> Option<&Arc<tokio::sync::Mutex<BlobStore>>> {
+        self.blob.as_ref()
+    }
+
+    /// Initialize the blob store with default configuration.
+    pub fn init_blob(&mut self) -> Result<()> {
+        self.init_blob_with_config(BlobConfig::default())
+    }
+
+    /// Initialize the blob store with custom configuration.
+    pub fn init_blob_with_config(&mut self, config: BlobConfig) -> Result<()> {
+        // Create a runtime for async blob operations
+        let runtime = Runtime::new()
+            .map_err(|e| RouterError::BlobError(format!("Failed to create runtime: {e}")))?;
+
+        // Create blob store
+        let store = self.vector.store().clone();
+        let blob_store = runtime
+            .block_on(async { BlobStore::new(store, config).await })
+            .map_err(|e| RouterError::BlobError(e.to_string()))?;
+
+        self.blob = Some(Arc::new(tokio::sync::Mutex::new(blob_store)));
+        self.blob_runtime = Some(Arc::new(runtime));
+        Ok(())
+    }
+
+    /// Start the blob store background tasks (GC).
+    pub fn start_blob(&mut self) -> Result<()> {
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob store not initialized".to_string()))?;
+        let runtime = self
+            .blob_runtime
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob runtime not initialized".to_string()))?;
+
+        runtime.block_on(async {
+            let mut blob_guard = blob.lock().await;
+            blob_guard.start().await
+        })?;
+        Ok(())
+    }
+
+    /// Shutdown the blob store gracefully.
+    pub fn shutdown_blob(&mut self) -> Result<()> {
+        if let (Some(blob), Some(runtime)) = (self.blob.as_ref(), self.blob_runtime.as_ref()) {
+            runtime.block_on(async {
+                let mut blob_guard = blob.lock().await;
+                blob_guard.shutdown().await
+            })?;
+        }
+        Ok(())
     }
 
     /// Set the current identity for vault access control.
@@ -590,6 +704,10 @@ impl QueryRouter {
             // Cache statements
             StatementKind::Cache(cache) => self.exec_cache(cache),
 
+            // Blob statements
+            StatementKind::Blob(blob) => self.exec_blob(blob),
+            StatementKind::Blobs(blobs) => self.exec_blobs(blobs),
+
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
         }
@@ -774,6 +892,312 @@ impl QueryRouter {
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
             _ => Err(RouterError::InvalidArgument(
                 "Expected string literal or identifier".to_string(),
+            )),
+        }
+    }
+
+    // ========== Blob Execution ==========
+
+    fn exec_blob(&self, stmt: &BlobStmt) -> Result<QueryResult> {
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob store not initialized".to_string()))?;
+        let runtime = self
+            .blob_runtime
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob runtime not initialized".to_string()))?;
+
+        match &stmt.operation {
+            BlobOp::Put {
+                filename,
+                data,
+                from_path,
+                options,
+            } => {
+                let filename_str = self.eval_string_expr(filename)?;
+                let put_options = self.blob_options_to_put_options(options)?;
+
+                // Get data either from inline DATA or from file path
+                let blob_data = if let Some(data_expr) = data {
+                    self.expr_to_bytes(data_expr)?
+                } else if let Some(path_expr) = from_path {
+                    let path = self.eval_string_expr(path_expr)?;
+                    std::fs::read(&path)
+                        .map_err(|e| RouterError::BlobError(format!("Failed to read file: {e}")))?
+                } else {
+                    return Err(RouterError::MissingArgument(
+                        "PUT requires either DATA or FROM path".to_string(),
+                    ));
+                };
+
+                let artifact_id = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.put(&filename_str, &blob_data, put_options).await
+                })?;
+                Ok(QueryResult::Value(artifact_id))
+            },
+            BlobOp::Get { artifact_id, to_path } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let data = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.get(&id).await
+                })?;
+
+                if let Some(path_expr) = to_path {
+                    let path = self.eval_string_expr(path_expr)?;
+                    std::fs::write(&path, &data)
+                        .map_err(|e| RouterError::BlobError(format!("Failed to write file: {e}")))?;
+                    Ok(QueryResult::Value(format!("Written {} bytes to {path}", data.len())))
+                } else {
+                    Ok(QueryResult::Blob(data))
+                }
+            },
+            BlobOp::Delete { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.delete(&id).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Info { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let meta = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.metadata(&id).await
+                })?;
+
+                Ok(QueryResult::ArtifactInfo(ArtifactInfoResult {
+                    id: meta.id,
+                    filename: meta.filename,
+                    content_type: meta.content_type,
+                    size: meta.size,
+                    checksum: meta.checksum,
+                    chunk_count: meta.chunk_count,
+                    created: meta.created,
+                    modified: meta.modified,
+                    created_by: meta.created_by,
+                    tags: meta.tags,
+                    linked_to: meta.linked_to,
+                    custom: meta.custom,
+                }))
+            },
+            BlobOp::Link { artifact_id, entity } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let entity_str = self.eval_string_expr(entity)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.link(&id, &entity_str).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Unlink { artifact_id, entity } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let entity_str = self.eval_string_expr(entity)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.unlink(&id, &entity_str).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Links { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let links = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.links(&id).await
+                })?;
+                Ok(QueryResult::ArtifactList(links))
+            },
+            BlobOp::Tag { artifact_id, tag } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let tag_str = self.eval_string_expr(tag)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.tag(&id, &tag_str).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Untag { artifact_id, tag } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let tag_str = self.eval_string_expr(tag)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.untag(&id, &tag_str).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Verify { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let valid = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.verify(&id).await
+                })?;
+                Ok(QueryResult::Value(if valid { "OK".to_string() } else { "INVALID".to_string() }))
+            },
+            BlobOp::Gc { full } => {
+                let stats = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    if *full {
+                        blob_guard.full_gc().await
+                    } else {
+                        blob_guard.gc().await
+                    }
+                })?;
+                Ok(QueryResult::Value(format!(
+                    "Deleted {} chunks, freed {} bytes",
+                    stats.deleted, stats.freed_bytes
+                )))
+            },
+            BlobOp::Repair => {
+                let stats = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.repair().await
+                })?;
+                Ok(QueryResult::Value(format!(
+                    "Fixed {} refs, deleted {} orphans",
+                    stats.refs_fixed, stats.orphans_deleted
+                )))
+            },
+            BlobOp::Stats => {
+                let stats = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.stats().await
+                })?;
+                Ok(QueryResult::BlobStats(BlobStatsResult {
+                    artifact_count: stats.artifact_count,
+                    chunk_count: stats.chunk_count,
+                    total_bytes: stats.total_bytes,
+                    unique_bytes: stats.unique_bytes,
+                    dedup_ratio: stats.dedup_ratio,
+                    orphaned_chunks: stats.orphaned_chunks,
+                }))
+            },
+            BlobOp::MetaSet { artifact_id, key, value } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let key_str = self.eval_string_expr(key)?;
+                let value_str = self.eval_string_expr(value)?;
+                runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.set_meta(&id, &key_str, &value_str).await
+                })?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::MetaGet { artifact_id, key } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let key_str = self.eval_string_expr(key)?;
+                let value = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.get_meta(&id, &key_str).await
+                })?;
+                match value {
+                    Some(v) => Ok(QueryResult::Value(v)),
+                    None => Ok(QueryResult::Value("(not found)".to_string())),
+                }
+            },
+        }
+    }
+
+    fn exec_blobs(&self, stmt: &BlobsStmt) -> Result<QueryResult> {
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob store not initialized".to_string()))?;
+        let runtime = self
+            .blob_runtime
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob runtime not initialized".to_string()))?;
+
+        match &stmt.operation {
+            BlobsOp::List { pattern } => {
+                let prefix = pattern
+                    .as_ref()
+                    .map(|p| self.eval_string_expr(p))
+                    .transpose()?;
+                let ids = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.list(prefix.as_deref()).await
+                })?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::For { entity } => {
+                let entity_str = self.eval_string_expr(entity)?;
+                let ids = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.artifacts_for(&entity_str).await
+                })?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::ByTag { tag } => {
+                let tag_str = self.eval_string_expr(tag)?;
+                let ids = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.by_tag(&tag_str).await
+                })?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::ByType { content_type } => {
+                let ct = self.eval_string_expr(content_type)?;
+                let ids = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.by_content_type(&ct).await
+                })?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::Similar { artifact_id, limit } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let k = limit
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(10);
+                let similar = runtime.block_on(async {
+                    let blob_guard = blob.lock().await;
+                    blob_guard.similar(&id, k).await
+                })?;
+                Ok(QueryResult::Similar(
+                    similar
+                        .into_iter()
+                        .map(|s| SimilarResult {
+                            key: s.id,
+                            score: s.similarity,
+                        })
+                        .collect(),
+                ))
+            },
+        }
+    }
+
+    fn blob_options_to_put_options(&self, options: &BlobOptions) -> Result<tensor_blob::PutOptions> {
+        let mut put_options = tensor_blob::PutOptions::new();
+
+        if let Some(ct) = &options.content_type {
+            put_options = put_options.with_content_type(&self.eval_string_expr(ct)?);
+        }
+
+        if let Some(cb) = &options.created_by {
+            put_options = put_options.with_created_by(&self.eval_string_expr(cb)?);
+        }
+
+        for link_expr in &options.link {
+            let link = self.eval_string_expr(link_expr)?;
+            put_options = put_options.with_link(&link);
+        }
+
+        for tag_expr in &options.tag {
+            let tag = self.eval_string_expr(tag_expr)?;
+            put_options = put_options.with_tag(&tag);
+        }
+
+        Ok(put_options)
+    }
+
+    fn expr_to_bytes(&self, expr: &Expr) -> Result<Vec<u8>> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::String(s)) => Ok(s.as_bytes().to_vec()),
+            // For now, only string literals are supported as inline data
+            _ => Err(RouterError::InvalidArgument(
+                "Expected string literal for blob data".to_string(),
             )),
         }
     }
