@@ -1947,7 +1947,9 @@ impl<'a> Parser<'a> {
         } else if self.eat(&TokenKind::Where) {
             // BLOBS WHERE TYPE = 'type'
             // Expect TYPE or an identifier
-            if self.check(&TokenKind::Ident("TYPE".to_string())) || self.check(&TokenKind::Ident("type".to_string())) {
+            if self.check(&TokenKind::Ident("TYPE".to_string()))
+                || self.check(&TokenKind::Ident("type".to_string()))
+            {
                 self.advance();
             }
             self.expect(&TokenKind::Eq)?;

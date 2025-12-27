@@ -279,9 +279,18 @@ mod tests {
         let chunk_key = chunk.key();
 
         let mut tensor = TensorData::new();
-        tensor.set("_type", TensorValue::Scalar(ScalarValue::String("blob_chunk".to_string())));
-        tensor.set("_data", TensorValue::Scalar(ScalarValue::Bytes(data.to_vec())));
-        tensor.set("_size", TensorValue::Scalar(ScalarValue::Int(data.len() as i64)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("blob_chunk".to_string())),
+        );
+        tensor.set(
+            "_data",
+            TensorValue::Scalar(ScalarValue::Bytes(data.to_vec())),
+        );
+        tensor.set(
+            "_size",
+            TensorValue::Scalar(ScalarValue::Int(data.len() as i64)),
+        );
         tensor.set("_refs", TensorValue::Scalar(ScalarValue::Int(refs)));
 
         store.put(&chunk_key, tensor).unwrap();
@@ -290,10 +299,19 @@ mod tests {
 
     fn store_artifact(store: &TensorStore, id: &str, chunks: Vec<String>, checksum: &str) {
         let mut tensor = TensorData::new();
-        tensor.set("_type", TensorValue::Scalar(ScalarValue::String("blob_artifact".to_string())));
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::String(id.to_string())));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("blob_artifact".to_string())),
+        );
+        tensor.set(
+            "_id",
+            TensorValue::Scalar(ScalarValue::String(id.to_string())),
+        );
         tensor.set("_chunks", TensorValue::Pointers(chunks));
-        tensor.set("_checksum", TensorValue::Scalar(ScalarValue::String(checksum.to_string())));
+        tensor.set(
+            "_checksum",
+            TensorValue::Scalar(ScalarValue::String(checksum.to_string())),
+        );
 
         let meta_key = format!("_blob:meta:{id}");
         store.put(&meta_key, tensor).unwrap();
@@ -359,7 +377,12 @@ mod tests {
         let chunk1 = store_chunk(&store, b"chunk 1", 1);
         let missing_key = "_blob:chunk:sha256:nonexistent".to_string();
 
-        store_artifact(&store, "test", vec![chunk1, missing_key.clone()], "sha256:test");
+        store_artifact(
+            &store,
+            "test",
+            vec![chunk1, missing_key.clone()],
+            "sha256:test",
+        );
 
         let missing = check_chunks_exist(&store, "test").unwrap();
         assert_eq!(missing.len(), 1);
@@ -470,7 +493,10 @@ mod tests {
         .unwrap();
 
         let tensor = store.get("_blob:meta:test").unwrap();
-        assert_eq!(get_string(&tensor, "_filename"), Some("new_name.txt".to_string()));
+        assert_eq!(
+            get_string(&tensor, "_filename"),
+            Some("new_name.txt".to_string())
+        );
         assert!(get_int(&tensor, "_modified").is_some());
     }
 }

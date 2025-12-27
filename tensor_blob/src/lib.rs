@@ -66,9 +66,9 @@ use std::sync::Arc;
 use tensor_store::{ScalarValue, TensorStore, TensorValue};
 use tokio::task::JoinHandle;
 
-use streaming::{get_int, get_pointers, get_string};
 #[cfg(feature = "vector")]
 use streaming::get_vector;
+use streaming::{get_int, get_pointers, get_string};
 
 /// S3-style blob store with content-addressable chunked storage.
 pub struct BlobStore {
@@ -120,12 +120,7 @@ impl BlobStore {
     // === Simple API ===
 
     /// Store bytes and return artifact ID.
-    pub async fn put(
-        &self,
-        filename: &str,
-        data: &[u8],
-        options: PutOptions,
-    ) -> Result<String> {
+    pub async fn put(&self, filename: &str, data: &[u8], options: PutOptions) -> Result<String> {
         if data.is_empty() {
             return Err(BlobError::EmptyData);
         }
@@ -166,11 +161,7 @@ impl BlobStore {
     // === Streaming API ===
 
     /// Create a writer for streaming upload.
-    pub async fn writer(
-        &self,
-        filename: &str,
-        options: PutOptions,
-    ) -> Result<BlobWriter> {
+    pub async fn writer(&self, filename: &str, options: PutOptions) -> Result<BlobWriter> {
         let artifact_id = uuid::Uuid::new_v4().to_string();
         self.writer_with_id(&artifact_id, filename, options).await
     }
@@ -242,11 +233,7 @@ impl BlobStore {
     }
 
     /// Update artifact metadata.
-    pub async fn update_metadata(
-        &self,
-        artifact_id: &str,
-        updates: MetadataUpdates,
-    ) -> Result<()> {
+    pub async fn update_metadata(&self, artifact_id: &str, updates: MetadataUpdates) -> Result<()> {
         let meta_key = format!("_blob:meta:{artifact_id}");
         let mut tensor = self
             .store
@@ -254,17 +241,25 @@ impl BlobStore {
             .map_err(|_| BlobError::NotFound(artifact_id.to_string()))?;
 
         if let Some(filename) = updates.filename {
-            tensor.set("_filename", TensorValue::Scalar(ScalarValue::String(filename)));
+            tensor.set(
+                "_filename",
+                TensorValue::Scalar(ScalarValue::String(filename)),
+            );
         }
         if let Some(content_type) = updates.content_type {
-            tensor.set("_content_type", TensorValue::Scalar(ScalarValue::String(content_type)));
+            tensor.set(
+                "_content_type",
+                TensorValue::Scalar(ScalarValue::String(content_type)),
+            );
         }
 
         for (key, value) in updates.custom {
             let field = format!("_meta:{key}");
             match value {
                 Some(v) => tensor.set(&field, TensorValue::Scalar(ScalarValue::String(v))),
-                None => { tensor.remove(&field); }
+                None => {
+                    tensor.remove(&field);
+                },
             }
         }
 
@@ -279,12 +274,7 @@ impl BlobStore {
     }
 
     /// Set custom metadata field.
-    pub async fn set_meta(
-        &self,
-        artifact_id: &str,
-        key: &str,
-        value: &str,
-    ) -> Result<()> {
+    pub async fn set_meta(&self, artifact_id: &str, key: &str, value: &str) -> Result<()> {
         integrity::update_artifact_field(
             &self.store,
             artifact_id,
@@ -395,7 +385,10 @@ impl BlobStore {
             .map_err(|_| BlobError::NotFound(artifact_id.to_string()))?;
 
         tensor.set("_embedding", TensorValue::Vector(embedding));
-        tensor.set("_embedded_model", TensorValue::Scalar(ScalarValue::String(model.to_string())));
+        tensor.set(
+            "_embedded_model",
+            TensorValue::Scalar(ScalarValue::String(model.to_string())),
+        );
 
         self.store.put(&meta_key, tensor)?;
         Ok(())
@@ -451,7 +444,11 @@ impl BlobStore {
         }
 
         // Sort by similarity descending
-        results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(k);
 
         Ok(results)
@@ -647,10 +644,7 @@ mod tests {
             .with_created_by("user:alice")
             .with_meta("author", "Alice");
 
-        let artifact_id = blob_store
-            .put("test.txt", b"data", options)
-            .await
-            .unwrap();
+        let artifact_id = blob_store.put("test.txt", b"data", options).await.unwrap();
 
         let metadata = blob_store.metadata(&artifact_id).await.unwrap();
         assert_eq!(metadata.filename, "test.txt");
@@ -737,7 +731,11 @@ mod tests {
         let blob_store = BlobStore::new(store, BlobConfig::default()).await.unwrap();
 
         let artifact_id = blob_store
-            .put("test.txt", b"test data for verification", PutOptions::default())
+            .put(
+                "test.txt",
+                b"test data for verification",
+                PutOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -811,8 +809,7 @@ mod tests {
     #[tokio::test]
     async fn test_blob_store_gc() {
         let store = TensorStore::new();
-        let config = BlobConfig::new()
-            .with_gc_min_age(std::time::Duration::from_secs(0));
+        let config = BlobConfig::new().with_gc_min_age(std::time::Duration::from_secs(0));
         let blob_store = BlobStore::new(store.clone(), config).await.unwrap();
 
         // Create and delete an artifact
@@ -887,7 +884,10 @@ mod tests {
         let mut reader = blob_store.reader(&artifact_id).await.unwrap();
         let data = reader.read_all().await.unwrap();
 
-        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        assert_eq!(
+            data,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
     }
 
     #[tokio::test]

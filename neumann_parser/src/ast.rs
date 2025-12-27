@@ -652,7 +652,10 @@ pub enum BlobsOp {
     /// Find blobs by content type: `BLOBS WHERE TYPE = 'type'`
     ByType { content_type: Expr },
     /// Find similar blobs: `BLOBS SIMILAR TO 'artifact_id' LIMIT n`
-    Similar { artifact_id: Expr, limit: Option<Expr> },
+    Similar {
+        artifact_id: Expr,
+        limit: Option<Expr>,
+    },
 }
 
 // =============================================================================

@@ -77,7 +77,9 @@ impl BlobConfig {
 
     pub fn validate(&self) -> Result<()> {
         if self.chunk_size == 0 {
-            return Err(BlobError::InvalidConfig("chunk_size must be > 0".to_string()));
+            return Err(BlobError::InvalidConfig(
+                "chunk_size must be > 0".to_string(),
+            ));
         }
         if self.gc_batch_size == 0 {
             return Err(BlobError::InvalidConfig(

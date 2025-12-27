@@ -37,7 +37,7 @@ impl fmt::Display for BlobError {
             Self::ChunkMissing(hash) => write!(f, "chunk missing: {hash}"),
             Self::ChecksumMismatch { expected, actual } => {
                 write!(f, "checksum mismatch: expected {expected}, got {actual}")
-            }
+            },
             Self::StorageError(msg) => write!(f, "storage error: {msg}"),
             Self::GraphError(msg) => write!(f, "graph error: {msg}"),
             Self::VectorError(msg) => write!(f, "vector error: {msg}"),
@@ -49,7 +49,7 @@ impl fmt::Display for BlobError {
             Self::EmptyData => write!(f, "empty data provided"),
             Self::DimensionMismatch { expected, got } => {
                 write!(f, "dimension mismatch: expected {expected}, got {got}")
-            }
+            },
         }
     }
 }
