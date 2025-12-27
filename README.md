@@ -1,5 +1,9 @@
 # Neumann
 
+[![CI](https://github.com/Shadylukin/Neumann/workflows/CI/badge.svg)](https://github.com/Shadylukin/Neumann/actions)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/uN3KbAyKvw)
+
 A unified runtime that stores relational data, graph relationships, and vector embeddings in a single mathematical structure — the tensor.
 
 Instead of spinning up Postgres, Neo4j, Qdrant, and Redis separately, you spin up Neumann.
@@ -98,18 +102,47 @@ TieredStore tracks access patterns:
 
 This enables 50GB+ vector indices on machines with 8GB RAM — hot data (working set) stays fast while cold data lives on disk. Benchmarks show 5-7% overhead for hot operations, with ~1M entries/sec migration throughput.
 
+## Installation
+
+```bash
+# Clone and build
+git clone https://github.com/Shadylukin/Neumann.git
+cd Neumann
+cargo build --release
+
+# Run the shell
+./target/release/neumann_shell
+```
+
+See [Installation Guide](docs/installation.md) for detailed instructions.
+
 ## Quick Start
 
 ```bash
-$ neumann init myproject
-$ neumann ingest ./src                              # code becomes queryable
-$ neumann create table users                        # relational
-$ neumann link user:1 -> post:5                     # graph
-$ neumann embed user:1 "semantic description"       # vector
-$ neumann query "users connected to posts similar to X"  # unified
+# Start the interactive shell
+$ ./target/release/neumann_shell
+
+# Create a table (relational)
+> CREATE TABLE users (id INT, name TEXT, role TEXT)
+> INSERT INTO users VALUES (1, 'Alice', 'engineer')
+> SELECT * FROM users WHERE role = 'engineer'
+
+# Create nodes and edges (graph)
+> NODE CREATE person {name: 'Alice'}
+> NODE CREATE project {name: 'Neumann'}
+> EDGE CREATE node:1 -> node:2 : works_on {}
+> NEIGHBORS node:2 INCOMING
+
+# Store and search embeddings (vector)
+> EMBED STORE 'doc:1' [0.1, 0.2, 0.3, 0.4]
+> EMBED STORE 'doc:2' [0.15, 0.25, 0.35, 0.45]
+> SIMILAR 'doc:1' LIMIT 5
+
+# Save your work
+> SAVE 'mydata.bin'
 ```
 
-The shell is the primary interface. Everything is a command. State lives in the tensor.
+See [Getting Started](docs/getting-started.md) for a full tutorial.
 
 ### Using the Unified Entity API (Rust)
 
@@ -168,6 +201,7 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Tensor Compress | Complete | Int8/binary quantization, delta encoding, RLE |
 | Tensor Vault | Complete | AES-256-GCM encrypted secrets with graph-based access, permission levels, TTL grants, rate limiting, namespace isolation, audit logging, and secret versioning |
 | Tensor Cache | Complete | LLM response caching with semantic similarity, cost tracking |
+| Tensor Blob | Complete | S3-style chunked blob storage with deduplication, streaming, entity linking |
 | Query Router | Complete | Cross-engine queries on unified entities, cache integration |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
@@ -187,19 +221,48 @@ Neumann finishes the thought.
 
 ## Documentation
 
+**Getting Started**
+- [Installation](docs/installation.md)
+- [Getting Started Tutorial](docs/getting-started.md)
 - [Architecture Overview](docs/architecture.md)
+
+**Core Modules**
 - [Tensor Store API](docs/tensor-store.md)
 - [Relational Engine API](docs/relational-engine.md)
 - [Graph Engine API](docs/graph-engine.md)
 - [Vector Engine API](docs/vector-engine.md)
+
+**Extended Modules**
 - [Tensor Compress](docs/tensor-compress.md)
 - [Tensor Vault](docs/tensor-vault.md)
 - [Tensor Cache](docs/tensor-cache.md)
+- [Tensor Blob](docs/tensor-blob.md)
+
+**Query Language**
 - [Query Router API](docs/query-router.md)
 - [Neumann Parser](docs/neumann-parser.md)
 - [Shell](docs/neumann-shell.md)
+
+**Reference**
 - [Benchmarks](docs/benchmarks.md)
+- [Changelog](CHANGELOG.md)
+
+## Getting Help
+
+- **Discord**: [Join our community](https://discord.gg/uN3KbAyKvw)
+- **GitHub Issues**: [Report bugs](https://github.com/Shadylukin/Neumann/issues)
+- **GitHub Discussions**: [Ask questions](https://github.com/Shadylukin/Neumann/discussions)
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-TBD
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+
+## Author
+
+Created by [Lukin Ackroyd](https://scrunchee.ai) in Auckland, New Zealand.
+
+Neumann is the infrastructure layer for [Scrunchee](https://scrunchee.ai), a code intelligence platform for the AI era.

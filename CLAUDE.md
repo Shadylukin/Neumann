@@ -10,11 +10,11 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 
 | Module | Purpose | Depends On |
 |--------|---------|------------|
-| `tensor_store` | Key-value storage layer | - |
+| `tensor_store` | Key-value storage layer | tensor_compress |
 | `relational_engine` | SQL-like tables with indexes | tensor_store |
 | `graph_engine` | Graph nodes and edges | tensor_store |
 | `vector_engine` | Embeddings and similarity search | tensor_store |
-| `tensor_compress` | Compression algorithms | tensor_store |
+| `tensor_compress` | Compression algorithms | - |
 | `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
 | `tensor_cache` | Semantic LLM response caching | tensor_store |
 | `tensor_blob` | S3-style chunked blob storage | tensor_store |
@@ -66,7 +66,7 @@ All code must pass before commit:
 - `cargo clippy -- -D warnings` - lints as errors
 - `cargo test` - all tests pass
 - `cargo doc --no-deps` - documentation builds
-- 95% minimum line coverage per crate (94% for shell due to interactive REPL)
+- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 94%)
 
 ## Testing Philosophy
 
@@ -83,7 +83,12 @@ See `docs/architecture.md` for full system design.
 
 ```
 tensor_store/           # Module 1: Storage layer
-  src/lib.rs            # Core types and TensorStore implementation
+  src/lib.rs            # Core types, TensorStore, SparseVector, BloomFilter
+  src/hnsw.rs           # HNSW index (Dense/Sparse/Delta support)
+  src/delta_vector.rs   # Delta encoding, ArchetypeRegistry, k-means
+  src/instrumentation.rs # Shard access tracking for hot/cold detection
+  src/mmap.rs           # Memory-mapped cold storage
+  src/tiered.rs         # Two-tier hot/cold TieredStore
 relational_engine/      # Module 2: Relational operations
   src/lib.rs            # Tables, schemas, conditions, indexes
 graph_engine/           # Module 3: Graph operations
@@ -91,31 +96,54 @@ graph_engine/           # Module 3: Graph operations
 vector_engine/          # Module 4: Vector operations
   src/lib.rs            # Embeddings, similarity search
 tensor_compress/        # Module 8: Compression algorithms
-  src/lib.rs            # Quantization, delta, RLE encoding
+  src/lib.rs            # Public API
+  src/quantize.rs       # Int8/binary vector quantization
+  src/delta.rs          # Delta + varint encoding
+  src/rle.rs            # Run-length encoding
+  src/format.rs         # Snapshot format v2
 tensor_vault/           # Module 9: Secret storage
-  src/lib.rs            # Vault API, access control
-  src/encryption.rs     # AES-256-GCM
+  src/lib.rs            # Vault API, versioning, namespaces
+  src/encryption.rs     # AES-256-GCM encryption
   src/key.rs            # Argon2id key derivation
-  src/access.rs         # Graph path verification
+  src/access.rs         # Graph-based access control with permissions
+  src/audit.rs          # Audit logging
+  src/rate_limit.rs     # Per-entity rate limiting
+  src/ttl.rs            # Grant TTL tracking
+  src/obfuscation.rs    # Key obfuscation via HMAC
 tensor_cache/           # Module 10: LLM response cache
   src/lib.rs            # Cache API, multi-layer lookup
+  src/config.rs         # Configuration and presets
+  src/error.rs          # Error types
+  src/stats.rs          # Statistics tracking
   src/exact.rs          # O(1) hash-based cache
   src/semantic.rs       # O(log n) HNSW-based cache
   src/embedding.rs      # Embedding cache
+  src/index.rs          # HNSW index wrapper
   src/eviction.rs       # Background eviction
+  src/ttl.rs            # TTL tracking
   src/tokenizer.rs      # tiktoken token counting
 tensor_blob/            # Module 11: Blob storage
   src/lib.rs            # BlobStore API
+  src/config.rs         # Configuration
+  src/error.rs          # Error types
+  src/metadata.rs       # Artifact metadata
   src/chunker.rs        # SHA-256 content-addressable chunking
   src/streaming.rs      # BlobWriter, BlobReader
   src/gc.rs             # Background garbage collection
   src/integrity.rs      # Checksum verification, repair
 neumann_parser/         # Module 5: Query parsing
-  src/lib.rs            # Tokenization, parsing, AST
+  src/lib.rs            # Public API
+  src/lexer.rs          # Tokenization
+  src/token.rs          # Token definitions
+  src/ast.rs            # AST node types
+  src/parser.rs         # Statement parsing
+  src/expr.rs           # Expression parsing (Pratt)
+  src/span.rs           # Source locations
+  src/error.rs          # Error types
 query_router/           # Module 6: Query execution
   src/lib.rs            # Unified query routing
 neumann_shell/          # Module 7: CLI interface
-  src/lib.rs            # Shell implementation
+  src/lib.rs            # Shell implementation, WAL
   src/main.rs           # Binary entry point
 docs/
   architecture.md       # System architecture overview
@@ -138,7 +166,12 @@ docs/
 ### Tensor Store
 - `TensorValue`: Scalar, Vector, Pointer, or Pointers
 - `TensorData`: A map of field names to TensorValues
+- `ScalarValue`: Int, Float, String, Bool, Bytes, Null
 - `TensorStore`: Thread-safe key-value store using DashMap
+- `BloomFilter`: Probabilistic set for fast negative lookups
+- `SparseVector`: Memory-efficient sparse embedding storage
+- `HNSWIndex`: Hierarchical navigable small world graph
+- `TieredStore`: Hot/cold storage with mmap backing
 
 ### Relational Engine
 - `Schema`, `Column`, `ColumnType`: Table structure
@@ -147,8 +180,9 @@ docs/
 - `RelationalEngine`: Table operations with index support
 
 ### Graph Engine
-- `NodeData`, `EdgeData`: Graph element properties
-- `Direction`: Edge traversal direction
+- `Node`, `Edge`: Graph elements with id, label/type, properties
+- `Direction`: Edge traversal direction (Outgoing, Incoming, Both)
+- `Path`: Sequence of nodes and edges
 - `GraphEngine`: Node/edge CRUD and traversals
 
 ### Vector Engine
@@ -164,8 +198,35 @@ docs/
 - `Vault`: Encrypted secret storage with graph-based access
 - `VaultConfig`: Argon2id parameters for key derivation
 - `VaultError`: Access denied, not found, crypto errors
+- `Permission`: Access levels (Read, Write, Admin)
 - `Cipher`: AES-256-GCM encryption wrapper
 - `MasterKey`: Derived key with zeroize on drop
+
+### Tensor Cache
+- `Cache`: Multi-layer LLM response cache
+- `CacheConfig`: Configuration and presets
+- `CacheHit`: Successful cache lookup result
+- `CacheStats`: Hit rates, token counts, cost savings
+- `EvictionStrategy`: LRU, LFU, Cost, Hybrid
+
+### Tensor Blob
+- `BlobStore`: Content-addressable artifact storage
+- `BlobConfig`: Chunk size, GC settings
+- `ArtifactMetadata`: Filename, size, checksum, links, tags
+- `PutOptions`: Upload options (links, tags, metadata)
+- `BlobWriter`, `BlobReader`: Streaming upload/download
+
+### Neumann Parser
+- `Statement`: Top-level parsed statement
+- `StatementKind`: Select, Insert, Node, Edge, Blob, Vault, Cache, etc.
+- `Expr`, `ExprKind`: Expression AST nodes
+- `Token`, `TokenKind`: Lexer tokens
+- `ParseError`: Error with span information
+
+### Query Router
+- `QueryRouter`: Unified query execution across all engines
+- `QueryResult`: Result variants (Rows, Nodes, Edges, Count, etc.)
+- `RouterError`: Query execution errors
 
 ## Concurrency Design
 

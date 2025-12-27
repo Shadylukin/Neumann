@@ -36,6 +36,14 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|            Tensor Blob (Module 11) [DONE]         |
+|   - S3-style chunked object storage             |
+|   - Content-addressable SHA-256 deduplication   |
+|   - Streaming upload/download (BlobWriter/Reader)|
+|   - Entity linking, tagging, metadata           |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |            Tensor Cache (Module 10) [DONE]        |
 |   - LLM response caching (exact + semantic)      |
 |   - Token counting (tiktoken)                    |
@@ -392,6 +400,41 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Implement distributed caching (single-node)
 - Support cache warming (manual only)
 
+### Module 11: Tensor Blob (Complete)
+
+**Responsibility**: S3-style object storage for large artifacts using content-addressable chunked storage.
+
+**Interface**:
+- `put(filename, data, options) -> Result<artifact_id>` - Store artifact
+- `get(artifact_id) -> Result<Vec<u8>>` - Retrieve artifact
+- `delete(artifact_id) -> Result<()>` - Delete artifact
+- `writer(filename, options) -> BlobWriter` - Streaming upload
+- `reader(artifact_id) -> BlobReader` - Streaming download
+- `metadata(artifact_id) -> ArtifactMetadata` - Get metadata
+- `link(artifact_id, entity) -> Result<()>` - Link to entity
+- `tag(artifact_id, tag) -> Result<()>` - Add tag
+- `by_tag(tag) -> Vec<ArtifactMetadata>` - Find by tag
+- `artifacts_for(entity) -> Vec<ArtifactMetadata>` - Find by entity
+- `gc() -> GcStats` - Garbage collect orphaned chunks
+- `verify(artifact_id) -> Result<bool>` - Verify integrity
+- `repair() -> RepairStats` - Repair broken references
+
+**Features**:
+- Content-addressable chunking with SHA-256 hashes
+- Automatic deduplication via reference counting
+- Streaming API for large files (never fully in memory)
+- Entity linking via graph edges
+- Tagging for organization
+- Custom metadata fields
+- Semantic search via embeddings
+- Background garbage collection
+- Integrity verification and repair
+
+**Does Not**:
+- Implement S3-compatible HTTP API (future)
+- Support multi-part uploads (single stream only)
+- Implement versioning (future)
+
 ## Data Flow
 
 ### Write Path
@@ -538,6 +581,7 @@ Neumann/
     tensor-compress.md       # Module 8 documentation
     tensor-vault.md          # Module 9 documentation
     tensor-cache.md          # Module 10 documentation
+    tensor-blob.md           # Module 11 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
@@ -598,6 +642,16 @@ Neumann/
       ttl.rs                 # TTL tracking
     benches/
       cache_bench.rs         # Cache benchmarks
+  tensor_blob/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 11: BlobStore API
+      chunker.rs             # SHA-256 content-addressable chunking
+      streaming.rs           # BlobWriter, BlobReader
+      gc.rs                  # Background garbage collection
+      integrity.rs           # Checksum verification, repair
+    benches/
+      blob_bench.rs          # Blob benchmarks
   query_router/
     Cargo.toml
     src/lib.rs               # Module 5: Query execution
@@ -630,7 +684,7 @@ Runs before every commit for all crates:
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (95% minimum, 92% for shell)
+5. `cargo llvm-cov` - Coverage check (95% minimum, per-crate thresholds for shell/parser/blob/router)
 
 ### CI Pipeline
 
@@ -639,7 +693,7 @@ Runs on every PR:
 2. Format check - Code style
 3. Clippy lints - Static analysis
 4. Tests - Unit and integration tests
-5. Coverage - Minimum 95% per crate (92% for shell)
+5. Coverage - Minimum 95% per crate (per-crate thresholds for complex modules)
 6. Documentation build - Doc generation
 7. Security audit - Dependency vulnerabilities
 8. Miri - Undefined behavior detection (tensor_store)

@@ -12,4 +12,17 @@ members = [
     "tensor_vault",
     "tensor_cache",
     "tensor_blob",
+    "integration_tests",
 ]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Lukin Ackroyd <lukin@scrunchee.ai>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Shadylukin/Neumann"
+homepage = "https://scrunchee.ai"
+documentation = "https://github.com/Shadylukin/Neumann/tree/main/docs"
+keywords = ["database", "tensor", "graph", "vector", "unified"]
+categories = ["database", "data-structures"]
+rust-version = "1.75"

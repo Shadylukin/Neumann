@@ -78,9 +78,28 @@ for token in tokens {
 ```sql
 -- SELECT
 SELECT * FROM table
+SELECT DISTINCT col1, col2 FROM table
 SELECT col1, col2 FROM table WHERE condition
-SELECT * FROM table ORDER BY col ASC
+SELECT * FROM table ORDER BY col ASC NULLS LAST
 SELECT * FROM table LIMIT 10 OFFSET 5
+
+-- SELECT with GROUP BY and HAVING
+SELECT col, COUNT(*) FROM table GROUP BY col
+SELECT col, COUNT(*) AS cnt FROM table GROUP BY col HAVING COUNT(*) > 5
+
+-- SELECT with JOINs
+SELECT * FROM t1 INNER JOIN t2 ON t1.id = t2.id
+SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id
+SELECT * FROM t1 RIGHT JOIN t2 ON t1.id = t2.id
+SELECT * FROM t1 FULL JOIN t2 ON t1.id = t2.id
+SELECT * FROM t1 CROSS JOIN t2
+SELECT * FROM t1 NATURAL JOIN t2
+SELECT * FROM t1 JOIN t2 USING (id)
+
+-- Subqueries
+SELECT * FROM (SELECT id FROM users) AS u
+SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)
+SELECT * FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE orders.user_id = users.id)
 
 -- INSERT
 INSERT INTO table VALUES (1, 'text', 3.14)
@@ -92,8 +111,22 @@ UPDATE table SET col = value WHERE condition
 -- DELETE
 DELETE FROM table WHERE condition
 
--- CREATE TABLE
-CREATE TABLE name (col1, col2, col3)
+-- CREATE TABLE with constraints
+CREATE TABLE IF NOT EXISTS users (
+    id INT PRIMARY KEY,
+    email VARCHAR UNIQUE NOT NULL,
+    age INT CHECK (age >= 18),
+    status VARCHAR DEFAULT 'active',
+    dept_id INT REFERENCES departments(id)
+)
+
+-- DROP TABLE
+DROP TABLE IF EXISTS users CASCADE
+
+-- CREATE/DROP INDEX
+CREATE UNIQUE INDEX idx_email ON users(email)
+CREATE INDEX IF NOT EXISTS idx_name ON users(name)
+DROP INDEX IF EXISTS idx_name
 ```
 
 ### Graph Statements
@@ -130,6 +163,107 @@ EMBED DELETE 'key'
 
 -- SIMILAR
 SIMILAR 'key' LIMIT k
+SIMILAR [0.1, 0.2, 0.3] LIMIT k
+```
+
+### Vault Statements
+
+```sql
+-- VAULT SET
+VAULT SET 'key' 'value'
+
+-- VAULT GET
+VAULT GET 'key'
+
+-- VAULT DELETE
+VAULT DELETE 'key'
+
+-- VAULT LIST
+VAULT LIST
+VAULT LIST 'pattern'
+
+-- VAULT ROTATE
+VAULT ROTATE 'key' 'new_value'
+
+-- VAULT GRANT
+VAULT GRANT 'entity' ON 'key'
+
+-- VAULT REVOKE
+VAULT REVOKE 'entity' ON 'key'
+```
+
+### Cache Statements
+
+```sql
+-- CACHE INIT
+CACHE INIT
+
+-- CACHE STATS
+CACHE STATS
+
+-- CACHE CLEAR
+CACHE CLEAR
+
+-- CACHE EVICT
+CACHE EVICT
+CACHE EVICT 100
+
+-- CACHE GET/PUT
+CACHE GET 'key'
+CACHE PUT 'key' 'value'
+```
+
+### Blob Statements
+
+```sql
+-- BLOB PUT
+BLOB PUT 'filename' 'data'
+BLOB PUT 'filename' FROM 'path'
+BLOB PUT 'filename' 'data' LINK entity TAG tag
+
+-- BLOB GET
+BLOB GET 'artifact_id'
+BLOB GET 'artifact_id' TO 'path'
+
+-- BLOB DELETE
+BLOB DELETE 'artifact_id'
+
+-- BLOB INFO
+BLOB INFO 'artifact_id'
+
+-- BLOB LINK/UNLINK
+BLOB LINK 'artifact_id' TO entity
+BLOB UNLINK 'artifact_id' FROM entity
+BLOB LINKS 'artifact_id'
+
+-- BLOB TAG/UNTAG
+BLOB TAG 'artifact_id' 'tag'
+BLOB UNTAG 'artifact_id' 'tag'
+
+-- BLOB VERIFY
+BLOB VERIFY 'artifact_id'
+
+-- BLOB GC
+BLOB GC
+BLOB GC FULL
+
+-- BLOB REPAIR
+BLOB REPAIR
+
+-- BLOB STATS
+BLOB STATS
+
+-- BLOB META
+BLOB META SET 'artifact_id' 'key' 'value'
+BLOB META GET 'artifact_id' 'key'
+
+-- BLOBS (Query/List)
+BLOBS
+BLOBS 'prefix'
+BLOBS FOR entity
+BLOBS BY TAG 'tag'
+BLOBS WHERE TYPE = 'content_type'
+BLOBS SIMILAR TO 'artifact_id' LIMIT n
 ```
 
 ### Expressions
@@ -182,6 +316,10 @@ pub enum StatementKind {
     Update(UpdateStmt),
     Delete(DeleteStmt),
     CreateTable(CreateTableStmt),
+    DropTable(DropTableStmt),
+    CreateIndex(CreateIndexStmt),
+    DropIndex(DropIndexStmt),
+    ShowTables,
 
     // Graph
     Node(NodeStmt),
@@ -193,6 +331,16 @@ pub enum StatementKind {
     // Vector
     Embed(EmbedStmt),
     Similar(SimilarStmt),
+
+    // Vault
+    Vault(VaultStmt),
+
+    // Cache
+    Cache(CacheStmt),
+
+    // Blob
+    Blob(BlobStmt),
+    Blobs(BlobsStmt),
 }
 ```
 
@@ -261,11 +409,33 @@ if let Err(e) = result {
 ## Reserved Keywords
 
 ```
-SELECT, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, SET,
-DELETE, CREATE, TABLE, AND, OR, NOT, NULL, IS, IN, LIKE,
-BETWEEN, ORDER, BY, ASC, DESC, LIMIT, OFFSET, NODE, EDGE,
-PATH, TO, VIA, NEIGHBORS, FIND, DIRECTED, OUTGOING, INCOMING,
-BOTH, EMBED, STORE, GET, SIMILAR, TRUE, FALSE
+-- SQL
+SELECT, DISTINCT, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, SET,
+DELETE, CREATE, DROP, TABLE, INDEX, AND, OR, NOT, NULL, IS, IN,
+LIKE, BETWEEN, ORDER, BY, ASC, DESC, NULLS, FIRST, LAST, LIMIT,
+OFFSET, GROUP, HAVING, JOIN, INNER, LEFT, RIGHT, FULL, OUTER,
+CROSS, NATURAL, ON, USING, AS, PRIMARY, KEY, UNIQUE, REFERENCES,
+FOREIGN, CHECK, DEFAULT, CASCADE, IF, EXISTS, SHOW, TABLES
+
+-- Graph
+NODE, EDGE, PATH, TO, VIA, NEIGHBORS, FIND, DIRECTED, OUTGOING,
+INCOMING, BOTH, RETURN
+
+-- Vector
+EMBED, STORE, GET, SIMILAR, COSINE, EUCLIDEAN, DOT_PRODUCT
+
+-- Vault
+VAULT, GRANT, REVOKE, ROTATE, LIST
+
+-- Cache
+CACHE, INIT, STATS, CLEAR, EVICT, PUT
+
+-- Blob
+BLOB, BLOBS, INFO, LINK, UNLINK, LINKS, TAG, UNTAG, VERIFY,
+GC, REPAIR, META, TYPE, FOR
+
+-- Literals
+TRUE, FALSE
 ```
 
 ## Performance
@@ -303,10 +473,10 @@ let result = router.execute_parsed("SELECT * FROM users")?;
 
 ## Future Considerations
 
-Not implemented:
+Not yet implemented:
 
-- **Subqueries**: Nested SELECT statements
-- **Joins**: JOIN syntax (currently handled differently)
-- **Window functions**: OVER, PARTITION BY
-- **CTEs**: WITH clauses
-- **Aggregations**: GROUP BY, HAVING, COUNT, SUM, etc.
+- **Window functions**: OVER, PARTITION BY, ROW_NUMBER, RANK
+- **CTEs**: WITH clauses (Common Table Expressions)
+- **UNION/INTERSECT/EXCEPT**: Set operations
+- **Stored procedures**: User-defined functions
+- **Triggers**: Automatic actions on data changes
