@@ -8,6 +8,7 @@ description = "Secure secret storage with graph-based access control"
 tensor_store = { path = "../tensor_store" }
 graph_engine = { path = "../graph_engine" }
 serde = { version = "1", features = ["derive"] }
+dashmap = "6"
 
 # Cryptography
 aes-gcm = "0.10"

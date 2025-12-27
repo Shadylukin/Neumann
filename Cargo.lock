@@ -1230,6 +1230,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2",
  "criterion",
+ "dashmap",
  "graph_engine",
  "peak_alloc",
  "rand",
