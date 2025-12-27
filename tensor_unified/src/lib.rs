@@ -170,6 +170,77 @@ impl UnifiedItem {
     }
 }
 
+// ========== Unified Trait ==========
+
+/// Trait for types that can be converted to a unified representation.
+///
+/// This allows nodes, edges, embeddings, and other engine-specific types
+/// to be presented in a consistent format for cross-engine queries.
+pub trait Unified {
+    /// Convert this item to a UnifiedItem.
+    fn as_unified(&self) -> UnifiedItem;
+
+    /// Get the source engine name.
+    fn source_engine(&self) -> &'static str;
+
+    /// Get the unique identifier.
+    fn unified_id(&self) -> String;
+}
+
+impl Unified for Node {
+    fn as_unified(&self) -> UnifiedItem {
+        let mut item = UnifiedItem::new("graph", self.id.to_string());
+        item.set("label", &self.label);
+        for (k, v) in &self.properties {
+            item.set(k.clone(), format!("{:?}", v));
+        }
+        item
+    }
+
+    fn source_engine(&self) -> &'static str {
+        "graph"
+    }
+
+    fn unified_id(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl Unified for graph_engine::Edge {
+    fn as_unified(&self) -> UnifiedItem {
+        let mut item = UnifiedItem::new("graph", self.id.to_string());
+        item.set("from", self.from.to_string());
+        item.set("to", self.to.to_string());
+        item.set("type", &self.edge_type);
+        for (k, v) in &self.properties {
+            item.set(k.clone(), format!("{:?}", v));
+        }
+        item
+    }
+
+    fn source_engine(&self) -> &'static str {
+        "graph"
+    }
+
+    fn unified_id(&self) -> String {
+        self.id.to_string()
+    }
+}
+
+impl Unified for vector_engine::SearchResult {
+    fn as_unified(&self) -> UnifiedItem {
+        UnifiedItem::new("vector", &self.key).with_score(self.score)
+    }
+
+    fn source_engine(&self) -> &'static str {
+        "vector"
+    }
+
+    fn unified_id(&self) -> String {
+        self.key.clone()
+    }
+}
+
 /// Pattern for FIND queries.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FindPattern {
@@ -1640,5 +1711,94 @@ mod tests {
         // Null
         let prop3 = graph_engine::PropertyValue::Null;
         assert!(!engine.property_matches_value(&prop3, &Value::Int(1)));
+    }
+
+    // ========== Unified Trait Tests ==========
+
+    #[test]
+    fn test_unified_trait_node() {
+        use crate::Unified;
+
+        let node = Node {
+            id: 42,
+            label: "person".to_string(),
+            properties: HashMap::from([(
+                "name".to_string(),
+                graph_engine::PropertyValue::String("Alice".to_string()),
+            )]),
+        };
+
+        let item = node.as_unified();
+        assert_eq!(item.id, "42");
+        assert_eq!(item.source, "graph");
+        assert!(item.data.contains_key("label"));
+        assert!(item.data.contains_key("name"));
+
+        assert_eq!(node.source_engine(), "graph");
+        assert_eq!(node.unified_id(), "42");
+    }
+
+    #[test]
+    fn test_unified_trait_edge() {
+        use crate::Unified;
+
+        let edge = graph_engine::Edge {
+            id: 1,
+            from: 10,
+            to: 20,
+            edge_type: "knows".to_string(),
+            properties: HashMap::new(),
+            directed: true,
+        };
+
+        let item = edge.as_unified();
+        assert_eq!(item.id, "1");
+        assert_eq!(item.source, "graph");
+        assert_eq!(item.data.get("from"), Some(&"10".to_string()));
+        assert_eq!(item.data.get("to"), Some(&"20".to_string()));
+        assert_eq!(item.data.get("type"), Some(&"knows".to_string()));
+
+        assert_eq!(edge.source_engine(), "graph");
+        assert_eq!(edge.unified_id(), "1");
+    }
+
+    #[test]
+    fn test_unified_trait_search_result() {
+        use crate::Unified;
+
+        let result = vector_engine::SearchResult {
+            key: "doc:123".to_string(),
+            score: 0.95,
+        };
+
+        let item = result.as_unified();
+        assert_eq!(item.id, "doc:123");
+        assert_eq!(item.source, "vector");
+        assert_eq!(item.score, Some(0.95));
+
+        assert_eq!(result.source_engine(), "vector");
+        assert_eq!(result.unified_id(), "doc:123");
+    }
+
+    #[test]
+    fn test_unified_trait_collect_items() {
+        use crate::Unified;
+
+        // Simulate collecting unified items from different sources
+        let node = Node {
+            id: 1,
+            label: "test".to_string(),
+            properties: HashMap::new(),
+        };
+        let search = vector_engine::SearchResult {
+            key: "vec:1".to_string(),
+            score: 0.8,
+        };
+
+        let items: Vec<UnifiedItem> = vec![node.as_unified(), search.as_unified()];
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].source, "graph");
+        assert_eq!(items[1].source, "vector");
     }
 }

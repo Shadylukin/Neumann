@@ -410,6 +410,41 @@ impl QueryRouter {
         self.blob.as_ref()
     }
 
+    // ========== Auto-Initialization Methods ==========
+
+    /// Ensure vault is initialized, auto-initializing from NEUMANN_VAULT_KEY if needed.
+    ///
+    /// Returns an error if vault cannot be initialized (no key available).
+    pub fn ensure_vault(&mut self) -> Result<&Vault> {
+        if self.vault.is_none() {
+            if let Ok(key) = std::env::var("NEUMANN_VAULT_KEY") {
+                self.init_vault(key.as_bytes())?;
+            } else {
+                return Err(RouterError::VaultError(
+                    "Vault not initialized. Set NEUMANN_VAULT_KEY env var or call init_vault()"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(self.vault.as_deref().unwrap())
+    }
+
+    /// Ensure cache is initialized, auto-initializing with defaults if needed.
+    pub fn ensure_cache(&mut self) -> &Cache {
+        if self.cache.is_none() {
+            self.init_cache();
+        }
+        self.cache.as_deref().unwrap()
+    }
+
+    /// Ensure blob store is initialized, auto-initializing with defaults if needed.
+    pub fn ensure_blob(&mut self) -> Result<&Arc<tokio::sync::Mutex<BlobStore>>> {
+        if self.blob.is_none() {
+            self.init_blob()?;
+        }
+        Ok(self.blob.as_ref().unwrap())
+    }
+
     /// Initialize the blob store with default configuration.
     pub fn init_blob(&mut self) -> Result<()> {
         self.init_blob_with_config(BlobConfig::default())
@@ -8488,5 +8523,95 @@ mod tests {
         assert!(result.as_rows().is_some());
         assert_eq!(result.as_rows().unwrap().len(), 1);
         assert!(QueryResult::Empty.as_rows().is_none());
+    }
+
+    // ========== Auto-Initialization Tests ==========
+
+    #[test]
+    fn test_ensure_cache_auto_init() {
+        let mut router = QueryRouter::new();
+        assert!(router.cache().is_none());
+
+        // ensure_cache should auto-initialize
+        let cache = router.ensure_cache();
+        assert_eq!(cache.stats().total_entries(), 0);
+
+        // Subsequent calls should return the same cache
+        let cache2 = router.ensure_cache();
+        assert_eq!(cache2.stats().total_entries(), 0);
+    }
+
+    #[test]
+    fn test_ensure_blob_auto_init() {
+        let mut router = QueryRouter::new();
+        assert!(router.blob().is_none());
+
+        // ensure_blob should auto-initialize
+        let result = router.ensure_blob();
+        assert!(result.is_ok());
+
+        // Subsequent calls should return the same blob store
+        let result2 = router.ensure_blob();
+        assert!(result2.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_vault_no_env_key() {
+        let mut router = QueryRouter::new();
+        assert!(router.vault().is_none());
+
+        // Remove env var if set (save and restore)
+        let saved = std::env::var("NEUMANN_VAULT_KEY").ok();
+        std::env::remove_var("NEUMANN_VAULT_KEY");
+
+        // ensure_vault should fail without env key
+        let result = router.ensure_vault();
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(err.to_string().contains("not initialized"));
+        }
+
+        // Restore env var if it was set
+        if let Some(key) = saved {
+            std::env::set_var("NEUMANN_VAULT_KEY", key);
+        }
+    }
+
+    #[test]
+    fn test_ensure_vault_with_pre_init() {
+        let mut router = QueryRouter::new();
+        router
+            .init_vault(b"32_byte_master_key_for_testing!")
+            .unwrap();
+
+        // ensure_vault should return the existing vault
+        let result = router.ensure_vault();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_cache_idempotent() {
+        let mut router = QueryRouter::new();
+
+        // Call ensure_cache multiple times
+        let _ = router.ensure_cache();
+        let _ = router.ensure_cache();
+        let _ = router.ensure_cache();
+
+        // Should still have cache
+        assert!(router.cache().is_some());
+    }
+
+    #[test]
+    fn test_ensure_blob_idempotent() {
+        let mut router = QueryRouter::new();
+
+        // Call ensure_blob multiple times
+        let _ = router.ensure_blob();
+        let _ = router.ensure_blob();
+        let _ = router.ensure_blob();
+
+        // Should still have blob
+        assert!(router.blob().is_some());
     }
 }
