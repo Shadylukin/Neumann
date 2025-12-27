@@ -799,7 +799,7 @@ fn format_blob(data: &[u8]) -> String {
         }
     }
     // Show summary for binary/large data
-    format!("<binary data: {} bytes>", size)
+    format!("<binary data: {size} bytes>")
 }
 
 /// Formats artifact info for display.
