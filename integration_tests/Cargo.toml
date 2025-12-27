@@ -1,0 +1,24 @@
+[package]
+name = "integration_tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tensor_store = { path = "../tensor_store" }
+tensor_compress = { path = "../tensor_compress" }
+relational_engine = { path = "../relational_engine" }
+graph_engine = { path = "../graph_engine" }
+vector_engine = { path = "../vector_engine" }
+tensor_vault = { path = "../tensor_vault" }
+tensor_cache = { path = "../tensor_cache" }
+tensor_blob = { path = "../tensor_blob", features = ["full"] }
+tensor_unified = { path = "../tensor_unified" }
+query_router = { path = "../query_router" }
+neumann_shell = { path = "../neumann_shell" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+bincode = "1.3"

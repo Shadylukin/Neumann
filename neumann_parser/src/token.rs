@@ -128,6 +128,8 @@ pub enum TokenKind {
     If,
     Show,
     Tables,
+    Describe,
+    Embeddings,
 
     // === Type Keywords ===
     Int,
@@ -183,12 +185,16 @@ pub enum TokenKind {
     Cosine,
     Euclidean,
     DotProduct,
+    Build,
+    Batch,
 
     // === Unified Query Keywords ===
     Find,
     With,
     Return,
     Match,
+    Entity,
+    Connected,
 
     // === Vault Keywords ===
     Vault,
@@ -203,6 +209,8 @@ pub enum TokenKind {
     Clear,
     Evict,
     Put,
+    Semantic,
+    Threshold,
 
     // === Blob Storage Keywords ===
     Blobs,
@@ -384,6 +392,8 @@ impl TokenKind {
                 | If
                 | Show
                 | Tables
+                | Describe
+                | Embeddings
                 | True
                 | False
                 | Null
@@ -434,10 +444,14 @@ impl TokenKind {
                 | Cosine
                 | Euclidean
                 | DotProduct
+                | Build
+                | Batch
                 | Find
                 | With
                 | Return
                 | Match
+                | Entity
+                | Connected
                 | Vault
                 | Grant
                 | Revoke
@@ -448,6 +462,8 @@ impl TokenKind {
                 | Clear
                 | Evict
                 | Put
+                | Semantic
+                | Threshold
                 | Blobs
                 | Info
                 | Link
@@ -568,6 +584,8 @@ impl TokenKind {
             "IF" => TokenKind::If,
             "SHOW" => TokenKind::Show,
             "TABLES" => TokenKind::Tables,
+            "DESCRIBE" => TokenKind::Describe,
+            "EMBEDDINGS" => TokenKind::Embeddings,
             "TRUE" => TokenKind::True,
             "FALSE" => TokenKind::False,
             "NULL" => TokenKind::Null,
@@ -626,12 +644,16 @@ impl TokenKind {
             "COSINE" => TokenKind::Cosine,
             "EUCLIDEAN" => TokenKind::Euclidean,
             "DOT_PRODUCT" | "DOTPRODUCT" => TokenKind::DotProduct,
+            "BUILD" => TokenKind::Build,
+            "BATCH" => TokenKind::Batch,
 
             // Unified keywords
             "FIND" => TokenKind::Find,
             "WITH" => TokenKind::With,
             "RETURN" => TokenKind::Return,
             "MATCH" => TokenKind::Match,
+            "ENTITY" => TokenKind::Entity,
+            "CONNECTED" => TokenKind::Connected,
 
             // Vault keywords
             "VAULT" => TokenKind::Vault,
@@ -646,6 +668,8 @@ impl TokenKind {
             "CLEAR" => TokenKind::Clear,
             "EVICT" => TokenKind::Evict,
             "PUT" => TokenKind::Put,
+            "SEMANTIC" => TokenKind::Semantic,
+            "THRESHOLD" => TokenKind::Threshold,
 
             // Blob storage keywords
             "BLOBS" => TokenKind::Blobs,
@@ -749,6 +773,8 @@ impl TokenKind {
             If => "IF",
             Show => "SHOW",
             Tables => "TABLES",
+            Describe => "DESCRIBE",
+            Embeddings => "EMBEDDINGS",
             Int => "INT",
             Integer_ => "INTEGER",
             Bigint => "BIGINT",
@@ -796,10 +822,14 @@ impl TokenKind {
             Cosine => "COSINE",
             Euclidean => "EUCLIDEAN",
             DotProduct => "DOT_PRODUCT",
+            Build => "BUILD",
+            Batch => "BATCH",
             Find => "FIND",
             With => "WITH",
             Return => "RETURN",
             Match => "MATCH",
+            Entity => "ENTITY",
+            Connected => "CONNECTED",
             Vault => "VAULT",
             Grant => "GRANT",
             Revoke => "REVOKE",
@@ -810,6 +840,8 @@ impl TokenKind {
             Clear => "CLEAR",
             Evict => "EVICT",
             Put => "PUT",
+            Semantic => "SEMANTIC",
+            Threshold => "THRESHOLD",
             Blobs => "BLOBS",
             Info => "INFO",
             Link => "LINK",

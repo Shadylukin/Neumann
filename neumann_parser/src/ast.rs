@@ -45,6 +45,12 @@ pub enum StatementKind {
     DropIndex(DropIndexStmt),
     /// SHOW TABLES statement
     ShowTables,
+    /// SHOW EMBEDDINGS statement
+    ShowEmbeddings { limit: Option<Expr> },
+    /// COUNT EMBEDDINGS statement
+    CountEmbeddings,
+    /// DESCRIBE statement
+    Describe(DescribeStmt),
 
     // === Graph Statements ===
     /// NODE command
@@ -65,6 +71,8 @@ pub enum StatementKind {
     // === Unified Statements ===
     /// FIND unified query
     Find(FindStmt),
+    /// ENTITY command
+    Entity(EntityStmt),
 
     // === Vault Statements ===
     /// VAULT command
@@ -336,10 +344,33 @@ pub struct CreateIndexStmt {
 }
 
 /// DROP INDEX statement.
+/// Supports both `DROP INDEX name` and `DROP INDEX ON table(column)` syntax.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DropIndexStmt {
     pub if_exists: bool,
-    pub name: Ident,
+    /// Index name (for named indexes)
+    pub name: Option<Ident>,
+    /// Table name (for ON table(column) syntax)
+    pub table: Option<Ident>,
+    /// Column name (for ON table(column) syntax)
+    pub column: Option<Ident>,
+}
+
+/// DESCRIBE statement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DescribeStmt {
+    pub target: DescribeTarget,
+}
+
+/// Target of DESCRIBE.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DescribeTarget {
+    /// DESCRIBE TABLE name
+    Table(Ident),
+    /// DESCRIBE NODE label
+    Node(Ident),
+    /// DESCRIBE EDGE type
+    Edge(Ident),
 }
 
 // =============================================================================
@@ -405,6 +436,10 @@ pub struct NeighborsStmt {
     pub node_id: Expr,
     pub direction: Direction,
     pub edge_type: Option<Ident>,
+    /// Optional BY SIMILARITY constraint for cross-engine queries
+    pub by_similarity: Option<Vec<Expr>>,
+    /// Optional LIMIT for BY SIMILARITY queries
+    pub limit: Option<Expr>,
 }
 
 /// Direction for graph traversal.
@@ -452,6 +487,10 @@ pub enum EmbedOp {
     Get { key: Expr },
     /// Delete embedding: `EMBED DELETE 'key'`
     Delete { key: Expr },
+    /// Build HNSW index: `EMBED BUILD INDEX`
+    BuildIndex,
+    /// Batch store embeddings: `EMBED BATCH [('key1', [v1, v2]), ('key2', [v1, v2])]`
+    Batch { items: Vec<(Expr, Vec<Expr>)> },
 }
 
 /// SIMILAR search.
@@ -460,6 +499,8 @@ pub struct SimilarStmt {
     pub query: SimilarQuery,
     pub limit: Option<Expr>,
     pub metric: Option<DistanceMetric>,
+    /// Optional CONNECTED TO constraint for cross-engine queries
+    pub connected_to: Option<Expr>,
 }
 
 /// Query for SIMILAR search.
@@ -505,6 +546,29 @@ pub enum FindPattern {
         from: Option<Ident>,
         edge: Option<Ident>,
         to: Option<Ident>,
+    },
+}
+
+/// ENTITY command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityStmt {
+    pub operation: EntityOp,
+}
+
+/// ENTITY operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EntityOp {
+    /// Create an entity: `ENTITY CREATE 'key' { properties } [EMBEDDING [vector]]`
+    Create {
+        key: Expr,
+        properties: Vec<Property>,
+        embedding: Option<Vec<Expr>>,
+    },
+    /// Connect entities: `ENTITY CONNECT 'from' -> 'to' : type`
+    Connect {
+        from_key: Expr,
+        to_key: Expr,
+        edge_type: Ident,
     },
 }
 
@@ -562,6 +626,17 @@ pub enum CacheOp {
     Get { key: Expr },
     /// Store cache entry: `CACHE PUT 'key' 'value'`
     Put { key: Expr, value: Expr },
+    /// Semantic cache lookup: `CACHE SEMANTIC GET 'query' [THRESHOLD n]`
+    SemanticGet {
+        query: Expr,
+        threshold: Option<Expr>,
+    },
+    /// Semantic cache store: `CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [vector]`
+    SemanticPut {
+        query: Expr,
+        response: Expr,
+        embedding: Vec<Expr>,
+    },
 }
 
 // =============================================================================
@@ -577,6 +652,8 @@ pub struct BlobStmt {
 /// BLOB operations.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BlobOp {
+    /// Initialize blob store: `BLOB INIT`
+    Init,
     /// Store blob: `BLOB PUT 'filename' DATA` or `BLOB PUT 'filename' FROM 'path'`
     Put {
         filename: Expr,

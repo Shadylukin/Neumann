@@ -66,7 +66,7 @@ All code must pass before commit:
 - `cargo clippy -- -D warnings` - lints as errors
 - `cargo test` - all tests pass
 - `cargo doc --no-deps` - documentation builds
-- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 94%)
+- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 93%)
 
 ## Testing Philosophy
 

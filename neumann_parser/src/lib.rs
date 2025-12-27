@@ -95,6 +95,61 @@ mod tests {
     }
 
     #[test]
+    fn test_entity_create_statement() {
+        let stmt = parse("ENTITY CREATE 'user:1' { name: 'Alice' }").unwrap();
+        assert!(matches!(stmt.kind, StatementKind::Entity(_)));
+    }
+
+    #[test]
+    fn test_entity_create_with_embedding() {
+        let stmt = parse("ENTITY CREATE 'doc:1' { title: 'Test' } EMBEDDING [1.0, 0.0]").unwrap();
+        if let StatementKind::Entity(EntityStmt {
+            operation: EntityOp::Create { embedding, .. },
+        }) = stmt.kind
+        {
+            assert!(embedding.is_some());
+            assert_eq!(embedding.unwrap().len(), 2);
+        } else {
+            panic!("expected ENTITY CREATE");
+        }
+    }
+
+    #[test]
+    fn test_entity_connect_statement() {
+        let stmt = parse("ENTITY CONNECT 'from' -> 'to' : follows").unwrap();
+        if let StatementKind::Entity(EntityStmt {
+            operation: EntityOp::Connect { edge_type, .. },
+        }) = stmt.kind
+        {
+            assert_eq!(edge_type.name, "follows");
+        } else {
+            panic!("expected ENTITY CONNECT");
+        }
+    }
+
+    #[test]
+    fn test_similar_connected_to() {
+        let stmt = parse("SIMILAR 'key' CONNECTED TO 'hub' LIMIT 10").unwrap();
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(similar.connected_to.is_some());
+            assert!(similar.limit.is_some());
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_neighbors_by_similarity() {
+        let stmt = parse("NEIGHBORS 'entity' BY SIMILAR [1.0, 0.0] LIMIT 5").unwrap();
+        if let StatementKind::Neighbors(neighbors) = stmt.kind {
+            assert!(neighbors.by_similarity.is_some());
+            assert_eq!(neighbors.by_similarity.unwrap().len(), 2);
+        } else {
+            panic!("expected NEIGHBORS");
+        }
+    }
+
+    #[test]
     fn test_lexer_api() {
         let mut lexer = Lexer::new("SELECT 1");
         let token = lexer.next_token();

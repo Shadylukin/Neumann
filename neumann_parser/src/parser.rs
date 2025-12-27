@@ -423,6 +423,21 @@ impl<'a> Parser<'a> {
         Ok(Expr::new(ExprKind::Array(items), start.merge(end)))
     }
 
+    fn parse_vector_literal(&mut self) -> ParseResult<Vec<Expr>> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut items = Vec::new();
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                items.push(self.parse_expr()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBracket)?;
+        Ok(items)
+    }
+
     fn parse_case_expr(&mut self) -> ParseResult<Expr> {
         let start = self.expect(&TokenKind::Case)?.span;
         let operand = if !self.check(&TokenKind::When) {
@@ -594,6 +609,8 @@ impl<'a> Parser<'a> {
             TokenKind::Create => self.parse_create()?,
             TokenKind::Drop => self.parse_drop()?,
             TokenKind::Show => self.parse_show()?,
+            TokenKind::Describe => self.parse_describe()?,
+            TokenKind::Count => self.parse_count()?,
 
             // Graph Statements
             TokenKind::Node => self.parse_node()?,
@@ -607,6 +624,7 @@ impl<'a> Parser<'a> {
 
             // Unified Statements
             TokenKind::Find => self.parse_find()?,
+            TokenKind::Entity => self.parse_entity()?,
 
             // Vault Statements
             TokenKind::Vault => self.parse_vault()?,
@@ -1330,9 +1348,29 @@ impl<'a> Parser<'a> {
                 false
             };
 
-            let name = self.expect_ident()?;
+            // Support both `DROP INDEX ON table(column)` and `DROP INDEX name`
+            if self.eat(&TokenKind::On) {
+                let table = self.expect_ident()?;
+                self.expect(&TokenKind::LParen)?;
+                let column = self.expect_ident()?;
+                self.expect(&TokenKind::RParen)?;
 
-            Ok(StatementKind::DropIndex(DropIndexStmt { if_exists, name }))
+                Ok(StatementKind::DropIndex(DropIndexStmt {
+                    if_exists,
+                    name: None,
+                    table: Some(table),
+                    column: Some(column),
+                }))
+            } else {
+                let name = self.expect_ident()?;
+
+                Ok(StatementKind::DropIndex(DropIndexStmt {
+                    if_exists,
+                    name: Some(name),
+                    table: None,
+                    column: None,
+                }))
+            }
         } else {
             Err(ParseError::unexpected(
                 self.current.kind.clone(),
@@ -1347,11 +1385,55 @@ impl<'a> Parser<'a> {
 
         if self.eat(&TokenKind::Tables) {
             Ok(StatementKind::ShowTables)
+        } else if self.eat(&TokenKind::Embeddings) {
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            Ok(StatementKind::ShowEmbeddings { limit })
         } else {
             Err(ParseError::unexpected(
                 self.current.kind.clone(),
                 self.current.span,
-                "TABLES",
+                "TABLES or EMBEDDINGS",
+            ))
+        }
+    }
+
+    fn parse_describe(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Describe)?;
+
+        let target = if self.eat(&TokenKind::Table) {
+            let name = self.expect_ident()?;
+            DescribeTarget::Table(name)
+        } else if self.eat(&TokenKind::Node) {
+            let label = self.expect_ident()?;
+            DescribeTarget::Node(label)
+        } else if self.eat(&TokenKind::Edge) {
+            let edge_type = self.expect_ident()?;
+            DescribeTarget::Edge(edge_type)
+        } else {
+            return Err(ParseError::unexpected(
+                self.current.kind.clone(),
+                self.current.span,
+                "TABLE, NODE, or EDGE",
+            ));
+        };
+
+        Ok(StatementKind::Describe(DescribeStmt { target }))
+    }
+
+    fn parse_count(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Count)?;
+
+        if self.eat(&TokenKind::Embeddings) {
+            Ok(StatementKind::CountEmbeddings)
+        } else {
+            Err(ParseError::unexpected(
+                self.current.kind.clone(),
+                self.current.span,
+                "EMBEDDINGS",
             ))
         }
     }
@@ -1472,10 +1554,26 @@ impl<'a> Parser<'a> {
             None
         };
 
+        // Check for BY SIMILARITY clause
+        let by_similarity = if self.eat(&TokenKind::By) {
+            self.expect(&TokenKind::Similar)?;
+            Some(self.parse_vector_literal()?)
+        } else {
+            None
+        };
+
+        let limit = if self.eat(&TokenKind::Limit) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         Ok(StatementKind::Neighbors(NeighborsStmt {
             node_id,
             direction,
             edge_type,
+            by_similarity,
+            limit,
         }))
     }
 
@@ -1531,9 +1629,42 @@ impl<'a> Parser<'a> {
         } else if self.eat(&TokenKind::Delete) {
             let key = self.parse_expr()?;
             EmbedOp::Delete { key }
+        } else if self.eat(&TokenKind::Build) {
+            self.expect(&TokenKind::Index)?;
+            EmbedOp::BuildIndex
+        } else if self.eat(&TokenKind::Batch) {
+            // EMBED BATCH [('key1', [v1, v2]), ('key2', [v1, v2])]
+            self.expect(&TokenKind::LBracket)?;
+            let mut items = Vec::new();
+            if !self.check(&TokenKind::RBracket) {
+                loop {
+                    // Parse ('key', [v1, v2])
+                    self.expect(&TokenKind::LParen)?;
+                    let key = self.parse_expr()?;
+                    self.expect(&TokenKind::Comma)?;
+                    self.expect(&TokenKind::LBracket)?;
+                    let mut vector = Vec::new();
+                    if !self.check(&TokenKind::RBracket) {
+                        loop {
+                            vector.push(self.parse_expr()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RBracket)?;
+                    self.expect(&TokenKind::RParen)?;
+                    items.push((key, vector));
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RBracket)?;
+            EmbedOp::Batch { items }
         } else {
             return Err(ParseError::invalid(
-                "expected STORE, GET, or DELETE after EMBED",
+                "expected STORE, GET, DELETE, BUILD INDEX, or BATCH after EMBED",
                 self.current.span,
             ));
         };
@@ -1561,6 +1692,14 @@ impl<'a> Parser<'a> {
             SimilarQuery::Key(key)
         };
 
+        // Check for CONNECTED TO clause
+        let connected_to = if self.eat(&TokenKind::Connected) {
+            self.expect(&TokenKind::To)?;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         let limit = if self.eat(&TokenKind::Limit) {
             Some(self.parse_expr()?)
         } else {
@@ -1581,6 +1720,7 @@ impl<'a> Parser<'a> {
             query,
             limit,
             metric,
+            connected_to,
         }))
     }
 
@@ -1649,6 +1789,51 @@ impl<'a> Parser<'a> {
             return_items,
             limit,
         }))
+    }
+
+    fn parse_entity(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Entity)?;
+
+        let operation = if self.eat(&TokenKind::Create) {
+            // ENTITY CREATE 'key' { properties } [EMBEDDING [vector]]
+            let key = self.parse_expr()?;
+            let properties = self.parse_properties()?;
+
+            let embedding = if self.eat(&TokenKind::Embedding) {
+                Some(self.parse_vector_literal()?)
+            } else {
+                None
+            };
+
+            EntityOp::Create {
+                key,
+                properties,
+                embedding,
+            }
+        } else if self.check(&TokenKind::Ident(String::new()))
+            && self.current.kind == TokenKind::Ident("CONNECT".to_string())
+        {
+            // ENTITY CONNECT 'from' -> 'to' : type
+            self.advance();
+            let from_key = self.parse_expr()?;
+            self.expect(&TokenKind::Arrow)?;
+            let to_key = self.parse_expr()?;
+            self.expect(&TokenKind::Colon)?;
+            let edge_type = self.expect_ident()?;
+
+            EntityOp::Connect {
+                from_key,
+                to_key,
+                edge_type,
+            }
+        } else {
+            return Err(ParseError::invalid(
+                "expected CREATE or CONNECT after ENTITY",
+                self.current.span,
+            ));
+        };
+
+        Ok(StatementKind::Entity(EntityStmt { operation }))
     }
 
     // =========================================================================
@@ -1755,11 +1940,50 @@ impl<'a> Parser<'a> {
                 let value = self.parse_expr()?;
                 CacheOp::Put { key, value }
             },
+            TokenKind::Semantic => {
+                self.advance();
+                if self.eat(&TokenKind::Get) {
+                    // CACHE SEMANTIC GET 'query' [THRESHOLD n]
+                    let query = self.parse_expr()?;
+                    let threshold = if self.eat(&TokenKind::Threshold) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    CacheOp::SemanticGet { query, threshold }
+                } else if self.eat(&TokenKind::Put) {
+                    // CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [vector]
+                    let query = self.parse_expr()?;
+                    let response = self.parse_expr()?;
+                    self.expect(&TokenKind::Embedding)?;
+                    self.expect(&TokenKind::LBracket)?;
+                    let mut embedding = Vec::new();
+                    if !self.check(&TokenKind::RBracket) {
+                        loop {
+                            embedding.push(self.parse_expr()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RBracket)?;
+                    CacheOp::SemanticPut {
+                        query,
+                        response,
+                        embedding,
+                    }
+                } else {
+                    return Err(ParseError::invalid(
+                        "expected GET or PUT after CACHE SEMANTIC",
+                        self.current.span,
+                    ));
+                }
+            },
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnexpectedToken {
                         found: self.current.kind.clone(),
-                        expected: "CACHE operation (INIT, STATS, CLEAR, EVICT, GET, PUT)"
+                        expected: "CACHE operation (INIT, STATS, CLEAR, EVICT, GET, PUT, SEMANTIC)"
                             .to_string(),
                     },
                     self.current.span,
@@ -1778,6 +2002,10 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Blob)?;
 
         let operation = match &self.current.kind {
+            TokenKind::Init => {
+                self.advance();
+                BlobOp::Init
+            },
             TokenKind::Put => {
                 self.advance();
                 let filename = self.parse_expr()?;
@@ -4577,5 +4805,232 @@ mod tests {
     #[should_panic(expected = "CACHE operation")]
     fn test_cache_invalid_operation() {
         parse_stmt("CACHE INVALID");
+    }
+
+    #[test]
+    fn test_blob_init() {
+        let stmt = parse_stmt("BLOB INIT");
+        if let StatementKind::Blob(blob) = stmt.kind {
+            assert!(matches!(blob.operation, BlobOp::Init));
+        } else {
+            panic!("expected BLOB");
+        }
+    }
+
+    #[test]
+    fn test_embed_build_index() {
+        let stmt = parse_stmt("EMBED BUILD INDEX");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(matches!(embed.operation, EmbedOp::BuildIndex));
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_drop_index_on_syntax() {
+        let stmt = parse_stmt("DROP INDEX ON users(name)");
+        if let StatementKind::DropIndex(drop) = stmt.kind {
+            assert!(!drop.if_exists);
+            assert!(drop.name.is_none());
+            assert_eq!(drop.table.as_ref().unwrap().name, "users");
+            assert_eq!(drop.column.as_ref().unwrap().name, "name");
+        } else {
+            panic!("expected DropIndex");
+        }
+    }
+
+    #[test]
+    fn test_drop_index_if_exists_on_syntax() {
+        let stmt = parse_stmt("DROP INDEX IF EXISTS ON products(sku)");
+        if let StatementKind::DropIndex(drop) = stmt.kind {
+            assert!(drop.if_exists);
+            assert_eq!(drop.table.as_ref().unwrap().name, "products");
+            assert_eq!(drop.column.as_ref().unwrap().name, "sku");
+        } else {
+            panic!("expected DropIndex");
+        }
+    }
+
+    #[test]
+    fn test_insert_select_query() {
+        let stmt = parse_stmt("INSERT INTO target SELECT * FROM source");
+        if let StatementKind::Insert(insert) = stmt.kind {
+            assert_eq!(insert.table.name, "target");
+            assert!(matches!(insert.source, InsertSource::Query(_)));
+        } else {
+            panic!("expected Insert");
+        }
+    }
+
+    // Phase 5: EMBED BATCH
+    #[test]
+    fn test_embed_batch() {
+        let stmt = parse_stmt("EMBED BATCH [('doc1', [1.0, 0.0]), ('doc2', [0.0, 1.0])]");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            if let EmbedOp::Batch { items } = embed.operation {
+                assert_eq!(items.len(), 2);
+            } else {
+                panic!("expected BATCH operation");
+            }
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_embed_batch_empty() {
+        let stmt = parse_stmt("EMBED BATCH []");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            if let EmbedOp::Batch { items } = embed.operation {
+                assert!(items.is_empty());
+            } else {
+                panic!("expected BATCH operation");
+            }
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_embed_batch_single() {
+        let stmt = parse_stmt("EMBED BATCH [('key', [1.0, 2.0, 3.0])]");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            if let EmbedOp::Batch { items } = embed.operation {
+                assert_eq!(items.len(), 1);
+            } else {
+                panic!("expected BATCH operation");
+            }
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    // Phase 5: CACHE SEMANTIC GET
+    #[test]
+    fn test_cache_semantic_get() {
+        let stmt = parse_stmt("CACHE SEMANTIC GET 'query text'");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::SemanticGet { threshold, .. } = cache.operation {
+                assert!(threshold.is_none());
+            } else {
+                panic!("expected SEMANTIC GET operation");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_semantic_get_with_threshold() {
+        let stmt = parse_stmt("CACHE SEMANTIC GET 'query' THRESHOLD 0.85");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::SemanticGet { threshold, .. } = cache.operation {
+                assert!(threshold.is_some());
+            } else {
+                panic!("expected SEMANTIC GET operation");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    // Phase 5: CACHE SEMANTIC PUT
+    #[test]
+    fn test_cache_semantic_put() {
+        let stmt = parse_stmt("CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [1.0, 0.0]");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::SemanticPut { embedding, .. } = cache.operation {
+                assert_eq!(embedding.len(), 2);
+            } else {
+                panic!("expected SEMANTIC PUT operation");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    #[test]
+    fn test_cache_semantic_put_large_embedding() {
+        let stmt = parse_stmt("CACHE SEMANTIC PUT 'q' 'r' EMBEDDING [1.0, 2.0, 3.0, 4.0, 5.0]");
+        if let StatementKind::Cache(cache) = stmt.kind {
+            if let CacheOp::SemanticPut { embedding, .. } = cache.operation {
+                assert_eq!(embedding.len(), 5);
+            } else {
+                panic!("expected SEMANTIC PUT operation");
+            }
+        } else {
+            panic!("expected CACHE");
+        }
+    }
+
+    // Phase 5: DESCRIBE
+    #[test]
+    fn test_describe_table() {
+        let stmt = parse_stmt("DESCRIBE TABLE users");
+        if let StatementKind::Describe(desc) = stmt.kind {
+            if let DescribeTarget::Table(ident) = desc.target {
+                assert_eq!(ident.name, "users");
+            } else {
+                panic!("expected TABLE target");
+            }
+        } else {
+            panic!("expected DESCRIBE");
+        }
+    }
+
+    #[test]
+    fn test_describe_node() {
+        let stmt = parse_stmt("DESCRIBE NODE person");
+        if let StatementKind::Describe(desc) = stmt.kind {
+            if let DescribeTarget::Node(ident) = desc.target {
+                assert_eq!(ident.name, "person");
+            } else {
+                panic!("expected NODE target");
+            }
+        } else {
+            panic!("expected DESCRIBE");
+        }
+    }
+
+    #[test]
+    fn test_describe_edge() {
+        let stmt = parse_stmt("DESCRIBE EDGE follows");
+        if let StatementKind::Describe(desc) = stmt.kind {
+            if let DescribeTarget::Edge(ident) = desc.target {
+                assert_eq!(ident.name, "follows");
+            } else {
+                panic!("expected EDGE target");
+            }
+        } else {
+            panic!("expected DESCRIBE");
+        }
+    }
+
+    // Phase 5: SHOW EMBEDDINGS
+    #[test]
+    fn test_show_embeddings() {
+        let stmt = parse_stmt("SHOW EMBEDDINGS");
+        assert!(matches!(
+            stmt.kind,
+            StatementKind::ShowEmbeddings { limit: None }
+        ));
+    }
+
+    #[test]
+    fn test_show_embeddings_with_limit() {
+        let stmt = parse_stmt("SHOW EMBEDDINGS LIMIT 10");
+        if let StatementKind::ShowEmbeddings { limit } = stmt.kind {
+            assert!(limit.is_some());
+        } else {
+            panic!("expected SHOW EMBEDDINGS");
+        }
+    }
+
+    // Phase 5: COUNT EMBEDDINGS
+    #[test]
+    fn test_count_embeddings() {
+        let stmt = parse_stmt("COUNT EMBEDDINGS");
+        assert!(matches!(stmt.kind, StatementKind::CountEmbeddings));
     }
 }

@@ -120,6 +120,11 @@ impl GraphEngine {
         }
     }
 
+    /// Access the underlying store.
+    pub fn store(&self) -> &TensorStore {
+        &self.store
+    }
+
     fn node_key(id: u64) -> String {
         format!("node:{}", id)
     }

@@ -655,15 +655,19 @@ dependencies = [
 name = "integration_tests"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "futures",
  "graph_engine",
+ "neumann_shell",
  "query_router",
  "relational_engine",
+ "serde_json",
  "tempfile",
  "tensor_blob",
  "tensor_cache",
  "tensor_compress",
  "tensor_store",
+ "tensor_unified",
  "tensor_vault",
  "tokio",
  "vector_engine",
@@ -1328,6 +1332,21 @@ dependencies = [
  "serde",
  "tensor_compress",
  "wide",
+]
+
+[[package]]
+name = "tensor_unified"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "futures",
+ "graph_engine",
+ "relational_engine",
+ "serde",
+ "serde_json",
+ "tensor_store",
+ "tokio",
+ "vector_engine",
 ]
 
 [[package]]

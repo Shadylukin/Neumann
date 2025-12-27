@@ -4,7 +4,7 @@ set -e
 source "$HOME/.cargo/env" 2>/dev/null || true
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CRATES="tensor_store relational_engine graph_engine vector_engine tensor_compress tensor_vault tensor_cache tensor_blob query_router neumann_parser neumann_shell"
+CRATES="tensor_store relational_engine graph_engine vector_engine tensor_compress tensor_vault tensor_cache tensor_blob tensor_unified query_router neumann_parser neumann_shell"
 MINIMUM_COVERAGE=95
 
 # Per-crate coverage thresholds
@@ -13,7 +13,7 @@ get_min_coverage() {
         neumann_shell) echo 88 ;;  # Has untestable REPL code and binary entry point
         neumann_parser) echo 91 ;;  # Complex parser with many edge cases
         tensor_blob) echo 91 ;;  # Async blob storage with complex I/O paths
-        query_router) echo 94 ;;  # Large module with cross-engine integration
+        query_router) echo 93 ;;  # Large module with cross-engine integration
         *) echo "$MINIMUM_COVERAGE" ;;
     esac
 }

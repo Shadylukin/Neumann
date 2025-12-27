@@ -12,7 +12,7 @@ members = [
     "tensor_vault",
     "tensor_cache",
     "tensor_blob",
-    "integration_tests",
+    "integration_tests", "tensor_unified",
 ]
 
 [workspace.package]

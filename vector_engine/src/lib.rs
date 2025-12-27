@@ -63,6 +63,18 @@ impl SearchResult {
     }
 }
 
+/// Distance metric for similarity search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DistanceMetric {
+    /// Cosine similarity: measures angle between vectors (default).
+    #[default]
+    Cosine,
+    /// Euclidean distance: L2 norm of difference.
+    Euclidean,
+    /// Dot product: inner product of vectors.
+    DotProduct,
+}
+
 /// Vector Engine for storing and searching embeddings.
 ///
 /// Uses cosine similarity for nearest neighbor search.
@@ -194,6 +206,48 @@ impl VectorEngine {
         Ok(results)
     }
 
+    /// Search for the top_k most similar embeddings using the specified distance metric.
+    ///
+    /// - Cosine: Higher scores are more similar (range -1 to 1)
+    /// - DotProduct: Higher scores are more similar (unbounded)
+    /// - Euclidean: Lower distances are more similar (converted to score via 1/(1+dist))
+    pub fn search_similar_with_metric(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        metric: DistanceMetric,
+    ) -> Result<Vec<SearchResult>> {
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        let query_magnitude = Self::magnitude(query);
+        if query_magnitude == 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let keys = self.store.scan(Self::embedding_prefix());
+
+        let mut results: Vec<SearchResult> = if keys.len() >= Self::PARALLEL_THRESHOLD {
+            Self::search_parallel_with_metric(&self.store, &keys, query, query_magnitude, metric)
+        } else {
+            Self::search_sequential_with_metric(&self.store, &keys, query, query_magnitude, metric)
+        };
+
+        // Sort by score descending (higher is better for all metrics after transformation)
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results.truncate(top_k);
+        Ok(results)
+    }
+
     /// Sequential similarity search (faster for small datasets)
     fn search_sequential(
         store: &TensorStore,
@@ -252,6 +306,93 @@ impl VectorEngine {
                 Some(SearchResult::new(key, score))
             })
             .collect()
+    }
+
+    /// Sequential similarity search with configurable metric
+    fn search_sequential_with_metric(
+        store: &TensorStore,
+        keys: &[String],
+        query: &[f32],
+        query_magnitude: f32,
+        metric: DistanceMetric,
+    ) -> Vec<SearchResult> {
+        keys.iter()
+            .filter_map(|storage_key| {
+                let tensor = store.get(storage_key).ok()?;
+                let stored_vec = match tensor.get("vector") {
+                    Some(TensorValue::Vector(v)) => v,
+                    _ => return None,
+                };
+
+                if stored_vec.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::compute_score(query, stored_vec, query_magnitude, metric);
+                let key = storage_key
+                    .strip_prefix(Self::embedding_prefix())
+                    .unwrap_or(storage_key)
+                    .to_string();
+
+                Some(SearchResult::new(key, score))
+            })
+            .collect()
+    }
+
+    /// Parallel similarity search with configurable metric
+    fn search_parallel_with_metric(
+        store: &TensorStore,
+        keys: &[String],
+        query: &[f32],
+        query_magnitude: f32,
+        metric: DistanceMetric,
+    ) -> Vec<SearchResult> {
+        keys.par_iter()
+            .filter_map(|storage_key| {
+                let tensor = store.get(storage_key).ok()?;
+                let stored_vec = match tensor.get("vector") {
+                    Some(TensorValue::Vector(v)) => v,
+                    _ => return None,
+                };
+
+                if stored_vec.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::compute_score(query, stored_vec, query_magnitude, metric);
+                let key = storage_key
+                    .strip_prefix(Self::embedding_prefix())
+                    .unwrap_or(storage_key)
+                    .to_string();
+
+                Some(SearchResult::new(key, score))
+            })
+            .collect()
+    }
+
+    /// Compute score based on the distance metric.
+    fn compute_score(
+        query: &[f32],
+        stored: &[f32],
+        query_magnitude: f32,
+        metric: DistanceMetric,
+    ) -> f32 {
+        match metric {
+            DistanceMetric::Cosine => Self::cosine_similarity(query, stored, query_magnitude),
+            DistanceMetric::DotProduct => simd::dot_product(query, stored),
+            DistanceMetric::Euclidean => {
+                // Convert distance to similarity: 1 / (1 + distance)
+                let dist = Self::euclidean_distance(query, stored);
+                1.0 / (1.0 + dist)
+            },
+        }
+    }
+
+    /// Compute Euclidean distance between two vectors.
+    fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+        // Sum of squared differences
+        let sum_sq: f32 = a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum();
+        sum_sq.sqrt()
     }
 
     /// Compute cosine similarity between two vectors using SIMD.
@@ -1332,5 +1473,114 @@ mod tests {
 
         let results = engine.search_entities(&[0.0, 0.0], 5).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn distance_metric_default() {
+        assert_eq!(DistanceMetric::default(), DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn search_with_metric_cosine() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.707, 0.707]).unwrap();
+        engine.store_embedding("c", vec![0.0, 1.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[1.0, 0.0], 3, DistanceMetric::Cosine)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // Cosine: identical vector should have highest score
+        assert_eq!(results[0].key, "a");
+        assert!((results[0].score - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn search_with_metric_dot_product() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![2.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![0.5, 0.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[1.0, 0.0], 3, DistanceMetric::DotProduct)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // Dot product: larger magnitude vector has higher score
+        assert_eq!(results[0].key, "b");
+        assert!((results[0].score - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn search_with_metric_euclidean() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![2.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![10.0, 0.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[1.0, 0.0], 3, DistanceMetric::Euclidean)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // Euclidean: closest vector (distance 0) should have highest score
+        assert_eq!(results[0].key, "a");
+        // Score = 1 / (1 + 0) = 1.0
+        assert!((results[0].score - 1.0).abs() < 0.01);
+        // "b" is distance 1, score = 1 / (1 + 1) = 0.5
+        assert_eq!(results[1].key, "b");
+        assert!((results[1].score - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn search_with_metric_empty_query_error() {
+        let engine = VectorEngine::new();
+        let result = engine.search_similar_with_metric(&[], 5, DistanceMetric::Cosine);
+        assert!(matches!(result, Err(VectorError::EmptyVector)));
+    }
+
+    #[test]
+    fn search_with_metric_zero_top_k_error() {
+        let engine = VectorEngine::new();
+        let result = engine.search_similar_with_metric(&[1.0], 0, DistanceMetric::Cosine);
+        assert!(matches!(result, Err(VectorError::InvalidTopK)));
+    }
+
+    #[test]
+    fn search_with_metric_zero_query() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("a", vec![1.0, 0.0]).unwrap();
+
+        let results = engine
+            .search_similar_with_metric(&[0.0, 0.0], 5, DistanceMetric::Cosine)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn euclidean_distance_identical() {
+        let a = vec![1.0, 2.0, 3.0];
+        let dist = VectorEngine::euclidean_distance(&a, &a);
+        assert!(dist.abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_unit() {
+        let a = vec![0.0, 0.0];
+        let b = vec![1.0, 0.0];
+        let dist = VectorEngine::euclidean_distance(&a, &b);
+        assert!((dist - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_pythagoras() {
+        // 3-4-5 triangle
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        let dist = VectorEngine::euclidean_distance(&a, &b);
+        assert!((dist - 5.0).abs() < 1e-6);
     }
 }

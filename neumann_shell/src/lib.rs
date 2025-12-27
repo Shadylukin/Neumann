@@ -510,16 +510,37 @@ Query Types:
 
   Graph:
     NODE CREATE label {prop: value, ...}
+    NODE LIST [label]              List all nodes or filter by label
+    NODE GET id                    Get node by ID
     EDGE CREATE node1 -> node2 : label [{props}]
+    EDGE LIST [type]               List all edges or filter by type
+    EDGE GET id                    Get edge by ID
     NEIGHBORS node_id OUTGOING|INCOMING|BOTH [: label]
     PATH node1 -> node2 [LIMIT n]
-    FIND NODE|EDGE WHERE condition
 
   Vector:
     EMBED STORE 'key' [vector values]
     EMBED GET 'key'
     EMBED DELETE 'key'
-    SIMILAR 'key' LIMIT n
+    SIMILAR 'key' [COSINE|EUCLIDEAN|DOT_PRODUCT] LIMIT n
+    SIMILAR [vector] [metric] LIMIT n
+
+  Unified (Cross-Engine):
+    FIND NODE [label] [WHERE condition] [LIMIT n]
+    FIND EDGE [type] [WHERE condition] [LIMIT n]
+
+  Blob Storage:
+    BLOB PUT 'path' [CHUNK size] [TAGS 'a','b'] [FOR 'entity']
+    BLOB GET 'id' TO 'path'        Download blob to file
+    BLOB DELETE 'id'               Delete blob
+    BLOB INFO 'id'                 Show blob metadata
+    BLOB LINK 'id' TO 'entity'     Link blob to entity
+    BLOB UNLINK 'id' FROM 'entity' Unlink blob from entity
+    BLOB TAG 'id' 'tag'            Add tag to blob
+    BLOB UNTAG 'id' 'tag'          Remove tag from blob
+    BLOBS                          List all blobs
+    BLOBS FOR 'entity'             List blobs linked to entity
+    BLOBS BY TAG 'tag'             Find blobs by tag
 
   Vault (Secrets):
     VAULT INIT                     Initialize vault from NEUMANN_VAULT_KEY
