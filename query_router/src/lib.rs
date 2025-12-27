@@ -3297,6 +3297,495 @@ impl QueryRouter {
             Ok((vector, top_k))
         }
     }
+
+    // ========== Async Execution Methods ==========
+
+    /// Execute a command string asynchronously using the AST-based parser.
+    ///
+    /// This method is the async counterpart to `execute_parsed()`. It provides
+    /// truly non-blocking execution for I/O-bound operations like blob storage.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let result = router.execute_parsed_async("BLOB GET 'artifact-id'").await?;
+    /// ```
+    pub async fn execute_parsed_async(&self, command: &str) -> Result<QueryResult> {
+        let stmt = parser::parse(command)
+            .map_err(|e| RouterError::ParseError(e.format_with_source(command)))?;
+
+        // Check cache for cacheable statements
+        if Self::is_cacheable_statement(&stmt) {
+            if let Some(cached) = self.try_cache_get(command) {
+                return Ok(cached);
+            }
+        }
+
+        // Execute the statement asynchronously
+        let result = self.execute_statement_async(&stmt).await?;
+
+        // Cache the result for cacheable statements
+        if Self::is_cacheable_statement(&stmt) {
+            self.try_cache_put(command, &result);
+        }
+
+        // Invalidate cache on write operations
+        if Self::is_write_statement(&stmt) {
+            self.invalidate_cache_on_write();
+        }
+
+        Ok(result)
+    }
+
+    /// Execute a parsed statement asynchronously.
+    ///
+    /// Most operations are synchronous (in-memory), but blob operations
+    /// are truly async, avoiding runtime blocking.
+    pub async fn execute_statement_async(&self, stmt: &Statement) -> Result<QueryResult> {
+        match &stmt.kind {
+            // Blob statements are truly async
+            StatementKind::Blob(blob) => self.exec_blob_async(blob).await,
+            StatementKind::Blobs(blobs) => self.exec_blobs_async(blobs).await,
+
+            // All other statements delegate to sync execution
+            // (they're in-memory and fast, no benefit from async)
+            _ => self.execute_statement(stmt),
+        }
+    }
+
+    /// Execute blob operations asynchronously without blocking.
+    async fn exec_blob_async(&self, stmt: &BlobStmt) -> Result<QueryResult> {
+        // Handle BLOB INIT specially - doesn't require blob to be initialized
+        if matches!(stmt.operation, BlobOp::Init) {
+            if self.blob.is_some() {
+                return Ok(QueryResult::Value(
+                    "Blob store already initialized".to_string(),
+                ));
+            } else {
+                return Err(RouterError::BlobError(
+                    "Use router.init_blob() to initialize blob storage".to_string(),
+                ));
+            }
+        }
+
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob store not initialized".to_string()))?;
+
+        match &stmt.operation {
+            BlobOp::Init => unreachable!(), // Handled above
+            BlobOp::Put {
+                filename,
+                data,
+                from_path,
+                options,
+            } => {
+                let filename_str = self.eval_string_expr(filename)?;
+                let put_options = self.blob_options_to_put_options(options)?;
+
+                // Get data either from inline DATA or from file path
+                let blob_data = if let Some(data_expr) = data {
+                    self.expr_to_bytes(data_expr)?
+                } else if let Some(path_expr) = from_path {
+                    let path = self.eval_string_expr(path_expr)?;
+                    tokio::fs::read(&path)
+                        .await
+                        .map_err(|e| RouterError::BlobError(format!("Failed to read file: {e}")))?
+                } else {
+                    return Err(RouterError::MissingArgument(
+                        "PUT requires either DATA or FROM path".to_string(),
+                    ));
+                };
+
+                let blob_guard = blob.lock().await;
+                let artifact_id = blob_guard
+                    .put(&filename_str, &blob_data, put_options)
+                    .await?;
+                Ok(QueryResult::Value(artifact_id))
+            },
+            BlobOp::Get {
+                artifact_id,
+                to_path,
+            } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let blob_guard = blob.lock().await;
+                let data = blob_guard.get(&id).await?;
+
+                if let Some(path_expr) = to_path {
+                    let path = self.eval_string_expr(path_expr)?;
+                    tokio::fs::write(&path, &data).await.map_err(|e| {
+                        RouterError::BlobError(format!("Failed to write file: {e}"))
+                    })?;
+                    Ok(QueryResult::Value(format!(
+                        "Written {} bytes to {path}",
+                        data.len()
+                    )))
+                } else {
+                    Ok(QueryResult::Blob(data))
+                }
+            },
+            BlobOp::Delete { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.delete(&id).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Info { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let blob_guard = blob.lock().await;
+                let meta = blob_guard.metadata(&id).await?;
+
+                Ok(QueryResult::ArtifactInfo(ArtifactInfoResult {
+                    id: meta.id,
+                    filename: meta.filename,
+                    content_type: meta.content_type,
+                    size: meta.size,
+                    checksum: meta.checksum,
+                    chunk_count: meta.chunk_count,
+                    created: meta.created,
+                    modified: meta.modified,
+                    created_by: meta.created_by,
+                    tags: meta.tags,
+                    linked_to: meta.linked_to,
+                    custom: meta.custom,
+                }))
+            },
+            BlobOp::Link {
+                artifact_id,
+                entity,
+            } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let entity_str = self.eval_string_expr(entity)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.link(&id, &entity_str).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Unlink {
+                artifact_id,
+                entity,
+            } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let entity_str = self.eval_string_expr(entity)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.unlink(&id, &entity_str).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Links { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let blob_guard = blob.lock().await;
+                let links = blob_guard.links(&id).await?;
+                Ok(QueryResult::ArtifactList(links))
+            },
+            BlobOp::Tag { artifact_id, tag } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let tag_str = self.eval_string_expr(tag)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.tag(&id, &tag_str).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Untag { artifact_id, tag } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let tag_str = self.eval_string_expr(tag)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.untag(&id, &tag_str).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::Verify { artifact_id } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let blob_guard = blob.lock().await;
+                let valid = blob_guard.verify(&id).await?;
+                Ok(QueryResult::Value(if valid {
+                    "OK".to_string()
+                } else {
+                    "INVALID".to_string()
+                }))
+            },
+            BlobOp::Gc { full } => {
+                let blob_guard = blob.lock().await;
+                let stats = if *full {
+                    blob_guard.full_gc().await?
+                } else {
+                    blob_guard.gc().await?
+                };
+                Ok(QueryResult::Value(format!(
+                    "Deleted {} chunks, freed {} bytes",
+                    stats.deleted, stats.freed_bytes
+                )))
+            },
+            BlobOp::Repair => {
+                let blob_guard = blob.lock().await;
+                let stats = blob_guard.repair().await?;
+                Ok(QueryResult::Value(format!(
+                    "Fixed {} refs, deleted {} orphans",
+                    stats.refs_fixed, stats.orphans_deleted
+                )))
+            },
+            BlobOp::Stats => {
+                let blob_guard = blob.lock().await;
+                let stats = blob_guard.stats().await?;
+                Ok(QueryResult::BlobStats(BlobStatsResult {
+                    artifact_count: stats.artifact_count,
+                    chunk_count: stats.chunk_count,
+                    total_bytes: stats.total_bytes,
+                    unique_bytes: stats.unique_bytes,
+                    dedup_ratio: stats.dedup_ratio,
+                    orphaned_chunks: stats.orphaned_chunks,
+                }))
+            },
+            BlobOp::MetaSet {
+                artifact_id,
+                key,
+                value,
+            } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let key_str = self.eval_string_expr(key)?;
+                let value_str = self.eval_string_expr(value)?;
+                let blob_guard = blob.lock().await;
+                blob_guard.set_meta(&id, &key_str, &value_str).await?;
+                Ok(QueryResult::Empty)
+            },
+            BlobOp::MetaGet { artifact_id, key } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let key_str = self.eval_string_expr(key)?;
+                let blob_guard = blob.lock().await;
+                let value = blob_guard.get_meta(&id, &key_str).await?;
+                match value {
+                    Some(v) => Ok(QueryResult::Value(v)),
+                    None => Ok(QueryResult::Value("(not found)".to_string())),
+                }
+            },
+        }
+    }
+
+    /// Execute blobs listing operations asynchronously.
+    async fn exec_blobs_async(&self, stmt: &BlobsStmt) -> Result<QueryResult> {
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| RouterError::BlobError("Blob store not initialized".to_string()))?;
+
+        let blob_guard = blob.lock().await;
+        match &stmt.operation {
+            BlobsOp::List { pattern } => {
+                let prefix = pattern
+                    .as_ref()
+                    .map(|p| self.eval_string_expr(p))
+                    .transpose()?;
+                let ids = blob_guard.list(prefix.as_deref()).await?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::For { entity } => {
+                let entity_str = self.eval_string_expr(entity)?;
+                let ids = blob_guard.artifacts_for(&entity_str).await?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::ByTag { tag } => {
+                let tag_str = self.eval_string_expr(tag)?;
+                let ids = blob_guard.by_tag(&tag_str).await?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::ByType { content_type } => {
+                let ct = self.eval_string_expr(content_type)?;
+                let ids = blob_guard.by_content_type(&ct).await?;
+                Ok(QueryResult::ArtifactList(ids))
+            },
+            BlobsOp::Similar { artifact_id, limit } => {
+                let id = self.eval_string_expr(artifact_id)?;
+                let k = limit
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(10);
+                let similar = blob_guard.similar(&id, k).await?;
+                Ok(QueryResult::Similar(
+                    similar
+                        .into_iter()
+                        .map(|s| SimilarResult {
+                            key: s.id,
+                            score: s.similarity,
+                        })
+                        .collect(),
+                ))
+            },
+        }
+    }
+
+    /// Store multiple embeddings in parallel.
+    ///
+    /// This method processes batch embeddings concurrently, which can provide
+    /// performance benefits when storing many embeddings at once.
+    ///
+    /// # Arguments
+    /// * `items` - Vector of (key, embedding) pairs to store
+    ///
+    /// # Returns
+    /// * `Ok(count)` - Number of embeddings successfully stored
+    /// * `Err(e)` - First error encountered
+    pub async fn embed_batch_parallel(&self, items: Vec<(String, Vec<f32>)>) -> Result<usize> {
+        use futures::future::join_all;
+
+        let futures: Vec<_> = items
+            .into_iter()
+            .map(|(key, vec)| {
+                let key = key.clone();
+                let vec = vec.clone();
+                let vector = Arc::clone(&self.vector);
+                async move { vector.store_embedding(&key, vec) }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+        let mut success_count = 0;
+        for result in results {
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => return Err(RouterError::VectorError(e.to_string())),
+            }
+        }
+        Ok(success_count)
+    }
+
+    /// Find similar entities connected to a target, with parallel graph/vector queries.
+    ///
+    /// This async version uses `tokio::join!` to parallelize the vector similarity
+    /// search and graph neighbor lookup, then filters the intersection.
+    pub async fn find_similar_connected_async(
+        &self,
+        query_key: &str,
+        connected_to: &str,
+        top_k: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        // Get query embedding
+        let query_embedding = self
+            .vector
+            .get_entity_embedding(query_key)
+            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+
+        // Clone Arcs for the async closures
+        let vector = Arc::clone(&self.vector);
+        let graph = Arc::clone(&self.graph);
+        let connected_to_owned = connected_to.to_string();
+        let hnsw_ref = self.hnsw_index.as_ref();
+
+        // Run vector similarity and graph neighbor queries in parallel
+        let (similar_result, neighbors_result) = tokio::join!(
+            async {
+                if let Some((index, keys)) = hnsw_ref {
+                    vector.search_with_hnsw(index, keys, &query_embedding, top_k * 2)
+                } else {
+                    vector.search_entities(&query_embedding, top_k * 2)
+                }
+            },
+            async { graph.get_entity_neighbors(&connected_to_owned) }
+        );
+
+        let similar = similar_result.map_err(|e| RouterError::VectorError(e.to_string()))?;
+
+        let connected_neighbors: std::collections::HashSet<String> =
+            neighbors_result.unwrap_or_default().into_iter().collect();
+
+        let mut items: Vec<UnifiedItem> = similar
+            .into_iter()
+            .filter(|s| connected_neighbors.contains(&s.key))
+            .take(top_k)
+            .map(|s| UnifiedItem {
+                source: "vector+graph".to_string(),
+                id: s.key,
+                data: HashMap::new(),
+                score: Some(s.score),
+            })
+            .collect();
+
+        items.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(items)
+    }
+
+    /// Find graph neighbors sorted by similarity, with parallel embedding lookups.
+    ///
+    /// This async version fetches embeddings for all neighbors in parallel.
+    pub async fn find_neighbors_by_similarity_async(
+        &self,
+        entity_key: &str,
+        query: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        use futures::future::join_all;
+
+        let neighbors = self
+            .graph
+            .get_entity_neighbors(entity_key)
+            .map_err(|e| RouterError::GraphError(e.to_string()))?;
+
+        let vector = Arc::clone(&self.vector);
+        let query_owned: Vec<f32> = query.to_vec();
+
+        // Fetch all embeddings in parallel
+        let futures: Vec<_> = neighbors
+            .iter()
+            .map(|key| {
+                let key = key.clone();
+                let vector = Arc::clone(&vector);
+                let query = query_owned.clone();
+                async move {
+                    if let Ok(embedding) = vector.get_entity_embedding(&key) {
+                        if embedding.len() == query.len() {
+                            if let Ok(score) =
+                                vector_engine::VectorEngine::compute_similarity(&query, &embedding)
+                            {
+                                return Some((key, score));
+                            }
+                        }
+                    }
+                    None
+                }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut items: Vec<UnifiedItem> = results
+            .into_iter()
+            .flatten()
+            .map(|(key, score)| UnifiedItem {
+                source: "graph+vector".to_string(),
+                id: key,
+                data: HashMap::new(),
+                score: Some(score),
+            })
+            .collect();
+
+        items.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        items.truncate(top_k);
+        Ok(items)
+    }
+
+    /// Get the Tokio runtime for async operations.
+    ///
+    /// Returns None if blob store hasn't been initialized (no runtime available).
+    pub fn runtime(&self) -> Option<&Runtime> {
+        self.blob_runtime.as_deref()
+    }
+
+    /// Execute an async operation using the router's runtime.
+    ///
+    /// This is useful for running async operations when you don't have
+    /// an async context available.
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> Result<F::Output> {
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::BlobError("Runtime not initialized. Call init_blob() first.".to_string())
+        })?;
+        Ok(runtime.block_on(future))
+    }
 }
 
 impl Default for QueryRouter {
@@ -8613,5 +9102,579 @@ mod tests {
 
         // Should still have blob
         assert!(router.blob().is_some());
+    }
+
+    // ========== Async Execution Tests ==========
+
+    #[tokio::test]
+    async fn test_execute_parsed_async_basic() {
+        let router = QueryRouter::new();
+
+        // Execute a simple CREATE TABLE (SQL standard syntax)
+        let result = router
+            .execute_parsed_async("CREATE TABLE async_test (id INT, name VARCHAR(100))")
+            .await;
+        assert!(result.is_ok());
+
+        // Execute an INSERT
+        let result = router
+            .execute_parsed_async("INSERT INTO async_test (id, name) VALUES (1, 'test')")
+            .await;
+        assert!(result.is_ok());
+
+        // Execute a SELECT
+        let result = router
+            .execute_parsed_async("SELECT * FROM async_test")
+            .await;
+        assert!(result.is_ok());
+        if let QueryResult::Rows(rows) = result.unwrap() {
+            assert_eq!(rows.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_statement_async_delegates() {
+        let router = QueryRouter::new();
+
+        // Parse a statement
+        let stmt = parser::parse("NODE CREATE user name='Alice'").unwrap();
+
+        // Execute async
+        let result = router.execute_statement_async(&stmt).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_parallel() {
+        let router = QueryRouter::new();
+
+        // Create batch of embeddings
+        let items: Vec<(String, Vec<f32>)> = (0..10)
+            .map(|i| (format!("parallel:{}", i), vec![i as f32 / 10.0; 4]))
+            .collect();
+
+        // Store in parallel
+        let result = router.embed_batch_parallel(items).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 10);
+
+        // Verify they were stored
+        for i in 0..10 {
+            let key = format!("parallel:{}", i);
+            let emb = router.vector().get_embedding(&key);
+            assert!(emb.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_similar_connected_async() {
+        let router = QueryRouter::new();
+
+        // Set up entities with embeddings
+        router
+            .vector()
+            .set_entity_embedding("query", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:1", vec![0.9, 0.1, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("user:2", vec![0.8, 0.2, 0.0])
+            .unwrap();
+
+        // Connect entities via graph
+        router
+            .graph()
+            .add_entity_edge("hub", "user:1", "connects")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("hub", "user:2", "connects")
+            .unwrap();
+
+        // Find similar connected async
+        let result = router.find_similar_connected_async("query", "hub", 5).await;
+        assert!(result.is_ok());
+        let items = result.unwrap();
+        assert!(!items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_neighbors_by_similarity_async() {
+        let router = QueryRouter::new();
+
+        // Set up graph with embeddings
+        router
+            .graph()
+            .add_entity_edge("center", "neighbor:1", "links")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "neighbor:2", "links")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "neighbor:3", "links")
+            .unwrap();
+
+        router
+            .vector()
+            .set_entity_embedding("neighbor:1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("neighbor:2", vec![0.9, 0.1, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("neighbor:3", vec![0.0, 1.0, 0.0])
+            .unwrap();
+
+        // Find neighbors sorted by similarity
+        let query = vec![1.0, 0.0, 0.0];
+        let result = router
+            .find_neighbors_by_similarity_async("center", &query, 3)
+            .await;
+        assert!(result.is_ok());
+        let items = result.unwrap();
+        assert_eq!(items.len(), 3);
+        // neighbor:1 should be most similar
+        assert!(items[0].id.contains("neighbor:1") || items[0].score.unwrap() > 0.9);
+    }
+
+    #[test]
+    fn test_block_on_helper() {
+        // This test can't be async since it tests block_on which
+        // creates a nested runtime - that's its purpose for sync callers
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Use block_on to run async code from sync context
+        let result = router.block_on(async { 42 + 1 });
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 43);
+    }
+
+    #[test]
+    fn test_runtime_accessor() {
+        let router = QueryRouter::new();
+        // Runtime not available until blob is initialized
+        assert!(router.runtime().is_none());
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        assert!(router.runtime().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_parsed_async_with_cache() {
+        let mut router = QueryRouter::new();
+        router.init_cache();
+
+        // Create and populate a table (SQL standard syntax)
+        router
+            .execute_parsed_async("CREATE TABLE cached (x INT)")
+            .await
+            .unwrap();
+        router
+            .execute_parsed_async("INSERT INTO cached (x) VALUES (1)")
+            .await
+            .unwrap();
+
+        // First query - not cached
+        let result1 = router.execute_parsed_async("SELECT * FROM cached").await;
+        assert!(result1.is_ok());
+
+        // Second query - should use cache
+        let result2 = router.execute_parsed_async("SELECT * FROM cached").await;
+        assert!(result2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_parallel_empty() {
+        let router = QueryRouter::new();
+
+        // Empty batch should succeed
+        let result = router.embed_batch_parallel(vec![]).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_parsed_async_error() {
+        let router = QueryRouter::new();
+
+        // Invalid SQL should return parse error
+        let result = router.execute_parsed_async("INVALID QUERY XYZ").await;
+        assert!(result.is_err());
+    }
+
+    // Note: The async blob tests use the router's block_on helper because
+    // init_blob() creates its own Tokio runtime, which conflicts with #[tokio::test].
+
+    #[test]
+    fn test_exec_blob_async_put_get() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Test blob PUT via execute_statement_async (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'test.txt' 'hello world'").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                let artifact_id = match result.unwrap() {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Test blob GET via execute_statement_async
+                let stmt = parser::parse(&format!("BLOB GET '{}'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Blob(data) = result.unwrap() {
+                    assert_eq!(String::from_utf8(data).unwrap(), "hello world");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_info() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'info.txt' 'test data'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Get info
+                let stmt = parser::parse(&format!("BLOB INFO '{}'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::ArtifactInfo(info) = result.unwrap() {
+                    assert_eq!(info.filename, "info.txt");
+                    assert_eq!(info.size, 9); // "test data" is 9 bytes
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_link_unlink() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'linked.txt' 'link test'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Link to entity
+                let stmt =
+                    parser::parse(&format!("BLOB LINK '{}' TO 'entity:1'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+
+                // Get links
+                let stmt = parser::parse(&format!("BLOB LINKS '{}'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::ArtifactList(links) = result.unwrap() {
+                    assert!(links.contains(&"entity:1".to_string()));
+                }
+
+                // Unlink
+                let stmt = parser::parse(&format!("BLOB UNLINK '{}' FROM 'entity:1'", artifact_id))
+                    .unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_tag_untag() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'tagged.txt' 'tag test'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Add tag
+                let stmt =
+                    parser::parse(&format!("BLOB TAG '{}' 'important'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+
+                // Remove tag
+                let stmt =
+                    parser::parse(&format!("BLOB UNTAG '{}' 'important'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_verify() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'verify.txt' 'verify test'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Verify
+                let stmt = parser::parse(&format!("BLOB VERIFY '{}'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert_eq!(v, "OK");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_stats() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Get stats
+                let stmt = parser::parse("BLOB STATS").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::BlobStats(stats) = result.unwrap() {
+                    // Stats should be valid (even if empty)
+                    assert!(stats.dedup_ratio >= 0.0);
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_gc() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // GC
+                let stmt = parser::parse("BLOB GC").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_delete() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'delete.txt' 'delete test'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Delete
+                let stmt = parser::parse(&format!("BLOB DELETE '{}'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_meta() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'meta.txt' 'meta test'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                // Set meta
+                let stmt = parser::parse(&format!("BLOB META SET '{}' 'key' 'value'", artifact_id))
+                    .unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+
+                // Get meta
+                let stmt =
+                    parser::parse(&format!("BLOB META GET '{}' 'key'", artifact_id)).unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert_eq!(v, "value");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_repair() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Repair
+                let stmt = parser::parse("BLOB REPAIR").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blobs_async_list() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store some blobs (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'list1.txt' 'data1'").unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+                let stmt = parser::parse("BLOB PUT 'list2.txt' 'data2'").unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+
+                // List blobs
+                let stmt = parser::parse("BLOBS").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::ArtifactList(ids) = result.unwrap() {
+                    assert!(ids.len() >= 2);
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blobs_async_for_entity() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store and link a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'entity.txt' 'entity data'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                let stmt =
+                    parser::parse(&format!("BLOB LINK '{}' TO 'myentity'", artifact_id)).unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+
+                // Get blobs for entity
+                let stmt = parser::parse("BLOBS FOR 'myentity'").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::ArtifactList(ids) = result.unwrap() {
+                    assert!(ids.contains(&artifact_id));
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blobs_async_by_tag() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Store and tag a blob (no DATA keyword)
+                let stmt = parser::parse("BLOB PUT 'bytag.txt' 'tag data'").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                let artifact_id = match result {
+                    QueryResult::Value(id) => id,
+                    _ => panic!("Expected Value result"),
+                };
+
+                let stmt = parser::parse(&format!("BLOB TAG '{}' 'mytag'", artifact_id)).unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+
+                // Get blobs by tag
+                let stmt = parser::parse("BLOBS BY TAG 'mytag'").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::ArtifactList(ids) = result.unwrap() {
+                    assert!(ids.contains(&artifact_id));
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_init_already_initialized() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        router
+            .block_on(async {
+                // Try BLOB INIT when already initialized
+                let stmt = parser::parse("BLOB INIT").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert!(v.contains("already initialized"));
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_blob_async_not_initialized() {
+        let router = QueryRouter::new();
+        // Don't init blob - can't run async tests without runtime
+        // Instead, test that sync execute_statement catches the error
+        let stmt = parser::parse("BLOB STATS").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
     }
 }

@@ -952,6 +952,7 @@ name = "query_router"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "futures",
  "graph_engine",
  "neumann_parser",
  "relational_engine",
