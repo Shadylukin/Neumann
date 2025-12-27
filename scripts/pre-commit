@@ -46,38 +46,54 @@ if [ "${SKIP_COVERAGE:-0}" != "1" ]; then
         for crate in $CRATES; do
             echo "Checking coverage for $crate..."
 
-            # Get coverage for the crate's own source files only (excluding dependencies)
-            # Files appear as either "crate_name/src/file.rs" or just "file.rs" (for main crate)
-            # Dependencies always have their path prefix, so we match:
-            # 1. Lines starting with the crate name (e.g., "relational_engine/src/lib.rs")
-            # 2. Lines starting with just a filename (e.g., "lib.rs ", "parser.rs ") - these are main crate files
+            # Get coverage output
             COV_OUTPUT=$(cargo llvm-cov --package "$crate" --summary-only 2>&1)
 
-            # Sum lines (field 8) and missed lines (field 9) for crate's own files
-            # Match files that belong to this crate (various path formats):
-            # - "file.rs" (just filename for main crate)
-            # - "crate_name/src/file.rs" (relative path)
-            # - "/full/path/crate_name/src/file.rs" (absolute path)
+            # Extract lines for this crate's files only (excluding dependencies)
+            # Coverage output formats vary:
+            # - "crate_name/src/file.rs" - relative path with crate prefix
+            # - "file.rs" - standalone filename (main crate files when no path prefix)
+            # - "/abs/path/crate_name/src/file.rs" - absolute path
+            # Dependencies always appear with their own crate path prefix.
+            #
+            # Strategy: Match lines that either:
+            # 1. Start with the crate name followed by /
+            # 2. Start with just a .rs filename (no / before the extension)
+            # 3. Contain /crate_name/src/ in the path
             TOTAL_LINES=$(echo "$COV_OUTPUT" | awk -v crate="$crate" '
-                /^[a-z_]+\.rs[[:space:]]/ { lines += $8; missed += $9 }
-                $0 ~ "^"crate"/" { lines += $8; missed += $9 }
-                $0 ~ "/"crate"/src/" { lines += $8; missed += $9 }
-                END { print lines, missed }
+                # Skip header, separator, and total lines
+                /^Filename|^----|^TOTAL/ { next }
+
+                # Match: crate_name/src/file.rs (starts with crate name)
+                $1 ~ "^"crate"/" { lines += $8; missed += $9; next }
+
+                # Match: /some/path/crate_name/src/file.rs (contains crate in path)
+                $1 ~ "/"crate"/src/" { lines += $8; missed += $9; next }
+
+                # Match: file.rs (standalone filename - no slash, ends in .rs)
+                # These are main crate files when cargo-llvm-cov omits the path
+                $1 ~ /^[a-z_]+\.rs$/ { lines += $8; missed += $9; next }
+
+                END { print (lines ? lines : 0), (missed ? missed : 0) }
             ')
             LINES=$(echo "$TOTAL_LINES" | awk '{print $1}')
             MISSED=$(echo "$TOTAL_LINES" | awk '{print $2}')
 
-            if [ -n "$LINES" ] && [ "$LINES" -gt 0 ]; then
-                COVERED=$((LINES - MISSED))
-                COVERAGE=$(awk "BEGIN {printf \"%.2f\", ($COVERED / $LINES) * 100}")
-                COVERAGE_INT=${COVERAGE%.*}
-                CRATE_MIN=$(get_min_coverage "$crate")
-                if [ "$COVERAGE_INT" -lt "$CRATE_MIN" ]; then
-                    echo "ERROR: Coverage for $crate is ${COVERAGE}%, minimum required is ${CRATE_MIN}%"
-                    exit 1
-                fi
-                echo "Coverage for $crate: ${COVERAGE}% (minimum: ${CRATE_MIN}%)"
+            if [ -z "$LINES" ] || [ "$LINES" -eq 0 ]; then
+                echo "ERROR: No coverage data found for $crate"
+                echo "This may indicate a bug in the coverage pattern matching."
+                exit 1
             fi
+
+            COVERED=$((LINES - MISSED))
+            COVERAGE=$(awk "BEGIN {printf \"%.2f\", ($COVERED / $LINES) * 100}")
+            COVERAGE_INT=${COVERAGE%.*}
+            CRATE_MIN=$(get_min_coverage "$crate")
+            if [ "$COVERAGE_INT" -lt "$CRATE_MIN" ]; then
+                echo "ERROR: Coverage for $crate is ${COVERAGE}%, minimum required is ${CRATE_MIN}%"
+                exit 1
+            fi
+            echo "Coverage for $crate: ${COVERAGE}% (minimum: ${CRATE_MIN}%)"
         done
     else
         echo "Skipping coverage check (cargo-llvm-cov not installed)"
