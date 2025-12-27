@@ -82,6 +82,22 @@ Delta (clustered): Store archetype_id + small delta → ~120 bytes (25x smaller)
 
 When vectors cluster around archetypes (common in embeddings), k-means discovers these patterns automatically. Similarity operations scale with actual information (non-zeros), not dimension size — yielding 10-150x speedups.
 
+### Tiered Memory
+
+When datasets exceed RAM, Neumann automatically tiers between hot and cold storage:
+
+```
+Hot Tier (DashMap):     Fast, in-memory, concurrent access
+Cold Tier (mmap):       Disk-backed, loaded on demand
+
+TieredStore tracks access patterns:
+- Frequently accessed data stays hot
+- Cold data migrates to memory-mapped files
+- Accessing cold data promotes it back to hot
+```
+
+This enables 50GB+ vector indices on machines with 8GB RAM — hot data (working set) stays fast while cold data lives on disk. Benchmarks show 5-7% overhead for hot operations, with ~1M entries/sec migration throughput.
+
 ## Quick Start
 
 ```bash
@@ -143,6 +159,7 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Module | Status | Description |
 |--------|--------|-------------|
 | Tensor Store | Complete | Key-value storage with shared entity support, HNSW index |
+| Tiered Storage | Complete | Hot/cold memory tiering with mmap for datasets larger than RAM |
 | Sparse Vectors | Complete | Memory-efficient storage for high-sparsity embeddings (3-33x compression) |
 | Delta Vectors | Complete | Archetype-based encoding with k-means clustering (auto-discovery) |
 | Relational Engine | Complete | Tables, schemas, SQL-like operations |

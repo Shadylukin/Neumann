@@ -515,15 +515,147 @@ index.insert("doc:3", EmbeddingStorage::Delta(delta_vec));
 let results = index.search(&query, 10);
 ```
 
+## Tiered Storage
+
+For datasets larger than available RAM, TieredStore provides automatic hot/cold tiering with memory-mapped cold storage.
+
+### TieredStore
+
+Two-tier storage combining fast in-memory access with disk-backed cold storage:
+
+```rust
+use tensor_store::{TieredStore, TieredConfig};
+
+// Configure tiered storage
+let config = TieredConfig {
+    cold_dir: "/data/cold".into(),      // Directory for cold storage files
+    cold_capacity: 64 * 1024 * 1024,    // Initial cold file size (64MB)
+    sample_rate: 100,                    // Track 1% of accesses
+};
+
+let mut store = TieredStore::new(config)?;
+
+// Use like regular TensorStore
+store.put("user:1", tensor);
+let data = store.get("user:1")?;
+
+// Check which tier data is in
+let stats = store.stats();
+println!("Hot: {}, Cold: {}", stats.hot_count, stats.cold_count);
+```
+
+### Cold Migration
+
+Move infrequently accessed data to cold storage:
+
+```rust
+// Migrate shards not accessed in 30 seconds
+let migrated = store.migrate_cold(30_000)?;
+println!("Migrated {} entries to cold storage", migrated);
+
+// Data is still accessible - reads from cold tier
+let data = store.get("old_key")?;  // Loads from mmap, promotes to hot
+```
+
+### Preloading
+
+Warm specific keys before heavy access:
+
+```rust
+// Preload keys you know you'll need
+let keys = vec!["user:1", "user:2", "user:3"];
+let loaded = store.preload(&keys)?;
+println!("Preloaded {} entries from cold to hot", loaded);
+```
+
+### Access Instrumentation
+
+Track hot/cold access patterns:
+
+```rust
+// Find most accessed shards
+let hot_shards = store.hot_shards(5);  // Top 5
+for (shard_id, access_count) in hot_shards {
+    println!("Shard {}: {} accesses", shard_id, access_count);
+}
+
+// Find cold shards (not accessed in 60s)
+let cold_shards = store.cold_shards(60_000);
+println!("Cold shards: {:?}", cold_shards);
+```
+
+### MmapStore (Low-Level)
+
+Direct memory-mapped file access for advanced use cases:
+
+```rust
+use tensor_store::{MmapStoreBuilder, MmapStore, MmapStoreMut};
+
+// Create a new mmap file
+let mut builder = MmapStoreBuilder::create("/data/store.bin")?;
+for (key, tensor) in entries {
+    builder.add(&key, &tensor)?;
+}
+let file_size = builder.finish()?;
+
+// Open read-only
+let store = MmapStore::open("/data/store.bin")?;
+let tensor = store.get("key")?;
+
+// Open mutable (supports updates)
+let mut store = MmapStoreMut::open("/data/store.bin")?;
+store.insert("new_key", &tensor)?;
+store.flush()?;
+
+// Compact to reclaim space from updates
+store.compact("/data/store_compacted.bin")?;
+```
+
+### Performance Characteristics
+
+| Operation | Throughput | Notes |
+|-----------|------------|-------|
+| Hot put | 1.4-1.5 M/s | DashMap insert |
+| Hot get | 2.9-3.4 M/s | DashMap lookup + clone |
+| Cold migration | 1.0-1.4 M/s | Serialize to mmap |
+| Cold promotion | 0.5-0.6 M/s | Deserialize + insert |
+| Write overhead | 5-7% | vs pure in-memory TensorStore |
+
+### When to Use TieredStore
+
+- Dataset exceeds available RAM
+- Working set is smaller than total data (e.g., hot 10%, cold 90%)
+- Development machines with limited memory
+- Need graceful degradation under memory pressure
+
+### File Format
+
+Cold storage uses a simple append-only format:
+
+```
+[Header: 16 bytes]
+  Magic: "MMAP" (4 bytes)
+  Version: 1 (4 bytes, little-endian)
+  Entry count: (8 bytes, little-endian)
+
+[Entries: variable]
+  Key length: (4 bytes)
+  Key: (variable, UTF-8)
+  Data length: (4 bytes)
+  Data: (variable, bincode-serialized TensorData)
+```
+
+Updates append new versions; use `compact()` to reclaim space from old versions.
+
 ## Future Considerations
 
 Not yet implemented:
 
-- **Write-Ahead Log (WAL)**: For durability between snapshots
 - **Incremental snapshots**: Only save changes since last snapshot
 - **Transactions**: Atomic multi-key operations
 - **TTL**: Automatic expiration
 - **Background snapshots**: Async save without blocking
 - **Streaming Compression**: Process without loading full snapshot
+- **Distributed tiering**: Cross-node cold storage
 
 These belong in higher layers or future modules.

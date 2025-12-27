@@ -75,6 +75,15 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|         Tiered Memory Storage [DONE]              |
+|   - Hot tier: DashMap in-memory                  |
+|   - Cold tier: mmap-backed file storage          |
+|   - Access instrumentation for hot/cold tracking |
+|   - Automatic cold migration based on access     |
+|   - Cold-to-hot promotion on access              |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |           Persistence Layer [DONE]                |
 |   - Snapshot save/load (bincode)                 |
 |   - Compressed snapshots (tensor_compress)       |
@@ -277,6 +286,49 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - HNSW: Unified index supporting Dense, Sparse, and Delta storage
 
 **Philosophy**: Replace explicit zeros with geometric structure. Instead of storing thousands of zero values, we store only the non-zero positions (sparse) or the delta from a learned centroid (delta). This is not just compression - it's recognizing that zeros carry no information and discarding them.
+
+### Tiered Memory Storage (Complete)
+
+**Responsibility**: Enable datasets larger than RAM by automatically tiering data between hot (in-memory) and cold (mmap) storage based on access patterns.
+
+**Interface** (TieredStore):
+- `put(key, tensor)` - Insert into hot tier
+- `get(key) -> Result<TensorData>` - Get from hot or cold (promotes if cold)
+- `exists(key) -> bool` - Check either tier
+- `delete(key) -> bool` - Remove from both tiers
+- `migrate_cold(threshold_ms) -> Result<usize>` - Move cold shards to mmap
+- `preload(keys) -> Result<usize>` - Warm specific keys from cold
+- `hot_shards(limit) -> Vec<(usize, u64)>` - Most accessed shards
+- `cold_shards(threshold_ms) -> Vec<usize>` - Least accessed shards
+- `stats() -> TieredStats` - Hot/cold counts, lookups, migrations
+
+**Interface** (MmapStore):
+- `MmapStoreBuilder::create(path)` - Create new mmap file
+- `MmapStore::open(path)` - Open read-only mmap
+- `MmapStoreMut::create(path, capacity)` - Create mutable mmap
+- `get(key) -> Result<TensorData>` - Deserialize on demand
+- `compact(output_path) -> Result<u64>` - Remove garbage, reclaim space
+
+**Features**:
+- Hot tier: DashMap with ~16 shards for concurrent access
+- Cold tier: Memory-mapped files with bincode serialization
+- Access instrumentation: Per-shard read/write tracking with sampling
+- Auto-grow: Cold storage files expand as needed
+- Promotion: Cold data moves to hot on access
+- Compaction: Remove old versions of updated keys
+
+**Performance** (128-dim embeddings, 10K entries):
+- Hot put: 1.4-1.5 M ops/sec
+- Hot get: 2.9-3.4 M ops/sec
+- Cold migration: 1.0-1.4 M entries/sec
+- Cold promotion: 0.5-0.6 M entries/sec
+- Write overhead vs pure in-memory: 5-7%
+
+**Use Cases**:
+- Datasets exceeding available RAM (e.g., 52GB+ vector indices)
+- Working sets smaller than total data (hot 10%, cold 90%)
+- Development machines with limited memory
+- Graceful degradation under memory pressure
 
 ### Module 9: Tensor Vault (Complete)
 
@@ -493,8 +545,11 @@ Neumann/
       lib.rs                 # Module 1: Storage layer + SparseVector
       hnsw.rs                # HNSW index with Dense/Sparse/Delta support
       delta_vector.rs        # Delta encoding, archetypes, k-means clustering
+      instrumentation.rs     # Shard access tracking for hot/cold detection
+      mmap.rs                # Memory-mapped cold storage
+      tiered.rs              # Two-tier hot/cold store
     benches/
-      tensor_store_bench.rs  # Storage, sparse, delta, k-means benchmarks
+      tensor_store_bench.rs  # Storage, sparse, delta, k-means, tiered benchmarks
   relational_engine/
     Cargo.toml
     src/lib.rs               # Module 2: SQL-like operations
