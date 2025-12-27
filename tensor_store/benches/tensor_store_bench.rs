@@ -1,7 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::sync::Arc;
 use std::thread;
-use tensor_store::{BloomFilter, ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
+use tensor_store::{
+    ArchetypeRegistry, BloomFilter, DeltaVector, KMeans, KMeansConfig, KMeansInit, ScalarValue,
+    SparseVector, TensorData, TensorStore, TensorValue,
+};
 
 fn create_test_tensor(id: i64) -> TensorData {
     let mut tensor = TensorData::new();
@@ -788,4 +791,447 @@ criterion_group!(
     bench_sparse_vector_batch_dot,
 );
 
-criterion_main!(benches, sparse_vector_benches);
+// ============================================================================
+// DeltaVector Benchmarks
+// ============================================================================
+
+fn create_archetype(dim: usize) -> Vec<f32> {
+    (0..dim).map(|i| (i as f32 * 0.01).sin()).collect()
+}
+
+fn create_similar_vector(archetype: &[f32], delta_fraction: f32, seed: usize) -> Vec<f32> {
+    archetype
+        .iter()
+        .enumerate()
+        .map(|(i, &val)| {
+            let noise = ((seed * 31 + i * 17) as f32 * 0.0001).sin() * delta_fraction;
+            val + noise
+        })
+        .collect()
+}
+
+fn bench_delta_vector_construction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/construction");
+
+    for dim in [128, 768, 1536] {
+        let archetype = create_archetype(dim);
+
+        for delta_fraction in [0.01, 0.05, 0.1] {
+            let vector = create_similar_vector(&archetype, delta_fraction, 42);
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}d", dim),
+                    format!("{:.0}%_delta", delta_fraction * 100.0),
+                ),
+                &(&vector, &archetype),
+                |bench, (vec, arch)| {
+                    bench.iter(|| {
+                        black_box(DeltaVector::from_dense_with_reference(vec, arch, 0, 0.001))
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_delta_vector_reconstruction(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/reconstruction");
+
+    for dim in [128, 768, 1536] {
+        let archetype = create_archetype(dim);
+        let vector = create_similar_vector(&archetype, 0.05, 42);
+        let delta = DeltaVector::from_dense_with_reference(&vector, &archetype, 0, 0.001);
+
+        group.bench_with_input(
+            BenchmarkId::new("to_dense", format!("{}d", dim)),
+            &(&delta, &archetype),
+            |bench, (d, arch)| {
+                bench.iter(|| black_box(d.to_dense(arch)));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_delta_vector_dot_product(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/dot_product");
+
+    for dim in [128, 768, 1536] {
+        let archetype = create_archetype(dim);
+        let vector = create_similar_vector(&archetype, 0.05, 42);
+        let delta = DeltaVector::from_dense_with_reference(&vector, &archetype, 0, 0.001);
+        let query: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.02).cos()).collect();
+
+        // Precomputed archetype dot product
+        let arch_dot_query: f32 = archetype.iter().zip(query.iter()).map(|(a, q)| a * q).sum();
+
+        // Delta dot with precomputed (optimized path)
+        group.bench_with_input(
+            BenchmarkId::new("delta_precomputed", format!("{}d", dim)),
+            &(&delta, &query, arch_dot_query),
+            |bench, (d, q, precomputed)| {
+                bench.iter(|| black_box(d.dot_dense_with_precomputed(q, *precomputed)));
+            },
+        );
+
+        // Delta dot without precomputed
+        group.bench_with_input(
+            BenchmarkId::new("delta_full", format!("{}d", dim)),
+            &(&delta, &query, &archetype),
+            |bench, (d, q, arch)| {
+                bench.iter(|| black_box(d.dot_dense(q, arch)));
+            },
+        );
+
+        // Dense baseline
+        group.bench_with_input(
+            BenchmarkId::new("dense_baseline", format!("{}d", dim)),
+            &(&vector, &query),
+            |bench, (v, q)| {
+                bench.iter(|| black_box(v.iter().zip(q.iter()).map(|(a, b)| a * b).sum::<f32>()));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_delta_same_archetype_dot(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/same_archetype_dot");
+
+    for dim in [128, 768, 1536] {
+        let archetype = create_archetype(dim);
+        let arch_mag_sq: f32 = archetype.iter().map(|x| x * x).sum();
+
+        let vec_a = create_similar_vector(&archetype, 0.05, 42);
+        let vec_b = create_similar_vector(&archetype, 0.05, 123);
+
+        let delta_a = DeltaVector::from_dense_with_reference(&vec_a, &archetype, 0, 0.001);
+        let delta_b = DeltaVector::from_dense_with_reference(&vec_b, &archetype, 0, 0.001);
+
+        // Delta-delta dot (optimized)
+        group.bench_with_input(
+            BenchmarkId::new("delta_delta", format!("{}d", dim)),
+            &(&delta_a, &delta_b, &archetype, arch_mag_sq),
+            |bench, (da, db, arch, mag_sq)| {
+                bench.iter(|| black_box(da.dot_same_archetype(db, arch, *mag_sq)));
+            },
+        );
+
+        // Dense baseline
+        group.bench_with_input(
+            BenchmarkId::new("dense_baseline", format!("{}d", dim)),
+            &(&vec_a, &vec_b),
+            |bench, (va, vb)| {
+                bench.iter(|| black_box(va.iter().zip(vb.iter()).map(|(a, b)| a * b).sum::<f32>()));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_delta_vector_memory(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/memory");
+
+    for dim in [128, 768, 1536] {
+        let archetype = create_archetype(dim);
+        let dense_bytes = dim * std::mem::size_of::<f32>();
+
+        for delta_fraction in [0.01, 0.05, 0.1] {
+            let vector = create_similar_vector(&archetype, delta_fraction, 42);
+            let delta = DeltaVector::from_dense_with_reference(&vector, &archetype, 0, 0.001);
+            let ratio = dense_bytes as f32 / delta.memory_bytes() as f32;
+
+            group.throughput(Throughput::Bytes(delta.memory_bytes() as u64));
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}d_{:.0}%_delta", dim, delta_fraction * 100.0),
+                    format!("ratio_{:.2}x", ratio),
+                ),
+                &delta,
+                |bench, d| {
+                    bench.iter(|| black_box(d.memory_bytes()));
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_archetype_registry(c: &mut Criterion) {
+    let mut group = c.benchmark_group("delta_vector/registry");
+
+    let dim = 768;
+    let mut registry = ArchetypeRegistry::new(16);
+
+    // Register some archetypes
+    for i in 0..8 {
+        let archetype: Vec<f32> = (0..dim)
+            .map(|j| ((i * 100 + j) as f32 * 0.01).sin())
+            .collect();
+        registry.register(archetype);
+    }
+
+    let test_vector: Vec<f32> = (0..dim).map(|i| (i as f32 * 0.01).sin() + 0.01).collect();
+
+    // Find best archetype
+    group.bench_function("find_best_archetype", |bench| {
+        bench.iter(|| black_box(registry.find_best_archetype(&test_vector)));
+    });
+
+    // Encode vector
+    group.bench_function("encode", |bench| {
+        bench.iter(|| black_box(registry.encode(&test_vector, 0.001)));
+    });
+
+    // Decode delta
+    let delta = registry.encode(&test_vector, 0.001).unwrap();
+    group.bench_function("decode", |bench| {
+        bench.iter(|| black_box(registry.decode(&delta)));
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    delta_vector_benches,
+    bench_delta_vector_construction,
+    bench_delta_vector_reconstruction,
+    bench_delta_vector_dot_product,
+    bench_delta_same_archetype_dot,
+    bench_delta_vector_memory,
+    bench_archetype_registry,
+);
+
+// ============================================================================
+// K-means Clustering Benchmarks
+// ============================================================================
+
+fn generate_clustered_data(
+    n_vectors: usize,
+    n_clusters: usize,
+    dim: usize,
+    noise: f32,
+) -> Vec<Vec<f32>> {
+    let mut vectors = Vec::with_capacity(n_vectors);
+    let per_cluster = n_vectors / n_clusters;
+
+    for cluster_id in 0..n_clusters {
+        // Generate cluster center
+        let center: Vec<f32> = (0..dim)
+            .map(|d| ((cluster_id * 100 + d) as f32 * 0.037).sin())
+            .collect();
+
+        for vec_id in 0..per_cluster {
+            let vec: Vec<f32> = center
+                .iter()
+                .enumerate()
+                .map(|(d, &c)| {
+                    let n = ((cluster_id * 1000 + vec_id * 10 + d) as f32 * 0.0013).sin() * noise;
+                    c + n
+                })
+                .collect();
+            vectors.push(vec);
+        }
+    }
+
+    vectors
+}
+
+fn bench_kmeans_fit(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/fit");
+
+    // Vary number of vectors
+    for n in [100, 500, 1000] {
+        let dim = 128;
+        let data = generate_clustered_data(n, 5, dim, 0.1);
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("n_vectors", n), &data, |bench, data| {
+            bench.iter(|| {
+                let config = KMeansConfig::default();
+                let kmeans = KMeans::new(config);
+                black_box(kmeans.fit(data, 5))
+            });
+        });
+    }
+
+    // Vary k (number of clusters)
+    let data_1000 = generate_clustered_data(1000, 10, 128, 0.1);
+    for k in [2, 5, 10, 20] {
+        group.bench_with_input(
+            BenchmarkId::new("k_clusters", k),
+            &(&data_1000, k),
+            |bench, (data, k)| {
+                bench.iter(|| {
+                    let config = KMeansConfig::default();
+                    let kmeans = KMeans::new(config);
+                    black_box(kmeans.fit(data, *k))
+                });
+            },
+        );
+    }
+
+    // Vary dimension
+    for dim in [64, 128, 384, 768] {
+        let data = generate_clustered_data(500, 5, dim, 0.1);
+
+        group.bench_with_input(BenchmarkId::new("dimension", dim), &data, |bench, data| {
+            bench.iter(|| {
+                let config = KMeansConfig::default();
+                let kmeans = KMeans::new(config);
+                black_box(kmeans.fit(data, 5))
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_kmeans_init_methods(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/initialization");
+
+    let data = generate_clustered_data(1000, 10, 128, 0.1);
+
+    // Random initialization
+    group.bench_with_input(
+        BenchmarkId::new("method", "random"),
+        &data,
+        |bench, data| {
+            bench.iter(|| {
+                let config = KMeansConfig {
+                    init_method: KMeansInit::Random,
+                    max_iterations: 50,
+                    ..Default::default()
+                };
+                let kmeans = KMeans::new(config);
+                black_box(kmeans.fit(data, 10))
+            });
+        },
+    );
+
+    // K-means++ initialization
+    group.bench_with_input(
+        BenchmarkId::new("method", "kmeans++"),
+        &data,
+        |bench, data| {
+            bench.iter(|| {
+                let config = KMeansConfig {
+                    init_method: KMeansInit::KMeansPlusPlus,
+                    max_iterations: 50,
+                    ..Default::default()
+                };
+                let kmeans = KMeans::new(config);
+                black_box(kmeans.fit(data, 10))
+            });
+        },
+    );
+
+    group.finish();
+}
+
+fn bench_discover_archetypes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/discover_archetypes");
+
+    for n in [100, 500, 1000] {
+        let data = generate_clustered_data(n, 5, 128, 0.1);
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::new("n_vectors", n), &data, |bench, data| {
+            bench.iter(|| {
+                let mut registry = ArchetypeRegistry::new(16);
+                let added = registry.discover_archetypes(data, 5, KMeansConfig::default());
+                black_box(added)
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_encode_batch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/encode_batch");
+
+    // Pre-discover archetypes
+    let data = generate_clustered_data(1000, 5, 128, 0.1);
+    let mut registry = ArchetypeRegistry::new(16);
+    registry.discover_archetypes(&data, 5, KMeansConfig::default());
+
+    for n in [100, 500, 1000] {
+        let batch: Vec<Vec<f32>> = data.iter().take(n).cloned().collect();
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(
+            BenchmarkId::new("batch_size", n),
+            &(&registry, &batch),
+            |bench, (reg, batch)| {
+                bench.iter(|| black_box(reg.encode_batch(batch, 0.01)));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_analyze_coverage(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/analyze_coverage");
+
+    let data = generate_clustered_data(1000, 5, 128, 0.1);
+    let mut registry = ArchetypeRegistry::new(16);
+    registry.discover_archetypes(&data, 5, KMeansConfig::default());
+
+    group.throughput(Throughput::Elements(1000));
+    group.bench_function("1000_vectors", |bench| {
+        bench.iter(|| black_box(registry.analyze_coverage(&data, 0.01)));
+    });
+
+    group.finish();
+}
+
+fn bench_full_clustering_pipeline(c: &mut Criterion) {
+    let mut group = c.benchmark_group("kmeans/full_pipeline");
+
+    // End-to-end: discover archetypes then encode all vectors
+    for n in [500, 1000] {
+        let data = generate_clustered_data(n, 5, 128, 0.1);
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(
+            BenchmarkId::new("discover_and_encode", n),
+            &data,
+            |bench, data| {
+                bench.iter(|| {
+                    let mut registry = ArchetypeRegistry::new(16);
+                    registry.discover_archetypes(data, 5, KMeansConfig::default());
+                    let encoded = registry.encode_batch(data, 0.01);
+                    black_box(encoded)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    kmeans_benches,
+    bench_kmeans_fit,
+    bench_kmeans_init_methods,
+    bench_discover_archetypes,
+    bench_encode_batch,
+    bench_analyze_coverage,
+    bench_full_clustering_pipeline,
+);
+
+criterion_main!(
+    benches,
+    sparse_vector_benches,
+    delta_vector_benches,
+    kmeans_benches
+);

@@ -9,9 +9,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+pub mod delta_vector;
 pub mod hnsw;
 pub mod sparse_vector;
 
+pub use delta_vector::{
+    ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
+};
 pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
 pub use sparse_vector::SparseVector;
 
@@ -2449,5 +2453,201 @@ mod tests {
         assert!(loaded.is_empty());
 
         std::fs::remove_file(&temp).ok();
+    }
+
+    // ==================== TensorValue embedding methods ====================
+
+    #[test]
+    fn tensor_value_from_embedding() {
+        // Sparse vector (high sparsity should stay sparse)
+        let sparse_vec = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let val = TensorValue::from_embedding(sparse_vec.clone(), 0.01, 0.8);
+        assert!(matches!(val, TensorValue::Sparse(_)));
+
+        // Dense vector (low sparsity should stay dense)
+        let dense_vec = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let val = TensorValue::from_embedding(dense_vec.clone(), 0.01, 0.8);
+        assert!(matches!(val, TensorValue::Vector(_)));
+    }
+
+    #[test]
+    fn tensor_value_from_embedding_auto() {
+        // High sparsity vector
+        let sparse_vec = vec![0.0; 100];
+        let mut sparse_vec = sparse_vec;
+        sparse_vec[50] = 1.0;
+        let val = TensorValue::from_embedding_auto(sparse_vec);
+        assert!(matches!(val, TensorValue::Sparse(_)));
+    }
+
+    #[test]
+    fn tensor_value_to_dense() {
+        // Dense vector
+        let val = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        assert_eq!(val.to_dense(), Some(vec![1.0, 2.0, 3.0]));
+
+        // Sparse vector
+        let sparse = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        let val = TensorValue::Sparse(sparse);
+        assert_eq!(val.to_dense(), Some(vec![1.0, 0.0, 2.0]));
+
+        // Non-vector type
+        let val = TensorValue::Scalar(ScalarValue::Int(42));
+        assert!(val.to_dense().is_none());
+    }
+
+    #[test]
+    fn tensor_value_dimension() {
+        // Dense vector
+        let val = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        assert_eq!(val.dimension(), Some(3));
+
+        // Sparse vector
+        let sparse = SparseVector::from_dense(&[1.0, 0.0, 2.0, 0.0]);
+        let val = TensorValue::Sparse(sparse);
+        assert_eq!(val.dimension(), Some(4));
+
+        // Non-vector type
+        let val = TensorValue::Scalar(ScalarValue::Int(42));
+        assert!(val.dimension().is_none());
+    }
+
+    #[test]
+    fn tensor_value_dot() {
+        // Sparse-Sparse
+        let a = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0, 2.0]));
+        let b = TensorValue::Sparse(SparseVector::from_dense(&[2.0, 0.0, 3.0]));
+        let dot = a.dot(&b).unwrap();
+        assert!((dot - 8.0).abs() < 0.001); // 1*2 + 2*3 = 8
+
+        // Sparse-Dense
+        let c = TensorValue::Vector(vec![2.0, 0.0, 3.0]);
+        let dot2 = a.dot(&c).unwrap();
+        assert!((dot2 - 8.0).abs() < 0.001);
+
+        // Dense-Sparse (reversed)
+        let dot3 = c.dot(&a).unwrap();
+        assert!((dot3 - 8.0).abs() < 0.001);
+
+        // Dense-Dense
+        let d = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        let e = TensorValue::Vector(vec![1.0, 1.0, 1.0]);
+        let dot4 = d.dot(&e).unwrap();
+        assert!((dot4 - 6.0).abs() < 0.001);
+
+        // Dimension mismatch
+        let f = TensorValue::Vector(vec![1.0, 2.0]);
+        assert!(d.dot(&f).is_none());
+
+        // Non-vector type
+        let g = TensorValue::Scalar(ScalarValue::Int(42));
+        assert!(d.dot(&g).is_none());
+    }
+
+    #[test]
+    fn tensor_value_cosine_similarity() {
+        // Same vectors
+        let a = TensorValue::Vector(vec![1.0, 0.0, 0.0]);
+        let sim = a.cosine_similarity(&a).unwrap();
+        assert!((sim - 1.0).abs() < 0.001);
+
+        // Orthogonal vectors
+        let b = TensorValue::Vector(vec![0.0, 1.0, 0.0]);
+        let sim2 = a.cosine_similarity(&b).unwrap();
+        assert!(sim2.abs() < 0.001);
+
+        // Sparse vectors
+        let c = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let d = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let sim3 = c.cosine_similarity(&d).unwrap();
+        assert!((sim3 - 1.0).abs() < 0.001);
+
+        // Mixed
+        let sim4 = a.cosine_similarity(&c).unwrap();
+        assert!((sim4 - 1.0).abs() < 0.001);
+    }
+
+    // ==================== SparseVector additional coverage ====================
+
+    #[test]
+    fn sparse_vector_with_capacity() {
+        let sv = SparseVector::with_capacity(100, 10);
+        assert_eq!(sv.dimension(), 100);
+        assert_eq!(sv.nnz(), 0);
+    }
+
+    #[test]
+    fn sparse_vector_in_bounds() {
+        let sv = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        assert!(sv.in_bounds(0));
+        assert!(sv.in_bounds(2));
+        assert!(!sv.in_bounds(3));
+        assert!(!sv.in_bounds(100));
+    }
+
+    #[test]
+    fn sparse_vector_set_existing() {
+        let mut sv = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        sv.set(0, 5.0); // Update existing
+        assert!((sv.get(0) - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn sparse_vector_get_zero_position() {
+        let sv = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        // Position 1 is zero (not stored), should return 0.0
+        assert!((sv.get(1) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn sparse_vector_dot_ordering() {
+        // Test the Greater branch in sparse-sparse dot product
+        let a = SparseVector::from_dense(&[0.0, 1.0, 0.0, 0.0]);
+        let b = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
+        let dot = a.dot(&b);
+        assert!((dot - 0.0).abs() < 0.001); // No overlap
+    }
+
+    #[test]
+    fn sparse_vector_cosine_distance_dense() {
+        let sv = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let dense = vec![1.0, 0.0, 0.0];
+        let dist = sv.cosine_distance_dense(&dense);
+        assert!(dist.abs() < 0.001); // Same vector = 0 distance
+    }
+
+    #[test]
+    fn sparse_vector_empty() {
+        let sv = SparseVector::new(10);
+        assert_eq!(sv.nnz(), 0);
+        assert!((sv.magnitude() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn sparse_vector_prune() {
+        let mut sv = SparseVector::from_dense(&[1.0, 0.001, 2.0, 0.0001]);
+        sv.prune(0.01);
+        // Values below 0.01 should be removed
+        assert_eq!(sv.nnz(), 2);
+        assert!((sv.get(0) - 1.0).abs() < 0.001);
+        assert!((sv.get(2) - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn sparse_vector_iter() {
+        let sv = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        let pairs: Vec<_> = sv.iter().collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (0, 1.0));
+        assert_eq!(pairs[1], (2, 2.0));
+    }
+
+    #[test]
+    fn sparse_vector_zero_magnitude_cosine() {
+        let sv = SparseVector::new(3);
+        let other = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        // Zero magnitude should return 0 for cosine similarity
+        let sim = sv.cosine_similarity(&other);
+        assert!((sim - 0.0).abs() < 0.001);
     }
 }

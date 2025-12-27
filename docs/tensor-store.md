@@ -420,6 +420,101 @@ assert!(restored.exists("user:1"));
 2. **Backup strategy**: Keep multiple snapshots with timestamps for point-in-time recovery
 3. **Bloom filter on load**: Use `load_snapshot_with_bloom_filter` for read-heavy workloads with sparse key access
 
+## Sparse and Delta Vectors
+
+tensor_store provides specialized vector types that exploit sparsity and clustering for memory efficiency.
+
+### SparseVector
+
+For vectors with many zeros (e.g., one-hot encodings, pruned embeddings):
+
+```rust
+use tensor_store::SparseVector;
+
+// Create from dense vector (zeros are discarded)
+let dense = vec![0.0, 0.5, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0];
+let sparse = SparseVector::from_dense(&dense);
+
+// Or with threshold (values below threshold become zero)
+let sparse = SparseVector::from_dense_with_threshold(&dense, 0.1);
+
+// Operations are O(nnz) instead of O(dimension)
+let dot = sparse.dot(&other_sparse);      // sparse-sparse
+let dot = sparse.dot_dense(&dense_vec);   // sparse-dense
+let cosine = sparse.cosine_similarity(&other_sparse);
+
+// Memory: ~6 bytes per non-zero vs 4 bytes per element
+assert!(sparse.memory_bytes() < dense.len() * 4);
+```
+
+**When to use**: Sparsity > 80% yields memory savings; > 95% yields significant speedups.
+
+### DeltaVector
+
+For clustered embeddings that share common structure:
+
+```rust
+use tensor_store::{DeltaVector, ArchetypeRegistry, KMeansConfig};
+
+// Automatic archetype discovery via k-means
+let mut registry = ArchetypeRegistry::new(16);  // max 16 archetypes
+registry.discover_archetypes(&embeddings, 5, KMeansConfig::default());
+
+// Encode vectors as deltas from nearest archetype
+let results = registry.encode_batch(&embeddings, 0.01);  // threshold
+for (delta, compression_ratio) in results {
+    println!("Compressed {}x", compression_ratio);
+}
+
+// Fast similarity with precomputed archetype dot products
+let archetype = registry.get(delta.archetype_id()).unwrap();
+let arch_dot_query: f32 = archetype.iter().zip(query.iter()).map(|(a, q)| a * q).sum();
+let result = delta.dot_dense_with_precomputed(&query, arch_dot_query);
+```
+
+**When to use**: Embeddings that cluster (semantic similarity, user profiles, documents).
+
+### K-means Clustering
+
+Discover archetypes automatically:
+
+```rust
+use tensor_store::{KMeans, KMeansConfig, KMeansInit};
+
+let config = KMeansConfig {
+    max_iterations: 100,
+    convergence_threshold: 1e-4,
+    seed: 42,
+    init_method: KMeansInit::KMeansPlusPlus,  // Better than random
+};
+
+let kmeans = KMeans::new(config);
+let centroids = kmeans.fit(&vectors, 5);  // Find 5 clusters
+
+// Analyze coverage quality
+let stats = registry.analyze_coverage(&vectors, 0.01);
+println!("Avg similarity to archetype: {}", stats.avg_similarity);
+println!("Avg compression ratio: {}", stats.avg_compression_ratio);
+```
+
+### HNSW with Mixed Storage
+
+The HNSW index supports all storage types:
+
+```rust
+use tensor_store::{HNSWIndex, HNSWConfig, EmbeddingStorage};
+
+let index = HNSWIndex::new(HNSWConfig::default());
+
+// Insert dense, sparse, or delta vectors
+index.insert("doc:1", EmbeddingStorage::Dense(vec![0.1, 0.2, 0.3]));
+index.insert("doc:2", EmbeddingStorage::Sparse(sparse_vec));
+index.insert("doc:3", EmbeddingStorage::Delta(delta_vec));
+
+// Search works across all types
+let results = index.search(&query, 10);
+```
+
 ## Future Considerations
 
 Not yet implemented:

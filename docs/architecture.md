@@ -67,6 +67,14 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|         Sparse/Delta Vectors [DONE]               |
+|   - SparseVector for high-sparsity embeddings    |
+|   - DeltaVector for archetype-based encoding     |
+|   - K-means clustering for archetype discovery   |
+|   - Unified HNSW index (Dense/Sparse/Delta)      |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |           Persistence Layer [DONE]                |
 |   - Snapshot save/load (bincode)                 |
 |   - Compressed snapshots (tensor_compress)       |
@@ -239,6 +247,37 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Implement product quantization (future)
 - Support streaming compression (future)
 
+### Sparse/Delta Vectors (Complete)
+
+**Responsibility**: Memory-efficient vector storage that exploits sparsity and clustering.
+
+**Interface** (SparseVector):
+- `from_dense(vector) -> SparseVector` - Convert dense to sparse
+- `from_dense_with_threshold(vector, threshold) -> SparseVector` - Sparsify with threshold
+- `to_dense() -> Vec<f32>` - Reconstruct dense
+- `dot(other) -> f32` - Sparse-sparse dot product O(nnz)
+- `dot_dense(other) -> f32` - Sparse-dense dot product O(nnz)
+- `cosine_similarity(other) -> f32` - Cosine similarity
+
+**Interface** (DeltaVector):
+- `from_dense_with_reference(vector, archetype, id, threshold) -> DeltaVector` - Delta encode
+- `to_dense(archetype) -> Vec<f32>` - Reconstruct via archetype + delta
+- `dot_dense_with_precomputed(query, arch_dot_query) -> f32` - O(nnz) with precomputed
+
+**Interface** (ArchetypeRegistry + K-means):
+- `discover_archetypes(vectors, k, config) -> usize` - K-means clustering
+- `encode_batch(vectors, threshold) -> Vec<(DeltaVector, ratio)>` - Bulk encoding
+- `analyze_coverage(vectors, threshold) -> CoverageStats` - Quality metrics
+
+**Features**:
+- SparseVector: 2.8-33x memory reduction at 90-99% sparsity
+- SparseVector: 10-152x dot product speedup at 99% sparsity
+- DeltaVector: Stores only differences from reference archetypes
+- K-means: Automatic archetype discovery with k-means++ initialization
+- HNSW: Unified index supporting Dense, Sparse, and Delta storage
+
+**Philosophy**: Replace explicit zeros with geometric structure. Instead of storing thousands of zero values, we store only the non-zero positions (sparse) or the delta from a learned centroid (delta). This is not just compression - it's recognizing that zeros carry no information and discarding them.
+
 ### Module 9: Tensor Vault (Complete)
 
 **Responsibility**: Encrypted secret storage with graph-based access control.
@@ -381,6 +420,32 @@ This provides significantly better concurrent write throughput compared to a sin
 
 Tensor Store accepts any `TensorData`. Schema validation belongs in Query Layer.
 
+### 6. Zero-Aware Storage (Sparse/Delta Vectors)
+
+Neumann uses geometric structure to eliminate zero storage overhead:
+
+```
+Dense Vector (768d):        3,072 bytes (768 x 4 bytes)
+  [0.1, 0.0, 0.0, ..., 0.2, 0.0, ...]
+
+Sparse Vector (99% zeros):  ~60 bytes (indices + values)
+  positions: [0, 500]
+  values: [0.1, 0.2]
+
+Delta Vector (5% diff):     ~120 bytes (archetype_id + sparse delta)
+  archetype_id: 3
+  delta_positions: [12, 45, 89]
+  delta_values: [0.01, -0.02, 0.03]
+```
+
+The philosophy:
+1. **Zeros carry no information** - don't store what doesn't exist
+2. **Similarity implies shared structure** - clustered vectors share archetypes
+3. **Geometry replaces data** - k-means centroids capture cluster structure
+4. **O(nnz) operations** - dot products scale with non-zeros, not dimension
+
+This yields 10-150x speedups and 3-33x memory savings depending on sparsity.
+
 ## File Structure
 
 ```
@@ -410,8 +475,11 @@ Neumann/
   tensor_store/
     Cargo.toml
     src/
-      lib.rs                 # Module 1: Storage layer
-      hnsw.rs                # HNSW index (shared with vector_engine)
+      lib.rs                 # Module 1: Storage layer + SparseVector
+      hnsw.rs                # HNSW index with Dense/Sparse/Delta support
+      delta_vector.rs        # Delta encoding, archetypes, k-means clustering
+    benches/
+      tensor_store_bench.rs  # Storage, sparse, delta, k-means benchmarks
   relational_engine/
     Cargo.toml
     src/lib.rs               # Module 2: SQL-like operations

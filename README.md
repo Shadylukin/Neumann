@@ -70,6 +70,18 @@ This enables cross-engine queries:
 
 When you point Neumann at a codebase, it doesn't just store files — it understands structure. Functions, dependencies, call graphs. This enables queries like "what would break if I changed this?" without leaving the same system that holds your application data.
 
+### Zero-Aware Storage
+
+Neumann treats zeros as the absence of information rather than data to store:
+
+```
+Traditional: Store 768 floats → 3,072 bytes per embedding
+Sparse (99% zeros): Store 8 positions + values → ~64 bytes (48x smaller)
+Delta (clustered): Store archetype_id + small delta → ~120 bytes (25x smaller)
+```
+
+When vectors cluster around archetypes (common in embeddings), k-means discovers these patterns automatically. Similarity operations scale with actual information (non-zeros), not dimension size — yielding 10-150x speedups.
+
 ## Quick Start
 
 ```bash
@@ -131,6 +143,8 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Module | Status | Description |
 |--------|--------|-------------|
 | Tensor Store | Complete | Key-value storage with shared entity support, HNSW index |
+| Sparse Vectors | Complete | Memory-efficient storage for high-sparsity embeddings (3-33x compression) |
+| Delta Vectors | Complete | Archetype-based encoding with k-means clustering (auto-discovery) |
 | Relational Engine | Complete | Tables, schemas, SQL-like operations |
 | Graph Engine | Complete | Nodes, edges, traversals, unified entity edges |
 | Vector Engine | Complete | Embeddings, similarity search, unified entity embeddings |

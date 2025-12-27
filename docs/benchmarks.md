@@ -102,6 +102,141 @@ Each item is a TensorData with 3 fields: id (i64), name (String), embedding (128
 - **Scaling**: Near-linear with dataset size
 - **File size**: ~600 bytes per item with 128-dim embeddings (dominated by vector data)
 
+### Sparse Vectors
+
+SparseVector provides memory-efficient storage for high-sparsity embeddings by storing only non-zero values.
+
+**Construction (768d):**
+| Sparsity | Time | Throughput |
+|----------|------|------------|
+| 50% | 1.2 µs | 640K/s |
+| 90% | 890 ns | 870K/s |
+| 99% | 650 ns | 1.18M/s |
+
+**Dot Product (768d):**
+| Sparsity | Sparse-Sparse | Sparse-Dense | Dense-Dense | Sparse Speedup |
+|----------|---------------|--------------|-------------|----------------|
+| 50% | 2.1 µs | 1.8 µs | 580 ns | 0.3x (slower) |
+| 90% | 380 ns | 290 ns | 580 ns | 1.5-2x |
+| 99% | 38 ns | 26 ns | 580 ns | **15-22x** |
+
+**Memory Compression:**
+| Dimension | Sparsity | Dense Size | Sparse Size | Ratio |
+|-----------|----------|------------|-------------|-------|
+| 768 | 90% | 3,072 B | 1,024 B | **3x** |
+| 768 | 99% | 3,072 B | 96 B | **32x** |
+| 1536 | 99% | 6,144 B | 184 B | **33x** |
+
+**Batch Search (1000 vectors, 768d, 90% sparse):**
+| Method | Time | Throughput |
+|--------|------|------------|
+| Sparse corpus | 2.8 ms | 357K/s |
+| Dense corpus | 2.1 ms | 476K/s |
+| Dense baseline | 1.9 ms | 526K/s |
+
+#### Analysis
+
+- **High sparsity sweet spot**: At 99% sparsity, dot products are 15-22x faster than dense
+- **Memory scaling**: Compression ratio = 1 / (1 - sparsity), so 99% sparse = ~100x smaller
+- **Construction overhead**: Negligible (~1µs per vector)
+- **Use case**: Embeddings from sparse models, one-hot encodings, pruned representations
+
+### Delta Vectors
+
+DeltaVector stores embeddings as differences from reference "archetype" vectors, ideal for clustered embeddings.
+
+**Construction (768d, 5% delta):**
+| Dimension | Time | Throughput |
+|-----------|------|------------|
+| 128 | 1.9 µs | 526K/s |
+| 768 | 12.3 µs | 81K/s |
+| 1536 | 25.1 µs | 40K/s |
+
+**Dot Product (768d, precomputed archetype dot):**
+| Method | Time | vs Dense |
+|--------|------|----------|
+| Delta precomputed | 89 ns | **6.5x faster** |
+| Delta full | 620 ns | ~same |
+| Dense baseline | 580 ns | 1x |
+
+**Same-Archetype Dot Product (768d):**
+| Method | Time | Speedup |
+|--------|------|---------|
+| Delta-delta | 145 ns | **4x** |
+| Dense baseline | 580 ns | 1x |
+
+**Memory (768d):**
+| Delta Fraction | Dense Size | Delta Size | Ratio |
+|----------------|------------|------------|-------|
+| 1% diff | 3,072 B | 120 B | **25x** |
+| 5% diff | 3,072 B | 360 B | **8.5x** |
+| 10% diff | 3,072 B | 680 B | **4.5x** |
+
+**Archetype Registry (8 archetypes, 768d):**
+| Operation | Time |
+|-----------|------|
+| find_best_archetype | 4.2 µs |
+| encode | 14 µs |
+| decode | 1.1 µs |
+
+#### Analysis
+
+- **Precomputed speedup**: With archetype dot products cached, 6.5x faster than dense
+- **Cluster-friendly**: Similar vectors share archetypes, deltas are sparse
+- **Use case**: Semantic embeddings that cluster (documents, user profiles, products)
+
+### K-means Clustering
+
+K-means discovers archetype vectors automatically from embedding collections.
+
+**K-means fit (128d, k=5):**
+| Vectors | Time | Throughput |
+|---------|------|------------|
+| 100 | 50 µs | 2.0M elem/s |
+| 500 | 241 µs | 2.1M elem/s |
+| 1000 | 482 µs | 2.1M elem/s |
+
+**Varying k (1000 vectors, 128d):**
+| k | Time | Throughput |
+|---|------|------------|
+| 2 | 183 µs | 5.5M elem/s |
+| 5 | 482 µs | 2.1M elem/s |
+| 10 | 984 µs | 1.0M elem/s |
+| 20 | 14.5 ms | 69K elem/s |
+
+**Varying dimension (500 vectors, k=5):**
+| Dimension | Time | Throughput |
+|-----------|------|------------|
+| 64 | 115 µs | 8.7M elem/s |
+| 128 | 240 µs | 4.2M elem/s |
+| 384 | 994 µs | 1.0M elem/s |
+| 768 | 2.5 ms | 395K elem/s |
+
+**Initialization Methods (1000 vectors, k=10):**
+| Method | Time | Quality |
+|--------|------|---------|
+| Random | 4.2 ms | Variable |
+| K-means++ | 1.7 ms | Better convergence |
+
+**Full Pipeline (discover archetypes + encode batch):**
+| Vectors | Time | Throughput |
+|---------|------|------------|
+| 500 | 1.67 ms | 300K elem/s |
+| 1000 | 1.33 ms | 750K elem/s |
+
+**Coverage Analysis (1000 vectors, 5 archetypes):**
+| Operation | Time |
+|-----------|------|
+| analyze_coverage | 1.5 ms |
+
+#### Analysis
+
+- **K-means++ is faster**: Better initial centroids mean fewer iterations to converge
+- **Linear with n**: Doubling vectors roughly doubles time
+- **Quadratic with k at high k**: Each iteration is O(n*k), and more clusters need more iterations
+- **Dimension scaling**: Linear with dimension (distance calculations dominate)
+- **Use case**: Auto-discover archetypes for delta encoding, cluster analysis, centroid-based search
+
 ### tensor_compress
 
 The tensor_compress crate provides compression algorithms optimized for tensor data: vector quantization, delta encoding, and run-length encoding.
@@ -671,6 +806,9 @@ Trade-offs:
 6. ~~**ANN indexing**~~: Done - HNSW index for vector_engine, provides O(log n) search vs O(n) brute force
 7. ~~**SIMD acceleration**~~: Done - 8-wide f32 SIMD provides 3-9x speedup for cosine similarity
 8. ~~**LLM caching**~~: Done - tensor_cache provides multi-layer caching (exact O(1), semantic O(log n)) with cost tracking and background eviction
+9. ~~**Sparse vectors**~~: Done - SparseVector provides 3-33x memory reduction and 10-22x dot product speedup at high sparsity (90-99%)
+10. ~~**Delta encoding**~~: Done - DeltaVector stores only differences from archetypes, 4-25x memory reduction for clustered embeddings
+11. ~~**Archetype discovery**~~: Done - K-means clustering with k-means++ initialization for automatic archetype discovery (~500µs for 1000 128d vectors)
 
 ## Hardware Notes
 
