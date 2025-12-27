@@ -280,25 +280,40 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 
 ### Module 9: Tensor Vault (Complete)
 
-**Responsibility**: Encrypted secret storage with graph-based access control.
+**Responsibility**: Encrypted secret storage with graph-based access control for multi-agent environments.
 
 **Interface**:
-- `store_secret(key, value, master_password) -> Result<()>`
-- `retrieve_secret(key, master_password) -> Result<String>`
-- `grant_access(secret_key, entity_id) -> Result<()>`
-- `revoke_access(secret_key, entity_id) -> Result<()>`
-- `can_access(secret_key, entity_id) -> bool`
+- `set(requester, key, value) -> Result<()>`
+- `get(requester, key) -> Result<String>`
+- `delete(requester, key) -> Result<()>`
+- `rotate(requester, key, new_value) -> Result<()>`
+- `list(requester, pattern) -> Result<Vec<String>>`
+- `grant(requester, entity, key) -> Result<()>`
+- `grant_with_permission(requester, entity, key, permission) -> Result<()>`
+- `grant_with_ttl(requester, entity, key, ttl) -> Result<()>`
+- `revoke(requester, entity, key) -> Result<()>`
+- `get_version(requester, key, version) -> Result<String>`
+- `list_versions(requester, key) -> Result<Vec<VersionInfo>>`
+- `rollback(requester, key, version) -> Result<()>`
+- `audit_log(key) -> Vec<AuditEntry>`
+- `audit_by_entity(entity) -> Vec<AuditEntry>`
+- `namespace(namespace, identity) -> NamespacedVault`
 
 **Features**:
 - AES-256-GCM encryption for secrets
 - Argon2id key derivation with configurable parameters
 - Graph-based access control via edges
+- Permission levels (Read/Write/Admin)
+- TTL grants with automatic expiration
+- Rate limiting per entity/operation
+- Namespace isolation for multi-tenant systems
+- Audit logging for all operations
+- Secret versioning with rollback
 - Secure key zeroization on drop
 
 **Does Not**:
-- Implement key rotation (planned)
-- Support secret versioning (planned)
-- Provide audit logging (planned)
+- Persist audit logs to disk (in-memory only)
+- Implement distributed rate limiting (single-node)
 
 ### Module 10: Tensor Cache (Complete)
 
@@ -502,10 +517,14 @@ Neumann/
   tensor_vault/
     Cargo.toml
     src/
-      lib.rs                 # Module 9: Vault API
+      lib.rs                 # Module 9: Vault API, versioning, namespaces
       encryption.rs          # AES-256-GCM encryption
       key.rs                 # Argon2id key derivation
-      access.rs              # Graph-based access control
+      access.rs              # Graph-based access control with permissions
+      audit.rs               # Audit logging and query API
+      rate_limit.rs          # Per-entity rate limiting
+      ttl.rs                 # Grant TTL tracking
+      obfuscation.rs         # Key obfuscation and padding
     benches/
       tensor_vault_bench.rs  # Vault benchmarks
   tensor_cache/

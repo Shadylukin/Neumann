@@ -10,12 +10,13 @@
 //! - Supports both dense and sparse vectors
 
 use crate::delta_vector::{ArchetypeRegistry, DeltaVector};
+use crate::instrumentation::HNSWAccessStats;
 use crate::SparseVector;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// SIMD-accelerated vector operations for cosine similarity.
 pub mod simd {
@@ -484,6 +485,8 @@ pub struct HNSWIndex {
     config: HNSWConfig,
     /// Random seed for level generation
     rng_seed: AtomicUsize,
+    /// Optional access statistics for memory instrumentation
+    access_stats: Option<Arc<HNSWAccessStats>>,
 }
 
 impl HNSWIndex {
@@ -500,7 +503,30 @@ impl HNSWIndex {
             max_layer: AtomicUsize::new(0),
             config,
             rng_seed: AtomicUsize::new(42),
+            access_stats: None,
         }
+    }
+
+    /// Create an HNSW index with access instrumentation enabled.
+    pub fn with_instrumentation(config: HNSWConfig) -> Self {
+        Self {
+            nodes: RwLock::new(Vec::new()),
+            entry_point: AtomicUsize::new(usize::MAX),
+            max_layer: AtomicUsize::new(0),
+            config,
+            rng_seed: AtomicUsize::new(42),
+            access_stats: Some(Arc::new(HNSWAccessStats::new())),
+        }
+    }
+
+    /// Check if instrumentation is enabled.
+    pub fn has_instrumentation(&self) -> bool {
+        self.access_stats.is_some()
+    }
+
+    /// Get access statistics snapshot.
+    pub fn access_stats(&self) -> Option<crate::instrumentation::HNSWStatsSnapshot> {
+        self.access_stats.as_ref().map(|s| s.snapshot())
     }
 
     /// Get the number of indexed vectors.
@@ -657,13 +683,29 @@ impl HNSWIndex {
             return Vec::new();
         }
 
+        // Track search start
+        if let Some(ref stats) = self.access_stats {
+            stats.record_search();
+            stats.record_entry_point_access();
+        }
+
         let nodes = self.nodes.read().unwrap();
         let max_layer = self.max_layer.load(AtomicOrdering::Relaxed);
 
         // Descend from top layer to layer 1 (greedy search)
         let mut current_node = entry_id;
         for layer in (1..=max_layer).rev() {
+            if let Some(ref stats) = self.access_stats {
+                stats.record_layer_traversal(layer);
+            }
             current_node = self.search_layer_greedy(&nodes, query, current_node, layer);
+        }
+
+        // Track layer 0 traversal
+        if let Some(ref stats) = self.access_stats {
+            stats.record_layer_traversal(0);
+            // Approximate distance calculations: ef candidates * avg neighbors
+            stats.record_distance_calculations((ef.max(k) * self.config.m) as u64);
         }
 
         // At layer 0, do full search
@@ -689,13 +731,28 @@ impl HNSWIndex {
             return Vec::new();
         }
 
+        // Track search start
+        if let Some(ref stats) = self.access_stats {
+            stats.record_search();
+            stats.record_entry_point_access();
+        }
+
         let nodes = self.nodes.read().unwrap();
         let max_layer = self.max_layer.load(AtomicOrdering::Relaxed);
 
         // Descend from top layer to layer 1 (greedy search)
         let mut current_node = entry_id;
         for layer in (1..=max_layer).rev() {
+            if let Some(ref stats) = self.access_stats {
+                stats.record_layer_traversal(layer);
+            }
             current_node = self.search_layer_greedy_sparse(&nodes, query, current_node, layer);
+        }
+
+        // Track layer 0 traversal
+        if let Some(ref stats) = self.access_stats {
+            stats.record_layer_traversal(0);
+            stats.record_distance_calculations((ef.max(k) * self.config.m) as u64);
         }
 
         // At layer 0, do full search

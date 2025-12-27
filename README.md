@@ -149,7 +149,7 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Graph Engine | Complete | Nodes, edges, traversals, unified entity edges |
 | Vector Engine | Complete | Embeddings, similarity search, unified entity embeddings |
 | Tensor Compress | Complete | Int8/binary quantization, delta encoding, RLE |
-| Tensor Vault | Complete | AES-256-GCM encrypted secrets with graph-based access |
+| Tensor Vault | Complete | AES-256-GCM encrypted secrets with graph-based access, permission levels, TTL grants, rate limiting, namespace isolation, audit logging, and secret versioning |
 | Tensor Cache | Complete | LLM response caching with semantic similarity, cost tracking |
 | Query Router | Complete | Cross-engine queries on unified entities, cache integration |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |

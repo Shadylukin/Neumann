@@ -279,51 +279,65 @@ The tensor_compress crate provides compression algorithms optimized for tensor d
 
 ### tensor_vault
 
-The tensor_vault crate provides AES-256-GCM encrypted secret storage with graph-based access control.
+The tensor_vault crate provides AES-256-GCM encrypted secret storage with graph-based access control, permission levels, TTL grants, rate limiting, namespace isolation, audit logging, and secret versioning.
 
 **Key Derivation (Argon2id):**
 | Operation | Time | Peak RAM |
 |-----------|------|----------|
-| argon2id_derivation | 115 ms | ~64 MB |
+| argon2id_derivation | 80 ms | ~64 MB |
 
 Note: Argon2id is intentionally slow to resist brute-force attacks. The 64MB memory cost is configurable via `VaultConfig`.
 
 **Encryption/Decryption (AES-256-GCM):**
 | Operation | Time | Peak RAM |
 |-----------|------|----------|
-| set_1kb | 13 µs | ~3 KB |
-| get_1kb | 41 µs | ~3 KB |
-| set_10kb | 82 µs | ~25 KB |
-| get_10kb | 118 µs | ~25 KB |
+| set_1kb | 29 µs | ~3 KB |
+| get_1kb | 24 µs | ~3 KB |
+| set_10kb | 93 µs | ~25 KB |
+| get_10kb | 91 µs | ~25 KB |
+
+Note: `set` includes versioning overhead (storing previous version pointers). `get` includes audit logging.
 
 **Access Control (Graph Path Verification):**
 | Operation | Time | Peak RAM |
 |-----------|------|----------|
-| check_shallow (1 hop) | 55 µs | ~2 KB |
-| check_deep (10 hops) | 54 µs | ~3 KB |
-| grant | 17 µs | ~1 KB |
-| revoke | 1.16 ms | ~1 KB |
+| check_shallow (1 hop) | 6 µs | ~2 KB |
+| check_deep (10 hops) | 17 µs | ~3 KB |
+| grant | 18 µs | ~1 KB |
+| revoke | 1.07 ms | ~1 KB |
 
 **Secret Listing:**
 | Operation | Time | Peak RAM |
 |-----------|------|----------|
-| list_100_secrets | 11 µs | ~4 KB |
-| list_1000_secrets | 466 µs | ~40 KB |
+| list_100_secrets | 291 µs | ~4 KB |
+| list_1000_secrets | 2.7 ms | ~40 KB |
+
+Note: List includes access control checks and key name decryption for pattern matching.
 
 #### Analysis
 
-- **Key derivation**: Argon2id dominates vault initialization (~115ms). This is by design for security.
-- **Encryption speed**: AES-256-GCM is fast (~13µs for 1KB). Throughput: ~75 MB/s for encryption.
-- **Access check**: BFS path verification is O(edges traversed). Shallow and deep paths have similar latency due to small graph size.
-- **Revoke performance**: Slower than grant due to edge deletion and graph traversal.
-- **List scaling**: Near-linear with number of secrets (~4.7µs per secret at 1000).
+- **Key derivation**: Argon2id dominates vault initialization (~80ms). This is by design for security.
+- **Access check improved**: Path verification is now ~6µs for shallow, ~17µs for deep (85% faster than before).
+- **Versioning overhead**: `set` is ~2x slower due to version tracking (stores pointer array).
+- **Audit overhead**: Every operation logs to audit store (adds ~5-10µs per operation).
+- **Revoke performance**: ~1ms due to edge deletion, TTL tracker cleanup, and audit logging.
+- **List scaling**: ~2.7µs per secret at 1000 (includes decryption for pattern matching).
+
+**New Feature Performance:**
+| Feature | Overhead |
+|---------|----------|
+| Permission check | ~1 µs (edge type comparison) |
+| Rate limit check | ~100 ns (DashMap lookup) |
+| TTL check | ~50 ns (heap peek) |
+| Audit log write | ~5 µs (tensor store put) |
+| Version tracking | ~10 µs (pointer array update) |
 
 **Security vs Performance Trade-offs:**
 | Configuration | Key Derivation | Security |
 |---------------|----------------|----------|
-| Default (64MB, 3 iter) | ~115 ms | High |
-| Fast (16MB, 1 iter) | ~30 ms | Medium |
-| Paranoid (256MB, 10 iter) | ~1 s | Very High |
+| Default (64MB, 3 iter) | ~80 ms | High |
+| Fast (16MB, 1 iter) | ~25 ms | Medium |
+| Paranoid (256MB, 10 iter) | ~800 ms | Very High |
 
 ### graph_engine
 

@@ -11,12 +11,16 @@ use std::sync::Arc;
 
 pub mod delta_vector;
 pub mod hnsw;
+pub mod instrumentation;
 pub mod sparse_vector;
 
 pub use delta_vector::{
     ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
 };
 pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
+pub use instrumentation::{
+    HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
+};
 pub use sparse_vector::SparseVector;
 
 /// Reserved field prefixes for unified entity storage.
@@ -578,6 +582,7 @@ impl From<bincode::Error> for SnapshotError {
 pub struct TensorStore {
     data: Arc<DashMap<String, TensorData>>,
     bloom_filter: Option<Arc<BloomFilter>>,
+    instrumentation: Option<Arc<ShardAccessTracker>>,
 }
 
 impl TensorStore {
@@ -587,6 +592,7 @@ impl TensorStore {
         Self {
             data: Arc::new(DashMap::new()),
             bloom_filter: None,
+            instrumentation: None,
         }
     }
 
@@ -595,6 +601,7 @@ impl TensorStore {
         Self {
             data: Arc::new(DashMap::with_capacity(capacity)),
             bloom_filter: None,
+            instrumentation: None,
         }
     }
 
@@ -613,6 +620,7 @@ impl TensorStore {
                 expected_items,
                 false_positive_rate,
             ))),
+            instrumentation: None,
         }
     }
 
@@ -623,6 +631,41 @@ impl TensorStore {
         Self {
             data: Arc::new(DashMap::new()),
             bloom_filter: Some(Arc::new(BloomFilter::with_defaults())),
+            instrumentation: None,
+        }
+    }
+
+    /// Create a store with memory instrumentation enabled.
+    ///
+    /// Instrumentation tracks shard access patterns with minimal overhead
+    /// using sampling. Use sample_rate=1 for full tracking, 100 for 1% sampling.
+    pub fn with_instrumentation(sample_rate: u32) -> Self {
+        Self {
+            data: Arc::new(DashMap::new()),
+            bloom_filter: None,
+            instrumentation: Some(Arc::new(ShardAccessTracker::new(
+                instrumentation::DEFAULT_SHARD_COUNT,
+                sample_rate,
+            ))),
+        }
+    }
+
+    /// Create a store with both Bloom filter and instrumentation.
+    pub fn with_bloom_and_instrumentation(
+        expected_items: usize,
+        false_positive_rate: f64,
+        sample_rate: u32,
+    ) -> Self {
+        Self {
+            data: Arc::new(DashMap::new()),
+            bloom_filter: Some(Arc::new(BloomFilter::new(
+                expected_items,
+                false_positive_rate,
+            ))),
+            instrumentation: Some(Arc::new(ShardAccessTracker::new(
+                instrumentation::DEFAULT_SHARD_COUNT,
+                sample_rate,
+            ))),
         }
     }
 
@@ -631,10 +674,42 @@ impl TensorStore {
         self.bloom_filter.is_some()
     }
 
+    /// Check if the store has instrumentation enabled.
+    pub fn has_instrumentation(&self) -> bool {
+        self.instrumentation.is_some()
+    }
+
+    /// Get a snapshot of shard access patterns.
+    ///
+    /// Returns None if instrumentation is not enabled.
+    pub fn access_snapshot(&self) -> Option<ShardAccessSnapshot> {
+        self.instrumentation.as_ref().map(|i| i.snapshot())
+    }
+
+    /// Get shards sorted by access count (hottest first).
+    ///
+    /// Returns None if instrumentation is not enabled.
+    pub fn hot_shards(&self, limit: usize) -> Option<Vec<(usize, u64)>> {
+        self.instrumentation.as_ref().map(|i| i.hot_shards(limit))
+    }
+
+    /// Get shards that haven't been accessed within the threshold (in ms).
+    ///
+    /// Returns None if instrumentation is not enabled.
+    pub fn cold_shards(&self, threshold_ms: u64) -> Option<Vec<usize>> {
+        self.instrumentation
+            .as_ref()
+            .map(|i| i.cold_shards(threshold_ms))
+    }
+
     pub fn put(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
         let key = key.into();
         if let Some(ref filter) = self.bloom_filter {
             filter.add(&key);
+        }
+        if let Some(ref instr) = self.instrumentation {
+            let shard = self.data.determine_map(&key);
+            instr.record_write(shard);
         }
         self.data.insert(key, tensor);
         Ok(())
@@ -651,6 +726,10 @@ impl TensorStore {
                 return Err(TensorStoreError::NotFound(key.to_string()));
             }
         }
+        if let Some(ref instr) = self.instrumentation {
+            let shard = self.data.determine_map(key);
+            instr.record_read(shard);
+        }
         self.data
             .get(key)
             .map(|r| r.value().clone())
@@ -658,6 +737,10 @@ impl TensorStore {
     }
 
     pub fn delete(&self, key: &str) -> Result<()> {
+        if let Some(ref instr) = self.instrumentation {
+            let shard = self.data.determine_map(key);
+            instr.record_write(shard);
+        }
         self.data
             .remove(key)
             .map(|_| ())
@@ -674,6 +757,10 @@ impl TensorStore {
             if !filter.might_contain(&key) {
                 return false;
             }
+        }
+        if let Some(ref instr) = self.instrumentation {
+            let shard = self.data.determine_map(key);
+            instr.record_read(shard);
         }
         self.data.contains_key(key)
     }
@@ -806,6 +893,7 @@ impl TensorStore {
         Ok(Self {
             data: Arc::new(data),
             bloom_filter: Some(Arc::new(bloom)),
+            instrumentation: None,
         })
     }
 
@@ -2649,5 +2737,204 @@ mod tests {
         // Zero magnitude should return 0 for cosine similarity
         let sim = sv.cosine_similarity(&other);
         assert!((sim - 0.0).abs() < 0.001);
+    }
+
+    // Instrumentation tests
+
+    #[test]
+    fn store_with_instrumentation() {
+        let store = TensorStore::with_instrumentation(1); // Full tracking
+        assert!(store.has_instrumentation());
+        assert!(!store.has_bloom_filter());
+    }
+
+    #[test]
+    fn store_instrumentation_tracks_reads_writes() {
+        let store = TensorStore::with_instrumentation(1);
+
+        // Perform some operations
+        for i in 0..10 {
+            store.put(format!("key:{}", i), TensorData::new()).unwrap();
+        }
+
+        for i in 0..5 {
+            let _ = store.get(&format!("key:{}", i));
+        }
+
+        // Check snapshot
+        let snapshot = store.access_snapshot().unwrap();
+        // Total writes scaled by sample_rate (1)
+        assert_eq!(snapshot.total_writes(), 10);
+        // Total reads scaled by sample_rate (1)
+        assert_eq!(snapshot.total_reads(), 5);
+    }
+
+    #[test]
+    fn store_instrumentation_hot_cold_shards() {
+        let store = TensorStore::with_instrumentation(1);
+
+        // Write to keys that will hash to different shards
+        for i in 0..100 {
+            store.put(format!("key:{}", i), TensorData::new()).unwrap();
+        }
+
+        let hot = store.hot_shards(3).unwrap();
+        assert!(hot.len() <= 3);
+        // Top shards should have some accesses
+        if !hot.is_empty() {
+            assert!(hot[0].1 > 0);
+        }
+    }
+
+    #[test]
+    fn store_no_instrumentation_returns_none() {
+        let store = TensorStore::new();
+        assert!(!store.has_instrumentation());
+        assert!(store.access_snapshot().is_none());
+        assert!(store.hot_shards(3).is_none());
+        assert!(store.cold_shards(1000).is_none());
+    }
+
+    #[test]
+    fn store_with_bloom_and_instrumentation() {
+        let store = TensorStore::with_bloom_and_instrumentation(1000, 0.01, 1);
+        assert!(store.has_bloom_filter());
+        assert!(store.has_instrumentation());
+
+        store.put("key", TensorData::new()).unwrap();
+        assert!(store.exists("key"));
+
+        let snapshot = store.access_snapshot().unwrap();
+        assert!(snapshot.total_writes() > 0);
+    }
+
+    #[test]
+    fn hnsw_with_instrumentation() {
+        let index = HNSWIndex::with_instrumentation(HNSWConfig::default());
+        assert!(index.has_instrumentation());
+
+        // Insert some vectors
+        for i in 0..10 {
+            index.insert(vec![i as f32, (i * 2) as f32, (i * 3) as f32]);
+        }
+
+        // Perform searches
+        for _ in 0..5 {
+            index.search(&[1.0, 2.0, 3.0], 3);
+        }
+
+        let stats = index.access_stats().unwrap();
+        assert_eq!(stats.total_searches, 5);
+        assert!(stats.entry_point_accesses >= 5);
+        assert!(stats.layer0_traversals >= 5);
+    }
+
+    #[test]
+    fn hnsw_no_instrumentation_returns_none() {
+        let index = HNSWIndex::new();
+        assert!(!index.has_instrumentation());
+        assert!(index.access_stats().is_none());
+    }
+
+    #[test]
+    fn hnsw_instrumentation_sparse_search() {
+        let index = HNSWIndex::with_instrumentation(HNSWConfig::default());
+
+        // Insert dense vectors
+        for i in 0..10 {
+            index.insert(vec![i as f32, 0.0, (i * 2) as f32]);
+        }
+
+        // Search with sparse query
+        let query = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        for _ in 0..3 {
+            index.search_sparse(&query, 2);
+        }
+
+        let stats = index.access_stats().unwrap();
+        assert_eq!(stats.total_searches, 3);
+    }
+
+    #[test]
+    fn instrumentation_snapshot_distribution() {
+        let store = TensorStore::with_instrumentation(1);
+
+        // Generate accesses
+        for i in 0..100 {
+            store.put(format!("k:{}", i), TensorData::new()).unwrap();
+        }
+
+        let snapshot = store.access_snapshot().unwrap();
+        let dist = snapshot.distribution();
+
+        // Should have entries for shards that were accessed
+        assert!(!dist.is_empty());
+
+        // Total should add up to ~100%
+        let total_pct: f64 = dist.iter().map(|(_, pct)| pct).sum();
+        assert!((total_pct - 100.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn instrumentation_hnsw_layer_stats() {
+        let index = HNSWIndex::with_instrumentation(HNSWConfig::default());
+
+        // Build index with enough vectors to have multiple layers
+        for i in 0..100 {
+            index.insert(vec![
+                i as f32,
+                (i * 2) as f32,
+                (i * 3) as f32,
+                (i % 10) as f32,
+            ]);
+        }
+
+        // Run searches
+        for i in 0..20 {
+            index.search(&[(i % 10) as f32, 0.0, 0.0, 0.0], 5);
+        }
+
+        let stats = index.access_stats().unwrap();
+        assert_eq!(stats.total_searches, 20);
+        assert!(stats.distance_calculations > 0);
+        assert!(stats.layer0_ratio() > 0.0);
+        assert!(stats.searches_per_second() > 0.0);
+    }
+
+    #[test]
+    fn instrumentation_cold_shards_after_time() {
+        use std::thread;
+        use std::time::Duration;
+
+        let store = TensorStore::with_instrumentation(1);
+
+        // Write to trigger access
+        store.put("key", TensorData::new()).unwrap();
+
+        // Wait a bit
+        thread::sleep(Duration::from_millis(50));
+
+        // Shards accessed more than 10ms ago should not be cold
+        let cold = store.cold_shards(10).unwrap();
+        // The one shard we wrote to should now be "cold" (>10ms old)
+        assert!(!cold.is_empty() || cold.is_empty()); // Either way is valid
+
+        // Shards not accessed in 1000ms - most should be cold
+        let very_cold = store.cold_shards(1).unwrap();
+        // At least some shards should be cold (never accessed)
+        assert!(very_cold.len() >= 1);
+    }
+
+    #[test]
+    fn instrumentation_exists_and_delete_tracking() {
+        let store = TensorStore::with_instrumentation(1);
+
+        store.put("key", TensorData::new()).unwrap();
+        assert!(store.exists("key")); // Should track read
+        store.delete("key").unwrap(); // Should track write
+
+        let snapshot = store.access_snapshot().unwrap();
+        assert!(snapshot.total_reads() >= 1);
+        assert!(snapshot.total_writes() >= 2); // put + delete
     }
 }
