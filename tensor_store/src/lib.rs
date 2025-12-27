@@ -12,7 +12,9 @@ use std::sync::Arc;
 pub mod delta_vector;
 pub mod hnsw;
 pub mod instrumentation;
+pub mod mmap;
 pub mod sparse_vector;
+pub mod tiered;
 
 pub use delta_vector::{
     ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
@@ -21,7 +23,9 @@ pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
 pub use instrumentation::{
     HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
 };
+pub use mmap::{MmapError, MmapStore, MmapStoreBuilder, MmapStoreMut};
 pub use sparse_vector::SparseVector;
+pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
 
 /// Reserved field prefixes for unified entity storage.
 ///
