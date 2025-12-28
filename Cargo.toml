@@ -12,7 +12,10 @@ members = [
     "tensor_vault",
     "tensor_cache",
     "tensor_blob",
-    "integration_tests", "tensor_unified", "tensor_checkpoint",
+    "integration_tests",
+    "tensor_unified",
+    "tensor_checkpoint",
+    "stress_tests",
 ]
 exclude = ["fuzz"]
 
