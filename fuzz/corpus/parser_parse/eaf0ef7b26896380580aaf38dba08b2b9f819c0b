@@ -1,0 +1,1 @@
+SELECT id FROM us rs WHERE age >"21

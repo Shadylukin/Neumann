@@ -1,0 +1,1 @@
+INSERT INTO users(namage) VALUES ('Ale', 30)TO u

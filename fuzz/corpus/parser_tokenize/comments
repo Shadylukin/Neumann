@@ -1,0 +1,2 @@
+SELECT -- line comment
+* /* block comment */ FROM users

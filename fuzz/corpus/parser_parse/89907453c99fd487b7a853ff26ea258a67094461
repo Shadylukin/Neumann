@@ -1,0 +1,1 @@
+SELECT(a AND( b)OR  cECT(a AND( b)OR! c ( b))OR cED( b)OR! c ( b)OR  cECT(a AND( b)OR  cND( b)OR! c ( b)OR  cECT(a AND(  ) )  AND(a AND( b)) )  AND(a AND( b)OR  c ) ) e

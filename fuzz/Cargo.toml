@@ -1,0 +1,101 @@
+[package]
+name = "neumann-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+# Crates to fuzz
+neumann_parser = { path = "../neumann_parser" }
+tensor_compress = { path = "../tensor_compress" }
+tensor_vault = { path = "../tensor_vault" }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
+tensor_store = { path = "../tensor_store" }
+bincode = "1.3"
+
+# Tier 1: Parser targets
+
+[[bin]]
+name = "parser_parse"
+path = "fuzz_targets/parser_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_parse_all"
+path = "fuzz_targets/parser_parse_all.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_parse_expr"
+path = "fuzz_targets/parser_parse_expr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_tokenize"
+path = "fuzz_targets/parser_tokenize.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 2: Compression targets
+
+[[bin]]
+name = "compress_ids"
+path = "fuzz_targets/compress_ids.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_rle"
+path = "fuzz_targets/compress_rle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compress_snapshot"
+path = "fuzz_targets/compress_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 2: Crypto target
+
+[[bin]]
+name = "vault_cipher"
+path = "fuzz_targets/vault_cipher.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 2: Checkpoint target
+
+[[bin]]
+name = "checkpoint_state"
+path = "fuzz_targets/checkpoint_state.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 3: Storage target
+
+[[bin]]
+name = "storage_sparse_vector"
+path = "fuzz_targets/storage_sparse_vector.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,1 @@
+SELECT  t WHERE ((a AND b) OR (c AND d)) AND e

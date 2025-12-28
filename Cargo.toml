@@ -14,6 +14,7 @@ members = [
     "tensor_blob",
     "integration_tests", "tensor_unified", "tensor_checkpoint",
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

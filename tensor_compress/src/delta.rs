@@ -64,9 +64,21 @@ pub fn varint_encode(values: &[u64]) -> Vec<u8> {
 pub fn varint_decode(bytes: &[u8]) -> Vec<u64> {
     let mut result = Vec::new();
     let mut current: u64 = 0;
-    let mut shift = 0;
+    let mut shift: u32 = 0;
 
     for &byte in bytes {
+        // Prevent shift overflow (max 10 bytes for u64, shift max 63)
+        if shift >= 64 {
+            // Malformed input: too many continuation bytes
+            // Skip remaining bytes of this value until we find a terminator
+            if byte & 0x80 == 0 {
+                result.push(current);
+                current = 0;
+                shift = 0;
+            }
+            continue;
+        }
+
         current |= u64::from(byte & 0x7F) << shift;
         shift += 7;
 

@@ -1,0 +1,1 @@
+SELECT dse.* FROM(SELECT idS ,u.u,!dse.s,TE'''[ 

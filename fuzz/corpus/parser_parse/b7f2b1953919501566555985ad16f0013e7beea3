@@ -1,0 +1,1 @@
+SELECT(a AND( b)OR  c  AND CT  AND( b)OR  c ) AND(

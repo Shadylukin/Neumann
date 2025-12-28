@@ -1,0 +1,6 @@
+# Fuzz artifacts (crashes should be filed as issues)
+artifacts/
+coverage/
+
+# Build artifacts
+target/

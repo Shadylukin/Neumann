@@ -1,0 +1,1 @@
+SELECT j FROM t WH j  
