@@ -225,7 +225,8 @@ impl VectorEngine {
         }
 
         let query_magnitude = Self::magnitude(query);
-        if query_magnitude == 0.0 {
+        // Zero-magnitude queries are invalid for cosine/dot product but valid for euclidean
+        if query_magnitude == 0.0 && !matches!(metric, DistanceMetric::Euclidean) {
             return Ok(Vec::new());
         }
 
@@ -1558,6 +1559,27 @@ mod tests {
             .search_similar_with_metric(&[0.0, 0.0], 5, DistanceMetric::Cosine)
             .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_with_metric_zero_query_euclidean() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("origin", vec![0.0, 0.0]).unwrap();
+        engine.store_embedding("unit", vec![1.0, 0.0]).unwrap();
+        engine.store_embedding("far", vec![10.0, 0.0]).unwrap();
+
+        // Zero query should work for Euclidean (finds vectors closest to origin)
+        let results = engine
+            .search_similar_with_metric(&[0.0, 0.0], 3, DistanceMetric::Euclidean)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        // Origin is closest to [0,0] (distance 0, score 1.0)
+        assert_eq!(results[0].key, "origin");
+        assert!((results[0].score - 1.0).abs() < 0.01);
+        // Unit is next (distance 1, score 0.5)
+        assert_eq!(results[1].key, "unit");
+        assert!((results[1].score - 0.5).abs() < 0.01);
     }
 
     #[test]

@@ -5575,6 +5575,29 @@ mod tests {
     }
 
     #[test]
+    fn parsed_similar_euclidean_zero_query() {
+        let router = QueryRouter::new();
+        router.execute("EMBED zero_origin [0.0, 0.0]").unwrap();
+        router.execute("EMBED zero_unit [1.0, 0.0]").unwrap();
+        router.execute("EMBED zero_far [10.0, 0.0]").unwrap();
+
+        // EUCLIDEAN with zero query should still work (find closest to origin)
+        let result = router
+            .execute_parsed("SIMILAR [0.0, 0.0] EUCLIDEAN LIMIT 3")
+            .unwrap();
+        match result {
+            QueryResult::Similar(results) => {
+                assert_eq!(results.len(), 3, "Should return 3 results for EUCLIDEAN with zero query");
+                // Origin should be closest (distance 0)
+                assert_eq!(results[0].key, "zero_origin");
+                // Score should be 1.0 for distance 0
+                assert!((results[0].score - 1.0).abs() < 0.01);
+            },
+            _ => panic!("Expected Similar"),
+        }
+    }
+
+    #[test]
     fn parsed_similar_dot_product_metric() {
         let router = QueryRouter::new();
         router.execute("EMBED dot_a [1.0, 0.0]").unwrap();
