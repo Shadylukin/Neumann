@@ -226,6 +226,36 @@ let results = router.find_similar_connected(
 | `find_neighbors_by_similarity(key, query, k)` | Get neighbors sorted by vector similarity |
 | `find_similar_connected(query_key, connected_to, k)` | Find entities similar to query AND connected to target |
 
+### UnifiedEngine Integration
+
+When created with `with_shared_store()`, the QueryRouter automatically initializes a
+`tensor_unified::UnifiedEngine` for cross-engine operations. The cross-engine methods
+(`find_similar_connected`, `find_neighbors_by_similarity`) delegate to UnifiedEngine
+when available, providing a consistent implementation across the codebase.
+
+```rust
+use query_router::QueryRouter;
+use tensor_store::TensorStore;
+
+let store = TensorStore::new();
+let router = QueryRouter::with_shared_store(store);
+
+// Check if UnifiedEngine is available
+if router.unified().is_some() {
+    // Cross-engine queries will delegate to UnifiedEngine
+}
+
+// Note: When HNSW index is built, find_similar_connected uses the
+// optimized HNSW path instead of delegating to UnifiedEngine
+router.build_vector_index()?;
+```
+
+| Constructor | UnifiedEngine Initialized |
+|-------------|--------------------------|
+| `QueryRouter::new()` | No |
+| `QueryRouter::with_engines(...)` | No |
+| `QueryRouter::with_shared_store(...)` | Yes |
+
 ## Error Handling
 
 | Error | Cause |

@@ -123,7 +123,8 @@ fn test_embed_batch_different_dimensions() {
     let result1 = router.execute_parsed("EMBED BATCH [('dim4:1', [1.0, 0.0, 0.0, 0.0])]");
     assert!(result1.is_ok());
 
-    let result2 = router.execute_parsed("EMBED BATCH [('dim8:1', [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]");
+    let result2 =
+        router.execute_parsed("EMBED BATCH [('dim8:1', [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]");
     assert!(result2.is_ok());
 }
 
@@ -132,9 +133,8 @@ fn test_embed_batch_with_special_keys() {
     let router = create_shared_router();
 
     // Keys with special characters
-    let result = router.execute_parsed(
-        "EMBED BATCH [('ns:sub/key-1', [1.0, 0.0]), ('ns:sub/key-2', [0.0, 1.0])]",
-    );
+    let result = router
+        .execute_parsed("EMBED BATCH [('ns:sub/key-1', [1.0, 0.0]), ('ns:sub/key-2', [0.0, 1.0])]");
 
     assert!(result.is_ok());
 }
@@ -207,7 +207,10 @@ fn test_embed_batch_sequential_batches() {
     for batch in 0..5 {
         let items: Vec<String> = (0..10)
             .map(|i| {
-                format!("('seq:{}:{}',[{:.1}, {:.1}])", batch, i, batch as f32, i as f32)
+                format!(
+                    "('seq:{}:{}',[{:.1}, {:.1}])",
+                    batch, i, batch as f32, i as f32
+                )
             })
             .collect();
 
@@ -249,7 +252,10 @@ fn test_embed_batch_performance_baseline() {
         .map(|i| {
             let v1 = (i as f32) / 100.0;
             let v2 = ((i + 1) as f32) / 100.0;
-            format!("('perf:{}', [{:.4}, {:.4}, 0.5, 0.5, 0.3, 0.3, 0.2, 0.2])", i, v1, v2)
+            format!(
+                "('perf:{}', [{:.4}, {:.4}, 0.5, 0.5, 0.3, 0.3, 0.2, 0.2])",
+                i, v1, v2
+            )
         })
         .collect();
 
@@ -280,8 +286,7 @@ fn test_embed_batch_zero_vectors() {
     let router = create_shared_router();
 
     // Zero vectors should work
-    let result =
-        router.execute_parsed("EMBED BATCH [('zero:1', [0.0, 0.0, 0.0, 0.0])]");
+    let result = router.execute_parsed("EMBED BATCH [('zero:1', [0.0, 0.0, 0.0, 0.0])]");
 
     assert!(result.is_ok());
 }

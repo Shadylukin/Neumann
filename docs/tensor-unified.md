@@ -107,18 +107,34 @@ NEIGHBORS 'entity:key' BY SIMILAR [0.1, 0.2, 0.3] LIMIT 10
 
 ## Integration with QueryRouter
 
-The QueryRouter delegates cross-engine operations to UnifiedEngine:
+QueryRouter integrates with UnifiedEngine for cross-engine operations. When created
+with `with_shared_store()`, the router automatically initializes an internal UnifiedEngine
+and delegates cross-engine methods to it:
 
 ```rust
 use query_router::QueryRouter;
+use tensor_store::TensorStore;
 
-let router = QueryRouter::new();
+// Create router with shared store - this initializes UnifiedEngine
+let store = TensorStore::new();
+let router = QueryRouter::with_shared_store(store);
 
-// These commands use UnifiedEngine internally
+// Verify UnifiedEngine is available
+assert!(router.unified().is_some());
+
+// Cross-engine Rust API methods delegate to UnifiedEngine
+let results = router.find_neighbors_by_similarity("entity:1", &[0.1, 0.2], 10)?;
+let results = router.find_similar_connected("query:1", "hub:1", 5)?;
+
+// Query language commands also use the integrated engines
 router.execute_parsed("ENTITY CREATE 'doc:1' {title: 'Hello'} EMBEDDING [0.1, 0.2]")?;
 router.execute_parsed("ENTITY CONNECT 'user:1' -> 'doc:1' : authored")?;
 router.execute_parsed("SIMILAR 'query:doc' CONNECTED TO 'user:1' LIMIT 5")?;
 ```
+
+**Note**: When using `QueryRouter::new()` or `QueryRouter::with_engines()`, the
+UnifiedEngine is not initialized and cross-engine methods use internal implementations.
+For full integration, use `QueryRouter::with_shared_store()`.
 
 ## Error Handling
 

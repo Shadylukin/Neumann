@@ -52,11 +52,11 @@ fn test_cache_get_without_init() {
     match result {
         Ok(QueryResult::Value(v)) => {
             // Empty or error message
-        }
+        },
         Err(_) => {
             // Expected - cache not initialized
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -235,7 +235,9 @@ fn test_init_with_shared_store() {
     router.init_blob().unwrap();
 
     // Data stored via one path should be in the shared store
-    router.execute("EMBED shared:key 1.0, 0.0, 0.0, 0.0").unwrap();
+    router
+        .execute("EMBED shared:key 1.0, 0.0, 0.0, 0.0")
+        .unwrap();
 
     // Vector engine should see it
     let result = router.execute_parsed("EMBED GET 'shared:key'");

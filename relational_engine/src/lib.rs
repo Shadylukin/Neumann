@@ -829,6 +829,10 @@ impl RelationalEngine {
         }
     }
 
+    pub fn store(&self) -> &TensorStore {
+        &self.store
+    }
+
     fn table_meta_key(name: &str) -> String {
         format!("_meta:table:{}", name)
     }
@@ -2795,6 +2799,19 @@ mod tests {
 
         let id = engine.insert("users", values).unwrap();
         assert_eq!(id, 1);
+    }
+
+    #[test]
+    fn store_accessor_returns_underlying_store() {
+        let store = TensorStore::new();
+        let engine = RelationalEngine::with_store(store.clone());
+
+        // Verify we can access the underlying store
+        let accessed_store = engine.store();
+
+        // The store should be the same (verify by checking they share data)
+        store.put("test_key", TensorData::new()).unwrap();
+        assert!(accessed_store.exists("test_key"));
     }
 
     #[test]

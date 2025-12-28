@@ -36,11 +36,11 @@ fn test_shell_execute_select() {
         CommandResult::Output(output) => {
             // Should contain data
             assert!(!output.is_empty());
-        }
+        },
         CommandResult::Error(e) => {
             panic!("Unexpected error: {}", e);
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -55,8 +55,8 @@ fn test_shell_help_command() {
             // Help should contain usage information
             assert!(!help_text.is_empty());
             assert!(help_text.contains("SELECT") || help_text.contains("select"));
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -69,8 +69,8 @@ fn test_shell_empty_command() {
     match result {
         CommandResult::Empty => {
             // Empty input should return Empty result
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -83,8 +83,8 @@ fn test_shell_whitespace_command() {
     match result {
         CommandResult::Empty => {
             // Whitespace-only should return Empty
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -97,8 +97,8 @@ fn test_shell_exit_command() {
     match result {
         CommandResult::Exit => {
             // exit should return Exit
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -111,8 +111,8 @@ fn test_shell_quit_command() {
     match result {
         CommandResult::Exit => {
             // quit should also return Exit
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -127,8 +127,8 @@ fn test_shell_node_commands() {
         CommandResult::Output(output) => {
             // Should output node ID
             assert!(!output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -146,8 +146,8 @@ fn test_shell_embed_commands() {
         CommandResult::Output(output) => {
             // Should show embedding
             assert!(!output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -166,8 +166,8 @@ fn test_shell_similar_command() {
     match result {
         CommandResult::Output(_output) => {
             // Should contain similarity results
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -182,8 +182,8 @@ fn test_shell_error_handling() {
         CommandResult::Error(e) => {
             // Should return error
             assert!(!e.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -201,8 +201,8 @@ fn test_shell_case_insensitivity() {
     match result {
         CommandResult::Output(_output) => {
             // Should show all tables
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -214,9 +214,9 @@ fn test_shell_semicolon_handling() {
     let result = shell.execute("SELECT 1;");
 
     match result {
-        CommandResult::Output(_) => {}
-        CommandResult::Error(_) => {}
-        _ => {}
+        CommandResult::Output(_) => {},
+        CommandResult::Error(_) => {},
+        _ => {},
     }
 }
 
@@ -234,8 +234,8 @@ fn test_shell_multiline_support() {
     let result = shell.execute(query);
 
     match result {
-        CommandResult::Output(_) => {}
-        _ => {}
+        CommandResult::Output(_) => {},
+        _ => {},
     }
 }
 
@@ -253,8 +253,8 @@ fn test_shell_show_tables() {
         CommandResult::Output(output) => {
             // Should list tables
             assert!(output.contains("table1") || output.contains("table2") || !output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -272,8 +272,8 @@ fn test_shell_describe_command() {
         CommandResult::Output(output) => {
             // Should show schema
             assert!(!output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -291,8 +291,8 @@ fn test_shell_count_embeddings() {
         CommandResult::Output(output) => {
             // Should show count
             assert!(!output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -309,8 +309,8 @@ fn test_shell_find_command() {
     match result {
         CommandResult::Output(_output) => {
             // Should show found nodes
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -322,8 +322,8 @@ fn test_shell_entity_commands() {
     let result = shell.execute("ENTITY CREATE 'user:1' { name: 'Test' }");
 
     match result {
-        CommandResult::Output(_output) => {}
-        _ => {}
+        CommandResult::Output(_output) => {},
+        _ => {},
     }
 
     // Entity connect
@@ -331,8 +331,8 @@ fn test_shell_entity_commands() {
     let connect_result = shell.execute("ENTITY CONNECT 'user:1' -> 'user:2' : knows");
 
     match connect_result {
-        CommandResult::Output(_) => {}
-        _ => {}
+        CommandResult::Output(_) => {},
+        _ => {},
     }
 }
 
@@ -346,8 +346,8 @@ fn test_shell_vault_commands_without_init() {
     match result {
         CommandResult::Error(_) => {
             // Expected
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -361,8 +361,8 @@ fn test_shell_cache_commands_without_init() {
     match result {
         CommandResult::Error(_) | CommandResult::Output(_) => {
             // Either error or empty output is acceptable
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -370,14 +370,13 @@ fn test_shell_cache_commands_without_init() {
 fn test_shell_embed_batch() {
     let mut shell = create_test_shell();
 
-    let result =
-        shell.execute("EMBED BATCH [('batch:1', [1.0, 0.0]), ('batch:2', [0.0, 1.0])]");
+    let result = shell.execute("EMBED BATCH [('batch:1', [1.0, 0.0]), ('batch:2', [0.0, 1.0])]");
 
     match result {
         CommandResult::Output(_output) => {
             // Should show count of stored embeddings
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -395,8 +394,8 @@ fn test_shell_neighbors_command() {
     match result {
         CommandResult::Output(_output) => {
             // Should show neighbor IDs
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -416,8 +415,8 @@ fn test_shell_path_command() {
     match result {
         CommandResult::Output(_output) => {
             // Should show path
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -431,8 +430,8 @@ fn test_shell_comment_handling() {
     match result {
         CommandResult::Output(_) | CommandResult::Error(_) => {
             // Comment handling may vary
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -452,7 +451,7 @@ fn test_shell_preserves_state() {
         CommandResult::Output(output) => {
             // Should show both rows
             assert!(!output.is_empty());
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }

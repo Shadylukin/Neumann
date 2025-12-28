@@ -961,6 +961,7 @@ dependencies = [
  "tensor_blob",
  "tensor_cache",
  "tensor_store",
+ "tensor_unified",
  "tensor_vault",
  "tokio",
  "vector_engine",

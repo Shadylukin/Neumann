@@ -565,6 +565,8 @@ impl From<bincode::Error> for SnapshotError {
     }
 }
 
+pub type SnapshotResult<T> = std::result::Result<T, SnapshotError>;
+
 /// Thread-safe key-value store for tensor data using sharded concurrent HashMap.
 ///
 /// Uses DashMap internally for lock-free concurrent reads and sharded writes.
@@ -826,7 +828,7 @@ impl TensorStore {
     /// store.put("key", tensor).unwrap();
     /// store.save_snapshot("data.bin")?;
     /// ```
-    pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> std::result::Result<(), SnapshotError> {
+    pub fn save_snapshot<P: AsRef<Path>>(&self, path: P) -> SnapshotResult<()> {
         let path = path.as_ref();
 
         // Create temp file in same directory for atomic rename
@@ -861,7 +863,7 @@ impl TensorStore {
     /// let store = TensorStore::load_snapshot("data.bin")?;
     /// let tensor = store.get("key")?;
     /// ```
-    pub fn load_snapshot<P: AsRef<Path>>(path: P) -> std::result::Result<Self, SnapshotError> {
+    pub fn load_snapshot<P: AsRef<Path>>(path: P) -> SnapshotResult<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let snapshot: HashMap<String, TensorData> = bincode::deserialize_from(reader)?;
@@ -881,7 +883,7 @@ impl TensorStore {
         path: P,
         expected_items: usize,
         false_positive_rate: f64,
-    ) -> std::result::Result<Self, SnapshotError> {
+    ) -> SnapshotResult<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let snapshot: HashMap<String, TensorData> = bincode::deserialize_from(reader)?;
@@ -915,7 +917,7 @@ impl TensorStore {
         &self,
         path: P,
         config: tensor_compress::CompressionConfig,
-    ) -> std::result::Result<(), SnapshotError> {
+    ) -> SnapshotResult<()> {
         use tensor_compress::format::{
             compress_vector, CompressedEntry, CompressedScalar, CompressedSnapshot,
             CompressedValue, Header,
@@ -975,9 +977,7 @@ impl TensorStore {
     /// # Errors
     /// Returns error if file read or deserialization fails.
     #[allow(clippy::cast_precision_loss)]
-    pub fn load_snapshot_compressed<P: AsRef<Path>>(
-        path: P,
-    ) -> std::result::Result<Self, SnapshotError> {
+    pub fn load_snapshot_compressed<P: AsRef<Path>>(path: P) -> SnapshotResult<Self> {
         use tensor_compress::format::{decompress_vector, CompressedSnapshot, CompressedValue};
 
         let file = File::open(path)?;

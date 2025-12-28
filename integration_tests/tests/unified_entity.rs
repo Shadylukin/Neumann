@@ -40,7 +40,9 @@ fn test_entity_create_multiple() {
     for i in 0..5 {
         let result = router.execute_parsed(&format!(
             "ENTITY CREATE 'item:{}' {{ name: 'Item{}', value: {} }}",
-            i, i, i * 10
+            i,
+            i,
+            i * 10
         ));
         assert!(result.is_ok());
     }
@@ -174,14 +176,18 @@ fn test_neighbors_by_similarity() {
         router
             .execute(&format!(
                 "EMBED node:{} {:.2}, {:.2}, 0.5, 0.5",
-                neighbor_id, v, 1.0 - v
+                neighbor_id,
+                v,
+                1.0 - v
             ))
             .unwrap();
     }
 
     // Find neighbors sorted by similarity
-    let result =
-        router.execute_parsed(&format!("NEIGHBORS 'node:{}' BY SIMILAR [0.5, 0.5, 0.5, 0.5] LIMIT 3", alice_id));
+    let result = router.execute_parsed(&format!(
+        "NEIGHBORS 'node:{}' BY SIMILAR [0.5, 0.5, 0.5, 0.5] LIMIT 3",
+        alice_id
+    ));
     // Note: This query syntax may vary based on implementation
     assert!(result.is_ok() || result.is_err()); // Accept either for now
 }
@@ -214,7 +220,9 @@ fn test_cross_engine_consistency() {
 
     // Create entity
     router
-        .execute_parsed("ENTITY CREATE 'test:item' { field: 'value' } EMBEDDING [1.0, 0.0, 0.0, 0.0]")
+        .execute_parsed(
+            "ENTITY CREATE 'test:item' { field: 'value' } EMBEDDING [1.0, 0.0, 0.0, 0.0]",
+        )
         .unwrap();
 
     // Access via graph using FIND NODE (NODE LIST is not a command)
@@ -223,8 +231,8 @@ fn test_cross_engine_consistency() {
     match find_result {
         Ok(QueryResult::Unified(_)) | Ok(QueryResult::Nodes(_)) => {
             // Should have at least our entity's node
-        }
-        _ => {}
+        },
+        _ => {},
     }
 
     // Vector: verify embedding was stored via vector engine API
@@ -365,11 +373,7 @@ fn test_similar_with_multiple_connections() {
     if let Ok(QueryResult::Similar(results)) = result {
         // Should only return docs connected to hub:1 (doc:0, doc:1, doc:2)
         for r in &results {
-            assert!(
-                r.key.contains("doc:0")
-                    || r.key.contains("doc:1")
-                    || r.key.contains("doc:2")
-            );
+            assert!(r.key.contains("doc:0") || r.key.contains("doc:1") || r.key.contains("doc:2"));
         }
     }
 }

@@ -524,12 +524,12 @@ fn test_find_across_engines() {
         .unwrap();
 
     // 2. Graph
-    router
-        .execute("NODE CREATE product name='Gadget'")
-        .unwrap();
+    router.execute("NODE CREATE product name='Gadget'").unwrap();
 
     // 3. Vector
-    router.execute("EMBED product:1 0.5, 0.5, 0.5, 0.5").unwrap();
+    router
+        .execute("EMBED product:1 0.5, 0.5, 0.5, 0.5")
+        .unwrap();
 
     // FIND should be able to work across engines
     let result = router.execute_parsed("FIND NODE product");

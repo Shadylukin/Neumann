@@ -44,6 +44,9 @@ use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_store::TensorStore;
+use tensor_unified::{
+    UnifiedEngine, UnifiedError, UnifiedItem, UnifiedResult as TensorUnifiedResult,
+};
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use tokio::runtime::Runtime;
 use vector_engine::{DistanceMetric as VectorDistanceMetric, HNSWIndex, VectorEngine, VectorError};
@@ -131,6 +134,18 @@ impl From<BlobError> for RouterError {
     }
 }
 
+impl From<UnifiedError> for RouterError {
+    fn from(e: UnifiedError) -> Self {
+        match e {
+            UnifiedError::RelationalError(msg) => RouterError::RelationalError(msg),
+            UnifiedError::GraphError(msg) => RouterError::GraphError(msg),
+            UnifiedError::VectorError(msg) => RouterError::VectorError(msg),
+            UnifiedError::NotFound(msg) => RouterError::VectorError(format!("Not found: {}", msg)),
+            UnifiedError::InvalidOperation(msg) => RouterError::InvalidArgument(msg),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, RouterError>;
 
 /// Result of a query execution.
@@ -199,13 +214,13 @@ pub struct UnifiedResult {
     pub items: Vec<UnifiedItem>,
 }
 
-/// Single item in unified result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnifiedItem {
-    pub source: String,
-    pub id: String,
-    pub data: HashMap<String, String>,
-    pub score: Option<f32>,
+impl From<TensorUnifiedResult> for UnifiedResult {
+    fn from(r: TensorUnifiedResult) -> Self {
+        Self {
+            description: r.description,
+            items: r.items,
+        }
+    }
 }
 
 /// Artifact info result from blob query.
@@ -285,6 +300,8 @@ pub struct QueryRouter {
     relational: Arc<RelationalEngine>,
     graph: Arc<GraphEngine>,
     vector: Arc<VectorEngine>,
+    /// Unified engine for cross-engine queries (lazily initialized)
+    unified: Option<UnifiedEngine>,
     /// Optional vault for secure secret storage (requires initialization)
     vault: Option<Arc<Vault>>,
     /// Optional cache for LLM response caching (requires initialization)
@@ -306,6 +323,7 @@ impl QueryRouter {
             relational: Arc::new(RelationalEngine::new()),
             graph: Arc::new(GraphEngine::new()),
             vector: Arc::new(VectorEngine::new()),
+            unified: None,
             vault: None,
             cache: None,
             blob: None,
@@ -325,6 +343,7 @@ impl QueryRouter {
             relational,
             graph,
             vector,
+            unified: None,
             vault: None,
             cache: None,
             blob: None,
@@ -339,10 +358,20 @@ impl QueryRouter {
     /// All engines share the same store, enabling cross-engine queries on unified entities.
     /// Cloning TensorStore shares the underlying storage (via `Arc<DashMap>`).
     pub fn with_shared_store(store: TensorStore) -> Self {
+        let relational = Arc::new(RelationalEngine::with_store(store.clone()));
+        let graph = Arc::new(GraphEngine::with_store(store.clone()));
+        let vector = Arc::new(VectorEngine::with_store(store.clone()));
+        let unified = UnifiedEngine::with_engines(
+            store,
+            Arc::clone(&relational),
+            Arc::clone(&graph),
+            Arc::clone(&vector),
+        );
         Self {
-            relational: Arc::new(RelationalEngine::with_store(store.clone())),
-            graph: Arc::new(GraphEngine::with_store(store.clone())),
-            vector: Arc::new(VectorEngine::with_store(store)),
+            relational,
+            graph,
+            vector,
+            unified: Some(unified),
             vault: None,
             cache: None,
             blob: None,
@@ -365,6 +394,11 @@ impl QueryRouter {
     /// Get reference to vector engine.
     pub fn vector(&self) -> &VectorEngine {
         &self.vector
+    }
+
+    /// Get reference to unified engine (if initialized).
+    pub fn unified(&self) -> Option<&UnifiedEngine> {
+        self.unified.as_ref()
     }
 
     /// Get reference to vault (if initialized).
@@ -550,16 +584,23 @@ impl QueryRouter {
             .into_iter()
             .collect();
 
+        // Delegate to UnifiedEngine if available and no HNSW index (HNSW optimization not yet in unified)
+        if self.unified.is_some() && self.hnsw_index.is_none() {
+            let unified = self.unified.as_ref().unwrap();
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            return Ok(rt.block_on(unified.find_similar_connected(
+                query_key,
+                connected_to,
+                top_k,
+            ))?);
+        }
+
         let mut items: Vec<UnifiedItem> = similar
             .into_iter()
             .filter(|s| connected_neighbors.contains(&s.key))
             .take(top_k)
-            .map(|s| UnifiedItem {
-                source: "vector+graph".to_string(),
-                id: s.key,
-                data: HashMap::new(),
-                score: Some(s.score),
-            })
+            .map(|s| UnifiedItem::new("vector+graph", &s.key).with_score(s.score))
             .collect();
 
         items.sort_by(|a, b| {
@@ -578,6 +619,13 @@ impl QueryRouter {
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<UnifiedItem>> {
+        // Delegate to UnifiedEngine if available
+        if let Some(unified) = &self.unified {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            return Ok(rt.block_on(unified.find_neighbors_by_similarity(entity_key, query, top_k))?);
+        }
+
         let neighbors = self
             .graph
             .get_entity_neighbors(entity_key)
@@ -594,12 +642,7 @@ impl QueryRouter {
                 let score =
                     vector_engine::VectorEngine::compute_similarity(query, &embedding).ok()?;
 
-                Some(UnifiedItem {
-                    source: "graph+vector".to_string(),
-                    id: neighbor_key,
-                    data: HashMap::new(),
-                    score: Some(score),
-                })
+                Some(UnifiedItem::new("graph+vector", &neighbor_key).with_score(score))
             })
             .collect();
 
@@ -2103,12 +2146,7 @@ impl QueryRouter {
                             data.insert(k.clone(), Self::property_to_string(v));
                         }
 
-                        items.push(UnifiedItem {
-                            source: "graph".to_string(),
-                            id: node.id.to_string(),
-                            data,
-                            score: None,
-                        });
+                        items.push(UnifiedItem::with_data("graph", node.id.to_string(), data));
                     }
                 }
             }
@@ -2161,12 +2199,7 @@ impl QueryRouter {
                             data.insert(k.clone(), Self::property_to_string(v));
                         }
 
-                        items.push(UnifiedItem {
-                            source: "graph".to_string(),
-                            id: edge.id.to_string(),
-                            data,
-                            score: None,
-                        });
+                        items.push(UnifiedItem::with_data("graph", edge.id.to_string(), data));
                     }
                 }
             }
@@ -3023,12 +3056,10 @@ impl QueryRouter {
                     let mut data = HashMap::new();
                     data.insert("key".to_string(), key.clone());
                     data.insert("connected_to".to_string(), connected_entity.clone());
-                    items.push(UnifiedItem {
-                        source: "vector+graph".to_string(),
-                        id: key.clone(),
-                        data,
-                        score: Some(*score),
-                    });
+                    items.push(
+                        UnifiedItem::with_data("vector+graph", key.clone(), data)
+                            .with_score(*score),
+                    );
                 }
             }
         } else if let Some(similar) = similar_keys {
@@ -3036,12 +3067,7 @@ impl QueryRouter {
             for (key, score) in similar {
                 let mut data = HashMap::new();
                 data.insert("key".to_string(), key.clone());
-                items.push(UnifiedItem {
-                    source: "vector".to_string(),
-                    id: key,
-                    data,
-                    score: Some(score),
-                });
+                items.push(UnifiedItem::with_data("vector", key, data).with_score(score));
             }
         }
 
@@ -3688,12 +3714,7 @@ impl QueryRouter {
             .into_iter()
             .filter(|s| connected_neighbors.contains(&s.key))
             .take(top_k)
-            .map(|s| UnifiedItem {
-                source: "vector+graph".to_string(),
-                id: s.key,
-                data: HashMap::new(),
-                score: Some(s.score),
-            })
+            .map(|s| UnifiedItem::new("vector+graph", &s.key).with_score(s.score))
             .collect();
 
         items.sort_by(|a, b| {
@@ -3751,12 +3772,7 @@ impl QueryRouter {
         let mut items: Vec<UnifiedItem> = results
             .into_iter()
             .flatten()
-            .map(|(key, score)| UnifiedItem {
-                source: "graph+vector".to_string(),
-                id: key,
-                data: HashMap::new(),
-                score: Some(score),
-            })
+            .map(|(key, score)| UnifiedItem::new("graph+vector", key).with_score(score))
             .collect();
 
         items.sort_by(|a, b| {
@@ -5587,7 +5603,11 @@ mod tests {
             .unwrap();
         match result {
             QueryResult::Similar(results) => {
-                assert_eq!(results.len(), 3, "Should return 3 results for EUCLIDEAN with zero query");
+                assert_eq!(
+                    results.len(),
+                    3,
+                    "Should return 3 results for EUCLIDEAN with zero query"
+                );
                 // Origin should be closest (distance 0)
                 assert_eq!(results[0].key, "zero_origin");
                 // Score should be 1.0 for distance 0
@@ -7088,6 +7108,108 @@ mod tests {
 
         // Verify all engines are accessible
         assert!(router.relational().list_tables().is_empty());
+    }
+
+    #[test]
+    fn with_shared_store_initializes_unified_engine() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Verify unified engine is initialized
+        assert!(router.unified().is_some());
+    }
+
+    #[test]
+    fn new_router_has_no_unified_engine() {
+        let router = QueryRouter::new();
+
+        // Without shared store, unified engine should not be initialized
+        assert!(router.unified().is_none());
+    }
+
+    #[test]
+    fn unified_engine_delegates_find_neighbors_by_similarity() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create test entities with embeddings
+        router
+            .vector()
+            .set_entity_embedding("center", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("neighbor1", vec![0.9, 0.1, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("neighbor2", vec![0.5, 0.5, 0.0])
+            .unwrap();
+
+        // Connect neighbors
+        router
+            .graph()
+            .add_entity_edge("center", "neighbor1", "connected")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("center", "neighbor2", "connected")
+            .unwrap();
+
+        // Find neighbors by similarity - should delegate to UnifiedEngine
+        let query = vec![1.0, 0.0, 0.0];
+        let results = router.find_neighbors_by_similarity("center", &query, 5).unwrap();
+
+        // Should find both neighbors
+        assert_eq!(results.len(), 2);
+        // Results should be sorted by similarity (neighbor1 is more similar)
+        assert_eq!(results[0].id, "neighbor1");
+        assert!(results[0].score.unwrap() > results[1].score.unwrap());
+    }
+
+    #[test]
+    fn unified_engine_delegates_find_similar_connected() {
+        let store = tensor_store::TensorStore::new();
+        let router = QueryRouter::with_shared_store(store);
+
+        // Create entities with embeddings
+        router
+            .vector()
+            .set_entity_embedding("query", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("connected1", vec![0.95, 0.05, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("connected2", vec![0.8, 0.2, 0.0])
+            .unwrap();
+        router
+            .vector()
+            .set_entity_embedding("not_connected", vec![0.99, 0.01, 0.0])
+            .unwrap();
+
+        // Connect some entities to hub
+        router
+            .graph()
+            .add_entity_edge("hub", "connected1", "links")
+            .unwrap();
+        router
+            .graph()
+            .add_entity_edge("hub", "connected2", "links")
+            .unwrap();
+        // not_connected is NOT linked to hub
+
+        // Find similar AND connected - should delegate to UnifiedEngine
+        let results = router.find_similar_connected("query", "hub", 5).unwrap();
+
+        // Should only find connected1 and connected2 (not "not_connected")
+        assert!(results.len() <= 2);
+        for item in &results {
+            assert!(item.id == "connected1" || item.id == "connected2");
+            assert!(item.score.is_some());
+        }
     }
 
     #[test]

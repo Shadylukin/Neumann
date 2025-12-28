@@ -33,8 +33,10 @@ pub fn create_router_with_cache() -> QueryRouter {
 /// Create a QueryRouter with cache initialized with custom embedding dimension.
 pub fn create_router_with_cache_dim(dim: usize) -> QueryRouter {
     let mut router = create_shared_router();
-    let mut config = CacheConfig::default();
-    config.embedding_dim = dim;
+    let config = CacheConfig {
+        embedding_dim: dim,
+        ..CacheConfig::default()
+    };
     router.init_cache_with_config(config);
     router
 }
@@ -177,17 +179,17 @@ pub fn assert_find_count(result: &QueryResult, expected: usize) {
     match result {
         QueryResult::Unified(unified) => {
             assert_eq!(unified.items.len(), expected);
-        }
+        },
         QueryResult::Nodes(nodes) => {
             assert_eq!(nodes.len(), expected);
-        }
+        },
         QueryResult::Edges(edges) => {
             assert_eq!(edges.len(), expected);
-        }
+        },
         QueryResult::Rows(rows) => {
             assert_eq!(rows.len(), expected);
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
