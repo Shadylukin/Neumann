@@ -12,6 +12,7 @@ vector_engine = { path = "../vector_engine" }
 tensor_vault = { path = "../tensor_vault" }
 tensor_cache = { path = "../tensor_cache" }
 tensor_blob = { path = "../tensor_blob", features = ["full"] }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
 neumann_shell = { path = "../neumann_shell" }

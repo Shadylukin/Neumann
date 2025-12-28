@@ -1030,6 +1030,30 @@ impl TensorStore {
 
         Ok(store)
     }
+
+    /// Serialize the store contents to bytes for checkpointing.
+    pub fn snapshot_bytes(&self) -> SnapshotResult<Vec<u8>> {
+        let snapshot: HashMap<String, TensorData> = self
+            .data
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        bincode::serialize(&snapshot).map_err(SnapshotError::from)
+    }
+
+    /// Restore store contents from serialized checkpoint bytes.
+    pub fn restore_from_bytes(&self, bytes: &[u8]) -> SnapshotResult<()> {
+        let snapshot: HashMap<String, TensorData> =
+            bincode::deserialize(bytes).map_err(SnapshotError::from)?;
+
+        self.data.clear();
+        for (key, value) in snapshot {
+            self.data.insert(key, value);
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for TensorStore {

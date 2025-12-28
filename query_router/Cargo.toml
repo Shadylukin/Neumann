@@ -12,6 +12,7 @@ tensor_unified = { path = "../tensor_unified" }
 tensor_vault = { path = "../tensor_vault" }
 tensor_cache = { path = "../tensor_cache" }
 tensor_blob = { path = "../tensor_blob", features = ["full"] }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
 neumann_parser = { path = "../neumann_parser" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "fs"] }
 futures = "0.3"

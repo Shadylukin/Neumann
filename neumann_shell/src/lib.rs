@@ -3,7 +3,7 @@
 //! Provides a readline-based interface for executing queries against the
 //! Neumann unified query engine.
 
-use query_router::{QueryResult, QueryRouter};
+use query_router::{CheckpointInfo, QueryResult, QueryRouter};
 use relational_engine::Row;
 use rustyline::error::ReadlineError;
 use rustyline::history::{DefaultHistory, History};
@@ -124,6 +124,12 @@ impl Shell {
     #[must_use]
     pub const fn router(&self) -> &QueryRouter {
         &self.router
+    }
+
+    /// Returns a mutable reference to the query router.
+    #[must_use]
+    pub const fn router_mut(&mut self) -> &mut QueryRouter {
+        &mut self.router
     }
 
     /// Check if a command is a write operation that should be logged to WAL.
@@ -561,6 +567,13 @@ Query Types:
     CACHE GET 'key'                Get cached response
     CACHE PUT 'key' 'value'        Store cache entry
 
+  Checkpoints (Rollback):
+    CHECKPOINT                     Create checkpoint with auto-generated name
+    CHECKPOINT 'name'              Create named checkpoint
+    CHECKPOINTS                    List all checkpoints
+    CHECKPOINTS LIMIT n            List last n checkpoints
+    ROLLBACK TO 'name-or-id'       Restore database to checkpoint
+
 Examples:
   > CREATE TABLE users (id INT, name TEXT)
   > INSERT INTO users VALUES (1, 'Alice')
@@ -697,6 +710,7 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::ArtifactInfo(info) => format_artifact_info(info),
         QueryResult::ArtifactList(ids) => format_artifact_list(ids),
         QueryResult::BlobStats(stats) => format_blob_stats(stats),
+        QueryResult::CheckpointList(checkpoints) => format_checkpoint_list(checkpoints),
     }
 }
 
@@ -881,6 +895,59 @@ fn format_blob_stats(stats: &query_router::BlobStatsResult) -> String {
         stats.dedup_ratio * 100.0,
         stats.orphaned_chunks
     )
+}
+
+fn format_checkpoint_list(checkpoints: &[CheckpointInfo]) -> String {
+    if checkpoints.is_empty() {
+        return "No checkpoints found".to_string();
+    }
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Checkpoints:");
+    let _ = writeln!(output, "{:<40} {:<30} {:<20} Type", "ID", "Name", "Created");
+    let _ = writeln!(output, "{}", "-".repeat(100));
+
+    for cp in checkpoints {
+        let created = format_timestamp(cp.created_at);
+        let cp_type = if cp.is_auto { "auto" } else { "manual" };
+        let _ = writeln!(
+            output,
+            "{:<40} {:<30} {:<20} {}",
+            &cp.id[..cp.id.len().min(36)],
+            &cp.name[..cp.name.len().min(28)],
+            created,
+            cp_type
+        );
+    }
+
+    output.trim_end().to_string()
+}
+
+fn format_timestamp(unix_secs: u64) -> String {
+    // Format as relative time for better readability
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if unix_secs == 0 {
+        return "unknown".to_string();
+    }
+
+    let diff = now.saturating_sub(unix_secs);
+
+    if diff < 60 {
+        format!("{diff}s ago")
+    } else if diff < 3600 {
+        let mins = diff / 60;
+        format!("{mins}m ago")
+    } else if diff < 86400 {
+        let hours = diff / 3600;
+        format!("{hours}h ago")
+    } else {
+        let days = diff / 86400;
+        format!("{days}d ago")
+    }
 }
 
 /// Formats rows as an ASCII table.
@@ -2343,5 +2410,115 @@ mod tests {
         assert!(help.contains("CACHE INIT"));
         assert!(help.contains("CACHE STATS"));
         assert!(help.contains("CACHE CLEAR"));
+    }
+
+    // ========== Checkpoint Tests ==========
+
+    #[test]
+    fn test_help_contains_checkpoint() {
+        let help = Shell::help_text();
+        assert!(help.contains("CHECKPOINT"));
+        assert!(help.contains("CHECKPOINTS"));
+        assert!(help.contains("ROLLBACK TO"));
+        assert!(help.contains("Checkpoints (Rollback)"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_empty() {
+        let checkpoints: Vec<CheckpointInfo> = vec![];
+        let output = format_result(&QueryResult::CheckpointList(checkpoints));
+        assert!(output.contains("No checkpoints found"));
+    }
+
+    #[test]
+    fn test_format_checkpoint_list_with_data() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let checkpoints = vec![
+            CheckpointInfo {
+                id: "cp-123".to_string(),
+                name: "manual-checkpoint".to_string(),
+                created_at: now,
+                is_auto: false,
+            },
+            CheckpointInfo {
+                id: "cp-456".to_string(),
+                name: "auto-before-DELETE".to_string(),
+                created_at: now - 60,
+                is_auto: true,
+            },
+        ];
+        let output = format_result(&QueryResult::CheckpointList(checkpoints));
+        assert!(output.contains("Checkpoints:"));
+        assert!(output.contains("cp-123"));
+        assert!(output.contains("manual-checkpoint"));
+        assert!(output.contains("manual"));
+        assert!(output.contains("auto"));
+    }
+
+    #[test]
+    fn test_checkpoint_create() {
+        let mut shell = Shell::new();
+        // Initialize blob and checkpoint manager
+        shell.router_mut().init_blob().unwrap();
+        shell.router_mut().init_checkpoint().unwrap();
+
+        let result = shell.execute("CHECKPOINT 'test-checkpoint'");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Checkpoint created"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_list() {
+        let mut shell = Shell::new();
+        shell.router_mut().init_blob().unwrap();
+        shell.router_mut().init_checkpoint().unwrap();
+
+        shell.execute("CHECKPOINT 'first'");
+        shell.execute("CHECKPOINT 'second'");
+
+        let result = shell.execute("CHECKPOINTS");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Checkpoints:"));
+            assert!(output.contains("first"));
+            assert!(output.contains("second"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_rollback() {
+        let mut shell = Shell::new();
+        shell.router_mut().init_blob().unwrap();
+        shell.router_mut().init_checkpoint().unwrap();
+
+        // Store some data
+        shell.execute("EMBED STORE 'rollback-test' [1.0, 2.0, 3.0]");
+
+        // Create checkpoint
+        shell.execute("CHECKPOINT 'before-delete'");
+
+        // Delete the data
+        shell.execute("EMBED DELETE 'rollback-test'");
+
+        // Rollback
+        let result = shell.execute("ROLLBACK TO 'before-delete'");
+        if let CommandResult::Output(output) = result {
+            assert!(output.contains("Rolled back"));
+        } else {
+            panic!("Expected Output, got {:?}", result);
+        }
+
+        // Verify data is restored
+        let result = shell.execute("EMBED GET 'rollback-test'");
+        assert!(matches!(result, CommandResult::Output(_)));
     }
 }

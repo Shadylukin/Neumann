@@ -665,6 +665,7 @@ dependencies = [
  "tempfile",
  "tensor_blob",
  "tensor_cache",
+ "tensor_checkpoint",
  "tensor_compress",
  "tensor_store",
  "tensor_unified",
@@ -960,6 +961,7 @@ dependencies = [
  "serde_json",
  "tensor_blob",
  "tensor_cache",
+ "tensor_checkpoint",
  "tensor_store",
  "tensor_unified",
  "tensor_vault",
@@ -1308,6 +1310,20 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "tensor_checkpoint"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "tempfile",
+ "tensor_blob",
+ "tensor_store",
+ "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 

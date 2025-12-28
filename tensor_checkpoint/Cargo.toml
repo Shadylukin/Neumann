@@ -1,0 +1,26 @@
+[package]
+name = "tensor_checkpoint"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+description = "Checkpoint and rollback system for Neumann database"
+
+[dependencies]
+tensor_store = { path = "../tensor_store" }
+tensor_blob = { path = "../tensor_blob" }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -88,6 +88,14 @@ pub enum StatementKind {
     /// BLOBS command (list/query blobs)
     Blobs(BlobsStmt),
 
+    // === Checkpoint Statements ===
+    /// CHECKPOINT command - create a named checkpoint
+    Checkpoint(CheckpointStmt),
+    /// ROLLBACK command - restore to a checkpoint
+    Rollback(RollbackStmt),
+    /// CHECKPOINTS command - list checkpoints
+    Checkpoints(CheckpointsStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -733,6 +741,28 @@ pub enum BlobsOp {
         artifact_id: Expr,
         limit: Option<Expr>,
     },
+}
+
+// =============================================================================
+// Checkpoint Statements
+// =============================================================================
+
+/// CHECKPOINT statement: `CHECKPOINT` or `CHECKPOINT 'name'`
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckpointStmt {
+    pub name: Option<Expr>,
+}
+
+/// ROLLBACK statement: `ROLLBACK TO 'checkpoint_id'`
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollbackStmt {
+    pub target: Expr,
+}
+
+/// CHECKPOINTS statement: `CHECKPOINTS` or `CHECKPOINTS LIMIT n`
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckpointsStmt {
+    pub limit: Option<Expr>,
 }
 
 // =============================================================================

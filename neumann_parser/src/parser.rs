@@ -636,6 +636,11 @@ impl<'a> Parser<'a> {
             TokenKind::Blob => self.parse_blob()?,
             TokenKind::Blobs => self.parse_blobs()?,
 
+            // Checkpoint Statements
+            TokenKind::Checkpoint => self.parse_checkpoint()?,
+            TokenKind::Checkpoints => self.parse_checkpoints()?,
+            TokenKind::Rollback => self.parse_rollback()?,
+
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnknownCommand(format!("{}", self.current.kind)),
@@ -2200,6 +2205,45 @@ impl<'a> Parser<'a> {
         };
 
         Ok(StatementKind::Blobs(BlobsStmt { operation }))
+    }
+
+    // =========================================================================
+    // Checkpoint Statement Parsers
+    // =========================================================================
+
+    fn parse_checkpoint(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Checkpoint)?;
+
+        // Optional checkpoint name
+        let name = if matches!(self.current.kind, TokenKind::String(_)) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        Ok(StatementKind::Checkpoint(CheckpointStmt { name }))
+    }
+
+    fn parse_rollback(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Rollback)?;
+        self.expect(&TokenKind::To)?;
+
+        let target = self.parse_expr()?;
+
+        Ok(StatementKind::Rollback(RollbackStmt { target }))
+    }
+
+    fn parse_checkpoints(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Checkpoints)?;
+
+        // Optional LIMIT
+        let limit = if self.eat(&TokenKind::Limit) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        Ok(StatementKind::Checkpoints(CheckpointsStmt { limit }))
     }
 }
 
@@ -5032,5 +5076,67 @@ mod tests {
     fn test_count_embeddings() {
         let stmt = parse_stmt("COUNT EMBEDDINGS");
         assert!(matches!(stmt.kind, StatementKind::CountEmbeddings));
+    }
+
+    // ========== Checkpoint Tests ==========
+
+    #[test]
+    fn test_checkpoint_no_name() {
+        let stmt = parse_stmt("CHECKPOINT");
+        if let StatementKind::Checkpoint(cp) = stmt.kind {
+            assert!(cp.name.is_none());
+        } else {
+            panic!("expected CHECKPOINT");
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_with_name() {
+        let stmt = parse_stmt("CHECKPOINT 'my-checkpoint'");
+        if let StatementKind::Checkpoint(cp) = stmt.kind {
+            assert!(cp.name.is_some());
+        } else {
+            panic!("expected CHECKPOINT");
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_with_double_quoted_name() {
+        let stmt = parse_stmt("CHECKPOINT \"my-checkpoint\"");
+        if let StatementKind::Checkpoint(cp) = stmt.kind {
+            assert!(cp.name.is_some());
+        } else {
+            panic!("expected CHECKPOINT");
+        }
+    }
+
+    #[test]
+    fn test_rollback_to() {
+        let stmt = parse_stmt("ROLLBACK TO 'checkpoint-id'");
+        if let StatementKind::Rollback(rb) = stmt.kind {
+            assert!(matches!(rb.target.kind, ExprKind::Literal(_)));
+        } else {
+            panic!("expected ROLLBACK");
+        }
+    }
+
+    #[test]
+    fn test_checkpoints_no_limit() {
+        let stmt = parse_stmt("CHECKPOINTS");
+        if let StatementKind::Checkpoints(cps) = stmt.kind {
+            assert!(cps.limit.is_none());
+        } else {
+            panic!("expected CHECKPOINTS");
+        }
+    }
+
+    #[test]
+    fn test_checkpoints_with_limit() {
+        let stmt = parse_stmt("CHECKPOINTS LIMIT 5");
+        if let StatementKind::Checkpoints(cps) = stmt.kind {
+            assert!(cps.limit.is_some());
+        } else {
+            panic!("expected CHECKPOINTS");
+        }
     }
 }

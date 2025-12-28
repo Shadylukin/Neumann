@@ -212,6 +212,11 @@ pub enum TokenKind {
     Semantic,
     Threshold,
 
+    // === Checkpoint Keywords ===
+    Checkpoint,
+    Checkpoints,
+    Rollback,
+
     // === Blob Storage Keywords ===
     Blobs,
     Info,
@@ -464,6 +469,9 @@ impl TokenKind {
                 | Put
                 | Semantic
                 | Threshold
+                | Checkpoint
+                | Checkpoints
+                | Rollback
                 | Blobs
                 | Info
                 | Link
@@ -671,6 +679,11 @@ impl TokenKind {
             "SEMANTIC" => TokenKind::Semantic,
             "THRESHOLD" => TokenKind::Threshold,
 
+            // Checkpoint keywords
+            "CHECKPOINT" => TokenKind::Checkpoint,
+            "CHECKPOINTS" => TokenKind::Checkpoints,
+            "ROLLBACK" => TokenKind::Rollback,
+
             // Blob storage keywords
             "BLOBS" => TokenKind::Blobs,
             "INFO" => TokenKind::Info,
@@ -842,6 +855,9 @@ impl TokenKind {
             Put => "PUT",
             Semantic => "SEMANTIC",
             Threshold => "THRESHOLD",
+            Checkpoint => "CHECKPOINT",
+            Checkpoints => "CHECKPOINTS",
+            Rollback => "ROLLBACK",
             Blobs => "BLOBS",
             Info => "INFO",
             Link => "LINK",

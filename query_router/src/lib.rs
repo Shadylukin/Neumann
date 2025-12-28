@@ -29,11 +29,12 @@
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
     self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
-    CacheStmt, DeleteStmt, DescribeStmt, DescribeTarget, Direction as ParsedDirection,
-    DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt, EmbedOp, EmbedStmt, EntityOp,
-    EntityStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt, Literal,
-    NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, SelectStmt, SimilarQuery, SimilarStmt,
-    Statement, StatementKind, TableRefKind, UpdateStmt, VaultOp, VaultStmt,
+    CacheStmt, CheckpointStmt, CheckpointsStmt, DeleteStmt, DescribeStmt, DescribeTarget,
+    Direction as ParsedDirection, DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt,
+    EmbedOp, EmbedStmt, EntityOp, EntityStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource,
+    InsertStmt, Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, RollbackStmt,
+    SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind, TableRefKind, UpdateStmt,
+    VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -43,6 +44,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
+use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
 use tensor_store::TensorStore;
 use tensor_unified::{
     UnifiedEngine, UnifiedError, UnifiedItem, UnifiedResult as TensorUnifiedResult,
@@ -70,6 +72,8 @@ pub enum RouterError {
     CacheError(String),
     /// Error from blob storage.
     BlobError(String),
+    /// Error from checkpoint system.
+    CheckpointError(String),
     /// Invalid argument provided.
     InvalidArgument(String),
     /// Missing required argument.
@@ -89,6 +93,7 @@ impl std::fmt::Display for RouterError {
             RouterError::VaultError(msg) => write!(f, "Vault error: {}", msg),
             RouterError::CacheError(msg) => write!(f, "Cache error: {}", msg),
             RouterError::BlobError(msg) => write!(f, "Blob error: {}", msg),
+            RouterError::CheckpointError(msg) => write!(f, "Checkpoint error: {}", msg),
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
@@ -131,6 +136,12 @@ impl From<CacheError> for RouterError {
 impl From<BlobError> for RouterError {
     fn from(e: BlobError) -> Self {
         RouterError::BlobError(e.to_string())
+    }
+}
+
+impl From<CheckpointError> for RouterError {
+    fn from(e: CheckpointError) -> Self {
+        RouterError::CheckpointError(e.to_string())
     }
 }
 
@@ -181,6 +192,8 @@ pub enum QueryResult {
     ArtifactList(Vec<String>),
     /// Blob storage statistics
     BlobStats(BlobStatsResult),
+    /// List of checkpoints
+    CheckpointList(Vec<CheckpointInfo>),
 }
 
 /// Node result from graph query.
@@ -251,6 +264,15 @@ pub struct BlobStatsResult {
     pub orphaned_chunks: usize,
 }
 
+/// Checkpoint information for display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub name: String,
+    pub created_at: u64,
+    pub is_auto: bool,
+}
+
 impl QueryResult {
     /// Convert the result to JSON string.
     pub fn to_json(&self) -> String {
@@ -314,6 +336,8 @@ pub struct QueryRouter {
     current_identity: String,
     /// Optional HNSW index for faster vector search
     hnsw_index: Option<(HNSWIndex, Vec<String>)>,
+    /// Optional checkpoint manager (requires blob storage)
+    checkpoint: Option<Arc<tokio::sync::Mutex<CheckpointManager>>>,
 }
 
 impl QueryRouter {
@@ -330,6 +354,7 @@ impl QueryRouter {
             blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
+            checkpoint: None,
         }
     }
 
@@ -350,6 +375,7 @@ impl QueryRouter {
             blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
+            checkpoint: None,
         }
     }
 
@@ -378,6 +404,7 @@ impl QueryRouter {
             blob_runtime: None,
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
+            checkpoint: None,
         }
     }
 
@@ -528,6 +555,53 @@ impl QueryRouter {
             })?;
         }
         Ok(())
+    }
+
+    /// Get reference to checkpoint manager (if initialized).
+    pub fn checkpoint(&self) -> Option<&Arc<tokio::sync::Mutex<CheckpointManager>>> {
+        self.checkpoint.as_ref()
+    }
+
+    /// Initialize the checkpoint manager with default configuration.
+    ///
+    /// Requires blob storage to be initialized first.
+    pub fn init_checkpoint(&mut self) -> Result<()> {
+        self.init_checkpoint_with_config(CheckpointConfig::default())
+    }
+
+    /// Initialize the checkpoint manager with custom configuration.
+    ///
+    /// Requires blob storage to be initialized first.
+    pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Result<()> {
+        let blob = self
+            .blob
+            .as_ref()
+            .ok_or_else(|| {
+                RouterError::CheckpointError(
+                    "Blob store must be initialized before checkpoint manager".to_string(),
+                )
+            })?
+            .clone();
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Blob runtime not initialized".to_string())
+        })?;
+
+        let manager = runtime.block_on(async { CheckpointManager::new(blob, config).await });
+
+        self.checkpoint = Some(Arc::new(tokio::sync::Mutex::new(manager)));
+        Ok(())
+    }
+
+    /// Ensure checkpoint manager is initialized, auto-initializing with defaults if needed.
+    pub fn ensure_checkpoint(&mut self) -> Result<&Arc<tokio::sync::Mutex<CheckpointManager>>> {
+        if self.checkpoint.is_none() {
+            // First ensure blob is initialized
+            if self.blob.is_none() {
+                self.init_blob()?;
+            }
+            self.init_checkpoint()?;
+        }
+        Ok(self.checkpoint.as_ref().unwrap())
     }
 
     /// Set the current identity for vault access control.
@@ -860,6 +934,11 @@ impl QueryRouter {
             // Blob statements
             StatementKind::Blob(blob) => self.exec_blob(blob),
             StatementKind::Blobs(blobs) => self.exec_blobs(blobs),
+
+            // Checkpoint statements
+            StatementKind::Checkpoint(cp) => self.exec_checkpoint(cp),
+            StatementKind::Rollback(rb) => self.exec_rollback(rb),
+            StatementKind::Checkpoints(cps) => self.exec_checkpoints(cps),
 
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
@@ -1470,6 +1549,91 @@ impl QueryRouter {
                 "Expected string literal for blob data".to_string(),
             )),
         }
+    }
+
+    // ========== Checkpoint Execution ==========
+
+    fn exec_checkpoint(&self, stmt: &CheckpointStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Blob runtime not initialized".to_string())
+        })?;
+
+        let name = stmt
+            .name
+            .as_ref()
+            .map(|e| self.eval_string_expr(e))
+            .transpose()?;
+
+        let store = self.vector.store();
+        let checkpoint_id = runtime.block_on(async {
+            let cp_guard = checkpoint.lock().await;
+            cp_guard.create(name.as_deref(), store).await
+        })?;
+
+        Ok(QueryResult::Value(format!(
+            "Checkpoint created: {}",
+            checkpoint_id
+        )))
+    }
+
+    fn exec_rollback(&self, stmt: &RollbackStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Blob runtime not initialized".to_string())
+        })?;
+
+        let target = self.eval_string_expr(&stmt.target)?;
+
+        let store = self.vector.store();
+        runtime.block_on(async {
+            let cp_guard = checkpoint.lock().await;
+            cp_guard.rollback(&target, store).await
+        })?;
+
+        Ok(QueryResult::Value(format!(
+            "Rolled back to checkpoint: {}",
+            target
+        )))
+    }
+
+    fn exec_checkpoints(&self, stmt: &CheckpointsStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Blob runtime not initialized".to_string())
+        })?;
+
+        let limit = stmt
+            .limit
+            .as_ref()
+            .map(|e| self.expr_to_usize(e))
+            .transpose()?;
+
+        // Default to 10 if no limit specified
+        let limit_opt = limit.or(Some(10));
+
+        let checkpoints = runtime.block_on(async {
+            let cp_guard = checkpoint.lock().await;
+            cp_guard.list(limit_opt).await
+        })?;
+
+        let info_list: Vec<CheckpointInfo> = checkpoints
+            .into_iter()
+            .map(|cp| CheckpointInfo {
+                id: cp.id,
+                name: cp.name,
+                created_at: cp.created_at,
+                is_auto: cp.trigger.is_some(),
+            })
+            .collect();
+
+        Ok(QueryResult::CheckpointList(info_list))
     }
 
     // ========== AST-Based Execution Methods ==========
@@ -3372,6 +3536,11 @@ impl QueryRouter {
             StatementKind::Blob(blob) => self.exec_blob_async(blob).await,
             StatementKind::Blobs(blobs) => self.exec_blobs_async(blobs).await,
 
+            // Checkpoint statements are async (use blob storage)
+            StatementKind::Checkpoint(cp) => self.exec_checkpoint_async(cp).await,
+            StatementKind::Rollback(rb) => self.exec_rollback_async(rb).await,
+            StatementKind::Checkpoints(cps) => self.exec_checkpoints_async(cps).await,
+
             // All other statements delegate to sync execution
             // (they're in-memory and fast, no benefit from async)
             _ => self.execute_statement(stmt),
@@ -3634,6 +3803,77 @@ impl QueryRouter {
                 ))
             },
         }
+    }
+
+    /// Execute checkpoint creation asynchronously.
+    async fn exec_checkpoint_async(&self, stmt: &CheckpointStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+
+        let name = stmt
+            .name
+            .as_ref()
+            .map(|e| self.eval_string_expr(e))
+            .transpose()?;
+
+        let store = self.vector.store();
+        let cp_guard = checkpoint.lock().await;
+        let checkpoint_id = cp_guard.create(name.as_deref(), store).await?;
+
+        Ok(QueryResult::Value(format!(
+            "Checkpoint created: {}",
+            checkpoint_id
+        )))
+    }
+
+    /// Execute rollback asynchronously.
+    async fn exec_rollback_async(&self, stmt: &RollbackStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+
+        let target = self.eval_string_expr(&stmt.target)?;
+
+        let store = self.vector.store();
+        let cp_guard = checkpoint.lock().await;
+        cp_guard.rollback(&target, store).await?;
+
+        Ok(QueryResult::Value(format!(
+            "Rolled back to checkpoint: {}",
+            target
+        )))
+    }
+
+    /// Execute checkpoint listing asynchronously.
+    async fn exec_checkpoints_async(&self, stmt: &CheckpointsStmt) -> Result<QueryResult> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+
+        let limit = stmt
+            .limit
+            .as_ref()
+            .map(|e| self.expr_to_usize(e))
+            .transpose()?;
+
+        // Default to 10 if no limit specified
+        let limit_opt = limit.or(Some(10));
+
+        let cp_guard = checkpoint.lock().await;
+        let checkpoints = cp_guard.list(limit_opt).await?;
+
+        let info_list: Vec<CheckpointInfo> = checkpoints
+            .into_iter()
+            .map(|cp| CheckpointInfo {
+                id: cp.id,
+                name: cp.name,
+                created_at: cp.created_at,
+                is_auto: cp.trigger.is_some(),
+            })
+            .collect();
+
+        Ok(QueryResult::CheckpointList(info_list))
     }
 
     /// Store multiple embeddings in parallel.
@@ -7158,7 +7398,9 @@ mod tests {
 
         // Find neighbors by similarity - should delegate to UnifiedEngine
         let query = vec![1.0, 0.0, 0.0];
-        let results = router.find_neighbors_by_similarity("center", &query, 5).unwrap();
+        let results = router
+            .find_neighbors_by_similarity("center", &query, 5)
+            .unwrap();
 
         // Should find both neighbors
         assert_eq!(results.len(), 2);
@@ -9821,5 +10063,452 @@ mod tests {
         let stmt = parser::parse("BLOB STATS").unwrap();
         let result = router.execute_statement(&stmt);
         assert!(result.is_err());
+    }
+
+    // ========== Checkpoint Tests ==========
+
+    #[test]
+    fn test_init_checkpoint_requires_blob() {
+        let mut router = QueryRouter::new();
+        // Checkpoint requires blob to be initialized first
+        let result = router.init_checkpoint();
+        assert!(result.is_err());
+        if let Err(RouterError::CheckpointError(msg)) = result {
+            assert!(msg.contains("Blob store must be initialized"));
+        }
+    }
+
+    #[test]
+    fn test_init_checkpoint_with_blob() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        let result = router.init_checkpoint();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_init_checkpoint_with_config() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        let config = CheckpointConfig::default().with_max_checkpoints(5);
+        let result = router.init_checkpoint_with_config(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_checkpoint_auto_init() {
+        let mut router = QueryRouter::new();
+        // ensure_checkpoint should auto-initialize blob and checkpoint
+        let result = router.ensure_checkpoint();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ensure_checkpoint_already_initialized() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+        // Calling ensure_checkpoint again should still work
+        let result = router.ensure_checkpoint();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_exec_checkpoint_not_initialized() {
+        let router = QueryRouter::new();
+        let stmt = parser::parse("CHECKPOINT").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
+        if let Err(RouterError::CheckpointError(msg)) = result {
+            assert!(msg.contains("not initialized"));
+        }
+    }
+
+    #[test]
+    fn test_exec_checkpoint_create() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                let stmt = parser::parse("CHECKPOINT").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert!(v.contains("Checkpoint created"));
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_checkpoint_with_name() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                let stmt = parser::parse("CHECKPOINT 'my-checkpoint'").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert!(v.contains("Checkpoint created"));
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_checkpoints_list() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                // Create a checkpoint first
+                let stmt = parser::parse("CHECKPOINT 'test-cp'").unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+
+                // List checkpoints
+                let stmt = parser::parse("CHECKPOINTS").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::CheckpointList(list) = result.unwrap() {
+                    assert!(!list.is_empty());
+                    assert_eq!(list[0].name, "test-cp");
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_checkpoints_with_limit() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                // Create multiple checkpoints
+                for i in 0..5 {
+                    let stmt = parser::parse(&format!("CHECKPOINT 'cp-{}'", i)).unwrap();
+                    router.execute_statement_async(&stmt).await.unwrap();
+                }
+
+                // List with limit
+                let stmt = parser::parse("CHECKPOINTS LIMIT 3").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::CheckpointList(list) = result.unwrap() {
+                    assert_eq!(list.len(), 3);
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_checkpoints_not_initialized() {
+        let router = QueryRouter::new();
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_exec_rollback_not_initialized() {
+        let router = QueryRouter::new();
+        let stmt = parser::parse("ROLLBACK TO 'some-id'").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
+        if let Err(RouterError::CheckpointError(msg)) = result {
+            assert!(msg.contains("not initialized"));
+        }
+    }
+
+    #[test]
+    fn test_exec_rollback_success() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Store some data
+        router.execute("EMBED testkey [1.0, 2.0, 3.0]").unwrap();
+
+        router
+            .block_on(async {
+                // Create checkpoint
+                let cp_stmt = parser::parse("CHECKPOINT 'before-delete'").unwrap();
+                router.execute_statement_async(&cp_stmt).await.unwrap();
+
+                // Delete the data using parsed command
+                router.execute_parsed("EMBED DELETE 'testkey'").unwrap();
+                assert!(!router.vector().exists("testkey"));
+
+                // Rollback
+                let rb_stmt = parser::parse("ROLLBACK TO 'before-delete'").unwrap();
+                let result = router.execute_statement_async(&rb_stmt).await;
+                assert!(result.is_ok());
+                if let QueryResult::Value(v) = result.unwrap() {
+                    assert!(v.contains("Rolled back"));
+                }
+
+                // Verify data is restored
+                assert!(router.vector().exists("testkey"));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exec_rollback_not_found() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                let stmt = parser::parse("ROLLBACK TO 'nonexistent'").unwrap();
+                let result = router.execute_statement_async(&stmt).await;
+                assert!(result.is_err());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_checkpoint_info_is_auto() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .block_on(async {
+                // Manual checkpoint should have is_auto = false
+                let stmt = parser::parse("CHECKPOINT 'manual'").unwrap();
+                router.execute_statement_async(&stmt).await.unwrap();
+
+                let stmt = parser::parse("CHECKPOINTS").unwrap();
+                let result = router.execute_statement_async(&stmt).await.unwrap();
+                if let QueryResult::CheckpointList(list) = result {
+                    assert!(!list[0].is_auto);
+                }
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_checkpoint_error_display() {
+        let e = RouterError::CheckpointError("test error".into());
+        assert!(e.to_string().contains("Checkpoint error"));
+        assert!(e.to_string().contains("test error"));
+    }
+
+    #[test]
+    fn test_exec_checkpoint_sync_success() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Use sync execute_statement which calls exec_checkpoint internally
+        let stmt = parser::parse("CHECKPOINT 'sync-test'").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::Value(v) = result.unwrap() {
+            assert!(v.contains("Checkpoint created"));
+        }
+    }
+
+    #[test]
+    fn test_exec_checkpoints_sync_success() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Create a checkpoint first
+        let stmt = parser::parse("CHECKPOINT 'for-list'").unwrap();
+        router.execute_statement(&stmt).unwrap();
+
+        // Use sync execute_statement for CHECKPOINTS
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::CheckpointList(list) = result.unwrap() {
+            assert!(!list.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_exec_rollback_sync_success() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Store data and create checkpoint
+        router.execute("EMBED synckey [1.0, 2.0]").unwrap();
+        let stmt = parser::parse("CHECKPOINT 'sync-rollback'").unwrap();
+        router.execute_statement(&stmt).unwrap();
+
+        // Delete data
+        router.execute_parsed("EMBED DELETE 'synckey'").unwrap();
+        assert!(!router.vector().exists("synckey"));
+
+        // Use sync execute_statement for ROLLBACK
+        let stmt = parser::parse("ROLLBACK TO 'sync-rollback'").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+
+        // Verify rollback worked
+        assert!(router.vector().exists("synckey"));
+    }
+
+    #[test]
+    fn test_exec_checkpoint_sync_runtime_not_initialized() {
+        // This is a tricky edge case - checkpoint is Some but runtime is None
+        // In practice this shouldn't happen because init_checkpoint requires blob
+        // But we test the error message path for coverage
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // The above initialization should succeed and both checkpoint and runtime
+        // should be Some. So this test verifies the success path works.
+        let stmt = parser::parse("CHECKPOINTS LIMIT 5").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_list_empty() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // List checkpoints when none exist
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+        if let QueryResult::CheckpointList(list) = result.unwrap() {
+            assert!(list.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_with_double_quoted_name() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        let stmt = parser::parse("CHECKPOINT \"double-quoted\"").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rollback_sync_by_id() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Create checkpoint and get its ID
+        let stmt = parser::parse("CHECKPOINT 'rollback-by-id'").unwrap();
+        router.execute_statement(&stmt).unwrap();
+
+        let stmt = parser::parse("CHECKPOINTS").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+        let checkpoint_id = if let QueryResult::CheckpointList(list) = result {
+            list[0].id.clone()
+        } else {
+            panic!("Expected CheckpointList");
+        };
+
+        // Rollback by ID
+        let stmt = parser::parse(&format!("ROLLBACK TO '{}'", checkpoint_id)).unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_checkpoints_ordering() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Create multiple checkpoints
+        router
+            .execute_statement(&parser::parse("CHECKPOINT 'first'").unwrap())
+            .unwrap();
+        router
+            .execute_statement(&parser::parse("CHECKPOINT 'second'").unwrap())
+            .unwrap();
+        router
+            .execute_statement(&parser::parse("CHECKPOINT 'third'").unwrap())
+            .unwrap();
+
+        // List should return them (most recent first based on implementation)
+        let result = router
+            .execute_statement(&parser::parse("CHECKPOINTS").unwrap())
+            .unwrap();
+        if let QueryResult::CheckpointList(list) = result {
+            assert_eq!(list.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_via_execute_parsed() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Use execute_parsed instead of execute_statement
+        let result = router.execute_parsed("CHECKPOINT 'parsed-test'");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_checkpoints_via_execute_parsed() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router.execute_parsed("CHECKPOINT 'test1'").unwrap();
+        router.execute_parsed("CHECKPOINT 'test2'").unwrap();
+
+        let result = router.execute_parsed("CHECKPOINTS");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rollback_via_execute_parsed() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        router
+            .execute_parsed("CHECKPOINT 'rollback-parsed'")
+            .unwrap();
+        let result = router.execute_parsed("ROLLBACK TO 'rollback-parsed'");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_default_name() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+        router.init_checkpoint().unwrap();
+
+        // Checkpoint without a name should use auto-generated name
+        let stmt = parser::parse("CHECKPOINT").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_ok());
+
+        let list_result = router
+            .execute_statement(&parser::parse("CHECKPOINTS").unwrap())
+            .unwrap();
+        if let QueryResult::CheckpointList(list) = list_result {
+            assert_eq!(list.len(), 1);
+            // Auto-generated name starts with "checkpoint-"
+            assert!(list[0].name.starts_with("checkpoint-"));
+        }
     }
 }

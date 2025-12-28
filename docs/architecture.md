@@ -51,6 +51,14 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|        Tensor Checkpoint (Module 13) [DONE]       |
+|   - Manual and auto checkpoints                 |
+|   - Rollback to previous state                  |
+|   - Count-based retention (purge oldest)        |
+|   - Uses tensor_blob for storage                |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |            Tensor Cache (Module 10) [DONE]        |
 |   - LLM response caching (exact + semantic)      |
 |   - Token counting (tiktoken)                    |
@@ -470,6 +478,48 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Support multi-part uploads (single stream only)
 - Implement versioning (future)
 
+### Module 13: Tensor Checkpoint (Complete)
+
+**Responsibility**: Checkpoint and rollback system for database state recovery.
+
+**Interface**:
+- `create(name, store) -> Result<checkpoint_id>` - Create named checkpoint
+- `create_auto(command, op, preview, store) -> Result<checkpoint_id>` - Auto-checkpoint before destructive op
+- `rollback(id_or_name, store) -> Result<()>` - Restore to checkpoint
+- `list(limit) -> Result<Vec<CheckpointInfo>>` - List checkpoints
+- `delete(id_or_name) -> Result<()>` - Delete checkpoint
+- `generate_preview(op, sample_data) -> OperationPreview` - Generate destructive op preview
+
+**Features**:
+- Manual checkpoints via CHECKPOINT command
+- Auto-checkpoints before destructive operations (DELETE, DROP, etc.)
+- Rollback to any checkpoint by ID or name
+- Count-based retention (configurable max checkpoints)
+- Uses tensor_blob for durable storage
+- Interactive confirmation with data preview
+- Bincode-serialized TensorStore snapshots
+
+**Configuration** (CheckpointConfig):
+- `max_checkpoints: usize` - Maximum checkpoints to retain (default: 10)
+- `auto_checkpoint: bool` - Enable auto-checkpoints (default: true)
+- `interactive_confirm: bool` - Require confirmation for destructive ops (default: true)
+- `preview_sample_size: usize` - Sample rows to show in preview (default: 5)
+
+**Destructive Operations** (DestructiveOp):
+- `Delete` - DELETE FROM table
+- `DropTable` - DROP TABLE
+- `DropIndex` - DROP INDEX
+- `NodeDelete` - NODE DELETE
+- `EmbedDelete` - EMBED DELETE
+- `VaultDelete` - VAULT DELETE
+- `BlobDelete` - BLOB DELETE
+- `CacheClear` - CACHE CLEAR
+
+**Does Not**:
+- Implement incremental checkpoints (full snapshots only)
+- Support distributed checkpoints (single-node)
+- Auto-checkpoint on every write (only destructive ops)
+
 ## Data Flow
 
 ### Write Path
@@ -618,6 +668,7 @@ Neumann/
     tensor-cache.md          # Module 10 documentation
     tensor-blob.md           # Module 11 documentation
     tensor-unified.md        # Module 12 documentation
+    tensor-checkpoint.md     # Module 13 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
@@ -691,6 +742,15 @@ Neumann/
       integrity.rs           # Checksum verification, repair
     benches/
       blob_bench.rs          # Blob benchmarks
+  tensor_checkpoint/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 13: CheckpointManager API
+      state.rs               # CheckpointState, DestructiveOp, metadata
+      storage.rs             # Integration with tensor_blob
+      retention.rs           # Count-based purge logic
+      preview.rs             # Operation preview generation
+      error.rs               # Error types
   query_router/
     Cargo.toml
     src/lib.rs               # Module 5: Query execution
