@@ -1,10 +1,12 @@
 use crate::instrumentation::ShardAccessTracker;
+use crate::metadata_slab::MetadataSlab;
 use crate::mmap::{MmapError, MmapStoreMut};
 use crate::{TensorData, TensorStore, TensorStoreError};
-use dashmap::DashMap;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
 pub enum TieredError {
@@ -80,19 +82,22 @@ pub struct TieredStats {
     pub migrations_to_hot: u64,
 }
 
+const SHARD_COUNT: usize = 16;
+
 /// Two-tier storage with hot (in-memory) and cold (mmap) layers.
 ///
 /// Data starts in the hot tier and can be migrated to cold based on access patterns.
 /// When cold data is accessed, it's promoted back to hot.
+/// Uses pure tensor storage (MetadataSlab) for zero resize stalls.
 pub struct TieredStore {
-    /// Hot tier: in-memory DashMap with access tracking.
-    hot: Arc<DashMap<String, TensorData>>,
+    /// Hot tier: in-memory tensor storage with access tracking.
+    hot: Arc<MetadataSlab>,
     /// Cold tier: memory-mapped file storage.
     cold: Option<MmapStoreMut>,
     /// Access tracking for hot tier.
     instrumentation: Arc<ShardAccessTracker>,
     /// Tracks which keys are in cold storage.
-    cold_keys: Arc<DashMap<String, ()>>,
+    cold_keys: Arc<RwLock<HashSet<String>>>,
     /// Configuration.
     #[allow(dead_code)]
     config: TieredConfig,
@@ -105,6 +110,13 @@ pub struct TieredStore {
 }
 
 impl TieredStore {
+    /// Compute shard index for a key (for instrumentation).
+    fn shard_for_key(key: &str) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish() as usize % SHARD_COUNT
+    }
+
     /// Create a new tiered store with the given configuration.
     pub fn new(config: TieredConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.cold_dir)?;
@@ -117,18 +129,18 @@ impl TieredStore {
         };
 
         // Build cold_keys index from existing cold store
-        let cold_keys = Arc::new(DashMap::new());
+        let mut cold_keys = HashSet::new();
         if let Some(ref c) = cold {
             for key in c.keys() {
-                cold_keys.insert(key.clone(), ());
+                cold_keys.insert(key.clone());
             }
         }
 
         Ok(Self {
-            hot: Arc::new(DashMap::new()),
+            hot: Arc::new(MetadataSlab::new()),
             cold,
-            instrumentation: Arc::new(ShardAccessTracker::new(16, config.sample_rate)),
-            cold_keys,
+            instrumentation: Arc::new(ShardAccessTracker::new(SHARD_COUNT, config.sample_rate)),
+            cold_keys: Arc::new(RwLock::new(cold_keys)),
             config,
             hot_lookups: AtomicU64::new(0),
             cold_lookups: AtomicU64::new(0),
@@ -146,10 +158,10 @@ impl TieredStore {
     /// Create without cold storage (hot-only mode).
     pub fn hot_only(sample_rate: u32) -> Self {
         Self {
-            hot: Arc::new(DashMap::new()),
+            hot: Arc::new(MetadataSlab::new()),
             cold: None,
-            instrumentation: Arc::new(ShardAccessTracker::new(16, sample_rate)),
-            cold_keys: Arc::new(DashMap::new()),
+            instrumentation: Arc::new(ShardAccessTracker::new(SHARD_COUNT, sample_rate)),
+            cold_keys: Arc::new(RwLock::new(HashSet::new())),
             config: TieredConfig::default(),
             hot_lookups: AtomicU64::new(0),
             cold_lookups: AtomicU64::new(0),
@@ -162,9 +174,9 @@ impl TieredStore {
     /// Insert data into hot tier.
     pub fn put(&mut self, key: impl Into<String>, tensor: TensorData) {
         let key = key.into();
-        let shard = self.hot.determine_map(&key);
+        let shard = Self::shard_for_key(&key);
         self.instrumentation.record_write(shard);
-        self.hot.insert(key, tensor);
+        self.hot.set(&key, tensor);
     }
 
     /// Get data, checking hot tier first, then cold.
@@ -174,24 +186,25 @@ impl TieredStore {
         // Try hot tier first
         self.hot_lookups.fetch_add(1, Ordering::Relaxed);
         if let Some(data) = self.hot.get(key) {
-            let shard = self.hot.determine_map(key);
+            let shard = Self::shard_for_key(key);
             self.instrumentation.record_read(shard);
-            return Ok(data.value().clone());
+            return Ok(data);
         }
 
         // Try cold tier
-        if self.cold_keys.contains_key(key) {
+        let in_cold = self.cold_keys.read().unwrap().contains(key);
+        if in_cold {
             self.cold_lookups.fetch_add(1, Ordering::Relaxed);
             if let Some(ref cold) = self.cold {
                 let tensor = cold.get(key)?;
                 self.cold_hits.fetch_add(1, Ordering::Relaxed);
 
                 // Promote to hot
-                self.hot.insert(key.to_string(), tensor.clone());
-                self.cold_keys.remove(key);
+                self.hot.set(key, tensor.clone());
+                self.cold_keys.write().unwrap().remove(key);
                 self.migrations_to_hot.fetch_add(1, Ordering::Relaxed);
 
-                let shard = self.hot.determine_map(key);
+                let shard = Self::shard_for_key(key);
                 self.instrumentation.record_read(shard);
 
                 return Ok(tensor);
@@ -205,13 +218,13 @@ impl TieredStore {
 
     /// Check if key exists in either tier.
     pub fn exists(&self, key: &str) -> bool {
-        self.hot.contains_key(key) || self.cold_keys.contains_key(key)
+        self.hot.contains(key) || self.cold_keys.read().unwrap().contains(key)
     }
 
     /// Delete from both tiers.
     pub fn delete(&mut self, key: &str) -> bool {
-        let hot_removed = self.hot.remove(key).is_some();
-        let cold_removed = self.cold_keys.remove(key).is_some();
+        let hot_removed = self.hot.delete(key).is_some();
+        let cold_removed = self.cold_keys.write().unwrap().remove(key);
         hot_removed || cold_removed
     }
 
@@ -219,7 +232,7 @@ impl TieredStore {
     pub fn stats(&self) -> TieredStats {
         TieredStats {
             hot_count: self.hot.len(),
-            cold_count: self.cold_keys.len(),
+            cold_count: self.cold_keys.read().unwrap().len(),
             hot_lookups: self.hot_lookups.load(Ordering::Relaxed),
             cold_lookups: self.cold_lookups.load(Ordering::Relaxed),
             cold_hits: self.cold_hits.load(Ordering::Relaxed),
@@ -240,21 +253,23 @@ impl TieredStore {
 
         let mut migrated = 0;
 
-        // Collect keys to migrate (can't iterate and modify DashMap simultaneously)
+        // Collect keys to migrate
         let keys_to_migrate: Vec<String> = self
             .hot
-            .iter()
-            .filter(|entry| {
-                let shard = self.hot.determine_map(entry.key());
+            .scan("")
+            .into_iter()
+            .filter(|(key, _)| {
+                let shard = Self::shard_for_key(key);
                 cold_shards.contains(&shard)
             })
-            .map(|entry| entry.key().clone())
+            .map(|(key, _)| key)
             .collect();
 
         for key in keys_to_migrate {
-            if let Some((k, tensor)) = self.hot.remove(&key) {
-                cold.insert(&k, &tensor)?;
-                self.cold_keys.insert(k, ());
+            if let Some(tensor) = self.hot.get(&key) {
+                cold.insert(&key, &tensor)?;
+                self.cold_keys.write().unwrap().insert(key.clone());
+                self.hot.delete(&key);
                 migrated += 1;
             }
         }
@@ -274,10 +289,12 @@ impl TieredStore {
 
         let mut loaded = 0;
         for key in keys {
-            if self.cold_keys.contains_key(*key) && !self.hot.contains_key(*key) {
+            let in_cold = self.cold_keys.read().unwrap().contains(*key);
+            let in_hot = self.hot.contains(key);
+            if in_cold && !in_hot {
                 if let Ok(tensor) = cold.get(key) {
-                    self.hot.insert((*key).to_string(), tensor);
-                    self.cold_keys.remove(*key);
+                    self.hot.set(key, tensor);
+                    self.cold_keys.write().unwrap().remove(*key);
                     loaded += 1;
                 }
             }
@@ -298,17 +315,17 @@ impl TieredStore {
 
     /// Get the number of entries in cold tier.
     pub fn cold_len(&self) -> usize {
-        self.cold_keys.len()
+        self.cold_keys.read().unwrap().len()
     }
 
     /// Total entries across both tiers.
     pub fn len(&self) -> usize {
-        self.hot.len() + self.cold_keys.len()
+        self.hot.len() + self.cold_keys.read().unwrap().len()
     }
 
     /// Check if empty.
     pub fn is_empty(&self) -> bool {
-        self.hot.is_empty() && self.cold_keys.is_empty()
+        self.hot.is_empty() && self.cold_keys.read().unwrap().is_empty()
     }
 
     /// Flush cold storage to disk.
@@ -334,28 +351,21 @@ impl TieredStore {
         // Load all cold data into hot
         if let Some(ref cold) = self.cold {
             let cold_key_list: Vec<String> =
-                self.cold_keys.iter().map(|e| e.key().clone()).collect();
+                self.cold_keys.read().unwrap().iter().cloned().collect();
             for key in cold_key_list {
                 if let Ok(tensor) = cold.get(&key) {
-                    self.hot.insert(key.clone(), tensor);
+                    self.hot.set(&key, tensor);
                 }
-                self.cold_keys.remove(&key);
+                self.cold_keys.write().unwrap().remove(&key);
             }
         }
 
-        Ok(TensorStore::from_dashmap(self.hot))
-    }
-}
-
-// Extend TensorStore with from_dashmap
-impl TensorStore {
-    /// Create a TensorStore from an existing DashMap.
-    pub fn from_dashmap(data: Arc<DashMap<String, TensorData>>) -> Self {
-        Self {
-            data,
-            bloom_filter: None,
-            instrumentation: None,
+        // Convert MetadataSlab contents to TensorStore
+        let store = TensorStore::new();
+        for (key, tensor) in self.hot.scan("") {
+            let _ = store.put(key, tensor);
         }
+        Ok(store)
     }
 }
 
@@ -483,7 +493,11 @@ mod tests {
             for i in 0..10 {
                 cold.insert(&format!("cold_{}", i), &create_test_tensor(i + 1000))
                     .unwrap();
-                store.cold_keys.insert(format!("cold_{}", i), ());
+                store
+                    .cold_keys
+                    .write()
+                    .unwrap()
+                    .insert(format!("cold_{}", i));
             }
             cold.flush().unwrap();
         }
@@ -528,7 +542,11 @@ mod tests {
             for i in 0..10 {
                 cold.insert(&format!("cold_{}", i), &create_test_tensor(i))
                     .unwrap();
-                store.cold_keys.insert(format!("cold_{}", i), ());
+                store
+                    .cold_keys
+                    .write()
+                    .unwrap()
+                    .insert(format!("cold_{}", i));
             }
             cold.flush().unwrap();
         }
@@ -566,7 +584,11 @@ mod tests {
             for i in 0..5 {
                 cold.insert(&format!("cold_{}", i), &create_test_tensor(i + 100))
                     .unwrap();
-                store.cold_keys.insert(format!("cold_{}", i), ());
+                store
+                    .cold_keys
+                    .write()
+                    .unwrap()
+                    .insert(format!("cold_{}", i));
             }
         }
 
@@ -756,7 +778,11 @@ mod tests {
         {
             let cold = store.cold.as_mut().unwrap();
             cold.insert("cold_key", &create_test_tensor(1)).unwrap();
-            store.cold_keys.insert("cold_key".to_string(), ());
+            store
+                .cold_keys
+                .write()
+                .unwrap()
+                .insert("cold_key".to_string());
         }
 
         assert!(store.exists("cold_key"));

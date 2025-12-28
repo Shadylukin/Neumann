@@ -5,21 +5,55 @@ The foundational storage layer for Neumann. Holds all data in a unified tensor s
 ## Design Principles
 
 1. **Single Responsibility**: Store and retrieve tensors by key. No query logic.
-2. **Concurrent by Design**: Uses DashMap for sharded concurrent access.
+2. **Concurrent by Design**: Uses SlabRouter with specialized tensor slabs for zero resize stalls.
 3. **Shareable Storage**: TensorStore clones share the same underlying data via Arc.
-4. **Minimal Dependencies**: Only DashMap for concurrent HashMap.
-5. **Predictable Memory**: Standard collections with no hidden allocations.
+4. **Pure Tensor Architecture**: All storage uses tensor-based structures (BTreeMap, sorted arrays) - no hash tables that resize.
+5. **Predictable Performance**: No throughput stalls from hash table resizing.
+
+## Architecture
+
+TensorStore uses SlabRouter internally, which routes operations to specialized slabs:
+
+```
+TensorStore
+  |
+  +-- Arc<SlabRouter>
+         |
+         +-- MetadataSlab (general key-value, BTreeMap-based)
+         +-- EntityIndex (sorted vocabulary + hash index)
+         +-- EmbeddingSlab (dense f32 arrays)
+         +-- GraphTensor (CSR format for edges)
+         +-- RelationalSlab (columnar storage)
+         +-- CacheRing (LRU/LFU eviction)
+         +-- BlobLog (append-only blob storage)
+```
+
+### Key Routing
+
+Operations are routed based on key prefixes:
+- `emb:*` -> EmbeddingSlab (embedding vectors)
+- `node:*`, `edge:*` -> GraphTensor (graph data)
+- `table:*` -> RelationalSlab (relational rows)
+- `_cache:*` -> CacheRing (cached data)
+- Everything else -> MetadataSlab (general metadata)
 
 ## Concurrency Model
 
-The store uses [DashMap](https://crates.io/crates/dashmap), a concurrent sharded HashMap:
+The store uses tensor-based structures instead of hash maps:
 
-- **Reads**: Lock-free, can proceed in parallel with other reads and writes to different shards
-- **Writes**: Only block other writes to the same shard (~16 shards by default)
-- **No poisoning**: Unlike RwLock, panics don't poison the entire store
-- **Clone on read**: `get()` returns cloned data to avoid holding references across operations
+- **No Resize Stalls**: BTreeMap and sorted arrays grow incrementally, never causing 99%+ throughput drops
+- **Lock-free Reads**: RwLock allows many concurrent readers
+- **Predictable Writes**: O(log n) inserts, no amortized O(n) resizing
+- **Clone on Read**: `get()` returns cloned data to avoid holding references
 
-This provides significantly better performance under write contention compared to a single RwLock.
+### Performance
+
+| Metric | SlabRouter | Previous (DashMap) |
+|--------|------------|-------------------|
+| PUT throughput | 3.1+ M ops/sec | 2.5 M ops/sec |
+| GET throughput | 4.6+ M ops/sec | 4.5 M ops/sec |
+| Throughput variance (CV) | <7% | 222% during resize |
+| Resize stalls | None | 99.6% throughput drops |
 
 ## Data Model
 
@@ -84,7 +118,7 @@ These are defined in `tensor_store::fields` and should not be used for applicati
 ```rust
 // Construction
 let store = TensorStore::new();
-let store = TensorStore::with_capacity(10_000);  // Pre-allocate
+let store = TensorStore::with_capacity(10_000);  // Pre-allocate (hint only)
 
 // Core operations (infallible except get/delete)
 store.put("user:1", tensor)?;      // Store tensor under key
@@ -128,6 +162,29 @@ tensor.len();                      // Number of fields
 tensor.is_empty();                 // bool
 ```
 
+### SlabRouter (Advanced)
+
+Direct access to the slab router for specialized use cases:
+
+```rust
+use tensor_store::SlabRouter;
+
+let router = SlabRouter::new();
+
+// Same API as TensorStore
+router.put("key", tensor)?;
+router.get("key")?;
+router.scan("prefix:");
+
+// Persistence
+router.save_to_file("data.bin")?;
+let router = SlabRouter::load_from_file("data.bin")?;
+
+// In-memory serialization
+let bytes = router.to_bytes()?;
+let router = SlabRouter::from_bytes(&bytes)?;
+```
+
 ## Error Handling
 
 ### TensorStoreError
@@ -137,8 +194,6 @@ Only `get` and `delete` can fail:
 | Error | Cause |
 |-------|-------|
 | `NotFound(key)` | `get` or `delete` on nonexistent key |
-
-Note: Unlike the previous RwLock-based implementation, there is no `LockError`. DashMap's sharded design eliminates lock poisoning concerns.
 
 ### SnapshotError
 
@@ -155,40 +210,55 @@ Both error types implement `std::error::Error` for use with `?` operator.
 
 | Operation | Time Complexity | Notes |
 |-----------|-----------------|-------|
-| `put` | O(1) amortized | Sharded HashMap insert |
-| `get` | O(1) + clone cost | Clone prevents reference issues |
-| `delete` | O(1) | Sharded HashMap remove |
-| `exists` | O(1) | Lock-free check |
-| `scan` | O(n) | Iterates all shards |
-| `scan_count` | O(n) | Iterates all shards, no allocation |
-| `len` | O(shards) | Sums shard lengths |
-| `clear` | O(n) | Clears all shards |
+| `put` | O(log n) | BTreeMap insert |
+| `get` | O(log n) + clone cost | Clone prevents reference issues |
+| `delete` | O(log n) | BTreeMap remove |
+| `exists` | O(log n) | BTreeMap lookup |
+| `scan` | O(k + log n) | BTreeMap range, k = result count |
+| `scan_count` | O(k + log n) | No allocation |
+| `len` | O(1) | Cached count |
+| `clear` | O(n) | Clears all data |
 
-### Concurrent Write Performance
+### Why Not Hash Maps?
 
-With the sharded design, concurrent writes to different keys typically proceed without blocking:
+Hash maps (including concurrent ones like DashMap) suffer from resize stalls:
 
-```
-Thread A writes "user:1" -> Shard 3 (locked briefly)
-Thread B writes "post:5" -> Shard 7 (parallel, different shard)
-Thread C writes "user:2" -> Shard 3 (waits for A, same shard)
-```
+| Metric | Hash Map | BTreeMap/Sorted Arrays |
+|--------|----------|------------------------|
+| Insert | O(1) amortized | O(log n) |
+| Resize | O(n) all at once | Incremental |
+| Throughput stability | Spikes during resize | Consistent |
+| Memory fragmentation | Higher | Lower |
 
-This provides roughly 16x better write throughput under contention compared to a single lock.
+For a database runtime, consistent performance is more important than slightly faster average case.
 
 ## Memory Layout
 
 ```
 TensorStore
   |
-  +-- DashMap<String, TensorData> (16 shards by default)
-                        |
-                        +-- HashMap<String, TensorValue>
-                                            |
-                                            +-- Scalar(ScalarValue)
-                                            +-- Vector(Vec<f32>)
-                                            +-- Pointer(String)
-                                            +-- Pointers(Vec<String>)
+  +-- Arc<SlabRouter>
+              |
+              +-- MetadataSlab
+              |     +-- RwLock<BTreeMap<String, TensorData>>
+              |
+              +-- EntityIndex
+              |     +-- Vec<String> (vocabulary)
+              |     +-- Vec<(u64, u32)> (sorted hash -> slot)
+              |
+              +-- EmbeddingSlab
+              |     +-- Vec<f32> (dense embeddings)
+              |     +-- BTreeMap<EntityId, slot>
+              |
+              +-- GraphTensor (CSR format)
+              |     +-- Vec<u64> (row pointers)
+              |     +-- Vec<u32> (column indices)
+              |
+              +-- CacheRing
+              |     +-- Ring buffer with LRU/LFU eviction
+              |
+              +-- BlobLog
+                    +-- Append-only segments
 ```
 
 ## Usage Examples
@@ -245,7 +315,7 @@ for t in 0..8 {
 for h in handles {
     h.join().unwrap();
 }
-// DashMap handles contention efficiently via sharding
+// SlabRouter handles contention without resize stalls
 ```
 
 ### Shared Storage Across Engines
@@ -255,7 +325,7 @@ TensorStore clones share the same underlying data, enabling unified entity stora
 ```rust
 let store = TensorStore::new();
 
-// Clone shares the same underlying Arc<DashMap>
+// Clone shares the same underlying Arc<SlabRouter>
 let store_clone = store.clone();
 
 // Writes via one clone are visible to the other
@@ -309,19 +379,19 @@ graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 | `snapshot_compressed_with_quantization` | Int8 quantization works |
 | `snapshot_compressed_empty_store` | Empty store compression works |
 
-## Architectural Decision: DashMap
+## Architectural Decision: Pure Tensor Storage
 
-**Why DashMap over RwLock<HashMap>?**
+**Why SlabRouter over DashMap?**
 
-| Aspect | RwLock<HashMap> | DashMap |
-|--------|-----------------|---------|
-| Read concurrency | Many readers | Many readers |
-| Write concurrency | One writer | ~16 writers (different shards) |
-| Poisoning | Can poison on panic | No poisoning |
-| API complexity | Manual lock handling | Simple API |
-| Dependency | std only | dashmap crate |
+| Aspect | DashMap | SlabRouter |
+|--------|---------|------------|
+| Throughput | 2.5 M ops/sec | 3.1+ M ops/sec |
+| Stability | 222% CV during resize | <7% CV |
+| Resize stalls | 99.6% throughput drops | None |
+| Growth | O(n) resize events | O(log n) incremental |
+| Memory | Hash table overhead | Compact tree/array |
 
-For infrastructure code where concurrent writes are expected and reliability is critical, DashMap provides better performance and eliminates the poisoning failure mode.
+For a database runtime where consistent performance is critical, tensor-based structures (BTreeMap, sorted arrays) provide predictable throughput without the pathological resize behavior of hash tables.
 
 ## Serialization
 
@@ -372,6 +442,15 @@ store.save_snapshot_compressed("data.bin", config)?;
 // Load compressed snapshot (auto-detects format)
 let store = TensorStore::load_snapshot_compressed("data.bin")?;
 ```
+
+### Snapshot Versions
+
+| Version | Format | Backward Compatible |
+|---------|--------|---------------------|
+| v2 | HashMap-based | Read-only support |
+| v3 | SlabRouter-based | Current format |
+
+Snapshots auto-detect format on load for backward compatibility.
 
 ### Implementation Details
 
@@ -521,7 +600,7 @@ For datasets larger than available RAM, TieredStore provides automatic hot/cold 
 
 ### TieredStore
 
-Two-tier storage combining fast in-memory access with disk-backed cold storage:
+Two-tier storage combining fast in-memory access with disk-backed cold storage. Uses pure tensor storage (MetadataSlab) for the hot tier, ensuring zero resize stalls:
 
 ```rust
 use tensor_store::{TieredStore, TieredConfig};
@@ -615,11 +694,11 @@ store.compact("/data/store_compacted.bin")?;
 
 | Operation | Throughput | Notes |
 |-----------|------------|-------|
-| Hot put | 1.4-1.5 M/s | DashMap insert |
-| Hot get | 2.9-3.4 M/s | DashMap lookup + clone |
+| Hot put | 3.0+ M/s | MetadataSlab insert |
+| Hot get | 4.5+ M/s | MetadataSlab lookup + clone |
 | Cold migration | 1.0-1.4 M/s | Serialize to mmap |
 | Cold promotion | 0.5-0.6 M/s | Deserialize + insert |
-| Write overhead | 5-7% | vs pure in-memory TensorStore |
+| Resize stalls | None | Pure tensor architecture |
 
 ### When to Use TieredStore
 

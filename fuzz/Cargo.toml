@@ -91,11 +91,18 @@ test = false
 doc = false
 bench = false
 
-# Tier 3: Storage target
+# Tier 3: Storage targets
 
 [[bin]]
 name = "storage_sparse_vector"
 path = "fuzz_targets/storage_sparse_vector.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slab_entity_index"
+path = "fuzz_targets/slab_entity_index.rs"
 test = false
 doc = false
 bench = false
