@@ -30,7 +30,7 @@ let router = QueryRouter::with_shared_store(store);
 
 ### Query Execution
 
-Two execution methods are available:
+Multiple execution methods are available:
 
 ```rust
 // String-based execution (legacy, uses regex parsing)
@@ -38,6 +38,27 @@ let result = router.execute("SELECT * FROM users")?;
 
 // AST-based execution (recommended, uses neumann_parser)
 let result = router.execute_parsed("SELECT * FROM users")?;
+
+// Async execution (for concurrent operations)
+let result = router.execute_async("SELECT * FROM users").await?;
+let result = router.execute_parsed_async("SELECT * FROM users").await?;
+```
+
+### Async Execution
+
+For I/O-bound or cross-engine operations, async methods provide better concurrency:
+
+```rust
+use query_router::QueryRouter;
+
+let router = QueryRouter::new();
+
+// Concurrent queries
+let (users, posts, similar) = tokio::join!(
+    router.execute_parsed_async("SELECT * FROM users"),
+    router.execute_parsed_async("SELECT * FROM posts"),
+    router.execute_parsed_async("SIMILAR 'doc:1' LIMIT 10"),
+);
 ```
 
 ### Query Result
@@ -115,16 +136,51 @@ FIND EDGE WHERE type = 'friend'
 
 ```sql
 -- Store an embedding
-EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4]
+EMBED doc1 0.1, 0.2, 0.3, 0.4
 
--- Retrieve an embedding
-EMBED GET 'doc1'
+-- Store with bracket syntax
+EMBED doc2 [0.1, 0.2, 0.3, 0.4]
 
--- Delete an embedding
-EMBED DELETE 'doc1'
-
--- Find similar embeddings
+-- Find similar embeddings (default: COSINE)
 SIMILAR 'doc1' LIMIT 5
+
+-- Find similar with explicit distance metric
+SIMILAR 'doc1' LIMIT 5 COSINE
+SIMILAR 'doc1' LIMIT 5 EUCLIDEAN
+SIMILAR 'doc1' LIMIT 5 DOT_PRODUCT
+
+-- Search by vector literal
+SIMILAR [0.1, 0.2, 0.3, 0.4] LIMIT 10 EUCLIDEAN
+
+-- Batch embedding storage
+EMBED BATCH [('key1', [0.1, 0.2]), ('key2', [0.3, 0.4])]
+
+-- Introspection
+SHOW EMBEDDINGS LIMIT 100
+COUNT EMBEDDINGS
+```
+
+### Distance Metrics
+
+| Metric | Description | Use Case |
+|--------|-------------|----------|
+| `COSINE` | Cosine similarity (default) | Semantic similarity, normalized vectors |
+| `EUCLIDEAN` | Euclidean distance (L2) | Spatial distance, absolute positions |
+| `DOT_PRODUCT` | Dot product | Magnitude-aware similarity |
+
+**Note**: EUCLIDEAN scores are transformed as `1/(1+distance)` so higher is always better.
+
+### Unified Entity Operations
+
+```sql
+-- Create entity with fields and embedding
+ENTITY CREATE 'user:1' {name: 'Alice', role: 'admin'} EMBEDDING [0.1, 0.2, 0.3]
+
+-- Connect entities
+ENTITY CONNECT 'user:1' -> 'doc:1' : authored
+
+-- Cross-engine similarity search
+SIMILAR 'query:key' CONNECTED TO 'hub:entity' LIMIT 10
 ```
 
 ### Cross-Engine Queries (Rust API)
@@ -262,4 +318,19 @@ Not implemented (out of scope):
 - **Cross-engine SQL joins**: SQL syntax for joining relational rows with graph/vector results
 - **Transactions**: Multi-statement atomic operations
 - **Query planning**: Cost-based optimization
-- **Caching**: Query result caching
+
+## Known Issues and Limitations
+
+### Distance Metric Syntax
+The distance metric keyword (COSINE, EUCLIDEAN, DOT_PRODUCT) must appear **after** the LIMIT clause:
+```sql
+-- Correct
+SIMILAR 'doc:1' LIMIT 10 EUCLIDEAN
+
+-- Incorrect (will not parse)
+SIMILAR 'doc:1' METRIC EUCLIDEAN LIMIT 10
+```
+
+### Zero-Magnitude Vectors
+- COSINE and DOT_PRODUCT return empty results for zero-magnitude query vectors
+- EUCLIDEAN correctly handles zero vectors (finds vectors closest to origin)

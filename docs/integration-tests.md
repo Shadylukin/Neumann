@@ -6,7 +6,7 @@ This document describes the integration test suite for the Neumann runtime.
 
 The integration test suite validates cross-engine functionality, data flow, and system behavior. All tests use a shared `TensorStore` to verify that relational, graph, and vector engines work correctly together.
 
-**Test Count:** 250 tests across 21 files
+**Test Count:** 267+ tests across 22 files
 
 ## Test Helpers (`integration_tests/src/lib.rs`)
 
@@ -575,6 +575,44 @@ Tests hot/cold data migration and access pattern optimization.
 
 ---
 
+## Distance Metrics Tests (`tests/distance_metrics.rs`) - 17 Tests
+
+Tests SIMILAR queries with different distance metrics.
+
+| Test Name | What It Tests |
+|-----------|---------------|
+| `test_similar_default_metric` | Default (COSINE) metric behavior |
+| `test_similar_cosine_metric` | Explicit COSINE metric |
+| `test_similar_euclidean_metric` | EUCLIDEAN distance metric |
+| `test_similar_dot_product_metric` | DOT_PRODUCT metric |
+| `test_similar_vector_with_cosine` | Vector literal with COSINE |
+| `test_similar_vector_with_euclidean` | Vector literal with EUCLIDEAN |
+| `test_similar_vector_with_dot_product` | Vector literal with DOT_PRODUCT |
+| `test_metric_case_insensitive` | Metric keyword case handling |
+| `test_similar_connected_with_metric` | Cross-engine query with metric |
+| `test_neighbors_by_similarity_with_metric` | Neighbors sorted by similarity |
+| `test_metric_ordering_consistency` | Consistent ordering across queries |
+| `test_euclidean_metric_parses` | EUCLIDEAN parses correctly |
+| `test_euclidean_distance_values` | EUCLIDEAN score values correct |
+| `test_dot_product_values` | DOT_PRODUCT score values correct |
+| `test_euclidean_vs_cosine_different_ordering` | Different metrics = different order |
+| `test_cosine_similarity_values` | COSINE score values correct |
+| `test_dot_product_metric_parses` | DOT_PRODUCT parses correctly |
+
+**Key Syntax:**
+```sql
+-- Metric goes AFTER LIMIT clause
+SIMILAR 'key' LIMIT 10 EUCLIDEAN
+SIMILAR [0.1, 0.2] LIMIT 5 DOT_PRODUCT
+```
+
+**Known Issues:**
+- Metric keyword must be AFTER LIMIT (not `METRIC EUCLIDEAN`)
+- COSINE/DOT_PRODUCT return empty for zero-magnitude queries
+- EUCLIDEAN correctly handles zero vectors
+
+---
+
 ## Running Tests
 
 ```bash
@@ -615,5 +653,6 @@ Integration tests cover:
 - **Sparse Vectors:** 22 tests - sparse vector creation and similarity
 - **Store Instrumentation:** 15 tests - access pattern tracking
 - **Tiered Storage:** 16 tests - hot/cold data migration
+- **Distance Metrics:** 17 tests - COSINE, EUCLIDEAN, DOT_PRODUCT similarity
 
-**Total: 250 integration tests**
+**Total: 267+ integration tests**

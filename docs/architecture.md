@@ -36,6 +36,13 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|          Tensor Unified (Module 12) [DONE]        |
+|   - Cross-engine operations                      |
+|   - Unified entity management                    |
+|   - find_similar_connected, find_neighbors_by_similarity |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |            Tensor Blob (Module 11) [DONE]         |
 |   - S3-style chunked object storage             |
 |   - Content-addressable SHA-256 deduplication   |
@@ -172,15 +179,21 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `get_embedding(key) -> Result<Vec<f64>>`
 - `delete_embedding(key) -> Result<()>`
 - `search_similar(query, top_k) -> Result<Vec<SearchResult>>`
+- `search_similar_with_metric(query, top_k, metric) -> Result<Vec<SearchResult>>`
 - `compute_similarity(a, b) -> Result<f64>`
 - `exists(key) -> bool`
 - `count() -> usize`
 - `list_keys() -> Vec<String>`
 
+**Distance Metrics**:
+- `DistanceMetric::Cosine` - Cosine similarity (default)
+- `DistanceMetric::Euclidean` - Euclidean distance (L2)
+- `DistanceMetric::DotProduct` - Raw dot product
+
 **Does Not**:
 - Store data directly (uses Tensor Store)
-- Implement approximate nearest neighbor (brute-force search)
 - Support metadata filtering
+- HNSW with non-cosine metrics (falls back to brute-force)
 
 ### Module 5: Query Router (Complete)
 
@@ -189,15 +202,37 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Interface**:
 - `execute(command) -> Result<QueryResult>` - String-based execution
 - `execute_parsed(command) -> Result<QueryResult>` - AST-based execution
+- `execute_async(command) -> Result<QueryResult>` - Async string-based
+- `execute_parsed_async(command) -> Result<QueryResult>` - Async AST-based
 
 **Supports**:
 - Relational: SELECT, INSERT, UPDATE, DELETE, CREATE TABLE
 - Graph: NODE, EDGE, PATH, NEIGHBORS, FIND
-- Vector: EMBED, SIMILAR
+- Vector: EMBED, SIMILAR (with COSINE, EUCLIDEAN, DOT_PRODUCT metrics)
+- Unified: ENTITY CREATE, ENTITY CONNECT, SIMILAR...CONNECTED TO
 
 **Does Not**:
 - Parse queries directly (delegates to Neumann Parser)
-- Implement cross-engine joins (planned)
+- Implement cross-engine SQL joins
+
+### Module 12: Tensor Unified (Complete)
+
+**Responsibility**: Cross-engine operations and unified entity management.
+
+**Interface**:
+- `create_entity(key, fields, embedding) -> Result<()>`
+- `connect_entities(from, to, edge_type) -> Result<String>`
+- `find_similar_connected(query, connected_to, k) -> Result<Vec<UnifiedItem>>`
+- `find_neighbors_by_similarity(entity, query, k) -> Result<Vec<UnifiedItem>>`
+
+**Features**:
+- Entities with relational fields, graph connections, and embeddings
+- Cross-engine queries combining vector similarity with graph connectivity
+- Async-first design for concurrent operations
+
+**Does Not**:
+- Store data directly (delegates to individual engines)
+- Implement transactions across engines
 
 ### Module 6: Neumann Parser (Complete)
 
@@ -582,6 +617,7 @@ Neumann/
     tensor-vault.md          # Module 9 documentation
     tensor-cache.md          # Module 10 documentation
     tensor-blob.md           # Module 11 documentation
+    tensor-unified.md        # Module 12 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
@@ -603,6 +639,9 @@ Neumann/
   vector_engine/
     Cargo.toml
     src/lib.rs               # Module 4: Similarity search
+  tensor_unified/
+    Cargo.toml
+    src/lib.rs               # Module 12: Cross-engine operations
   tensor_compress/
     Cargo.toml
     src/

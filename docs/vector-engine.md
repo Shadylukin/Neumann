@@ -5,7 +5,7 @@ Module 4 of Neumann. Provides embeddings storage and similarity search.
 ## Design Principles
 
 1. **Layered Architecture**: Depends only on Tensor Store for persistence
-2. **Cosine Similarity**: Standard metric for embedding similarity
+2. **Multiple Distance Metrics**: Cosine, Euclidean, and Dot Product similarity
 3. **SIMD Acceleration**: 8-wide SIMD for dot products and magnitudes
 4. **Dual Search Modes**: Brute-force O(n) or HNSW O(log n)
 5. **Unified Entities**: Embeddings can be attached to shared entities
@@ -38,7 +38,7 @@ engine.count();  // -> usize
 ### Similarity Search
 
 ```rust
-// Find top-k most similar embeddings to query
+// Find top-k most similar embeddings (default: cosine similarity)
 let query = vec![0.1, 0.2, 0.3];
 let results = engine.search_similar(&query, 5)?;
 
@@ -47,7 +47,30 @@ for result in results {
 }
 ```
 
-Results are sorted by similarity score (highest first). The score is cosine similarity, ranging from -1.0 (opposite) to 1.0 (identical).
+Results are sorted by similarity score (highest first).
+
+### Distance Metrics
+
+```rust
+use vector_engine::DistanceMetric;
+
+// Cosine similarity (default) - range: -1.0 to 1.0
+let results = engine.search_similar_with_metric(&query, 5, DistanceMetric::Cosine)?;
+
+// Euclidean distance - score: 1/(1+distance), range: 0.0 to 1.0
+let results = engine.search_similar_with_metric(&query, 5, DistanceMetric::Euclidean)?;
+
+// Dot product - raw dot product value
+let results = engine.search_similar_with_metric(&query, 5, DistanceMetric::DotProduct)?;
+```
+
+| Metric | Formula | Score Range | Best For |
+|--------|---------|-------------|----------|
+| Cosine | `a . b / (\|a\| * \|b\|)` | -1.0 to 1.0 | Semantic similarity |
+| Euclidean | `1 / (1 + sqrt(sum((a-b)^2)))` | 0.0 to 1.0 | Spatial distance |
+| DotProduct | `sum(a * b)` | unbounded | Magnitude-aware |
+
+**Note**: Euclidean scores are transformed so higher is always better (consistent with other metrics).
 
 ### Cosine Similarity
 
@@ -157,12 +180,35 @@ The engine supports any vector dimension. Common embedding sizes:
 | `search_similar_fewer_than_k` | Handles fewer than k exist |
 | `similarity_scores_mathematically_correct` | Verifies cos(0)=1, cos(90)=0, cos(180)=-1 |
 
+## HNSW Index
+
+For large datasets, build an HNSW index for O(log n) search:
+
+```rust
+// Build HNSW index (via QueryRouter)
+router.build_vector_index()?;
+
+// Searches now use HNSW automatically
+let results = router.execute_parsed("SIMILAR 'doc:1' LIMIT 10")?;
+```
+
+| Dataset Size | Brute-Force | With HNSW | Speedup |
+|--------------|-------------|-----------|---------|
+| 200 vectors | 4.17s | 9.3us | 448,000x |
+
+**Note**: HNSW currently only supports cosine similarity. Other metrics fall back to brute-force.
+
+## Known Limitations
+
+### Zero-Magnitude Vectors
+- **Cosine/DotProduct**: Return empty results (undefined for zero vectors)
+- **Euclidean**: Correctly handles zero vectors (finds vectors closest to origin)
+
 ## Future Considerations
 
-Not implemented (out of scope for Module 4):
+Not implemented (out of scope):
 
-- **Approximate Nearest Neighbor (ANN)**: HNSW, IVF for faster search
 - **Dimensionality Reduction**: PCA, random projection
-- **Quantization**: Reduce memory with int8/binary vectors
-- **Batched Operations**: Store/search multiple at once
+- **Product Quantization**: Further memory reduction beyond int8
 - **Metadata Filtering**: Pre-filter by attributes before similarity search
+- **HNSW with non-cosine metrics**: Currently falls back to brute-force
