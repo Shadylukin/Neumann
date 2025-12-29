@@ -546,4 +546,242 @@ mod tests {
         let result = chain.append(block);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_chain_is_empty() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // After genesis only
+        assert!(chain.is_empty());
+
+        // Add a block
+        let block = chain.new_block().build();
+        chain.append(block).unwrap();
+
+        assert!(!chain.is_empty());
+    }
+
+    #[test]
+    fn test_chain_get_tip() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Genesis is the tip initially
+        let tip = chain.get_tip().unwrap().unwrap();
+        assert_eq!(tip.header.height, 0);
+
+        // Add a block
+        let block = chain.new_block().build();
+        chain.append(block).unwrap();
+
+        // Now height 1 is the tip
+        let tip = chain.get_tip().unwrap().unwrap();
+        assert_eq!(tip.header.height, 1);
+    }
+
+    #[test]
+    fn test_chain_get_blocks_range() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add 5 blocks
+        for _ in 1..=5 {
+            let block = chain.new_block().build();
+            chain.append(block).unwrap();
+        }
+
+        // Get range [2, 4]
+        let blocks = chain.get_blocks_range(2, 4).unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].header.height, 2);
+        assert_eq!(blocks[1].header.height, 3);
+        assert_eq!(blocks[2].header.height, 4);
+    }
+
+    #[test]
+    fn test_chain_get_blocks_range_partial() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add 2 blocks
+        for _ in 1..=2 {
+            let block = chain.new_block().build();
+            chain.append(block).unwrap();
+        }
+
+        // Try to get range that goes beyond existing blocks
+        let blocks = chain.get_blocks_range(1, 5).unwrap();
+        // Should only get blocks 1 and 2
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn test_block_builder_add_transactions() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let txs = vec![
+            Transaction::Put {
+                key: "k1".to_string(),
+                data: vec![1],
+            },
+            Transaction::Put {
+                key: "k2".to_string(),
+                data: vec![2],
+            },
+            Transaction::Delete {
+                key: "k3".to_string(),
+            },
+        ];
+
+        let block = chain.new_block().add_transactions(txs).build();
+
+        assert_eq!(block.transactions.len(), 3);
+    }
+
+    #[test]
+    fn test_reinitialize_existing_chain() {
+        let store = tensor_store::TensorStore::new();
+        let graph = Arc::new(GraphEngine::with_store(store.clone()));
+        let chain1 = Chain::new(graph.clone(), "node1".to_string());
+
+        // Initialize and add blocks
+        chain1.initialize().unwrap();
+        for _ in 1..=3 {
+            let block = chain1.new_block().build();
+            chain1.append(block).unwrap();
+        }
+        assert_eq!(chain1.height(), 3);
+
+        // Create a new chain pointing to the same store
+        let chain2 = Chain::new(graph.clone(), "node1".to_string());
+        chain2.initialize().unwrap();
+
+        // Should load existing height
+        assert_eq!(chain2.height(), 3);
+        assert_eq!(chain2.tip_hash(), chain1.tip_hash());
+    }
+
+    #[test]
+    fn test_verify_chain_empty() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Only genesis - should pass
+        chain.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn test_verify_chain_with_blocks() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add valid blocks
+        for _ in 1..=3 {
+            let block = chain.new_block().build();
+            chain.append(block).unwrap();
+        }
+
+        // Verify should pass
+        chain.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn test_get_block_at_nonexistent() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Try to get a block that doesn't exist
+        let result = chain.get_block_at(100).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_history_no_matches() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add blocks with different keys
+        for i in 1..=3 {
+            let block = chain
+                .new_block()
+                .add_transaction(Transaction::Put {
+                    key: format!("key{}", i),
+                    data: vec![i as u8],
+                })
+                .build();
+            chain.append(block).unwrap();
+        }
+
+        // Look for a key that doesn't exist
+        let history = chain.history("nonexistent").unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_append_computes_tx_root() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::Put {
+                key: "k".to_string(),
+                data: vec![1],
+            })
+            .build();
+
+        // tx_root should be set by builder already
+        assert_ne!(block.header.tx_root, [0u8; 32]);
+
+        chain.append(block).unwrap();
+
+        // Retrieve and verify
+        let stored = chain.get_block_at(1).unwrap().unwrap();
+        assert_ne!(stored.header.tx_root, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_chain_iterator_handles_all_heights() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add blocks
+        for _ in 1..=2 {
+            let block = chain.new_block().build();
+            chain.append(block).unwrap();
+        }
+
+        // Iterate and collect
+        let mut heights = Vec::new();
+        for result in chain.iter() {
+            let block = result.unwrap();
+            heights.push(block.header.height);
+        }
+
+        assert_eq!(heights, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_tip_hash_updates() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let genesis_hash = chain.tip_hash();
+
+        // Add a block
+        let block = chain.new_block().build();
+        let hash1 = chain.append(block).unwrap();
+
+        assert_ne!(chain.tip_hash(), genesis_hash);
+        assert_eq!(chain.tip_hash(), hash1);
+
+        // Add another block
+        let block = chain.new_block().build();
+        let hash2 = chain.append(block).unwrap();
+
+        assert_ne!(chain.tip_hash(), hash1);
+        assert_eq!(chain.tip_hash(), hash2);
+    }
 }

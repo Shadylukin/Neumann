@@ -53,6 +53,18 @@ pub enum Message {
     Ping { term: u64 },
     /// Pong response.
     Pong { term: u64 },
+
+    // 2PC Distributed Transaction messages
+    /// Prepare request for distributed transaction.
+    TxPrepare(TxPrepareMsg),
+    /// Vote response for prepare request.
+    TxPrepareResponse(TxPrepareResponseMsg),
+    /// Commit request for distributed transaction.
+    TxCommit(TxCommitMsg),
+    /// Abort request for distributed transaction.
+    TxAbort(TxAbortMsg),
+    /// Response to commit/abort.
+    TxAck(TxAckMsg),
 }
 
 /// Request vote message for leader election.
@@ -172,6 +184,95 @@ pub struct SnapshotResponse {
     pub total_size: u64,
     /// Whether this is the last chunk.
     pub is_last: bool,
+}
+
+// 2PC Distributed Transaction Messages
+
+/// Prepare request for distributed transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxPrepareMsg {
+    /// Distributed transaction ID.
+    pub tx_id: u64,
+    /// Coordinator node ID.
+    pub coordinator: NodeId,
+    /// Shard being addressed.
+    pub shard_id: usize,
+    /// Operations to execute on this shard.
+    pub operations: Vec<crate::block::Transaction>,
+    /// Delta embedding for conflict detection.
+    pub delta_embedding: Vec<f32>,
+    /// Timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+/// Vote response from participant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxPrepareResponseMsg {
+    /// Distributed transaction ID.
+    pub tx_id: u64,
+    /// Shard responding.
+    pub shard_id: usize,
+    /// Vote result.
+    pub vote: TxVote,
+}
+
+/// Vote from a participant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TxVote {
+    /// Participant is ready to commit.
+    Yes {
+        /// Lock handle for the prepared transaction.
+        lock_handle: u64,
+        /// Delta computed by participant.
+        delta: Vec<f32>,
+        /// Keys affected by this transaction.
+        affected_keys: Vec<String>,
+    },
+    /// Participant cannot commit.
+    No {
+        /// Reason for rejection.
+        reason: String,
+    },
+    /// Participant detected a conflict.
+    Conflict {
+        /// Similarity with conflicting transaction.
+        similarity: f32,
+        /// ID of the conflicting transaction.
+        conflicting_tx: u64,
+    },
+}
+
+/// Commit request for distributed transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxCommitMsg {
+    /// Distributed transaction ID.
+    pub tx_id: u64,
+    /// Shards to commit.
+    pub shards: Vec<usize>,
+}
+
+/// Abort request for distributed transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxAbortMsg {
+    /// Distributed transaction ID.
+    pub tx_id: u64,
+    /// Reason for abort.
+    pub reason: String,
+    /// Shards to abort.
+    pub shards: Vec<usize>,
+}
+
+/// Acknowledgment for commit/abort.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxAckMsg {
+    /// Distributed transaction ID.
+    pub tx_id: u64,
+    /// Shard responding.
+    pub shard_id: usize,
+    /// Whether the operation succeeded.
+    pub success: bool,
+    /// Error message if failed.
+    pub error: Option<String>,
 }
 
 /// Transport trait for network communication.
@@ -425,5 +526,811 @@ mod tests {
         let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.term, 1);
         assert_eq!(decoded.index, 1);
+    }
+
+    #[test]
+    fn test_peer_config() {
+        let config = PeerConfig {
+            node_id: "peer1".to_string(),
+            address: "127.0.0.1:9000".to_string(),
+        };
+        assert_eq!(config.node_id, "peer1");
+        assert_eq!(config.address, "127.0.0.1:9000");
+
+        // Test serialization
+        let bytes = bincode::serialize(&config).unwrap();
+        let decoded: PeerConfig = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.node_id, "peer1");
+    }
+
+    #[test]
+    fn test_request_vote_response_serialization() {
+        let msg = Message::RequestVoteResponse(RequestVoteResponse {
+            term: 5,
+            vote_granted: true,
+            voter_id: "voter1".to_string(),
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::RequestVoteResponse(rvr) = decoded {
+            assert_eq!(rvr.term, 5);
+            assert!(rvr.vote_granted);
+            assert_eq!(rvr.voter_id, "voter1");
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_append_entries_serialization() {
+        let msg = Message::AppendEntries(AppendEntries {
+            term: 3,
+            leader_id: "leader1".to_string(),
+            prev_log_index: 10,
+            prev_log_term: 2,
+            entries: vec![],
+            leader_commit: 8,
+            block_embedding: Some(vec![0.1, 0.2, 0.3]),
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::AppendEntries(ae) = decoded {
+            assert_eq!(ae.term, 3);
+            assert_eq!(ae.leader_id, "leader1");
+            assert!(ae.block_embedding.is_some());
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_append_entries_response_serialization() {
+        let msg = Message::AppendEntriesResponse(AppendEntriesResponse {
+            term: 3,
+            success: true,
+            follower_id: "follower1".to_string(),
+            match_index: 15,
+            used_fast_path: true,
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::AppendEntriesResponse(aer) = decoded {
+            assert_eq!(aer.term, 3);
+            assert!(aer.success);
+            assert!(aer.used_fast_path);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_block_request_response_serialization() {
+        let req = Message::BlockRequest(BlockRequest {
+            from_height: 10,
+            to_height: 20,
+            requester_id: "requester".to_string(),
+        });
+
+        let bytes = bincode::serialize(&req).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::BlockRequest(br) = decoded {
+            assert_eq!(br.from_height, 10);
+            assert_eq!(br.to_height, 20);
+        } else {
+            panic!("wrong message type");
+        }
+
+        let resp = Message::BlockResponse(BlockResponse {
+            blocks: vec![],
+            current_height: 25,
+        });
+
+        let bytes = bincode::serialize(&resp).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::BlockResponse(br) = decoded {
+            assert!(br.blocks.is_empty());
+            assert_eq!(br.current_height, 25);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_snapshot_request_response_serialization() {
+        let req = Message::SnapshotRequest(SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 1000,
+            chunk_size: 4096,
+        });
+
+        let bytes = bincode::serialize(&req).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::SnapshotRequest(sr) = decoded {
+            assert_eq!(sr.offset, 1000);
+            assert_eq!(sr.chunk_size, 4096);
+        } else {
+            panic!("wrong message type");
+        }
+
+        let resp = Message::SnapshotResponse(SnapshotResponse {
+            snapshot_height: 100,
+            snapshot_hash: [1u8; 32],
+            data: vec![1, 2, 3, 4],
+            offset: 0,
+            total_size: 4096,
+            is_last: false,
+        });
+
+        let bytes = bincode::serialize(&resp).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::SnapshotResponse(sr) = decoded {
+            assert_eq!(sr.snapshot_height, 100);
+            assert!(!sr.is_last);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_ping_pong_serialization() {
+        let ping = Message::Ping { term: 42 };
+        let bytes = bincode::serialize(&ping).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 42);
+        } else {
+            panic!("wrong message type");
+        }
+
+        let pong = Message::Pong { term: 42 };
+        let bytes = bincode::serialize(&pong).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        if let Message::Pong { term } = decoded {
+            assert_eq!(term, 42);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_tx_prepare_msg_serialization() {
+        use crate::block::Transaction;
+
+        let msg = Message::TxPrepare(TxPrepareMsg {
+            tx_id: 123,
+            coordinator: "coord".to_string(),
+            shard_id: 1,
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1, 2, 3],
+            }],
+            delta_embedding: vec![0.5, 0.5],
+            timeout_ms: 5000,
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::TxPrepare(tp) = decoded {
+            assert_eq!(tp.tx_id, 123);
+            assert_eq!(tp.shard_id, 1);
+            assert_eq!(tp.operations.len(), 1);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_tx_prepare_response_serialization() {
+        let msg = Message::TxPrepareResponse(TxPrepareResponseMsg {
+            tx_id: 123,
+            shard_id: 1,
+            vote: TxVote::Yes {
+                lock_handle: 456,
+                delta: vec![0.1, 0.2],
+                affected_keys: vec!["key1".to_string()],
+            },
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::TxPrepareResponse(tpr) = decoded {
+            assert_eq!(tpr.tx_id, 123);
+            if let TxVote::Yes { lock_handle, .. } = tpr.vote {
+                assert_eq!(lock_handle, 456);
+            } else {
+                panic!("wrong vote type");
+            }
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_tx_vote_variants_serialization() {
+        let yes = TxVote::Yes {
+            lock_handle: 1,
+            delta: vec![0.1],
+            affected_keys: vec!["k1".to_string()],
+        };
+        let bytes = bincode::serialize(&yes).unwrap();
+        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        assert!(matches!(decoded, TxVote::Yes { .. }));
+
+        let no = TxVote::No {
+            reason: "test reason".to_string(),
+        };
+        let bytes = bincode::serialize(&no).unwrap();
+        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        if let TxVote::No { reason } = decoded {
+            assert_eq!(reason, "test reason");
+        } else {
+            panic!("wrong vote type");
+        }
+
+        let conflict = TxVote::Conflict {
+            similarity: 0.95,
+            conflicting_tx: 999,
+        };
+        let bytes = bincode::serialize(&conflict).unwrap();
+        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        if let TxVote::Conflict {
+            similarity,
+            conflicting_tx,
+        } = decoded
+        {
+            assert!((similarity - 0.95).abs() < 0.01);
+            assert_eq!(conflicting_tx, 999);
+        } else {
+            panic!("wrong vote type");
+        }
+    }
+
+    #[test]
+    fn test_tx_commit_abort_ack_serialization() {
+        let commit = Message::TxCommit(TxCommitMsg {
+            tx_id: 100,
+            shards: vec![0, 1, 2],
+        });
+        let bytes = bincode::serialize(&commit).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        if let Message::TxCommit(tc) = decoded {
+            assert_eq!(tc.tx_id, 100);
+            assert_eq!(tc.shards, vec![0, 1, 2]);
+        } else {
+            panic!("wrong message type");
+        }
+
+        let abort = Message::TxAbort(TxAbortMsg {
+            tx_id: 100,
+            reason: "conflict".to_string(),
+            shards: vec![0, 1],
+        });
+        let bytes = bincode::serialize(&abort).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        if let Message::TxAbort(ta) = decoded {
+            assert_eq!(ta.tx_id, 100);
+            assert_eq!(ta.reason, "conflict");
+        } else {
+            panic!("wrong message type");
+        }
+
+        let ack = Message::TxAck(TxAckMsg {
+            tx_id: 100,
+            shard_id: 1,
+            success: true,
+            error: None,
+        });
+        let bytes = bincode::serialize(&ack).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        if let Message::TxAck(ta) = decoded {
+            assert_eq!(ta.tx_id, 100);
+            assert!(ta.success);
+            assert!(ta.error.is_none());
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_tx_ack_with_error() {
+        let ack = TxAckMsg {
+            tx_id: 200,
+            shard_id: 2,
+            success: false,
+            error: Some("transaction not found".to_string()),
+        };
+
+        let bytes = bincode::serialize(&ack).unwrap();
+        let decoded: TxAckMsg = bincode::deserialize(&bytes).unwrap();
+        assert!(!decoded.success);
+        assert_eq!(decoded.error, Some("transaction not found".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_send_recv() {
+        let node1 = MemoryTransport::new("node1".to_string());
+        let node2 = MemoryTransport::new("node2".to_string());
+
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Send from node1 to node2
+        node1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await
+            .unwrap();
+
+        // Receive on node2
+        let (from, msg) = node2.recv().await.unwrap();
+        assert_eq!(from, "node1");
+        assert!(matches!(msg, Message::Ping { term: 1 }));
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_send_unknown_peer() {
+        let node1 = MemoryTransport::new("node1".to_string());
+
+        let result = node1
+            .send(&"unknown".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_recv_empty() {
+        let node1 = MemoryTransport::new("node1".to_string());
+
+        let result = node1.recv().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_broadcast() {
+        let node1 = MemoryTransport::new("node1".to_string());
+        let node2 = MemoryTransport::new("node2".to_string());
+        let node3 = MemoryTransport::new("node3".to_string());
+
+        node1.connect_to("node2".to_string(), node2.sender());
+        node1.connect_to("node3".to_string(), node3.sender());
+
+        node1.broadcast(Message::Ping { term: 10 }).await.unwrap();
+
+        // Both should receive
+        let (from2, _) = node2.recv().await.unwrap();
+        let (from3, _) = node3.recv().await.unwrap();
+        assert_eq!(from2, "node1");
+        assert_eq!(from3, "node1");
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_connect_disconnect() {
+        let node1 = MemoryTransport::new("node1".to_string());
+        let node2 = MemoryTransport::new("node2".to_string());
+
+        node1.connect_to("node2".to_string(), node2.sender());
+        assert_eq!(node1.peers().len(), 1);
+
+        node1.disconnect(&"node2".to_string()).await.unwrap();
+        assert!(node1.peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_memory_transport_connect_noop() {
+        let node1 = MemoryTransport::new("node1".to_string());
+
+        let peer = PeerConfig {
+            node_id: "node2".to_string(),
+            address: "127.0.0.1:9000".to_string(),
+        };
+
+        // Connect is a no-op for MemoryTransport
+        let result = node1.connect(&peer).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_network_manager_creation() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = NetworkManager::new(transport.clone());
+
+        assert_eq!(manager.transport().local_id(), "node1");
+    }
+
+    #[test]
+    fn test_network_manager_add_handler() {
+        struct TestHandler;
+        impl MessageHandler for TestHandler {
+            fn handle(&self, _from: &NodeId, msg: &Message) -> Option<Message> {
+                if let Message::Ping { term } = msg {
+                    Some(Message::Pong { term: *term })
+                } else {
+                    None
+                }
+            }
+        }
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = NetworkManager::new(transport);
+
+        manager.add_handler(Box::new(TestHandler));
+
+        // Handler should be registered
+        assert_eq!(manager.handlers.read().len(), 1);
+    }
+
+    #[test]
+    fn test_message_debug_format() {
+        let msg = Message::Ping { term: 42 };
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Ping"));
+        assert!(debug.contains("42"));
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let msg = Message::RequestVote(RequestVote {
+            term: 1,
+            candidate_id: "c1".to_string(),
+            last_log_index: 5,
+            last_log_term: 1,
+            state_embedding: vec![0.1, 0.2],
+        });
+
+        let cloned = msg.clone();
+        if let Message::RequestVote(rv) = cloned {
+            assert_eq!(rv.term, 1);
+            assert_eq!(rv.candidate_id, "c1");
+        }
+    }
+
+    #[test]
+    fn test_peer_config_debug_clone() {
+        let config = PeerConfig {
+            node_id: "node1".to_string(),
+            address: "127.0.0.1:8080".to_string(),
+        };
+        let cloned = config.clone();
+        assert_eq!(config.node_id, cloned.node_id);
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("PeerConfig"));
+    }
+
+    #[test]
+    fn test_request_vote_debug_clone() {
+        let rv = RequestVote {
+            term: 5,
+            candidate_id: "cand".to_string(),
+            last_log_index: 10,
+            last_log_term: 4,
+            state_embedding: vec![0.1, 0.2, 0.3],
+        };
+        let cloned = rv.clone();
+        assert_eq!(rv.term, cloned.term);
+
+        let debug = format!("{:?}", rv);
+        assert!(debug.contains("RequestVote"));
+    }
+
+    #[test]
+    fn test_request_vote_response_debug_clone() {
+        let rvr = RequestVoteResponse {
+            term: 5,
+            vote_granted: true,
+            voter_id: "voter".to_string(),
+        };
+        let cloned = rvr.clone();
+        assert_eq!(rvr.vote_granted, cloned.vote_granted);
+
+        let debug = format!("{:?}", rvr);
+        assert!(debug.contains("RequestVoteResponse"));
+    }
+
+    #[test]
+    fn test_append_entries_debug_clone() {
+        let ae = AppendEntries {
+            term: 3,
+            leader_id: "leader".to_string(),
+            prev_log_index: 10,
+            prev_log_term: 2,
+            entries: vec![],
+            leader_commit: 8,
+            block_embedding: None,
+        };
+        let cloned = ae.clone();
+        assert_eq!(ae.term, cloned.term);
+
+        let debug = format!("{:?}", ae);
+        assert!(debug.contains("AppendEntries"));
+    }
+
+    #[test]
+    fn test_append_entries_response_debug_clone() {
+        let aer = AppendEntriesResponse {
+            term: 3,
+            success: true,
+            follower_id: "follower".to_string(),
+            match_index: 15,
+            used_fast_path: false,
+        };
+        let cloned = aer.clone();
+        assert_eq!(aer.match_index, cloned.match_index);
+
+        let debug = format!("{:?}", aer);
+        assert!(debug.contains("AppendEntriesResponse"));
+    }
+
+    #[test]
+    fn test_log_entry_debug_clone() {
+        use crate::block::{Block, BlockHeader};
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "p".to_string());
+        let block = Block::new(header, vec![]);
+
+        let entry = LogEntry {
+            term: 1,
+            index: 1,
+            block,
+        };
+        let cloned = entry.clone();
+        assert_eq!(entry.term, cloned.term);
+
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("LogEntry"));
+    }
+
+    #[test]
+    fn test_block_request_debug_clone() {
+        let br = BlockRequest {
+            from_height: 10,
+            to_height: 20,
+            requester_id: "node1".to_string(),
+        };
+        let cloned = br.clone();
+        assert_eq!(br.from_height, cloned.from_height);
+
+        let debug = format!("{:?}", br);
+        assert!(debug.contains("BlockRequest"));
+    }
+
+    #[test]
+    fn test_block_response_debug_clone() {
+        let br = BlockResponse {
+            blocks: vec![],
+            current_height: 100,
+        };
+        let cloned = br.clone();
+        assert_eq!(br.current_height, cloned.current_height);
+
+        let debug = format!("{:?}", br);
+        assert!(debug.contains("BlockResponse"));
+    }
+
+    #[test]
+    fn test_snapshot_request_debug_clone() {
+        let sr = SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 1000,
+            chunk_size: 4096,
+        };
+        let cloned = sr.clone();
+        assert_eq!(sr.offset, cloned.offset);
+
+        let debug = format!("{:?}", sr);
+        assert!(debug.contains("SnapshotRequest"));
+    }
+
+    #[test]
+    fn test_snapshot_response_debug_clone() {
+        let sr = SnapshotResponse {
+            snapshot_height: 100,
+            snapshot_hash: [1u8; 32],
+            data: vec![1, 2, 3],
+            offset: 0,
+            total_size: 1000,
+            is_last: false,
+        };
+        let cloned = sr.clone();
+        assert_eq!(sr.snapshot_height, cloned.snapshot_height);
+
+        let debug = format!("{:?}", sr);
+        assert!(debug.contains("SnapshotResponse"));
+    }
+
+    #[test]
+    fn test_tx_prepare_msg_debug_clone() {
+        let msg = TxPrepareMsg {
+            tx_id: 123,
+            coordinator: "coord".to_string(),
+            shard_id: 1,
+            operations: vec![],
+            delta_embedding: vec![0.1],
+            timeout_ms: 5000,
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.tx_id, cloned.tx_id);
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("TxPrepareMsg"));
+    }
+
+    #[test]
+    fn test_tx_prepare_response_msg_debug_clone() {
+        let msg = TxPrepareResponseMsg {
+            tx_id: 123,
+            shard_id: 1,
+            vote: TxVote::No {
+                reason: "test".to_string(),
+            },
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.tx_id, cloned.tx_id);
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("TxPrepareResponseMsg"));
+    }
+
+    #[test]
+    fn test_tx_vote_debug_clone() {
+        let yes = TxVote::Yes {
+            lock_handle: 1,
+            delta: vec![0.1],
+            affected_keys: vec!["k1".to_string()],
+        };
+        let cloned = yes.clone();
+        if let (TxVote::Yes { lock_handle: l1, .. }, TxVote::Yes { lock_handle: l2, .. }) =
+            (&yes, &cloned)
+        {
+            assert_eq!(l1, l2);
+        }
+
+        let debug = format!("{:?}", yes);
+        assert!(debug.contains("Yes"));
+    }
+
+    #[test]
+    fn test_tx_commit_msg_debug_clone() {
+        let msg = TxCommitMsg {
+            tx_id: 100,
+            shards: vec![0, 1, 2],
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.tx_id, cloned.tx_id);
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("TxCommitMsg"));
+    }
+
+    #[test]
+    fn test_tx_abort_msg_debug_clone() {
+        let msg = TxAbortMsg {
+            tx_id: 100,
+            reason: "conflict".to_string(),
+            shards: vec![0, 1],
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.reason, cloned.reason);
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("TxAbortMsg"));
+    }
+
+    #[test]
+    fn test_tx_ack_msg_debug_clone() {
+        let msg = TxAckMsg {
+            tx_id: 100,
+            shard_id: 1,
+            success: true,
+            error: None,
+        };
+        let cloned = msg.clone();
+        assert_eq!(msg.success, cloned.success);
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("TxAckMsg"));
+    }
+
+    #[test]
+    fn test_all_message_variants_debug() {
+        let messages = vec![
+            Message::Ping { term: 1 },
+            Message::Pong { term: 1 },
+            Message::RequestVote(RequestVote {
+                term: 1,
+                candidate_id: "c".to_string(),
+                last_log_index: 0,
+                last_log_term: 0,
+                state_embedding: vec![],
+            }),
+            Message::RequestVoteResponse(RequestVoteResponse {
+                term: 1,
+                vote_granted: true,
+                voter_id: "v".to_string(),
+            }),
+            Message::AppendEntries(AppendEntries {
+                term: 1,
+                leader_id: "l".to_string(),
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: vec![],
+                leader_commit: 0,
+                block_embedding: None,
+            }),
+            Message::AppendEntriesResponse(AppendEntriesResponse {
+                term: 1,
+                success: true,
+                follower_id: "f".to_string(),
+                match_index: 0,
+                used_fast_path: false,
+            }),
+            Message::BlockRequest(BlockRequest {
+                from_height: 0,
+                to_height: 1,
+                requester_id: "r".to_string(),
+            }),
+            Message::BlockResponse(BlockResponse {
+                blocks: vec![],
+                current_height: 0,
+            }),
+            Message::SnapshotRequest(SnapshotRequest {
+                requester_id: "r".to_string(),
+                offset: 0,
+                chunk_size: 1,
+            }),
+            Message::SnapshotResponse(SnapshotResponse {
+                snapshot_height: 0,
+                snapshot_hash: [0u8; 32],
+                data: vec![],
+                offset: 0,
+                total_size: 0,
+                is_last: true,
+            }),
+            Message::TxPrepare(TxPrepareMsg {
+                tx_id: 1,
+                coordinator: "c".to_string(),
+                shard_id: 0,
+                operations: vec![],
+                delta_embedding: vec![],
+                timeout_ms: 1000,
+            }),
+            Message::TxPrepareResponse(TxPrepareResponseMsg {
+                tx_id: 1,
+                shard_id: 0,
+                vote: TxVote::No {
+                    reason: "n".to_string(),
+                },
+            }),
+            Message::TxCommit(TxCommitMsg {
+                tx_id: 1,
+                shards: vec![],
+            }),
+            Message::TxAbort(TxAbortMsg {
+                tx_id: 1,
+                reason: "r".to_string(),
+                shards: vec![],
+            }),
+            Message::TxAck(TxAckMsg {
+                tx_id: 1,
+                shard_id: 0,
+                success: true,
+                error: None,
+            }),
+        ];
+
+        for msg in messages {
+            let debug = format!("{:?}", msg);
+            assert!(!debug.is_empty());
+        }
     }
 }

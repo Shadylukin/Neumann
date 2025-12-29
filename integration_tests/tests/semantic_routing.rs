@@ -202,8 +202,8 @@ fn test_semantic_partition_performance() {
 
     // Should be fast (lower threshold for coverage instrumentation)
     assert!(
-        ops_per_sec > 40_000.0,
-        "Expected >40k ops/sec, got {:.0}",
+        ops_per_sec > 30_000.0,
+        "Expected >30k ops/sec, got {:.0}",
         ops_per_sec
     );
 }

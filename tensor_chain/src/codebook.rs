@@ -940,4 +940,338 @@ mod tests {
         // Invalid state (too far from any centroid)
         assert!(!manager.is_valid_state("test", &[0.5, 0.5]));
     }
+
+    #[test]
+    fn test_codebook_entry_with_label() {
+        let entry = CodebookEntry::new(0, vec![1.0, 0.0, 0.0]).with_label("test_label");
+        assert_eq!(entry.label, Some("test_label".to_string()));
+    }
+
+    #[test]
+    fn test_codebook_entry_accessors() {
+        let mut entry = CodebookEntry::new(0, vec![1.0, 0.0]);
+        assert_eq!(entry.access_count(), 0);
+
+        let initial_access = entry.last_access();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        entry.record_access();
+        assert_eq!(entry.access_count(), 1);
+        assert!(entry.last_access() >= initial_access);
+
+        assert_eq!(entry.centroid(), &[1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_codebook_entry_ema_update() {
+        let mut entry = CodebookEntry::new(0, vec![1.0, 0.0]);
+        entry.ema_update(&[0.0, 1.0], 0.5);
+
+        // After 50% EMA update: centroid = 0.5 * [0,1] + 0.5 * [1,0] = [0.5, 0.5]
+        assert!((entry.centroid[0] - 0.5).abs() < 0.001);
+        assert!((entry.centroid[1] - 0.5).abs() < 0.001);
+        assert_eq!(entry.access_count(), 1);
+    }
+
+    #[test]
+    fn test_codebook_entry_cosine_zero_magnitude() {
+        let entry = CodebookEntry::new(0, vec![0.0, 0.0, 0.0]);
+        assert_eq!(entry.cosine_similarity(&[1.0, 0.0, 0.0]), 0.0);
+
+        let entry2 = CodebookEntry::new(0, vec![1.0, 0.0, 0.0]);
+        assert_eq!(entry2.cosine_similarity(&[0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn test_global_codebook_empty() {
+        let codebook = GlobalCodebook::new(3);
+        assert!(codebook.is_empty());
+        assert_eq!(codebook.len(), 0);
+        assert_eq!(codebook.dimension(), 3);
+        assert!(codebook.quantize(&[1.0, 0.0, 0.0]).is_none());
+        assert!(!codebook.is_valid_state(&[1.0, 0.0, 0.0], 0.9));
+    }
+
+    #[test]
+    fn test_global_codebook_from_centroids_with_labels() {
+        let centroids = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let labels = vec!["x_axis".to_string(), "y_axis".to_string()];
+        let codebook = GlobalCodebook::from_centroids_with_labels(centroids, labels);
+
+        assert_eq!(codebook.len(), 2);
+        assert_eq!(codebook.get(0).unwrap().label, Some("x_axis".to_string()));
+        assert_eq!(codebook.get(1).unwrap().label, Some("y_axis".to_string()));
+    }
+
+    #[test]
+    fn test_global_codebook_iter() {
+        let centroids = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![0.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+
+        let count = codebook.iter().count();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_global_codebook_get() {
+        let centroids = vec![vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+
+        assert!(codebook.get(0).is_some());
+        assert!(codebook.get(999).is_none());
+    }
+
+    #[test]
+    fn test_global_codebook_is_valid_state() {
+        let centroids = vec![vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+
+        assert!(codebook.is_valid_state(&[1.0, 0.0], 0.9));
+        assert!(!codebook.is_valid_state(&[0.0, 1.0], 0.9));
+    }
+
+    #[test]
+    fn test_global_codebook_kmeans_empty() {
+        let codebook = GlobalCodebook::from_kmeans(&[], 3, 10);
+        assert!(codebook.is_empty());
+
+        let codebook = GlobalCodebook::from_kmeans(&[vec![1.0, 0.0]], 0, 10);
+        assert!(codebook.is_empty());
+    }
+
+    #[test]
+    fn test_global_codebook_kmeans_convergence() {
+        // Test early convergence
+        let vectors = vec![vec![1.0, 0.0], vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_kmeans(&vectors, 1, 100);
+        assert_eq!(codebook.len(), 1);
+    }
+
+    #[test]
+    fn test_local_codebook_stats() {
+        let local = LocalCodebook::new("test", 2, 10, 0.1);
+
+        local.quantize_and_update(&[1.0, 0.0], 0.9);
+        local.quantize_and_update(&[1.0, 0.0], 0.9);
+
+        let stats = local.stats();
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.total_insertions, 1);
+        assert!(stats.total_updates > 0 || stats.total_lookups > 0);
+    }
+
+    #[test]
+    fn test_local_codebook_is_valid_state() {
+        let local = LocalCodebook::new("test", 2, 10, 0.1);
+        local.quantize_and_update(&[1.0, 0.0], 0.9);
+
+        assert!(local.is_valid_state(&[1.0, 0.0], 0.9));
+        assert!(!local.is_valid_state(&[0.0, 1.0], 0.99));
+    }
+
+    #[test]
+    fn test_local_codebook_quantize_empty() {
+        let local = LocalCodebook::new("test", 2, 10, 0.1);
+        assert!(local.quantize(&[1.0, 0.0]).is_none());
+        assert!(!local.is_valid_state(&[1.0, 0.0], 0.5));
+    }
+
+    #[test]
+    fn test_local_codebook_ema_update_nonexistent() {
+        let local = LocalCodebook::new("test", 2, 10, 0.1);
+        // Should not panic when updating non-existent entry
+        local.ema_update(999, &[1.0, 0.0]);
+        assert!(local.is_empty());
+    }
+
+    #[test]
+    fn test_pruning_strategy_default() {
+        let strategy = PruningStrategy::default();
+        assert!(matches!(
+            strategy,
+            PruningStrategy::Hybrid {
+                recency_weight: _,
+                frequency_weight: _
+            }
+        ));
+    }
+
+    #[test]
+    fn test_pruning_strategy_lru() {
+        let mut local = LocalCodebook::new("test", 2, 2, 0.1);
+        local.set_pruning_strategy(PruningStrategy::LRU);
+        local.set_min_usage_for_prune(0);
+
+        local.quantize_and_update(&[1.0, 0.0], 0.5);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        local.quantize_and_update(&[0.0, 1.0], 0.5);
+
+        // Insert a new entry to trigger pruning
+        local.quantize_and_update(&[-1.0, 0.0], 0.5);
+        assert!(local.len() <= 2);
+    }
+
+    #[test]
+    fn test_pruning_strategy_lfu() {
+        let mut local = LocalCodebook::new("test", 2, 2, 0.1);
+        local.set_pruning_strategy(PruningStrategy::LFU);
+        local.set_min_usage_for_prune(0);
+
+        local.quantize_and_update(&[1.0, 0.0], 0.5);
+        local.quantize_and_update(&[1.0, 0.0], 0.5); // Access twice
+        local.quantize_and_update(&[0.0, 1.0], 0.5); // Access once
+
+        // Insert a new entry to trigger pruning
+        local.quantize_and_update(&[-1.0, 0.0], 0.5);
+        assert!(local.len() <= 2);
+    }
+
+    #[test]
+    fn test_codebook_config_default() {
+        let config = CodebookConfig::default();
+        assert_eq!(config.local_capacity, 256);
+        assert!((config.ema_alpha - 0.1).abs() < 0.01);
+        assert!((config.similarity_threshold - 0.9).abs() < 0.01);
+        assert!((config.residual_threshold - 0.05).abs() < 0.01);
+        assert!((config.validity_threshold - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_codebook_manager_global_accessor() {
+        let global = GlobalCodebook::from_centroids(vec![vec![1.0, 0.0]]);
+        let manager = CodebookManager::with_global(global);
+
+        assert_eq!(manager.global().len(), 1);
+    }
+
+    #[test]
+    fn test_codebook_manager_quantize_empty_global() {
+        let global = GlobalCodebook::new(3);
+        let manager = CodebookManager::with_global(global);
+
+        let result = manager.quantize("test", &[1.0, 0.0, 0.0]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_codebook_manager_quantize_with_residual() {
+        // Create codebook where residual will be significant
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = GlobalCodebook::from_centroids(centroids);
+        let config = CodebookConfig {
+            residual_threshold: 0.01, // Low threshold to trigger local codebook
+            ..Default::default()
+        };
+        let manager = CodebookManager::new(global, config);
+
+        // Query that produces significant residual
+        let result = manager.quantize("test", &[1.0, 0.5, 0.0]).unwrap();
+        assert_eq!(result.global_entry_id, 0);
+        assert!(result.local_entry_id.is_some());
+    }
+
+    #[test]
+    fn test_codebook_manager_is_valid_transition() {
+        let centroids = vec![vec![1.0, 0.0], vec![0.8, 0.2]];
+        let global = GlobalCodebook::from_centroids(centroids);
+        let config = CodebookConfig {
+            validity_threshold: 0.8,
+            ..Default::default()
+        };
+        let manager = CodebookManager::new(global, config);
+
+        // Valid transition (both states valid, small distance)
+        assert!(manager.is_valid_transition("test", &[1.0, 0.0], &[0.8, 0.2], 1.0));
+
+        // Invalid transition (from invalid state)
+        assert!(!manager.is_valid_transition("test", &[0.0, 0.0], &[1.0, 0.0], 2.0));
+
+        // Invalid transition (distance too large)
+        assert!(!manager.is_valid_transition("test", &[1.0, 0.0], &[0.8, 0.2], 0.01));
+    }
+
+    #[test]
+    fn test_hierarchical_quantization_debug() {
+        let quant = HierarchicalQuantization {
+            global_entry_id: 0,
+            global_similarity: 0.9,
+            local_entry_id: Some(1),
+            local_similarity: Some(0.8),
+            codes: vec![0, 1],
+        };
+        let _ = format!("{:?}", quant);
+    }
+
+    #[test]
+    fn test_local_codebook_stats_debug() {
+        let stats = LocalCodebookStats {
+            entry_count: 10,
+            total_updates: 100,
+            total_lookups: 200,
+            total_prunes: 5,
+            total_insertions: 15,
+        };
+        let _ = format!("{:?}", stats);
+    }
+
+    #[test]
+    fn test_kmeans_plusplus_all_same() {
+        // All vectors are the same - should handle gracefully
+        let vectors = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_kmeans(&vectors, 2, 10);
+        assert!(codebook.len() <= 2);
+    }
+
+    #[test]
+    fn test_euclidean_distance() {
+        let d = euclidean_distance(&[0.0, 0.0], &[3.0, 4.0]);
+        assert!((d - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_codebook_entry_centroid_accessor() {
+        let entry = CodebookEntry::new(0, vec![1.0, 2.0, 3.0]);
+        assert_eq!(entry.centroid(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_local_codebook_dimension() {
+        let local = LocalCodebook::new("test", 5, 10, 0.1);
+        assert_eq!(local.dimension(), 5);
+    }
+
+    #[test]
+    fn test_get_or_create_local() {
+        let global = GlobalCodebook::from_centroids(vec![vec![1.0, 0.0]]);
+        let manager = CodebookManager::with_global(global);
+
+        let local = manager.get_or_create_local("domain1");
+        assert_eq!(local.domain(), "domain1");
+        assert!(local.is_empty());
+    }
+
+    #[test]
+    fn test_global_codebook_compute_residual_empty() {
+        let codebook = GlobalCodebook::new(3);
+        assert!(codebook.compute_residual(&[1.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn test_local_codebook_insert_pruning() {
+        let mut local = LocalCodebook::new("test", 2, 3, 0.1);
+        local.set_min_usage_for_prune(1);
+
+        // Fill to capacity
+        local.quantize_and_update(&[1.0, 0.0], 0.5);
+        local.quantize_and_update(&[0.0, 1.0], 0.5);
+        local.quantize_and_update(&[-1.0, 0.0], 0.5);
+
+        // Access all to meet min_usage_for_prune
+        local.quantize_and_update(&[1.0, 0.0], 0.5);
+        local.quantize_and_update(&[0.0, 1.0], 0.5);
+        local.quantize_and_update(&[-1.0, 0.0], 0.5);
+
+        let stats = local.stats();
+        assert!(stats.total_insertions >= 3);
+    }
 }

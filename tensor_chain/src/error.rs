@@ -92,3 +92,150 @@ impl From<std::io::Error> for ChainError {
         ChainError::StorageError(err.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_failed() {
+        let err = ChainError::ValidationFailed("test reason".to_string());
+        assert!(err.to_string().contains("block validation failed"));
+        assert!(err.to_string().contains("test reason"));
+    }
+
+    #[test]
+    fn test_invalid_hash() {
+        let err = ChainError::InvalidHash {
+            expected: "abc123".to_string(),
+            actual: "def456".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("invalid block hash"));
+        assert!(msg.contains("abc123"));
+        assert!(msg.contains("def456"));
+    }
+
+    #[test]
+    fn test_block_not_found() {
+        let err = ChainError::BlockNotFound(42);
+        assert!(err.to_string().contains("block not found at height 42"));
+    }
+
+    #[test]
+    fn test_transaction_failed() {
+        let err = ChainError::TransactionFailed("commit error".to_string());
+        assert!(err.to_string().contains("transaction failed"));
+        assert!(err.to_string().contains("commit error"));
+    }
+
+    #[test]
+    fn test_workspace_error() {
+        let err = ChainError::WorkspaceError("isolation violated".to_string());
+        assert!(err.to_string().contains("workspace error"));
+    }
+
+    #[test]
+    fn test_checkpoint_error() {
+        let err = ChainError::CheckpointError("snapshot failed".to_string());
+        assert!(err.to_string().contains("checkpoint error"));
+    }
+
+    #[test]
+    fn test_codebook_error() {
+        let err = ChainError::CodebookError("invalid centroid".to_string());
+        assert!(err.to_string().contains("codebook validation failed"));
+    }
+
+    #[test]
+    fn test_invalid_transition() {
+        let err = ChainError::InvalidTransition("state drift".to_string());
+        assert!(err.to_string().contains("invalid state transition"));
+    }
+
+    #[test]
+    fn test_conflict_detected() {
+        let err = ChainError::ConflictDetected { similarity: 0.95 };
+        assert!(err.to_string().contains("semantic conflict detected"));
+        assert!(err.to_string().contains("0.950"));
+    }
+
+    #[test]
+    fn test_merge_failed() {
+        let err = ChainError::MergeFailed("non-orthogonal".to_string());
+        assert!(err.to_string().contains("merge failed"));
+    }
+
+    #[test]
+    fn test_consensus_error() {
+        let err = ChainError::ConsensusError("quorum not reached".to_string());
+        assert!(err.to_string().contains("consensus error"));
+    }
+
+    #[test]
+    fn test_network_error() {
+        let err = ChainError::NetworkError("connection refused".to_string());
+        assert!(err.to_string().contains("network error"));
+    }
+
+    #[test]
+    fn test_serialization_error() {
+        let err = ChainError::SerializationError("invalid format".to_string());
+        assert!(err.to_string().contains("serialization error"));
+    }
+
+    #[test]
+    fn test_storage_error() {
+        let err = ChainError::StorageError("disk full".to_string());
+        assert!(err.to_string().contains("storage error"));
+    }
+
+    #[test]
+    fn test_graph_error() {
+        let err = ChainError::GraphError("node not found".to_string());
+        assert!(err.to_string().contains("graph error"));
+    }
+
+    #[test]
+    fn test_crypto_error() {
+        let err = ChainError::CryptoError("invalid signature".to_string());
+        assert!(err.to_string().contains("crypto error"));
+    }
+
+    #[test]
+    fn test_empty_chain() {
+        let err = ChainError::EmptyChain;
+        assert!(err.to_string().contains("chain is empty"));
+    }
+
+    #[test]
+    fn test_invalid_state() {
+        let err = ChainError::InvalidState("corrupted".to_string());
+        assert!(err.to_string().contains("invalid chain state"));
+    }
+
+    #[test]
+    fn test_from_bincode_error() {
+        let bincode_err = bincode::serialize(&"test").and_then(|_| {
+            bincode::deserialize::<u64>(b"invalid")
+        }).unwrap_err();
+        let chain_err: ChainError = bincode_err.into();
+        assert!(matches!(chain_err, ChainError::SerializationError(_)));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let chain_err: ChainError = io_err.into();
+        assert!(matches!(chain_err, ChainError::StorageError(_)));
+        assert!(chain_err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let err = ChainError::BlockNotFound(100);
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("BlockNotFound"));
+        assert!(debug_str.contains("100"));
+    }
+}

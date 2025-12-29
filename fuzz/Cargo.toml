@@ -161,3 +161,26 @@ path = "fuzz_targets/block_validate.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 5: Phase 3 targets - Distributed Transactions
+
+[[bin]]
+name = "distributed_tx_serialize"
+path = "fuzz_targets/distributed_tx_serialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "distributed_tx_coordinator"
+path = "fuzz_targets/distributed_tx_coordinator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_manager"
+path = "fuzz_targets/lock_manager.rs"
+test = false
+doc = false
+bench = false

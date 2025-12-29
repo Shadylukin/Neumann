@@ -321,6 +321,151 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Mode for validation - controls how thorough validation should be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ValidationMode {
+    /// Full validation using codebook-based state and transition checks.
+    #[default]
+    Full,
+    /// Fast-path validation using only similarity comparison.
+    /// Contains the similarity score that triggered fast-path.
+    FastPath,
+    /// Skip validation entirely (for trusted sources).
+    Trusted,
+}
+
+/// Result of fast-path validation check.
+#[derive(Debug, Clone)]
+pub struct FastPathResult {
+    /// Whether fast-path can be used.
+    pub can_use_fast_path: bool,
+    /// Similarity score with recent embeddings.
+    pub similarity: f32,
+    /// Number of blocks checked for similarity.
+    pub blocks_checked: usize,
+    /// Reason for rejection (if any).
+    pub rejection_reason: Option<String>,
+}
+
+impl FastPathResult {
+    /// Create a result indicating fast-path can be used.
+    pub fn accept(similarity: f32, blocks_checked: usize) -> Self {
+        Self {
+            can_use_fast_path: true,
+            similarity,
+            blocks_checked,
+            rejection_reason: None,
+        }
+    }
+
+    /// Create a result indicating fast-path cannot be used.
+    pub fn reject(reason: &str, similarity: f32, blocks_checked: usize) -> Self {
+        Self {
+            can_use_fast_path: false,
+            similarity,
+            blocks_checked,
+            rejection_reason: Some(reason.to_string()),
+        }
+    }
+}
+
+/// Validates whether fast-path replication can be used.
+pub struct FastPathValidator {
+    /// Minimum similarity threshold for fast-path.
+    pub similarity_threshold: f32,
+    /// Minimum number of blocks from leader before allowing fast-path.
+    pub min_leader_history: usize,
+    /// Interval for forcing full validation (every N blocks).
+    pub full_validation_interval: usize,
+    /// Blocks since last full validation.
+    blocks_since_full: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for FastPathValidator {
+    fn default() -> Self {
+        Self {
+            similarity_threshold: 0.95,
+            min_leader_history: 3,
+            full_validation_interval: 10,
+            blocks_since_full: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl FastPathValidator {
+    /// Create a new fast-path validator with custom thresholds.
+    pub fn new(similarity_threshold: f32, min_leader_history: usize) -> Self {
+        Self {
+            similarity_threshold,
+            min_leader_history,
+            full_validation_interval: 10,
+            blocks_since_full: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Check if fast-path validation can be used.
+    pub fn check_fast_path(
+        &self,
+        block_embedding: &[f32],
+        recent_embeddings: &[Vec<f32>],
+    ) -> FastPathResult {
+        // Need minimum history from leader
+        if recent_embeddings.len() < self.min_leader_history {
+            return FastPathResult::reject(
+                "insufficient leader history",
+                0.0,
+                recent_embeddings.len(),
+            );
+        }
+
+        // Force full validation periodically
+        let blocks_since = self
+            .blocks_since_full
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if blocks_since >= self.full_validation_interval {
+            return FastPathResult::reject(
+                "periodic full validation required",
+                0.0,
+                recent_embeddings.len(),
+            );
+        }
+
+        // Check similarity with recent embeddings
+        let max_similarity = recent_embeddings
+            .iter()
+            .map(|emb| cosine_similarity(block_embedding, emb))
+            .fold(0.0f32, |max, sim| max.max(sim));
+
+        if max_similarity >= self.similarity_threshold {
+            FastPathResult::accept(max_similarity, recent_embeddings.len())
+        } else {
+            FastPathResult::reject(
+                "similarity below threshold",
+                max_similarity,
+                recent_embeddings.len(),
+            )
+        }
+    }
+
+    /// Record that a block was validated.
+    /// Call with `used_fast_path=true` if fast-path was used.
+    pub fn record_validation(&self, used_fast_path: bool) {
+        if used_fast_path {
+            self.blocks_since_full
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.blocks_since_full
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Reset the full validation counter.
+    pub fn reset(&self) {
+        self.blocks_since_full
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +606,463 @@ mod tests {
 
         let results = validator.validate_batch("test", &transitions);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_validation_mode_default() {
+        let mode = ValidationMode::default();
+        assert_eq!(mode, ValidationMode::Full);
+    }
+
+    #[test]
+    fn test_fast_path_result_accept() {
+        let result = FastPathResult::accept(0.98, 5);
+        assert!(result.can_use_fast_path);
+        assert_eq!(result.similarity, 0.98);
+        assert_eq!(result.blocks_checked, 5);
+        assert!(result.rejection_reason.is_none());
+    }
+
+    #[test]
+    fn test_fast_path_result_reject() {
+        let result = FastPathResult::reject("test reason", 0.5, 3);
+        assert!(!result.can_use_fast_path);
+        assert_eq!(result.similarity, 0.5);
+        assert_eq!(result.blocks_checked, 3);
+        assert_eq!(result.rejection_reason.as_deref(), Some("test reason"));
+    }
+
+    #[test]
+    fn test_fast_path_validator_insufficient_history() {
+        let validator = FastPathValidator::new(0.95, 3);
+
+        // Only 2 recent embeddings (need 3)
+        let recent = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+
+        let result = validator.check_fast_path(&[1.0, 0.0, 0.0], &recent);
+        assert!(!result.can_use_fast_path);
+        assert!(result
+            .rejection_reason
+            .as_deref()
+            .unwrap()
+            .contains("insufficient"));
+    }
+
+    #[test]
+    fn test_fast_path_validator_high_similarity() {
+        let validator = FastPathValidator::new(0.95, 2);
+
+        // Similar embeddings
+        let recent = vec![vec![1.0, 0.0, 0.0], vec![0.98, 0.02, 0.0]];
+
+        let result = validator.check_fast_path(&[0.99, 0.01, 0.0], &recent);
+        assert!(result.can_use_fast_path);
+        assert!(result.similarity >= 0.95);
+    }
+
+    #[test]
+    fn test_fast_path_validator_low_similarity() {
+        let validator = FastPathValidator::new(0.95, 2);
+
+        // Dissimilar embeddings
+        let recent = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+
+        let result = validator.check_fast_path(&[0.0, 0.0, 1.0], &recent);
+        assert!(!result.can_use_fast_path);
+        assert!(result.similarity < 0.95);
+    }
+
+    #[test]
+    fn test_fast_path_validator_periodic_full() {
+        let validator = FastPathValidator::new(0.95, 2);
+
+        // Simulate many fast-path validations
+        for _ in 0..10 {
+            validator.record_validation(true);
+        }
+
+        // Should force full validation after interval
+        let recent = vec![vec![1.0, 0.0, 0.0], vec![0.99, 0.01, 0.0]];
+        let result = validator.check_fast_path(&[1.0, 0.0, 0.0], &recent);
+        assert!(!result.can_use_fast_path);
+        assert!(result
+            .rejection_reason
+            .as_deref()
+            .unwrap()
+            .contains("periodic"));
+    }
+
+    #[test]
+    fn test_fast_path_validator_reset() {
+        let validator = FastPathValidator::new(0.95, 2);
+
+        // Simulate fast-path validations
+        for _ in 0..5 {
+            validator.record_validation(true);
+        }
+
+        // Record full validation
+        validator.record_validation(false);
+
+        // Now fast-path should work again
+        let recent = vec![vec![1.0, 0.0, 0.0], vec![0.99, 0.01, 0.0]];
+        let result = validator.check_fast_path(&[1.0, 0.0, 0.0], &recent);
+        assert!(result.can_use_fast_path);
+    }
+
+    #[test]
+    fn test_validation_config_default() {
+        let config = ValidationConfig::default();
+        assert_eq!(config.state_threshold, 0.8);
+        assert_eq!(config.max_transition_magnitude, 1.0);
+        assert!(config.strict_transition);
+    }
+
+    #[test]
+    fn test_validation_config_clone_debug() {
+        let config = ValidationConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.state_threshold, cloned.state_threshold);
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("ValidationConfig"));
+    }
+
+    #[test]
+    fn test_state_validation_debug_clone() {
+        let validation = StateValidation {
+            is_valid: true,
+            global_entry: Some(42),
+            global_similarity: 0.95,
+            local_entry: Some(10),
+            local_similarity: 0.85,
+            domain: "test".to_string(),
+        };
+
+        let cloned = validation.clone();
+        assert_eq!(validation.is_valid, cloned.is_valid);
+        assert_eq!(validation.global_entry, cloned.global_entry);
+
+        let debug = format!("{:?}", validation);
+        assert!(debug.contains("StateValidation"));
+    }
+
+    #[test]
+    fn test_transition_validation_debug_clone() {
+        let state_val = StateValidation {
+            is_valid: true,
+            global_entry: Some(0),
+            global_similarity: 1.0,
+            local_entry: None,
+            local_similarity: 0.0,
+            domain: "test".to_string(),
+        };
+
+        let validation = TransitionValidation {
+            is_valid: true,
+            from_validation: state_val.clone(),
+            to_validation: state_val,
+            magnitude: 0.5,
+            direction_similarity: 0.9,
+            rejection_reason: None,
+        };
+
+        let cloned = validation.clone();
+        assert_eq!(validation.is_valid, cloned.is_valid);
+        assert_eq!(validation.magnitude, cloned.magnitude);
+
+        let debug = format!("{:?}", validation);
+        assert!(debug.contains("TransitionValidation"));
+    }
+
+    #[test]
+    fn test_transition_validator_global_accessor() {
+        let validator = create_test_validator();
+        let global = validator.global();
+        assert_eq!(global.len(), 3);
+    }
+
+    #[test]
+    fn test_transition_validator_get_or_create_local() {
+        let validator = create_test_validator();
+        let local = validator.get_or_create_local("new_domain");
+        assert_eq!(local.dimension(), 3);
+    }
+
+    #[test]
+    fn test_transition_validator_register_local() {
+        let validator = create_test_validator();
+
+        let local = LocalCodebook::new("my_domain", 3, 10, 0.9);
+        validator.register_local("my_domain", local);
+
+        let locals = validator.locals.read();
+        assert!(locals.contains_key("my_domain"));
+    }
+
+    #[test]
+    fn test_is_valid_state() {
+        let validator = create_test_validator();
+
+        assert!(validator.is_valid_state("test", &[1.0, 0.0, 0.0]));
+        assert!(!validator.is_valid_state("test", &[0.5, 0.5, 0.5]));
+    }
+
+    #[test]
+    fn test_is_valid_transition() {
+        let config = ValidationConfig {
+            state_threshold: 0.9,
+            max_transition_magnitude: 0.5,
+            strict_transition: true,
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0], vec![0.9, 0.1, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Small valid transition
+        assert!(validator.is_valid_transition("test", &[1.0, 0.0, 0.0], &[0.95, 0.05, 0.0]));
+
+        // Large invalid transition
+        assert!(!validator.is_valid_transition("test", &[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn test_non_strict_transition_validation() {
+        let config = ValidationConfig {
+            state_threshold: 0.9,
+            max_transition_magnitude: 1.5,
+            strict_transition: false, // Non-strict
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Non-strict allows invalid states if magnitude is within limit
+        let validation =
+            validator.validate_transition("test", &[0.5, 0.5, 0.0], &[0.6, 0.4, 0.0]);
+        assert!(validation.is_valid);
+    }
+
+    #[test]
+    fn test_non_strict_transition_exceeds_magnitude() {
+        let config = ValidationConfig {
+            state_threshold: 0.9,
+            max_transition_magnitude: 0.1, // Very small limit
+            strict_transition: false,
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Even non-strict fails if magnitude exceeds limit
+        let validation =
+            validator.validate_transition("test", &[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+        assert!(!validation.is_valid);
+        assert!(validation
+            .rejection_reason
+            .as_deref()
+            .unwrap()
+            .contains("magnitude"));
+    }
+
+    #[test]
+    fn test_transition_invalid_source_state() {
+        let config = ValidationConfig {
+            state_threshold: 0.99,
+            max_transition_magnitude: 10.0,
+            strict_transition: true,
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Invalid source state
+        let validation =
+            validator.validate_transition("test", &[0.0, 1.0, 0.0], &[1.0, 0.0, 0.0]);
+        assert!(!validation.is_valid);
+        assert!(validation
+            .rejection_reason
+            .as_deref()
+            .unwrap()
+            .contains("source"));
+    }
+
+    #[test]
+    fn test_transition_invalid_target_state() {
+        let config = ValidationConfig {
+            state_threshold: 0.99,
+            max_transition_magnitude: 10.0,
+            strict_transition: true,
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Invalid target state
+        let validation =
+            validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
+        assert!(!validation.is_valid);
+        assert!(validation
+            .rejection_reason
+            .as_deref()
+            .unwrap()
+            .contains("target"));
+    }
+
+    #[test]
+    fn test_validate_path_short() {
+        let validator = create_test_validator();
+
+        // Empty path
+        assert!(validator.validate_path("test", &[]).is_ok());
+
+        // Single state
+        assert!(validator.validate_path("test", &[vec![1.0, 0.0, 0.0]]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_invalid() {
+        let config = ValidationConfig {
+            state_threshold: 0.99,
+            max_transition_magnitude: 0.1,
+            strict_transition: true,
+            codebook_config: CodebookConfig::default(),
+        };
+        let centroids = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let validator = TransitionValidator::new(global, config);
+
+        // Invalid path (big jump)
+        let path = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+        let result = validator.validate_path("test", &path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compute_path_drift_short() {
+        let validator = create_test_validator();
+
+        // Empty path
+        assert_eq!(validator.compute_path_drift(&[]), 0.0);
+
+        // Single state
+        assert_eq!(validator.compute_path_drift(&[vec![1.0, 0.0, 0.0]]), 0.0);
+    }
+
+    #[test]
+    fn test_find_max_deviation_empty() {
+        let validator = create_test_validator();
+
+        let result = validator.find_max_deviation("test", &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_magnitude() {
+        // Zero magnitude vectors
+        let sim = cosine_similarity(&[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+        assert_eq!(sim, 0.0);
+
+        let sim = cosine_similarity(&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0]);
+        assert_eq!(sim, 0.0);
+
+        let sim = cosine_similarity(&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]);
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn test_validation_mode_debug_copy() {
+        let mode = ValidationMode::FastPath;
+        let copied = mode;
+        assert_eq!(mode, copied);
+
+        let debug = format!("{:?}", mode);
+        assert!(debug.contains("FastPath"));
+
+        let debug = format!("{:?}", ValidationMode::Full);
+        assert!(debug.contains("Full"));
+
+        let debug = format!("{:?}", ValidationMode::Trusted);
+        assert!(debug.contains("Trusted"));
+    }
+
+    #[test]
+    fn test_fast_path_result_debug_clone() {
+        let result = FastPathResult::accept(0.97, 4);
+        let cloned = result.clone();
+        assert_eq!(result.similarity, cloned.similarity);
+
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("FastPathResult"));
+    }
+
+    #[test]
+    fn test_fast_path_validator_default() {
+        let validator = FastPathValidator::default();
+        assert_eq!(validator.similarity_threshold, 0.95);
+        assert_eq!(validator.min_leader_history, 3);
+        assert_eq!(validator.full_validation_interval, 10);
+    }
+
+    #[test]
+    fn test_fast_path_validator_reset_method() {
+        let validator = FastPathValidator::new(0.95, 2);
+
+        // Simulate some validations
+        for _ in 0..5 {
+            validator.record_validation(true);
+        }
+
+        // Verify counter incremented
+        let count = validator
+            .blocks_since_full
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(count, 5);
+
+        // Reset
+        validator.reset();
+
+        // Verify counter is zero
+        let count = validator
+            .blocks_since_full
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_state_validation_with_local_codebook() {
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+        let config = ValidationConfig {
+            state_threshold: 0.99, // Very high threshold
+            ..Default::default()
+        };
+        let validator = TransitionValidator::new(global, config);
+
+        // Register a local codebook with a different centroid
+        let mut local = LocalCodebook::new("domain", 3, 10, 0.9);
+        local.quantize_and_update(&[0.0, 1.0, 0.0], 0.1);
+        validator.register_local("domain", local);
+
+        // State should be valid via local codebook
+        let validation = validator.validate_state("domain", &[0.0, 1.0, 0.0]);
+        assert!(validation.local_entry.is_some());
+        assert!(validation.local_similarity > 0.0);
+    }
+
+    #[test]
+    fn test_validate_state_no_local_codebook() {
+        let validator = create_test_validator();
+
+        // State validated against global only (no local codebook for domain)
+        let validation = validator.validate_state("unknown_domain", &[1.0, 0.0, 0.0]);
+        assert!(validation.is_valid);
+        assert!(validation.local_entry.is_none());
+        assert_eq!(validation.local_similarity, 0.0);
     }
 }

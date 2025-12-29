@@ -18,7 +18,81 @@ use serde::{Deserialize, Serialize};
 use tensor_store::TensorStore;
 
 use crate::block::Transaction as ChainTransaction;
+use crate::consensus::DeltaVector;
 use crate::error::{ChainError, Result};
+
+/// Default embedding dimension for state snapshots.
+pub const DEFAULT_EMBEDDING_DIM: usize = 128;
+
+/// Embedding state for a transaction workspace.
+///
+/// Tracks the semantic representation of state before and after transaction
+/// execution, enabling delta-based conflict detection.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceEmbedding {
+    /// Embedding of state at begin() time.
+    pub before: Vec<f32>,
+    /// Embedding of state at commit() time (computed lazily).
+    pub after: Option<Vec<f32>>,
+    /// Delta embedding (after - before), computed when both are available.
+    pub delta: Option<Vec<f32>>,
+}
+
+impl WorkspaceEmbedding {
+    /// Create a new workspace embedding from the initial state.
+    pub fn new(before: Vec<f32>) -> Self {
+        Self {
+            before,
+            after: None,
+            delta: None,
+        }
+    }
+
+    /// Create an empty embedding (for stores without embeddings).
+    pub fn empty(dim: usize) -> Self {
+        Self {
+            before: vec![0.0; dim],
+            after: None,
+            delta: None,
+        }
+    }
+
+    /// Set the after-state embedding and compute delta.
+    pub fn set_after(&mut self, after: Vec<f32>) {
+        if self.before.len() == after.len() {
+            let delta: Vec<f32> = after
+                .iter()
+                .zip(self.before.iter())
+                .map(|(a, b)| a - b)
+                .collect();
+            self.delta = Some(delta);
+        }
+        self.after = Some(after);
+    }
+
+    /// Get the delta embedding, or compute a zero delta if not available.
+    pub fn delta_or_zero(&self) -> Vec<f32> {
+        self.delta
+            .clone()
+            .unwrap_or_else(|| vec![0.0; self.before.len()])
+    }
+
+    /// Check if the delta has been computed.
+    pub fn has_delta(&self) -> bool {
+        self.delta.is_some()
+    }
+}
+
+/// A candidate for merging with another transaction.
+#[derive(Debug, Clone)]
+pub struct MergeCandidate {
+    /// The transaction workspace.
+    pub workspace: Arc<TransactionWorkspace>,
+    /// Delta vector for conflict detection.
+    pub delta: DeltaVector,
+    /// Cosine similarity with the reference transaction.
+    pub similarity: f32,
+}
 
 /// Monotonic transaction ID counter.
 static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -63,6 +137,9 @@ pub struct TransactionWorkspace {
 
     /// Timestamp when transaction started.
     started_at: u64,
+
+    /// Embedding state for semantic conflict detection.
+    embedding: RwLock<WorkspaceEmbedding>,
 }
 
 impl TransactionWorkspace {
@@ -84,6 +161,7 @@ impl TransactionWorkspace {
             affected_keys: RwLock::new(HashSet::new()),
             state: RwLock::new(TransactionState::Active),
             started_at,
+            embedding: RwLock::new(WorkspaceEmbedding::empty(DEFAULT_EMBEDDING_DIM)),
         })
     }
 
@@ -183,6 +261,39 @@ impl TransactionWorkspace {
     /// Get the checkpoint bytes (for delta computation).
     pub fn checkpoint_bytes(&self) -> &[u8] {
         &self.checkpoint_bytes
+    }
+
+    /// Set the before-state embedding (captured at transaction begin).
+    pub fn set_before_embedding(&self, embedding: Vec<f32>) {
+        self.embedding.write().before = embedding;
+    }
+
+    /// Compute the delta embedding from the current state.
+    /// Call this at commit time after all operations are recorded.
+    pub fn compute_delta(&self, after_embedding: Vec<f32>) {
+        self.embedding.write().set_after(after_embedding);
+    }
+
+    /// Get a copy of the workspace embedding.
+    pub fn embedding(&self) -> WorkspaceEmbedding {
+        self.embedding.read().clone()
+    }
+
+    /// Get the delta embedding, or zeros if not computed.
+    pub fn delta_embedding(&self) -> Vec<f32> {
+        self.embedding.read().delta_or_zero()
+    }
+
+    /// Check if the delta has been computed.
+    pub fn has_delta(&self) -> bool {
+        self.embedding.read().has_delta()
+    }
+
+    /// Convert the delta embedding to a DeltaVector for conflict detection.
+    pub fn to_delta_vector(&self) -> DeltaVector {
+        let emb = self.embedding.read();
+        let affected = self.affected_keys.read().clone();
+        DeltaVector::new(emb.delta_or_zero(), affected, self.id)
     }
 }
 
@@ -315,6 +426,70 @@ impl TransactionManager {
     pub fn active_ids(&self) -> Vec<u64> {
         self.active.read().keys().copied().collect()
     }
+
+    /// Find transactions that can be merged with the given workspace.
+    ///
+    /// Returns candidates where cosine similarity is below the threshold,
+    /// indicating orthogonal (non-conflicting) changes.
+    pub fn find_merge_candidates(
+        &self,
+        workspace: &TransactionWorkspace,
+        orthogonal_threshold: f32,
+    ) -> Vec<MergeCandidate> {
+        let target_delta = workspace.to_delta_vector();
+
+        // Skip if target has zero magnitude (no meaningful change)
+        if target_delta.magnitude == 0.0 {
+            return Vec::new();
+        }
+
+        let active = self.active.read();
+        let mut candidates = Vec::new();
+
+        for (id, other) in active.iter() {
+            // Skip self
+            if *id == workspace.id() {
+                continue;
+            }
+
+            // Skip non-active transactions
+            if !other.is_active() {
+                continue;
+            }
+
+            let other_delta = other.to_delta_vector();
+
+            // Skip zero-magnitude deltas
+            if other_delta.magnitude == 0.0 {
+                continue;
+            }
+
+            let similarity = target_delta.cosine_similarity(&other_delta).abs();
+
+            // Orthogonal if similarity is below threshold
+            if similarity < orthogonal_threshold {
+                candidates.push(MergeCandidate {
+                    workspace: other.clone(),
+                    delta: other_delta,
+                    similarity,
+                });
+            }
+        }
+
+        // Sort by similarity (most orthogonal first)
+        candidates.sort_by(|a, b| {
+            a.similarity
+                .partial_cmp(&b.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        candidates
+    }
+
+    /// Get all active transactions.
+    pub fn active_transactions(&self) -> Vec<Arc<TransactionWorkspace>> {
+        self.active.read().values().cloned().collect()
+    }
 }
 
 impl Default for TransactionManager {
@@ -417,5 +592,655 @@ mod tests {
         manager.remove(ws1.id());
         assert_eq!(manager.active_count(), 1);
         assert!(manager.get(ws1.id()).is_none());
+    }
+
+    #[test]
+    fn test_workspace_embedding_default() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        let embedding = workspace.embedding();
+        assert_eq!(embedding.before.len(), DEFAULT_EMBEDDING_DIM);
+        assert!(embedding.after.is_none());
+        assert!(embedding.delta.is_none());
+        assert!(!workspace.has_delta());
+    }
+
+    #[test]
+    fn test_workspace_embedding_computation() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        // Set before embedding
+        let before = vec![1.0, 0.0, 0.0, 0.0];
+        workspace.set_before_embedding(before.clone());
+
+        // Set after embedding and compute delta
+        let after = vec![1.0, 1.0, 0.0, 0.0];
+        workspace.compute_delta(after.clone());
+
+        let embedding = workspace.embedding();
+        assert_eq!(embedding.before, before);
+        assert_eq!(embedding.after, Some(after));
+        assert!(embedding.delta.is_some());
+
+        let delta = embedding.delta.unwrap();
+        assert_eq!(delta, vec![0.0, 1.0, 0.0, 0.0]);
+        assert!(workspace.has_delta());
+    }
+
+    #[test]
+    fn test_workspace_to_delta_vector() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        // Add some operations to set affected keys
+        workspace
+            .add_operation(ChainTransaction::Put {
+                key: "test_key".to_string(),
+                data: vec![1, 2, 3],
+            })
+            .unwrap();
+
+        // Set embeddings
+        let before = vec![1.0, 0.0, 0.0, 0.0];
+        let after = vec![1.0, 0.5, 0.0, 0.0];
+        workspace.set_before_embedding(before);
+        workspace.compute_delta(after);
+
+        let delta_vector = workspace.to_delta_vector();
+
+        assert_eq!(delta_vector.tx_id, workspace.id());
+        assert!(delta_vector.affected_keys.contains("test_key"));
+        assert_eq!(delta_vector.dimension(), 4);
+    }
+
+    #[test]
+    fn test_merge_candidate_finding() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        // Create two workspaces with orthogonal delta embeddings
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // Direction: X
+
+        let ws2 = manager.begin(&store).unwrap();
+        ws2.add_operation(ChainTransaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Direction: Y (orthogonal to X)
+
+        // Find merge candidates for ws1
+        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+
+        // ws2 should be a merge candidate (orthogonal)
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].workspace.id(), ws2.id());
+        assert!(candidates[0].similarity < 0.1);
+    }
+
+    #[test]
+    fn test_merge_candidate_excludes_parallel() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        // Create two workspaces with parallel (similar) delta embeddings
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // Direction: X
+
+        let ws2 = manager.begin(&store).unwrap();
+        ws2.add_operation(ChainTransaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.9, 0.1, 0.0, 0.0]); // Similar to X (not orthogonal)
+
+        // Find merge candidates for ws1 with strict threshold
+        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+
+        // ws2 should NOT be a merge candidate (too similar)
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_embedding_new() {
+        let before = vec![1.0, 2.0, 3.0];
+        let embedding = WorkspaceEmbedding::new(before.clone());
+
+        assert_eq!(embedding.before, before);
+        assert!(embedding.after.is_none());
+        assert!(embedding.delta.is_none());
+    }
+
+    #[test]
+    fn test_workspace_embedding_empty() {
+        let embedding = WorkspaceEmbedding::empty(8);
+
+        assert_eq!(embedding.before.len(), 8);
+        assert!(embedding.before.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_workspace_embedding_delta_or_zero() {
+        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0, 3.0]);
+
+        // Before computing delta, should return zeros
+        let delta = embedding.delta_or_zero();
+        assert_eq!(delta, vec![0.0, 0.0, 0.0]);
+
+        // After setting delta, should return actual delta
+        embedding.set_after(vec![2.0, 3.0, 4.0]);
+        let delta = embedding.delta_or_zero();
+        assert_eq!(delta, vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_workspace_embedding_set_after_mismatched_dimensions() {
+        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0, 3.0]);
+
+        // Set after with different dimension - delta should NOT be computed
+        embedding.set_after(vec![1.0, 2.0]); // Only 2 dimensions vs 3
+
+        assert!(embedding.after.is_some()); // after is still set
+        assert!(embedding.delta.is_none()); // but delta is not computed
+        assert!(!embedding.has_delta());
+    }
+
+    #[test]
+    fn test_workspace_embedding_has_delta() {
+        let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0]);
+        assert!(!embedding.has_delta());
+
+        embedding.set_after(vec![2.0, 3.0]);
+        assert!(embedding.has_delta());
+    }
+
+    #[test]
+    fn test_workspace_embedding_default_derive() {
+        let embedding = WorkspaceEmbedding::default();
+        assert!(embedding.before.is_empty());
+        assert!(embedding.after.is_none());
+        assert!(embedding.delta.is_none());
+    }
+
+    #[test]
+    fn test_merge_candidate_debug() {
+        let store = TensorStore::new();
+        let workspace = Arc::new(TransactionWorkspace::begin(&store).unwrap());
+        let delta = DeltaVector::new(vec![1.0], HashSet::new(), 1);
+
+        let candidate = MergeCandidate {
+            workspace,
+            delta,
+            similarity: 0.05,
+        };
+
+        let debug = format!("{:?}", candidate);
+        assert!(debug.contains("MergeCandidate"));
+        assert!(debug.contains("similarity"));
+    }
+
+    #[test]
+    fn test_transaction_state_display() {
+        let states = [
+            TransactionState::Active,
+            TransactionState::Committing,
+            TransactionState::Committed,
+            TransactionState::RolledBack,
+            TransactionState::Failed,
+        ];
+
+        for state in states {
+            let debug = format!("{:?}", state);
+            assert!(!debug.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_workspace_id() {
+        let store = TensorStore::new();
+        let ws1 = TransactionWorkspace::begin(&store).unwrap();
+        let ws2 = TransactionWorkspace::begin(&store).unwrap();
+
+        assert!(ws1.id() > 0);
+        assert!(ws2.id() > ws1.id());
+    }
+
+    #[test]
+    fn test_workspace_started_at() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Should be very close to now (within 1 second)
+        assert!(workspace.started_at() <= now);
+        assert!(workspace.started_at() > now - 1000);
+    }
+
+    #[test]
+    fn test_add_operation_to_non_active() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        // Mark as committed
+        workspace.mark_committed();
+
+        // Try to add operation - should fail
+        let result = workspace.add_operation(ChainTransaction::Put {
+            key: "key".to_string(),
+            data: vec![1],
+        });
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChainError::TransactionFailed(msg) => {
+                assert!(msg.contains("not active"));
+            }
+            _ => panic!("Expected TransactionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_mark_committing_success() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        assert!(workspace.mark_committing().is_ok());
+        assert_eq!(workspace.state(), TransactionState::Committing);
+    }
+
+    #[test]
+    fn test_mark_committing_fails_on_non_active() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        workspace.mark_committed();
+
+        let result = workspace.mark_committing();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChainError::TransactionFailed(msg) => {
+                assert!(msg.contains("cannot commit"));
+            }
+            _ => panic!("Expected TransactionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_mark_committed() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        workspace.mark_committed();
+        assert_eq!(workspace.state(), TransactionState::Committed);
+        assert!(!workspace.is_active());
+    }
+
+    #[test]
+    fn test_mark_failed() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        workspace.mark_failed();
+        assert_eq!(workspace.state(), TransactionState::Failed);
+        assert!(!workspace.is_active());
+    }
+
+    #[test]
+    fn test_rollback() {
+        let store = TensorStore::new();
+        store.put("existing", tensor_store::TensorData::new()).unwrap();
+
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        // Add a new key
+        store.put("new_key", tensor_store::TensorData::new()).unwrap();
+
+        // Rollback should restore original state
+        workspace.rollback(&store).unwrap();
+
+        assert_eq!(workspace.state(), TransactionState::RolledBack);
+        // Check that existing key is still there and new_key is gone
+        assert!(store.get("existing").is_ok());
+        assert!(store.get("new_key").unwrap_err().to_string().contains("not found") || store.get("new_key").is_err());
+    }
+
+    #[test]
+    fn test_rollback_fails_on_committed() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        workspace.mark_committed();
+
+        let result = workspace.rollback(&store);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChainError::TransactionFailed(msg) => {
+                assert!(msg.contains("committed"));
+            }
+            _ => panic!("Expected TransactionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_checkpoint_bytes() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        let bytes = workspace.checkpoint_bytes();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_delta_embedding() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        // Without delta computed, should return zeros
+        let delta = workspace.delta_embedding();
+        assert!(delta.iter().all(|&x| x == 0.0));
+
+        // After computing delta
+        workspace.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
+        workspace.compute_delta(vec![1.0, 2.0, 3.0, 4.0]);
+
+        let delta = workspace.delta_embedding();
+        assert_eq!(delta, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_transaction_delta_empty() {
+        let delta = TransactionDelta::empty();
+
+        assert_eq!(delta.tx_id, 0);
+        assert!(delta.parent_tx_id.is_none());
+        assert!(delta.delta_embedding.is_empty());
+        assert!(delta.affected_keys.is_empty());
+        assert_eq!(delta.timestamp, 0);
+        assert!(!delta.is_merge);
+        assert!(delta.merge_parents.is_empty());
+    }
+
+    #[test]
+    fn test_transaction_delta_with_embedding() {
+        let delta = TransactionDelta::empty().with_embedding(vec![1.0, 2.0, 3.0]);
+
+        assert_eq!(delta.delta_embedding, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_transaction_delta_as_merge() {
+        let delta = TransactionDelta::empty().as_merge(vec![1, 2, 3]);
+
+        assert!(delta.is_merge);
+        assert_eq!(delta.merge_parents, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_transaction_delta_from_workspace() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+        workspace
+            .add_operation(ChainTransaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            })
+            .unwrap();
+
+        let delta = TransactionDelta::from_workspace(&workspace);
+
+        assert_eq!(delta.tx_id, workspace.id());
+        assert!(delta.parent_tx_id.is_none());
+        assert!(delta.affected_keys.contains("key1"));
+        assert!(!delta.is_merge);
+        assert!(delta.merge_parents.is_empty());
+        assert!(delta.timestamp > 0);
+    }
+
+    #[test]
+    fn test_transaction_delta_clone() {
+        let delta = TransactionDelta {
+            tx_id: 42,
+            parent_tx_id: Some(41),
+            delta_embedding: vec![1.0, 2.0],
+            affected_keys: ["key1"].iter().map(|s| s.to_string()).collect(),
+            timestamp: 12345,
+            is_merge: true,
+            merge_parents: vec![1, 2],
+        };
+
+        let cloned = delta.clone();
+        assert_eq!(delta.tx_id, cloned.tx_id);
+        assert_eq!(delta.parent_tx_id, cloned.parent_tx_id);
+        assert_eq!(delta.delta_embedding, cloned.delta_embedding);
+        assert_eq!(delta.affected_keys, cloned.affected_keys);
+        assert_eq!(delta.is_merge, cloned.is_merge);
+        assert_eq!(delta.merge_parents, cloned.merge_parents);
+    }
+
+    #[test]
+    fn test_transaction_delta_debug() {
+        let delta = TransactionDelta::empty();
+        let debug = format!("{:?}", delta);
+        assert!(debug.contains("TransactionDelta"));
+        assert!(debug.contains("tx_id"));
+    }
+
+    #[test]
+    fn test_transaction_manager_active_ids() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        let ws1 = manager.begin(&store).unwrap();
+        let ws2 = manager.begin(&store).unwrap();
+
+        let ids = manager.active_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&ws1.id()));
+        assert!(ids.contains(&ws2.id()));
+    }
+
+    #[test]
+    fn test_transaction_manager_active_transactions() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        let _ws1 = manager.begin(&store).unwrap();
+        let _ws2 = manager.begin(&store).unwrap();
+
+        let txs = manager.active_transactions();
+        assert_eq!(txs.len(), 2);
+    }
+
+    #[test]
+    fn test_transaction_manager_default() {
+        let manager = TransactionManager::default();
+        assert_eq!(manager.active_count(), 0);
+    }
+
+    #[test]
+    fn test_find_merge_candidates_zero_magnitude() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        // Create workspace with zero delta (no change)
+        let ws = manager.begin(&store).unwrap();
+        // Don't compute any delta - it will have zero magnitude
+
+        let candidates = manager.find_merge_candidates(&ws, 0.1);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_merge_candidates_skips_inactive() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+
+        let ws2 = manager.begin(&store).unwrap();
+        ws2.add_operation(ChainTransaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]);
+
+        // Mark ws2 as committed (inactive)
+        ws2.mark_committed();
+
+        // Should not find ws2 as a candidate
+        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_merge_candidates_skips_zero_other_magnitude() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+
+        let ws2 = manager.begin(&store).unwrap();
+        // ws2 has zero delta (zero magnitude)
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.0, 0.0, 0.0, 0.0]);
+
+        // Should not find ws2 as a candidate
+        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_merge_candidates_sorting() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        // Create reference workspace
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]); // X direction
+
+        // Create orthogonal workspace (Y direction)
+        let ws2 = manager.begin(&store).unwrap();
+        ws2.add_operation(ChainTransaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Perfectly orthogonal
+
+        // Create almost orthogonal workspace
+        let ws3 = manager.begin(&store).unwrap();
+        ws3.add_operation(ChainTransaction::Put {
+            key: "key3".to_string(),
+            data: vec![3],
+        })
+        .unwrap();
+        ws3.set_before_embedding(vec![0.0; 4]);
+        ws3.compute_delta(vec![0.05, 0.99, 0.0, 0.0]); // Almost orthogonal
+
+        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+
+        // Should have 2 candidates, sorted by similarity (most orthogonal first)
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates[0].similarity <= candidates[1].similarity);
+    }
+
+    #[test]
+    fn test_workspace_debug() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        let debug = format!("{:?}", workspace);
+        assert!(debug.contains("TransactionWorkspace"));
+    }
+
+    #[test]
+    fn test_workspace_operations_returns_clone() {
+        let store = TensorStore::new();
+        let workspace = TransactionWorkspace::begin(&store).unwrap();
+
+        workspace
+            .add_operation(ChainTransaction::Put {
+                key: "key".to_string(),
+                data: vec![1],
+            })
+            .unwrap();
+
+        let ops1 = workspace.operations();
+        let ops2 = workspace.operations();
+
+        assert_eq!(ops1.len(), 1);
+        assert_eq!(ops2.len(), 1);
+        assert_eq!(ops1, ops2);
+    }
+
+    #[test]
+    fn test_transaction_delta_no_overlap() {
+        let delta1 = TransactionDelta {
+            tx_id: 1,
+            parent_tx_id: None,
+            delta_embedding: vec![],
+            affected_keys: ["key1"].iter().map(|s| s.to_string()).collect(),
+            timestamp: 0,
+            is_merge: false,
+            merge_parents: vec![],
+        };
+
+        let delta2 = TransactionDelta {
+            tx_id: 2,
+            parent_tx_id: None,
+            delta_embedding: vec![],
+            affected_keys: ["key2"].iter().map(|s| s.to_string()).collect(),
+            timestamp: 0,
+            is_merge: false,
+            merge_parents: vec![],
+        };
+
+        assert!(!delta1.overlaps_with(&delta2));
+        assert!(delta1.overlapping_keys(&delta2).is_empty());
     }
 }

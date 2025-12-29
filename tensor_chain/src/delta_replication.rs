@@ -984,4 +984,150 @@ mod tests {
         let batch = manager.create_batch(false);
         assert!(batch.is_none());
     }
+
+    #[test]
+    fn test_delta_update_debug_clone() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1);
+        let cloned = update.clone();
+        assert_eq!(update.key, cloned.key);
+        assert_eq!(update.version, cloned.version);
+
+        let debug = format!("{:?}", update);
+        assert!(debug.contains("DeltaUpdate"));
+    }
+
+    #[test]
+    fn test_delta_batch_debug_clone() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+
+        let cloned = batch.clone();
+        assert_eq!(batch.sequence, cloned.sequence);
+        assert_eq!(batch.len(), cloned.len());
+
+        let debug = format!("{:?}", batch);
+        assert!(debug.contains("DeltaBatch"));
+    }
+
+    #[test]
+    fn test_replication_stats_debug_clone() {
+        let mut stats = ReplicationStats::default();
+        stats.bytes_sent = 100;
+
+        let cloned = stats.clone();
+        assert_eq!(stats.bytes_sent, cloned.bytes_sent);
+
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("ReplicationStats"));
+    }
+
+    #[test]
+    fn test_delta_replication_config_debug_clone() {
+        let config = DeltaReplicationConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.max_batch_size, cloned.max_batch_size);
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("DeltaReplicationConfig"));
+    }
+
+    #[test]
+    fn test_manager_debug() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let debug = format!("{:?}", manager);
+        assert!(debug.contains("DeltaReplicationManager"));
+    }
+
+    #[test]
+    fn test_queue_update_low_similarity_fallback() {
+        let config = DeltaReplicationConfig {
+            min_archetype_similarity: 0.99, // Very high threshold
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Initialize with an archetype
+        let mut registry = manager.registry.write();
+        registry.register(vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+        drop(registry);
+
+        // Queue an embedding that's not similar enough - should fallback to full
+        manager.queue_update("key1".to_string(), &[0.5, 0.5, 0.0, 0.0], 1);
+
+        let batch = manager.create_batch(true).unwrap();
+        // When similarity is too low, it should do a full update
+        assert!(batch.updates[0].is_full_update());
+    }
+
+    #[test]
+    fn test_flush_empty() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let batches = manager.flush();
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn test_decode_delta_index_out_of_bounds() {
+        let mut registry = ArchetypeRegistry::new(10);
+        registry.register(vec![1.0, 2.0]).unwrap();
+
+        // Create a delta update with out-of-bounds index
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0, 10], // Index 10 out of bounds
+            delta_values: vec![0.1, 0.2],
+            version: 1,
+            dimension: 2,
+        };
+
+        // Should decode without panic, ignoring out-of-bounds
+        let decoded = update.decode(&registry);
+        assert!(decoded.is_some());
+        let result = decoded.unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(approx_eq(result[0], 1.1, 0.001)); // 1.0 + 0.1
+        assert!(approx_eq(result[1], 2.0, 0.001)); // Unchanged
+    }
+
+    #[test]
+    fn test_create_batch_with_is_final_true() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        manager.queue_update("key1".to_string(), &[1.0], 1);
+
+        let batch = manager.create_batch(true).unwrap();
+        assert!(batch.is_final);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42);
+        let bytes = bincode::serialize(&update).unwrap();
+        let decoded: DeltaUpdate = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(update.key, decoded.key);
+        assert_eq!(update.version, decoded.version);
+        assert_eq!(update.delta_values, decoded.delta_values);
+    }
+
+    #[test]
+    fn test_batch_serialization_roundtrip() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 99);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch = batch.finalize();
+
+        let bytes = bincode::serialize(&batch).unwrap();
+        let decoded: DeltaBatch = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(batch.source, decoded.source);
+        assert_eq!(batch.sequence, decoded.sequence);
+        assert_eq!(batch.is_final, decoded.is_final);
+        assert_eq!(batch.len(), decoded.len());
+    }
 }

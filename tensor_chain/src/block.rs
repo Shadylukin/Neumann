@@ -412,4 +412,468 @@ mod tests {
         };
         assert_eq!(tx.affected_key(), "node_a");
     }
+
+    #[test]
+    fn test_block_header_with_embedding() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let embedding = vec![1.0, 2.0, 3.0, 4.0];
+        let header = header.with_embedding(embedding.clone());
+
+        assert_eq!(header.delta_embedding, embedding);
+    }
+
+    #[test]
+    fn test_block_header_with_codes() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let codes = vec![1u16, 2, 3, 4, 5];
+        let header = header.with_codes(codes.clone());
+
+        assert_eq!(header.quantized_codes, codes);
+    }
+
+    #[test]
+    fn test_block_header_with_signature() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let sig = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let header = header.with_signature(sig.clone());
+
+        assert_eq!(header.signature, sig);
+    }
+
+    #[test]
+    fn test_block_header_hash_includes_embedding_and_codes() {
+        let header1 = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
+            .with_embedding(vec![1.0, 2.0])
+            .with_codes(vec![1, 2, 3]);
+
+        let header2 = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
+            .with_embedding(vec![3.0, 4.0])
+            .with_codes(vec![4, 5, 6]);
+
+        // Different embeddings/codes should produce different hashes
+        assert_ne!(header1.hash(), header2.hash());
+    }
+
+    #[test]
+    fn test_block_header_builder_chaining() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
+            .with_embedding(vec![1.0])
+            .with_codes(vec![1])
+            .with_signature(vec![0xFF]);
+
+        assert_eq!(header.delta_embedding, vec![1.0]);
+        assert_eq!(header.quantized_codes, vec![1]);
+        assert_eq!(header.signature, vec![0xFF]);
+    }
+
+    #[test]
+    fn test_transaction_delete_affected_key() {
+        let tx = Transaction::Delete {
+            key: "delete_key".to_string(),
+        };
+        assert_eq!(tx.affected_key(), "delete_key");
+    }
+
+    #[test]
+    fn test_transaction_embed_affected_key() {
+        let tx = Transaction::Embed {
+            key: "embed_key".to_string(),
+            vector: vec![1.0, 2.0, 3.0],
+        };
+        assert_eq!(tx.affected_key(), "embed_key");
+    }
+
+    #[test]
+    fn test_transaction_node_create_affected_key() {
+        let tx = Transaction::NodeCreate {
+            key: "node_key".to_string(),
+            label: "Person".to_string(),
+        };
+        assert_eq!(tx.affected_key(), "node_key");
+    }
+
+    #[test]
+    fn test_transaction_node_delete_affected_key() {
+        let tx = Transaction::NodeDelete {
+            key: "node_key".to_string(),
+        };
+        assert_eq!(tx.affected_key(), "node_key");
+    }
+
+    #[test]
+    fn test_transaction_table_insert_affected_key() {
+        let tx = Transaction::TableInsert {
+            table: "users".to_string(),
+            values: vec![1, 2, 3],
+        };
+        assert_eq!(tx.affected_key(), "users");
+    }
+
+    #[test]
+    fn test_transaction_table_update_affected_key() {
+        let tx = Transaction::TableUpdate {
+            table: "users".to_string(),
+            row_id: 42,
+            values: vec![4, 5, 6],
+        };
+        assert_eq!(tx.affected_key(), "users");
+    }
+
+    #[test]
+    fn test_transaction_table_delete_affected_key() {
+        let tx = Transaction::TableDelete {
+            table: "users".to_string(),
+            row_id: 42,
+        };
+        assert_eq!(tx.affected_key(), "users");
+    }
+
+    #[test]
+    fn test_transaction_hash_deterministic() {
+        let tx = Transaction::Put {
+            key: "key".to_string(),
+            data: vec![1, 2, 3],
+        };
+
+        let hash1 = tx.hash();
+        let hash2 = tx.hash();
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_transaction_hash_different_for_different_tx() {
+        let tx1 = Transaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        };
+        let tx2 = Transaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        };
+
+        assert_ne!(tx1.hash(), tx2.hash());
+    }
+
+    #[test]
+    fn test_block_compute_tx_root_empty() {
+        let genesis = Block::genesis("node1".to_string());
+        assert_eq!(genesis.compute_tx_root(), [0u8; 32]);
+    }
+
+    #[test]
+    fn test_block_compute_tx_root_with_transactions() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let txs = vec![
+            Transaction::Put {
+                key: "k1".to_string(),
+                data: vec![1],
+            },
+            Transaction::Put {
+                key: "k2".to_string(),
+                data: vec![2],
+            },
+        ];
+        let block = Block::new(header, txs);
+
+        let root = block.compute_tx_root();
+        assert_ne!(root, [0u8; 32]);
+
+        // Should be deterministic
+        assert_eq!(root, block.compute_tx_root());
+    }
+
+    #[test]
+    fn test_block_verify_tx_root() {
+        let txs = vec![
+            Transaction::Put {
+                key: "k1".to_string(),
+                data: vec![1],
+            },
+            Transaction::Delete {
+                key: "k2".to_string(),
+            },
+        ];
+
+        // Compute the real tx_root
+        let leaves: Vec<[u8; 32]> = txs.iter().map(|tx| tx.hash()).collect();
+        let tx_root = merkle_root(&leaves);
+
+        let header =
+            BlockHeader::new(1, [0u8; 32], tx_root, [0u8; 32], "node1".to_string());
+        let block = Block::new(header, txs);
+
+        assert!(block.verify_tx_root());
+    }
+
+    #[test]
+    fn test_block_verify_tx_root_fails_on_mismatch() {
+        let txs = vec![Transaction::Put {
+            key: "k1".to_string(),
+            data: vec![1],
+        }];
+
+        let header = BlockHeader::new(
+            1,
+            [0u8; 32],
+            [99u8; 32], // Wrong tx_root
+            [0u8; 32],
+            "node1".to_string(),
+        );
+        let block = Block::new(header, txs);
+
+        assert!(!block.verify_tx_root());
+    }
+
+    #[test]
+    fn test_block_add_signature() {
+        let mut block = Block::genesis("node1".to_string());
+        let sig = ValidatorSignature {
+            validator: "validator1".to_string(),
+            signature: vec![1, 2, 3],
+            block_hash: block.hash(),
+        };
+
+        block.add_signature(sig.clone());
+
+        assert_eq!(block.signatures.len(), 1);
+        assert_eq!(block.signatures[0], sig);
+    }
+
+    #[test]
+    fn test_block_affected_keys() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let txs = vec![
+            Transaction::Put {
+                key: "k1".to_string(),
+                data: vec![1],
+            },
+            Transaction::Delete {
+                key: "k2".to_string(),
+            },
+            Transaction::NodeCreate {
+                key: "k3".to_string(),
+                label: "Label".to_string(),
+            },
+        ];
+        let block = Block::new(header, txs);
+
+        let keys = block.affected_keys();
+        assert_eq!(keys, vec!["k1", "k2", "k3"]);
+    }
+
+    #[test]
+    fn test_verify_chain_fails_on_wrong_height() {
+        let genesis = Block::genesis("node1".to_string());
+
+        let mut next_header = BlockHeader::new(
+            5, // Wrong height (should be 1)
+            genesis.hash(),
+            [0u8; 32],
+            [0u8; 32],
+            "node1".to_string(),
+        );
+        next_header.timestamp = genesis.header.timestamp + 1000;
+
+        let next_block = Block::new(next_header, vec![]);
+
+        let err = next_block.verify_chain(&genesis).unwrap_err();
+        match err {
+            ChainError::ValidationFailed(msg) => {
+                assert!(msg.contains("height"));
+            }
+            _ => panic!("Expected ValidationFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_verify_chain_fails_on_timestamp_before_previous() {
+        let genesis = Block::genesis("node1".to_string());
+
+        let mut next_header =
+            BlockHeader::new(1, genesis.hash(), [0u8; 32], [0u8; 32], "node1".to_string());
+        // Set timestamp BEFORE the genesis block
+        next_header.timestamp = genesis.header.timestamp.saturating_sub(1000);
+
+        let next_block = Block::new(next_header, vec![]);
+
+        let err = next_block.verify_chain(&genesis).unwrap_err();
+        match err {
+            ChainError::ValidationFailed(msg) => {
+                assert!(msg.contains("timestamp"));
+            }
+            _ => panic!("Expected ValidationFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_merkle_root_empty() {
+        let leaves: Vec<[u8; 32]> = vec![];
+        assert_eq!(merkle_root(&leaves), [0u8; 32]);
+    }
+
+    #[test]
+    fn test_merkle_root_single_leaf() {
+        let leaves = vec![[42u8; 32]];
+        assert_eq!(merkle_root(&leaves), [42u8; 32]);
+    }
+
+    #[test]
+    fn test_merkle_root_two_leaves() {
+        let leaves = vec![[1u8; 32], [2u8; 32]];
+        let root = merkle_root(&leaves);
+
+        // Should not be either leaf
+        assert_ne!(root, [1u8; 32]);
+        assert_ne!(root, [2u8; 32]);
+        assert_ne!(root, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_merkle_root_odd_number() {
+        // Odd number of leaves - last one gets duplicated
+        let leaves = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
+        let root = merkle_root(&leaves);
+
+        // Should produce a valid root
+        assert_ne!(root, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_merkle_root_power_of_two() {
+        let leaves = vec![[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]];
+        let root = merkle_root(&leaves);
+
+        // Should produce a valid root
+        assert_ne!(root, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_validator_signature_debug() {
+        let sig = ValidatorSignature {
+            validator: "node1".to_string(),
+            signature: vec![1, 2, 3],
+            block_hash: [0u8; 32],
+        };
+
+        let debug = format!("{:?}", sig);
+        assert!(debug.contains("ValidatorSignature"));
+        assert!(debug.contains("node1"));
+    }
+
+    #[test]
+    fn test_block_header_debug() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let debug = format!("{:?}", header);
+        assert!(debug.contains("BlockHeader"));
+        assert!(debug.contains("height"));
+    }
+
+    #[test]
+    fn test_block_debug() {
+        let block = Block::genesis("node1".to_string());
+        let debug = format!("{:?}", block);
+        assert!(debug.contains("Block"));
+        assert!(debug.contains("header"));
+    }
+
+    #[test]
+    fn test_transaction_debug() {
+        let tx = Transaction::Put {
+            key: "k".to_string(),
+            data: vec![1],
+        };
+        let debug = format!("{:?}", tx);
+        assert!(debug.contains("Put"));
+    }
+
+    #[test]
+    fn test_block_clone_and_eq() {
+        let block = Block::genesis("node1".to_string());
+        let cloned = block.clone();
+
+        assert_eq!(block, cloned);
+    }
+
+    #[test]
+    fn test_block_header_clone_and_eq() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
+            .with_embedding(vec![1.0])
+            .with_codes(vec![1])
+            .with_signature(vec![0xFF]);
+
+        let cloned = header.clone();
+        assert_eq!(header, cloned);
+    }
+
+    #[test]
+    fn test_transaction_clone_and_eq() {
+        let tx = Transaction::Embed {
+            key: "k".to_string(),
+            vector: vec![1.0, 2.0],
+        };
+        let cloned = tx.clone();
+        assert_eq!(tx, cloned);
+    }
+
+    #[test]
+    fn test_validator_signature_clone_and_eq() {
+        let sig = ValidatorSignature {
+            validator: "v1".to_string(),
+            signature: vec![1, 2],
+            block_hash: [1u8; 32],
+        };
+        let cloned = sig.clone();
+        assert_eq!(sig, cloned);
+    }
+
+    #[test]
+    fn test_block_hash_uses_header_hash() {
+        let block = Block::genesis("node1".to_string());
+        assert_eq!(block.hash(), block.header.hash());
+    }
+
+    #[test]
+    fn test_verify_chain_error_message_format() {
+        let genesis = Block::genesis("node1".to_string());
+
+        // Wrong prev_hash - check error contains expected and actual hashes
+        let mut next_header = BlockHeader::new(
+            1,
+            [99u8; 32],
+            [0u8; 32],
+            [0u8; 32],
+            "node1".to_string(),
+        );
+        next_header.timestamp = genesis.header.timestamp + 1000;
+
+        let next_block = Block::new(next_header, vec![]);
+
+        let err = next_block.verify_chain(&genesis).unwrap_err();
+        match err {
+            ChainError::InvalidHash { expected, actual } => {
+                // Check that we get proper hex encoding
+                assert_eq!(expected.len(), 64); // 32 bytes = 64 hex chars
+                assert_eq!(actual.len(), 64);
+            }
+            _ => panic!("Expected InvalidHash error"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_signatures() {
+        let mut block = Block::genesis("node1".to_string());
+        let hash = block.hash();
+
+        for i in 0..3 {
+            let sig = ValidatorSignature {
+                validator: format!("validator{}", i),
+                signature: vec![i as u8],
+                block_hash: hash,
+            };
+            block.add_signature(sig);
+        }
+
+        assert_eq!(block.signatures.len(), 3);
+    }
 }
