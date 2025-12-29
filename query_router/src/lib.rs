@@ -1667,9 +1667,18 @@ impl QueryRouter {
             prefer_columnar: true,
         };
 
-        let rows = self
+        let mut rows = self
             .relational
             .select_columnar(table_name, condition, options)?;
+
+        // Apply LIMIT clause if present
+        if let Some(ref limit_expr) = select.limit {
+            if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &limit_expr.kind {
+                let limit = *n as usize;
+                rows.truncate(limit);
+            }
+        }
+
         Ok(QueryResult::Rows(rows))
     }
 

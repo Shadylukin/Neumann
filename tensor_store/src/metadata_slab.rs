@@ -11,6 +11,7 @@
 //! - Low-volume, high-value data (secrets, configuration)
 //! - Prefix-based scanning (via BTreeMap's ordered iteration)
 //! - Stable performance without resize stalls
+//! - O(log n) operations for all access patterns
 
 use crate::TensorData;
 use parking_lot::RwLock;
@@ -40,6 +41,9 @@ pub struct MetadataSlab {
 
     /// Approximate total bytes stored (for memory tracking).
     total_bytes: AtomicUsize,
+
+    /// Number of entries (O(1) len).
+    len: AtomicUsize,
 }
 
 impl MetadataSlab {
@@ -48,6 +52,7 @@ impl MetadataSlab {
         Self {
             data: RwLock::new(BTreeMap::new()),
             total_bytes: AtomicUsize::new(0),
+            len: AtomicUsize::new(0),
         }
     }
 
@@ -75,6 +80,9 @@ impl MetadataSlab {
         if let Some(old) = data.get(key) {
             let old_bytes = estimate_tensor_data_bytes(old);
             self.total_bytes.fetch_sub(old_bytes, Ordering::Relaxed);
+        } else {
+            // New key - increment count
+            self.len.fetch_add(1, Ordering::Relaxed);
         }
 
         data.insert(key.to_string(), value);
@@ -88,6 +96,7 @@ impl MetadataSlab {
         if let Some(old) = data.remove(key) {
             let old_bytes = key.len() + estimate_tensor_data_bytes(&old);
             self.total_bytes.fetch_sub(old_bytes, Ordering::Relaxed);
+            self.len.fetch_sub(1, Ordering::Relaxed);
             Some(old)
         } else {
             None
@@ -110,7 +119,7 @@ impl MetadataSlab {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             None => {
-                // Prefix is all 0xFF bytes, scan to end
+                // Prefix is all 0xFF bytes or empty, scan to end
                 data.range(prefix.to_string()..)
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
@@ -120,6 +129,10 @@ impl MetadataSlab {
 
     /// Count keys matching a prefix.
     pub fn scan_count(&self, prefix: &str) -> usize {
+        if prefix.is_empty() {
+            return self.len();
+        }
+
         let data = self.data.read();
         let end = next_prefix(prefix);
 
@@ -137,13 +150,13 @@ impl MetadataSlab {
     /// Get the number of entries.
     #[inline]
     pub fn len(&self) -> usize {
-        self.data.read().len()
+        self.len.load(Ordering::Relaxed)
     }
 
     /// Check if the slab is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.read().is_empty()
+        self.len() == 0
     }
 
     /// Get the approximate total bytes stored.
@@ -156,6 +169,7 @@ impl MetadataSlab {
     pub fn clear(&self) {
         self.data.write().clear();
         self.total_bytes.store(0, Ordering::Relaxed);
+        self.len.store(0, Ordering::Relaxed);
     }
 
     /// Get serializable state for snapshots.
@@ -167,6 +181,7 @@ impl MetadataSlab {
 
     /// Restore from a snapshot.
     pub fn restore(snapshot: MetadataSlabSnapshot) -> Self {
+        let len = snapshot.data.len();
         let total_bytes: usize = snapshot
             .data
             .iter()
@@ -176,6 +191,7 @@ impl MetadataSlab {
         Self {
             data: RwLock::new(snapshot.data),
             total_bytes: AtomicUsize::new(total_bytes),
+            len: AtomicUsize::new(len),
         }
     }
 
@@ -242,6 +258,7 @@ impl MetadataSlab {
         let result = value.clone();
         data.insert(key.to_string(), value);
         self.total_bytes.fetch_add(value_bytes, Ordering::Relaxed);
+        self.len.fetch_add(1, Ordering::Relaxed);
         result
     }
 }

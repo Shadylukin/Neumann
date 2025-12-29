@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
+use stress_tests::{generate_embeddings, LatencyHistogram};
 use tensor_store::TensorStore;
 use tokio::sync::Barrier;
 
@@ -11,7 +11,6 @@ use tokio::sync::Barrier;
 #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 #[ignore]
 async fn stress_router_concurrent_queries() {
-    let config = full_config();
     let concurrent_streams = 100;
     let queries_per_stream = 100;
 
@@ -22,19 +21,28 @@ async fn stress_router_concurrent_queries() {
     let store = TensorStore::new();
     let router = Arc::new(query_router::QueryRouter::with_shared_store(store));
 
-    // Create table first
-    let _ = router.execute("CREATE TABLE test (id INT, name STRING)");
+    // Create table first (Neumann syntax uses colon for types)
+    router
+        .execute("CREATE TABLE test (id:INT, name:TEXT)")
+        .expect("create table");
 
     // Pre-populate with some data
     let _embeddings = generate_embeddings(1000, 128, 42);
+    let mut node_ids = Vec::new();
     for i in 0..100 {
-        let _ = router.execute(&format!(
-            "INSERT INTO test (id, name) VALUES ({}, 'entity{}')",
-            i, i
-        ));
-        let _ = router.execute(&format!("CREATE NODE entity {{ id: {}, type: 'test' }}", i));
+        // Neumann INSERT syntax: INSERT table col=val, col=val
+        router
+            .execute(&format!("INSERT test id={}, name='entity{}'", i, i))
+            .expect("insert");
+        // Neumann NODE syntax: NODE CREATE <label> <prop>=<value>
+        // Capture the actual node ID returned
+        match router.execute(&format!("NODE CREATE entity idx={}, type='test'", i)) {
+            Ok(query_router::QueryResult::Ids(ids)) => node_ids.push(ids[0]),
+            _ => panic!("Failed to create node"),
+        }
     }
 
+    let node_ids = Arc::new(node_ids);
     let barrier = Arc::new(Barrier::new(concurrent_streams));
     let success_count = Arc::new(AtomicUsize::new(0));
     let error_count = Arc::new(AtomicUsize::new(0));
@@ -47,6 +55,7 @@ async fn stress_router_concurrent_queries() {
         let barrier = Arc::clone(&barrier);
         let success = Arc::clone(&success_count);
         let errors = Arc::clone(&error_count);
+        let node_ids = Arc::clone(&node_ids);
 
         handles.push(tokio::spawn(async move {
             // Wait for all streams to be ready
@@ -55,21 +64,27 @@ async fn stress_router_concurrent_queries() {
             let mut latencies = LatencyHistogram::new();
 
             for i in 0..queries_per_stream {
+                // Use Neumann query syntax - mix of SELECTs, INSERTs, and NODE operations
                 let query = match i % 4 {
-                    0 => format!("SELECT * FROM test WHERE id = {}", stream_id),
-                    1 => format!("NODE {}", stream_id % 100),
+                    0 => "SELECT * FROM test LIMIT 10".to_string(),
+                    1 => format!("NODE GET {}", node_ids[stream_id % 100]),
                     2 => format!(
-                        "INSERT INTO test (id, name) VALUES ({}, 'stream{}')",
+                        "INSERT test id={}, name='stream{}'",
                         stream_id * 1000 + i,
                         stream_id
                     ),
-                    _ => format!("SELECT id, name FROM test LIMIT 10"),
+                    _ => "NODE LIST entity".to_string(),
                 };
 
                 let op_start = Instant::now();
                 match router.execute(&query) {
                     Ok(_) => success.fetch_add(1, Ordering::Relaxed),
-                    Err(_) => errors.fetch_add(1, Ordering::Relaxed),
+                    Err(e) => {
+                        if stream_id == 0 && i < 8 {
+                            eprintln!("Stream 0 query {} failed: {} - {:?}", i, query, e);
+                        }
+                        errors.fetch_add(1, Ordering::Relaxed)
+                    }
                 };
                 latencies.record(op_start.elapsed());
             }
@@ -103,9 +118,15 @@ async fn stress_router_concurrent_queries() {
         println!("  Stream {}: {}", i, results[i]);
     }
 
-    // Most queries should succeed (some may fail due to schema issues in this test)
+    // Most queries should succeed
     let success_rate = successes as f64 / total_queries as f64;
     println!("Success rate: {:.2}%", success_rate * 100.0);
+
+    assert!(
+        success_rate > 0.9,
+        "Success rate too low: {:.2}%",
+        success_rate * 100.0
+    );
 
     println!("PASSED: {} concurrent query streams", concurrent_streams);
 }
@@ -114,7 +135,6 @@ async fn stress_router_concurrent_queries() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore]
 async fn stress_router_parallel_inserts() {
-    let _config = full_config();
     let stream_count = 50;
     let inserts_per_stream = 100;
 
@@ -125,8 +145,10 @@ async fn stress_router_parallel_inserts() {
     let store = TensorStore::new();
     let router = Arc::new(query_router::QueryRouter::with_shared_store(store));
 
-    // Create table first
-    let _ = router.execute("CREATE TABLE parallel_test (id INT, stream INT, value STRING)");
+    // Create table first (Neumann syntax)
+    router
+        .execute("CREATE TABLE parallel_test (id:INT, stream:INT, value:TEXT)")
+        .expect("create table");
 
     let barrier = Arc::new(Barrier::new(stream_count));
     let success_count = Arc::new(AtomicUsize::new(0));
@@ -147,8 +169,9 @@ async fn stress_router_parallel_inserts() {
 
             for i in 0..inserts_per_stream {
                 let op_start = Instant::now();
+                // Neumann INSERT syntax
                 let query = format!(
-                    "INSERT INTO parallel_test (id, stream, value) VALUES ({}, {}, 'data_{}')",
+                    "INSERT parallel_test id={}, stream={}, value='data_{}'",
                     stream_id * 1000 + i,
                     stream_id,
                     i
@@ -187,6 +210,15 @@ async fn stress_router_parallel_inserts() {
         println!("  Stream {}: {}", i, results[i]);
     }
 
+    let success_rate = successes as f64 / total_inserts as f64;
+    println!("Success rate: {:.2}%", success_rate * 100.0);
+
+    assert!(
+        success_rate > 0.9,
+        "Success rate too low: {:.2}%",
+        success_rate * 100.0
+    );
+
     println!("PASSED: {} parallel insert streams", stream_count);
 }
 
@@ -208,8 +240,10 @@ fn stress_router_sustained_writes() {
     let store = TensorStore::new();
     let router = query_router::QueryRouter::with_shared_store(store);
 
-    // Create table for stress test
-    let _ = router.execute("CREATE TABLE stress_test (id INT, thread INT, iter INT)");
+    // Create table for stress test (Neumann syntax)
+    router
+        .execute("CREATE TABLE stress_test (id:INT, thread:INT, iter:INT)")
+        .expect("create table");
 
     let router = Arc::new(Mutex::new(router));
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -231,8 +265,9 @@ fn stress_router_sustained_writes() {
             let mut i = 0;
 
             while !done.load(Ordering::Acquire) {
+                // Neumann INSERT syntax
                 let query = format!(
-                    "INSERT INTO stress_test (id, thread, iter) VALUES ({}, {}, {})",
+                    "INSERT stress_test id={}, thread={}, iter={}",
                     t * 1000000 + i,
                     t,
                     i
