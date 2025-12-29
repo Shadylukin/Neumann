@@ -2732,7 +2732,52 @@ impl QueryRouter {
     // ========== Relational Commands ==========
 
     fn execute_select(&self, command: &str) -> Result<QueryResult> {
-        // SELECT <table> [WHERE <condition>]
+        // Support both: SELECT <table> [WHERE <condition>]
+        // and: SELECT * FROM <table> [WHERE <condition>] [LIMIT n]
+        let upper = command.to_uppercase();
+
+        // Check for FROM clause (standard SQL syntax)
+        if let Some(from_pos) = upper.find(" FROM ") {
+            let rest_after_from = &command[from_pos + 6..];
+
+            // Find table name (until WHERE, LIMIT, or end)
+            let upper_rest = rest_after_from.to_uppercase();
+            let end_pos = upper_rest
+                .find(" WHERE ")
+                .or_else(|| upper_rest.find(" LIMIT "))
+                .unwrap_or(rest_after_from.len());
+            let table = rest_after_from[..end_pos].trim();
+
+            // Parse WHERE condition
+            let condition = if let Some(where_pos) = upper_rest.find(" WHERE ") {
+                let after_where = &rest_after_from[where_pos + 7..];
+                let limit_pos = after_where.to_uppercase().find(" LIMIT ");
+                let cond_str = if let Some(pos) = limit_pos {
+                    &after_where[..pos]
+                } else {
+                    after_where
+                };
+                self.parse_condition(cond_str.trim())?
+            } else {
+                Condition::True
+            };
+
+            // Parse LIMIT
+            let limit = if let Some(limit_pos) = upper_rest.find(" LIMIT ") {
+                let after_limit = rest_after_from[limit_pos + 7..].trim();
+                after_limit.parse::<usize>().ok()
+            } else {
+                None
+            };
+
+            let mut rows = self.relational.select(table, condition)?;
+            if let Some(n) = limit {
+                rows.truncate(n);
+            }
+            return Ok(QueryResult::Rows(rows));
+        }
+
+        // Legacy syntax: SELECT <table> [WHERE <condition>]
         let parts: Vec<&str> = command.splitn(2, char::is_whitespace).collect();
         if parts.len() < 2 {
             return Err(RouterError::MissingArgument("table name".to_string()));
@@ -2967,6 +3012,47 @@ impl QueryRouter {
                     .map_err(|_| RouterError::InvalidArgument("Invalid node ID".to_string()))?;
                 self.graph.delete_node(id)?;
                 Ok(QueryResult::Count(1))
+            },
+            "LIST" => {
+                // NODE LIST [<label>]
+                let label_filter = if parts.len() >= 3 {
+                    Some(parts[2])
+                } else {
+                    None
+                };
+                // Scan all node keys and filter by label
+                let keys = self.graph.store().scan("node:");
+                let mut results = Vec::new();
+                for key in keys {
+                    // Skip edge lists (node:123:out, node:123:in)
+                    if key.contains(":out") || key.contains(":in") {
+                        continue;
+                    }
+                    // Parse node ID from key "node:{id}"
+                    if let Some(id_str) = key.strip_prefix("node:") {
+                        if let Ok(id) = id_str.parse::<u64>() {
+                            if let Ok(node) = self.graph.get_node(id) {
+                                // Apply label filter
+                                if let Some(filter) = label_filter {
+                                    if node.label != filter {
+                                        continue;
+                                    }
+                                }
+                                let properties: HashMap<String, String> = node
+                                    .properties
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), Self::property_to_string(v)))
+                                    .collect();
+                                results.push(NodeResult {
+                                    id: node.id,
+                                    label: node.label.clone(),
+                                    properties,
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(QueryResult::Nodes(results))
             },
             _ => Err(RouterError::UnknownCommand(format!("NODE {}", subcmd))),
         }

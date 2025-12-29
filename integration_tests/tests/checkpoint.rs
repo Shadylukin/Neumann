@@ -41,7 +41,10 @@ async fn test_checkpoint_manager_rollback() {
     // Put some data
     use tensor_store::{ScalarValue, TensorData, TensorValue};
     let mut data = TensorData::new();
-    data.set("name", TensorValue::Scalar(ScalarValue::String("Alice".to_string())));
+    data.set(
+        "name",
+        TensorValue::Scalar(ScalarValue::String("Alice".to_string())),
+    );
     store.put("user:1", data).unwrap();
 
     // Create checkpoint
@@ -59,7 +62,9 @@ async fn test_checkpoint_manager_rollback() {
     let restored = store.get("user:1").unwrap();
     assert_eq!(
         restored.get("name"),
-        Some(&TensorValue::Scalar(ScalarValue::String("Alice".to_string())))
+        Some(&TensorValue::Scalar(ScalarValue::String(
+            "Alice".to_string()
+        )))
     );
 }
 
@@ -76,7 +81,10 @@ async fn test_checkpoint_manager_rollback_by_name() {
 
     use tensor_store::{ScalarValue, TensorData, TensorValue};
     let mut data = TensorData::new();
-    data.set("val", TensorValue::Scalar(ScalarValue::String("original".to_string())));
+    data.set(
+        "val",
+        TensorValue::Scalar(ScalarValue::String("original".to_string())),
+    );
     store.put("key", data).unwrap();
 
     manager.create(Some("named-cp"), &store).await.unwrap();
@@ -130,7 +138,10 @@ async fn test_checkpoint_retention() {
 
     // Create 5 checkpoints
     for i in 0..5 {
-        manager.create(Some(&format!("cp-{i}")), &store).await.unwrap();
+        manager
+            .create(Some(&format!("cp-{i}")), &store)
+            .await
+            .unwrap();
     }
 
     // Should only have 3 (the most recent)
@@ -257,7 +268,10 @@ async fn test_checkpoint_list_with_limit() {
     let manager = CheckpointManager::new(blob, config).await;
 
     for i in 0..5 {
-        manager.create(Some(&format!("cp-{i}")), &store).await.unwrap();
+        manager
+            .create(Some(&format!("cp-{i}")), &store)
+            .await
+            .unwrap();
     }
 
     let list = manager.list(Some(3)).await.unwrap();

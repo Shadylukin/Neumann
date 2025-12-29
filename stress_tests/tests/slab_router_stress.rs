@@ -52,7 +52,8 @@ fn stddev(values: &[f64], mean: f64) -> f64 {
     if values.len() <= 1 {
         return 0.0;
     }
-    let variance: f64 = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    let variance: f64 =
+        values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -235,7 +236,11 @@ fn stress_slab_router_mixed_workload() {
     let throughput = total_ops as f64 / elapsed.as_secs_f64();
 
     println!("Mixed workload: {:.0} ops/sec", throughput);
-    assert!(throughput > 10_000.0, "Throughput too low: {:.0}", throughput);
+    assert!(
+        throughput > 10_000.0,
+        "Throughput too low: {:.0}",
+        throughput
+    );
 }
 
 #[test]
@@ -273,7 +278,11 @@ fn stress_slab_router_cache_heavy() {
     let throughput = total_ops / elapsed.as_secs_f64();
 
     println!("Cache-heavy: {:.0} ops/sec", throughput);
-    assert!(throughput > 50_000.0, "Throughput too low: {:.0}", throughput);
+    assert!(
+        throughput > 50_000.0,
+        "Throughput too low: {:.0}",
+        throughput
+    );
 }
 
 #[test]
@@ -312,7 +321,11 @@ fn stress_slab_router_embedding_heavy() {
     let throughput = total_ops / elapsed.as_secs_f64();
 
     println!("Embedding-heavy: {:.0} ops/sec", throughput);
-    assert!(throughput > 5_000.0, "Throughput too low: {:.0}", throughput);
+    assert!(
+        throughput > 5_000.0,
+        "Throughput too low: {:.0}",
+        throughput
+    );
 }
 
 #[test]

@@ -79,12 +79,7 @@ async fn stress_router_concurrent_queries() {
                 let op_start = Instant::now();
                 match router.execute(&query) {
                     Ok(_) => success.fetch_add(1, Ordering::Relaxed),
-                    Err(e) => {
-                        if stream_id == 0 && i < 8 {
-                            eprintln!("Stream 0 query {} failed: {} - {:?}", i, query, e);
-                        }
-                        errors.fetch_add(1, Ordering::Relaxed)
-                    }
+                    Err(_) => errors.fetch_add(1, Ordering::Relaxed),
                 };
                 latencies.record(op_start.elapsed());
             }
