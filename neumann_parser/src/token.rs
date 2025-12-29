@@ -217,6 +217,22 @@ pub enum TokenKind {
     Checkpoints,
     Rollback,
 
+    // === Chain Keywords ===
+    Chain,
+    Begin,
+    Commit,
+    Transaction,
+    History,
+    Drift,
+    Codebook,
+    Global,
+    Local,
+    Analyze,
+    Height,
+    Transitions,
+    Tip,
+    Block,
+
     // === Blob Storage Keywords ===
     Blobs,
     Info,
@@ -472,6 +488,20 @@ impl TokenKind {
                 | Checkpoint
                 | Checkpoints
                 | Rollback
+                | Chain
+                | Begin
+                | Commit
+                | Transaction
+                | History
+                | Drift
+                | Codebook
+                | Global
+                | Local
+                | Analyze
+                | Height
+                | Transitions
+                | Tip
+                | Block
                 | Blobs
                 | Info
                 | Link
@@ -684,6 +714,22 @@ impl TokenKind {
             "CHECKPOINTS" => TokenKind::Checkpoints,
             "ROLLBACK" => TokenKind::Rollback,
 
+            // Chain keywords
+            "CHAIN" => TokenKind::Chain,
+            "BEGIN" => TokenKind::Begin,
+            "COMMIT" => TokenKind::Commit,
+            "TRANSACTION" => TokenKind::Transaction,
+            "HISTORY" => TokenKind::History,
+            "DRIFT" => TokenKind::Drift,
+            "CODEBOOK" => TokenKind::Codebook,
+            "GLOBAL" => TokenKind::Global,
+            "LOCAL" => TokenKind::Local,
+            "ANALYZE" => TokenKind::Analyze,
+            "HEIGHT" => TokenKind::Height,
+            "TRANSITIONS" => TokenKind::Transitions,
+            "TIP" => TokenKind::Tip,
+            "BLOCK" => TokenKind::Block,
+
             // Blob storage keywords
             "BLOBS" => TokenKind::Blobs,
             "INFO" => TokenKind::Info,
@@ -858,6 +904,20 @@ impl TokenKind {
             Checkpoint => "CHECKPOINT",
             Checkpoints => "CHECKPOINTS",
             Rollback => "ROLLBACK",
+            Chain => "CHAIN",
+            Begin => "BEGIN",
+            Commit => "COMMIT",
+            Transaction => "TRANSACTION",
+            History => "HISTORY",
+            Drift => "DRIFT",
+            Codebook => "CODEBOOK",
+            Global => "GLOBAL",
+            Local => "LOCAL",
+            Analyze => "ANALYZE",
+            Height => "HEIGHT",
+            Transitions => "TRANSITIONS",
+            Tip => "TIP",
+            Block => "BLOCK",
             Blobs => "BLOBS",
             Info => "INFO",
             Link => "LINK",

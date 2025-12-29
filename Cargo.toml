@@ -15,6 +15,7 @@ members = [
     "integration_tests",
     "tensor_unified",
     "tensor_checkpoint",
+    "tensor_chain",
     "stress_tests",
 ]
 exclude = ["fuzz"]

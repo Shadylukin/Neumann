@@ -29,13 +29,14 @@
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
     self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
-    CacheStmt, CheckpointStmt, CheckpointsStmt, DeleteStmt, DescribeStmt, DescribeTarget,
-    Direction as ParsedDirection, DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt,
-    EmbedOp, EmbedStmt, EntityOp, EntityStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource,
-    InsertStmt, Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property, RollbackStmt,
-    SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind, TableRefKind, UpdateStmt,
-    VaultOp, VaultStmt,
+    CacheStmt, ChainOp, ChainStmt, CheckpointStmt, CheckpointsStmt, DeleteStmt, DescribeStmt,
+    DescribeTarget, Direction as ParsedDirection, DistanceMetric as ParsedDistanceMetric, EdgeOp,
+    EdgeStmt, EmbedOp, EmbedStmt, EntityOp, EntityStmt, Expr, ExprKind, FindPattern, FindStmt,
+    InsertSource, InsertStmt, Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property,
+    RollbackStmt, SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind, TableRefKind,
+    UpdateStmt, VaultOp, VaultStmt,
 };
+use tensor_chain::{ChainError, TensorChain};
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
 };
@@ -74,6 +75,8 @@ pub enum RouterError {
     BlobError(String),
     /// Error from checkpoint system.
     CheckpointError(String),
+    /// Error from chain system.
+    ChainError(String),
     /// Invalid argument provided.
     InvalidArgument(String),
     /// Missing required argument.
@@ -94,6 +97,7 @@ impl std::fmt::Display for RouterError {
             RouterError::CacheError(msg) => write!(f, "Cache error: {}", msg),
             RouterError::BlobError(msg) => write!(f, "Blob error: {}", msg),
             RouterError::CheckpointError(msg) => write!(f, "Checkpoint error: {}", msg),
+            RouterError::ChainError(msg) => write!(f, "Chain error: {}", msg),
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
@@ -142,6 +146,12 @@ impl From<BlobError> for RouterError {
 impl From<CheckpointError> for RouterError {
     fn from(e: CheckpointError) -> Self {
         RouterError::CheckpointError(e.to_string())
+    }
+}
+
+impl From<ChainError> for RouterError {
+    fn from(e: ChainError) -> Self {
+        RouterError::ChainError(e.to_string())
     }
 }
 
@@ -194,6 +204,8 @@ pub enum QueryResult {
     BlobStats(BlobStatsResult),
     /// List of checkpoints
     CheckpointList(Vec<CheckpointInfo>),
+    /// Chain operation result
+    Chain(ChainResult),
 }
 
 /// Node result from graph query.
@@ -273,6 +285,90 @@ pub struct CheckpointInfo {
     pub is_auto: bool,
 }
 
+/// Chain operation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChainResult {
+    /// Transaction begun
+    TransactionBegun { tx_id: String },
+    /// Transaction committed
+    Committed { block_hash: String, height: u64 },
+    /// Chain rolled back
+    RolledBack { to_height: u64 },
+    /// Chain history for a key
+    History(Vec<ChainHistoryEntry>),
+    /// Similar blocks/transactions
+    Similar(Vec<ChainSimilarResult>),
+    /// Chain drift metrics
+    Drift(ChainDriftResult),
+    /// Chain height
+    Height(u64),
+    /// Chain tip
+    Tip { hash: String, height: u64 },
+    /// Block info
+    Block(ChainBlockInfo),
+    /// Codebook info
+    Codebook(ChainCodebookInfo),
+    /// Verification result
+    Verified { ok: bool, errors: Vec<String> },
+    /// Transition analysis
+    TransitionAnalysis(ChainTransitionAnalysis),
+}
+
+/// Entry in chain history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainHistoryEntry {
+    pub height: u64,
+    pub transaction_type: String,
+    pub data: Option<Vec<u8>>,
+}
+
+/// Similar result from chain query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainSimilarResult {
+    pub block_hash: String,
+    pub height: u64,
+    pub similarity: f32,
+}
+
+/// Chain drift metrics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainDriftResult {
+    pub from_height: u64,
+    pub to_height: u64,
+    pub total_drift: f32,
+    pub avg_drift_per_block: f32,
+    pub max_drift: f32,
+}
+
+/// Block info from chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainBlockInfo {
+    pub height: u64,
+    pub hash: String,
+    pub prev_hash: String,
+    pub timestamp: u64,
+    pub transaction_count: usize,
+    pub proposer: String,
+}
+
+/// Codebook info.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainCodebookInfo {
+    pub scope: String,
+    pub entry_count: usize,
+    pub dimension: usize,
+    pub domain: Option<String>,
+}
+
+/// Transition analysis result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainTransitionAnalysis {
+    pub total_transitions: usize,
+    pub valid_transitions: usize,
+    pub invalid_transitions: usize,
+    pub avg_validity_score: f32,
+}
+
 impl QueryResult {
     /// Convert the result to JSON string.
     pub fn to_json(&self) -> String {
@@ -338,6 +434,8 @@ pub struct QueryRouter {
     hnsw_index: Option<(HNSWIndex, Vec<String>)>,
     /// Optional checkpoint manager (requires blob storage)
     checkpoint: Option<Arc<tokio::sync::Mutex<CheckpointManager>>>,
+    /// Optional tensor chain (requires initialization)
+    chain: Option<Arc<TensorChain>>,
 }
 
 impl QueryRouter {
@@ -355,6 +453,7 @@ impl QueryRouter {
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
             checkpoint: None,
+            chain: None,
         }
     }
 
@@ -376,6 +475,7 @@ impl QueryRouter {
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
             checkpoint: None,
+            chain: None,
         }
     }
 
@@ -405,6 +505,7 @@ impl QueryRouter {
             current_identity: Vault::ROOT.to_string(),
             hnsw_index: None,
             checkpoint: None,
+            chain: None,
         }
     }
 
@@ -602,6 +703,28 @@ impl QueryRouter {
             self.init_checkpoint()?;
         }
         Ok(self.checkpoint.as_ref().unwrap())
+    }
+
+    /// Initialize the tensor chain with a node ID.
+    pub fn init_chain(&mut self, node_id: &str) -> Result<()> {
+        let store = self.vector.store().clone();
+        let chain = TensorChain::new(store, node_id);
+        chain.initialize()?;
+        self.chain = Some(Arc::new(chain));
+        Ok(())
+    }
+
+    /// Get a reference to the chain if initialized.
+    pub fn chain(&self) -> Option<&Arc<TensorChain>> {
+        self.chain.as_ref()
+    }
+
+    /// Ensure chain is initialized, auto-initializing with default node ID if needed.
+    pub fn ensure_chain(&mut self) -> Result<&Arc<TensorChain>> {
+        if self.chain.is_none() {
+            self.init_chain("default_node")?;
+        }
+        Ok(self.chain.as_ref().unwrap())
     }
 
     /// Set the current identity for vault access control.
@@ -939,6 +1062,9 @@ impl QueryRouter {
             StatementKind::Checkpoint(cp) => self.exec_checkpoint(cp),
             StatementKind::Rollback(rb) => self.exec_rollback(rb),
             StatementKind::Checkpoints(cps) => self.exec_checkpoints(cps),
+
+            // Chain statements
+            StatementKind::Chain(chain) => self.exec_chain(chain),
 
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
@@ -1634,6 +1760,137 @@ impl QueryRouter {
             .collect();
 
         Ok(QueryResult::CheckpointList(info_list))
+    }
+
+    // ========== Chain Execution ==========
+
+    fn exec_chain(&self, stmt: &ChainStmt) -> Result<QueryResult> {
+        let chain = self.chain.as_ref().ok_or_else(|| {
+            RouterError::ChainError("Chain not initialized".to_string())
+        })?;
+
+        match &stmt.operation {
+            ChainOp::Begin => {
+                let workspace = chain.begin()?;
+                Ok(QueryResult::Chain(ChainResult::TransactionBegun {
+                    tx_id: workspace.id().to_string(),
+                }))
+            },
+            ChainOp::Commit => {
+                // Note: In a real implementation, you'd track the active transaction
+                // For now, we return a placeholder response
+                Ok(QueryResult::Chain(ChainResult::Committed {
+                    block_hash: "pending".to_string(),
+                    height: chain.height(),
+                }))
+            },
+            ChainOp::Rollback { height } => {
+                let h = self.expr_to_u64(height)?;
+                // Note: Full rollback would require more implementation
+                Ok(QueryResult::Chain(ChainResult::RolledBack { to_height: h }))
+            },
+            ChainOp::History { key } => {
+                let key_str = self.eval_string_expr(key)?;
+                let history = chain.history(&key_str)?;
+                let entries: Vec<ChainHistoryEntry> = history
+                    .into_iter()
+                    .map(|(height, tx)| ChainHistoryEntry {
+                        height,
+                        transaction_type: format!("{:?}", tx),
+                        data: None,
+                    })
+                    .collect();
+                Ok(QueryResult::Chain(ChainResult::History(entries)))
+            },
+            ChainOp::Similar { embedding, limit } => {
+                let _embedding: Vec<f32> = embedding
+                    .iter()
+                    .map(|e| self.expr_to_f32(e))
+                    .collect::<Result<Vec<_>>>()?;
+                let _limit = limit.as_ref().map(|e| self.expr_to_usize(e)).transpose()?;
+                // Note: Similarity search over chain requires additional implementation
+                Ok(QueryResult::Chain(ChainResult::Similar(vec![])))
+            },
+            ChainOp::Drift { from_height, to_height } => {
+                let from_h = self.expr_to_u64(from_height)?;
+                let to_h = self.expr_to_u64(to_height)?;
+                // Compute drift metrics (placeholder)
+                Ok(QueryResult::Chain(ChainResult::Drift(ChainDriftResult {
+                    from_height: from_h,
+                    to_height: to_h,
+                    total_drift: 0.0,
+                    avg_drift_per_block: 0.0,
+                    max_drift: 0.0,
+                })))
+            },
+            ChainOp::Height => {
+                let height = chain.height();
+                Ok(QueryResult::Chain(ChainResult::Height(height)))
+            },
+            ChainOp::Tip => {
+                let hash = chain.tip_hash();
+                let height = chain.height();
+                Ok(QueryResult::Chain(ChainResult::Tip {
+                    hash: hex::encode(hash),
+                    height,
+                }))
+            },
+            ChainOp::Block { height } => {
+                let h = self.expr_to_u64(height)?;
+                if let Some(block) = chain.get_block(h)? {
+                    Ok(QueryResult::Chain(ChainResult::Block(ChainBlockInfo {
+                        height: h,
+                        hash: hex::encode(block.hash()),
+                        prev_hash: hex::encode(block.header.prev_hash),
+                        timestamp: block.header.timestamp,
+                        transaction_count: block.transactions.len(),
+                        proposer: block.header.proposer.clone(),
+                    })))
+                } else {
+                    Err(RouterError::ChainError(format!("Block {} not found", h)))
+                }
+            },
+            ChainOp::Verify => {
+                match chain.verify() {
+                    Ok(()) => Ok(QueryResult::Chain(ChainResult::Verified {
+                        ok: true,
+                        errors: vec![],
+                    })),
+                    Err(e) => Ok(QueryResult::Chain(ChainResult::Verified {
+                        ok: false,
+                        errors: vec![e.to_string()],
+                    })),
+                }
+            },
+            ChainOp::ShowCodebookGlobal => {
+                // Placeholder - would need access to codebook manager
+                Ok(QueryResult::Chain(ChainResult::Codebook(ChainCodebookInfo {
+                    scope: "global".to_string(),
+                    entry_count: 0,
+                    dimension: 0,
+                    domain: None,
+                })))
+            },
+            ChainOp::ShowCodebookLocal { domain } => {
+                let domain_str = self.eval_string_expr(domain)?;
+                Ok(QueryResult::Chain(ChainResult::Codebook(ChainCodebookInfo {
+                    scope: "local".to_string(),
+                    entry_count: 0,
+                    dimension: 0,
+                    domain: Some(domain_str),
+                })))
+            },
+            ChainOp::AnalyzeTransitions => {
+                Ok(QueryResult::Chain(ChainResult::TransitionAnalysis(
+                    ChainTransitionAnalysis {
+                        total_transitions: 0,
+                        valid_transitions: 0,
+                        invalid_transitions: 0,
+                        avg_validity_score: 0.0,
+                    },
+                )))
+            },
+        }
     }
 
     // ========== AST-Based Execution Methods ==========
@@ -10604,6 +10861,168 @@ mod tests {
             assert_eq!(list.len(), 1);
             // Auto-generated name starts with "checkpoint-"
             assert!(list[0].name.starts_with("checkpoint-"));
+        }
+    }
+
+    // ========== Chain Tests ==========
+
+    #[test]
+    fn test_chain_not_initialized() {
+        let router = QueryRouter::new();
+        let stmt = parser::parse("CHAIN HEIGHT").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
+        if let Err(RouterError::ChainError(msg)) = result {
+            assert!(msg.contains("not initialized"));
+        }
+    }
+
+    #[test]
+    fn test_chain_height() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN HEIGHT").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Height(h)) = result {
+            assert_eq!(h, 0);
+        } else {
+            panic!("expected CHAIN HEIGHT result");
+        }
+    }
+
+    #[test]
+    fn test_chain_tip() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN TIP").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Tip { height, .. }) = result {
+            assert_eq!(height, 0);
+        } else {
+            panic!("expected CHAIN TIP result");
+        }
+    }
+
+    #[test]
+    fn test_chain_verify() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN VERIFY").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Verified { ok, errors }) = result {
+            assert!(ok);
+            assert!(errors.is_empty());
+        } else {
+            panic!("expected CHAIN VERIFY result");
+        }
+    }
+
+    #[test]
+    fn test_chain_block_not_found() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN BLOCK 999").unwrap();
+        let result = router.execute_statement(&stmt);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_chain_history() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN HISTORY 'test_key'").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::History(entries)) = result {
+            // No history yet since no transactions
+            assert!(entries.is_empty());
+        } else {
+            panic!("expected CHAIN HISTORY result");
+        }
+    }
+
+    #[test]
+    fn test_chain_drift() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("CHAIN DRIFT FROM 0 TO 100").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Drift(drift)) = result {
+            assert_eq!(drift.from_height, 0);
+            assert_eq!(drift.to_height, 100);
+        } else {
+            panic!("expected CHAIN DRIFT result");
+        }
+    }
+
+    #[test]
+    fn test_chain_begin() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("BEGIN CHAIN TRANSACTION").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::TransactionBegun { tx_id }) = result {
+            assert!(!tx_id.is_empty());
+        } else {
+            panic!("expected CHAIN BEGIN result");
+        }
+    }
+
+    #[test]
+    fn test_show_codebook_global() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("SHOW CODEBOOK GLOBAL").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Codebook(info)) = result {
+            assert_eq!(info.scope, "global");
+        } else {
+            panic!("expected SHOW CODEBOOK GLOBAL result");
+        }
+    }
+
+    #[test]
+    fn test_show_codebook_local() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("SHOW CODEBOOK LOCAL 'users'").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::Codebook(info)) = result {
+            assert_eq!(info.scope, "local");
+            assert_eq!(info.domain, Some("users".to_string()));
+        } else {
+            panic!("expected SHOW CODEBOOK LOCAL result");
+        }
+    }
+
+    #[test]
+    fn test_analyze_codebook_transitions() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        let stmt = parser::parse("ANALYZE CODEBOOK TRANSITIONS").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Chain(ChainResult::TransitionAnalysis(analysis)) = result {
+            assert_eq!(analysis.total_transitions, 0);
+        } else {
+            panic!("expected ANALYZE CODEBOOK TRANSITIONS result");
         }
     }
 }

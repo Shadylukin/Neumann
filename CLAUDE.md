@@ -18,8 +18,11 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 | `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
 | `tensor_cache` | Semantic LLM response caching | tensor_store |
 | `tensor_blob` | S3-style chunked blob storage | tensor_store |
+| `tensor_checkpoint` | Atomic snapshot/restore | tensor_store |
+| `tensor_unified` | Multi-engine unified storage | all engines |
+| `tensor_chain` | Tensor-native blockchain | tensor_store, graph_engine, tensor_checkpoint |
 | `neumann_parser` | Query tokenization and parsing | - |
-| `query_router` | Unified query execution | all engines, parser, vault, cache, blob |
+| `query_router` | Unified query execution | all engines, parser, vault, cache, blob, chain |
 | `neumann_shell` | Interactive CLI interface | query_router |
 
 ## Code Style
@@ -66,7 +69,7 @@ All code must pass before commit:
 - `cargo clippy -- -D warnings` - lints as errors
 - `cargo test` - all tests pass
 - `cargo doc --no-deps` - documentation builds
-- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 93%)
+- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 92%, chain 75%)
 
 ## Testing Philosophy
 
@@ -176,6 +179,17 @@ tensor_blob/            # Module 11: Blob storage
   src/streaming.rs      # BlobWriter, BlobReader
   src/gc.rs             # Background garbage collection
   src/integrity.rs      # Checksum verification, repair
+tensor_chain/           # Module 12: Tensor blockchain
+  src/lib.rs            # TensorChain API, ChainConfig
+  src/block.rs          # Block, BlockHeader, Transaction
+  src/chain.rs          # Chain linked via graph edges
+  src/transaction.rs    # Workspace isolation, delta tracking
+  src/codebook.rs       # GlobalCodebook, LocalCodebook, CodebookManager
+  src/validation.rs     # TransitionValidator
+  src/consensus.rs      # Semantic conflict detection, auto-merge
+  src/raft.rs           # Tensor-Raft consensus
+  src/network.rs        # Transport trait, MemoryTransport
+  src/error.rs          # ChainError types
 neumann_parser/         # Module 5: Query parsing
   src/lib.rs            # Public API
   src/lexer.rs          # Tokenization
@@ -203,6 +217,7 @@ docs/
   tensor-vault.md       # Module 9 API documentation
   tensor-cache.md       # Module 10 API documentation
   tensor-blob.md        # Module 11 API documentation
+  tensor-chain.md       # Module 12 API documentation
   benchmarks.md         # Performance benchmarks
 ```
 
@@ -272,6 +287,16 @@ docs/
 - `QueryRouter`: Unified query execution across all engines
 - `QueryResult`: Result variants (Rows, Nodes, Edges, Count, etc.)
 - `RouterError`: Query execution errors
+
+### Tensor Chain
+- `TensorChain`: Tensor-native blockchain with semantic transactions
+- `Block`, `BlockHeader`: Block structure with delta embeddings
+- `Transaction`: Put, Delete, Update operations
+- `GlobalCodebook`: Static codebook for consensus validation
+- `LocalCodebook`: EMA-adaptive codebook per domain
+- `ConsensusManager`: Semantic conflict detection and auto-merge
+- `RaftNode`: Tensor-Raft consensus state machine
+- `ChainError`: Chain operation errors
 
 ## Concurrency Design
 

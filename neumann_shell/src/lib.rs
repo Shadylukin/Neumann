@@ -3,7 +3,10 @@
 //! Provides a readline-based interface for executing queries against the
 //! Neumann unified query engine.
 
-use query_router::{CheckpointInfo, QueryResult, QueryRouter};
+use query_router::{
+    ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult,
+    ChainSimilarResult, ChainTransitionAnalysis, CheckpointInfo, QueryResult, QueryRouter,
+};
 use relational_engine::Row;
 use rustyline::error::ReadlineError;
 use rustyline::history::{DefaultHistory, History};
@@ -711,6 +714,7 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::ArtifactList(ids) => format_artifact_list(ids),
         QueryResult::BlobStats(stats) => format_blob_stats(stats),
         QueryResult::CheckpointList(checkpoints) => format_checkpoint_list(checkpoints),
+        QueryResult::Chain(chain) => format_chain_result(chain),
     }
 }
 
@@ -920,6 +924,120 @@ fn format_checkpoint_list(checkpoints: &[CheckpointInfo]) -> String {
         );
     }
 
+    output.trim_end().to_string()
+}
+
+fn format_chain_result(result: &ChainResult) -> String {
+    match result {
+        ChainResult::TransactionBegun { tx_id } => {
+            format!("Chain transaction started: {tx_id}")
+        },
+        ChainResult::Committed { block_hash, height } => {
+            format!("Committed block {block_hash} at height {height}")
+        },
+        ChainResult::RolledBack { to_height } => {
+            format!("Chain rolled back to height {to_height}")
+        },
+        ChainResult::History(entries) => format_chain_history(entries),
+        ChainResult::Similar(results) => format_chain_similar(results),
+        ChainResult::Drift(drift) => format_chain_drift(drift),
+        ChainResult::Height(h) => format!("Chain height: {h}"),
+        ChainResult::Tip { hash, height } => {
+            format!("Chain tip: {hash} at height {height}")
+        },
+        ChainResult::Block(info) => format_chain_block(info),
+        ChainResult::Codebook(info) => format_chain_codebook(info),
+        ChainResult::Verified { ok, errors } => {
+            if *ok {
+                "Chain verified: OK".to_string()
+            } else {
+                let mut output = "Chain verification failed:\n".to_string();
+                for err in errors {
+                    let _ = writeln!(output, "  - {err}");
+                }
+                output.trim_end().to_string()
+            }
+        },
+        ChainResult::TransitionAnalysis(analysis) => format_chain_transitions(analysis),
+    }
+}
+
+fn format_chain_history(entries: &[ChainHistoryEntry]) -> String {
+    if entries.is_empty() {
+        return "No history found for key".to_string();
+    }
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Chain History:");
+    let _ = writeln!(output, "{:<10} {:<30}", "Height", "Transaction");
+    let _ = writeln!(output, "{}", "-".repeat(50));
+
+    for entry in entries {
+        let _ = writeln!(output, "{:<10} {}", entry.height, entry.transaction_type);
+    }
+
+    output.trim_end().to_string()
+}
+
+fn format_chain_similar(results: &[ChainSimilarResult]) -> String {
+    if results.is_empty() {
+        return "No similar blocks found".to_string();
+    }
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Similar Blocks:");
+    let _ = writeln!(output, "{:<10} {:<66} {:<10}", "Height", "Hash", "Similarity");
+    let _ = writeln!(output, "{}", "-".repeat(90));
+
+    for r in results {
+        let _ = writeln!(output, "{:<10} {:<66} {:.4}", r.height, r.block_hash, r.similarity);
+    }
+
+    output.trim_end().to_string()
+}
+
+fn format_chain_drift(drift: &ChainDriftResult) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "Chain Drift Analysis:");
+    let _ = writeln!(output, "  From height:        {}", drift.from_height);
+    let _ = writeln!(output, "  To height:          {}", drift.to_height);
+    let _ = writeln!(output, "  Total drift:        {:.4}", drift.total_drift);
+    let _ = writeln!(output, "  Avg drift/block:    {:.4}", drift.avg_drift_per_block);
+    let _ = writeln!(output, "  Max drift:          {:.4}", drift.max_drift);
+    output.trim_end().to_string()
+}
+
+fn format_chain_block(info: &ChainBlockInfo) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "Block Info:");
+    let _ = writeln!(output, "  Height:       {}", info.height);
+    let _ = writeln!(output, "  Hash:         {}", info.hash);
+    let _ = writeln!(output, "  Prev Hash:    {}", info.prev_hash);
+    let _ = writeln!(output, "  Timestamp:    {}", info.timestamp);
+    let _ = writeln!(output, "  Transactions: {}", info.transaction_count);
+    let _ = writeln!(output, "  Proposer:     {}", info.proposer);
+    output.trim_end().to_string()
+}
+
+fn format_chain_codebook(info: &ChainCodebookInfo) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "Codebook Info:");
+    let _ = writeln!(output, "  Scope:      {}", info.scope);
+    let _ = writeln!(output, "  Entries:    {}", info.entry_count);
+    let _ = writeln!(output, "  Dimension:  {}", info.dimension);
+    if let Some(domain) = &info.domain {
+        let _ = writeln!(output, "  Domain:     {domain}");
+    }
+    output.trim_end().to_string()
+}
+
+fn format_chain_transitions(analysis: &ChainTransitionAnalysis) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "Transition Analysis:");
+    let _ = writeln!(output, "  Total transitions:   {}", analysis.total_transitions);
+    let _ = writeln!(output, "  Valid transitions:   {}", analysis.valid_transitions);
+    let _ = writeln!(output, "  Invalid transitions: {}", analysis.invalid_transitions);
+    let _ = writeln!(output, "  Avg validity score:  {:.4}", analysis.avg_validity_score);
     output.trim_end().to_string()
 }
 

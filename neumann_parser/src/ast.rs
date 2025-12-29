@@ -96,6 +96,10 @@ pub enum StatementKind {
     /// CHECKPOINTS command - list checkpoints
     Checkpoints(CheckpointsStmt),
 
+    // === Chain Statements ===
+    /// CHAIN command
+    Chain(ChainStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -763,6 +767,47 @@ pub struct RollbackStmt {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckpointsStmt {
     pub limit: Option<Expr>,
+}
+
+// =============================================================================
+// Chain Statements
+// =============================================================================
+
+/// CHAIN command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainStmt {
+    pub operation: ChainOp,
+}
+
+/// CHAIN operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChainOp {
+    /// Begin a chain transaction: `BEGIN CHAIN TRANSACTION`
+    Begin,
+    /// Commit a chain transaction: `COMMIT CHAIN`
+    Commit,
+    /// Rollback chain to height: `ROLLBACK CHAIN TO height`
+    Rollback { height: Expr },
+    /// Get chain history for key: `CHAIN HISTORY 'key'`
+    History { key: Expr },
+    /// Search chain by similarity: `CHAIN SIMILAR [embedding] LIMIT n`
+    Similar { embedding: Vec<Expr>, limit: Option<Expr> },
+    /// Get chain drift metrics: `CHAIN DRIFT FROM height TO height`
+    Drift { from_height: Expr, to_height: Expr },
+    /// Show global codebook: `SHOW CODEBOOK GLOBAL`
+    ShowCodebookGlobal,
+    /// Show local codebook: `SHOW CODEBOOK LOCAL 'domain'`
+    ShowCodebookLocal { domain: Expr },
+    /// Analyze codebook transitions: `ANALYZE CODEBOOK TRANSITIONS`
+    AnalyzeTransitions,
+    /// Get chain height: `CHAIN HEIGHT`
+    Height,
+    /// Get chain tip: `CHAIN TIP`
+    Tip,
+    /// Get block at height: `CHAIN BLOCK height`
+    Block { height: Expr },
+    /// Verify chain integrity: `CHAIN VERIFY`
+    Verify,
 }
 
 // =============================================================================

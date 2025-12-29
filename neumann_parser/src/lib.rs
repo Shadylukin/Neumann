@@ -269,4 +269,177 @@ mod tests {
         assert!(!errors.is_empty());
         assert_eq!(errors.len(), 1);
     }
+
+    // Chain statement tests
+    #[test]
+    fn test_chain_begin() {
+        let stmt = parse("BEGIN CHAIN TRANSACTION").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::Begin));
+        } else {
+            panic!("expected CHAIN BEGIN");
+        }
+    }
+
+    #[test]
+    fn test_chain_commit() {
+        let stmt = parse("COMMIT CHAIN").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::Commit));
+        } else {
+            panic!("expected CHAIN COMMIT");
+        }
+    }
+
+    #[test]
+    fn test_chain_rollback() {
+        let stmt = parse("ROLLBACK CHAIN TO 100").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::Rollback { height } = chain.operation {
+                if let ExprKind::Literal(Literal::Integer(h)) = height.kind {
+                    assert_eq!(h, 100);
+                } else {
+                    panic!("expected integer");
+                }
+            } else {
+                panic!("expected CHAIN ROLLBACK");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_chain_history() {
+        let stmt = parse("CHAIN HISTORY 'users:123'").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::History { key } = chain.operation {
+                if let ExprKind::Literal(Literal::String(k)) = key.kind {
+                    assert_eq!(k, "users:123");
+                } else {
+                    panic!("expected string");
+                }
+            } else {
+                panic!("expected CHAIN HISTORY");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_chain_similar() {
+        let stmt = parse("CHAIN SIMILAR [1.0, 2.0, 3.0] LIMIT 10").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::Similar { embedding, limit } = chain.operation {
+                assert_eq!(embedding.len(), 3);
+                assert!(limit.is_some());
+            } else {
+                panic!("expected CHAIN SIMILAR");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_chain_drift() {
+        let stmt = parse("CHAIN DRIFT FROM 0 TO 1000").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::Drift { from_height, to_height } = chain.operation {
+                if let ExprKind::Literal(Literal::Integer(f)) = from_height.kind {
+                    assert_eq!(f, 0);
+                }
+                if let ExprKind::Literal(Literal::Integer(t)) = to_height.kind {
+                    assert_eq!(t, 1000);
+                }
+            } else {
+                panic!("expected CHAIN DRIFT");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_chain_height() {
+        let stmt = parse("CHAIN HEIGHT").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::Height));
+        } else {
+            panic!("expected CHAIN HEIGHT");
+        }
+    }
+
+    #[test]
+    fn test_chain_tip() {
+        let stmt = parse("CHAIN TIP").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::Tip));
+        } else {
+            panic!("expected CHAIN TIP");
+        }
+    }
+
+    #[test]
+    fn test_chain_block() {
+        let stmt = parse("CHAIN BLOCK 42").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::Block { height } = chain.operation {
+                if let ExprKind::Literal(Literal::Integer(h)) = height.kind {
+                    assert_eq!(h, 42);
+                }
+            } else {
+                panic!("expected CHAIN BLOCK");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_chain_verify() {
+        let stmt = parse("CHAIN VERIFY").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::Verify));
+        } else {
+            panic!("expected CHAIN VERIFY");
+        }
+    }
+
+    #[test]
+    fn test_show_codebook_global() {
+        let stmt = parse("SHOW CODEBOOK GLOBAL").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::ShowCodebookGlobal));
+        } else {
+            panic!("expected SHOW CODEBOOK GLOBAL");
+        }
+    }
+
+    #[test]
+    fn test_show_codebook_local() {
+        let stmt = parse("SHOW CODEBOOK LOCAL 'users'").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            if let ChainOp::ShowCodebookLocal { domain } = chain.operation {
+                if let ExprKind::Literal(Literal::String(d)) = domain.kind {
+                    assert_eq!(d, "users");
+                }
+            } else {
+                panic!("expected SHOW CODEBOOK LOCAL");
+            }
+        } else {
+            panic!("expected CHAIN statement");
+        }
+    }
+
+    #[test]
+    fn test_analyze_codebook_transitions() {
+        let stmt = parse("ANALYZE CODEBOOK TRANSITIONS").unwrap();
+        if let StatementKind::Chain(chain) = stmt.kind {
+            assert!(matches!(chain.operation, ChainOp::AnalyzeTransitions));
+        } else {
+            panic!("expected ANALYZE CODEBOOK TRANSITIONS");
+        }
+    }
 }

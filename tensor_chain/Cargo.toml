@@ -1,0 +1,48 @@
+[package]
+name = "tensor_chain"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords = ["blockchain", "tensor", "consensus", "distributed"]
+categories = ["database", "cryptography"]
+rust-version.workspace = true
+description = "Tensor-native blockchain with semantic conflict detection and auto-merge"
+
+[dependencies]
+# Core Neumann modules
+tensor_store = { path = "../tensor_store" }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
+tensor_compress = { path = "../tensor_compress" }
+tensor_vault = { path = "../tensor_vault" }
+graph_engine = { path = "../graph_engine" }
+tensor_blob = { path = "../tensor_blob" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+
+# Crypto
+sha2 = "0.10"
+blake2 = "0.10"
+rand = "0.8"
+
+# Concurrency
+dashmap = "5"
+parking_lot = "0.12"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+thiserror = "1"
+hex = "0.4"
+
+[dev-dependencies]
+criterion = "0.5"
+tokio-test = "0.4"

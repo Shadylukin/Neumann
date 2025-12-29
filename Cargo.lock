@@ -105,6 +105,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -431,6 +442,19 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -715,6 +739,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -739,6 +769,7 @@ dependencies = [
  "bincode",
  "futures",
  "graph_engine",
+ "neumann_parser",
  "neumann_shell",
  "query_router",
  "relational_engine",
@@ -1062,12 +1093,14 @@ dependencies = [
  "criterion",
  "futures",
  "graph_engine",
+ "hex",
  "neumann_parser",
  "relational_engine",
  "serde",
  "serde_json",
  "tensor_blob",
  "tensor_cache",
+ "tensor_chain",
  "tensor_checkpoint",
  "tensor_store",
  "tensor_unified",
@@ -1450,7 +1483,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "criterion",
- "dashmap",
+ "dashmap 6.1.0",
  "serde",
  "serde_json",
  "tensor_store",
@@ -1459,6 +1492,32 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "tensor_chain"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "blake2",
+ "criterion",
+ "dashmap 5.5.3",
+ "graph_engine",
+ "hex",
+ "parking_lot",
+ "rand",
+ "serde",
+ "sha2",
+ "tensor_blob",
+ "tensor_checkpoint",
+ "tensor_compress",
+ "tensor_store",
+ "tensor_vault",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
  "uuid",
 ]
 
@@ -1527,7 +1586,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2",
  "criterion",
- "dashmap",
+ "dashmap 6.1.0",
  "graph_engine",
  "peak_alloc",
  "rand",

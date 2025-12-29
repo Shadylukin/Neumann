@@ -639,7 +639,13 @@ impl<'a> Parser<'a> {
             // Checkpoint Statements
             TokenKind::Checkpoint => self.parse_checkpoint()?,
             TokenKind::Checkpoints => self.parse_checkpoints()?,
-            TokenKind::Rollback => self.parse_rollback()?,
+            TokenKind::Rollback => self.parse_rollback_or_chain_rollback()?,
+
+            // Chain Statements
+            TokenKind::Chain => self.parse_chain()?,
+            TokenKind::Begin => self.parse_begin_chain()?,
+            TokenKind::Commit => self.parse_commit_chain()?,
+            TokenKind::Analyze => self.parse_analyze()?,
 
             _ => {
                 return Err(ParseError::new(
@@ -1397,11 +1403,29 @@ impl<'a> Parser<'a> {
                 None
             };
             Ok(StatementKind::ShowEmbeddings { limit })
+        } else if self.eat(&TokenKind::Codebook) {
+            // SHOW CODEBOOK GLOBAL or SHOW CODEBOOK LOCAL 'domain'
+            if self.eat(&TokenKind::Global) {
+                Ok(StatementKind::Chain(ChainStmt {
+                    operation: ChainOp::ShowCodebookGlobal,
+                }))
+            } else if self.eat(&TokenKind::Local) {
+                let domain = self.parse_expr()?;
+                Ok(StatementKind::Chain(ChainStmt {
+                    operation: ChainOp::ShowCodebookLocal { domain },
+                }))
+            } else {
+                Err(ParseError::unexpected(
+                    self.current.kind.clone(),
+                    self.current.span,
+                    "GLOBAL or LOCAL",
+                ))
+            }
         } else {
             Err(ParseError::unexpected(
                 self.current.kind.clone(),
                 self.current.span,
-                "TABLES or EMBEDDINGS",
+                "TABLES, EMBEDDINGS, or CODEBOOK",
             ))
         }
     }
@@ -2224,12 +2248,21 @@ impl<'a> Parser<'a> {
         Ok(StatementKind::Checkpoint(CheckpointStmt { name }))
     }
 
-    fn parse_rollback(&mut self) -> ParseResult<StatementKind> {
+    fn parse_rollback_or_chain_rollback(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Rollback)?;
+
+        // Check if it's ROLLBACK CHAIN TO height
+        if self.eat(&TokenKind::Chain) {
+            self.expect(&TokenKind::To)?;
+            let height = self.parse_expr()?;
+            return Ok(StatementKind::Chain(ChainStmt {
+                operation: ChainOp::Rollback { height },
+            }));
+        }
+
+        // Regular ROLLBACK TO checkpoint
         self.expect(&TokenKind::To)?;
-
         let target = self.parse_expr()?;
-
         Ok(StatementKind::Rollback(RollbackStmt { target }))
     }
 
@@ -2244,6 +2277,87 @@ impl<'a> Parser<'a> {
         };
 
         Ok(StatementKind::Checkpoints(CheckpointsStmt { limit }))
+    }
+
+    // =========================================================================
+    // Chain Statement Parsers
+    // =========================================================================
+
+    fn parse_chain(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Chain)?;
+
+        let operation = if self.eat(&TokenKind::History) {
+            // CHAIN HISTORY 'key'
+            let key = self.parse_expr()?;
+            ChainOp::History { key }
+        } else if self.eat(&TokenKind::Similar) {
+            // CHAIN SIMILAR [embedding] LIMIT n
+            let embedding = self.parse_vector_literal()?;
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            ChainOp::Similar { embedding, limit }
+        } else if self.eat(&TokenKind::Drift) {
+            // CHAIN DRIFT FROM height TO height
+            self.expect(&TokenKind::From)?;
+            let from_height = self.parse_expr()?;
+            self.expect(&TokenKind::To)?;
+            let to_height = self.parse_expr()?;
+            ChainOp::Drift { from_height, to_height }
+        } else if self.eat(&TokenKind::Height) {
+            // CHAIN HEIGHT
+            ChainOp::Height
+        } else if self.eat(&TokenKind::Tip) {
+            // CHAIN TIP
+            ChainOp::Tip
+        } else if self.eat(&TokenKind::Block) {
+            // CHAIN BLOCK height
+            let height = self.parse_expr()?;
+            ChainOp::Block { height }
+        } else if self.eat(&TokenKind::Verify) {
+            // CHAIN VERIFY
+            ChainOp::Verify
+        } else {
+            return Err(ParseError::unexpected(
+                self.current.kind.clone(),
+                self.current.span,
+                "HISTORY, SIMILAR, DRIFT, HEIGHT, TIP, BLOCK, or VERIFY",
+            ));
+        };
+
+        Ok(StatementKind::Chain(ChainStmt { operation }))
+    }
+
+    fn parse_begin_chain(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Begin)?;
+        self.expect(&TokenKind::Chain)?;
+        // Optional TRANSACTION keyword
+        self.eat(&TokenKind::Transaction);
+
+        Ok(StatementKind::Chain(ChainStmt {
+            operation: ChainOp::Begin,
+        }))
+    }
+
+    fn parse_commit_chain(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Commit)?;
+        self.expect(&TokenKind::Chain)?;
+
+        Ok(StatementKind::Chain(ChainStmt {
+            operation: ChainOp::Commit,
+        }))
+    }
+
+    fn parse_analyze(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Analyze)?;
+        self.expect(&TokenKind::Codebook)?;
+        self.expect(&TokenKind::Transitions)?;
+
+        Ok(StatementKind::Chain(ChainStmt {
+            operation: ChainOp::AnalyzeTransitions,
+        }))
     }
 }
 

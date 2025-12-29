@@ -15,6 +15,7 @@ tensor_blob = { path = "../tensor_blob", features = ["full"] }
 tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
+neumann_parser = { path = "../neumann_parser" }
 neumann_shell = { path = "../neumann_shell" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
