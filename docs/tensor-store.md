@@ -51,9 +51,24 @@ The store uses tensor-based structures instead of hash maps:
 | Metric | SlabRouter | Previous (DashMap) |
 |--------|------------|-------------------|
 | PUT throughput | 3.1+ M ops/sec | 2.5 M ops/sec |
-| GET throughput | 4.6+ M ops/sec | 4.5 M ops/sec |
-| Throughput variance (CV) | <7% | 222% during resize |
+| GET throughput | 4.9+ M ops/sec | 4.5 M ops/sec |
+| Throughput variance (CV) | 12% steady-state | 222% during resize |
 | Resize stalls | None | 99.6% throughput drops |
+
+### Stress Test Results
+
+Stress tests validate stability under sustained concurrent load:
+
+| Test | Throughput | CV | Duration |
+|------|------------|-----|----------|
+| SlabRouter Stability | 653K ops/sec | 12.0% | 60s |
+| Mixed Workload | 802K ops/sec | - | 16s |
+| Cache-Heavy | 144K ops/sec | - | 8s |
+| Embedding-Heavy | 128K ops/sec | - | 8s |
+
+**Note on CV variance**: The duration stress test (which grows the store continuously over 60s) shows higher CV (~50%) as throughput naturally decreases when the store grows from empty to millions of entries. This is expected behavior - BTreeMap operations are O(log n) so performance scales with size. The key metric is that there are no sudden stalls or throughput cliffs, unlike hash table resizing which causes abrupt 99%+ drops.
+
+The SlabRouter stability test maintains a steady working set size, achieving 12% CV which is well within the 20% target for production stability.
 
 ## Data Model
 
@@ -386,12 +401,17 @@ graph_engine.add_entity_edge("user:1", "user:2", "follows")?;
 | Aspect | DashMap | SlabRouter |
 |--------|---------|------------|
 | Throughput | 2.5 M ops/sec | 3.1+ M ops/sec |
-| Stability | 222% CV during resize | <7% CV |
+| Stability | 222% CV during resize | 12% CV steady-state |
 | Resize stalls | 99.6% throughput drops | None |
 | Growth | O(n) resize events | O(log n) incremental |
 | Memory | Hash table overhead | Compact tree/array |
 
 For a database runtime where consistent performance is critical, tensor-based structures (BTreeMap, sorted arrays) provide predictable throughput without the pathological resize behavior of hash tables.
+
+**Observed behavior under load**:
+- Steady-state workloads (fixed working set): 12% CV - excellent stability
+- Growing workloads (continuous inserts): ~50% CV - expected O(log n) slowdown as store grows, but no sudden stalls
+- The key difference from hash tables: performance degrades gradually and predictably, never cliff-diving during resize
 
 ## Serialization
 
