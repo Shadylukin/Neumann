@@ -43,7 +43,7 @@ impl MasterKey {
     }
 
     /// Create from raw bytes (for testing and fuzzing).
-    #[cfg(any(test, fuzzing))]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn from_bytes(bytes: [u8; KEY_SIZE]) -> Self {
         Self { bytes }
     }

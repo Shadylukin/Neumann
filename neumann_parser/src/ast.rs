@@ -791,7 +791,10 @@ pub enum ChainOp {
     /// Get chain history for key: `CHAIN HISTORY 'key'`
     History { key: Expr },
     /// Search chain by similarity: `CHAIN SIMILAR [embedding] LIMIT n`
-    Similar { embedding: Vec<Expr>, limit: Option<Expr> },
+    Similar {
+        embedding: Vec<Expr>,
+        limit: Option<Expr>,
+    },
     /// Get chain drift metrics: `CHAIN DRIFT FROM height TO height`
     Drift { from_height: Expr, to_height: Expr },
     /// Show global codebook: `SHOW CODEBOOK GLOBAL`

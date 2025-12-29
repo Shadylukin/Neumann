@@ -412,13 +412,7 @@ mod tests {
     fn test_log_entry_serialization() {
         use crate::block::BlockHeader;
 
-        let header = BlockHeader::new(
-            1,
-            [0u8; 32],
-            [0u8; 32],
-            [0u8; 32],
-            "proposer".to_string(),
-        );
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
         let block = crate::block::Block::new(header, vec![]);
 
         let entry = LogEntry {

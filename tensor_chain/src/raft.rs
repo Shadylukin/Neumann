@@ -219,12 +219,12 @@ impl RaftNode {
             Message::RequestVoteResponse(rvr) => {
                 self.handle_request_vote_response(from, rvr);
                 None
-            }
+            },
             Message::AppendEntries(ae) => self.handle_append_entries(from, ae),
             Message::AppendEntriesResponse(aer) => {
                 self.handle_append_entries_response(from, aer);
                 None
-            }
+            },
             Message::Ping { term } => Some(Message::Pong { term: *term }),
             _ => None,
         }
@@ -360,8 +360,7 @@ impl RaftNode {
                 // Update commit index
                 let mut volatile = self.volatile.write();
                 if ae.leader_commit > volatile.commit_index {
-                    volatile.commit_index =
-                        ae.leader_commit.min(persistent.log.len() as u64);
+                    volatile.commit_index = ae.leader_commit.min(persistent.log.len() as u64);
                 }
             }
         }

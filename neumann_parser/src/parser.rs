@@ -2305,7 +2305,10 @@ impl<'a> Parser<'a> {
             let from_height = self.parse_expr()?;
             self.expect(&TokenKind::To)?;
             let to_height = self.parse_expr()?;
-            ChainOp::Drift { from_height, to_height }
+            ChainOp::Drift {
+                from_height,
+                to_height,
+            }
         } else if self.eat(&TokenKind::Height) {
             // CHAIN HEIGHT
             ChainOp::Height

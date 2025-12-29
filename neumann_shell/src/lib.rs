@@ -986,11 +986,19 @@ fn format_chain_similar(results: &[ChainSimilarResult]) -> String {
 
     let mut output = String::new();
     let _ = writeln!(output, "Similar Blocks:");
-    let _ = writeln!(output, "{:<10} {:<66} {:<10}", "Height", "Hash", "Similarity");
+    let _ = writeln!(
+        output,
+        "{:<10} {:<66} {:<10}",
+        "Height", "Hash", "Similarity"
+    );
     let _ = writeln!(output, "{}", "-".repeat(90));
 
     for r in results {
-        let _ = writeln!(output, "{:<10} {:<66} {:.4}", r.height, r.block_hash, r.similarity);
+        let _ = writeln!(
+            output,
+            "{:<10} {:<66} {:.4}",
+            r.height, r.block_hash, r.similarity
+        );
     }
 
     output.trim_end().to_string()
@@ -1002,7 +1010,11 @@ fn format_chain_drift(drift: &ChainDriftResult) -> String {
     let _ = writeln!(output, "  From height:        {}", drift.from_height);
     let _ = writeln!(output, "  To height:          {}", drift.to_height);
     let _ = writeln!(output, "  Total drift:        {:.4}", drift.total_drift);
-    let _ = writeln!(output, "  Avg drift/block:    {:.4}", drift.avg_drift_per_block);
+    let _ = writeln!(
+        output,
+        "  Avg drift/block:    {:.4}",
+        drift.avg_drift_per_block
+    );
     let _ = writeln!(output, "  Max drift:          {:.4}", drift.max_drift);
     output.trim_end().to_string()
 }
@@ -1034,10 +1046,26 @@ fn format_chain_codebook(info: &ChainCodebookInfo) -> String {
 fn format_chain_transitions(analysis: &ChainTransitionAnalysis) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "Transition Analysis:");
-    let _ = writeln!(output, "  Total transitions:   {}", analysis.total_transitions);
-    let _ = writeln!(output, "  Valid transitions:   {}", analysis.valid_transitions);
-    let _ = writeln!(output, "  Invalid transitions: {}", analysis.invalid_transitions);
-    let _ = writeln!(output, "  Avg validity score:  {:.4}", analysis.avg_validity_score);
+    let _ = writeln!(
+        output,
+        "  Total transitions:   {}",
+        analysis.total_transitions
+    );
+    let _ = writeln!(
+        output,
+        "  Valid transitions:   {}",
+        analysis.valid_transitions
+    );
+    let _ = writeln!(
+        output,
+        "  Invalid transitions: {}",
+        analysis.invalid_transitions
+    );
+    let _ = writeln!(
+        output,
+        "  Avg validity score:  {:.4}",
+        analysis.avg_validity_score
+    );
     output.trim_end().to_string()
 }
 

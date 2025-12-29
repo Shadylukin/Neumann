@@ -177,9 +177,7 @@ impl Chain {
         let mut prev_block = self.get_genesis()?.ok_or(ChainError::EmptyChain)?;
 
         for h in 1..=height {
-            let block = self
-                .get_block_at(h)?
-                .ok_or(ChainError::BlockNotFound(h))?;
+            let block = self.get_block_at(h)?.ok_or(ChainError::BlockNotFound(h))?;
 
             block.verify_chain(&prev_block)?;
             prev_block = block;

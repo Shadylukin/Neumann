@@ -346,7 +346,11 @@ mod tests {
     fn test_chain_drift() {
         let stmt = parse("CHAIN DRIFT FROM 0 TO 1000").unwrap();
         if let StatementKind::Chain(chain) = stmt.kind {
-            if let ChainOp::Drift { from_height, to_height } = chain.operation {
+            if let ChainOp::Drift {
+                from_height,
+                to_height,
+            } = chain.operation
+            {
                 if let ExprKind::Literal(Literal::Integer(f)) = from_height.kind {
                     assert_eq!(f, 0);
                 }

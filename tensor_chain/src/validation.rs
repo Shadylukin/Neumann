@@ -126,10 +126,7 @@ impl TransitionValidator {
     /// Validate a state and return detailed results.
     pub fn validate_state(&self, domain: &str, state: &[f32]) -> StateValidation {
         // Check global codebook
-        let (global_entry, global_similarity) = self
-            .global
-            .quantize(state)
-            .unwrap_or((0, 0.0));
+        let (global_entry, global_similarity) = self.global.quantize(state).unwrap_or((0, 0.0));
 
         // Check local codebook if exists
         let (local_entry, local_similarity) = {
@@ -366,28 +363,18 @@ mod tests {
             strict_transition: true,
             codebook_config: CodebookConfig::default(),
         };
-        let centroids = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.9, 0.1, 0.0],
-        ];
+        let centroids = vec![vec![1.0, 0.0, 0.0], vec![0.9, 0.1, 0.0]];
         let global = Arc::new(GlobalCodebook::from_centroids(centroids));
         let validator = TransitionValidator::new(global, config);
 
         // Small valid transition
-        let validation = validator.validate_transition(
-            "test",
-            &[1.0, 0.0, 0.0],
-            &[0.95, 0.05, 0.0],
-        );
+        let validation =
+            validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.95, 0.05, 0.0]);
         assert!(validation.is_valid);
         assert!(validation.magnitude < 0.5);
 
         // Large invalid transition
-        let validation = validator.validate_transition(
-            "test",
-            &[1.0, 0.0, 0.0],
-            &[0.0, 1.0, 0.0],
-        );
+        let validation = validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
         assert!(!validation.is_valid);
         assert!(validation.magnitude > 0.5);
     }
@@ -438,9 +425,9 @@ mod tests {
         let validator = create_test_validator();
 
         let states = vec![
-            vec![1.0, 0.0, 0.0],     // Valid (sim = 1.0)
-            vec![0.5, 0.5, 0.5],     // Invalid (low similarity)
-            vec![0.0, 1.0, 0.0],     // Valid (sim = 1.0)
+            vec![1.0, 0.0, 0.0], // Valid (sim = 1.0)
+            vec![0.5, 0.5, 0.5], // Invalid (low similarity)
+            vec![0.0, 1.0, 0.0], // Valid (sim = 1.0)
         ];
 
         let (idx, deviation) = validator.find_max_deviation("test", &states).unwrap();
@@ -453,10 +440,7 @@ mod tests {
         let validator = create_test_validator();
 
         // Learn some states
-        let states = vec![
-            vec![0.5, 0.5, 0.0],
-            vec![0.6, 0.4, 0.0],
-        ];
+        let states = vec![vec![0.5, 0.5, 0.0], vec![0.6, 0.4, 0.0]];
         validator.learn_from_states("custom", &states, 0.9);
 
         // Now validate against learned domain

@@ -152,7 +152,12 @@ impl DeltaVector {
     }
 
     /// Create from before and after state embeddings.
-    pub fn from_states(before: &[f32], after: &[f32], affected_keys: HashSet<String>, tx_id: u64) -> Self {
+    pub fn from_states(
+        before: &[f32],
+        after: &[f32],
+        affected_keys: HashSet<String>,
+        tx_id: u64,
+    ) -> Self {
         let vector: Vec<f32> = after
             .iter()
             .zip(before.iter())
@@ -354,7 +359,7 @@ impl ConsensusManager {
             MergeAction::VectorAdd => d1.add(d2),
             MergeAction::WeightedAverage { weight1, weight2 } => {
                 d1.weighted_average(d2, weight1 as f32, weight2 as f32)
-            }
+            },
             MergeAction::Deduplicate => d1.clone(),
             MergeAction::Cancel => DeltaVector::zero(d1.dimension()),
             MergeAction::Reject => {
@@ -365,7 +370,7 @@ impl ConsensusManager {
                     action: MergeAction::Reject,
                     error: Some("merge rejected".to_string()),
                 };
-            }
+            },
         };
 
         MergeResult {

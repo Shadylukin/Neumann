@@ -98,6 +98,10 @@ The project uses cargo-fuzz (libFuzzer-based) for coverage-guided fuzzing.
 | `vault_cipher` | tensor_vault | AES-256-GCM roundtrip |
 | `checkpoint_state` | tensor_checkpoint | Checkpoint bincode |
 | `storage_sparse_vector` | tensor_store | Sparse vector roundtrip |
+| `slab_entity_index` | tensor_store | EntityIndex operations |
+| `consistent_hash` | tensor_store | Consistent hash partitioner |
+| `tcp_framing` | tensor_chain | TCP wire protocol codec |
+| `membership` | tensor_chain | Cluster config serialization |
 
 ### Running Locally
 

@@ -43,9 +43,12 @@ pub mod block;
 pub mod chain;
 pub mod codebook;
 pub mod consensus;
+pub mod delta_replication;
 pub mod error;
+pub mod membership;
 pub mod network;
 pub mod raft;
+pub mod tcp;
 pub mod transaction;
 pub mod validation;
 
@@ -60,17 +63,28 @@ pub use consensus::{
     ConflictClass, ConflictResult, ConsensusConfig, ConsensusManager, DeltaVector, MergeAction,
     MergeResult,
 };
+pub use delta_replication::{
+    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, ReplicationStats,
+};
 pub use error::{ChainError, Result};
+pub use membership::{
+    ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
+    MembershipManager, NodeHealth, NodeStatus, PeerNodeConfig,
+};
 pub use network::{
     AppendEntries, AppendEntriesResponse, LogEntry, MemoryTransport, Message, NetworkManager,
     PeerConfig, RequestVote, RequestVoteResponse, Transport,
 };
 pub use raft::{RaftConfig, RaftNode, RaftState};
-pub use validation::{
-    StateValidation, TransitionValidation, TransitionValidator, ValidationConfig,
+pub use tcp::{
+    Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
+    TcpTransportConfig, TlsConfig, TransportStats,
 };
 pub use transaction::{
     TransactionDelta, TransactionManager, TransactionState, TransactionWorkspace,
+};
+pub use validation::{
+    StateValidation, TransitionValidation, TransitionValidator, ValidationConfig,
 };
 
 use std::sync::Arc;

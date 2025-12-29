@@ -5,8 +5,8 @@
 //! - Transaction workflows
 //! - Query integration via QueryRouter
 
-use query_router::{ChainResult, QueryResult, QueryRouter};
 use neumann_parser::parse;
+use query_router::{ChainResult, QueryResult, QueryRouter};
 
 #[test]
 fn test_chain_initialization() {
@@ -18,7 +18,9 @@ fn test_chain_initialization() {
     assert!(result.is_err());
 
     // Initialize chain
-    router.init_chain("test_node").expect("Failed to init chain");
+    router
+        .init_chain("test_node")
+        .expect("Failed to init chain");
 
     // Now it should work
     let result = router.execute_statement(&stmt).unwrap();

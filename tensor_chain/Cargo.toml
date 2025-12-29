@@ -42,7 +42,24 @@ parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 hex = "0.4"
+tracing = "0.1"
+
+# TCP transport
+bytes = "1.5"
+socket2 = { version = "0.5", features = ["all"] }
+
+# Optional TLS support
+tokio-rustls = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+[features]
+default = []
+tls = ["tokio-rustls", "rustls-pemfile"]
 
 [dev-dependencies]
 criterion = "0.5"
 tokio-test = "0.4"
+
+[[bench]]
+name = "tensor_chain_bench"
+harness = false

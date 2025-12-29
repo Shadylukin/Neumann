@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub mod blob_log;
 pub mod cache_ring;
+pub mod consistent_hash;
 pub mod delta_vector;
 pub mod embedding_slab;
 pub mod entity_index;
@@ -17,7 +18,10 @@ pub mod hnsw;
 pub mod instrumentation;
 pub mod metadata_slab;
 pub mod mmap;
+pub mod partitioned;
+pub mod partitioner;
 pub mod relational_slab;
+pub mod semantic_partitioner;
 pub mod slab_router;
 pub mod snapshot;
 pub mod sparse_vector;
@@ -25,6 +29,7 @@ pub mod tiered;
 
 pub use blob_log::{BlobLog, BlobLogSnapshot, ChunkHash};
 pub use cache_ring::{CacheRing, CacheRingSnapshot, CacheStats, EvictionScorer, EvictionStrategy};
+pub use consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner, ConsistentHashStats};
 pub use delta_vector::{
     ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
 };
@@ -37,9 +42,17 @@ pub use instrumentation::{
 };
 pub use metadata_slab::{MetadataSlab, MetadataSlabSnapshot};
 pub use mmap::{MmapError, MmapStore, MmapStoreBuilder, MmapStoreMut};
+pub use partitioned::{
+    PartitionedError, PartitionedGet, PartitionedPut, PartitionedResult, PartitionedStore,
+};
+pub use partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
 pub use relational_slab::{
     ColumnDef, ColumnType, ColumnValue, RelationalError, RelationalSlab, RelationalSlabSnapshot,
     Row, RowId, TableSchema,
+};
+pub use semantic_partitioner::{
+    EncodedEmbedding, RoutingMethod, SemanticPartitionResult, SemanticPartitioner,
+    SemanticPartitionerConfig, SemanticPartitionerStats,
 };
 pub use slab_router::{SlabRouter, SlabRouterConfig, SlabRouterError, SlabRouterSnapshot};
 pub use snapshot::{

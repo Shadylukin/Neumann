@@ -18,6 +18,9 @@ rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 
+[features]
+fuzzing = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 peak_alloc = "0.2"
@@ -28,7 +31,6 @@ harness = false
 
 [lints.rust]
 unsafe_code = "forbid"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [lints.clippy]
 all = "warn"

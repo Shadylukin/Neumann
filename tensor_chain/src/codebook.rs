@@ -165,10 +165,7 @@ impl GlobalCodebook {
     }
 
     /// Create from centroids with labels.
-    pub fn from_centroids_with_labels(
-        centroids: Vec<Vec<f32>>,
-        labels: Vec<String>,
-    ) -> Self {
+    pub fn from_centroids_with_labels(centroids: Vec<Vec<f32>>, labels: Vec<String>) -> Self {
         let dimension = centroids.first().map(|v| v.len()).unwrap_or(0);
         let entries = centroids
             .into_iter()
@@ -293,7 +290,10 @@ pub enum PruningStrategy {
     /// Least Frequently Used.
     LFU,
     /// Hybrid: combines recency and frequency.
-    Hybrid { recency_weight: f32, frequency_weight: f32 },
+    Hybrid {
+        recency_weight: f32,
+        frequency_weight: f32,
+    },
 }
 
 impl Default for PruningStrategy {
@@ -474,7 +474,7 @@ impl LocalCodebook {
                         let frequency_score = (1.0 + e.access_count as f64).ln();
                         recency_score * recency_weight as f64
                             + frequency_score * frequency_weight as f64
-                    }
+                    },
                 };
                 (i, score)
             })
@@ -617,7 +617,8 @@ impl CodebookManager {
         let residual_magnitude: f32 = residual.iter().map(|x| x * x).sum::<f32>().sqrt();
 
         // Step 3: If residual is significant, use local codebook
-        let (local_entry_id, local_similarity) = if residual_magnitude > self.config.residual_threshold
+        let (local_entry_id, local_similarity) = if residual_magnitude
+            > self.config.residual_threshold
         {
             let local = self.get_or_create_local(domain);
             let (id, sim) = local.quantize_and_update(&residual, self.config.similarity_threshold);
@@ -644,7 +645,10 @@ impl CodebookManager {
     /// Check if a state is valid (near a codebook entry).
     pub fn is_valid_state(&self, domain: &str, state: &[f32]) -> bool {
         // First check global
-        if self.global.is_valid_state(state, self.config.validity_threshold) {
+        if self
+            .global
+            .is_valid_state(state, self.config.validity_threshold)
+        {
             return true;
         }
 
@@ -909,10 +913,7 @@ mod tests {
 
     #[test]
     fn test_codebook_manager() {
-        let centroids = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-        ];
+        let centroids = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
         let global = GlobalCodebook::from_centroids(centroids);
         let manager = CodebookManager::with_global(global);
 

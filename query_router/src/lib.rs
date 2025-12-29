@@ -26,6 +26,8 @@
 //! ## Unified Commands
 //! - `FIND <entity> WHERE <condition> SIMILAR TO <key> CONNECTED TO <entity>`
 
+pub mod distributed;
+
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
     self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
@@ -36,7 +38,6 @@ use neumann_parser::{
     RollbackStmt, SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind, TableRefKind,
     UpdateStmt, VaultOp, VaultStmt,
 };
-use tensor_chain::{ChainError, TensorChain};
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
 };
@@ -45,6 +46,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
+use tensor_chain::{ChainError, TensorChain};
 use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
 use tensor_store::TensorStore;
 use tensor_unified::{
@@ -1765,9 +1767,10 @@ impl QueryRouter {
     // ========== Chain Execution ==========
 
     fn exec_chain(&self, stmt: &ChainStmt) -> Result<QueryResult> {
-        let chain = self.chain.as_ref().ok_or_else(|| {
-            RouterError::ChainError("Chain not initialized".to_string())
-        })?;
+        let chain = self
+            .chain
+            .as_ref()
+            .ok_or_else(|| RouterError::ChainError("Chain not initialized".to_string()))?;
 
         match &stmt.operation {
             ChainOp::Begin => {
@@ -1811,7 +1814,10 @@ impl QueryRouter {
                 // Note: Similarity search over chain requires additional implementation
                 Ok(QueryResult::Chain(ChainResult::Similar(vec![])))
             },
-            ChainOp::Drift { from_height, to_height } => {
+            ChainOp::Drift {
+                from_height,
+                to_height,
+            } => {
                 let from_h = self.expr_to_u64(from_height)?;
                 let to_h = self.expr_to_u64(to_height)?;
                 // Compute drift metrics (placeholder)
@@ -1850,46 +1856,46 @@ impl QueryRouter {
                     Err(RouterError::ChainError(format!("Block {} not found", h)))
                 }
             },
-            ChainOp::Verify => {
-                match chain.verify() {
-                    Ok(()) => Ok(QueryResult::Chain(ChainResult::Verified {
-                        ok: true,
-                        errors: vec![],
-                    })),
-                    Err(e) => Ok(QueryResult::Chain(ChainResult::Verified {
-                        ok: false,
-                        errors: vec![e.to_string()],
-                    })),
-                }
+            ChainOp::Verify => match chain.verify() {
+                Ok(()) => Ok(QueryResult::Chain(ChainResult::Verified {
+                    ok: true,
+                    errors: vec![],
+                })),
+                Err(e) => Ok(QueryResult::Chain(ChainResult::Verified {
+                    ok: false,
+                    errors: vec![e.to_string()],
+                })),
             },
             ChainOp::ShowCodebookGlobal => {
                 // Placeholder - would need access to codebook manager
-                Ok(QueryResult::Chain(ChainResult::Codebook(ChainCodebookInfo {
-                    scope: "global".to_string(),
-                    entry_count: 0,
-                    dimension: 0,
-                    domain: None,
-                })))
-            },
-            ChainOp::ShowCodebookLocal { domain } => {
-                let domain_str = self.eval_string_expr(domain)?;
-                Ok(QueryResult::Chain(ChainResult::Codebook(ChainCodebookInfo {
-                    scope: "local".to_string(),
-                    entry_count: 0,
-                    dimension: 0,
-                    domain: Some(domain_str),
-                })))
-            },
-            ChainOp::AnalyzeTransitions => {
-                Ok(QueryResult::Chain(ChainResult::TransitionAnalysis(
-                    ChainTransitionAnalysis {
-                        total_transitions: 0,
-                        valid_transitions: 0,
-                        invalid_transitions: 0,
-                        avg_validity_score: 0.0,
+                Ok(QueryResult::Chain(ChainResult::Codebook(
+                    ChainCodebookInfo {
+                        scope: "global".to_string(),
+                        entry_count: 0,
+                        dimension: 0,
+                        domain: None,
                     },
                 )))
             },
+            ChainOp::ShowCodebookLocal { domain } => {
+                let domain_str = self.eval_string_expr(domain)?;
+                Ok(QueryResult::Chain(ChainResult::Codebook(
+                    ChainCodebookInfo {
+                        scope: "local".to_string(),
+                        entry_count: 0,
+                        dimension: 0,
+                        domain: Some(domain_str),
+                    },
+                )))
+            },
+            ChainOp::AnalyzeTransitions => Ok(QueryResult::Chain(ChainResult::TransitionAnalysis(
+                ChainTransitionAnalysis {
+                    total_transitions: 0,
+                    valid_transitions: 0,
+                    invalid_transitions: 0,
+                    avg_validity_score: 0.0,
+                },
+            ))),
         }
     }
 
