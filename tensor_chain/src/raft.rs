@@ -18,6 +18,7 @@ use crate::network::{
     AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
     Transport,
 };
+use crate::validation::FastPathValidator;
 
 /// Raft node state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,12 +227,12 @@ pub struct RaftNode {
     votes_received: RwLock<Vec<NodeId>>,
     /// State embedding for similarity-based tie-breaking.
     state_embedding: RwLock<Vec<f32>>,
-    /// Recent block embeddings for fast-path (leader only).
-    recent_embeddings: RwLock<Vec<Vec<f32>>>,
     /// Finalized height (checkpointed).
     finalized_height: AtomicU64,
     /// Fast-path validation state.
     fast_path_state: FastPathState,
+    /// Fast-path validator for replication.
+    fast_path_validator: FastPathValidator,
 }
 
 impl RaftNode {
@@ -258,13 +259,13 @@ impl RaftNode {
             current_leader: RwLock::new(None),
             peers: RwLock::new(peers),
             transport,
-            config,
             last_heartbeat: RwLock::new(Instant::now()),
             votes_received: RwLock::new(Vec::new()),
             state_embedding: RwLock::new(Vec::new()),
-            recent_embeddings: RwLock::new(Vec::new()),
             finalized_height: AtomicU64::new(0),
             fast_path_state: FastPathState::default(),
+            fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
+            config,
         }
     }
 
@@ -433,7 +434,7 @@ impl RaftNode {
     }
 
     /// Handle AppendEntries RPC.
-    fn handle_append_entries(&self, from: &NodeId, ae: &AppendEntries) -> Option<Message> {
+    fn handle_append_entries(&self, _from: &NodeId, ae: &AppendEntries) -> Option<Message> {
         let mut persistent = self.persistent.write();
         let mut success = false;
         let mut match_index = 0;
@@ -449,15 +450,41 @@ impl RaftNode {
         if ae.term == persistent.current_term {
             // Valid leader
             *self.state.write() = RaftState::Follower;
+
+            // Detect leader change and clear stale embeddings
+            let old_leader = self.current_leader.read().clone();
+            if old_leader.as_ref() != Some(&ae.leader_id) {
+                if let Some(ref old) = old_leader {
+                    self.fast_path_state.clear_leader(old);
+                }
+                self.fast_path_validator.reset();
+            }
+
             *self.current_leader.write() = Some(ae.leader_id.clone());
             *self.last_heartbeat.write() = Instant::now();
 
-            // Check if we can use fast-path
+            // Check if we can use fast-path using the validator
             if self.config.enable_fast_path && ae.block_embedding.is_some() {
                 let embedding = ae.block_embedding.as_ref().unwrap();
-                if self.can_use_fast_path(from, embedding) {
-                    used_fast_path = true;
+                let history = self.fast_path_state.get_embeddings(&ae.leader_id);
+                let result = self.fast_path_validator.check_fast_path(embedding, &history);
+
+                used_fast_path = result.can_use_fast_path;
+
+                // Record statistics
+                if used_fast_path {
+                    self.fast_path_state.stats.record_fast_path();
+                } else if result.rejection_reason.as_deref() == Some("periodic full validation required") {
+                    self.fast_path_state.stats.record_full_validation();
+                } else {
+                    self.fast_path_state.stats.record_rejected();
                 }
+
+                // Record this validation for periodic full validation tracking
+                self.fast_path_validator.record_validation(used_fast_path);
+
+                // Track embedding for future fast-path checks
+                self.fast_path_state.add_embedding(&ae.leader_id, embedding.clone());
             }
 
             // Check log consistency
@@ -544,23 +571,6 @@ impl RaftNode {
         if should_advance_commit {
             self.try_advance_commit_index();
         }
-    }
-
-    /// Check if fast-path validation can be used.
-    fn can_use_fast_path(&self, leader: &NodeId, embedding: &[f32]) -> bool {
-        // Only use fast-path if embedding is similar to recent blocks from same leader
-        if self.current_leader.read().as_ref() != Some(leader) {
-            return false;
-        }
-
-        let recent = self.recent_embeddings.read();
-        if recent.is_empty() {
-            return false;
-        }
-
-        // Check similarity with most recent embedding
-        let last = &recent[recent.len() - 1];
-        cosine_similarity(embedding, last) >= self.config.similarity_threshold
     }
 
     /// Start an election.
@@ -656,12 +666,18 @@ impl RaftNode {
             return Err(ChainError::ConsensusError("not leader".to_string()));
         }
 
+        // Capture embedding before moving block
+        let embedding = block.header.delta_embedding.clone();
+
         let mut persistent = self.persistent.write();
         let index = persistent.log.len() as u64 + 1;
         let term = persistent.current_term;
 
         let entry = LogEntry { term, index, block };
         persistent.log.push(entry);
+
+        // Track embedding for fast-path validation by followers
+        self.fast_path_state.add_embedding(&self.node_id, embedding);
 
         Ok(index)
     }
@@ -702,18 +718,43 @@ impl RaftNode {
             volatile.last_applied = up_to;
         }
     }
-}
 
-/// Compute cosine similarity between two vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    /// Get entries for replication to a specific follower.
+    ///
+    /// Returns (prev_log_index, prev_log_term, entries, block_embedding).
+    /// The block_embedding is from the last entry if any, for fast-path validation.
+    pub fn get_entries_for_follower(&self, follower: &NodeId) -> (u64, u64, Vec<LogEntry>, Option<Vec<f32>>) {
+        let persistent = self.persistent.read();
+        let leader_state = self.leader_state.read();
 
-    if mag_a == 0.0 || mag_b == 0.0 {
-        0.0
-    } else {
-        dot / (mag_a * mag_b)
+        let next_idx = leader_state
+            .as_ref()
+            .and_then(|ls| ls.next_index.get(follower))
+            .copied()
+            .unwrap_or(1);
+
+        let (prev_log_index, prev_log_term) = if next_idx <= 1 {
+            (0, 0)
+        } else {
+            let idx = (next_idx - 2) as usize;
+            if idx < persistent.log.len() {
+                (persistent.log[idx].index, persistent.log[idx].term)
+            } else {
+                (0, 0)
+            }
+        };
+
+        let start = (next_idx - 1) as usize;
+        let entries = if start < persistent.log.len() {
+            persistent.log[start..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // Extract embedding from last entry for fast-path
+        let block_embedding = entries.last().map(|e| e.block.header.delta_embedding.clone());
+
+        (prev_log_index, prev_log_term, entries, block_embedding)
     }
 }
 
@@ -1268,10 +1309,13 @@ mod tests {
             config,
         );
 
-        // First, establish node2 as leader and add some embeddings
+        // First, establish node2 as leader and add sufficient embedding history (min_leader_history = 3)
         {
             *node.current_leader.write() = Some("node2".to_string());
-            node.recent_embeddings.write().push(vec![1.0, 0.0, 0.0]);
+            // Need at least 3 embeddings for fast-path to be considered
+            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         }
 
         // Send append entries with similar embedding
@@ -1296,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn test_can_use_fast_path_leader_mismatch() {
+    fn test_fast_path_leader_change_clears_history() {
         let mut config = RaftConfig::default();
         config.enable_fast_path = true;
 
@@ -1308,20 +1352,39 @@ mod tests {
             config,
         );
 
-        // Current leader is node3
-        *node.current_leader.write() = Some("node3".to_string());
-        node.recent_embeddings.write().push(vec![1.0, 0.0, 0.0]);
+        // Build up history for node2
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        *node.current_leader.write() = Some("node2".to_string());
 
-        // Check fast path for node2 (not the current leader)
-        let embedding = vec![1.0, 0.0, 0.0];
-        let result = node.can_use_fast_path(&"node2".to_string(), &embedding);
+        // Now receive from node3 - should trigger leader change cleanup
+        let ae = AppendEntries {
+            term: 2,
+            leader_id: "node3".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+        };
 
-        // Should fail because node2 is not the current leader
-        assert!(!result);
+        let response = node.handle_message(&"node3".to_string(), &Message::AppendEntries(ae));
+
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            // Should not use fast-path because node3 has no history yet
+            assert!(!aer.used_fast_path);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
+
+        // Old leader's history should be cleared
+        assert_eq!(node.fast_path_state.leader_history_size(&"node2".to_string()), 0);
     }
 
     #[test]
-    fn test_can_use_fast_path_empty_recent() {
+    fn test_fast_path_insufficient_history() {
         let mut config = RaftConfig::default();
         config.enable_fast_path = true;
 
@@ -1333,17 +1396,33 @@ mod tests {
             config,
         );
 
-        // Set leader but no recent embeddings
+        // Only 1 embedding in history (need 3 minimum)
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         *node.current_leader.write() = Some("node2".to_string());
 
-        let embedding = vec![1.0, 0.0, 0.0];
-        let result = node.can_use_fast_path(&"node2".to_string(), &embedding);
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "node2".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+        };
 
-        assert!(!result); // No recent embeddings
+        let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
+
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            // Insufficient history - should not use fast-path
+            assert!(!aer.used_fast_path);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
     }
 
     #[test]
-    fn test_can_use_fast_path_low_similarity() {
+    fn test_fast_path_low_similarity_rejected() {
         let mut config = RaftConfig::default();
         config.enable_fast_path = true;
         config.similarity_threshold = 0.95;
@@ -1357,13 +1436,88 @@ mod tests {
         );
 
         *node.current_leader.write() = Some("node2".to_string());
-        node.recent_embeddings.write().push(vec![1.0, 0.0, 0.0]);
+        // Add sufficient history
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
 
         // Orthogonal vector - low similarity
-        let embedding = vec![0.0, 1.0, 0.0];
-        let result = node.can_use_fast_path(&"node2".to_string(), &embedding);
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "node2".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(vec![0.0, 1.0, 0.0]),
+        };
 
-        assert!(!result); // Similarity too low
+        let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
+
+        if let Some(Message::AppendEntriesResponse(aer)) = response {
+            assert!(aer.success);
+            // Low similarity - should not use fast-path
+            assert!(!aer.used_fast_path);
+        } else {
+            panic!("expected AppendEntriesResponse");
+        }
+    }
+
+    #[test]
+    fn test_fast_path_stats_recorded() {
+        use std::sync::atomic::Ordering;
+
+        let mut config = RaftConfig::default();
+        config.enable_fast_path = true;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        *node.current_leader.write() = Some("node2".to_string());
+        // Add sufficient history for fast-path
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+
+        // Send similar embedding - should use fast-path
+        let ae = AppendEntries {
+            term: 1,
+            leader_id: "node2".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae.clone()));
+
+        // Check stats - should have 1 fast-path accepted
+        let stats = node.fast_path_stats();
+        assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.fast_path_rejected.load(Ordering::Relaxed), 0);
+
+        // Send dissimilar embedding - should reject fast-path
+        let ae2 = AppendEntries {
+            term: 1,
+            leader_id: "node2".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(vec![0.0, 1.0, 0.0]),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae2));
+
+        // Check stats - should have 1 rejected
+        assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.fast_path_rejected.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1386,43 +1540,6 @@ mod tests {
         // Pong is not handled, should return None
         let response = node.handle_message(&"node2".to_string(), &Message::Pong { term: 1 });
         assert!(response.is_none());
-    }
-
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 0.001);
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![-1.0, 0.0, 0.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!((sim - (-1.0)).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_cosine_similarity_zero_vector() {
-        let a = vec![0.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        let sim = cosine_similarity(&a, &b);
-        assert_eq!(sim, 0.0);
-
-        // Both zero
-        let c = vec![0.0, 0.0, 0.0];
-        let sim2 = cosine_similarity(&a, &c);
-        assert_eq!(sim2, 0.0);
     }
 
     #[test]

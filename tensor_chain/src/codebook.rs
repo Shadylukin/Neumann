@@ -97,6 +97,11 @@ impl CodebookEntry {
         self.last_access
     }
 
+    /// Get the label if set.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
     /// Record an access.
     pub fn record_access(&mut self) {
         self.access_count += 1;

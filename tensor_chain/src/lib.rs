@@ -229,6 +229,12 @@ pub struct TensorChain {
 
     /// Configuration.
     config: ChainConfig,
+
+    /// Codebook manager for state quantization and validation.
+    codebook_manager: CodebookManager,
+
+    /// Transition validator for semantic state validation.
+    transition_validator: TransitionValidator,
 }
 
 impl TensorChain {
@@ -238,11 +244,19 @@ impl TensorChain {
         let config = ChainConfig::new(node_id);
         let chain = Chain::new(graph.clone(), config.node_id.clone());
 
+        // Initialize codebook with default dimension (matches delta embedding size)
+        let global_codebook = GlobalCodebook::new(4);
+        let codebook_manager = CodebookManager::with_global(global_codebook.clone());
+        let transition_validator =
+            TransitionValidator::with_global(Arc::new(global_codebook));
+
         Self {
             chain,
             tx_manager: TransactionManager::new(),
             graph,
             config,
+            codebook_manager,
+            transition_validator,
         }
     }
 
@@ -251,11 +265,44 @@ impl TensorChain {
         let graph = Arc::new(GraphEngine::with_store(store));
         let chain = Chain::new(graph.clone(), config.node_id.clone());
 
+        // Initialize codebook with default dimension
+        let global_codebook = GlobalCodebook::new(4);
+        let codebook_manager = CodebookManager::with_global(global_codebook.clone());
+        let transition_validator =
+            TransitionValidator::with_global(Arc::new(global_codebook));
+
         Self {
             chain,
             tx_manager: TransactionManager::new(),
             graph,
             config,
+            codebook_manager,
+            transition_validator,
+        }
+    }
+
+    /// Create with custom codebook configuration.
+    pub fn with_codebook(
+        store: TensorStore,
+        config: ChainConfig,
+        global_codebook: GlobalCodebook,
+        codebook_config: CodebookConfig,
+        validation_config: ValidationConfig,
+    ) -> Self {
+        let graph = Arc::new(GraphEngine::with_store(store));
+        let chain = Chain::new(graph.clone(), config.node_id.clone());
+
+        let codebook_manager = CodebookManager::new(global_codebook.clone(), codebook_config);
+        let transition_validator =
+            TransitionValidator::new(Arc::new(global_codebook), validation_config);
+
+        Self {
+            chain,
+            tx_manager: TransactionManager::new(),
+            graph,
+            config,
+            codebook_manager,
+            transition_validator,
         }
     }
 
@@ -277,6 +324,16 @@ impl TensorChain {
     /// Get the node ID.
     pub fn node_id(&self) -> &NodeId {
         &self.config.node_id
+    }
+
+    /// Get the codebook manager.
+    pub fn codebook_manager(&self) -> &CodebookManager {
+        &self.codebook_manager
+    }
+
+    /// Get the transition validator.
+    pub fn transition_validator(&self) -> &TransitionValidator {
+        &self.transition_validator
     }
 
     /// Begin a new transaction.
@@ -313,12 +370,25 @@ impl TensorChain {
                 (operations, workspace.delta_embedding(), vec![])
             };
 
-        // Build the block with merged operations and delta embedding
+        // Quantize delta embedding using codebook
+        let quantized_codes = if !merged_delta.is_empty() {
+            if let Some((code, _similarity)) = self.codebook_manager.global().quantize(&merged_delta)
+            {
+                vec![code as u16]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Build the block with merged operations, delta embedding, and quantized codes
         let block = self
             .chain
             .new_block()
             .add_transactions(merged_operations)
             .with_embedding(merged_delta)
+            .with_codes(quantized_codes)
             .build();
 
         // Append to chain
@@ -362,6 +432,9 @@ impl TensorChain {
         let max_merge = self.config.auto_merge.max_merge_batch;
         let candidates_to_merge: Vec<_> = candidates.into_iter().take(max_merge).collect();
 
+        // Track original delta for validation
+        let original_delta = delta.vector.clone();
+
         // Merge each orthogonal candidate
         for candidate in candidates_to_merge {
             // Mark candidate as committing
@@ -369,11 +442,28 @@ impl TensorChain {
                 continue; // Skip if can't mark as committing
             }
 
-            // Merge operations
-            all_operations.extend(candidate.workspace.operations());
+            // Tentatively merge delta
+            let tentative_delta = delta.add(&candidate.delta);
 
-            // Merge delta via vector addition
-            delta = delta.add(&candidate.delta);
+            // Validate merged state using transition validator (if codebook has entries)
+            // Skip validation if codebook is empty (learning mode)
+            if !self.codebook_manager.global().is_empty() {
+                let validation = self.transition_validator.validate_transition(
+                    "chain",
+                    &original_delta,
+                    &tentative_delta.vector,
+                );
+
+                if !validation.is_valid {
+                    // Reject merge - rollback candidate
+                    candidate.workspace.mark_failed();
+                    continue;
+                }
+            }
+
+            // Accept merge
+            all_operations.extend(candidate.workspace.operations());
+            delta = tentative_delta;
 
             // Track merged workspace
             merged_workspaces.push(candidate.workspace);
@@ -447,6 +537,170 @@ impl TensorChain {
     /// Create a new block builder.
     pub fn new_block(&self) -> BlockBuilder {
         self.chain.new_block()
+    }
+
+    /// Save global codebook entries to TensorStore.
+    ///
+    /// Stores each centroid with key pattern `_codebook:global:{entry_id}`.
+    pub fn save_global_codebook(&self) -> Result<usize> {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let mut count = 0;
+        for entry in self.codebook_manager.global().iter() {
+            let key = format!("_codebook:global:{}", entry.id());
+            let mut data = TensorData::new();
+
+            // Store centroid as vector
+            data.set(
+                "_embedding",
+                TensorValue::Vector(entry.centroid().to_vec()),
+            );
+
+            // Store metadata
+            data.set(
+                "id",
+                TensorValue::Scalar(ScalarValue::Int(entry.id() as i64)),
+            );
+            data.set(
+                "magnitude",
+                TensorValue::Scalar(ScalarValue::Float(entry.magnitude() as f64)),
+            );
+            data.set(
+                "access_count",
+                TensorValue::Scalar(ScalarValue::Int(entry.access_count() as i64)),
+            );
+            if let Some(label) = entry.label() {
+                data.set(
+                    "label",
+                    TensorValue::Scalar(ScalarValue::String(String::from(label))),
+                );
+            }
+
+            self.graph
+                .store()
+                .put(&key, data)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+            count += 1;
+        }
+
+        // Store metadata about the codebook
+        let meta_key = "_codebook:global:_meta";
+        let mut meta = TensorData::new();
+        meta.set(
+            "entry_count",
+            TensorValue::Scalar(ScalarValue::Int(count as i64)),
+        );
+        meta.set(
+            "dimension",
+            TensorValue::Scalar(ScalarValue::Int(
+                self.codebook_manager.global().dimension() as i64,
+            )),
+        );
+        self.graph
+            .store()
+            .put(meta_key, meta)
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
+        Ok(count)
+    }
+
+    /// Load global codebook from TensorStore.
+    ///
+    /// Returns a GlobalCodebook constructed from stored entries.
+    pub fn load_global_codebook(&self) -> Result<Option<GlobalCodebook>> {
+        use tensor_store::TensorValue;
+
+        // First check if metadata exists
+        let meta_key = "_codebook:global:_meta";
+        let meta = match self.graph.store().get(meta_key) {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+
+        let entry_count = match meta.get("entry_count") {
+            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => *n as usize,
+            _ => return Ok(None),
+        };
+
+        if entry_count == 0 {
+            return Ok(None);
+        }
+
+        // Load all centroids
+        let mut centroids = Vec::with_capacity(entry_count);
+        for id in 0..entry_count {
+            let key = format!("_codebook:global:{}", id);
+            if let Ok(data) = self.graph.store().get(&key) {
+                if let Some(TensorValue::Vector(centroid)) = data.get("_embedding") {
+                    centroids.push(centroid.clone());
+                }
+            }
+        }
+
+        if centroids.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(GlobalCodebook::from_centroids(centroids)))
+    }
+
+    /// Create a TensorChain, loading existing codebook from store if available.
+    ///
+    /// This is the recommended constructor for production use, as it preserves
+    /// learned codebooks across restarts.
+    pub fn load_or_create(store: TensorStore, config: ChainConfig) -> Self {
+        let graph = Arc::new(GraphEngine::with_store(store));
+        let chain = Chain::new(graph.clone(), config.node_id.clone());
+
+        // Try to load existing codebook from store
+        let global_codebook = Self::try_load_codebook_from_store(graph.store())
+            .unwrap_or_else(|| GlobalCodebook::new(4));
+
+        let codebook_manager = CodebookManager::with_global(global_codebook.clone());
+        let transition_validator =
+            TransitionValidator::with_global(Arc::new(global_codebook));
+
+        Self {
+            chain,
+            tx_manager: TransactionManager::new(),
+            graph,
+            config,
+            codebook_manager,
+            transition_validator,
+        }
+    }
+
+    /// Helper to load codebook from a TensorStore.
+    fn try_load_codebook_from_store(store: &TensorStore) -> Option<GlobalCodebook> {
+        use tensor_store::TensorValue;
+
+        let meta_key = "_codebook:global:_meta";
+        let meta = store.get(meta_key).ok()?;
+
+        let entry_count = match meta.get("entry_count") {
+            Some(TensorValue::Scalar(tensor_store::ScalarValue::Int(n))) => *n as usize,
+            _ => return None,
+        };
+
+        if entry_count == 0 {
+            return None;
+        }
+
+        let mut centroids = Vec::with_capacity(entry_count);
+        for id in 0..entry_count {
+            let key = format!("_codebook:global:{}", id);
+            if let Ok(data) = store.get(&key) {
+                if let Some(TensorValue::Vector(centroid)) = data.get("_embedding") {
+                    centroids.push(centroid.clone());
+                }
+            }
+        }
+
+        if centroids.is_empty() {
+            return None;
+        }
+
+        Some(GlobalCodebook::from_centroids(centroids))
     }
 }
 
@@ -911,5 +1165,148 @@ mod tests {
 
         let tip = chain.get_tip().unwrap().unwrap();
         assert_eq!(tip.header.height, 1);
+    }
+
+    #[test]
+    fn test_codebook_manager_accessor() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let manager = chain.codebook_manager();
+        // Default codebook has dimension 4
+        assert_eq!(manager.global().dimension(), 4);
+    }
+
+    #[test]
+    fn test_transition_validator_accessor() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let validator = chain.transition_validator();
+        // Verify we can use the validator (empty codebook, so no valid centroids)
+        let validation = validator.validate_state("test_domain", &[1.0, 0.0, 0.0, 0.0]);
+        // With empty codebook, similarity is 0.0 (below threshold)
+        assert_eq!(validation.global_similarity, 0.0);
+    }
+
+    #[test]
+    fn test_save_and_load_global_codebook() {
+        let store = TensorStore::new();
+
+        // Create chain with custom codebook
+        let centroids = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ];
+        let global_codebook = GlobalCodebook::from_centroids(centroids);
+        let config = ChainConfig::new("node1");
+
+        let chain = TensorChain::with_codebook(
+            store,
+            config,
+            global_codebook,
+            CodebookConfig::default(),
+            ValidationConfig::default(),
+        );
+
+        // Save codebook
+        let count = chain.save_global_codebook().unwrap();
+        assert_eq!(count, 3);
+
+        // Load it back
+        let loaded = chain.load_global_codebook().unwrap().unwrap();
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded.dimension(), 4);
+    }
+
+    #[test]
+    fn test_load_global_codebook_empty_store() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        // No codebook saved - should return None
+        let loaded = chain.load_global_codebook().unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_load_or_create_with_empty_store() {
+        let store = TensorStore::new();
+        let config = ChainConfig::new("node1");
+
+        let chain = TensorChain::load_or_create(store, config);
+
+        // Should create default codebook (empty, dimension 4)
+        assert_eq!(chain.codebook_manager().global().dimension(), 4);
+        assert_eq!(chain.codebook_manager().global().len(), 0);
+    }
+
+    #[test]
+    fn test_load_or_create_with_existing_codebook() {
+        let store = TensorStore::new();
+
+        // First create and save a codebook
+        let centroids = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+        ];
+        let global_codebook = GlobalCodebook::from_centroids(centroids);
+        let config = ChainConfig::new("node1");
+
+        let chain1 = TensorChain::with_codebook(
+            store.clone(),
+            config.clone(),
+            global_codebook,
+            CodebookConfig::default(),
+            ValidationConfig::default(),
+        );
+        chain1.save_global_codebook().unwrap();
+
+        // Now load_or_create should find the existing codebook
+        let chain2 = TensorChain::load_or_create(store, config);
+
+        assert_eq!(chain2.codebook_manager().global().len(), 2);
+        assert_eq!(chain2.codebook_manager().global().dimension(), 4);
+    }
+
+    #[test]
+    fn test_commit_quantizes_delta() {
+        // Create a codebook with known centroids
+        let centroids = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0],
+        ];
+        let global_codebook = GlobalCodebook::from_centroids(centroids);
+        let config = ChainConfig::new("node1").with_auto_merge(false);
+        let store = TensorStore::new();
+
+        let chain = TensorChain::with_codebook(
+            store,
+            config,
+            global_codebook,
+            CodebookConfig::default(),
+            ValidationConfig::default(),
+        );
+        chain.initialize().unwrap();
+
+        // Create transaction with delta close to centroid 0
+        let tx = chain.begin().unwrap();
+        tx.add_operation(Transaction::Put {
+            key: "test".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        tx.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
+        tx.compute_delta(vec![0.9, 0.1, 0.0, 0.0]); // Close to [1,0,0,0]
+
+        chain.commit(tx).unwrap();
+
+        // Check block has quantized codes
+        let block = chain.get_tip().unwrap().unwrap();
+        assert!(!block.header.quantized_codes.is_empty());
+        assert_eq!(block.header.quantized_codes[0], 0); // Should quantize to centroid 0
     }
 }

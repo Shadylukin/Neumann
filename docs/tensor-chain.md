@@ -195,6 +195,44 @@ if manager.is_valid_transition("users", &from_state, &to_state, max_distance) {
 }
 ```
 
+### Codebook Persistence
+
+Codebooks are persisted to TensorStore for recovery across restarts:
+
+```rust
+use tensor_chain::{TensorChain, ChainConfig, GlobalCodebook};
+use tensor_store::TensorStore;
+
+// Option 1: Use load_or_create (recommended for production)
+// Automatically loads existing codebook or creates empty one
+let store = TensorStore::new();
+let chain = TensorChain::load_or_create(store, ChainConfig::new("node1"));
+
+// Option 2: Manual save/load
+let chain = TensorChain::with_codebook(store, config, codebook, cb_config, val_config);
+
+// Save codebook to store (key pattern: _codebook:global:{id})
+let count = chain.save_global_codebook()?;
+println!("Saved {} codebook entries", count);
+
+// Load codebook from store
+if let Some(loaded) = chain.load_global_codebook()? {
+    println!("Loaded codebook with {} entries", loaded.len());
+}
+
+// Access codebook manager
+let manager = chain.codebook_manager();
+println!("Global codebook dimension: {}", manager.global().dimension());
+
+// Access transition validator
+let validator = chain.transition_validator();
+let validation = validator.validate_transition("domain", &from, &to);
+```
+
+Storage format:
+- Centroids: `_codebook:global:{entry_id}` with `_embedding` vector
+- Metadata: `_codebook:global:_meta` with `entry_count` and `dimension`
+
 ## Semantic Conflict Detection
 
 Conflicts classified by cosine similarity of delta embeddings:
@@ -625,6 +663,14 @@ impl TensorChain {
     // Construction
     pub fn new(store: TensorStore, node_id: impl Into<NodeId>) -> Self;
     pub fn with_config(store: TensorStore, config: ChainConfig) -> Self;
+    pub fn with_codebook(
+        store: TensorStore,
+        config: ChainConfig,
+        global_codebook: GlobalCodebook,
+        codebook_config: CodebookConfig,
+        validation_config: ValidationConfig,
+    ) -> Self;
+    pub fn load_or_create(store: TensorStore, config: ChainConfig) -> Self;
     pub fn initialize(&self) -> Result<()>;
 
     // Transaction Management
@@ -644,6 +690,14 @@ impl TensorChain {
     // History and Verification
     pub fn history(&self, key: &str) -> Result<Vec<(u64, Transaction)>>;
     pub fn verify(&self) -> Result<()>;
+
+    // Codebook Access
+    pub fn codebook_manager(&self) -> &CodebookManager;
+    pub fn transition_validator(&self) -> &TransitionValidator;
+
+    // Codebook Persistence
+    pub fn save_global_codebook(&self) -> Result<usize>;
+    pub fn load_global_codebook(&self) -> Result<Option<GlobalCodebook>>;
 
     // Advanced
     pub fn active_transactions(&self) -> usize;

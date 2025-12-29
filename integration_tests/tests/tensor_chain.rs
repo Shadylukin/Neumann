@@ -215,3 +215,150 @@ fn test_commit_chain() {
         panic!("Expected ChainResult::Committed");
     }
 }
+
+#[test]
+fn test_codebook_persistence_roundtrip() {
+    use tensor_chain::{
+        ChainConfig, CodebookConfig, GlobalCodebook, TensorChain, ValidationConfig,
+    };
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+
+    // Create chain with custom codebook
+    let centroids = vec![
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0, 0.0],
+        vec![0.0, 0.0, 1.0, 0.0],
+        vec![0.0, 0.0, 0.0, 1.0],
+    ];
+    let global = GlobalCodebook::from_centroids(centroids);
+    let config = ChainConfig::new("persist_test");
+
+    let chain = TensorChain::with_codebook(
+        store.clone(),
+        config.clone(),
+        global,
+        CodebookConfig::default(),
+        ValidationConfig::default(),
+    );
+    chain.initialize().unwrap();
+
+    // Save codebook
+    let saved_count = chain.save_global_codebook().unwrap();
+    assert_eq!(saved_count, 4);
+
+    // Create a new chain using load_or_create - should load existing codebook
+    let chain2 = TensorChain::load_or_create(store, config);
+
+    assert_eq!(chain2.codebook_manager().global().len(), 4);
+    assert_eq!(chain2.codebook_manager().global().dimension(), 4);
+}
+
+#[test]
+fn test_transaction_with_codebook_quantization() {
+    use tensor_chain::{
+        ChainConfig, CodebookConfig, GlobalCodebook, TensorChain, Transaction, ValidationConfig,
+    };
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+
+    // Create codebook with orthogonal centroids
+    let centroids = vec![
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![0.0, 1.0, 0.0, 0.0],
+        vec![0.0, 0.0, 1.0, 0.0],
+        vec![0.0, 0.0, 0.0, 1.0],
+    ];
+    let global = GlobalCodebook::from_centroids(centroids);
+    let config = ChainConfig::new("quant_test").with_auto_merge(false);
+
+    let chain = TensorChain::with_codebook(
+        store,
+        config,
+        global,
+        CodebookConfig::default(),
+        ValidationConfig::default(),
+    );
+    chain.initialize().unwrap();
+
+    // Create transaction with delta close to first centroid
+    let tx = chain.begin().unwrap();
+    tx.add_operation(Transaction::Put {
+        key: "test_key".to_string(),
+        data: vec![1, 2, 3],
+    })
+    .unwrap();
+    tx.set_before_embedding(vec![0.0, 0.0, 0.0, 0.0]);
+    tx.compute_delta(vec![0.95, 0.05, 0.0, 0.0]); // Close to [1,0,0,0]
+
+    chain.commit(tx).unwrap();
+
+    // Verify block has quantized codes
+    let block = chain.get_tip().unwrap().unwrap();
+    assert!(!block.header.quantized_codes.is_empty());
+    assert_eq!(block.header.quantized_codes[0], 0); // Nearest centroid is 0
+}
+
+#[test]
+fn test_load_or_create_fresh_store() {
+    use tensor_chain::{ChainConfig, TensorChain};
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+    let config = ChainConfig::new("fresh_test");
+
+    // Fresh store should create empty codebook
+    let chain = TensorChain::load_or_create(store, config);
+
+    assert_eq!(chain.codebook_manager().global().len(), 0);
+    assert_eq!(chain.codebook_manager().global().dimension(), 4);
+}
+
+#[test]
+fn test_codebook_manager_accessor() {
+    use tensor_chain::TensorChain;
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+    let chain = TensorChain::new(store, "accessor_test");
+
+    let manager = chain.codebook_manager();
+    assert_eq!(manager.global().dimension(), 4);
+    assert!(manager.global().is_empty());
+}
+
+#[test]
+fn test_transition_validator_with_codebook() {
+    use std::sync::Arc;
+    use tensor_chain::{GlobalCodebook, TransitionValidator, ValidationConfig};
+
+    // Create codebook with single centroid
+    let centroids = vec![vec![1.0, 0.0, 0.0]];
+    let global = Arc::new(GlobalCodebook::from_centroids(centroids));
+    let config = ValidationConfig {
+        state_threshold: 0.9,
+        max_transition_magnitude: 0.5,
+        strict_transition: true,
+        codebook_config: Default::default(),
+    };
+    let validator = TransitionValidator::new(global, config);
+
+    // Valid transition (close to centroid)
+    let validation = validator.validate_transition(
+        "test",
+        &[1.0, 0.0, 0.0],
+        &[0.95, 0.05, 0.0],
+    );
+    assert!(validation.is_valid);
+    assert!(validation.magnitude < 0.5);
+
+    // Invalid transition (too far from centroid)
+    let validation = validator.validate_transition(
+        "test",
+        &[0.0, 1.0, 0.0],
+        &[0.0, 0.0, 1.0],
+    );
+    assert!(!validation.is_valid);
+}
