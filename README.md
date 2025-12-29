@@ -205,11 +205,12 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Query Router | Complete | Cross-engine queries on unified entities, cache integration |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
+| Tensor Chain | Complete | Tensor-native blockchain with Raft consensus, semantic conflict detection, 2PC distributed transactions |
 | Persistence | Basic | Snapshot-based save/load with bincode serialization |
 
 ## What Neumann Is Not (For Now)
 
-- **Not a distributed system.** Single-node, in-memory first. Durability and clustering come later.
+- **Not a fully distributed system yet.** Tensor Chain provides Raft consensus and 2PC, but dynamic membership and automatic sharding are future work.
 - **Not a replacement for production Postgres at scale.** It's for development, prototyping, small-to-medium workloads, and AI-native applications.
 - **Not a full IDE or code editor.** It stores and queries code structure, but you still write code elsewhere.
 
@@ -237,6 +238,7 @@ Neumann finishes the thought.
 - [Tensor Vault](docs/tensor-vault.md)
 - [Tensor Cache](docs/tensor-cache.md)
 - [Tensor Blob](docs/tensor-blob.md)
+- [Tensor Chain](docs/tensor-chain.md)
 
 **Query Language**
 - [Query Router API](docs/query-router.md)

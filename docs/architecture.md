@@ -90,6 +90,15 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 +--------------------------------------------------+
                         |
 +--------------------------------------------------+
+|          Tensor Chain (Module 14) [DONE]          |
+|   - Tensor-native blockchain with Raft consensus |
+|   - Semantic conflict detection (delta vectors)  |
+|   - Hierarchical codebook validation             |
+|   - 2PC distributed transactions                 |
+|   - TCP transport with membership management     |
++--------------------------------------------------+
+                        |
++--------------------------------------------------+
 |         Sparse/Delta Vectors [DONE]               |
 |   - SparseVector for high-sparsity embeddings    |
 |   - DeltaVector for archetype-based encoding     |
@@ -520,6 +529,39 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Support distributed checkpoints (single-node)
 - Auto-checkpoint on every write (only destructive ops)
 
+### Module 14: Tensor Chain (Complete)
+
+**Responsibility**: Tensor-native blockchain with semantic conflict detection, hierarchical codebook validation, and distributed consensus.
+
+**Interface**:
+- `new(store, node_id) -> TensorChain` - Create chain
+- `begin() -> Result<TransactionWorkspace>` - Start transaction
+- `commit(workspace) -> Result<BlockHash>` - Commit transaction to block
+- `rollback(workspace) -> Result<()>` - Abort transaction
+- `height() -> u64` - Current chain height
+- `get_block(height) -> Result<Block>` - Get block by height
+- `history(key) -> Result<Vec<(u64, Transaction)>>` - Key change history
+- `verify() -> Result<()>` - Verify chain integrity
+
+**Features**:
+- Semantic transactions with delta embedding tracking
+- Hierarchical codebooks (Global static + Local EMA-adaptive)
+- Cosine similarity-based conflict detection
+- Orthogonal transaction auto-merge via vector addition
+- Tensor-Raft consensus with similarity fast-path
+- Two-phase finality (Raft quorum -> checkpointed)
+- TCP transport with persistent connections
+- Static cluster membership with health checking
+- Delta-compressed replication (4-10x bandwidth reduction)
+- 2PC distributed transactions with delta-based conflict resolution
+
+**Test Coverage**: >95% across all modules (validation.rs: 100%, block.rs: 99.44%, codebook.rs: 99.36%, etc.)
+
+**Does Not**:
+- Implement dynamic cluster membership (static config only)
+- Support sharding (single chain, future work)
+- Persist audit logs (in-memory only)
+
 ## Data Flow
 
 ### Write Path
@@ -669,6 +711,7 @@ Neumann/
     tensor-blob.md           # Module 11 documentation
     tensor-unified.md        # Module 12 documentation
     tensor-checkpoint.md     # Module 13 documentation
+    tensor-chain.md          # Module 14 documentation
     benchmarks.md            # Performance benchmarks
   tensor_store/
     Cargo.toml
@@ -751,6 +794,31 @@ Neumann/
       retention.rs           # Count-based purge logic
       preview.rs             # Operation preview generation
       error.rs               # Error types
+  tensor_chain/
+    Cargo.toml
+    src/
+      lib.rs                 # Module 14: TensorChain API, ChainConfig
+      block.rs               # Block, BlockHeader, Transaction types
+      chain.rs               # Chain linked via graph edges
+      transaction.rs         # Workspace isolation, delta tracking
+      codebook.rs            # GlobalCodebook, LocalCodebook, CodebookManager
+      validation.rs          # TransitionValidator, FastPathValidator
+      consensus.rs           # Semantic conflict detection, auto-merge
+      raft.rs                # Tensor-Raft consensus state machine
+      network.rs             # Transport trait, MemoryTransport
+      membership.rs          # Cluster membership and health checking
+      delta_replication.rs   # Delta-compressed state replication
+      distributed_tx.rs      # 2PC coordinator, LockManager
+      error.rs               # ChainError types
+      tcp/
+        mod.rs               # TCP module exports
+        config.rs            # TCP transport configuration
+        transport.rs         # TcpTransport implementation
+        connection.rs        # Connection and ConnectionPool
+        framing.rs           # Length-delimited wire protocol
+        listener.rs          # Accept loop
+        reconnect.rs         # Exponential backoff
+        error.rs             # TCP-specific errors
   query_router/
     Cargo.toml
     src/lib.rs               # Module 5: Query execution
@@ -783,7 +851,7 @@ Runs before every commit for all crates:
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (95% minimum, per-crate thresholds for shell/parser/blob/router)
+5. `cargo llvm-cov` - Coverage check (95% minimum, per-crate thresholds: shell 88%, parser 91%, blob 91%, router 92%, chain 95%)
 
 ### CI Pipeline
 
