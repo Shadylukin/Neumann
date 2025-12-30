@@ -48,10 +48,13 @@ tensor_chain/
   codebook.rs         # GlobalCodebook, LocalCodebook, CodebookManager
   validation.rs       # TransitionValidator
   consensus.rs        # Semantic conflict detection, auto-merge (sparse DeltaVector)
-  raft.rs             # Tensor-Raft consensus state machine
+  raft.rs             # Tensor-Raft consensus with persistence
+  state_machine.rs    # Raft->Chain state machine (applies committed entries)
+  cluster.rs          # ClusterOrchestrator (unified node startup)
   network.rs          # Transport trait, MemoryTransport (sparse messages)
   error.rs            # ChainError types
   membership.rs       # Cluster membership and health checking
+  geometric_membership.rs # Embedding-based peer scoring
   delta_replication.rs # Delta-compressed state replication
   distributed_tx.rs   # 2PC coordinator, LockManager
   tcp/
@@ -60,8 +63,6 @@ tensor_chain/
     transport.rs      # TcpTransport implementation
     connection.rs     # Connection and ConnectionPool
     framing.rs        # Length-delimited wire protocol
-    listener.rs       # Accept loop for incoming connections
-    reconnect.rs      # Exponential backoff reconnection
     error.rs          # TCP-specific error types
 ```
 
@@ -618,6 +619,232 @@ Messages use length-delimited framing:
 - **Automatic Reconnection**: Exponential backoff with jitter
 - **Backpressure**: Bounded per-peer queue (1000 messages)
 - **Health Monitoring**: Integrated with membership layer
+
+## Cluster Orchestration
+
+The `ClusterOrchestrator` provides a unified API for starting and managing distributed Neumann nodes. It ties together all distributed components into a cohesive unit.
+
+### Quick Start
+
+```rust
+use tensor_chain::{ClusterOrchestrator, OrchestratorConfig, LocalNodeConfig, ClusterPeerConfig};
+use std::net::SocketAddr;
+
+// Configure local node
+let local = LocalNodeConfig::new("node1", "0.0.0.0:9100".parse()?);
+
+// Configure peers
+let peers = vec![
+    ClusterPeerConfig::new("node2", "192.168.1.11:9100".parse()?),
+    ClusterPeerConfig::new("node3", "192.168.1.12:9100".parse()?),
+];
+
+// Create and start the orchestrator
+let config = OrchestratorConfig::new(local, peers);
+let orchestrator = ClusterOrchestrator::start(config).await?;
+
+// Check node state
+println!("Node ID: {}", orchestrator.node_id());
+println!("Is leader: {}", orchestrator.is_leader());
+println!("Chain height: {}", orchestrator.chain_height());
+
+// Run until shutdown signal
+let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+orchestrator.run(shutdown_rx).await?;
+
+// Graceful shutdown (saves Raft state)
+orchestrator.shutdown().await?;
+```
+
+### What ClusterOrchestrator Manages
+
+| Component | Purpose |
+|-----------|---------|
+| TensorStore | Persistence for chain data and Raft state |
+| TcpTransport | Network communication between nodes |
+| MembershipManager | Health checking and peer tracking |
+| GeometricMembershipManager | Embedding-based peer scoring |
+| RaftNode | Consensus with persistence |
+| Chain | Block storage via GraphEngine |
+| TensorStateMachine | Applies committed Raft entries to chain |
+
+### Configuration Options
+
+```rust
+let config = OrchestratorConfig::new(local, peers)
+    .with_raft(RaftConfig {
+        heartbeat_interval: 50,
+        election_timeout: (150, 300),
+        similarity_threshold: 0.95,
+        enable_fast_path: true,
+        ..Default::default()
+    })
+    .with_geometric(GeometricMembershipConfig::default())
+    .with_fast_path_threshold(0.95);
+```
+
+### Accessing Components
+
+```rust
+// Access Raft node for consensus operations
+let raft = orchestrator.raft();
+if raft.is_leader() {
+    raft.propose(block)?;
+}
+
+// Access chain for queries
+let chain = orchestrator.chain();
+let tip = chain.get_tip()?;
+
+// Access membership for cluster view
+let membership = orchestrator.membership();
+let view = membership.view();
+
+// Access store for persistence
+let store = orchestrator.store();
+store.save_snapshot(&path)?;
+```
+
+## State Machine (Raft→Chain Integration)
+
+The `TensorStateMachine` bridges Raft consensus and TensorChain storage, applying committed log entries to the chain with fast-path optimization.
+
+### How It Works
+
+```
+Raft Log:          [Entry 1] [Entry 2] [Entry 3] [Entry 4]
+                        ↓         ↓         ↓
+                   committed  committed  committed
+                        ↓         ↓         ↓
+State Machine:     apply()   apply()   apply()
+                        ↓         ↓         ↓
+TensorChain:       [Block 1] [Block 2] [Block 3]
+```
+
+### Fast-Path Validation
+
+When a block's embedding is similar to recently applied blocks (similarity > threshold), the state machine skips heavy validation:
+
+```rust
+use tensor_chain::TensorStateMachine;
+
+// Create state machine with custom threshold
+let sm = TensorStateMachine::with_threshold(chain, raft, 0.95);
+
+// Apply all committed but unapplied entries
+let applied = sm.apply_committed()?;
+println!("Applied {} blocks", applied);
+
+// Check similarity for fast-path eligibility
+let similarity = sm.recent_embedding_similarity(&block_embedding);
+if similarity > 0.95 {
+    // Fast-path: minimal validation
+} else {
+    // Full validation path
+}
+```
+
+### Integration with ClusterOrchestrator
+
+The orchestrator's run loop automatically applies committed entries:
+
+```rust
+loop {
+    // Tick Raft (handle timeouts, elections, heartbeats)
+    raft.tick_async().await?;
+
+    // Apply any committed entries to chain
+    state_machine.apply_committed()?;
+}
+```
+
+## Raft Persistence
+
+Raft state is persisted to TensorStore for crash recovery, using the same patterns as codebook persistence.
+
+### Persisted State
+
+| Field | Key Pattern | Description |
+|-------|-------------|-------------|
+| term | `_raft:state:{node_id}` | Current term number |
+| voted_for | `_raft:state:{node_id}` | Vote recipient (if any) |
+| log | `_raft:state:{node_id}` | Serialized log entries |
+| embedding | `_raft:state:{node_id}` | State embedding for geometric recovery |
+
+### Manual Save/Load
+
+```rust
+use tensor_chain::RaftNode;
+
+// Save Raft state to TensorStore
+raft_node.save_to_store(&store)?;
+
+// Load state from store (returns None if not found)
+let state = RaftNode::load_from_store("node1", &store);
+if let Some((term, voted_for, log)) = state {
+    println!("Recovered: term={}, log_len={}", term, log.len());
+}
+
+// Create node with persisted state
+let node = RaftNode::with_store(
+    "node1".to_string(),
+    peers,
+    transport,
+    RaftConfig::default(),
+    &store,  // Loads state if available
+);
+```
+
+### Automatic Persistence via Snapshots
+
+When using `save_snapshot_compressed()`, Raft state is automatically included:
+
+```rust
+// Save everything (including Raft state)
+raft_node.save_to_store(&store)?;
+store.save_snapshot_compressed(&path, CompressConfig::default())?;
+
+// Load everything on restart
+let store = TensorStore::load_snapshot(&path)?;
+let node = RaftNode::with_store(node_id, peers, transport, config, &store);
+```
+
+## Geometric Membership
+
+Embedding-based peer scoring for intelligent routing and leader preference.
+
+### Peer Scoring
+
+```rust
+use tensor_chain::{GeometricMembershipManager, GeometricMembershipConfig};
+
+let config = GeometricMembershipConfig {
+    routing_dimensions: 128,
+    similarity_weight: 0.7,
+    latency_weight: 0.3,
+};
+
+let geometric = GeometricMembershipManager::new(membership, config);
+
+// Score peers by embedding similarity
+let scores = geometric.score_peers(&query_embedding);
+for (peer_id, score) in scores {
+    println!("Peer {}: score={:.3}", peer_id, score);
+}
+
+// Get best peer for a query
+let best = geometric.best_peer_for(&query_embedding);
+```
+
+### Integration with Raft
+
+Geometric membership influences leader election via vote bias:
+
+```rust
+// Candidate with similar state embedding gets higher vote preference
+let bias = raft_node.geometric_vote_bias(&candidate_embedding);
+// bias in [0, 1] where 1 = identical state embedding
+```
 
 ## Cluster Membership
 
