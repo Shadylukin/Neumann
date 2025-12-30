@@ -19,6 +19,7 @@ cargo bench --package neumann_shell
 cargo bench --package tensor_compress
 cargo bench --package tensor_vault
 cargo bench --package tensor_cache
+cargo bench --package tensor_chain
 ```
 
 Benchmark reports are generated in `target/criterion/` with HTML visualizations.
@@ -604,6 +605,141 @@ The tensor_cache crate provides LLM response caching with exact, semantic (HNSW)
 | CostBased | Evict lowest cost efficiency |
 | Hybrid | Weighted combination (recommended) |
 
+### tensor_chain
+
+The tensor_chain crate provides a tensor-native blockchain with semantic consensus, Raft replication, 2PC distributed transactions, and sparse delta encoding.
+
+**Block Creation:**
+| Configuration | Time | Per Transaction |
+|---------------|------|-----------------|
+| empty_block | 171 ns | - |
+| block_10_txns | 13.4 µs | 1.34 µs |
+| block_100_txns | 111 µs | 1.11 µs |
+
+**Transaction Commit:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| single_put | 432 µs | 2.3K/s |
+| multi_put_10 | 480 µs | 20.8K ops/s |
+
+**Batch Transactions:**
+| Count | Time | Throughput |
+|-------|------|------------|
+| 10 | 822 µs | 12.2K/s |
+| 100 | 21.5 ms | 4.7K/s |
+| 1000 | 1.6 s | 607/s |
+
+**Consensus Validation:**
+| Operation | Time | Notes |
+|-----------|------|-------|
+| conflict_detection_pair | 279 ns | Hybrid cosine + Jaccard |
+| cosine_similarity | 187 ns | Sparse vector |
+| merge_pair | 448 ns | Orthogonal merge |
+| merge_all_10 | 632 ns | Batch merge |
+| find_merge_order_10 | 9 µs | Optimal ordering |
+
+**Codebook Operations:**
+| Operation | Time | Notes |
+|-----------|------|-------|
+| global_quantize_128d | 854 ns | State validation |
+| global_compute_residual | 925 ns | Delta compression |
+| global_is_valid_state | 1.28 µs | State machine check |
+| local_quantize_128d | 145 ns | EMA-adaptive |
+| local_quantize_and_update | 177 ns | With EMA update |
+| manager_quantize_128d | 1.2 µs | Full pipeline |
+
+**Delta Vector Operations:**
+| Operation | Time | Improvement |
+|-----------|------|-------------|
+| cosine_similarity_128d | 196 ns | 35% faster |
+| add_128d | 975 ns | 44% faster |
+| scale_128d | 163 ns | 35% faster |
+| weighted_average_128d | 982 ns | 26% faster |
+| overlaps_with | 8.4 ns | 35% faster |
+| cosine_similarity_768d | 1.96 µs | 10% faster |
+| add_768d | 2.6 µs | 27% faster |
+
+**Chain Query Operations:**
+| Operation | Time | Improvement |
+|-----------|------|-------------|
+| get_block_by_height | 1.19 µs | 38% faster |
+| get_tip | 1.06 µs | 45% faster |
+| get_genesis | 852 ns | 53% faster |
+| height | 0.87 ns | 50% faster |
+| tip_hash | 11.4 ns | 32% faster |
+| history_key | 163 µs | 15% faster |
+| verify_chain_100_blocks | 276 µs | - |
+
+**Chain Iteration:**
+| Operation | Time | Improvement |
+|-----------|------|-------------|
+| iterate_50_blocks | 88 µs | 10% faster |
+| get_blocks_range_0_25 | 35 µs | 27% faster |
+
+**K-means Codebook Training:**
+| Configuration | Time |
+|---------------|------|
+| 100 vectors, 8 clusters | 123 µs |
+| 1000 vectors, 16 clusters | 8.4 ms |
+
+#### Sparse Vector Performance
+
+**Conflict Detection by Sparsity Level (50 deltas, 128d):**
+| Sparsity | Time | Throughput | vs Dense |
+|----------|------|------------|----------|
+| 10% (dense) | 389 µs | 3.1M pairs/s | 1x |
+| 50% | 261 µs | 4.6M pairs/s | 1.5x |
+| 90% | 57 µs | 21.5M pairs/s | **6.8x** |
+| 99% | 23 µs | 52.3M pairs/s | **16.9x** |
+
+**Individual Sparse Operations (vs previous dense implementation):**
+| Operation | Sparse Time | Improvement |
+|-----------|-------------|-------------|
+| cosine_similarity | 16.5 ns | **76% faster** |
+| angular_distance | 28.5 ns | **64% faster** |
+| jaccard_index | 10.4 ns | **58% faster** |
+| euclidean_distance | 13.6 ns | **71% faster** |
+| overlapping_keys | 89 ns | **45% faster** |
+| add | 688 ns | 19% faster |
+| weighted_average | 674 ns | 12% faster |
+| project_orthogonal | 624 ns | **42% faster** |
+| detect_conflict_full | 53 ns | **33% faster** |
+
+**High Dimension Sparse Performance:**
+| Dimension | Cosine Time | Batch Detect (20 deltas) | Improvement |
+|-----------|-------------|--------------------------|-------------|
+| 128d | 10.3 ns | 8.9 µs | 57% faster |
+| 256d | 19 ns | 9.5 µs | 55% faster |
+| 512d | 41 ns | 17.2 µs | **49-75% faster** |
+| 768d | 62.5 ns | 24 µs | **55-77% faster** |
+
+#### Real Transaction Delta Sparsity Analysis
+
+Measurement of actual delta sparsity for different transaction patterns (128d embeddings):
+
+| Pattern | Avg NNZ | Sparsity | Estimated Speedup |
+|---------|---------|----------|-------------------|
+| Single Key Update | 4.0 | 96.9% | ~10x |
+| Multi-Field Update | 11.3 | 91.2% | ~3x |
+| New Record Insert | 29.5 | 77.0% | ~1x |
+| Counter Increment | 1.0 | 99.2% | ~10x |
+| Bulk Migration | 59.5 | 53.5% | ~1x |
+| Graph Edge | 7.0 | 94.5% | ~3x |
+
+**Realistic Workload Mix** (70% single-key, 20% multi-field, 10% other):
+- Average NNZ: 7.1 / 128 dimensions
+- Average Sparsity: **94.5%**
+- Expected speedup: **3-10x** for typical workloads
+
+#### Analysis
+
+- **Sparse advantage**: Real transaction deltas are 90-99% sparse, providing 3-10x speedup
+- **Hybrid conflict detection**: Cosine + Jaccard catches both angular and structural conflicts
+- **Memory savings**: Sparse DeltaVector uses 8-32x less memory than dense for typical deltas
+- **Network bandwidth**: Sparse serialization reduces replication bandwidth by 8-10x
+- **High dimension scaling**: Benefits increase with dimension (768d: 4-5x faster than dense)
+- **Common operations optimized**: Single-key updates (most common) are 96.9% sparse
+
 ### neumann_parser
 
 The parser is a hand-written recursive descent parser with Pratt expression parsing for operator precedence.
@@ -823,6 +959,8 @@ Trade-offs:
 9. ~~**Sparse vectors**~~: Done - SparseVector provides 3-33x memory reduction and 10-22x dot product speedup at high sparsity (90-99%)
 10. ~~**Delta encoding**~~: Done - DeltaVector stores only differences from archetypes, 4-25x memory reduction for clustered embeddings
 11. ~~**Archetype discovery**~~: Done - K-means clustering with k-means++ initialization for automatic archetype discovery (~500µs for 1000 128d vectors)
+12. ~~**Sparse consensus**~~: Done - tensor_chain uses sparse DeltaVector throughout: 3-17x faster conflict detection, 8-10x bandwidth reduction for typical 94% sparse transaction deltas
+13. ~~**Hybrid conflict detection**~~: Done - tensor_chain uses cosine + Jaccard automatically to catch both angular and structural conflicts without configuration
 
 ## Hardware Notes
 

@@ -742,16 +742,18 @@ fn kmeans_plusplus_init(vectors: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
             let threshold = (rng_state as f32 / u64::MAX as f32) * total_dist;
 
             let mut cumulative = 0.0;
+            let mut selected = false;
             for (i, &d) in distances.iter().enumerate() {
                 cumulative += d;
                 if cumulative >= threshold {
                     centroids.push(vectors[i].clone());
+                    selected = true;
                     break;
                 }
             }
 
             // Fallback if we didn't select (numerical issues)
-            if centroids.len() < k {
+            if !selected {
                 centroids.push(vectors[vectors.len() - 1].clone());
             }
         }
