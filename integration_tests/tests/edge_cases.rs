@@ -190,7 +190,7 @@ fn test_empty_string_handling() {
     assert_eq!(rows.len(), 1);
 
     // Verify empty string is preserved
-    let data = &rows[0].values.get("data").unwrap();
+    let data = &rows[0].get("data").unwrap();
     match data {
         Value::String(s) => assert_eq!(s, ""),
         _ => panic!("Expected String value"),

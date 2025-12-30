@@ -177,7 +177,7 @@ fn test_data_survives_engine_restart() {
     let relational2 = RelationalEngine::with_store(store.clone());
     let rows = relational2.select("test_table", Condition::True).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].values.get("id"), Some(&Value::Int(42)));
+    assert_eq!(rows[0].get("id"), Some(&Value::Int(42)));
 }
 
 #[test]

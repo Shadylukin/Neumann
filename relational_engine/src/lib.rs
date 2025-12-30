@@ -468,7 +468,9 @@ impl Value {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Row {
     pub id: u64,
-    pub values: HashMap<String, Value>,
+    /// Column values stored as ordered pairs for faster iteration.
+    /// Use `get()` for single-column access, or iterate directly for bulk access.
+    pub values: Vec<(String, Value)>,
 }
 
 impl Row {
@@ -476,14 +478,25 @@ impl Row {
         if column == "_id" {
             return None;
         }
-        self.values.get(column)
+        self.values
+            .iter()
+            .find(|(k, _)| k == column)
+            .map(|(_, v)| v)
     }
 
     pub fn get_with_id(&self, column: &str) -> Option<Value> {
         if column == "_id" {
             return Some(Value::Int(self.id as i64));
         }
-        self.values.get(column).cloned()
+        self.values
+            .iter()
+            .find(|(k, _)| k == column)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Check if a column exists in this row.
+    pub fn contains(&self, column: &str) -> bool {
+        self.values.iter().any(|(k, _)| k == column)
     }
 }
 
@@ -1207,14 +1220,14 @@ impl RelationalEngine {
             _ => return None,
         };
 
-        // Pre-allocate HashMap based on tensor field count (minus internal fields)
-        let mut values = HashMap::with_capacity(tensor.len().saturating_sub(1));
+        // Pre-allocate Vec based on tensor field count (minus internal fields)
+        let mut values = Vec::with_capacity(tensor.len().saturating_sub(1));
         for key in tensor.keys() {
             if key.starts_with('_') {
                 continue;
             }
             if let Some(TensorValue::Scalar(scalar)) = tensor.get(key) {
-                values.insert(key.clone(), Value::from_scalar(scalar));
+                values.push((key.clone(), Value::from_scalar(scalar)));
             }
         }
 
@@ -1244,37 +1257,18 @@ impl RelationalEngine {
             return Ok(rows);
         }
 
-        // No index available: full table scan
+        // No index available: full table scan using reference-based iteration
+        // This avoids cloning TensorData for rows that don't match the condition
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
 
-        // Use parallel iteration for large tables
-        // Key optimization: evaluate condition on TensorData BEFORE creating Row
-        let mut rows: Vec<Row> = if keys.len() >= Self::PARALLEL_THRESHOLD {
-            keys.par_iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    // Evaluate on TensorData first - avoids HashMap allocation for non-matches
-                    if condition.evaluate_tensor(&tensor) {
-                        self.tensor_to_row(&tensor)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            keys.iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    // Evaluate on TensorData first - avoids HashMap allocation for non-matches
-                    if condition.evaluate_tensor(&tensor) {
-                        self.tensor_to_row(&tensor)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
+        let mut rows: Vec<Row> = self.store.scan_filter_map(&prefix, |_key, tensor| {
+            // Evaluate condition on reference - no clone unless match
+            if condition.evaluate_tensor(tensor) {
+                self.tensor_to_row(tensor)
+            } else {
+                None
+            }
+        });
 
         rows.sort_by_key(|r| r.id);
         Ok(rows)
@@ -1337,35 +1331,18 @@ impl RelationalEngine {
         let indexed_columns = self.get_table_indexes(table);
         let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
 
-        // Parallel: identify rows that match condition
+        // Use reference-based iteration - only clone tensor for matching rows
         let matching_rows: Vec<(String, TensorData, Row)> =
-            if keys.len() >= Self::PARALLEL_THRESHOLD {
-                keys.par_iter()
-                    .filter_map(|key| {
-                        let tensor = self.store.get(key).ok()?;
-                        let row = self.tensor_to_row(&tensor)?;
-                        if condition.evaluate(&row) {
-                            Some((key.clone(), tensor, row))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            } else {
-                keys.iter()
-                    .filter_map(|key| {
-                        let tensor = self.store.get(key).ok()?;
-                        let row = self.tensor_to_row(&tensor)?;
-                        if condition.evaluate(&row) {
-                            Some((key.clone(), tensor, row))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
+            self.store.scan_filter_map(&prefix, |key, tensor| {
+                let row = self.tensor_to_row(tensor)?;
+                if condition.evaluate(&row) {
+                    // Only clone tensor for matching rows
+                    Some((key.to_string(), tensor.clone(), row))
+                } else {
+                    None
+                }
+            });
 
         // Sequential: update indexes and store (index ops are not thread-safe)
         for (key, tensor, row) in &matching_rows {
@@ -1405,34 +1382,16 @@ impl RelationalEngine {
         let indexed_columns = self.get_table_indexes(table);
         let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
 
-        // Parallel: identify rows to delete
-        let to_delete: Vec<(String, Row)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
-            keys.par_iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    if condition.evaluate(&row) {
-                        Some((key.clone(), row))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            keys.iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    if condition.evaluate(&row) {
-                        Some((key.clone(), row))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
+        // Use reference-based iteration - only materialize matching rows
+        let to_delete: Vec<(String, Row)> = self.store.scan_filter_map(&prefix, |key, tensor| {
+            let row = self.tensor_to_row(tensor)?;
+            if condition.evaluate(&row) {
+                Some((key.to_string(), row))
+            } else {
+                None
+            }
+        });
 
         // Sequential: remove from indexes (index ops are not thread-safe)
         for (_, row) in &to_delete {
@@ -1619,30 +1578,13 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
-        // Build index from existing data
+        // Build index from existing data using reference-based iteration
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
-
-        // Parallel: collect all (value, row_id) pairs
-        let entries: Vec<(Value, u64)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
-            keys.par_iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    let value = row.get_with_id(column)?;
-                    Some((value, row.id))
-                })
-                .collect()
-        } else {
-            keys.iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    let value = row.get_with_id(column)?;
-                    Some((value, row.id))
-                })
-                .collect()
-        };
+        let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
+            let row = self.tensor_to_row(tensor)?;
+            let value = row.get_with_id(column)?;
+            Some((value, row.id))
+        });
 
         // Sequential: add to index (index_add is not thread-safe)
         for (value, row_id) in entries {
@@ -1686,30 +1628,13 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
-        // Build index from existing data
+        // Build index from existing data using reference-based iteration
         let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
-
-        // Parallel: collect all (value, row_id) pairs
-        let entries: Vec<(Value, u64)> = if keys.len() >= Self::PARALLEL_THRESHOLD {
-            keys.par_iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    let value = row.get_with_id(column)?;
-                    Some((value, row.id))
-                })
-                .collect()
-        } else {
-            keys.iter()
-                .filter_map(|key| {
-                    let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    let value = row.get_with_id(column)?;
-                    Some((value, row.id))
-                })
-                .collect()
-        };
+        let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
+            let row = self.tensor_to_row(tensor)?;
+            let value = row.get_with_id(column)?;
+            Some((value, row.id))
+        });
 
         // Sequential: add to B-tree index
         for (value, row_id) in entries {
@@ -2709,7 +2634,7 @@ impl RelationalEngine {
             let key = Self::row_key(table, row_id);
 
             if let Ok(tensor) = self.store.get(&key) {
-                let mut values = HashMap::new();
+                let mut values = Vec::new();
 
                 match &projection {
                     Some(cols) => {
@@ -2718,7 +2643,7 @@ impl RelationalEngine {
                                 continue;
                             }
                             if let Some(TensorValue::Scalar(scalar)) = tensor.get(col) {
-                                values.insert(col.clone(), Value::from_scalar(scalar));
+                                values.push((col.clone(), Value::from_scalar(scalar)));
                             }
                         }
                     },
@@ -2728,7 +2653,7 @@ impl RelationalEngine {
                                 continue;
                             }
                             if let Some(TensorValue::Scalar(scalar)) = tensor.get(key) {
-                                values.insert(key.clone(), Value::from_scalar(scalar));
+                                values.push((key.clone(), Value::from_scalar(scalar)));
                             }
                         }
                     },
@@ -2767,11 +2692,11 @@ impl RelationalEngine {
                 continue;
             }
             let row_id = row_ids[idx];
-            let mut values = HashMap::with_capacity(col_refs.len());
+            let mut values = Vec::with_capacity(col_refs.len());
 
             for &(col_name, col_data) in &col_refs {
                 if let Some(val) = col_data.get_value(idx) {
-                    values.insert(col_name.to_string(), val);
+                    values.push((col_name.to_string(), val));
                 }
             }
 
@@ -2812,7 +2737,7 @@ impl RelationalEngine {
                             if c == "_id" {
                                 None
                             } else {
-                                row.values.get(c).map(|v| (c.clone(), v.clone()))
+                                row.get(c).map(|v| (c.clone(), v.clone()))
                             }
                         })
                         .collect();
@@ -3257,8 +3182,7 @@ mod tests {
 
     #[test]
     fn row_get_returns_none_for_id() {
-        let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String("test".into()));
+        let values = vec![("name".to_string(), Value::String("test".into()))];
         let row = Row { id: 1, values };
         assert!(row.get("_id").is_none());
         assert_eq!(row.get_with_id("_id"), Some(Value::Int(1)));
@@ -3552,8 +3476,7 @@ mod tests {
 
     #[test]
     fn row_debug_and_clone() {
-        let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String("test".into()));
+        let values = vec![("name".to_string(), Value::String("test".into()))];
         let row = Row { id: 1, values };
         let cloned = row.clone();
         assert_eq!(cloned.id, 1);
@@ -3744,7 +3667,7 @@ mod tests {
     fn row_get_nonexistent_column() {
         let row = Row {
             id: 1,
-            values: HashMap::new(),
+            values: Vec::new(),
         };
         assert!(row.get("nonexistent").is_none());
         assert!(row.get_with_id("nonexistent").is_none());
@@ -4752,9 +4675,9 @@ mod tests {
         assert_eq!(rows.len(), 4);
 
         for row in &rows {
-            assert!(row.values.contains_key("name"));
-            assert!(!row.values.contains_key("age"));
-            assert!(!row.values.contains_key("email"));
+            assert!(row.contains("name"));
+            assert!(!row.contains("age"));
+            assert!(!row.contains("email"));
         }
     }
 
@@ -4784,7 +4707,7 @@ mod tests {
         assert_eq!(rows.len(), 10);
 
         for row in &rows {
-            let age = row.values.get("age").unwrap();
+            let age = row.get("age").unwrap();
             if let Value::Int(a) = age {
                 assert!(*a >= 30 && *a < 40);
             }
@@ -5032,8 +4955,8 @@ mod tests {
 
         assert_eq!(rows.len(), 5); // ages 35-39
         for row in &rows {
-            assert!(row.values.contains_key("name"));
-            assert!(row.values.contains_key("age"));
+            assert!(row.contains("name"));
+            assert!(row.contains("age"));
         }
     }
 
@@ -5205,8 +5128,8 @@ mod tests {
 
         assert_eq!(rows.len(), 4);
         for row in &rows {
-            assert!(row.values.contains_key("name"));
-            assert!(!row.values.contains_key("age"));
+            assert!(row.contains("name"));
+            assert!(!row.contains("age"));
         }
     }
 
@@ -5229,7 +5152,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].values.contains_key("name"));
+        assert!(rows[0].contains("name"));
         // _id is in row.id, not in values
     }
 

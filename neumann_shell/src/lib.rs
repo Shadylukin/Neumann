@@ -1102,8 +1102,8 @@ fn format_rows(rows: &[Row]) -> String {
         return "(0 rows)".to_string();
     }
 
-    // Get column names from first row
-    let columns: Vec<&String> = rows[0].values.keys().collect();
+    // Get column names from first row (values is Vec<(String, Value)>)
+    let columns: Vec<&String> = rows[0].values.iter().map(|(k, _)| k).collect();
     if columns.is_empty() {
         return "(0 rows)".to_string();
     }
@@ -1114,12 +1114,7 @@ fn format_rows(rows: &[Row]) -> String {
         .map(|row| {
             columns
                 .iter()
-                .map(|col| {
-                    row.values
-                        .get(*col)
-                        .map(|v| format!("{v:?}"))
-                        .unwrap_or_default()
-                })
+                .map(|col| row.get(col).map(|v| format!("{v:?}")).unwrap_or_default())
                 .collect()
         })
         .collect();
@@ -1512,26 +1507,20 @@ mod tests {
     #[test]
     fn test_format_rows_with_data() {
         use relational_engine::{Row, Value};
-        use std::collections::HashMap;
-
         let rows = vec![
             Row {
                 id: 1,
-                values: {
-                    let mut m = HashMap::new();
-                    m.insert("name".to_string(), Value::String("Alice".into()));
-                    m.insert("age".to_string(), Value::Int(30));
-                    m
-                },
+                values: vec![
+                    ("name".to_string(), Value::String("Alice".into())),
+                    ("age".to_string(), Value::Int(30)),
+                ],
             },
             Row {
                 id: 2,
-                values: {
-                    let mut m = HashMap::new();
-                    m.insert("name".to_string(), Value::String("Bob".into()));
-                    m.insert("age".to_string(), Value::Int(25));
-                    m
-                },
+                values: vec![
+                    ("name".to_string(), Value::String("Bob".into())),
+                    ("age".to_string(), Value::Int(25)),
+                ],
             },
         ];
         let output = format_result(&QueryResult::Rows(rows));
@@ -1563,12 +1552,11 @@ mod tests {
     #[test]
     fn test_format_rows_empty_columns() {
         use relational_engine::Row;
-        use std::collections::HashMap;
 
-        // Row with empty values HashMap
+        // Row with empty values Vec
         let rows = vec![Row {
             id: 1,
-            values: HashMap::new(),
+            values: vec![],
         }];
         assert_eq!(format_rows(&rows), "(0 rows)");
     }
@@ -1584,27 +1572,22 @@ mod tests {
     #[test]
     fn test_format_rows_missing_column() {
         use relational_engine::{Row, Value};
-        use std::collections::HashMap;
 
         // Create rows where second row is missing a column
         let rows = vec![
             Row {
                 id: 1,
-                values: {
-                    let mut m = HashMap::new();
-                    m.insert("a".to_string(), Value::Int(1));
-                    m.insert("b".to_string(), Value::Int(2));
-                    m
-                },
+                values: vec![
+                    ("a".to_string(), Value::Int(1)),
+                    ("b".to_string(), Value::Int(2)),
+                ],
             },
             Row {
                 id: 2,
-                values: {
-                    let mut m = HashMap::new();
-                    m.insert("a".to_string(), Value::Int(3));
+                values: vec![
+                    ("a".to_string(), Value::Int(3)),
                     // 'b' is missing - should use default
-                    m
-                },
+                ],
             },
         ];
         let output = format_rows(&rows);
@@ -1614,15 +1597,10 @@ mod tests {
     #[test]
     fn test_format_rows_single_row() {
         use relational_engine::{Row, Value};
-        use std::collections::HashMap;
 
         let rows = vec![Row {
             id: 1,
-            values: {
-                let mut m = HashMap::new();
-                m.insert("x".to_string(), Value::Int(42));
-                m
-            },
+            values: vec![("x".to_string(), Value::Int(42))],
         }];
         let output = format_rows(&rows);
         assert!(output.contains("(1 rows)"));
@@ -1818,14 +1796,10 @@ mod tests {
 
         let rows = vec![Row {
             id: 1,
-            values: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "long_column_name".to_string(),
-                    Value::String("short".into()),
-                );
-                m
-            },
+            values: vec![(
+                "long_column_name".to_string(),
+                Value::String("short".into()),
+            )],
         }];
         let output = format_rows(&rows);
         assert!(output.contains("long_column_name"));

@@ -142,6 +142,41 @@ impl MetadataSlab {
         }
     }
 
+    /// Scan entries by prefix, filtering and mapping in a single pass.
+    ///
+    /// This is more efficient than `scan()` followed by filtering because:
+    /// - Takes the lock only once
+    /// - Only clones entries where `f` returns `Some`
+    /// - Avoids intermediate allocations for non-matching entries
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Only clone entries where age > 25
+    /// let results: Vec<TensorData> = slab.scan_filter_map("users:", |key, data| {
+    ///     if let Some(TensorValue::Scalar(ScalarValue::Int(age))) = data.get("age") {
+    ///         if *age > 25 {
+    ///             return Some(data.clone());
+    ///         }
+    ///     }
+    ///     None
+    /// });
+    /// ```
+    pub fn scan_filter_map<F, T>(&self, prefix: &str, mut f: F) -> Vec<T>
+    where
+        F: FnMut(&str, &TensorData) -> Option<T>,
+    {
+        let data = self.data.read();
+        let end = next_prefix(prefix);
+
+        let iter: Box<dyn Iterator<Item = (&String, &TensorData)>> = match end {
+            Some(end_key) => Box::new(data.range(prefix.to_string()..end_key)),
+            None => Box::new(data.range(prefix.to_string()..)),
+        };
+
+        iter.filter_map(|(k, v)| f(k, v)).collect()
+    }
+
     /// Get all keys in the slab.
     pub fn keys(&self) -> Vec<String> {
         self.data.read().keys().cloned().collect()
@@ -451,6 +486,48 @@ mod tests {
 
         let posts = slab.scan("post:");
         assert!(posts.is_empty());
+    }
+
+    #[test]
+    fn test_scan_filter_map() {
+        let slab = MetadataSlab::new();
+        slab.set("user:1", make_tensor_data(1));
+        slab.set("user:2", make_tensor_data(2));
+        slab.set("user:3", make_tensor_data(3));
+        slab.set("post:1", make_tensor_data(100));
+
+        // Filter to only return users with id > 1
+        let filtered: Vec<i64> = slab.scan_filter_map("user:", |_key, data| {
+            if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = data.get("id") {
+                if *id > 1 {
+                    return Some(*id);
+                }
+            }
+            None
+        });
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains(&2));
+        assert!(filtered.contains(&3));
+    }
+
+    #[test]
+    fn test_scan_filter_map_empty_result() {
+        let slab = MetadataSlab::new();
+        slab.set("user:1", make_tensor_data(1));
+        slab.set("user:2", make_tensor_data(2));
+
+        // Filter that matches nothing
+        let results: Vec<i64> = slab.scan_filter_map("user:", |_key, data| {
+            if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = data.get("id") {
+                if *id > 100 {
+                    return Some(*id);
+                }
+            }
+            None
+        });
+
+        assert!(results.is_empty());
     }
 
     #[test]

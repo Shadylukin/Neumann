@@ -355,10 +355,7 @@ impl ResultMerger {
                 QueryResult::Similar(similar) => all_similar.extend(similar),
                 QueryResult::Count(n) => all_rows.push(Row {
                     id: 0,
-                    values: std::collections::HashMap::from([(
-                        "count".to_string(),
-                        Value::Int(n as i64),
-                    )]),
+                    values: vec![("count".to_string(), Value::Int(n as i64))],
                 }),
                 _ => {},
             }

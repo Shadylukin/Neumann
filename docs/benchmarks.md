@@ -390,71 +390,79 @@ The graph engine stores nodes and edges as tensors, using adjacency lists for ne
 
 ### relational_engine
 
-The relational engine provides SQL-like operations on top of tensor_store, with optional hash indexes for accelerated equality lookups.
+The relational engine provides SQL-like operations on top of tensor_store, with optional hash indexes for accelerated equality lookups and tensor-native condition evaluation.
 
 **Row Insertion:**
 | Count | Time | Throughput |
 |-------|------|------------|
-| 100 | 420µs | 238K rows/s |
-| 1,000 | 5.9ms | 170K rows/s |
-| 5,000 | 77ms | 65K rows/s |
+| 100 | 462µs | 216K rows/s |
+| 1,000 | 3.1ms | 319K rows/s |
+| 5,000 | 15.6ms | 320K rows/s |
+
+**Batch Insertion:**
+| Count | Time | Throughput |
+|-------|------|------------|
+| 100 | 282µs | 355K rows/s |
+| 1,000 | 1.45ms | 688K rows/s |
+| 5,000 | 7.26ms | 688K rows/s |
 
 **Select Full Scan:**
 | Rows | Time | Throughput |
 |------|------|------------|
-| 100 | 104µs | 960K rows/s |
-| 1,000 | 977µs | 1.02M rows/s |
-| 5,000 | 5.8ms | 857K rows/s |
+| 100 | 119µs | 841K rows/s |
+| 1,000 | 995µs | 1.01M rows/s |
+| 5,000 | 5.27ms | 949K rows/s |
 
 **Select with Index vs Without (5,000 rows):**
 | Query Type | With Index | Without Index | Speedup |
 |------------|------------|---------------|---------|
-| Equality (2% match) | 126µs | 5.96ms | **47x** |
-| By _id (single row) | 3.5µs | 5.59ms | **1,597x** |
+| Equality (2% match) | 105µs | 4.23ms | **40x** |
+| By _id (single row) | 2.93µs | 4.70ms | **1,604x** |
 
 **Select Filtered - No Index (5,000 rows):**
 | Filter Type | Time |
 |-------------|------|
-| Range (20% match) | 5.1ms |
-| Compound AND | 5.7ms |
+| Range (20% match) | 4.16ms |
+| Compound AND | 4.42ms |
 
 **Index Creation (parallel):**
 | Rows | Time |
 |------|------|
-| 100 | 200µs |
-| 1,000 | 1.3ms |
-| 5,000 | 9.6ms |
+| 100 | 554µs |
+| 1,000 | 2.75ms |
+| 5,000 | 12.3ms |
 
 **Update/Delete (1,000 rows, 10% affected):**
 | Operation | Time |
 |-----------|------|
-| Update | 2.0ms |
-| Delete | 1.6ms |
+| Update | 1.74ms |
+| Delete | 2.14ms |
 
 **Join Performance (hash join):**
 | Tables | Result Rows | Time |
 |--------|-------------|------|
-| 50 users × 500 posts | 500 | 630µs |
-| 100 users × 1000 posts | 1,000 | 2.1ms |
-| 100 users × 5000 posts | 5,000 | 3.6ms |
+| 50 users × 500 posts | 500 | 1.78ms |
+| 100 users × 1000 posts | 1,000 | 1.50ms |
+| 100 users × 5000 posts | 5,000 | 32.2ms |
 
 **Row Count:**
 | Rows | Time |
 |------|------|
-| 100 | 3.7µs |
-| 1,000 | 9.9µs |
-| 5,000 | 56µs |
+| 100 | 49µs |
+| 1,000 | 462µs |
+| 5,000 | 2.95ms |
 
 #### Analysis
 
 - **Index acceleration**: Hash indexes provide O(1) lookup for equality conditions
-  - 47x speedup for equality queries matching 2% of rows
-  - 1,597x speedup for single-row _id lookups
+  - 40x speedup for equality queries matching 2% of rows
+  - 1,604x speedup for single-row _id lookups
 - **Full scan cost**: Without index, O(n) for all queries (parallelized for >1000 rows)
-- **Parallel operations**: update/delete/create_index use rayon for condition evaluation (28-45% faster)
+- **Batch insert**: 2x faster than individual inserts (688K/s vs 320K/s)
+- **Tensor-native evaluation**: `evaluate_tensor()` evaluates conditions directly on TensorData, avoiding Row conversion for non-matching rows
+- **Parallel operations**: update/delete/create_index use rayon for condition evaluation
 - **Index maintenance**: Small overhead on insert/update/delete to maintain indexes
-- **Join complexity**: O(n+m) hash join (2-5x faster than nested loop)
-- **row_count**: Uses scan_count, much faster than full scan (~100x)
+- **Join complexity**: O(n+m) hash join
 
 ### vector_engine
 
@@ -576,9 +584,49 @@ The tensor_cache crate provides LLM response caching with exact, semantic (HNSW)
 **Eviction (batch processing):**
 | Entries in Cache | Time |
 |------------------|------|
-| 1,000 | 5.1 µs |
-| 5,000 | 4.3 µs |
-| 10,000 | 8.1 µs |
+| 1,000 | 3.3 µs |
+| 5,000 | 4.0 µs |
+| 10,000 | 8.4 µs |
+
+**Distance Metrics (raw computation, 128d):**
+| Metric | Time | Notes |
+|--------|------|-------|
+| Jaccard | 73 ns | Fastest, best for sparse |
+| Euclidean | 105 ns | Good for spatial data |
+| Cosine | 186 ns | Default, best for dense |
+| Angular | 193 ns | Alternative to cosine |
+
+**Semantic Lookup by Metric (1000 entries):**
+| Metric | Time |
+|--------|------|
+| Jaccard | 28.6 µs |
+| Euclidean | 27.8 µs |
+| Cosine | 28.4 µs |
+
+**Sparse vs Dense (80% sparsity):**
+| Configuration | Time | Improvement |
+|---------------|------|-------------|
+| Dense lookup | 28.8 µs | baseline |
+| Sparse lookup | 24.1 µs | **16% faster** |
+
+**Auto-Metric Selection:**
+| Operation | Time |
+|-----------|------|
+| Sparsity check | 0.66 ns |
+| Auto-select dense | 13.4 µs |
+| Auto-select sparse | 16.5 µs |
+
+#### Redis Comparison
+
+| System | In-Process | Over TCP |
+|--------|------------|----------|
+| Redis | ~60 ns | ~143 µs |
+| tensor_cache (exact) | 208 ns | ~143 µs* |
+| tensor_cache (semantic) | 21 µs | N/A |
+
+*Estimated: network latency dominates (99.9% of time).
+
+**Key Insight**: For embedded use (no network), Redis is 3.5x faster for exact lookups. Over TCP (typical deployment), both are network-bound at ~143µs. Our differentiator is **semantic search** (21µs) which Redis cannot provide.
 
 #### Analysis
 
@@ -587,6 +635,7 @@ The tensor_cache crate provides LLM response caching with exact, semantic (HNSW)
 - **Embedding cache**: Fast O(1) lookup for precomputed embeddings
 - **Put performance**: Consistent ~50µs regardless of cache size (HNSW insert is O(log n))
 - **Eviction**: Efficient batch eviction with LRU/LFU/Cost/Hybrid strategies
+- **Distance metrics**: Auto-selection based on sparsity (>=70% sparse uses Jaccard)
 - **Token counting**: tiktoken cl100k_base encoding for accurate GPT-4 token counts
 - **Cost tracking**: Estimates cost savings based on model pricing tables
 
@@ -604,6 +653,14 @@ The tensor_cache crate provides LLM response caching with exact, semantic (HNSW)
 | LFU | Evict least frequently accessed |
 | CostBased | Evict lowest cost efficiency |
 | Hybrid | Weighted combination (recommended) |
+
+**Metric Selection Guide:**
+| Embedding Type | Recommended Metric |
+|----------------|-------------------|
+| OpenAI/Cohere (dense) | Cosine (default) |
+| Sparse (>=70% zeros) | Jaccard (auto-selected) |
+| Spatial/geographic | Euclidean |
+| Custom binary | Jaccard |
 
 ### tensor_chain
 

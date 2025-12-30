@@ -236,6 +236,20 @@ impl SlabRouter {
         self.scan(prefix).len()
     }
 
+    /// Scan entries by prefix, filtering and mapping in a single pass.
+    ///
+    /// More efficient than `scan()` + `get()` because:
+    /// - Takes locks only once per slab
+    /// - Only clones entries where the filter function returns `Some`
+    /// - Avoids intermediate allocations for non-matching entries
+    pub fn scan_filter_map<F, T>(&self, prefix: &str, f: F) -> Vec<T>
+    where
+        F: FnMut(&str, &TensorData) -> Option<T>,
+    {
+        // Currently all data goes through metadata slab
+        self.metadata.scan_filter_map(prefix, f)
+    }
+
     /// Get total entity count across all slabs.
     pub fn len(&self) -> usize {
         self.metadata.len() + self.cache.len()

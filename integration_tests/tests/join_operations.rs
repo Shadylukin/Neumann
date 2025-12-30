@@ -51,7 +51,7 @@ fn test_basic_inner_join() {
     // Verify Alice has 2 orders
     let alice_orders: Vec<_> = results
         .iter()
-        .filter(|(user, _)| match user.values.get("name") {
+        .filter(|(user, _)| match user.get("name") {
             Some(Value::String(s)) => s == "Alice",
             _ => false,
         })
@@ -61,7 +61,7 @@ fn test_basic_inner_join() {
     // Carol should have no orders
     let carol_orders: Vec<_> = results
         .iter()
-        .filter(|(user, _)| match user.values.get("name") {
+        .filter(|(user, _)| match user.get("name") {
             Some(Value::String(s)) => s == "Carol",
             _ => false,
         })
@@ -177,7 +177,7 @@ fn test_join_one_to_many() {
     // Count employees per department
     let eng_count = results
         .iter()
-        .filter(|(dept, _)| match dept.values.get("dept_name") {
+        .filter(|(dept, _)| match dept.get("dept_name") {
             Some(Value::String(s)) => s == "Engineering",
             _ => false,
         })
@@ -186,7 +186,7 @@ fn test_join_one_to_many() {
 
     let sales_count = results
         .iter()
-        .filter(|(dept, _)| match dept.values.get("dept_name") {
+        .filter(|(dept, _)| match dept.get("dept_name") {
             Some(Value::String(s)) => s == "Sales",
             _ => false,
         })
@@ -283,11 +283,11 @@ fn test_join_with_string_keys() {
 
     // Verify join correctness
     for (product, inv) in &results {
-        let prod_sku = match product.values.get("sku") {
+        let prod_sku = match product.get("sku") {
             Some(Value::String(s)) => s.clone(),
             _ => panic!("Expected sku"),
         };
-        let inv_sku = match inv.values.get("sku") {
+        let inv_sku = match inv.get("sku") {
             Some(Value::String(s)) => s.clone(),
             _ => panic!("Expected sku"),
         };
@@ -432,12 +432,12 @@ fn test_join_preserves_all_columns() {
     let (left_result, right_result) = &results[0];
 
     // Verify all columns from left table
-    assert!(left_result.values.contains_key("id"));
-    assert!(left_result.values.contains_key("left_col1"));
-    assert!(left_result.values.contains_key("left_col2"));
+    assert!(left_result.contains("id"));
+    assert!(left_result.contains("left_col1"));
+    assert!(left_result.contains("left_col2"));
 
     // Verify all columns from right table
-    assert!(right_result.values.contains_key("ref_id"));
-    assert!(right_result.values.contains_key("right_col1"));
-    assert!(right_result.values.contains_key("right_col2"));
+    assert!(right_result.contains("ref_id"));
+    assert!(right_result.contains("right_col1"));
+    assert!(right_result.contains("right_col2"));
 }

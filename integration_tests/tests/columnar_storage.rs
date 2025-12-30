@@ -222,10 +222,10 @@ fn test_select_with_projection() {
     assert_eq!(results.len(), 1);
 
     let row = &results[0];
-    assert!(row.values.contains_key("name"));
-    assert!(row.values.contains_key("age"));
+    assert!(row.contains("name"));
+    assert!(row.contains("age"));
     // city and id should not be present
-    assert!(!row.values.contains_key("city"));
+    assert!(!row.contains("city"));
     // Note: _id may or may not be included depending on implementation
 }
 
@@ -250,7 +250,7 @@ fn test_select_with_projection_includes_id() {
         .unwrap();
 
     assert_eq!(results.len(), 1);
-    assert!(results[0].values.contains_key("value"));
+    assert!(results[0].contains("value"));
 }
 
 #[test]
@@ -486,8 +486,8 @@ fn test_columnar_scan_with_projection() {
 
     // Should only have projected columns
     for row in &results {
-        assert!(row.values.contains_key("a"));
-        assert!(row.values.contains_key("b"));
+        assert!(row.contains("a"));
+        assert!(row.contains("b"));
         // c should not be present (or implementation may include it)
     }
 }

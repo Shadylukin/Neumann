@@ -2040,10 +2040,10 @@ impl QueryRouter {
                 // Insert each row from the SELECT result
                 let mut ids = Vec::new();
                 for row in rows {
-                    let mut values = HashMap::new();
+                    let mut values: HashMap<String, Value> = HashMap::new();
 
                     for col in &columns {
-                        if let Some(val) = row.values.get(col) {
+                        if let Some(val) = row.get(col) {
                             values.insert(col.clone(), val.clone());
                         }
                     }
@@ -9750,8 +9750,7 @@ mod tests {
 
     #[test]
     fn test_query_result_as_rows() {
-        let mut values = HashMap::new();
-        values.insert("name".to_string(), Value::String("test".to_string()));
+        let values = vec![("name".to_string(), Value::String("test".to_string()))];
         let rows = vec![Row { id: 1, values }];
         let result = QueryResult::Rows(rows);
         assert!(result.as_rows().is_some());

@@ -162,7 +162,7 @@ fn test_rle_encode_status_column() {
     let rows = relational.select("orders", Condition::True).unwrap();
     let status_values: Vec<String> = rows
         .iter()
-        .filter_map(|r| match r.values.get("status") {
+        .filter_map(|r| match r.get("status") {
             Some(Value::String(s)) => Some(s.clone()),
             _ => None,
         })
@@ -335,7 +335,7 @@ fn test_compression_end_to_end() {
         .unwrap();
     let categories: Vec<String> = rows
         .iter()
-        .filter_map(|r| match r.values.get("category") {
+        .filter_map(|r| match r.get("category") {
             Some(Value::String(s)) => Some(s.clone()),
             _ => None,
         })
