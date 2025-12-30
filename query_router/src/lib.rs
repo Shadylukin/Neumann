@@ -1208,7 +1208,7 @@ impl QueryRouter {
                     .collect::<Result<_>>()?;
 
                 cache
-                    .put(&query_str, &emb, &response_str, "manual", 0)
+                    .put(&query_str, &emb, &response_str, "manual", None)
                     .map_err(|e| RouterError::CacheError(e.to_string()))?;
                 Ok(QueryResult::Value("OK".to_string()))
             },

@@ -46,7 +46,7 @@ fn bench_exact_lookup(c: &mut Criterion) {
                 &embedding,
                 &format!("response {}", i),
                 "gpt-4",
-                i as u64,
+                None,
             )
             .unwrap();
     }
@@ -75,7 +75,7 @@ fn bench_semantic_lookup(c: &mut Criterion) {
                 &embedding,
                 &format!("response {}", i),
                 "gpt-4",
-                i as u64,
+                None,
             )
             .unwrap();
     }
@@ -108,7 +108,7 @@ fn bench_put(c: &mut Criterion) {
                         &embedding,
                         &format!("response {}", i),
                         "gpt-4",
-                        i as u64,
+                        None,
                     )
                     .unwrap();
             }
@@ -116,13 +116,7 @@ fn bench_put(c: &mut Criterion) {
             let new_embedding = normalize(&create_test_vector(128, size + 1));
 
             b.iter(|| {
-                let _ = cache.put(
-                    "new prompt",
-                    &new_embedding,
-                    "new response",
-                    "gpt-4",
-                    (size + 1) as u64,
-                );
+                let _ = cache.put("new prompt", &new_embedding, "new response", "gpt-4", None);
             })
         });
     }
@@ -176,7 +170,7 @@ fn bench_eviction(c: &mut Criterion) {
                         &embedding,
                         &format!("response {}", i),
                         "gpt-4",
-                        i as u64,
+                        None,
                     )
                     .unwrap();
             }
@@ -244,7 +238,7 @@ fn bench_semantic_with_metrics(c: &mut Criterion) {
                         &embedding,
                         &format!("response {}", i),
                         "gpt-4",
-                        i as u64,
+                        None,
                     )
                     .unwrap();
             }
@@ -276,7 +270,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
                     &embedding,
                     &format!("response {}", i),
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }
@@ -300,7 +294,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
                     &embedding,
                     &format!("response {}", i),
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }
@@ -335,7 +329,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
                     &embedding,
                     &format!("response {}", i),
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }
@@ -359,7 +353,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
                     &embedding,
                     &format!("response {}", i),
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }

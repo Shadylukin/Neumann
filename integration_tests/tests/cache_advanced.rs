@@ -52,7 +52,9 @@ fn test_cache_semantic_similarity() {
         let prompt = format!("prompt:{}", i);
         let response = format!("response for prompt {}", i);
         // put() stores in both exact and semantic caches
-        cache.put(&prompt, emb, &response, "test-model", 0).unwrap();
+        cache
+            .put(&prompt, emb, &response, "test-model", None)
+            .unwrap();
     }
 
     // Query with a similar embedding (same as first)
@@ -161,7 +163,7 @@ fn test_cache_multi_layer_stats() {
                 emb,
                 &format!("response_{}", i),
                 "test-model",
-                0,
+                None,
             )
             .unwrap();
     }

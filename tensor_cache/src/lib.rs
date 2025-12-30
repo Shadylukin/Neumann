@@ -16,14 +16,8 @@
 //!
 //! let cache = Cache::new();
 //!
-//! // Store a response
-//! cache.put(
-//!     "What is 2+2?",
-//!     &embedding,
-//!     "4",
-//!     "gpt-4",
-//!     0,
-//! )?;
+//! // Store a response (None = use default TTL)
+//! cache.put("What is 2+2?", &embedding, "4", "gpt-4", None)?;
 //!
 //! // Look up (tries exact first, then semantic)
 //! if let Some(hit) = cache.get("What is 2+2?", Some(&embedding)) {
@@ -60,11 +54,10 @@ mod index;
 mod semantic;
 mod stats;
 mod tokenizer;
-mod ttl;
 
 pub use config::{CacheConfig, EvictionStrategy};
 pub use error::{CacheError, Result};
-pub use eviction::{EvictionHandle, EvictionManager, EvictionScorer};
+pub use eviction::{EvictionManager, EvictionScorer};
 pub use stats::{CacheLayer, CacheStats, StatsSnapshot};
 pub use tokenizer::{ModelPricing, TokenCounter};
 
@@ -76,8 +69,6 @@ use exact::ExactCache;
 use semantic::SemanticCache;
 use std::sync::Arc;
 use std::time::Duration;
-use tensor_store::TensorStore;
-use ttl::TTLTracker;
 
 /// Result of a successful cache lookup.
 #[derive(Debug, Clone)]
@@ -100,24 +91,16 @@ pub struct CacheHit {
 
 /// LLM response cache with exact, semantic, and embedding layers.
 pub struct Cache {
-    /// Underlying storage (for persistence compatibility).
-    #[allow(dead_code)]
-    store: TensorStore,
     /// Exact match cache.
     exact: ExactCache,
     /// Semantic similarity cache.
     semantic: SemanticCache,
     /// Embedding cache.
     embedding: EmbeddingCache,
-    /// TTL tracker.
-    #[allow(dead_code)]
-    ttl_tracker: TTLTracker,
     /// Statistics.
     stats: Arc<CacheStats>,
     /// Configuration.
     config: CacheConfig,
-    /// Eviction handle (if background eviction is running).
-    eviction_handle: Option<EvictionHandle>,
 }
 
 impl Cache {
@@ -129,33 +112,13 @@ impl Cache {
     /// Create a cache with custom configuration.
     pub fn with_config(config: CacheConfig) -> Self {
         let stats = Arc::new(CacheStats::new());
-        let store = TensorStore::new();
 
         Self {
-            store,
             exact: ExactCache::new(&config, Arc::clone(&stats)),
             semantic: SemanticCache::new(&config, Arc::clone(&stats)),
             embedding: EmbeddingCache::new(&config, Arc::clone(&stats)),
-            ttl_tracker: TTLTracker::new(),
             stats,
             config,
-            eviction_handle: None,
-        }
-    }
-
-    /// Create a cache using an existing TensorStore.
-    pub fn with_store(store: TensorStore, config: CacheConfig) -> Self {
-        let stats = Arc::new(CacheStats::new());
-
-        Self {
-            store,
-            exact: ExactCache::new(&config, Arc::clone(&stats)),
-            semantic: SemanticCache::new(&config, Arc::clone(&stats)),
-            embedding: EmbeddingCache::new(&config, Arc::clone(&stats)),
-            ttl_tracker: TTLTracker::new(),
-            stats,
-            config,
-            eviction_handle: None,
         }
     }
 
@@ -163,60 +126,7 @@ impl Cache {
     ///
     /// Tries exact match first, then semantic similarity if embedding is provided.
     pub fn get(&self, prompt: &str, embedding: Option<&[f32]>) -> Option<CacheHit> {
-        // Try exact match first (key is based on prompt only)
-        let exact_key = exact::generate_prompt_key(prompt);
-        if let Some(entry) = self.exact.get(&exact_key) {
-            let cost_saved = TokenCounter::estimate_cost(
-                entry.input_tokens,
-                entry.output_tokens,
-                self.config.input_cost_per_1k,
-                self.config.output_cost_per_1k,
-            );
-
-            self.stats
-                .record_tokens_saved(entry.input_tokens, entry.output_tokens);
-            self.stats
-                .record_cost_saved((cost_saved * 1_000_000.0) as u64);
-
-            return Some(CacheHit {
-                response: entry.response,
-                layer: CacheLayer::Exact,
-                similarity: None,
-                input_tokens: entry.input_tokens,
-                output_tokens: entry.output_tokens,
-                cost_saved,
-                metric_used: None,
-            });
-        }
-
-        // Try semantic match if embedding provided
-        if let Some(emb) = embedding {
-            if let Some(hit) = self.semantic.get(emb, None) {
-                let cost_saved = TokenCounter::estimate_cost(
-                    hit.input_tokens,
-                    hit.output_tokens,
-                    self.config.input_cost_per_1k,
-                    self.config.output_cost_per_1k,
-                );
-
-                self.stats
-                    .record_tokens_saved(hit.input_tokens, hit.output_tokens);
-                self.stats
-                    .record_cost_saved((cost_saved * 1_000_000.0) as u64);
-
-                return Some(CacheHit {
-                    response: hit.response,
-                    layer: CacheLayer::Semantic,
-                    similarity: Some(hit.similarity),
-                    input_tokens: hit.input_tokens,
-                    output_tokens: hit.output_tokens,
-                    cost_saved,
-                    metric_used: Some(hit.metric_used),
-                });
-            }
-        }
-
-        None
+        self.get_with_metric(prompt, embedding, None)
     }
 
     /// Look up a cached response with a specific distance metric.
@@ -229,71 +139,85 @@ impl Cache {
         embedding: Option<&[f32]>,
         metric: Option<&DistanceMetric>,
     ) -> Option<CacheHit> {
-        // Try exact match first (key is based on prompt only)
-        let exact_key = exact::generate_prompt_key(prompt);
-        if let Some(entry) = self.exact.get(&exact_key) {
-            let cost_saved = TokenCounter::estimate_cost(
-                entry.input_tokens,
-                entry.output_tokens,
-                self.config.input_cost_per_1k,
-                self.config.output_cost_per_1k,
-            );
-
-            self.stats
-                .record_tokens_saved(entry.input_tokens, entry.output_tokens);
-            self.stats
-                .record_cost_saved((cost_saved * 1_000_000.0) as u64);
-
-            return Some(CacheHit {
-                response: entry.response,
-                layer: CacheLayer::Exact,
-                similarity: None,
-                input_tokens: entry.input_tokens,
-                output_tokens: entry.output_tokens,
-                cost_saved,
-                metric_used: None,
-            });
+        // Try exact match first
+        if let Some(hit) = self.try_exact_match(prompt) {
+            return Some(hit);
         }
 
-        // Try semantic match with specified metric if embedding provided
+        // Try semantic match if embedding provided
         if let Some(emb) = embedding {
-            let threshold = self.config.semantic_threshold;
-            let hit = match metric {
-                Some(m) => self.semantic.get_with_metric(emb, threshold, m),
-                None => self.semantic.get(emb, None), // Uses auto-selection
-            };
-
-            if let Some(hit) = hit {
-                let cost_saved = TokenCounter::estimate_cost(
-                    hit.input_tokens,
-                    hit.output_tokens,
-                    self.config.input_cost_per_1k,
-                    self.config.output_cost_per_1k,
-                );
-
-                self.stats
-                    .record_tokens_saved(hit.input_tokens, hit.output_tokens);
-                self.stats
-                    .record_cost_saved((cost_saved * 1_000_000.0) as u64);
-
-                return Some(CacheHit {
-                    response: hit.response,
-                    layer: CacheLayer::Semantic,
-                    similarity: Some(hit.similarity),
-                    input_tokens: hit.input_tokens,
-                    output_tokens: hit.output_tokens,
-                    cost_saved,
-                    metric_used: Some(hit.metric_used),
-                });
-            }
+            return self.try_semantic_match(emb, metric);
         }
 
         None
     }
 
+    /// Try exact cache lookup.
+    fn try_exact_match(&self, prompt: &str) -> Option<CacheHit> {
+        let exact_key = exact::generate_prompt_key(prompt);
+        let entry = self.exact.get(&exact_key)?;
+
+        let cost_saved = TokenCounter::estimate_cost(
+            entry.input_tokens,
+            entry.output_tokens,
+            self.config.input_cost_per_1k,
+            self.config.output_cost_per_1k,
+        );
+
+        self.stats
+            .record_tokens_saved(entry.input_tokens, entry.output_tokens);
+        self.stats
+            .record_cost_saved((cost_saved * 1_000_000.0) as u64);
+
+        Some(CacheHit {
+            response: entry.response,
+            layer: CacheLayer::Exact,
+            similarity: None,
+            input_tokens: entry.input_tokens,
+            output_tokens: entry.output_tokens,
+            cost_saved,
+            metric_used: None,
+        })
+    }
+
+    /// Try semantic cache lookup with optional metric override.
+    fn try_semantic_match(
+        &self,
+        embedding: &[f32],
+        metric: Option<&DistanceMetric>,
+    ) -> Option<CacheHit> {
+        let threshold = self.config.semantic_threshold;
+        let hit = match metric {
+            Some(m) => self.semantic.get_with_metric(embedding, threshold, m),
+            None => self.semantic.get(embedding, None),
+        }?;
+
+        let cost_saved = TokenCounter::estimate_cost(
+            hit.input_tokens,
+            hit.output_tokens,
+            self.config.input_cost_per_1k,
+            self.config.output_cost_per_1k,
+        );
+
+        self.stats
+            .record_tokens_saved(hit.input_tokens, hit.output_tokens);
+        self.stats
+            .record_cost_saved((cost_saved * 1_000_000.0) as u64);
+
+        Some(CacheHit {
+            response: hit.response,
+            layer: CacheLayer::Semantic,
+            similarity: Some(hit.similarity),
+            input_tokens: hit.input_tokens,
+            output_tokens: hit.output_tokens,
+            cost_saved,
+            metric_used: Some(hit.metric_used),
+        })
+    }
+
     /// Store a response in the cache.
     ///
-    /// Stores in both exact and semantic caches if embedding is provided.
+    /// Stores in both exact and semantic caches. Use `ttl` to override the default TTL.
     ///
     /// # Errors
     ///
@@ -304,13 +228,13 @@ impl Cache {
         embedding: &[f32],
         response: &str,
         model: &str,
-        _params_hash: u64,
+        ttl: Option<Duration>,
     ) -> Result<()> {
         let input_tokens = TokenCounter::count(prompt).unwrap_or(0);
         let output_tokens = TokenCounter::count(response).unwrap_or(0);
-        let ttl = self.config.default_ttl;
+        let ttl = ttl.unwrap_or(self.config.default_ttl);
 
-        // Store in exact cache (key is based on prompt only)
+        // Store in exact cache
         let exact_key = exact::generate_prompt_key(prompt);
         self.exact.insert(
             exact_key,
@@ -322,47 +246,6 @@ impl Cache {
         )?;
 
         // Store in semantic cache
-        self.semantic.insert(
-            prompt.to_string(),
-            embedding,
-            response.to_string(),
-            input_tokens,
-            output_tokens,
-            model.to_string(),
-            ttl,
-            None,
-        )?;
-
-        Ok(())
-    }
-
-    /// Store a response with custom TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if insertion fails due to dimension mismatch.
-    pub fn put_with_ttl(
-        &self,
-        prompt: &str,
-        embedding: &[f32],
-        response: &str,
-        model: &str,
-        _params_hash: u64,
-        ttl: Duration,
-    ) -> Result<()> {
-        let input_tokens = TokenCounter::count(prompt).unwrap_or(0);
-        let output_tokens = TokenCounter::count(response).unwrap_or(0);
-
-        let exact_key = exact::generate_prompt_key(prompt);
-        self.exact.insert(
-            exact_key,
-            response.to_string(),
-            input_tokens,
-            output_tokens,
-            model.to_string(),
-            ttl,
-        )?;
-
         self.semantic.insert(
             prompt.to_string(),
             embedding,
@@ -441,11 +324,8 @@ impl Cache {
         );
     }
 
-    /// Invalidate entries by exact key.
-    ///
-    /// Note: model and `params_hash` are accepted for API compatibility but
-    /// the exact cache key is based only on the prompt.
-    pub fn invalidate(&self, prompt: &str, _model: &str, _params_hash: u64) -> bool {
+    /// Invalidate entries by prompt.
+    pub fn invalidate(&self, prompt: &str) -> bool {
         let key = exact::generate_prompt_key(prompt);
         self.exact.remove(&key).is_some()
     }
@@ -529,48 +409,6 @@ impl Cache {
         self.exact.clear();
         self.semantic.clear();
         self.embedding.clear();
-        self.ttl_tracker.clear();
-    }
-
-    /// Start background eviction.
-    ///
-    /// This must be called from within a tokio runtime.
-    pub fn start_eviction(&mut self) {
-        if self.eviction_handle.is_some() {
-            return;
-        }
-
-        let manager = EvictionManager::from_cache_config(&self.config, Arc::clone(&self.stats));
-
-        // We need to use a weak reference pattern here to avoid circular references
-        // Since we can't easily pass &self to a spawned task, we'll use a simpler approach
-        // where the eviction task just cleans up expired entries
-
-        let exact = self.exact.eviction_candidates(0).len(); // Just to access
-        let _ = exact;
-
-        // For now, we'll create a simple eviction function that returns 0
-        // In a real implementation, you'd use Arc<Cache> or channels
-        let handle = manager.start(|_batch_size| {
-            // This is a placeholder - in production, you'd use a channel or Arc<Cache>
-            0
-        });
-
-        self.eviction_handle = Some(handle);
-    }
-
-    /// Stop background eviction.
-    pub async fn stop_eviction(&mut self) {
-        if let Some(handle) = self.eviction_handle.take() {
-            handle.shutdown().await;
-        }
-    }
-
-    /// Check if background eviction is running.
-    pub fn is_eviction_running(&self) -> bool {
-        self.eviction_handle
-            .as_ref()
-            .is_some_and(EvictionHandle::is_running)
     }
 
     /// Get the total number of cached entries across all layers.
@@ -613,7 +451,7 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Exact match without embedding
@@ -629,7 +467,7 @@ mod tests {
         let similar = normalize(&[0.95, 0.05, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Miss on exact (different prompt), hit on semantic
@@ -658,11 +496,11 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
         assert!(cache.get("prompt", None).is_some());
 
-        cache.invalidate("prompt", "gpt-4", 0);
+        cache.invalidate("prompt");
         assert!(cache.get("prompt", None).is_none());
     }
 
@@ -672,7 +510,7 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
         cache.get("prompt", None); // Hit
         cache.get("other", None); // Miss
@@ -694,7 +532,7 @@ mod tests {
                     &embedding,
                     "response",
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }
@@ -710,7 +548,7 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
         cache
             .put_embedding("doc", "content", vec![0.1], "model")
@@ -728,27 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn test_with_store() {
-        let store = TensorStore::new();
-        let mut config = CacheConfig::default();
-        config.embedding_dim = 3;
-        let cache = Cache::with_store(store, config);
-        assert!(cache.is_empty());
-    }
-
-    #[test]
-    fn test_put_with_ttl() {
+    fn test_put_with_custom_ttl() {
         let cache = create_test_cache();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put_with_ttl(
+            .put(
                 "prompt",
                 &embedding,
                 "response",
                 "gpt-4",
-                0,
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
             )
             .unwrap();
 
@@ -856,13 +684,12 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put_with_ttl(
+            .put(
                 "prompt",
                 &embedding,
                 "response",
                 "gpt-4",
-                0,
-                Duration::from_millis(1),
+                Some(Duration::from_millis(1)),
             )
             .unwrap();
 
@@ -880,7 +707,7 @@ mod tests {
 
         let embedding = normalize(&[1.0, 0.0, 0.0]);
         cache
-            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
 
         assert!(cache.len() > 0);
@@ -907,7 +734,7 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         let hit = cache.get("What is 2+2?", None).unwrap();
@@ -926,7 +753,7 @@ mod tests {
         let similar = normalize(&[0.99, 0.01, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Different prompt but similar embedding
@@ -934,12 +761,6 @@ mod tests {
         assert_eq!(hit.layer, CacheLayer::Semantic);
         assert!(hit.similarity.is_some());
         assert!(hit.similarity.unwrap() > 0.9);
-    }
-
-    #[test]
-    fn test_eviction_running_status() {
-        let cache = create_test_cache();
-        assert!(!cache.is_eviction_running());
     }
 
     #[test]
@@ -955,7 +776,7 @@ mod tests {
                     &embedding,
                     "response",
                     "gpt-4",
-                    i as u64,
+                    None,
                 )
                 .unwrap();
         }
@@ -998,12 +819,12 @@ mod tests {
 
         // Insert old entry
         cache
-            .put("old_prompt", &e1, "old_response", "gpt-4", 0)
+            .put("old_prompt", &e1, "old_response", "gpt-4", None)
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         // Insert new entry
         cache
-            .put("new_prompt", &e2, "new_response", "gpt-4", 0)
+            .put("new_prompt", &e2, "new_response", "gpt-4", None)
             .unwrap();
 
         // Evict 1 entry - should evict the older one
@@ -1026,8 +847,8 @@ mod tests {
         let e1 = normalize(&[1.0, 0.0, 0.0]);
         let e2 = normalize(&[0.0, 1.0, 0.0]);
 
-        cache.put("rarely_used", &e1, "r1", "gpt-4", 0).unwrap();
-        cache.put("often_used", &e2, "r2", "gpt-4", 0).unwrap();
+        cache.put("rarely_used", &e1, "r1", "gpt-4", None).unwrap();
+        cache.put("often_used", &e2, "r2", "gpt-4", None).unwrap();
 
         // Access often_used multiple times
         cache.get("often_used", None);
@@ -1061,10 +882,10 @@ mod tests {
         let e2 = normalize(&[0.0, 1.0, 0.0]);
 
         // Low value entry (short response, rarely accessed)
-        cache.put("low_value", &e1, "x", "gpt-4", 0).unwrap();
+        cache.put("low_value", &e1, "x", "gpt-4", None).unwrap();
         // High value entry (longer response, frequently accessed)
         cache
-            .put("high_value", &e2, &"x".repeat(100), "gpt-4", 0)
+            .put("high_value", &e2, &"x".repeat(100), "gpt-4", None)
             .unwrap();
 
         // Access high_value multiple times
@@ -1088,7 +909,7 @@ mod tests {
         let similar = normalize(&[0.99, 0.01, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Semantic hit should include metric_used
@@ -1104,7 +925,7 @@ mod tests {
         let similar = normalize(&[0.99, 0.01, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Query with explicit cosine metric
@@ -1128,7 +949,7 @@ mod tests {
         let similar = normalize(&[0.99, 0.01, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Query with explicit Jaccard metric
@@ -1146,7 +967,7 @@ mod tests {
         let similar = normalize(&[0.99, 0.01, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Query with None metric triggers auto-selection
@@ -1164,7 +985,7 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         cache
-            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .put("What is 2+2?", &embedding, "4", "gpt-4", None)
             .unwrap();
 
         // Exact hit should not have metric
@@ -1219,7 +1040,7 @@ mod tests {
 
         let embedding = normalize(&[1.0, 0.0, 0.0]);
         cache
-            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
 
         let hit = cache.get("prompt", None).unwrap();

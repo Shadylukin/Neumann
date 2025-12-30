@@ -33,7 +33,13 @@ fn test_cache_with_cosine_metric() {
     let embeddings = sample_embeddings_normalized(3, 32);
 
     cache
-        .put("First query", &embeddings[0], "First response", "gpt-4", 0)
+        .put(
+            "First query",
+            &embeddings[0],
+            "First response",
+            "gpt-4",
+            None,
+        )
         .unwrap();
 
     // Similar embedding should get a hit
@@ -67,7 +73,13 @@ fn test_cache_with_jaccard_metric() {
     let embeddings = sample_embeddings_normalized(3, 32);
 
     cache
-        .put("First query", &embeddings[0], "First response", "gpt-4", 0)
+        .put(
+            "First query",
+            &embeddings[0],
+            "First response",
+            "gpt-4",
+            None,
+        )
         .unwrap();
 
     let hit = cache.get("Different query", Some(&embeddings[0])).unwrap();
@@ -90,7 +102,7 @@ fn test_cache_auto_metric_selection_dense() {
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
 
     cache
-        .put("Dense query", &embedding, "Dense response", "gpt-4", 0)
+        .put("Dense query", &embedding, "Dense response", "gpt-4", None)
         .unwrap();
 
     let hit = cache.get("Different", Some(&embedding)).unwrap();
@@ -114,7 +126,7 @@ fn test_cache_auto_metric_selection_sparse() {
     let embedding = create_sparse_embedding(32, 0.8);
 
     cache
-        .put("Sparse query", &embedding, "Sparse response", "gpt-4", 0)
+        .put("Sparse query", &embedding, "Sparse response", "gpt-4", None)
         .unwrap();
 
     let hit = cache.get("Different", Some(&embedding)).unwrap();
@@ -134,7 +146,7 @@ fn test_cache_get_with_explicit_metric() {
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
 
     cache
-        .put("Query", &embedding, "Response", "gpt-4", 0)
+        .put("Query", &embedding, "Response", "gpt-4", None)
         .unwrap();
 
     // Query with explicit Euclidean metric
@@ -164,7 +176,7 @@ fn test_cache_sparse_embeddings_preset() {
     // Should be functional
     let embedding = create_sparse_embedding(32, 0.8);
     cache
-        .put("Test", &embedding, "Response", "model", 0)
+        .put("Test", &embedding, "Response", "model", None)
         .unwrap();
     assert!(cache.get("Test", None).is_some());
 }
@@ -200,7 +212,7 @@ fn test_cache_hit_similarity_range() {
     let embeddings = sample_embeddings_normalized(2, 32);
 
     cache
-        .put("Query", &embeddings[0], "Response", "gpt-4", 0)
+        .put("Query", &embeddings[0], "Response", "gpt-4", None)
         .unwrap();
 
     // Exact match should have similarity close to 1.0
@@ -220,7 +232,7 @@ fn test_cache_metric_used_in_exact_vs_semantic() {
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
 
     cache
-        .put("Exact query", &embedding, "Response", "gpt-4", 0)
+        .put("Exact query", &embedding, "Response", "gpt-4", None)
         .unwrap();
 
     // Exact match should not have metric_used
