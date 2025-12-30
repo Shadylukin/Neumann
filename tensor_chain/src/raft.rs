@@ -114,7 +114,8 @@ impl FastPathStats {
 
     /// Record a full validation.
     pub fn record_full_validation(&self) {
-        self.full_validation_required.fetch_add(1, Ordering::Relaxed);
+        self.full_validation_required
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get the fast-path acceptance rate.
@@ -515,14 +516,18 @@ impl RaftNode {
             if self.config.enable_fast_path && ae.block_embedding.is_some() {
                 let embedding = ae.block_embedding.as_ref().unwrap();
                 let history = self.fast_path_state.get_embeddings(&ae.leader_id);
-                let result = self.fast_path_validator.check_fast_path(embedding, &history);
+                let result = self
+                    .fast_path_validator
+                    .check_fast_path(embedding, &history);
 
                 used_fast_path = result.can_use_fast_path;
 
                 // Record statistics
                 if used_fast_path {
                     self.fast_path_state.stats.record_fast_path();
-                } else if result.rejection_reason.as_deref() == Some("periodic full validation required") {
+                } else if result.rejection_reason.as_deref()
+                    == Some("periodic full validation required")
+                {
                     self.fast_path_state.stats.record_full_validation();
                 } else {
                     self.fast_path_state.stats.record_rejected();
@@ -532,7 +537,8 @@ impl RaftNode {
                 self.fast_path_validator.record_validation(used_fast_path);
 
                 // Track embedding for future fast-path checks
-                self.fast_path_state.add_embedding(&ae.leader_id, embedding.clone());
+                self.fast_path_state
+                    .add_embedding(&ae.leader_id, embedding.clone());
             }
 
             // Check log consistency
@@ -772,7 +778,10 @@ impl RaftNode {
     ///
     /// Returns (prev_log_index, prev_log_term, entries, block_embedding).
     /// The block_embedding is from the last entry if any, for fast-path validation.
-    pub fn get_entries_for_follower(&self, follower: &NodeId) -> (u64, u64, Vec<LogEntry>, Option<Vec<f32>>) {
+    pub fn get_entries_for_follower(
+        &self,
+        follower: &NodeId,
+    ) -> (u64, u64, Vec<LogEntry>, Option<Vec<f32>>) {
         let persistent = self.persistent.read();
         let leader_state = self.leader_state.read();
 
@@ -801,7 +810,9 @@ impl RaftNode {
         };
 
         // Extract embedding from last entry for fast-path
-        let block_embedding = entries.last().map(|e| e.block.header.delta_embedding.clone());
+        let block_embedding = entries
+            .last()
+            .map(|e| e.block.header.delta_embedding.clone());
 
         (prev_log_index, prev_log_term, entries, block_embedding)
     }
@@ -923,18 +934,19 @@ impl RaftNode {
             RaftState::Follower | RaftState::Candidate => {
                 // Check election timeout
                 let timeout = self.config.election_timeout.0
-                    + rand::random::<u64>() % (self.config.election_timeout.1 - self.config.election_timeout.0);
+                    + rand::random::<u64>()
+                        % (self.config.election_timeout.1 - self.config.election_timeout.0);
                 if elapsed > timeout {
                     self.start_election_async().await?;
                 }
-            }
+            },
             RaftState::Leader => {
                 // Send heartbeats
                 if elapsed > self.config.heartbeat_interval {
                     self.send_heartbeats().await?;
                     *self.last_heartbeat.write() = Instant::now();
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -1421,7 +1433,12 @@ mod tests {
         // Get initial next_index for node2
         let initial_next = {
             let ls = node.leader_state.read();
-            ls.as_ref().unwrap().next_index.get(&"node2".to_string()).copied().unwrap()
+            ls.as_ref()
+                .unwrap()
+                .next_index
+                .get(&"node2".to_string())
+                .copied()
+                .unwrap()
         };
 
         // Receive failure response
@@ -1438,7 +1455,12 @@ mod tests {
         // next_index should be decremented
         let new_next = {
             let ls = node.leader_state.read();
-            ls.as_ref().unwrap().next_index.get(&"node2".to_string()).copied().unwrap()
+            ls.as_ref()
+                .unwrap()
+                .next_index
+                .get(&"node2".to_string())
+                .copied()
+                .unwrap()
         };
 
         assert_eq!(new_next, initial_next - 1);
@@ -1535,9 +1557,12 @@ mod tests {
         {
             *node.current_leader.write() = Some("node2".to_string());
             // Need at least 3 embeddings for fast-path to be considered
-            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-            node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            node.fast_path_state
+                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            node.fast_path_state
+                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            node.fast_path_state
+                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         }
 
         // Send append entries with similar embedding
@@ -1575,9 +1600,12 @@ mod tests {
         );
 
         // Build up history for node2
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         *node.current_leader.write() = Some("node2".to_string());
 
         // Now receive from node3 - should trigger leader change cleanup
@@ -1602,7 +1630,11 @@ mod tests {
         }
 
         // Old leader's history should be cleared
-        assert_eq!(node.fast_path_state.leader_history_size(&"node2".to_string()), 0);
+        assert_eq!(
+            node.fast_path_state
+                .leader_history_size(&"node2".to_string()),
+            0
+        );
     }
 
     #[test]
@@ -1619,7 +1651,8 @@ mod tests {
         );
 
         // Only 1 embedding in history (need 3 minimum)
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         *node.current_leader.write() = Some("node2".to_string());
 
         let ae = AppendEntries {
@@ -1659,9 +1692,12 @@ mod tests {
 
         *node.current_leader.write() = Some("node2".to_string());
         // Add sufficient history
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
 
         // Orthogonal vector - low similarity
         let ae = AppendEntries {
@@ -1702,9 +1738,12 @@ mod tests {
 
         *node.current_leader.write() = Some("node2".to_string());
         // Add sufficient history for fast-path
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        node.fast_path_state.add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+        node.fast_path_state
+            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
 
         // Send similar embedding - should use fast-path
         let ae = AppendEntries {
@@ -2071,7 +2110,11 @@ mod tests {
     fn test_handle_request_vote_response_duplicate_vote() {
         let node = create_test_node(
             "node1",
-            vec!["node2".to_string(), "node3".to_string(), "node4".to_string()],
+            vec![
+                "node2".to_string(),
+                "node3".to_string(),
+                "node4".to_string(),
+            ],
         );
 
         node.start_election();
@@ -2082,7 +2125,10 @@ mod tests {
             vote_granted: true,
             voter_id: "node2".to_string(),
         };
-        node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr1.clone()));
+        node.handle_message(
+            &"node2".to_string(),
+            &Message::RequestVoteResponse(rvr1.clone()),
+        );
 
         // Duplicate vote from node2 (should be ignored)
         node.handle_message(&"node2".to_string(), &Message::RequestVoteResponse(rvr1));

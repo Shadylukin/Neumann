@@ -178,7 +178,7 @@ async fn test_raft_leader_sends_heartbeats() {
         match msg {
             Message::AppendEntries(ae) => {
                 assert_eq!(ae.leader_id, "node1");
-            }
+            },
             _ => panic!("Expected AppendEntries message"),
         }
     }

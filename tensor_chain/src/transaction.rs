@@ -439,7 +439,7 @@ impl TransactionManager {
         let target_delta = workspace.to_delta_vector();
 
         // Skip if target has zero magnitude (no meaningful change)
-        if target_delta.magnitude == 0.0 {
+        if target_delta.magnitude() == 0.0 {
             return Vec::new();
         }
 
@@ -460,7 +460,7 @@ impl TransactionManager {
             let other_delta = other.to_delta_vector();
 
             // Skip zero-magnitude deltas
-            if other_delta.magnitude == 0.0 {
+            if other_delta.magnitude() == 0.0 {
                 continue;
             }
 
@@ -856,7 +856,7 @@ mod tests {
         match result.unwrap_err() {
             ChainError::TransactionFailed(msg) => {
                 assert!(msg.contains("not active"));
-            }
+            },
             _ => panic!("Expected TransactionFailed error"),
         }
     }
@@ -882,7 +882,7 @@ mod tests {
         match result.unwrap_err() {
             ChainError::TransactionFailed(msg) => {
                 assert!(msg.contains("cannot commit"));
-            }
+            },
             _ => panic!("Expected TransactionFailed error"),
         }
     }
@@ -910,12 +910,16 @@ mod tests {
     #[test]
     fn test_rollback() {
         let store = TensorStore::new();
-        store.put("existing", tensor_store::TensorData::new()).unwrap();
+        store
+            .put("existing", tensor_store::TensorData::new())
+            .unwrap();
 
         let workspace = TransactionWorkspace::begin(&store).unwrap();
 
         // Add a new key
-        store.put("new_key", tensor_store::TensorData::new()).unwrap();
+        store
+            .put("new_key", tensor_store::TensorData::new())
+            .unwrap();
 
         // Rollback should restore original state
         workspace.rollback(&store).unwrap();
@@ -923,7 +927,14 @@ mod tests {
         assert_eq!(workspace.state(), TransactionState::RolledBack);
         // Check that existing key is still there and new_key is gone
         assert!(store.get("existing").is_ok());
-        assert!(store.get("new_key").unwrap_err().to_string().contains("not found") || store.get("new_key").is_err());
+        assert!(
+            store
+                .get("new_key")
+                .unwrap_err()
+                .to_string()
+                .contains("not found")
+                || store.get("new_key").is_err()
+        );
     }
 
     #[test]
@@ -938,7 +949,7 @@ mod tests {
         match result.unwrap_err() {
             ChainError::TransactionFailed(msg) => {
                 assert!(msg.contains("committed"));
-            }
+            },
             _ => panic!("Expected TransactionFailed error"),
         }
     }

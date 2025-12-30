@@ -840,8 +840,7 @@ mod tests {
         let validator = TransitionValidator::new(global, config);
 
         // Non-strict allows invalid states if magnitude is within limit
-        let validation =
-            validator.validate_transition("test", &[0.5, 0.5, 0.0], &[0.6, 0.4, 0.0]);
+        let validation = validator.validate_transition("test", &[0.5, 0.5, 0.0], &[0.6, 0.4, 0.0]);
         assert!(validation.is_valid);
     }
 
@@ -858,8 +857,7 @@ mod tests {
         let validator = TransitionValidator::new(global, config);
 
         // Even non-strict fails if magnitude exceeds limit
-        let validation =
-            validator.validate_transition("test", &[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+        let validation = validator.validate_transition("test", &[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
         assert!(!validation.is_valid);
         assert!(validation
             .rejection_reason
@@ -881,8 +879,7 @@ mod tests {
         let validator = TransitionValidator::new(global, config);
 
         // Invalid source state
-        let validation =
-            validator.validate_transition("test", &[0.0, 1.0, 0.0], &[1.0, 0.0, 0.0]);
+        let validation = validator.validate_transition("test", &[0.0, 1.0, 0.0], &[1.0, 0.0, 0.0]);
         assert!(!validation.is_valid);
         assert!(validation
             .rejection_reason
@@ -904,8 +901,7 @@ mod tests {
         let validator = TransitionValidator::new(global, config);
 
         // Invalid target state
-        let validation =
-            validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
+        let validation = validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
         assert!(!validation.is_valid);
         assert!(validation
             .rejection_reason
@@ -922,7 +918,9 @@ mod tests {
         assert!(validator.validate_path("test", &[]).is_ok());
 
         // Single state
-        assert!(validator.validate_path("test", &[vec![1.0, 0.0, 0.0]]).is_ok());
+        assert!(validator
+            .validate_path("test", &[vec![1.0, 0.0, 0.0]])
+            .is_ok());
     }
 
     #[test]

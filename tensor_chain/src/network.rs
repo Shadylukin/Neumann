@@ -492,7 +492,8 @@ impl MessageHandler for TxHandler {
                 let tx_vote = match vote {
                     crate::distributed_tx::PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
                         lock_handle,
-                        delta: delta.vector,
+                        // Convert sparse to dense for network message (Phase 4 will make this sparse)
+                        delta: delta.to_dense(delta.sparse().dimension()),
                         affected_keys: delta.affected_keys.into_iter().collect(),
                     },
                     crate::distributed_tx::PrepareVote::No { reason } => TxVote::No { reason },
@@ -510,7 +511,7 @@ impl MessageHandler for TxHandler {
                     shard_id: prepare.shard_id,
                     vote: tx_vote,
                 }))
-            }
+            },
             Message::TxCommit(commit) => {
                 let response = self.participant.commit(commit.tx_id);
 
@@ -520,7 +521,7 @@ impl MessageHandler for TxHandler {
                     success: response.success,
                     error: response.error,
                 }))
-            }
+            },
             Message::TxAbort(abort) => {
                 let response = self.participant.abort(abort.tx_id);
 
@@ -530,7 +531,7 @@ impl MessageHandler for TxHandler {
                     success: response.success,
                     error: response.error,
                 }))
-            }
+            },
             _ => None, // Not a 2PC message, pass to other handlers
         }
     }
@@ -973,11 +974,7 @@ mod tests {
         let node1 = MemoryTransport::new("node1".to_string());
 
         // This will now block forever since recv loops until message
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            node1.recv(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_millis(10), node1.recv()).await;
         assert!(result.is_err()); // Should timeout
     }
 
@@ -1275,8 +1272,14 @@ mod tests {
             affected_keys: vec!["k1".to_string()],
         };
         let cloned = yes.clone();
-        if let (TxVote::Yes { lock_handle: l1, .. }, TxVote::Yes { lock_handle: l2, .. }) =
-            (&yes, &cloned)
+        if let (
+            TxVote::Yes {
+                lock_handle: l1, ..
+            },
+            TxVote::Yes {
+                lock_handle: l2, ..
+            },
+        ) = (&yes, &cloned)
         {
             assert_eq!(l1, l2);
         }
@@ -1422,8 +1425,8 @@ mod tests {
 
     #[test]
     fn test_tx_handler_prepare() {
-        use crate::distributed_tx::TxParticipant;
         use crate::block::Transaction;
+        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
 
         let participant = Arc::new(TxParticipant::new());
@@ -1454,8 +1457,8 @@ mod tests {
 
     #[test]
     fn test_tx_handler_commit() {
-        use crate::distributed_tx::TxParticipant;
         use crate::block::Transaction;
+        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
 
         let participant = Arc::new(TxParticipant::new());
@@ -1494,8 +1497,8 @@ mod tests {
 
     #[test]
     fn test_tx_handler_abort() {
-        use crate::distributed_tx::TxParticipant;
         use crate::block::Transaction;
+        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
 
         let participant = Arc::new(TxParticipant::new());

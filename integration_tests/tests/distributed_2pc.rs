@@ -8,12 +8,12 @@
 
 use std::sync::Arc;
 
+use tensor_chain::consensus::{ConsensusConfig, ConsensusManager};
 use tensor_chain::{
-    block::Transaction, DistributedTxCoordinator, DistributedTxConfig, Message, MessageHandler,
+    block::Transaction, DistributedTxConfig, DistributedTxCoordinator, Message, MessageHandler,
     PrepareRequest, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxParticipant, TxPhase,
     TxPrepareMsg, TxVote,
 };
-use tensor_chain::consensus::{ConsensusConfig, ConsensusManager};
 
 fn create_test_coordinator() -> DistributedTxCoordinator {
     let consensus = ConsensusManager::new(ConsensusConfig::default());
@@ -89,7 +89,13 @@ fn test_2pc_multi_shard_all_yes() {
 
     // Commit
     coordinator.commit(tx.tx_id).unwrap();
-    assert_eq!(coordinator.stats.committed.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        coordinator
+            .stats
+            .committed
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 }
 
 #[test]
@@ -388,7 +394,13 @@ fn test_2pc_orthogonal_merges() {
 
     // Verify orthogonal merge was counted
     coordinator.commit(tx.tx_id).unwrap();
-    assert!(coordinator.stats.orthogonal_merges.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(
+        coordinator
+            .stats
+            .orthogonal_merges
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
 }
 
 #[test]
@@ -396,7 +408,9 @@ fn test_2pc_stats_tracking() {
     let coordinator = create_test_coordinator();
 
     // Create and commit a transaction
-    let tx = coordinator.begin("coordinator".to_string(), vec![0]).unwrap();
+    let tx = coordinator
+        .begin("coordinator".to_string(), vec![0])
+        .unwrap();
     let request = PrepareRequest {
         tx_id: tx.tx_id,
         coordinator: "coordinator".to_string(),
@@ -412,7 +426,9 @@ fn test_2pc_stats_tracking() {
     coordinator.commit(tx.tx_id).unwrap();
 
     // Create and abort a transaction
-    let tx2 = coordinator.begin("coordinator".to_string(), vec![0]).unwrap();
+    let tx2 = coordinator
+        .begin("coordinator".to_string(), vec![0])
+        .unwrap();
     coordinator.abort(tx2.tx_id, "test abort").unwrap();
 
     let stats = coordinator.stats();

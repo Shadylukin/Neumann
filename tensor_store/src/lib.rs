@@ -11,6 +11,7 @@ pub mod blob_log;
 pub mod cache_ring;
 pub mod consistent_hash;
 pub mod delta_vector;
+pub mod distance;
 pub mod embedding_slab;
 pub mod entity_index;
 pub mod graph_tensor;
@@ -33,6 +34,7 @@ pub use consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner, Consi
 pub use delta_vector::{
     ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
 };
+pub use distance::{DistanceMetric, GeometricConfig};
 pub use embedding_slab::{EmbeddingError, EmbeddingSlab, EmbeddingSlabSnapshot, EmbeddingSlot};
 pub use entity_index::{EntityId, EntityIndex, EntityIndexSnapshot};
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};

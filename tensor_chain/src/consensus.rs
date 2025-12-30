@@ -19,6 +19,8 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use tensor_store::distance::{DistanceMetric, GeometricConfig};
+use tensor_store::SparseVector;
 
 use crate::transaction::TransactionDelta;
 
@@ -35,6 +37,10 @@ pub struct ConsensusConfig {
     pub opposite_threshold: f32,
     /// Whether to allow merging with key overlap.
     pub allow_key_overlap_merge: bool,
+    /// Distance metric for conflict detection.
+    pub metric: DistanceMetric,
+    /// Sparsity threshold for delta computation.
+    pub sparsity_threshold: f32,
 }
 
 impl Default for ConsensusConfig {
@@ -45,6 +51,8 @@ impl Default for ConsensusConfig {
             identical_threshold: 0.99,
             opposite_threshold: -0.95,
             allow_key_overlap_merge: false,
+            metric: DistanceMetric::Cosine,
+            sparsity_threshold: 1e-6,
         }
     }
 }
@@ -127,12 +135,12 @@ pub struct MergeResult {
 }
 
 /// A delta vector representing a change in state space.
+///
+/// Uses sparse representation for efficiency - only non-zero changes are stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaVector {
-    /// The embedding delta (after - before).
-    pub vector: Vec<f32>,
-    /// Magnitude of the delta.
-    pub magnitude: f32,
+    /// The sparse embedding delta (after - before).
+    pub delta: SparseVector,
     /// Keys affected by this delta.
     pub affected_keys: HashSet<String>,
     /// Source transaction ID.
@@ -140,61 +148,137 @@ pub struct DeltaVector {
 }
 
 impl DeltaVector {
-    /// Create a new delta vector.
+    /// Create a new delta vector from a dense embedding.
+    ///
+    /// Converts to sparse representation automatically.
     pub fn new(vector: Vec<f32>, affected_keys: HashSet<String>, tx_id: u64) -> Self {
-        let magnitude = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
         Self {
-            vector,
-            magnitude,
+            delta: SparseVector::from_dense(&vector),
+            affected_keys,
+            tx_id,
+        }
+    }
+
+    /// Create a new delta vector from a sparse embedding.
+    pub fn from_sparse(delta: SparseVector, affected_keys: HashSet<String>, tx_id: u64) -> Self {
+        Self {
+            delta,
             affected_keys,
             tx_id,
         }
     }
 
     /// Create from before and after state embeddings.
+    ///
+    /// Computes a sparse delta, storing only positions that changed.
     pub fn from_states(
         before: &[f32],
         after: &[f32],
         affected_keys: HashSet<String>,
         tx_id: u64,
     ) -> Self {
-        let vector: Vec<f32> = after
-            .iter()
-            .zip(before.iter())
-            .map(|(a, b)| a - b)
-            .collect();
-        Self::new(vector, affected_keys, tx_id)
+        Self::from_states_with_threshold(before, after, affected_keys, tx_id, 1e-6)
     }
 
-    /// Create a zero delta.
+    /// Create from before and after state embeddings with custom sparsity threshold.
+    pub fn from_states_with_threshold(
+        before: &[f32],
+        after: &[f32],
+        affected_keys: HashSet<String>,
+        tx_id: u64,
+        threshold: f32,
+    ) -> Self {
+        let delta = SparseVector::from_diff(before, after, threshold);
+        Self::from_sparse(delta, affected_keys, tx_id)
+    }
+
+    /// Create a zero delta with the specified dimension.
     pub fn zero(dimension: usize) -> Self {
         Self {
-            vector: vec![0.0; dimension],
-            magnitude: 0.0,
+            delta: SparseVector::new(dimension),
             affected_keys: HashSet::new(),
             tx_id: 0,
         }
     }
 
-    /// Get the dimension of the delta.
-    pub fn dimension(&self) -> usize {
-        self.vector.len()
+    /// Get the magnitude of the delta.
+    pub fn magnitude(&self) -> f32 {
+        self.delta.magnitude()
+    }
+
+    /// Check if this delta is empty (no changes).
+    pub fn is_empty(&self) -> bool {
+        self.delta.nnz() == 0
+    }
+
+    /// Get the number of non-zero positions in the delta.
+    pub fn nnz(&self) -> usize {
+        self.delta.nnz()
+    }
+
+    /// Get the dense representation of the delta.
+    ///
+    /// For sparse deltas this reconstructs the full vector.
+    pub fn to_dense(&self, dimension: usize) -> Vec<f32> {
+        let mut result = vec![0.0; dimension];
+        for (&idx, &val) in self.delta.positions().iter().zip(self.delta.values()) {
+            if (idx as usize) < dimension {
+                result[idx as usize] = val;
+            }
+        }
+        result
     }
 
     /// Compute cosine similarity with another delta.
     pub fn cosine_similarity(&self, other: &DeltaVector) -> f32 {
-        if self.magnitude == 0.0 || other.magnitude == 0.0 {
-            return 0.0;
-        }
+        self.delta.cosine_similarity(&other.delta)
+    }
 
-        let dot: f32 = self
-            .vector
-            .iter()
-            .zip(other.vector.iter())
-            .map(|(a, b)| a * b)
-            .sum();
+    /// Compute angular distance with another delta.
+    ///
+    /// Range: [0, PI] where 0 = identical direction.
+    pub fn angular_distance(&self, other: &DeltaVector) -> f32 {
+        self.delta.angular_distance(&other.delta)
+    }
 
-        dot / (self.magnitude * other.magnitude)
+    /// Compute Jaccard index (structural similarity) with another delta.
+    ///
+    /// Measures overlap of non-zero positions, independent of values.
+    /// Range: [0, 1] where 1 = same positions modified.
+    pub fn jaccard_index(&self, other: &DeltaVector) -> f32 {
+        self.delta.jaccard_index(&other.delta)
+    }
+
+    /// Compute structural similarity (alias for jaccard_index).
+    pub fn structural_similarity(&self, other: &DeltaVector) -> f32 {
+        self.jaccard_index(other)
+    }
+
+    /// Compute geodesic distance on the unit sphere.
+    pub fn geodesic_distance(&self, other: &DeltaVector) -> f32 {
+        self.delta.geodesic_distance(&other.delta)
+    }
+
+    /// Compute weighted Jaccard similarity.
+    ///
+    /// Considers both position overlap and value magnitudes.
+    pub fn weighted_jaccard(&self, other: &DeltaVector) -> f32 {
+        self.delta.weighted_jaccard(&other.delta)
+    }
+
+    /// Compute Euclidean distance.
+    pub fn euclidean_distance(&self, other: &DeltaVector) -> f32 {
+        self.delta.euclidean_distance(&other.delta)
+    }
+
+    /// Compute similarity using the specified metric.
+    pub fn similarity(&self, other: &DeltaVector, metric: &DistanceMetric) -> f32 {
+        metric.compute(&self.delta, &other.delta)
+    }
+
+    /// Compute composite geometric similarity with configurable weights.
+    pub fn geometric_similarity(&self, other: &DeltaVector, config: &GeometricConfig) -> f32 {
+        config.compute(&self.delta, &other.delta)
     }
 
     /// Check if this delta overlaps with another in key space.
@@ -213,74 +297,65 @@ impl DeltaVector {
             .collect()
     }
 
+    /// Check if this delta overlaps with another in index space.
+    ///
+    /// True if both deltas modify the same embedding positions.
+    pub fn overlaps_indices(&self, other: &DeltaVector) -> bool {
+        self.delta.jaccard_index(&other.delta) > 0.0
+    }
+
     /// Add another delta vector (for orthogonal merge).
     pub fn add(&self, other: &DeltaVector) -> DeltaVector {
-        let vector: Vec<f32> = self
-            .vector
-            .iter()
-            .zip(other.vector.iter())
-            .map(|(a, b)| a + b)
-            .collect();
+        let delta = self.delta.add(&other.delta);
         let keys: HashSet<String> = self
             .affected_keys
             .union(&other.affected_keys)
             .cloned()
             .collect();
-        DeltaVector::new(vector, keys, 0) // New tx_id will be assigned
+        DeltaVector::from_sparse(delta, keys, 0) // New tx_id will be assigned
     }
 
     /// Compute weighted average with another delta.
     pub fn weighted_average(&self, other: &DeltaVector, w1: f32, w2: f32) -> DeltaVector {
         let total = w1 + w2;
         if total == 0.0 {
-            return DeltaVector::zero(self.dimension());
+            return DeltaVector::zero(0);
         }
-
-        let vector: Vec<f32> = self
-            .vector
-            .iter()
-            .zip(other.vector.iter())
-            .map(|(a, b)| (w1 * a + w2 * b) / total)
-            .collect();
+        let delta = self.delta.weighted_average(&other.delta, w1, w2);
         let keys: HashSet<String> = self
             .affected_keys
             .union(&other.affected_keys)
             .cloned()
             .collect();
-        DeltaVector::new(vector, keys, 0)
+        DeltaVector::from_sparse(delta, keys, 0)
     }
 
     /// Project out the conflicting component (along a direction).
-    pub fn project_non_conflicting(&self, conflict_direction: &[f32]) -> DeltaVector {
-        let dir_mag: f32 = conflict_direction.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if dir_mag == 0.0 {
-            return self.clone();
-        }
+    pub fn project_non_conflicting(&self, conflict_direction: &SparseVector) -> DeltaVector {
+        let delta = self.delta.project_orthogonal(conflict_direction);
+        DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
+    }
 
-        // Compute projection of self onto conflict direction
-        let dot: f32 = self
-            .vector
-            .iter()
-            .zip(conflict_direction.iter())
-            .map(|(a, b)| a * b)
-            .sum();
-        let proj_scalar = dot / (dir_mag * dir_mag);
-
-        // Subtract projection to get orthogonal component
-        let vector: Vec<f32> = self
-            .vector
-            .iter()
-            .zip(conflict_direction.iter())
-            .map(|(a, b)| a - proj_scalar * b)
-            .collect();
-
-        DeltaVector::new(vector, self.affected_keys.clone(), self.tx_id)
+    /// Project out the conflicting component from a dense direction.
+    pub fn project_non_conflicting_dense(&self, conflict_direction: &[f32]) -> DeltaVector {
+        let direction = SparseVector::from_dense(conflict_direction);
+        self.project_non_conflicting(&direction)
     }
 
     /// Scale the delta by a factor.
     pub fn scale(&self, factor: f32) -> DeltaVector {
-        let vector: Vec<f32> = self.vector.iter().map(|x| x * factor).collect();
-        DeltaVector::new(vector, self.affected_keys.clone(), self.tx_id)
+        let delta = self.delta.scale(factor);
+        DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
+    }
+
+    /// Get access to the underlying sparse vector.
+    pub fn sparse(&self) -> &SparseVector {
+        &self.delta
+    }
+
+    /// Get the dimension of the underlying sparse vector.
+    pub fn dimension(&self) -> usize {
+        self.delta.dimension()
     }
 }
 
@@ -561,8 +636,8 @@ mod tests {
         let keys: HashSet<String> = ["key1", "key2"].iter().map(|s| s.to_string()).collect();
         let delta = DeltaVector::new(vec![1.0, 0.0, 0.0], keys.clone(), 1);
 
-        assert_eq!(delta.dimension(), 3);
-        assert!((delta.magnitude - 1.0).abs() < 0.001);
+        assert_eq!(delta.nnz(), 1); // Only one non-zero value
+        assert!((delta.magnitude() - 1.0).abs() < 0.001);
         assert_eq!(delta.affected_keys, keys);
     }
 
@@ -592,7 +667,7 @@ mod tests {
         let d2 = DeltaVector::new(vec![0.0, 1.0], keys2, 2);
 
         let sum = d1.add(&d2);
-        assert_eq!(sum.vector, vec![1.0, 1.0]);
+        assert_eq!(sum.to_dense(2), vec![1.0, 1.0]);
         assert!(sum.affected_keys.contains("a"));
         assert!(sum.affected_keys.contains("b"));
     }
@@ -603,7 +678,7 @@ mod tests {
         let d2 = DeltaVector::new(vec![0.0, 2.0], HashSet::new(), 2);
 
         let avg = d1.weighted_average(&d2, 0.5, 0.5);
-        assert_eq!(avg.vector, vec![1.0, 1.0]);
+        assert_eq!(avg.to_dense(2), vec![1.0, 1.0]);
     }
 
     #[test]
@@ -611,10 +686,11 @@ mod tests {
         let d = DeltaVector::new(vec![1.0, 1.0], HashSet::new(), 1);
         let conflict_dir = vec![1.0, 0.0];
 
-        let projected = d.project_non_conflicting(&conflict_dir);
+        let projected = d.project_non_conflicting_dense(&conflict_dir);
         // Should remove the x component, leaving only y
-        assert!(projected.vector[0].abs() < 0.001);
-        assert!((projected.vector[1] - 1.0).abs() < 0.001);
+        let dense = projected.to_dense(2);
+        assert!(dense[0].abs() < 0.001);
+        assert!((dense[1] - 1.0).abs() < 0.001);
     }
 
     #[test]
@@ -684,7 +760,7 @@ mod tests {
         let result = manager.merge(&d1, &d2);
         assert!(result.success);
         let merged = result.merged_delta.unwrap();
-        assert_eq!(merged.vector, vec![1.0, 1.0, 0.0]);
+        assert_eq!(merged.to_dense(3), vec![1.0, 1.0, 0.0]);
     }
 
     #[test]
@@ -699,7 +775,7 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.action, MergeAction::Cancel);
         let merged = result.merged_delta.unwrap();
-        assert!(merged.magnitude < 0.001); // Should be zero
+        assert!(merged.magnitude() < 0.001); // Should be zero
     }
 
     #[test]
@@ -730,7 +806,7 @@ mod tests {
         let result = manager.merge_all(&deltas);
         assert!(result.success);
         let merged = result.merged_delta.unwrap();
-        assert_eq!(merged.vector, vec![1.0, 1.0, 1.0]);
+        assert_eq!(merged.to_dense(3), vec![1.0, 1.0, 1.0]);
         assert_eq!(result.parent_ids.len(), 3);
     }
 
@@ -932,7 +1008,10 @@ mod tests {
     fn test_merge_action_serde() {
         let actions = [
             MergeAction::VectorAdd,
-            MergeAction::WeightedAverage { weight1: 50, weight2: 50 },
+            MergeAction::WeightedAverage {
+                weight1: 50,
+                weight2: 50,
+            },
             MergeAction::Deduplicate,
             MergeAction::Cancel,
             MergeAction::Reject,
@@ -969,15 +1048,17 @@ mod tests {
         let keys: HashSet<String> = ["key"].iter().map(|s| s.to_string()).collect();
 
         let delta = DeltaVector::from_states(&before, &after, keys, 42);
-        assert_eq!(delta.vector, vec![0.0, 1.0, 0.0]);
+        // Only position 1 changed (0.0 -> 1.0)
+        assert_eq!(delta.nnz(), 1);
+        assert_eq!(delta.to_dense(3), vec![0.0, 1.0, 0.0]);
         assert_eq!(delta.tx_id, 42);
     }
 
     #[test]
     fn test_delta_vector_zero() {
         let delta = DeltaVector::zero(5);
-        assert_eq!(delta.dimension(), 5);
-        assert_eq!(delta.magnitude, 0.0);
+        assert!(delta.is_empty());
+        assert_eq!(delta.magnitude(), 0.0);
         assert!(delta.affected_keys.is_empty());
         assert_eq!(delta.tx_id, 0);
     }
@@ -1013,7 +1094,7 @@ mod tests {
         let d2 = DeltaVector::new(vec![3.0, 4.0], HashSet::new(), 2);
 
         let result = d1.weighted_average(&d2, 0.0, 0.0);
-        assert_eq!(result.magnitude, 0.0);
+        assert_eq!(result.magnitude(), 0.0);
     }
 
     #[test]
@@ -1021,9 +1102,9 @@ mod tests {
         let d = DeltaVector::new(vec![1.0, 2.0, 3.0], HashSet::new(), 1);
         let zero_dir = vec![0.0, 0.0, 0.0];
 
-        let result = d.project_non_conflicting(&zero_dir);
+        let result = d.project_non_conflicting_dense(&zero_dir);
         // With zero direction, should return the original
-        assert_eq!(result.vector, d.vector);
+        assert_eq!(result.to_dense(3), d.to_dense(3));
     }
 
     #[test]
@@ -1031,7 +1112,7 @@ mod tests {
         let d = DeltaVector::new(vec![1.0, 2.0, 3.0], HashSet::new(), 1);
         let scaled = d.scale(2.0);
 
-        assert_eq!(scaled.vector, vec![2.0, 4.0, 6.0]);
+        assert_eq!(scaled.to_dense(3), vec![2.0, 4.0, 6.0]);
         assert_eq!(scaled.tx_id, 1);
     }
 
@@ -1043,7 +1124,7 @@ mod tests {
         let serialized = bincode::serialize(&d).unwrap();
         let deserialized: DeltaVector = bincode::deserialize(&serialized).unwrap();
 
-        assert_eq!(d.vector, deserialized.vector);
+        assert_eq!(d.to_dense(2), deserialized.to_dense(2));
         assert_eq!(d.tx_id, deserialized.tx_id);
     }
 
@@ -1059,7 +1140,7 @@ mod tests {
 
         let vector = manager.delta_to_vector(&delta);
         assert_eq!(vector.tx_id, 123);
-        assert_eq!(vector.vector, vec![1.0, 2.0, 3.0]);
+        assert_eq!(vector.to_dense(3), vec![1.0, 2.0, 3.0]);
         assert!(vector.affected_keys.contains("key1"));
     }
 
@@ -1094,7 +1175,7 @@ mod tests {
         let deltas = vec![
             DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1),
             DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal
-            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2, 3),          // Conflicting with accumulated
+            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2, 3), // Conflicting with accumulated
         ];
 
         let result = manager.merge_all(&deltas);

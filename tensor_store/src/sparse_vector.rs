@@ -379,6 +379,364 @@ impl SparseVector {
         }
     }
 
+    // ========================================================================
+    // Sparse Arithmetic Operations
+    // ========================================================================
+
+    /// Create a sparse delta from two dense vectors.
+    ///
+    /// Only stores positions where |after[i] - before[i]| > threshold.
+    /// This is the core operation for eliminating dense ceremony.
+    pub fn from_diff(before: &[f32], after: &[f32], threshold: f32) -> Self {
+        debug_assert_eq!(before.len(), after.len());
+        let dimension = before.len();
+        let mut positions = Vec::new();
+        let mut values = Vec::new();
+
+        for (i, (&b, &a)) in before.iter().zip(after).enumerate() {
+            let delta = a - b;
+            // Use > threshold (not >=) so that exact zeros are never stored
+            // When threshold is 0, only non-zero deltas are stored
+            if delta.abs() > threshold {
+                positions.push(i as u32);
+                values.push(delta);
+            }
+        }
+
+        Self {
+            dimension,
+            positions,
+            values,
+        }
+    }
+
+    /// Subtract another sparse vector (self - other).
+    ///
+    /// Positions with zero difference are not stored.
+    pub fn sub(&self, other: &SparseVector) -> SparseVector {
+        self.add(&other.scale(-1.0))
+    }
+
+    /// Weighted average of two sparse vectors.
+    ///
+    /// Result = (w1 * self + w2 * other) / (w1 + w2)
+    /// Positions with zero result are not stored.
+    pub fn weighted_average(&self, other: &SparseVector, w1: f32, w2: f32) -> SparseVector {
+        debug_assert_eq!(self.dimension, other.dimension);
+
+        let total = w1 + w2;
+        if total == 0.0 {
+            return SparseVector::new(self.dimension);
+        }
+
+        let mut result_positions = Vec::new();
+        let mut result_values = Vec::new();
+
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() || j < other.positions.len() {
+            let (pos, val) = if i >= self.positions.len() {
+                let p = other.positions[j];
+                let v = w2 * other.values[j] / total;
+                j += 1;
+                (p, v)
+            } else if j >= other.positions.len() {
+                let p = self.positions[i];
+                let v = w1 * self.values[i] / total;
+                i += 1;
+                (p, v)
+            } else {
+                match self.positions[i].cmp(&other.positions[j]) {
+                    std::cmp::Ordering::Equal => {
+                        let p = self.positions[i];
+                        let v = (w1 * self.values[i] + w2 * other.values[j]) / total;
+                        i += 1;
+                        j += 1;
+                        (p, v)
+                    },
+                    std::cmp::Ordering::Less => {
+                        let p = self.positions[i];
+                        let v = w1 * self.values[i] / total;
+                        i += 1;
+                        (p, v)
+                    },
+                    std::cmp::Ordering::Greater => {
+                        let p = other.positions[j];
+                        let v = w2 * other.values[j] / total;
+                        j += 1;
+                        (p, v)
+                    },
+                }
+            };
+
+            if val != 0.0 {
+                result_positions.push(pos);
+                result_values.push(val);
+            }
+        }
+
+        SparseVector {
+            dimension: self.dimension,
+            positions: result_positions,
+            values: result_values,
+        }
+    }
+
+    /// Project out the component along a direction (self - proj(self onto direction)).
+    ///
+    /// Used for conflict resolution: removes the conflicting component.
+    pub fn project_orthogonal(&self, direction: &SparseVector) -> SparseVector {
+        let dir_mag_sq = direction.values.iter().map(|v| v * v).sum::<f32>();
+        if dir_mag_sq == 0.0 {
+            return self.clone();
+        }
+
+        let dot = self.dot(direction);
+        let proj_scalar = dot / dir_mag_sq;
+
+        // self - proj_scalar * direction
+        self.sub(&direction.scale(proj_scalar))
+    }
+
+    // ========================================================================
+    // Geometric Distance Metrics
+    // ========================================================================
+
+    /// Angular distance: acos(cosine_similarity).
+    ///
+    /// More linear than cosine for small angles.
+    /// Range: [0, PI] where 0 = identical, PI = opposite.
+    pub fn angular_distance(&self, other: &SparseVector) -> f32 {
+        let cos = self.cosine_similarity(other).clamp(-1.0, 1.0);
+        cos.acos()
+    }
+
+    /// Geodesic distance on unit sphere.
+    ///
+    /// For normalized vectors, this is the arc length.
+    /// Equivalent to angular_distance for normalized inputs.
+    pub fn geodesic_distance(&self, other: &SparseVector) -> f32 {
+        // Geodesic on hypersphere is just arc length = angle
+        self.angular_distance(other)
+    }
+
+    /// Jaccard index on non-zero positions.
+    ///
+    /// Measures structural overlap independent of values.
+    /// |intersection| / |union| of non-zero positions.
+    /// Range: [0, 1] where 1 = same positions, 0 = no overlap.
+    pub fn jaccard_index(&self, other: &SparseVector) -> f32 {
+        if self.positions.is_empty() && other.positions.is_empty() {
+            return 1.0; // Both empty = identical structure
+        }
+        if self.positions.is_empty() || other.positions.is_empty() {
+            return 0.0; // One empty, one not = no overlap
+        }
+
+        let mut intersection = 0usize;
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() && j < other.positions.len() {
+            match self.positions[i].cmp(&other.positions[j]) {
+                std::cmp::Ordering::Equal => {
+                    intersection += 1;
+                    i += 1;
+                    j += 1;
+                },
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+
+        let union = self.positions.len() + other.positions.len() - intersection;
+        intersection as f32 / union as f32
+    }
+
+    /// Overlap coefficient: |intersection| / min(|a|, |b|).
+    ///
+    /// Measures containment - 1.0 if smaller is subset of larger.
+    /// Range: [0, 1].
+    pub fn overlap_coefficient(&self, other: &SparseVector) -> f32 {
+        if self.positions.is_empty() || other.positions.is_empty() {
+            return 0.0;
+        }
+
+        let mut intersection = 0usize;
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() && j < other.positions.len() {
+            match self.positions[i].cmp(&other.positions[j]) {
+                std::cmp::Ordering::Equal => {
+                    intersection += 1;
+                    i += 1;
+                    j += 1;
+                },
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+
+        let min_size = self.positions.len().min(other.positions.len());
+        intersection as f32 / min_size as f32
+    }
+
+    /// Weighted Jaccard: sum(min(|a|, |b|)) / sum(max(|a|, |b|)).
+    ///
+    /// Like Jaccard but accounts for value magnitudes.
+    /// Range: [0, 1] where 1 = identical values at all positions.
+    pub fn weighted_jaccard(&self, other: &SparseVector) -> f32 {
+        debug_assert_eq!(self.dimension, other.dimension);
+
+        let mut min_sum = 0.0f32;
+        let mut max_sum = 0.0f32;
+
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() || j < other.positions.len() {
+            let (a_val, b_val) = if i >= self.positions.len() {
+                let v = other.values[j].abs();
+                j += 1;
+                (0.0, v)
+            } else if j >= other.positions.len() {
+                let v = self.values[i].abs();
+                i += 1;
+                (v, 0.0)
+            } else {
+                match self.positions[i].cmp(&other.positions[j]) {
+                    std::cmp::Ordering::Equal => {
+                        let a = self.values[i].abs();
+                        let b = other.values[j].abs();
+                        i += 1;
+                        j += 1;
+                        (a, b)
+                    },
+                    std::cmp::Ordering::Less => {
+                        let v = self.values[i].abs();
+                        i += 1;
+                        (v, 0.0)
+                    },
+                    std::cmp::Ordering::Greater => {
+                        let v = other.values[j].abs();
+                        j += 1;
+                        (0.0, v)
+                    },
+                }
+            };
+
+            min_sum += a_val.min(b_val);
+            max_sum += a_val.max(b_val);
+        }
+
+        if max_sum == 0.0 {
+            1.0 // Both zero vectors
+        } else {
+            min_sum / max_sum
+        }
+    }
+
+    /// Euclidean distance (L2 norm of difference).
+    ///
+    /// sqrt(sum((a[i] - b[i])^2))
+    pub fn euclidean_distance(&self, other: &SparseVector) -> f32 {
+        self.euclidean_distance_squared(other).sqrt()
+    }
+
+    /// Squared Euclidean distance (avoids sqrt).
+    pub fn euclidean_distance_squared(&self, other: &SparseVector) -> f32 {
+        debug_assert_eq!(self.dimension, other.dimension);
+
+        let mut sum_sq = 0.0f32;
+
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() || j < other.positions.len() {
+            let diff = if i >= self.positions.len() {
+                let v = other.values[j];
+                j += 1;
+                v // 0 - v = -v, squared = v^2
+            } else if j >= other.positions.len() {
+                let v = self.values[i];
+                i += 1;
+                v // v - 0 = v
+            } else {
+                match self.positions[i].cmp(&other.positions[j]) {
+                    std::cmp::Ordering::Equal => {
+                        let d = self.values[i] - other.values[j];
+                        i += 1;
+                        j += 1;
+                        d
+                    },
+                    std::cmp::Ordering::Less => {
+                        let v = self.values[i];
+                        i += 1;
+                        v
+                    },
+                    std::cmp::Ordering::Greater => {
+                        let v = other.values[j];
+                        j += 1;
+                        -v
+                    },
+                }
+            };
+
+            sum_sq += diff * diff;
+        }
+
+        sum_sq
+    }
+
+    /// Manhattan distance (L1 norm of difference).
+    ///
+    /// sum(|a[i] - b[i]|)
+    pub fn manhattan_distance(&self, other: &SparseVector) -> f32 {
+        debug_assert_eq!(self.dimension, other.dimension);
+
+        let mut sum = 0.0f32;
+
+        let mut i = 0;
+        let mut j = 0;
+
+        while i < self.positions.len() || j < other.positions.len() {
+            let diff = if i >= self.positions.len() {
+                let v = other.values[j].abs();
+                j += 1;
+                v
+            } else if j >= other.positions.len() {
+                let v = self.values[i].abs();
+                i += 1;
+                v
+            } else {
+                match self.positions[i].cmp(&other.positions[j]) {
+                    std::cmp::Ordering::Equal => {
+                        let d = (self.values[i] - other.values[j]).abs();
+                        i += 1;
+                        j += 1;
+                        d
+                    },
+                    std::cmp::Ordering::Less => {
+                        let v = self.values[i].abs();
+                        i += 1;
+                        v
+                    },
+                    std::cmp::Ordering::Greater => {
+                        let v = other.values[j].abs();
+                        j += 1;
+                        v
+                    },
+                }
+            };
+
+            sum += diff;
+        }
+
+        sum
+    }
+
     /// Memory usage in bytes (approximate).
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -717,5 +1075,211 @@ mod tests {
         assert!(!sparse.has_value(0));
         assert!(sparse.has_value(1));
         assert!(!sparse.has_value(2));
+    }
+
+    // ========================================================================
+    // Tests for new sparse arithmetic operations
+    // ========================================================================
+
+    #[test]
+    fn from_diff_creates_sparse_delta() {
+        let before = vec![1.0, 2.0, 3.0, 4.0];
+        let after = vec![1.0, 2.5, 3.0, 5.0]; // positions 1 and 3 changed
+
+        let delta = SparseVector::from_diff(&before, &after, 0.0);
+
+        assert_eq!(delta.nnz(), 2);
+        assert_eq!(delta.get(1), 0.5); // 2.5 - 2.0
+        assert_eq!(delta.get(3), 1.0); // 5.0 - 4.0
+    }
+
+    #[test]
+    fn from_diff_respects_threshold() {
+        let before = vec![1.0, 2.0, 3.0];
+        let after = vec![1.01, 2.5, 3.001]; // 0.01, 0.5, 0.001
+
+        let delta = SparseVector::from_diff(&before, &after, 0.1);
+
+        assert_eq!(delta.nnz(), 1); // Only 0.5 exceeds threshold
+        assert_eq!(delta.get(1), 0.5);
+    }
+
+    #[test]
+    fn sub_sparse_vectors() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.5, 2.0, 1.0, 1.0]);
+
+        let diff = a.sub(&b);
+
+        assert_eq!(diff.get(0), 0.5); // 1.0 - 0.5
+        assert_eq!(diff.get(1), 0.0); // 2.0 - 2.0 = 0, not stored
+        assert_eq!(diff.get(2), 2.0); // 3.0 - 1.0
+        assert_eq!(diff.get(3), -1.0); // 0.0 - 1.0
+    }
+
+    #[test]
+    fn weighted_average_sparse() {
+        let a = SparseVector::from_dense(&[2.0, 0.0, 4.0]);
+        let b = SparseVector::from_dense(&[0.0, 6.0, 0.0]);
+
+        let avg = a.weighted_average(&b, 1.0, 1.0); // Equal weights
+
+        assert_eq!(avg.get(0), 1.0); // (1*2 + 1*0) / 2 = 1
+        assert_eq!(avg.get(1), 3.0); // (1*0 + 1*6) / 2 = 3
+        assert_eq!(avg.get(2), 2.0); // (1*4 + 1*0) / 2 = 2
+    }
+
+    #[test]
+    fn weighted_average_with_weights() {
+        let a = SparseVector::from_dense(&[4.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 8.0]);
+
+        let avg = a.weighted_average(&b, 3.0, 1.0); // 3:1 ratio
+
+        assert_eq!(avg.get(0), 3.0); // (3*4 + 1*0) / 4 = 3
+        assert_eq!(avg.get(1), 2.0); // (3*0 + 1*8) / 4 = 2
+    }
+
+    #[test]
+    fn project_orthogonal_perpendicular() {
+        // Vector at 45 degrees, project out x-axis component
+        let v = SparseVector::from_dense(&[1.0, 1.0]);
+        let x_axis = SparseVector::from_dense(&[1.0, 0.0]);
+
+        let result = v.project_orthogonal(&x_axis);
+
+        assert!(result.get(0).abs() < 1e-6); // x component removed
+        assert!((result.get(1) - 1.0).abs() < 1e-6); // y component preserved
+    }
+
+    #[test]
+    fn project_orthogonal_zero_direction() {
+        let v = SparseVector::from_dense(&[1.0, 2.0]);
+        let zero = SparseVector::new(2);
+
+        let result = v.project_orthogonal(&zero);
+
+        assert_eq!(result.to_dense(), v.to_dense());
+    }
+
+    // ========================================================================
+    // Tests for geometric distance metrics
+    // ========================================================================
+
+    #[test]
+    fn angular_distance_identical() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+
+        // Use 1e-3 tolerance due to floating point in cosine -> acos
+        assert!(a.angular_distance(&b).abs() < 1e-3);
+    }
+
+    #[test]
+    fn angular_distance_orthogonal() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 1.0]);
+
+        let dist = a.angular_distance(&b);
+        assert!((dist - std::f32::consts::FRAC_PI_2).abs() < 1e-6); // PI/2
+    }
+
+    #[test]
+    fn angular_distance_opposite() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[-1.0, 0.0]);
+
+        let dist = a.angular_distance(&b);
+        assert!((dist - std::f32::consts::PI).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jaccard_identical_structure() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 2.0, 0.0]);
+        let b = SparseVector::from_dense(&[3.0, 0.0, 4.0, 0.0]); // Same positions
+
+        assert!((a.jaccard_index(&b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jaccard_no_overlap() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 0.0, 2.0, 0.0]);
+
+        assert!(a.jaccard_index(&b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn jaccard_partial_overlap() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 0.0, 0.0]); // positions 0, 1
+        let b = SparseVector::from_dense(&[0.0, 3.0, 4.0, 0.0]); // positions 1, 2
+
+        // Intersection: {1}, Union: {0, 1, 2} => 1/3
+        assert!((a.jaccard_index(&b) - 1.0 / 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn overlap_coefficient_subset() {
+        let small = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+        let large = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+
+        // Small has 1 position, large has 3, intersection is 1
+        // 1 / min(1, 3) = 1.0
+        assert!((small.overlap_coefficient(&large) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_jaccard_identical() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+
+        assert!((a.weighted_jaccard(&b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_jaccard_different_magnitudes() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[2.0, 0.0]);
+
+        // min(1, 2) / max(1, 2) = 1/2 = 0.5
+        assert!((a.weighted_jaccard(&b) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_orthogonal_unit() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 1.0]);
+
+        // sqrt(1^2 + 1^2) = sqrt(2)
+        assert!((a.euclidean_distance(&b) - 2.0_f32.sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_squared_avoids_sqrt() {
+        let a = SparseVector::from_dense(&[3.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 4.0]);
+
+        // 3^2 + 4^2 = 9 + 16 = 25
+        assert!((a.euclidean_distance_squared(&b) - 25.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn manhattan_distance_sparse() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 3.0]);
+        let b = SparseVector::from_dense(&[0.0, 2.0, 1.0]);
+
+        // |1-0| + |0-2| + |3-1| = 1 + 2 + 2 = 5
+        assert!((a.manhattan_distance(&b) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn geodesic_equals_angular_for_unit_vectors() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.707, 0.707]);
+
+        let angular = a.angular_distance(&b);
+        let geodesic = a.geodesic_distance(&b);
+
+        assert!((angular - geodesic).abs() < 1e-6);
     }
 }

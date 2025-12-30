@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tensor_chain::{
-    MemoryTransport, Message, MembershipCallback, MembershipManager, NodeHealth,
-    RaftConfig, RaftNode,
-};
 use tensor_chain::membership::{ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig};
 use tensor_chain::network::RequestVote;
+use tensor_chain::{
+    MembershipCallback, MembershipManager, MemoryTransport, Message, NodeHealth, RaftConfig,
+    RaftNode,
+};
 
 fn create_test_cluster_config(node_id: &str, peers: &[(&str, &str)]) -> ClusterConfig {
     let mut config = ClusterConfig::new(
@@ -66,12 +66,7 @@ impl TestCallback {
 }
 
 impl MembershipCallback for TestCallback {
-    fn on_health_change(
-        &self,
-        node_id: &String,
-        old_health: NodeHealth,
-        new_health: NodeHealth,
-    ) {
+    fn on_health_change(&self, node_id: &String, old_health: NodeHealth, new_health: NodeHealth) {
         self.health_changes
             .lock()
             .push((node_id.clone(), old_health, new_health));
@@ -158,10 +153,10 @@ async fn test_membership_mark_failed() {
 #[tokio::test]
 async fn test_membership_detects_node_failure() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-        ("node3", "127.0.0.1:9102"),
-    ]);
+    let config = create_test_cluster_config(
+        "node1",
+        &[("node2", "127.0.0.1:9101"), ("node3", "127.0.0.1:9102")],
+    );
 
     let manager = MembershipManager::new(config, transport);
     let callback = Arc::new(TestCallback::new());
@@ -224,9 +219,7 @@ async fn test_membership_run_and_shutdown() {
 
     // Start the run loop in a background task
     let manager_clone = manager.clone();
-    let run_handle = tokio::spawn(async move {
-        manager_clone.run().await
-    });
+    let run_handle = tokio::spawn(async move { manager_clone.run().await });
 
     // Let it run for a bit
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -245,10 +238,10 @@ async fn test_membership_run_and_shutdown() {
 #[tokio::test]
 async fn test_membership_cluster_view_generation() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-        ("node3", "127.0.0.1:9102"),
-    ]);
+    let config = create_test_cluster_config(
+        "node1",
+        &[("node2", "127.0.0.1:9101"), ("node3", "127.0.0.1:9102")],
+    );
 
     let manager = MembershipManager::new(config, transport);
 
@@ -268,10 +261,10 @@ async fn test_membership_cluster_view_generation() {
 #[tokio::test]
 async fn test_raft_membership_integration_unhealthy_candidate() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-        ("node3", "127.0.0.1:9102"),
-    ]);
+    let config = create_test_cluster_config(
+        "node1",
+        &[("node2", "127.0.0.1:9101"), ("node3", "127.0.0.1:9102")],
+    );
 
     let membership = Arc::new(MembershipManager::new(config, transport.clone()));
 
@@ -308,9 +301,7 @@ async fn test_raft_membership_integration_unhealthy_candidate() {
 #[tokio::test]
 async fn test_raft_membership_integration_healthy_candidate() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-    ]);
+    let config = create_test_cluster_config("node1", &[("node2", "127.0.0.1:9101")]);
 
     let membership = Arc::new(MembershipManager::new(config, transport.clone()));
 
@@ -394,11 +385,14 @@ async fn test_membership_no_duplicate_transitions() {
 #[tokio::test]
 async fn test_membership_multiple_peers() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-        ("node3", "127.0.0.1:9102"),
-        ("node4", "127.0.0.1:9103"),
-    ]);
+    let config = create_test_cluster_config(
+        "node1",
+        &[
+            ("node2", "127.0.0.1:9101"),
+            ("node3", "127.0.0.1:9102"),
+            ("node4", "127.0.0.1:9103"),
+        ],
+    );
 
     let manager = MembershipManager::new(config, transport);
 
@@ -425,10 +419,10 @@ async fn test_membership_multiple_peers() {
 #[tokio::test]
 async fn test_membership_cluster_view_contents() {
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-    let config = create_test_cluster_config("node1", &[
-        ("node2", "127.0.0.1:9101"),
-        ("node3", "127.0.0.1:9102"),
-    ]);
+    let config = create_test_cluster_config(
+        "node1",
+        &[("node2", "127.0.0.1:9101"), ("node3", "127.0.0.1:9102")],
+    );
 
     let manager = MembershipManager::new(config, transport);
 

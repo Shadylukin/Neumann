@@ -216,9 +216,9 @@ mod tests {
 
     #[test]
     fn test_from_bincode_error() {
-        let bincode_err = bincode::serialize(&"test").and_then(|_| {
-            bincode::deserialize::<u64>(b"invalid")
-        }).unwrap_err();
+        let bincode_err = bincode::serialize(&"test")
+            .and_then(|_| bincode::deserialize::<u64>(b"invalid"))
+            .unwrap_err();
         let chain_err: ChainError = bincode_err.into();
         assert!(matches!(chain_err, ChainError::SerializationError(_)));
     }

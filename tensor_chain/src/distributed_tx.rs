@@ -114,7 +114,9 @@ impl DistributedTransaction {
 
     /// Check if all votes are YES.
     pub fn all_yes(&self) -> bool {
-        self.votes.values().all(|v| matches!(v, PrepareVote::Yes { .. }))
+        self.votes
+            .values()
+            .all(|v| matches!(v, PrepareVote::Yes { .. }))
     }
 
     /// Check if any vote is NO or Conflict.
@@ -534,7 +536,7 @@ impl DistributedTxCoordinator {
                     similarity: 1.0, // Same keys = maximum conflict
                     conflicting_tx,
                 };
-            }
+            },
         };
 
         // Compute delta from request embedding
@@ -623,7 +625,11 @@ impl DistributedTxCoordinator {
                 Some(TxPhase::Prepared)
             } else {
                 tx.phase = TxPhase::Aborting;
-                if tx.votes.values().any(|v| matches!(v, PrepareVote::Conflict { .. })) {
+                if tx
+                    .votes
+                    .values()
+                    .any(|v| matches!(v, PrepareVote::Conflict { .. }))
+                {
                     self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
                 }
                 Some(TxPhase::Aborting)
@@ -788,7 +794,7 @@ impl TxParticipant {
                     similarity: 1.0,
                     conflicting_tx,
                 };
-            }
+            },
         };
 
         let delta = DeltaVector::new(
@@ -951,12 +957,8 @@ mod tests {
     fn test_lock_manager_different_keys() {
         let lock_manager = LockManager::new();
 
-        lock_manager
-            .try_lock(1, &["key1".to_string()])
-            .unwrap();
-        lock_manager
-            .try_lock(2, &["key2".to_string()])
-            .unwrap();
+        lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+        lock_manager.try_lock(2, &["key2".to_string()]).unwrap();
 
         assert!(lock_manager.is_locked("key1"));
         assert!(lock_manager.is_locked("key2"));
@@ -968,9 +970,7 @@ mod tests {
     fn test_coordinator_begin() {
         let coordinator = create_test_coordinator();
 
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0, 1])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
 
         assert_eq!(coordinator.pending_count(), 1);
         assert!(coordinator.get(tx.tx_id).is_some());
@@ -1014,7 +1014,7 @@ mod tests {
             PrepareVote::Yes { lock_handle, delta } => {
                 assert!(lock_handle > 0);
                 assert!(delta.affected_keys.contains("key1"));
-            }
+            },
             _ => panic!("expected Yes vote"),
         }
     }
@@ -1022,9 +1022,7 @@ mod tests {
     #[test]
     fn test_voting_all_yes() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0, 1])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
 
         let delta0 = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -1063,9 +1061,7 @@ mod tests {
     #[test]
     fn test_voting_any_no() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0, 1])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -1095,9 +1091,7 @@ mod tests {
     #[test]
     fn test_commit_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -1123,9 +1117,7 @@ mod tests {
     #[test]
     fn test_abort_flow() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         coordinator.abort(tx.tx_id, "test abort").unwrap();
 
@@ -1215,7 +1207,7 @@ mod tests {
         tx.add_delta(1, delta1);
 
         let merged = tx.merged_delta().unwrap();
-        assert_eq!(merged.vector, vec![1.0, 1.0, 0.0]);
+        assert_eq!(merged.to_dense(3), vec![1.0, 1.0, 0.0]);
         assert!(merged.affected_keys.contains("key1"));
         assert!(merged.affected_keys.contains("key2"));
     }
@@ -1305,9 +1297,7 @@ mod tests {
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
         // Create a transaction with immediate timeout
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         // Modify timeout to 0 (simulating timeout)
         {
@@ -1385,9 +1375,7 @@ mod tests {
     #[test]
     fn test_commit_not_prepared() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         // Try to commit without preparing
         let result = coordinator.commit(tx.tx_id);
@@ -1603,9 +1591,7 @@ mod tests {
     #[test]
     fn test_voting_with_conflict() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0, 1])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -1644,9 +1630,7 @@ mod tests {
     #[test]
     fn test_cross_shard_conflict_detection() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0, 1])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
 
         // Two shards with overlapping keys and similar deltas
         let delta0 = DeltaVector::new(
@@ -1739,9 +1723,7 @@ mod tests {
     #[test]
     fn test_abort_releases_locks() {
         let coordinator = create_test_coordinator();
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         let delta = DeltaVector::new(
             vec![1.0, 0.0, 0.0],
@@ -1769,9 +1751,7 @@ mod tests {
         let consensus = ConsensusManager::new(ConsensusConfig::default());
         let coordinator = DistributedTxCoordinator::new(consensus, config);
 
-        let tx = coordinator
-            .begin("node1".to_string(), vec![0])
-            .unwrap();
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
 
         // Add a vote with lock
         {

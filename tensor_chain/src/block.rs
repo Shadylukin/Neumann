@@ -599,8 +599,7 @@ mod tests {
         let leaves: Vec<[u8; 32]> = txs.iter().map(|tx| tx.hash()).collect();
         let tx_root = merkle_root(&leaves);
 
-        let header =
-            BlockHeader::new(1, [0u8; 32], tx_root, [0u8; 32], "node1".to_string());
+        let header = BlockHeader::new(1, [0u8; 32], tx_root, [0u8; 32], "node1".to_string());
         let block = Block::new(header, txs);
 
         assert!(block.verify_tx_root());
@@ -681,7 +680,7 @@ mod tests {
         match err {
             ChainError::ValidationFailed(msg) => {
                 assert!(msg.contains("height"));
-            }
+            },
             _ => panic!("Expected ValidationFailed error"),
         }
     }
@@ -701,7 +700,7 @@ mod tests {
         match err {
             ChainError::ValidationFailed(msg) => {
                 assert!(msg.contains("timestamp"));
-            }
+            },
             _ => panic!("Expected ValidationFailed error"),
         }
     }
@@ -838,13 +837,8 @@ mod tests {
         let genesis = Block::genesis("node1".to_string());
 
         // Wrong prev_hash - check error contains expected and actual hashes
-        let mut next_header = BlockHeader::new(
-            1,
-            [99u8; 32],
-            [0u8; 32],
-            [0u8; 32],
-            "node1".to_string(),
-        );
+        let mut next_header =
+            BlockHeader::new(1, [99u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
         next_header.timestamp = genesis.header.timestamp + 1000;
 
         let next_block = Block::new(next_header, vec![]);
@@ -855,7 +849,7 @@ mod tests {
                 // Check that we get proper hex encoding
                 assert_eq!(expected.len(), 64); // 32 bytes = 64 hex chars
                 assert_eq!(actual.len(), 64);
-            }
+            },
             _ => panic!("Expected InvalidHash error"),
         }
     }

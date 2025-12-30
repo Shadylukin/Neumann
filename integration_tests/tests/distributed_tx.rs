@@ -5,11 +5,11 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use tensor_chain::{ConsensusConfig, ConsensusManager, DeltaVector, Transaction};
 use tensor_chain::{
     DistributedTransaction, DistributedTxConfig, DistributedTxCoordinator, DistributedTxStats,
     LockManager, PrepareRequest, PrepareVote, TxParticipant, TxPhase,
 };
-use tensor_chain::{ConsensusConfig, ConsensusManager, DeltaVector, Transaction};
 
 // ============================================================================
 // Helper Functions
@@ -104,7 +104,7 @@ fn test_distributed_tx_delta_tracking() {
 
     // Verify merged delta
     let merged = tx.merged_delta().unwrap();
-    assert_eq!(merged.vector, vec![1.0, 1.0, 1.0]);
+    assert_eq!(merged.to_dense(3), vec![1.0, 1.0, 1.0]);
 }
 
 // ============================================================================
@@ -239,7 +239,7 @@ fn test_coordinator_prepare_vote_yes() {
         PrepareVote::Yes { lock_handle, delta } => {
             assert!(lock_handle > 0);
             assert!(delta.affected_keys.contains("test_key"));
-        }
+        },
         _ => panic!("Expected Yes vote"),
     }
 }
@@ -249,9 +249,7 @@ fn test_coordinator_full_commit_flow() {
     let coordinator = create_coordinator();
 
     // Begin transaction
-    let tx = coordinator
-        .begin("coord".to_string(), vec![0, 1])
-        .unwrap();
+    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Simulate votes from shards (orthogonal deltas)
@@ -259,11 +257,25 @@ fn test_coordinator_full_commit_flow() {
     let delta1 = create_delta(vec![0.0, 1.0, 0.0, 0.0], vec!["shard1_key"], tx_id);
 
     // Record first vote
-    let phase = coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta: delta0 });
+    let phase = coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta: delta0,
+        },
+    );
     assert!(phase.is_none()); // Not all voted yet
 
     // Record second vote
-    let phase = coordinator.record_vote(tx_id, 1, PrepareVote::Yes { lock_handle: 2, delta: delta1 });
+    let phase = coordinator.record_vote(
+        tx_id,
+        1,
+        PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta1,
+        },
+    );
     assert_eq!(phase, Some(TxPhase::Prepared));
 
     // Commit
@@ -277,15 +289,20 @@ fn test_coordinator_full_commit_flow() {
 fn test_coordinator_abort_on_no_vote() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator
-        .begin("coord".to_string(), vec![0, 1])
-        .unwrap();
+    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     let delta = create_delta(vec![1.0, 0.0], vec!["key1"], tx_id);
 
     // First shard votes yes
-    coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta });
+    coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta,
+        },
+    );
 
     // Second shard votes no
     let phase = coordinator.record_vote(
@@ -303,15 +320,20 @@ fn test_coordinator_abort_on_no_vote() {
 fn test_coordinator_conflict_vote() {
     let coordinator = create_coordinator();
 
-    let tx = coordinator
-        .begin("coord".to_string(), vec![0, 1])
-        .unwrap();
+    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     let delta = create_delta(vec![1.0, 0.0], vec!["key1"], tx_id);
 
     // First shard votes yes
-    coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta });
+    coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta,
+        },
+    );
 
     // Second shard detects conflict
     let phase = coordinator.record_vote(
@@ -335,17 +357,29 @@ fn test_coordinator_cross_shard_conflict_detection() {
     };
     let coordinator = create_coordinator_with_config(config);
 
-    let tx = coordinator
-        .begin("coord".to_string(), vec![0, 1])
-        .unwrap();
+    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Both shards touch the same key with high similarity deltas
     let delta0 = create_delta(vec![1.0, 0.1, 0.0], vec!["shared_key"], tx_id);
     let delta1 = create_delta(vec![0.9, 0.2, 0.0], vec!["shared_key"], tx_id);
 
-    coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta: delta0 });
-    let phase = coordinator.record_vote(tx_id, 1, PrepareVote::Yes { lock_handle: 2, delta: delta1 });
+    coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta: delta0,
+        },
+    );
+    let phase = coordinator.record_vote(
+        tx_id,
+        1,
+        PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta1,
+        },
+    );
 
     // Should abort due to cross-shard conflict on same key
     assert_eq!(phase, Some(TxPhase::Aborting));
@@ -359,20 +393,38 @@ fn test_coordinator_orthogonal_merge_success() {
     };
     let coordinator = create_coordinator_with_config(config);
 
-    let tx = coordinator
-        .begin("coord".to_string(), vec![0, 1])
-        .unwrap();
+    let tx = coordinator.begin("coord".to_string(), vec![0, 1]).unwrap();
     let tx_id = tx.tx_id;
 
     // Orthogonal deltas on different keys
     let delta0 = create_delta(vec![1.0, 0.0, 0.0], vec!["key_a"], tx_id);
     let delta1 = create_delta(vec![0.0, 1.0, 0.0], vec!["key_b"], tx_id);
 
-    coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta: delta0 });
-    let phase = coordinator.record_vote(tx_id, 1, PrepareVote::Yes { lock_handle: 2, delta: delta1 });
+    coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta: delta0,
+        },
+    );
+    let phase = coordinator.record_vote(
+        tx_id,
+        1,
+        PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta1,
+        },
+    );
 
     assert_eq!(phase, Some(TxPhase::Prepared));
-    assert_eq!(coordinator.stats().orthogonal_merges.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        coordinator
+            .stats()
+            .orthogonal_merges
+            .load(Ordering::Relaxed),
+        1
+    );
 }
 
 // ============================================================================
@@ -464,7 +516,7 @@ fn test_participant_conflict_on_locked_key() {
     match vote2 {
         PrepareVote::Conflict { conflicting_tx, .. } => {
             assert_eq!(conflicting_tx, 1);
-        }
+        },
         _ => panic!("Expected Conflict vote"),
     }
 }
@@ -553,7 +605,14 @@ fn test_single_shard_transaction() {
 
     let delta = create_delta(vec![1.0, 0.0], vec!["single_key"], tx_id);
 
-    let phase = coordinator.record_vote(tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta });
+    let phase = coordinator.record_vote(
+        tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta,
+        },
+    );
     assert_eq!(phase, Some(TxPhase::Prepared));
 
     coordinator.commit(tx_id).unwrap();

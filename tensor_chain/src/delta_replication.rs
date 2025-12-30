@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tensor_compress::{quantize_int8, dequantize_int8, QuantizedInt8};
+use tensor_compress::{dequantize_int8, quantize_int8, QuantizedInt8};
 use tensor_store::ArchetypeRegistry;
 
 use crate::block::NodeId;
@@ -1270,7 +1270,11 @@ mod tests {
         let dequantized = quantized.dequantize();
 
         // Values should be close (within 1% error)
-        for (orig, deq) in update.delta_values.iter().zip(dequantized.delta_values.iter()) {
+        for (orig, deq) in update
+            .delta_values
+            .iter()
+            .zip(dequantized.delta_values.iter())
+        {
             assert!(
                 (orig - deq).abs() < 0.02,
                 "Quantization error too large: {} vs {}",
@@ -1352,7 +1356,10 @@ mod tests {
         assert_eq!(quantized.key, decoded.key);
         assert_eq!(quantized.version, decoded.version);
         assert_eq!(quantized.dimension, decoded.dimension);
-        assert_eq!(quantized.quantized_values.data, decoded.quantized_values.data);
+        assert_eq!(
+            quantized.quantized_values.data,
+            decoded.quantized_values.data
+        );
     }
 
     #[test]

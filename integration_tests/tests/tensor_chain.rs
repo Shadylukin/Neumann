@@ -346,19 +346,11 @@ fn test_transition_validator_with_codebook() {
     let validator = TransitionValidator::new(global, config);
 
     // Valid transition (close to centroid)
-    let validation = validator.validate_transition(
-        "test",
-        &[1.0, 0.0, 0.0],
-        &[0.95, 0.05, 0.0],
-    );
+    let validation = validator.validate_transition("test", &[1.0, 0.0, 0.0], &[0.95, 0.05, 0.0]);
     assert!(validation.is_valid);
     assert!(validation.magnitude < 0.5);
 
     // Invalid transition (too far from centroid)
-    let validation = validator.validate_transition(
-        "test",
-        &[0.0, 1.0, 0.0],
-        &[0.0, 0.0, 1.0],
-    );
+    let validation = validator.validate_transition("test", &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]);
     assert!(!validation.is_valid);
 }

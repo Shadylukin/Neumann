@@ -65,8 +65,13 @@ pub use consensus::{
     MergeAction, MergeResult,
 };
 pub use delta_replication::{
-    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate,
-    QuantizedDeltaUpdate, ReplicationStats,
+    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, QuantizedDeltaUpdate,
+    ReplicationStats,
+};
+pub use distributed_tx::{
+    AbortRequest, CommitRequest, DistributedTransaction, DistributedTxConfig,
+    DistributedTxCoordinator, DistributedTxStats, KeyLock, LockManager, PrepareRequest,
+    PrepareVote, PreparedTx, ShardId, TxParticipant, TxPhase, TxResponse,
 };
 pub use error::{ChainError, Result};
 pub use membership::{
@@ -75,8 +80,8 @@ pub use membership::{
 };
 pub use network::{
     AppendEntries, AppendEntriesResponse, LogEntry, MemoryTransport, Message, MessageHandler,
-    NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport, TxAbortMsg,
-    TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg,
+    TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
 pub use tcp::{
@@ -89,11 +94,6 @@ pub use transaction::{
 pub use validation::{
     FastPathResult, FastPathValidator, StateValidation, TransitionValidation, TransitionValidator,
     ValidationConfig, ValidationMode,
-};
-pub use distributed_tx::{
-    AbortRequest, CommitRequest, DistributedTransaction, DistributedTxConfig,
-    DistributedTxCoordinator, DistributedTxStats, KeyLock, LockManager, PrepareRequest,
-    PrepareVote, PreparedTx, ShardId, TxParticipant, TxPhase, TxResponse,
 };
 
 use std::sync::Arc;
@@ -121,9 +121,7 @@ impl RaftHandle {
         let node_id = node.node_id().to_string();
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
-        let join_handle = tokio::spawn(async move {
-            node.run(shutdown_rx).await
-        });
+        let join_handle = tokio::spawn(async move { node.run(shutdown_rx).await });
 
         Self {
             shutdown_tx,
@@ -151,15 +149,17 @@ impl RaftHandle {
     pub async fn join(self) -> Result<()> {
         match self.join_handle.await {
             Ok(result) => result,
-            Err(e) => Err(ChainError::ConsensusError(format!("Raft task panicked: {}", e))),
+            Err(e) => Err(ChainError::ConsensusError(format!(
+                "Raft task panicked: {}",
+                e
+            ))),
         }
     }
 
     /// Shut down and wait for the Raft node to finish.
     pub async fn shutdown_and_wait(self) -> Result<()> {
         self.shutdown();
-        self.join()
-        .await
+        self.join().await
     }
 }
 
@@ -310,8 +310,7 @@ impl TensorChain {
         // Initialize codebook with default dimension (matches delta embedding size)
         let global_codebook = GlobalCodebook::new(4);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
-        let transition_validator =
-            TransitionValidator::with_global(Arc::new(global_codebook));
+        let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
         Self {
             chain,
@@ -331,8 +330,7 @@ impl TensorChain {
         // Initialize codebook with default dimension
         let global_codebook = GlobalCodebook::new(4);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
-        let transition_validator =
-            TransitionValidator::with_global(Arc::new(global_codebook));
+        let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
         Self {
             chain,
@@ -426,16 +424,17 @@ impl TensorChain {
         let delta = workspace.to_delta_vector();
 
         // Check for auto-merge candidates
-        let (merged_operations, merged_delta, merged_workspaces) =
-            if self.config.auto_merge.enabled {
-                self.find_and_merge_orthogonal(&workspace, delta)?
-            } else {
-                (operations, workspace.delta_embedding(), vec![])
-            };
+        let (merged_operations, merged_delta, merged_workspaces) = if self.config.auto_merge.enabled
+        {
+            self.find_and_merge_orthogonal(&workspace, delta)?
+        } else {
+            (operations, workspace.delta_embedding(), vec![])
+        };
 
         // Quantize delta embedding using codebook
         let quantized_codes = if !merged_delta.is_empty() {
-            if let Some((code, _similarity)) = self.codebook_manager.global().quantize(&merged_delta)
+            if let Some((code, _similarity)) =
+                self.codebook_manager.global().quantize(&merged_delta)
             {
                 vec![code as u16]
             } else {
@@ -467,11 +466,11 @@ impl TensorChain {
                 }
 
                 Ok(hash)
-            }
+            },
             Err(e) => {
                 workspace.mark_failed();
                 Err(e)
-            }
+            },
         }
     }
 
@@ -486,17 +485,17 @@ impl TensorChain {
         let mut merged_workspaces = Vec::new();
 
         // Find merge candidates
-        let candidates = self.tx_manager.find_merge_candidates(
-            workspace,
-            self.config.auto_merge.orthogonal_threshold,
-        );
+        let candidates = self
+            .tx_manager
+            .find_merge_candidates(workspace, self.config.auto_merge.orthogonal_threshold);
 
         // Limit to max_merge_batch
         let max_merge = self.config.auto_merge.max_merge_batch;
         let candidates_to_merge: Vec<_> = candidates.into_iter().take(max_merge).collect();
 
-        // Track original delta for validation
-        let original_delta = delta.vector.clone();
+        // Track original delta for validation (convert to dense for compatibility)
+        let dim = delta.sparse().dimension();
+        let original_delta = delta.to_dense(dim);
 
         // Merge each orthogonal candidate
         for candidate in candidates_to_merge {
@@ -511,10 +510,11 @@ impl TensorChain {
             // Validate merged state using transition validator (if codebook has entries)
             // Skip validation if codebook is empty (learning mode)
             if !self.codebook_manager.global().is_empty() {
+                let tentative_dim = tentative_delta.sparse().dimension();
                 let validation = self.transition_validator.validate_transition(
                     "chain",
                     &original_delta,
-                    &tentative_delta.vector,
+                    &tentative_delta.to_dense(tentative_dim),
                 );
 
                 if !validation.is_valid {
@@ -532,7 +532,9 @@ impl TensorChain {
             merged_workspaces.push(candidate.workspace);
         }
 
-        Ok((all_operations, delta.vector, merged_workspaces))
+        // Convert sparse delta to dense for return (Phase 4 will make this sparse)
+        let final_dim = delta.sparse().dimension();
+        Ok((all_operations, delta.to_dense(final_dim), merged_workspaces))
     }
 
     /// Rollback a transaction.
@@ -614,10 +616,7 @@ impl TensorChain {
             let mut data = TensorData::new();
 
             // Store centroid as vector
-            data.set(
-                "_embedding",
-                TensorValue::Vector(entry.centroid().to_vec()),
-            );
+            data.set("_embedding", TensorValue::Vector(entry.centroid().to_vec()));
 
             // Store metadata
             data.set(
@@ -656,7 +655,7 @@ impl TensorChain {
         meta.set(
             "dimension",
             TensorValue::Scalar(ScalarValue::Int(
-                self.codebook_manager.global().dimension() as i64,
+                self.codebook_manager.global().dimension() as i64
             )),
         );
         self.graph
@@ -720,8 +719,7 @@ impl TensorChain {
             .unwrap_or_else(|| GlobalCodebook::new(4));
 
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
-        let transition_validator =
-            TransitionValidator::with_global(Arc::new(global_codebook));
+        let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
         Self {
             chain,
@@ -1310,10 +1308,7 @@ mod tests {
         let store = TensorStore::new();
 
         // First create and save a codebook
-        let centroids = vec![
-            vec![1.0, 0.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0, 0.0],
-        ];
+        let centroids = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
         let global_codebook = GlobalCodebook::from_centroids(centroids);
         let config = ChainConfig::new("node1");
 
