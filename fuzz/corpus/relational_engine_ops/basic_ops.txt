@@ -1,0 +1,1 @@
+{"ops":[{"CreateTable":{"table_name":"users","columns":[{"name":"id","col_type":"Int","nullable":false},{"name":"name","col_type":"String","nullable":true}]}},{"Insert":{"table_idx":0,"values":[["id",{"Int":1}],["name",{"String":"alice"}]]}},{"Select":{"table_idx":0,"condition":"True"}}]}

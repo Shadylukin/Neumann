@@ -649,9 +649,7 @@ fn bench_conflict_operation_breakdown(c: &mut Criterion) {
         b.iter(|| black_box(d1.overlaps_with(&d3)))
     });
 
-    group.bench_function("add_sparse", |b| {
-        b.iter(|| black_box(d1.add(&d2)))
-    });
+    group.bench_function("add_sparse", |b| b.iter(|| black_box(d1.add(&d2))));
 
     group.bench_function("weighted_average_sparse", |b| {
         b.iter(|| black_box(d1.weighted_average(&d2, 0.6, 0.4)))
@@ -759,9 +757,12 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
         })
         .collect();
 
-    let avg_nnz: f32 = single_key_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
-    let avg_sparsity: f32 =
-        single_key_deltas.iter().map(|d| d.sparsity()).sum::<f32>() / 100.0;
+    let avg_nnz: f32 = single_key_deltas
+        .iter()
+        .map(|d| d.nnz() as f32)
+        .sum::<f32>()
+        / 100.0;
+    let avg_sparsity: f32 = single_key_deltas.iter().map(|d| d.sparsity()).sum::<f32>() / 100.0;
     println!("  Avg NNZ: {:.1} / {}", avg_nnz, dimension);
     println!("  Avg Sparsity: {:.1}%", avg_sparsity * 100.0);
 
@@ -791,9 +792,12 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
         })
         .collect();
 
-    let avg_nnz: f32 = multi_field_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
-    let avg_sparsity: f32 =
-        multi_field_deltas.iter().map(|d| d.sparsity()).sum::<f32>() / 100.0;
+    let avg_nnz: f32 = multi_field_deltas
+        .iter()
+        .map(|d| d.nnz() as f32)
+        .sum::<f32>()
+        / 100.0;
+    let avg_sparsity: f32 = multi_field_deltas.iter().map(|d| d.sparsity()).sum::<f32>() / 100.0;
     println!("  Avg NNZ: {:.1} / {}", avg_nnz, dimension);
     println!("  Avg Sparsity: {:.1}%", avg_sparsity * 100.0);
 
@@ -953,7 +957,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
     let realistic_deltas: Vec<DeltaVector> = (0..100)
         .map(|i| {
             let delta = match i % 20 {
-                0..=13 => single_key_deltas[i % 100].clone(),  // 70%
+                0..=13 => single_key_deltas[i % 100].clone(),   // 70%
                 14..=17 => multi_field_deltas[i % 100].clone(), // 20%
                 18 => insert_deltas[i % 100].clone(),           // 5%
                 _ => edge_deltas[i % 100].clone(),              // 5%
@@ -962,8 +966,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
         })
         .collect();
 
-    let mix_avg_nnz: f32 =
-        realistic_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
+    let mix_avg_nnz: f32 = realistic_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
     let mix_avg_sparsity: f32 = realistic_deltas
         .iter()
         .map(|d| d.sparse().sparsity())

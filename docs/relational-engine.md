@@ -111,6 +111,20 @@ Conditions are composable predicates for filtering rows:
 | `Condition::Gt(col, val)` | Column greater than value |
 | `Condition::Ge(col, val)` | Column greater than or equal |
 
+#### Evaluation Methods
+
+Conditions support two evaluation methods:
+
+```rust
+// Row-based evaluation (legacy)
+let result = condition.evaluate(&row);
+
+// TensorData-based evaluation (tensor-native, 31% faster)
+let result = condition.evaluate_tensor(&tensor);
+```
+
+The `evaluate_tensor()` method evaluates conditions directly on `TensorData` without creating intermediate `Row` objects. This provides ~31% speedup on select operations by avoiding HashMap allocation for rows that don't match the condition.
+
 Conditions can be combined:
 
 ```rust
@@ -278,6 +292,29 @@ Where k = number of indexes on the table.
 | `batch_insert_with_indexes` | Index maintenance during batch |
 | `batch_insert_with_btree_index` | B-tree index maintenance during batch |
 | `batch_insert_null_not_allowed` | Null validation in batch |
+| `evaluate_tensor_*` | TensorData-direct evaluation consistency |
+
+### Integration Tests
+
+| Test | What It Verifies |
+|------|------------------|
+| `test_evaluate_consistency_eq` | Eq condition consistency between evaluate() and evaluate_tensor() |
+| `test_evaluate_consistency_ne` | Ne condition consistency |
+| `test_evaluate_consistency_comparisons` | Lt/Le/Gt/Ge condition consistency |
+| `test_evaluate_consistency_logical` | And/Or condition consistency |
+| `test_evaluate_consistency_nested` | Complex nested condition consistency |
+| `test_evaluate_consistency_missing_fields` | Missing field handling |
+| `test_evaluate_consistency_null_values` | Null value handling |
+| `test_evaluate_consistency_id_field` | _id field handling |
+| `test_engine_select_correctness` | End-to-end select correctness |
+| `test_evaluate_performance_improvement` | Performance verification |
+
+### Fuzz Targets
+
+| Target | What It Tests |
+|--------|---------------|
+| `relational_condition` | evaluate() vs evaluate_tensor() consistency with arbitrary inputs |
+| `relational_engine_ops` | Engine CRUD operations with arbitrary inputs |
 
 ## Future Considerations
 

@@ -75,6 +75,23 @@ pub trait Partitioner: Debug + Send + Sync {
 
     /// Get the total number of partitions.
     fn total_partitions(&self) -> usize;
+
+    /// Route based on embedding similarity to node centroids.
+    ///
+    /// For geometric routing, routes to the node whose centroid is most similar
+    /// to the given embedding. Default implementation ignores the embedding
+    /// and falls back to key-based hashing.
+    fn partition_by_embedding(&self, key: &str, _embedding: &[f32]) -> PartitionResult {
+        self.partition(key)
+    }
+
+    /// Get a node's geometric region centroid.
+    ///
+    /// Returns the centroid vector for the given node's Voronoi region,
+    /// or None if geometric routing is not supported.
+    fn region_centroid(&self, _node: &PhysicalNodeId) -> Option<Vec<f32>> {
+        None
+    }
 }
 
 #[cfg(test)]

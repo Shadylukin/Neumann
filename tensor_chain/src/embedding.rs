@@ -52,7 +52,7 @@ impl std::fmt::Display for EmbeddingError {
             Self::AlreadyComputed => write!(f, "delta already computed"),
             Self::DimensionMismatch { before, after } => {
                 write!(f, "dimension mismatch: before={}, after={}", before, after)
-            }
+            },
         }
     }
 }
@@ -128,7 +128,7 @@ impl EmbeddingState {
                     after,
                     delta,
                 })
-            }
+            },
             Self::Computed { .. } => Err(EmbeddingError::AlreadyComputed),
         }
     }
@@ -165,7 +165,7 @@ impl EmbeddingState {
                     after,
                     delta,
                 })
-            }
+            },
             Self::Computed { .. } => Err(EmbeddingError::AlreadyComputed),
         }
     }
@@ -274,7 +274,7 @@ mod tests {
             EmbeddingError::DimensionMismatch { before, after } => {
                 assert_eq!(before, 3);
                 assert_eq!(after, 2);
-            }
+            },
             _ => panic!("expected DimensionMismatch"),
         }
     }

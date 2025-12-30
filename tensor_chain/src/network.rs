@@ -68,6 +68,28 @@ pub enum Message {
     TxAck(TxAckMsg),
 }
 
+impl Message {
+    /// Extract the routing embedding from a message for geometric routing decisions.
+    ///
+    /// Returns the most semantically relevant embedding for the message type:
+    /// - RequestVote: candidate's state embedding
+    /// - AppendEntries: block embedding (if present)
+    /// - TxPrepare: transaction delta embedding
+    pub fn routing_embedding(&self) -> Option<&SparseVector> {
+        match self {
+            Message::RequestVote(rv) => Some(&rv.state_embedding),
+            Message::AppendEntries(ae) => ae.block_embedding.as_ref(),
+            Message::TxPrepare(tp) => Some(&tp.delta_embedding),
+            _ => None,
+        }
+    }
+
+    /// Check if this message has a routing embedding.
+    pub fn has_routing_embedding(&self) -> bool {
+        self.routing_embedding().is_some()
+    }
+}
+
 /// Request vote message for leader election.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestVote {
@@ -299,6 +321,30 @@ pub trait Transport: Send + Sync {
 
     /// Get local node ID.
     fn local_id(&self) -> &NodeId;
+}
+
+/// Extended transport trait with geometric routing capabilities.
+///
+/// Adds methods for sending messages based on embedding similarity,
+/// enabling geometric-aware message routing in distributed systems.
+#[allow(async_fn_in_trait)]
+pub trait GeometricTransport: Transport {
+    /// Send a message to the geometrically nearest peer based on embedding similarity.
+    ///
+    /// Finds the peer whose cached embedding is most similar to the provided
+    /// embedding and sends the message to that peer.
+    async fn send_to_nearest(&self, embedding: &SparseVector, msg: Message) -> Result<()>;
+
+    /// Broadcast a message to all peers within a geometric region.
+    ///
+    /// Sends the message only to peers whose embeddings have similarity
+    /// above the threshold to the provided region centroid.
+    async fn broadcast_to_region(
+        &self,
+        region_centroid: &SparseVector,
+        similarity_threshold: f32,
+        msg: Message,
+    ) -> Result<()>;
 }
 
 /// In-memory transport for testing.

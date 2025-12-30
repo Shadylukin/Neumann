@@ -102,6 +102,9 @@ The project uses cargo-fuzz (libFuzzer-based) for coverage-guided fuzzing.
 | `consistent_hash` | tensor_store | Consistent hash partitioner |
 | `tcp_framing` | tensor_chain | TCP wire protocol codec |
 | `membership` | tensor_chain | Cluster config serialization |
+| `relational_condition` | relational_engine | Condition evaluate() vs evaluate_tensor() |
+| `relational_engine_ops` | relational_engine | Engine CRUD operations |
+| `cache_eviction_scorer` | tensor_cache | Eviction strategy scoring |
 
 ### Running Locally
 

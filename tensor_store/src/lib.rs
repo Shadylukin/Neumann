@@ -27,6 +27,7 @@ pub mod slab_router;
 pub mod snapshot;
 pub mod sparse_vector;
 pub mod tiered;
+pub mod voronoi;
 
 pub use blob_log::{BlobLog, BlobLogSnapshot, ChunkHash};
 pub use cache_ring::{CacheRing, CacheRingSnapshot, CacheStats, EvictionScorer, EvictionStrategy};
@@ -64,6 +65,7 @@ pub use snapshot::{
 };
 pub use sparse_vector::SparseVector;
 pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
+pub use voronoi::{VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion};
 
 /// Reserved field prefixes for unified entity storage.
 ///
@@ -830,6 +832,14 @@ impl TensorStore {
         if let Some(ref filter) = self.bloom_filter {
             filter.clear();
         }
+    }
+
+    /// Access the underlying SlabRouter for direct slab operations.
+    ///
+    /// This provides access to specialized slabs like RelationalSlab for
+    /// engines that need direct columnar storage access.
+    pub fn router(&self) -> &SlabRouter {
+        &self.router
     }
 
     pub fn scan_count(&self, prefix: &str) -> usize {

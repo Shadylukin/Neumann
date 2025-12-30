@@ -509,7 +509,7 @@ impl Condition {
         Condition::Or(Box::new(self), Box::new(other))
     }
 
-    fn evaluate(&self, row: &Row) -> bool {
+    pub fn evaluate(&self, row: &Row) -> bool {
         match self {
             Condition::True => true,
             Condition::Eq(col, val) => row.get_with_id(col).as_ref() == Some(val),
@@ -552,6 +552,77 @@ impl Condition {
 
     fn compare_ge(&self, row: &Row, col: &str, val: &Value) -> bool {
         match (row.get_with_id(col), val) {
+            (Some(Value::Int(a)), Value::Int(b)) => a >= *b,
+            (Some(Value::Float(a)), Value::Float(b)) => a >= *b,
+            (Some(Value::String(a)), Value::String(b)) => a >= *b,
+            _ => false,
+        }
+    }
+
+    /// Evaluate condition directly on TensorData without intermediate Row conversion.
+    /// This avoids HashMap allocation and cloning for rows that don't match.
+    pub fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
+        match self {
+            Condition::True => true,
+            Condition::Eq(col, val) => Self::tensor_field_eq(tensor, col, val),
+            Condition::Ne(col, val) => !Self::tensor_field_eq(tensor, col, val),
+            Condition::Lt(col, val) => Self::tensor_compare_lt(tensor, col, val),
+            Condition::Le(col, val) => Self::tensor_compare_le(tensor, col, val),
+            Condition::Gt(col, val) => Self::tensor_compare_gt(tensor, col, val),
+            Condition::Ge(col, val) => Self::tensor_compare_ge(tensor, col, val),
+            Condition::And(a, b) => a.evaluate_tensor(tensor) && b.evaluate_tensor(tensor),
+            Condition::Or(a, b) => a.evaluate_tensor(tensor) || b.evaluate_tensor(tensor),
+        }
+    }
+
+    fn tensor_get_value(tensor: &TensorData, col: &str) -> Option<Value> {
+        // Handle special _id column
+        if col == "_id" {
+            if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = tensor.get("_id") {
+                return Some(Value::Int(*id));
+            }
+            return None;
+        }
+
+        match tensor.get(col) {
+            Some(TensorValue::Scalar(scalar)) => Some(Value::from_scalar(scalar)),
+            _ => None,
+        }
+    }
+
+    fn tensor_field_eq(tensor: &TensorData, col: &str, val: &Value) -> bool {
+        Self::tensor_get_value(tensor, col).as_ref() == Some(val)
+    }
+
+    fn tensor_compare_lt(tensor: &TensorData, col: &str, val: &Value) -> bool {
+        match (Self::tensor_get_value(tensor, col), val) {
+            (Some(Value::Int(a)), Value::Int(b)) => a < *b,
+            (Some(Value::Float(a)), Value::Float(b)) => a < *b,
+            (Some(Value::String(a)), Value::String(b)) => a < *b,
+            _ => false,
+        }
+    }
+
+    fn tensor_compare_le(tensor: &TensorData, col: &str, val: &Value) -> bool {
+        match (Self::tensor_get_value(tensor, col), val) {
+            (Some(Value::Int(a)), Value::Int(b)) => a <= *b,
+            (Some(Value::Float(a)), Value::Float(b)) => a <= *b,
+            (Some(Value::String(a)), Value::String(b)) => a <= *b,
+            _ => false,
+        }
+    }
+
+    fn tensor_compare_gt(tensor: &TensorData, col: &str, val: &Value) -> bool {
+        match (Self::tensor_get_value(tensor, col), val) {
+            (Some(Value::Int(a)), Value::Int(b)) => a > *b,
+            (Some(Value::Float(a)), Value::Float(b)) => a > *b,
+            (Some(Value::String(a)), Value::String(b)) => a > *b,
+            _ => false,
+        }
+    }
+
+    fn tensor_compare_ge(tensor: &TensorData, col: &str, val: &Value) -> bool {
+        match (Self::tensor_get_value(tensor, col), val) {
             (Some(Value::Int(a)), Value::Int(b)) => a >= *b,
             (Some(Value::Float(a)), Value::Float(b)) => a >= *b,
             (Some(Value::String(a)), Value::String(b)) => a >= *b,
@@ -1160,9 +1231,10 @@ impl RelationalEngine {
             for row_id in row_ids {
                 let key = Self::row_key(table, row_id);
                 if let Ok(tensor) = self.store.get(&key) {
-                    if let Some(row) = self.tensor_to_row(&tensor) {
-                        // Still evaluate condition for compound conditions
-                        if condition.evaluate(&row) {
+                    // Evaluate condition on TensorData FIRST (avoids HashMap allocation)
+                    if condition.evaluate_tensor(&tensor) {
+                        // Only materialize Row for matching rows
+                        if let Some(row) = self.tensor_to_row(&tensor) {
                             rows.push(row);
                         }
                     }
@@ -1177,13 +1249,14 @@ impl RelationalEngine {
         let keys = self.store.scan(&prefix);
 
         // Use parallel iteration for large tables
+        // Key optimization: evaluate condition on TensorData BEFORE creating Row
         let mut rows: Vec<Row> = if keys.len() >= Self::PARALLEL_THRESHOLD {
             keys.par_iter()
                 .filter_map(|key| {
                     let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    if condition.evaluate(&row) {
-                        Some(row)
+                    // Evaluate on TensorData first - avoids HashMap allocation for non-matches
+                    if condition.evaluate_tensor(&tensor) {
+                        self.tensor_to_row(&tensor)
                     } else {
                         None
                     }
@@ -1193,9 +1266,9 @@ impl RelationalEngine {
             keys.iter()
                 .filter_map(|key| {
                     let tensor = self.store.get(key).ok()?;
-                    let row = self.tensor_to_row(&tensor)?;
-                    if condition.evaluate(&row) {
-                        Some(row)
+                    // Evaluate on TensorData first - avoids HashMap allocation for non-matches
+                    if condition.evaluate_tensor(&tensor) {
+                        self.tensor_to_row(&tensor)
                     } else {
                         None
                     }

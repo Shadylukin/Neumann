@@ -908,4 +908,99 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
         assert!(cache.get("nonexistent", Some(&embedding)).is_none());
     }
+
+    #[test]
+    fn test_cache_eviction_respects_lru_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::LRU;
+        let cache = Cache::with_config(config);
+
+        let e1 = normalize(&[1.0, 0.0, 0.0]);
+        let e2 = normalize(&[0.0, 1.0, 0.0]);
+
+        // Insert old entry
+        cache
+            .put("old_prompt", &e1, "old_response", "gpt-4", 0)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Insert new entry
+        cache
+            .put("new_prompt", &e2, "new_response", "gpt-4", 0)
+            .unwrap();
+
+        // Evict 1 entry - should evict the older one
+        let evicted = cache.evict(1);
+        assert_eq!(evicted, 1);
+
+        // Old entry should be gone (from exact cache)
+        assert!(cache.get("old_prompt", None).is_none());
+        // New entry should still exist
+        assert!(cache.get("new_prompt", None).is_some());
+    }
+
+    #[test]
+    fn test_cache_eviction_respects_lfu_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::LFU;
+        let cache = Cache::with_config(config);
+
+        let e1 = normalize(&[1.0, 0.0, 0.0]);
+        let e2 = normalize(&[0.0, 1.0, 0.0]);
+
+        cache.put("rarely_used", &e1, "r1", "gpt-4", 0).unwrap();
+        cache.put("often_used", &e2, "r2", "gpt-4", 0).unwrap();
+
+        // Access often_used multiple times
+        cache.get("often_used", None);
+        cache.get("often_used", None);
+        cache.get("often_used", None);
+
+        // Evict 1 entry - should evict rarely used
+        let evicted = cache.evict(1);
+        assert_eq!(evicted, 1);
+
+        // Rarely used should be gone
+        assert!(cache.get("rarely_used", None).is_none());
+        // Often used should still exist
+        assert!(cache.get("often_used", None).is_some());
+    }
+
+    #[test]
+    fn test_cache_eviction_respects_hybrid_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::Hybrid {
+            lru_weight: 40,
+            lfu_weight: 30,
+            cost_weight: 30,
+        };
+        config.input_cost_per_1k = 0.01;
+        config.output_cost_per_1k = 0.03;
+        let cache = Cache::with_config(config);
+
+        let e1 = normalize(&[1.0, 0.0, 0.0]);
+        let e2 = normalize(&[0.0, 1.0, 0.0]);
+
+        // Low value entry (short response, rarely accessed)
+        cache.put("low_value", &e1, "x", "gpt-4", 0).unwrap();
+        // High value entry (longer response, frequently accessed)
+        cache
+            .put("high_value", &e2, &"x".repeat(100), "gpt-4", 0)
+            .unwrap();
+
+        // Access high_value multiple times
+        cache.get("high_value", None);
+        cache.get("high_value", None);
+
+        // Evict 1 entry - should evict lower value
+        let evicted = cache.evict(1);
+        assert_eq!(evicted, 1);
+
+        // Low value should be gone
+        assert!(cache.get("low_value", None).is_none());
+        // High value should still exist
+        assert!(cache.get("high_value", None).is_some());
+    }
 }

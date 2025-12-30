@@ -46,6 +46,12 @@ pub struct RaftConfig {
     pub enable_fast_path: bool,
     /// Minimum nodes for quorum (default: majority).
     pub quorum_size: Option<usize>,
+    /// Enable geometric tie-breaking in leader elections.
+    /// When logs are equal, prefer candidates with similar state embeddings.
+    pub enable_geometric_tiebreak: bool,
+    /// Minimum similarity for geometric tie-breaking to apply (0.0-1.0).
+    /// Below this threshold, vote randomly among equal candidates.
+    pub geometric_tiebreak_threshold: f32,
 }
 
 impl Default for RaftConfig {
@@ -56,6 +62,8 @@ impl Default for RaftConfig {
             similarity_threshold: 0.95,
             enable_fast_path: true,
             quorum_size: None,
+            enable_geometric_tiebreak: true,
+            geometric_tiebreak_threshold: 0.3,
         }
     }
 }
@@ -314,6 +322,28 @@ impl RaftNode {
         }
     }
 
+    /// Compute geometric vote bias based on state embedding similarity.
+    ///
+    /// Returns a score from 0.0 to 1.0 indicating preference for a candidate.
+    /// Higher similarity between local and candidate state embeddings = higher score.
+    fn geometric_vote_bias(&self, candidate_embedding: &SparseVector) -> f32 {
+        if !self.config.enable_geometric_tiebreak {
+            return 0.5; // Neutral bias
+        }
+
+        let local_embedding = self.state_embedding.read();
+
+        // If either embedding is empty (zero dimension), return neutral bias
+        if local_embedding.dimension() == 0 || candidate_embedding.dimension() == 0 {
+            return 0.5;
+        }
+
+        let similarity = local_embedding.cosine_similarity(candidate_embedding);
+
+        // Normalize to 0-1 range (cosine similarity can be -1 to 1)
+        ((similarity + 1.0) / 2.0).clamp(0.0, 1.0)
+    }
+
     /// Get the node ID.
     pub fn node_id(&self) -> &NodeId {
         &self.node_id
@@ -442,6 +472,7 @@ impl RaftNode {
         // 2. Haven't voted or voted for this candidate
         // 3. Candidate's log is at least as up-to-date
         // 4. Candidate is healthy (if membership manager is configured)
+        // 5. For equal logs, use geometric tie-breaking based on state embedding similarity
         if rv.term == persistent.current_term {
             let can_vote = persistent.voted_for.is_none()
                 || persistent.voted_for.as_ref() == Some(&rv.candidate_id);
@@ -456,8 +487,22 @@ impl RaftNode {
                 let last = &persistent.log[persistent.log.len() - 1];
                 (last.index, last.term)
             };
-            let log_ok = rv.last_log_term > last_log_term
-                || (rv.last_log_term == last_log_term && rv.last_log_index >= last_log_index);
+
+            // Check if candidate's log is strictly better or exactly equal
+            let log_strictly_better = rv.last_log_term > last_log_term
+                || (rv.last_log_term == last_log_term && rv.last_log_index > last_log_index);
+            let log_equal =
+                rv.last_log_term == last_log_term && rv.last_log_index == last_log_index;
+
+            // For equal logs, use geometric tie-breaking
+            let geometric_ok = if log_equal && self.config.enable_geometric_tiebreak {
+                let bias = self.geometric_vote_bias(&rv.state_embedding);
+                bias >= self.config.geometric_tiebreak_threshold
+            } else {
+                true // No geometric tie-breaking needed for strictly better logs
+            };
+
+            let log_ok = log_strictly_better || (log_equal && geometric_ok);
 
             if can_vote && log_ok && candidate_healthy {
                 vote_granted = true;
@@ -832,7 +877,9 @@ impl RaftNode {
         };
 
         // Extract embedding from last entry for fast-path (already sparse)
-        let block_embedding = entries.last().map(|e| e.block.header.delta_embedding.clone());
+        let block_embedding = entries
+            .last()
+            .map(|e| e.block.header.delta_embedding.clone());
 
         (prev_log_index, prev_log_term, entries, block_embedding)
     }

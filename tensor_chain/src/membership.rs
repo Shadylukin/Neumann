@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tensor_store::SparseVector;
 use tokio::sync::broadcast;
 
 use crate::block::NodeId;
@@ -53,6 +54,10 @@ pub struct NodeStatus {
     pub total_pings: u64,
     /// Total failed pings.
     pub total_failures: u64,
+    /// Node's state embedding for geometric routing.
+    pub state_embedding: Option<SparseVector>,
+    /// When the state embedding was last updated.
+    pub embedding_updated: Option<Instant>,
 }
 
 impl NodeStatus {
@@ -66,7 +71,15 @@ impl NodeStatus {
             consecutive_failures: 0,
             total_pings: 0,
             total_failures: 0,
+            state_embedding: None,
+            embedding_updated: None,
         }
+    }
+
+    /// Update the node's state embedding.
+    pub fn update_embedding(&mut self, embedding: SparseVector) {
+        self.state_embedding = Some(embedding);
+        self.embedding_updated = Some(Instant::now());
     }
 
     fn record_success(&mut self, rtt_ms: u64) {

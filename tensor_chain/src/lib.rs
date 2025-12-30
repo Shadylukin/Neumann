@@ -47,6 +47,7 @@ pub mod delta_replication;
 pub mod distributed_tx;
 pub mod embedding;
 pub mod error;
+pub mod geometric_membership;
 pub mod membership;
 pub mod network;
 pub mod raft;
@@ -76,14 +77,15 @@ pub use distributed_tx::{
 };
 pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
+pub use geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager, RankedPeer};
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
     MembershipManager, NodeHealth, NodeStatus, PeerNodeConfig,
 };
 pub use network::{
-    AppendEntries, AppendEntriesResponse, LogEntry, MemoryTransport, Message, MessageHandler,
-    NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg,
-    TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    AppendEntries, AppendEntriesResponse, GeometricTransport, LogEntry, MemoryTransport, Message,
+    MessageHandler, NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport,
+    TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
 pub use tcp::{
@@ -218,7 +220,50 @@ impl AutoMergeConfig {
     }
 }
 
-/// Configuration for TensorChain.
+/// Configuration for geometric routing in distributed operations.
+#[derive(Debug, Clone)]
+pub struct GeometricRoutingConfig {
+    /// Enable geometric routing based on embeddings.
+    pub enabled: bool,
+    /// Minimum similarity threshold for geometric routing (0.0-1.0).
+    /// Below this threshold, falls back to hash-based routing.
+    pub min_similarity: f32,
+    /// Enable fallback to hash-based routing when geometric routing fails.
+    pub fallback_to_hash: bool,
+}
+
+impl Default for GeometricRoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_similarity: 0.5,
+            fallback_to_hash: true,
+        }
+    }
+}
+
+impl GeometricRoutingConfig {
+    /// Create a disabled geometric routing config.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Set the minimum similarity threshold.
+    pub fn with_min_similarity(mut self, threshold: f32) -> Self {
+        self.min_similarity = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Disable fallback to hash-based routing.
+    pub fn without_fallback(mut self) -> Self {
+        self.fallback_to_hash = false;
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChainConfig {
     /// Node ID for this chain instance.
@@ -229,6 +274,8 @@ pub struct ChainConfig {
     pub conflict_threshold: f32,
     /// Auto-merge configuration for orthogonal transactions.
     pub auto_merge: AutoMergeConfig,
+    /// Geometric routing configuration.
+    pub geometric_routing: GeometricRoutingConfig,
 }
 
 impl Default for ChainConfig {
@@ -238,6 +285,7 @@ impl Default for ChainConfig {
             max_txs_per_block: 1000,
             conflict_threshold: 0.7,
             auto_merge: AutoMergeConfig::default(),
+            geometric_routing: GeometricRoutingConfig::default(),
         }
     }
 }
@@ -272,6 +320,18 @@ impl ChainConfig {
     /// Set the full auto-merge configuration.
     pub fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
         self.auto_merge = config;
+        self
+    }
+
+    /// Set the geometric routing configuration.
+    pub fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
+        self.geometric_routing = config;
+        self
+    }
+
+    /// Disable geometric routing.
+    pub fn without_geometric_routing(mut self) -> Self {
+        self.geometric_routing.enabled = false;
         self
     }
 }
@@ -397,6 +457,31 @@ impl TensorChain {
     /// Get the transition validator.
     pub fn transition_validator(&self) -> &TransitionValidator {
         &self.transition_validator
+    }
+
+    /// Get the geometric routing configuration.
+    pub fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
+        &self.config.geometric_routing
+    }
+
+    /// Check if geometric routing is enabled.
+    pub fn is_geometric_routing_enabled(&self) -> bool {
+        self.config.geometric_routing.enabled
+    }
+
+    /// Route a key to a node based on embedding similarity.
+    ///
+    /// Uses the geometric routing configuration to determine routing.
+    /// If geometric routing is disabled or the embedding is empty,
+    /// returns the local node as the default route.
+    pub fn route_by_embedding(&self, embedding: &tensor_store::SparseVector) -> NodeId {
+        if !self.config.geometric_routing.enabled || embedding.dimension() == 0 {
+            return self.config.node_id.clone();
+        }
+
+        // For now, return local node - actual distributed routing requires
+        // integration with SemanticPartitioner or VoronoiPartitioner
+        self.config.node_id.clone()
     }
 
     /// Begin a new transaction.

@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
-use crate::config::CacheConfig;
+use crate::config::{CacheConfig, EvictionStrategy};
 use crate::error::{CacheError, Result};
+use crate::eviction::EvictionScorer;
 use crate::stats::{CacheLayer, CacheStats};
 use dashmap::DashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -64,6 +65,7 @@ pub struct EmbeddingCache {
     entries: DashMap<String, EmbeddingEntry>,
     capacity: usize,
     stats: Arc<CacheStats>,
+    eviction_strategy: EvictionStrategy,
 }
 
 impl EmbeddingCache {
@@ -73,6 +75,7 @@ impl EmbeddingCache {
             entries: DashMap::with_capacity(config.embedding_capacity),
             capacity: config.embedding_capacity,
             stats,
+            eviction_strategy: config.eviction_strategy,
         }
     }
 
@@ -270,10 +273,12 @@ impl EmbeddingCache {
 
     /// Calculate eviction score for an entry.
     fn eviction_score(&self, entry: &EmbeddingEntry) -> f64 {
-        let age_secs = entry.last_accessed.elapsed().as_secs_f64();
-        let frequency = entry.access_count as f64;
-        let age_minutes = age_secs / 60.0;
-        frequency / (1.0 + age_minutes)
+        let scorer = EvictionScorer::new(self.eviction_strategy);
+        let last_access_secs = entry.last_accessed.elapsed().as_secs_f64();
+        // Embeddings don't have token costs, but we can use size as proxy
+        let size_bytes = entry.embedding.len() * std::mem::size_of::<f32>();
+
+        scorer.score(last_access_secs, entry.access_count, 0.0, size_bytes)
     }
 }
 
@@ -612,5 +617,81 @@ mod tests {
         });
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_eviction_uses_lru_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::LRU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = EmbeddingCache::new(&config, stats);
+
+        cache
+            .insert("old".into(), vec![0.1, 0.2], "m".into(), None)
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        cache
+            .insert("new".into(), vec![0.3, 0.4], "m".into(), None)
+            .unwrap();
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Older entry should be first (lower score)
+        assert_eq!(candidates[0].0, "old");
+    }
+
+    #[test]
+    fn test_eviction_uses_lfu_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::LFU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = EmbeddingCache::new(&config, stats);
+
+        cache
+            .insert("rarely".into(), vec![0.1, 0.2], "m".into(), None)
+            .unwrap();
+        cache
+            .insert("often".into(), vec![0.3, 0.4], "m".into(), None)
+            .unwrap();
+
+        // Access "often" multiple times
+        cache.get("often");
+        cache.get("often");
+        cache.get("often");
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Less frequently accessed should have lower score
+        assert_eq!(candidates[0].0, "rarely");
+    }
+
+    #[test]
+    fn test_eviction_uses_hybrid_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::Hybrid {
+            lru_weight: 40,
+            lfu_weight: 30,
+            cost_weight: 30,
+        };
+        let stats = Arc::new(CacheStats::new());
+        let cache = EmbeddingCache::new(&config, stats);
+
+        // Small embedding
+        cache
+            .insert("small".into(), vec![0.1], "m".into(), None)
+            .unwrap();
+        // Large embedding
+        cache
+            .insert("large".into(), vec![0.1; 100], "m".into(), None)
+            .unwrap();
+
+        // Access large more
+        cache.get("large");
+        cache.get("large");
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Small (less valuable) should have lower score
+        assert_eq!(candidates[0].0, "small");
     }
 }

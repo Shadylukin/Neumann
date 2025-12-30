@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
-use crate::config::CacheConfig;
+use crate::config::{CacheConfig, EvictionStrategy};
 use crate::error::{CacheError, Result};
+use crate::eviction::EvictionScorer;
 use crate::stats::{CacheLayer, CacheStats};
 use dashmap::DashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -67,6 +68,9 @@ pub struct ExactCache {
     entries: DashMap<String, ExactEntry>,
     capacity: usize,
     stats: Arc<CacheStats>,
+    eviction_strategy: EvictionStrategy,
+    input_cost_per_1k: f64,
+    output_cost_per_1k: f64,
 }
 
 impl ExactCache {
@@ -76,6 +80,9 @@ impl ExactCache {
             entries: DashMap::with_capacity(config.exact_capacity),
             capacity: config.exact_capacity,
             stats,
+            eviction_strategy: config.eviction_strategy,
+            input_cost_per_1k: config.input_cost_per_1k,
+            output_cost_per_1k: config.output_cost_per_1k,
         }
     }
 
@@ -210,13 +217,19 @@ impl ExactCache {
 
     /// Calculate eviction score for an entry (lower = more likely to evict).
     fn eviction_score(&self, entry: &ExactEntry) -> f64 {
-        let age_secs = entry.last_accessed.elapsed().as_secs_f64();
-        let frequency = entry.access_count as f64;
+        let scorer = EvictionScorer::new(self.eviction_strategy);
+        let last_access_secs = entry.last_accessed.elapsed().as_secs_f64();
+        let cost_per_hit = (entry.input_tokens as f64 * self.input_cost_per_1k
+            + entry.output_tokens as f64 * self.output_cost_per_1k)
+            / 1000.0;
+        let size_bytes = entry.response.len();
 
-        // Combine recency and frequency (higher is better, so we negate for eviction)
-        // Score = frequency / (1 + age_in_minutes)
-        let age_minutes = age_secs / 60.0;
-        frequency / (1.0 + age_minutes)
+        scorer.score(
+            last_access_secs,
+            entry.access_count,
+            cost_per_hit,
+            size_bytes,
+        )
     }
 }
 
@@ -397,5 +410,163 @@ mod tests {
         assert_eq!(cache.len(), 2);
         cache.clear();
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_eviction_uses_lru_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::LRU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = ExactCache::new(&config, stats);
+
+        // Insert two entries
+        cache
+            .insert(
+                "old".into(),
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        cache
+            .insert(
+                "new".into(),
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        // With LRU, older entries should have lower scores (evicted first)
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // First candidate should be "old" (lower score = older = evict first)
+        assert_eq!(candidates[0].0, "old");
+    }
+
+    #[test]
+    fn test_eviction_uses_lfu_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::LFU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = ExactCache::new(&config, stats);
+
+        cache
+            .insert(
+                "rarely".into(),
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        cache
+            .insert(
+                "often".into(),
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        // Access "often" multiple times
+        cache.get("often");
+        cache.get("often");
+        cache.get("often");
+
+        // With LFU, less frequently accessed should have lower scores
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // First candidate should be "rarely" (lower frequency = evict first)
+        assert_eq!(candidates[0].0, "rarely");
+    }
+
+    #[test]
+    fn test_eviction_uses_hybrid_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::Hybrid {
+            lru_weight: 40,
+            lfu_weight: 30,
+            cost_weight: 30,
+        };
+        let stats = Arc::new(CacheStats::new());
+        let cache = ExactCache::new(&config, stats);
+
+        // Insert entries with different characteristics
+        cache
+            .insert(
+                "low_value".into(),
+                "x".into(),
+                1,
+                1,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        cache
+            .insert(
+                "high_value".into(),
+                "x".repeat(100),
+                100,
+                100,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        // Access high_value more
+        cache.get("high_value");
+        cache.get("high_value");
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // low_value should be evicted first (less value)
+        assert_eq!(candidates[0].0, "low_value");
+    }
+
+    #[test]
+    fn test_eviction_uses_cost_strategy() {
+        let mut config = CacheConfig::default();
+        config.eviction_strategy = EvictionStrategy::CostBased;
+        config.input_cost_per_1k = 0.01;
+        config.output_cost_per_1k = 0.03;
+        let stats = Arc::new(CacheStats::new());
+        let cache = ExactCache::new(&config, stats);
+
+        // Low cost entry (few tokens)
+        cache
+            .insert(
+                "cheap".into(),
+                "x".into(),
+                1,
+                1,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+        // High cost entry (many tokens)
+        cache
+            .insert(
+                "expensive".into(),
+                "y".into(),
+                1000,
+                1000,
+                "m".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Cheap entry should be evicted first (lower cost savings)
+        assert_eq!(candidates[0].0, "cheap");
     }
 }

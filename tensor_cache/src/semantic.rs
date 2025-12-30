@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
-use crate::config::CacheConfig;
+use crate::config::{CacheConfig, EvictionStrategy};
 use crate::error::{CacheError, Result};
+use crate::eviction::EvictionScorer;
 use crate::index::CacheIndex;
 use crate::stats::{CacheLayer, CacheStats};
 use dashmap::DashMap;
@@ -81,6 +82,12 @@ pub struct SemanticCache {
     threshold: f32,
     /// Statistics tracker.
     stats: Arc<CacheStats>,
+    /// Eviction strategy.
+    eviction_strategy: EvictionStrategy,
+    /// Cost per 1000 input tokens.
+    input_cost_per_1k: f64,
+    /// Cost per 1000 output tokens.
+    output_cost_per_1k: f64,
 }
 
 impl SemanticCache {
@@ -92,6 +99,9 @@ impl SemanticCache {
             capacity: config.semantic_capacity,
             threshold: config.semantic_threshold,
             stats,
+            eviction_strategy: config.eviction_strategy,
+            input_cost_per_1k: config.input_cost_per_1k,
+            output_cost_per_1k: config.output_cost_per_1k,
         }
     }
 
@@ -419,10 +429,19 @@ impl SemanticCache {
 
     /// Calculate eviction score for an entry.
     fn eviction_score(&self, entry: &SemanticEntry) -> f64 {
-        let age_secs = entry.last_accessed.elapsed().as_secs_f64();
-        let frequency = entry.access_count as f64;
-        let age_minutes = age_secs / 60.0;
-        frequency / (1.0 + age_minutes)
+        let scorer = EvictionScorer::new(self.eviction_strategy);
+        let last_access_secs = entry.last_accessed.elapsed().as_secs_f64();
+        let cost_per_hit = (entry.input_tokens as f64 * self.input_cost_per_1k
+            + entry.output_tokens as f64 * self.output_cost_per_1k)
+            / 1000.0;
+        let size_bytes = entry.response.len();
+
+        scorer.score(
+            last_access_secs,
+            entry.access_count,
+            cost_per_hit,
+            size_bytes,
+        )
     }
 }
 
@@ -1085,5 +1104,150 @@ mod tests {
         let hit = cache.get(&dense, Some(0.5)).unwrap();
         // Should find the most similar (itself)
         assert_eq!(hit.response, "dense response");
+    }
+
+    #[test]
+    fn test_eviction_uses_lru_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::LRU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        let v1 = normalize(&[1.0, 0.0, 0.0]);
+        let v2 = normalize(&[0.0, 1.0, 0.0]);
+
+        cache
+            .insert(
+                "old".into(),
+                &v1,
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        cache
+            .insert(
+                "new".into(),
+                &v2,
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Older entry should be first (lower score)
+        // Note: We check the score relationship, not the key order since IDs are UUIDs
+        assert!(candidates[0].1 < candidates[1].1);
+    }
+
+    #[test]
+    fn test_eviction_uses_lfu_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::LFU;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        let v1 = normalize(&[1.0, 0.0, 0.0]);
+        let v2 = normalize(&[0.0, 1.0, 0.0]);
+
+        cache
+            .insert(
+                "rarely".into(),
+                &v1,
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+        cache
+            .insert(
+                "often".into(),
+                &v2,
+                "r".into(),
+                10,
+                10,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Access v2 entry multiple times
+        cache.get(&v2, None);
+        cache.get(&v2, None);
+        cache.get(&v2, None);
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Less frequently accessed should have lower score
+        assert!(candidates[0].1 < candidates[1].1);
+    }
+
+    #[test]
+    fn test_eviction_uses_hybrid_strategy() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.eviction_strategy = EvictionStrategy::Hybrid {
+            lru_weight: 40,
+            lfu_weight: 30,
+            cost_weight: 30,
+        };
+        config.input_cost_per_1k = 0.01;
+        config.output_cost_per_1k = 0.03;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        let v1 = normalize(&[1.0, 0.0, 0.0]);
+        let v2 = normalize(&[0.0, 1.0, 0.0]);
+
+        // Low value entry
+        cache
+            .insert(
+                "low".into(),
+                &v1,
+                "x".into(),
+                1,
+                1,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+        // High value entry
+        cache
+            .insert(
+                "high".into(),
+                &v2,
+                "x".repeat(100),
+                100,
+                100,
+                "m".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Access high value more
+        cache.get(&v2, None);
+        cache.get(&v2, None);
+
+        let candidates = cache.eviction_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        // Lower value entry should have lower score
+        assert!(candidates[0].1 < candidates[1].1);
     }
 }

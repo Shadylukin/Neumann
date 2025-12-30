@@ -953,7 +953,7 @@ mod tests {
         let deltas = vec![
             DeltaVector::new(vec![1.0, 0.0, 0.0], keys1.clone(), 1),
             DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 2), // Orthogonal to all (position 2)
-            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3),  // Conflicts with 0 (high cosine)
+            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3), // Conflicts with 0 (high cosine)
         ];
 
         let orthogonal = manager.find_orthogonal_set(&deltas);
