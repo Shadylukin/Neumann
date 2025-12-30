@@ -10,7 +10,7 @@ use crate::stats::{CacheLayer, CacheStats};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tensor_store::{EmbeddingStorage, HNSWMemoryStats, SparseVector};
+use tensor_store::{DistanceMetric, EmbeddingStorage, HNSWConfig, HNSWMemoryStats, SparseVector};
 use uuid::Uuid;
 
 /// Entry in the semantic cache.
@@ -68,6 +68,8 @@ pub struct SemanticHit {
     pub output_tokens: usize,
     /// Model used.
     pub model: String,
+    /// The distance metric used for this match.
+    pub metric_used: DistanceMetric,
 }
 
 /// Semantic cache with HNSW-based similarity search.
@@ -88,13 +90,23 @@ pub struct SemanticCache {
     input_cost_per_1k: f64,
     /// Cost per 1000 output tokens.
     output_cost_per_1k: f64,
+    /// Distance metric for similarity scoring.
+    distance_metric: DistanceMetric,
+    /// Whether to auto-select metric based on sparsity.
+    auto_select_metric: bool,
+    /// Sparsity threshold for auto-selecting Jaccard.
+    sparsity_metric_threshold: f32,
 }
 
 impl SemanticCache {
     /// Create a new semantic cache.
     pub fn new(config: &CacheConfig, stats: Arc<CacheStats>) -> Self {
         Self {
-            index: CacheIndex::new(config.embedding_dim),
+            index: CacheIndex::with_metric(
+                config.embedding_dim,
+                HNSWConfig::default(),
+                config.distance_metric.clone(),
+            ),
             entries: DashMap::with_capacity(config.semantic_capacity),
             capacity: config.semantic_capacity,
             threshold: config.semantic_threshold,
@@ -102,14 +114,62 @@ impl SemanticCache {
             eviction_strategy: config.eviction_strategy,
             input_cost_per_1k: config.input_cost_per_1k,
             output_cost_per_1k: config.output_cost_per_1k,
+            distance_metric: config.distance_metric.clone(),
+            auto_select_metric: config.auto_select_metric,
+            sparsity_metric_threshold: config.sparsity_metric_threshold,
         }
     }
 
+    /// Select the appropriate metric based on embedding sparsity.
+    fn select_metric(&self, embedding: &[f32]) -> DistanceMetric {
+        if !self.auto_select_metric {
+            return self.distance_metric.clone();
+        }
+        let sparse = SparseVector::from_dense(embedding);
+        if sparse.sparsity() >= self.sparsity_metric_threshold {
+            DistanceMetric::Jaccard
+        } else {
+            self.distance_metric.clone()
+        }
+    }
+
+    /// Select the appropriate metric for a sparse embedding.
+    fn select_metric_sparse(&self, embedding: &SparseVector) -> DistanceMetric {
+        if !self.auto_select_metric {
+            return self.distance_metric.clone();
+        }
+        if embedding.sparsity() >= self.sparsity_metric_threshold {
+            DistanceMetric::Jaccard
+        } else {
+            self.distance_metric.clone()
+        }
+    }
+
+    /// Get the configured distance metric.
+    pub fn metric(&self) -> &DistanceMetric {
+        &self.distance_metric
+    }
+
     /// Look up a semantically similar entry.
+    ///
+    /// Uses auto-selection to choose the appropriate metric based on sparsity.
     pub fn get(&self, embedding: &[f32], threshold: Option<f32>) -> Option<SemanticHit> {
         let threshold = threshold.unwrap_or(self.threshold);
+        let metric = self.select_metric(embedding);
+        self.get_with_metric(embedding, threshold, &metric)
+    }
 
-        match self.index.search(embedding, 1, threshold) {
+    /// Look up a semantically similar entry with a specific metric.
+    pub fn get_with_metric(
+        &self,
+        embedding: &[f32],
+        threshold: f32,
+        metric: &DistanceMetric,
+    ) -> Option<SemanticHit> {
+        match self
+            .index
+            .search_with_metric(embedding, 1, threshold, metric)
+        {
             Ok(results) if !results.is_empty() => {
                 let result = &results[0];
                 if let Some(mut entry) = self.entries.get_mut(&result.key) {
@@ -128,6 +188,7 @@ impl SemanticCache {
                         input_tokens: entry.input_tokens,
                         output_tokens: entry.output_tokens,
                         model: entry.model.clone(),
+                        metric_used: result.metric_used.clone(),
                     })
                 } else {
                     self.stats.record_miss(CacheLayer::Semantic);
@@ -190,14 +251,29 @@ impl SemanticCache {
     }
 
     /// Look up a semantically similar entry using a sparse query.
+    ///
+    /// Uses auto-selection to choose the appropriate metric based on sparsity.
     pub fn get_sparse(
         &self,
         embedding: &SparseVector,
         threshold: Option<f32>,
     ) -> Option<SemanticHit> {
         let threshold = threshold.unwrap_or(self.threshold);
+        let metric = self.select_metric_sparse(embedding);
+        self.get_sparse_with_metric(embedding, threshold, &metric)
+    }
 
-        match self.index.search_sparse(embedding, 1, threshold) {
+    /// Look up a semantically similar entry using a sparse query with a specific metric.
+    pub fn get_sparse_with_metric(
+        &self,
+        embedding: &SparseVector,
+        threshold: f32,
+        metric: &DistanceMetric,
+    ) -> Option<SemanticHit> {
+        match self
+            .index
+            .search_sparse_with_metric(embedding, 1, threshold, metric)
+        {
             Ok(results) if !results.is_empty() => {
                 let result = &results[0];
                 if let Some(mut entry) = self.entries.get_mut(&result.key) {
@@ -216,6 +292,7 @@ impl SemanticCache {
                         input_tokens: entry.input_tokens,
                         output_tokens: entry.output_tokens,
                         model: entry.model.clone(),
+                        metric_used: result.metric_used.clone(),
                     })
                 } else {
                     self.stats.record_miss(CacheLayer::Semantic);
@@ -457,12 +534,10 @@ mod tests {
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
-        let mag: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if mag == 0.0 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / mag).collect()
-        }
+        SparseVector::from_dense(v)
+            .normalize()
+            .map(|sv| sv.to_dense())
+            .unwrap_or_else(|| v.to_vec())
     }
 
     #[test]
@@ -1249,5 +1324,178 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         // Lower value entry should have lower score
         assert!(candidates[0].1 < candidates[1].1);
+    }
+
+    #[test]
+    fn test_cache_with_jaccard_metric() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.distance_metric = DistanceMetric::Jaccard;
+        config.auto_select_metric = false;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        assert_eq!(cache.metric(), &DistanceMetric::Jaccard);
+
+        let embedding = [1.0, 0.0, 0.0];
+        cache
+            .insert(
+                "query".into(),
+                &embedding,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let hit = cache.get(&embedding, Some(0.5)).unwrap();
+        assert_eq!(hit.metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_auto_metric_selection_dense() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.auto_select_metric = true;
+        config.sparsity_metric_threshold = 0.7;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        // Dense embedding (0% sparsity) - should use cosine
+        let dense = [0.5, 0.5, 0.5];
+        cache
+            .insert(
+                "query".into(),
+                &dense,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let hit = cache.get(&dense, Some(0.5)).unwrap();
+        // Dense embeddings use the default metric (Cosine)
+        assert_eq!(hit.metric_used, DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn test_auto_metric_selection_sparse() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 10;
+        config.auto_select_metric = true;
+        config.sparsity_metric_threshold = 0.7;
+        let stats = Arc::new(CacheStats::new());
+        let cache = SemanticCache::new(&config, stats);
+
+        // Sparse embedding (80% sparsity) - should use Jaccard
+        let sparse = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+        cache
+            .insert(
+                "query".into(),
+                &sparse,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let hit = cache.get(&sparse, Some(0.5)).unwrap();
+        // Sparse embeddings should auto-select Jaccard
+        assert_eq!(hit.metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_get_with_metric_override() {
+        let cache = create_test_cache();
+
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        cache
+            .insert(
+                "query".into(),
+                &embedding,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        // Override to Jaccard
+        let hit = cache
+            .get_with_metric(&embedding, 0.5, &DistanceMetric::Jaccard)
+            .unwrap();
+        assert_eq!(hit.metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_sparse_get_with_metric() {
+        let cache = create_test_cache();
+
+        let dense = normalize(&[1.0, 0.0, 0.0]);
+        let sparse = SparseVector::from_dense(&dense);
+
+        cache
+            .insert_sparse(
+                "query".into(),
+                &sparse,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let hit = cache
+            .get_sparse_with_metric(&sparse, 0.5, &DistanceMetric::Euclidean)
+            .unwrap();
+        assert_eq!(hit.metric_used, DistanceMetric::Euclidean);
+    }
+
+    #[test]
+    fn test_hit_includes_metric_used() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache
+            .insert(
+                "query".into(),
+                &embedding,
+                "response".into(),
+                10,
+                5,
+                "gpt-4".into(),
+                Duration::from_secs(60),
+                None,
+            )
+            .unwrap();
+
+        let hit = cache.get(&embedding, None).unwrap();
+        // Default metric is Cosine
+        assert_eq!(hit.metric_used, DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn test_normalize_uses_sparse_vector() {
+        // Verify normalize delegates to SparseVector
+        let v = vec![3.0, 4.0, 0.0];
+        let normalized = normalize(&v);
+
+        // Expected: magnitude = 5.0, so normalized = [0.6, 0.8, 0.0]
+        assert!((normalized[0] - 0.6).abs() < 0.001);
+        assert!((normalized[1] - 0.8).abs() < 0.001);
+        assert!(normalized[2].abs() < 0.001);
     }
 }

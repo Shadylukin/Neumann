@@ -68,6 +68,9 @@ pub use eviction::{EvictionHandle, EvictionManager, EvictionScorer};
 pub use stats::{CacheLayer, CacheStats, StatsSnapshot};
 pub use tokenizer::{ModelPricing, TokenCounter};
 
+// Re-export geometric types from tensor_store for convenience
+pub use tensor_store::{DistanceMetric, SparseVector};
+
 use embedding::EmbeddingCache;
 use exact::ExactCache;
 use semantic::SemanticCache;
@@ -91,6 +94,8 @@ pub struct CacheHit {
     pub output_tokens: usize,
     /// Estimated cost saved in dollars.
     pub cost_saved: f64,
+    /// Distance metric used (only for semantic hits).
+    pub metric_used: Option<DistanceMetric>,
 }
 
 /// LLM response cache with exact, semantic, and embedding layers.
@@ -180,6 +185,7 @@ impl Cache {
                 input_tokens: entry.input_tokens,
                 output_tokens: entry.output_tokens,
                 cost_saved,
+                metric_used: None,
             });
         }
 
@@ -205,6 +211,79 @@ impl Cache {
                     input_tokens: hit.input_tokens,
                     output_tokens: hit.output_tokens,
                     cost_saved,
+                    metric_used: Some(hit.metric_used),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Look up a cached response with a specific distance metric.
+    ///
+    /// Tries exact match first, then semantic similarity with the specified metric.
+    /// If `metric` is None, uses auto-selection based on embedding sparsity.
+    pub fn get_with_metric(
+        &self,
+        prompt: &str,
+        embedding: Option<&[f32]>,
+        metric: Option<&DistanceMetric>,
+    ) -> Option<CacheHit> {
+        // Try exact match first (key is based on prompt only)
+        let exact_key = exact::generate_prompt_key(prompt);
+        if let Some(entry) = self.exact.get(&exact_key) {
+            let cost_saved = TokenCounter::estimate_cost(
+                entry.input_tokens,
+                entry.output_tokens,
+                self.config.input_cost_per_1k,
+                self.config.output_cost_per_1k,
+            );
+
+            self.stats
+                .record_tokens_saved(entry.input_tokens, entry.output_tokens);
+            self.stats
+                .record_cost_saved((cost_saved * 1_000_000.0) as u64);
+
+            return Some(CacheHit {
+                response: entry.response,
+                layer: CacheLayer::Exact,
+                similarity: None,
+                input_tokens: entry.input_tokens,
+                output_tokens: entry.output_tokens,
+                cost_saved,
+                metric_used: None,
+            });
+        }
+
+        // Try semantic match with specified metric if embedding provided
+        if let Some(emb) = embedding {
+            let threshold = self.config.semantic_threshold;
+            let hit = match metric {
+                Some(m) => self.semantic.get_with_metric(emb, threshold, m),
+                None => self.semantic.get(emb, None), // Uses auto-selection
+            };
+
+            if let Some(hit) = hit {
+                let cost_saved = TokenCounter::estimate_cost(
+                    hit.input_tokens,
+                    hit.output_tokens,
+                    self.config.input_cost_per_1k,
+                    self.config.output_cost_per_1k,
+                );
+
+                self.stats
+                    .record_tokens_saved(hit.input_tokens, hit.output_tokens);
+                self.stats
+                    .record_cost_saved((cost_saved * 1_000_000.0) as u64);
+
+                return Some(CacheHit {
+                    response: hit.response,
+                    layer: CacheLayer::Semantic,
+                    similarity: Some(hit.similarity),
+                    input_tokens: hit.input_tokens,
+                    output_tokens: hit.output_tokens,
+                    cost_saved,
+                    metric_used: Some(hit.metric_used),
                 });
             }
         }
@@ -522,12 +601,10 @@ mod tests {
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
-        let mag: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if mag == 0.0 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / mag).collect()
-        }
+        SparseVector::from_dense(v)
+            .normalize()
+            .map(|sv| sv.to_dense())
+            .unwrap_or_else(|| v.to_vec())
     }
 
     #[test]
@@ -1002,5 +1079,150 @@ mod tests {
         assert!(cache.get("low_value", None).is_none());
         // High value should still exist
         assert!(cache.get("high_value", None).is_some());
+    }
+
+    #[test]
+    fn test_cache_hit_includes_metric_used() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        let similar = normalize(&[0.99, 0.01, 0.0]);
+
+        cache
+            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .unwrap();
+
+        // Semantic hit should include metric_used
+        let hit = cache.get("Different prompt", Some(&similar)).unwrap();
+        assert_eq!(hit.layer, CacheLayer::Semantic);
+        assert!(hit.metric_used.is_some());
+    }
+
+    #[test]
+    fn test_get_with_metric_cosine() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        let similar = normalize(&[0.99, 0.01, 0.0]);
+
+        cache
+            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .unwrap();
+
+        // Query with explicit cosine metric
+        let hit = cache
+            .get_with_metric("Different", Some(&similar), Some(&DistanceMetric::Cosine))
+            .unwrap();
+        assert_eq!(hit.layer, CacheLayer::Semantic);
+        assert!(hit.similarity.unwrap() > 0.9);
+        assert_eq!(hit.metric_used, Some(DistanceMetric::Cosine));
+    }
+
+    #[test]
+    fn test_get_with_metric_jaccard() {
+        // Use a lower threshold for Jaccard since it computes differently for dense vectors
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 3;
+        config.semantic_threshold = 0.3; // Lower threshold for Jaccard
+        let cache = Cache::with_config(config);
+
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        let similar = normalize(&[0.99, 0.01, 0.0]);
+
+        cache
+            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .unwrap();
+
+        // Query with explicit Jaccard metric
+        let hit = cache
+            .get_with_metric("Different", Some(&similar), Some(&DistanceMetric::Jaccard))
+            .unwrap();
+        assert_eq!(hit.layer, CacheLayer::Semantic);
+        assert_eq!(hit.metric_used, Some(DistanceMetric::Jaccard));
+    }
+
+    #[test]
+    fn test_get_with_metric_auto_selection() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        let similar = normalize(&[0.99, 0.01, 0.0]);
+
+        cache
+            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .unwrap();
+
+        // Query with None metric triggers auto-selection
+        let hit = cache
+            .get_with_metric("Different", Some(&similar), None)
+            .unwrap();
+        assert_eq!(hit.layer, CacheLayer::Semantic);
+        // Auto-selection should provide a metric
+        assert!(hit.metric_used.is_some());
+    }
+
+    #[test]
+    fn test_get_with_metric_exact_hit_has_no_metric() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache
+            .put("What is 2+2?", &embedding, "4", "gpt-4", 0)
+            .unwrap();
+
+        // Exact hit should not have metric
+        let hit = cache
+            .get_with_metric(
+                "What is 2+2?",
+                Some(&embedding),
+                Some(&DistanceMetric::Cosine),
+            )
+            .unwrap();
+        assert_eq!(hit.layer, CacheLayer::Exact);
+        assert!(hit.metric_used.is_none());
+    }
+
+    #[test]
+    fn test_normalize_uses_sparse_vector() {
+        // Test that normalize properly delegates to SparseVector
+        let v = vec![3.0, 4.0, 0.0];
+        let normalized = normalize(&v);
+
+        // Length should be 5 (sqrt(9+16)), so normalized is [0.6, 0.8, 0.0]
+        assert!((normalized[0] - 0.6).abs() < 0.001);
+        assert!((normalized[1] - 0.8).abs() < 0.001);
+        assert!((normalized[2] - 0.0).abs() < 0.001);
+
+        // Verify magnitude is 1
+        let mag: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((mag - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_normalize_zero_magnitude() {
+        // Zero vector should return as-is
+        let v = vec![0.0, 0.0, 0.0];
+        let normalized = normalize(&v);
+        assert_eq!(normalized, v);
+    }
+
+    #[test]
+    fn test_sparse_config_preset() {
+        let config = CacheConfig::sparse_embeddings();
+        assert_eq!(config.distance_metric, DistanceMetric::Jaccard);
+        assert!(config.auto_select_metric);
+        assert!((config.sparsity_metric_threshold - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cache_with_sparse_config() {
+        let mut config = CacheConfig::sparse_embeddings();
+        config.embedding_dim = 3;
+        let cache = Cache::with_config(config);
+
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", 0)
+            .unwrap();
+
+        let hit = cache.get("prompt", None).unwrap();
+        assert_eq!(hit.response, "response");
     }
 }

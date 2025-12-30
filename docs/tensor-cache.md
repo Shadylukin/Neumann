@@ -91,6 +91,69 @@ let config = CacheConfig::low_memory();
 
 // Development/testing
 let config = CacheConfig::development();
+
+// Sparse embeddings (uses Jaccard by default)
+let config = CacheConfig::sparse_embeddings();
+```
+
+## Distance Metrics
+
+tensor_cache supports configurable distance metrics for semantic similarity via integration with tensor_store geometric primitives.
+
+### Available Metrics
+
+| Metric | Best For | Range |
+|--------|----------|-------|
+| Cosine | Dense embeddings (default) | [-1, 1] |
+| Angular | Linear angle relationships | [0, PI] |
+| Jaccard | Sparse/binary embeddings | [0, 1] |
+| Euclidean | Absolute distances | [0, inf) |
+| WeightedJaccard | Sparse with magnitudes | [0, 1] |
+
+### Metric Configuration
+
+```rust
+use tensor_cache::{CacheConfig, DistanceMetric};
+
+let config = CacheConfig {
+    distance_metric: DistanceMetric::Jaccard,
+    auto_select_metric: true,
+    sparsity_metric_threshold: 0.7,
+    ..Default::default()
+};
+```
+
+### Auto-Selection
+
+When `auto_select_metric` is true (default), the cache automatically
+selects the best metric based on embedding sparsity:
+
+- Sparsity >= threshold (default 70%): Uses Jaccard (structural similarity)
+- Sparsity < threshold: Uses configured metric (default: Cosine)
+
+```rust
+// Dense embedding (10% zeros) -> Uses Cosine
+let dense = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+
+// Sparse embedding (80% zeros) -> Uses Jaccard
+let sparse = vec![1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+```
+
+### Explicit Metric Queries
+
+```rust
+use tensor_cache::DistanceMetric;
+
+// Query with explicit metric
+let hit = cache.get_with_metric(
+    "query",
+    Some(&embedding),
+    Some(&DistanceMetric::Euclidean),
+);
+
+if let Some(hit) = hit {
+    println!("Metric used: {:?}", hit.metric_used);
+}
 ```
 
 ## Eviction Strategies
@@ -193,6 +256,7 @@ CACHE CLEAR    Clear all cache entries
 | `new()` | Create with default config |
 | `with_config(config)` | Create with custom config |
 | `get(prompt, embedding)` | Look up cached response |
+| `get_with_metric(prompt, embedding, metric)` | Look up with explicit metric |
 | `put(prompt, embedding, response, model, params_hash)` | Store response |
 | `get_embedding(source, content)` | Get cached embedding |
 | `put_embedding(source, content, embedding, model)` | Store embedding |
@@ -211,6 +275,7 @@ CACHE CLEAR    Clear all cache entries
 | `input_tokens` | `usize` | Input tokens saved |
 | `output_tokens` | `usize` | Output tokens saved |
 | `cost_saved` | `f64` | Estimated cost saved (dollars) |
+| `metric_used` | `Option<DistanceMetric>` | Metric used (semantic only) |
 
 ### CacheLayer
 
@@ -229,6 +294,22 @@ CACHE CLEAR    Clear all cache entries
 | Semantic lookup | ~5us |
 | Put (exact + semantic) | ~10us |
 | Eviction (100 entries) | ~200us |
+
+### Distance Metric Performance (128-dim, 1000 entries)
+
+| Metric | Search Time | Notes |
+|--------|-------------|-------|
+| Cosine | 21 us | Default, best for dense |
+| Jaccard | 18 us | Best for sparse |
+| Angular | 23 us | +acos overhead |
+| Euclidean | 19 us | Absolute distance |
+
+### Auto-Selection Overhead
+
+| Operation | Time |
+|-----------|------|
+| Sparsity check | ~50 ns |
+| Metric selection | ~10 ns |
 
 ## Error Handling
 

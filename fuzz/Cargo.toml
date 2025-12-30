@@ -227,3 +227,17 @@ path = "fuzz_targets/cache_eviction_scorer.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cache_semantic_search"
+path = "fuzz_targets/cache_semantic_search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cache_metric_roundtrip"
+path = "fuzz_targets/cache_metric_roundtrip.rs"
+test = false
+doc = false
+bench = false

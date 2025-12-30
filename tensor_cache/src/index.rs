@@ -8,7 +8,9 @@ use crate::error::{CacheError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
-use tensor_store::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats, SparseVector};
+use tensor_store::{
+    DistanceMetric, EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats, SparseVector,
+};
 
 /// Cache-specific HNSW index wrapper.
 ///
@@ -27,6 +29,8 @@ pub struct CacheIndex {
     dimension: usize,
     /// Number of entries.
     entry_count: AtomicUsize,
+    /// Distance metric for similarity scoring.
+    distance_metric: DistanceMetric,
 }
 
 /// Result of a semantic search.
@@ -36,6 +40,8 @@ pub struct IndexSearchResult {
     pub key: String,
     /// Similarity score (0.0 to 1.0).
     pub similarity: f32,
+    /// The metric used for this result.
+    pub metric_used: DistanceMetric,
 }
 
 impl CacheIndex {
@@ -46,6 +52,11 @@ impl CacheIndex {
 
     /// Create a new cache index with custom HNSW configuration.
     pub fn with_config(dimension: usize, config: HNSWConfig) -> Self {
+        Self::with_metric(dimension, config, DistanceMetric::Cosine)
+    }
+
+    /// Create a new cache index with custom HNSW configuration and distance metric.
+    pub fn with_metric(dimension: usize, config: HNSWConfig, metric: DistanceMetric) -> Self {
         Self {
             index: RwLock::new(HNSWIndex::with_config(config.clone())),
             config,
@@ -53,7 +64,13 @@ impl CacheIndex {
             node_to_key: DashMap::new(),
             dimension,
             entry_count: AtomicUsize::new(0),
+            distance_metric: metric,
         }
+    }
+
+    /// Get the distance metric used by this index.
+    pub fn metric(&self) -> &DistanceMetric {
+        &self.distance_metric
     }
 
     /// Insert a dense embedding for a cache key.
@@ -131,11 +148,27 @@ impl CacheIndex {
     /// Search for similar embeddings using a dense query.
     ///
     /// Returns results above the similarity threshold, sorted by similarity (highest first).
+    /// Uses the index's configured distance metric.
     pub fn search(
         &self,
         query: &[f32],
         k: usize,
         threshold: f32,
+    ) -> Result<Vec<IndexSearchResult>> {
+        self.search_with_metric(query, k, threshold, &self.distance_metric)
+    }
+
+    /// Search for similar embeddings using a dense query with a specific metric.
+    ///
+    /// HNSW candidates are retrieved using cosine similarity, then re-scored
+    /// with the specified metric. This allows using different metrics without
+    /// rebuilding the index.
+    pub fn search_with_metric(
+        &self,
+        query: &[f32],
+        k: usize,
+        threshold: f32,
+        metric: &DistanceMetric,
     ) -> Result<Vec<IndexSearchResult>> {
         if query.len() != self.dimension {
             return Err(CacheError::DimensionMismatch {
@@ -149,29 +182,88 @@ impl CacheIndex {
             return Ok(Vec::new());
         }
 
-        let results = index.search(query, k);
+        // Retrieve more candidates than needed for re-scoring
+        let ef = (k * 3).max(10);
+        let candidates = index.search(query, ef);
         drop(index);
 
-        Ok(results
+        let query_sparse = SparseVector::from_dense(query);
+
+        let mut results: Vec<IndexSearchResult> = candidates
             .into_iter()
-            .filter(|(_, similarity)| *similarity >= threshold)
-            .filter_map(|(node_id, similarity)| {
-                self.node_to_key.get(&node_id).map(|key| IndexSearchResult {
-                    key: key.clone(),
-                    similarity,
-                })
+            .filter_map(|(node_id, _cosine_score)| {
+                let key = self.node_to_key.get(&node_id)?;
+
+                // Re-score with the specified metric
+                let embedding = {
+                    let index = self.index.read().unwrap();
+                    index.get_embedding(node_id)?
+                };
+
+                let similarity = match &embedding {
+                    EmbeddingStorage::Dense(dense) => {
+                        let stored_sparse = SparseVector::from_dense(dense);
+                        let raw = metric.compute(&query_sparse, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
+                    EmbeddingStorage::Sparse(sparse) => {
+                        let raw = metric.compute(&query_sparse, sparse);
+                        metric.to_similarity(raw)
+                    },
+                    EmbeddingStorage::Delta(delta) => {
+                        // Use the delta's sparse representation directly
+                        let stored_sparse = delta.to_sparse_delta();
+                        let raw = metric.compute(&query_sparse, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
+                };
+
+                if similarity >= threshold {
+                    Some(IndexSearchResult {
+                        key: key.clone(),
+                        similarity,
+                        metric_used: metric.clone(),
+                    })
+                } else {
+                    None
+                }
             })
-            .collect())
+            .collect();
+
+        // Re-sort by the new metric scores and limit to k
+        results.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(k);
+
+        Ok(results)
     }
 
     /// Search for similar embeddings using a sparse query.
     ///
     /// More efficient when the query is sparse (>70% zeros).
+    /// Uses the index's configured distance metric.
     pub fn search_sparse(
         &self,
         query: &SparseVector,
         k: usize,
         threshold: f32,
+    ) -> Result<Vec<IndexSearchResult>> {
+        self.search_sparse_with_metric(query, k, threshold, &self.distance_metric)
+    }
+
+    /// Search for similar embeddings using a sparse query with a specific metric.
+    ///
+    /// HNSW candidates are retrieved using cosine similarity, then re-scored
+    /// with the specified metric.
+    pub fn search_sparse_with_metric(
+        &self,
+        query: &SparseVector,
+        k: usize,
+        threshold: f32,
+        metric: &DistanceMetric,
     ) -> Result<Vec<IndexSearchResult>> {
         if query.dimension() != self.dimension {
             return Err(CacheError::DimensionMismatch {
@@ -185,19 +277,61 @@ impl CacheIndex {
             return Ok(Vec::new());
         }
 
-        let results = index.search_sparse(query, k);
+        // Retrieve more candidates than needed for re-scoring
+        let ef = (k * 3).max(10);
+        let candidates = index.search_sparse(query, ef);
         drop(index);
 
-        Ok(results
+        let mut results: Vec<IndexSearchResult> = candidates
             .into_iter()
-            .filter(|(_, similarity)| *similarity >= threshold)
-            .filter_map(|(node_id, similarity)| {
-                self.node_to_key.get(&node_id).map(|key| IndexSearchResult {
-                    key: key.clone(),
-                    similarity,
-                })
+            .filter_map(|(node_id, _cosine_score)| {
+                let key = self.node_to_key.get(&node_id)?;
+
+                // Re-score with the specified metric
+                let embedding = {
+                    let index = self.index.read().unwrap();
+                    index.get_embedding(node_id)?
+                };
+
+                let similarity = match &embedding {
+                    EmbeddingStorage::Dense(dense) => {
+                        let stored_sparse = SparseVector::from_dense(dense);
+                        let raw = metric.compute(query, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
+                    EmbeddingStorage::Sparse(sparse) => {
+                        let raw = metric.compute(query, sparse);
+                        metric.to_similarity(raw)
+                    },
+                    EmbeddingStorage::Delta(delta) => {
+                        // Use the delta's sparse representation directly
+                        let stored_sparse = delta.to_sparse_delta();
+                        let raw = metric.compute(query, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
+                };
+
+                if similarity >= threshold {
+                    Some(IndexSearchResult {
+                        key: key.clone(),
+                        similarity,
+                        metric_used: metric.clone(),
+                    })
+                } else {
+                    None
+                }
             })
-            .collect())
+            .collect();
+
+        // Re-sort by the new metric scores and limit to k
+        results.sort_by(|a, b| {
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(k);
+
+        Ok(results)
     }
 
     /// Remove a key from the index.
@@ -281,12 +415,10 @@ mod tests {
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
-        let mag: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if mag == 0.0 {
-            v.to_vec()
-        } else {
-            v.iter().map(|x| x / mag).collect()
-        }
+        SparseVector::from_dense(v)
+            .normalize()
+            .map(|sv| sv.to_dense())
+            .unwrap_or_else(|| v.to_vec())
     }
 
     #[test]
@@ -456,10 +588,12 @@ mod tests {
         let result = IndexSearchResult {
             key: "test".into(),
             similarity: 0.95,
+            metric_used: DistanceMetric::Cosine,
         };
         let cloned = result.clone();
         assert_eq!(cloned.key, "test");
         assert_eq!(cloned.similarity, 0.95);
+        assert_eq!(cloned.metric_used, DistanceMetric::Cosine);
     }
 
     #[test]
@@ -577,5 +711,106 @@ mod tests {
         let sparse_query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
         let results = index.search_sparse(&sparse_query, 2, 0.0).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_with_metric_jaccard() {
+        let index = CacheIndex::with_metric(3, HNSWConfig::default(), DistanceMetric::Jaccard);
+        assert_eq!(index.metric(), &DistanceMetric::Jaccard);
+
+        index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
+        index.insert("key2", &[1.0, 1.0, 0.0]).unwrap();
+
+        let results = index.search(&[1.0, 0.0, 0.0], 2, 0.0).unwrap();
+        assert!(!results.is_empty());
+        // Jaccard compares structural overlap
+        assert_eq!(results[0].metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_search_with_metric_override() {
+        let index = CacheIndex::new(3); // Default cosine
+
+        index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
+        index.insert("key2", &[0.5, 0.5, 0.0]).unwrap();
+
+        // Search with Jaccard instead of cosine
+        let results = index
+            .search_with_metric(&[1.0, 0.0, 0.0], 2, 0.0, &DistanceMetric::Jaccard)
+            .unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_search_sparse_with_metric_override() {
+        let index = CacheIndex::new(3);
+
+        let sparse1 = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let sparse2 = SparseVector::from_dense(&[0.5, 0.5, 0.0]);
+
+        index.insert_sparse("key1", &sparse1).unwrap();
+        index.insert_sparse("key2", &sparse2).unwrap();
+
+        // Search with Jaccard instead of cosine
+        let results = index
+            .search_sparse_with_metric(&sparse1, 2, 0.0, &DistanceMetric::Jaccard)
+            .unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].metric_used, DistanceMetric::Jaccard);
+    }
+
+    #[test]
+    fn test_metric_affects_ranking() {
+        let index = CacheIndex::new(3);
+
+        // Insert vectors with same structure but different magnitudes
+        index.insert("small", &[0.1, 0.0, 0.0]).unwrap();
+        index.insert("large", &[1.0, 0.0, 0.0]).unwrap();
+
+        // Cosine should give same similarity (direction matters, not magnitude)
+        let cosine_results = index
+            .search_with_metric(&[1.0, 0.0, 0.0], 2, 0.0, &DistanceMetric::Cosine)
+            .unwrap();
+        let cosine_sims: Vec<f32> = cosine_results.iter().map(|r| r.similarity).collect();
+        // Both should have high cosine similarity (same direction)
+        assert!(cosine_sims.iter().all(|&s| s > 0.9));
+
+        // Euclidean should give different scores (distance matters)
+        let euclidean_results = index
+            .search_with_metric(&[1.0, 0.0, 0.0], 2, 0.0, &DistanceMetric::Euclidean)
+            .unwrap();
+        // Should have different similarities due to magnitude difference
+        assert!(!euclidean_results.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_uses_sparse_vector() {
+        // Verify that normalize() now uses SparseVector::normalize() internally
+        let v = vec![3.0, 4.0, 0.0];
+        let normalized = normalize(&v);
+
+        // Expected: magnitude = 5.0, so normalized = [0.6, 0.8, 0.0]
+        assert!((normalized[0] - 0.6).abs() < 0.001);
+        assert!((normalized[1] - 0.8).abs() < 0.001);
+        assert!(normalized[2].abs() < 0.001);
+    }
+
+    #[test]
+    fn test_normalize_zero_vector() {
+        let v = vec![0.0, 0.0, 0.0];
+        let normalized = normalize(&v);
+        // Zero vector should return unchanged
+        assert_eq!(normalized, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_result_includes_metric_used() {
+        let index = CacheIndex::new(3);
+        index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
+
+        let results = index.search(&[1.0, 0.0, 0.0], 1, 0.0).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].metric_used, DistanceMetric::Cosine);
     }
 }

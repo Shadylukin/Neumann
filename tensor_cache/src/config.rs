@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tensor_store::DistanceMetric;
 
 /// Eviction strategy for cache entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +72,17 @@ pub struct CacheConfig {
 
     /// Size threshold for inline vs. pointer storage (bytes).
     pub inline_threshold: usize,
+
+    /// Distance metric for semantic similarity search.
+    pub distance_metric: DistanceMetric,
+
+    /// Auto-select metric based on embedding sparsity.
+    /// When true, uses Jaccard for sparse embeddings (sparsity >= threshold).
+    pub auto_select_metric: bool,
+
+    /// Sparsity threshold for auto-selecting Jaccard over configured metric.
+    /// Embeddings with sparsity >= this value use Jaccard, others use distance_metric.
+    pub sparsity_metric_threshold: f32,
 }
 
 impl Default for CacheConfig {
@@ -89,6 +101,9 @@ impl Default for CacheConfig {
             input_cost_per_1k: 0.0015, // GPT-4 Turbo input
             output_cost_per_1k: 0.002, // GPT-4 Turbo output
             inline_threshold: 4096,    // 4KB
+            distance_metric: DistanceMetric::Cosine,
+            auto_select_metric: true,
+            sparsity_metric_threshold: 0.7,
         }
     }
 }
@@ -153,7 +168,26 @@ impl CacheConfig {
             return Err("default_ttl cannot exceed max_ttl".into());
         }
 
+        if self.sparsity_metric_threshold < 0.0 || self.sparsity_metric_threshold > 1.0 {
+            return Err(format!(
+                "sparsity_metric_threshold must be between 0.0 and 1.0, got {}",
+                self.sparsity_metric_threshold
+            ));
+        }
+
         Ok(())
+    }
+
+    /// Create a configuration optimized for sparse embeddings.
+    /// Uses Jaccard metric by default and aggressive auto-selection.
+    pub fn sparse_embeddings() -> Self {
+        Self {
+            distance_metric: DistanceMetric::Jaccard,
+            auto_select_metric: true,
+            sparsity_metric_threshold: 0.5, // More aggressive sparse detection
+            semantic_threshold: 0.85,       // Lower threshold for structural matching
+            ..Default::default()
+        }
     }
 }
 
@@ -212,5 +246,55 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: CacheConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.exact_capacity, restored.exact_capacity);
+    }
+
+    #[test]
+    fn test_config_distance_metric_default() {
+        let config = CacheConfig::default();
+        assert_eq!(config.distance_metric, DistanceMetric::Cosine);
+        assert!(config.auto_select_metric);
+        assert!((config.sparsity_metric_threshold - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_config_sparse_embeddings_preset() {
+        let config = CacheConfig::sparse_embeddings();
+        assert_eq!(config.distance_metric, DistanceMetric::Jaccard);
+        assert!(config.auto_select_metric);
+        assert!((config.sparsity_metric_threshold - 0.5).abs() < 0.001);
+        assert!((config.semantic_threshold - 0.85).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_config_validation_sparsity_threshold() {
+        let mut config = CacheConfig::default();
+        assert!(config.validate().is_ok());
+
+        config.sparsity_metric_threshold = 1.5;
+        assert!(config.validate().is_err());
+
+        config.sparsity_metric_threshold = -0.1;
+        assert!(config.validate().is_err());
+
+        config.sparsity_metric_threshold = 0.0;
+        assert!(config.validate().is_ok());
+
+        config.sparsity_metric_threshold = 1.0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_serialize_with_distance_metric() {
+        let mut config = CacheConfig::default();
+        config.distance_metric = DistanceMetric::Jaccard;
+        config.auto_select_metric = false;
+        config.sparsity_metric_threshold = 0.8;
+
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: CacheConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.distance_metric, DistanceMetric::Jaccard);
+        assert!(!restored.auto_select_metric);
+        assert!((restored.sparsity_metric_threshold - 0.8).abs() < 0.001);
     }
 }
