@@ -45,6 +45,7 @@ pub mod codebook;
 pub mod consensus;
 pub mod delta_replication;
 pub mod distributed_tx;
+pub mod embedding;
 pub mod error;
 pub mod membership;
 pub mod network;
@@ -73,6 +74,7 @@ pub use distributed_tx::{
     DistributedTxCoordinator, DistributedTxStats, KeyLock, LockManager, PrepareRequest,
     PrepareVote, PreparedTx, ShardId, TxParticipant, TxPhase, TxResponse,
 };
+pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
@@ -449,7 +451,7 @@ impl TensorChain {
             .chain
             .new_block()
             .add_transactions(merged_operations)
-            .with_embedding(merged_delta)
+            .with_dense_embedding(&merged_delta)
             .with_codes(quantized_codes)
             .build();
 
@@ -987,7 +989,7 @@ mod tests {
         // Check the block has a non-zero embedding
         let block = chain.get_tip().unwrap().unwrap();
         let embedding = &block.header.delta_embedding;
-        assert!(!embedding.is_empty());
+        assert!(embedding.nnz() > 0);
     }
 
     #[test]

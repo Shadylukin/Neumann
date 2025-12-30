@@ -188,11 +188,15 @@ tensor_chain/           # Module 12: Tensor blockchain
   src/block.rs          # Block, BlockHeader, Transaction
   src/chain.rs          # Chain linked via graph edges
   src/transaction.rs    # Workspace isolation, delta tracking
+  src/embedding.rs      # EmbeddingState machine (Initial, Computed)
   src/codebook.rs       # GlobalCodebook, LocalCodebook, CodebookManager
   src/validation.rs     # TransitionValidator
-  src/consensus.rs      # Semantic conflict detection, auto-merge
+  src/consensus.rs      # Semantic conflict detection, auto-merge (sparse DeltaVector)
   src/raft.rs           # Tensor-Raft consensus
-  src/network.rs        # Transport trait, MemoryTransport
+  src/network.rs        # Transport trait, MemoryTransport (sparse messages)
+  src/distributed_tx.rs # 2PC coordinator, LockManager
+  src/membership.rs     # Cluster membership and health checking
+  src/delta_replication.rs # Delta-compressed state replication
   src/error.rs          # ChainError types
 neumann_parser/         # Module 5: Query parsing
   src/lib.rs            # Public API
@@ -233,7 +237,10 @@ docs/
 - `ScalarValue`: Int, Float, String, Bool, Bytes, Null
 - `TensorStore`: Thread-safe key-value store using DashMap
 - `BloomFilter`: Probabilistic set for fast negative lookups
-- `SparseVector`: Memory-efficient sparse embedding storage
+- `SparseVector`: Memory-efficient sparse embedding with geometric operations
+  - Arithmetic: `sub`, `weighted_average`, `project_orthogonal`, `from_diff`
+  - Metrics: `cosine_similarity`, `jaccard_index`, `euclidean_distance`, `angular_distance`
+- `DistanceMetric`: Cosine, Angular, Geodesic, Jaccard, Overlap, Euclidean, Composite
 - `HNSWIndex`: Hierarchical navigable small world graph
 - `TieredStore`: Hot/cold storage with mmap backing
 
@@ -299,8 +306,12 @@ docs/
 - `GlobalCodebook`: Static codebook for consensus validation
 - `LocalCodebook`: EMA-adaptive codebook per domain
 - `ConsensusManager`: Semantic conflict detection and auto-merge
+- `DeltaVector`: Sparse delta for conflict detection (uses SparseVector internally)
+- `EmbeddingState`: Type-safe embedding lifecycle (Initial, Computed)
+- `WorkspaceEmbedding`: Transaction embedding tracking via EmbeddingState
 - `RaftNode`: Tensor-Raft consensus state machine
 - `ChainError`: Chain operation errors
+- Network messages (RequestVote, AppendEntries, TxPrepareMsg, TxVote): Use SparseVector
 
 ## Concurrency Design
 

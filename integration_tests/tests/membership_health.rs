@@ -17,6 +17,7 @@ use tensor_chain::{
     MembershipCallback, MembershipManager, MemoryTransport, Message, NodeHealth, RaftConfig,
     RaftNode,
 };
+use tensor_store::SparseVector;
 
 fn create_test_cluster_config(node_id: &str, peers: &[(&str, &str)]) -> ClusterConfig {
     let mut config = ClusterConfig::new(
@@ -286,7 +287,7 @@ async fn test_raft_membership_integration_unhealthy_candidate() {
         candidate_id: "node2".to_string(),
         last_log_index: 0,
         last_log_term: 0,
-        state_embedding: vec![],
+        state_embedding: SparseVector::new(0),
     };
 
     let response = raft.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
@@ -323,7 +324,7 @@ async fn test_raft_membership_integration_healthy_candidate() {
         candidate_id: "node2".to_string(),
         last_log_index: 0,
         last_log_term: 0,
-        state_embedding: vec![],
+        state_embedding: SparseVector::new(0),
     };
 
     let response = raft.handle_message(&"node2".to_string(), &Message::RequestVote(rv));

@@ -14,6 +14,7 @@ use tensor_chain::{
     PrepareRequest, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxParticipant, TxPhase,
     TxPrepareMsg, TxVote,
 };
+use tensor_store::SparseVector;
 
 fn create_test_coordinator() -> DistributedTxCoordinator {
     let consensus = ConsensusManager::new(ConsensusConfig::default());
@@ -37,7 +38,7 @@ fn test_2pc_single_shard_commit() {
             key: "user:1".to_string(),
             data: vec![1, 2, 3],
         }],
-        delta_embedding: vec![1.0, 0.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -74,7 +75,7 @@ fn test_2pc_multi_shard_all_yes() {
             delta_embedding: {
                 let mut v = vec![0.0; 3];
                 v[shard] = 1.0;
-                v
+                SparseVector::from_dense(&v)
             },
             timeout_ms: 5000,
         };
@@ -114,7 +115,7 @@ fn test_2pc_conflict_detected() {
             key: "shared_key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -129,7 +130,7 @@ fn test_2pc_conflict_detected() {
             key: "shared_key".to_string(),
             data: vec![2],
         }],
-        delta_embedding: vec![0.0, 1.0],
+        delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
         timeout_ms: 5000,
     };
 
@@ -153,7 +154,7 @@ fn test_2pc_abort_on_no_vote() {
             key: "key0".to_string(),
             data: vec![0],
         }],
-        delta_embedding: vec![1.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
     let vote0 = coordinator.handle_prepare(request0);
@@ -185,7 +186,7 @@ fn test_tx_handler_prepare_commit_flow() {
             key: "test_key".to_string(),
             data: vec![1, 2, 3],
         }],
-        delta_embedding: vec![1.0, 0.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
         timeout_ms: 5000,
     });
 
@@ -231,7 +232,7 @@ fn test_tx_handler_prepare_abort_flow() {
             key: "test_key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0],
+        delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     });
 
@@ -270,7 +271,7 @@ fn test_tx_participant_lock_conflict() {
             key: "shared_key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0],
+        delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     });
 
@@ -288,7 +289,7 @@ fn test_tx_participant_lock_conflict() {
             key: "shared_key".to_string(),
             data: vec![2],
         }],
-        delta_embedding: vec![0.0, 1.0],
+        delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
         timeout_ms: 5000,
     });
 
@@ -418,7 +419,7 @@ fn test_2pc_stats_tracking() {
             key: "key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0],
+        delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     };
     let vote = coordinator.handle_prepare(request);

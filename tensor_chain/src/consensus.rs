@@ -19,7 +19,6 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use tensor_store::distance::{DistanceMetric, GeometricConfig};
 use tensor_store::SparseVector;
 
 use crate::transaction::TransactionDelta;
@@ -27,9 +26,9 @@ use crate::transaction::TransactionDelta;
 /// Configuration for the consensus manager.
 #[derive(Debug, Clone)]
 pub struct ConsensusConfig {
-    /// Threshold below which transactions are orthogonal.
+    /// Threshold below which transactions are orthogonal (cosine).
     pub orthogonal_threshold: f32,
-    /// Threshold above which transactions conflict.
+    /// Threshold above which transactions conflict (cosine).
     pub conflict_threshold: f32,
     /// Threshold for considering transactions identical.
     pub identical_threshold: f32,
@@ -37,8 +36,9 @@ pub struct ConsensusConfig {
     pub opposite_threshold: f32,
     /// Whether to allow merging with key overlap.
     pub allow_key_overlap_merge: bool,
-    /// Distance metric for conflict detection.
-    pub metric: DistanceMetric,
+    /// Structural overlap threshold (Jaccard) - conflicts if both deltas modify same positions.
+    /// Two deltas with high Jaccard are likely in conflict even if cosine is low.
+    pub structural_conflict_threshold: f32,
     /// Sparsity threshold for delta computation.
     pub sparsity_threshold: f32,
 }
@@ -51,7 +51,8 @@ impl Default for ConsensusConfig {
             identical_threshold: 0.99,
             opposite_threshold: -0.95,
             allow_key_overlap_merge: false,
-            metric: DistanceMetric::Cosine,
+            // High structural overlap = likely conflict (same positions being modified)
+            structural_conflict_threshold: 0.5,
             sparsity_threshold: 1e-6,
         }
     }
@@ -94,8 +95,10 @@ impl ConflictClass {
 pub struct ConflictResult {
     /// Classification of the conflict.
     pub class: ConflictClass,
-    /// Cosine similarity between delta embeddings.
+    /// Cosine similarity between delta embeddings (angular).
     pub similarity: f32,
+    /// Jaccard index - structural overlap of modified positions.
+    pub structural_overlap: f32,
     /// Keys that overlap between the two deltas.
     pub overlapping_keys: HashSet<String>,
     /// Whether the deltas can be merged.
@@ -271,16 +274,6 @@ impl DeltaVector {
         self.delta.euclidean_distance(&other.delta)
     }
 
-    /// Compute similarity using the specified metric.
-    pub fn similarity(&self, other: &DeltaVector, metric: &DistanceMetric) -> f32 {
-        metric.compute(&self.delta, &other.delta)
-    }
-
-    /// Compute composite geometric similarity with configurable weights.
-    pub fn geometric_similarity(&self, other: &DeltaVector, config: &GeometricConfig) -> f32 {
-        config.compute(&self.delta, &other.delta)
-    }
-
     /// Check if this delta overlaps with another in key space.
     pub fn overlaps_with(&self, other: &DeltaVector) -> bool {
         self.affected_keys
@@ -376,25 +369,49 @@ impl ConsensusManager {
     }
 
     /// Detect conflict between two transaction deltas.
+    ///
+    /// Uses hybrid detection combining:
+    /// - **Cosine similarity**: Angular conflict (same direction = conflict)
+    /// - **Jaccard index**: Structural conflict (same positions = likely conflict)
+    ///
+    /// This catches conflicts that pure cosine misses - two deltas modifying the
+    /// same embedding positions are likely in conflict even if their values differ.
     pub fn detect_conflict(&self, d1: &DeltaVector, d2: &DeltaVector) -> ConflictResult {
         let similarity = d1.cosine_similarity(d2);
+        let structural_overlap = d1.structural_similarity(d2);
         let overlapping_keys = d1.overlapping_keys(d2);
-        let has_overlap = !overlapping_keys.is_empty();
+        let has_key_overlap = !overlapping_keys.is_empty();
         let all_keys_overlap = overlapping_keys.len() == d1.affected_keys.len()
             && overlapping_keys.len() == d2.affected_keys.len();
 
-        // Classify based on similarity and key overlap
+        // Classify using hybrid detection:
+        // 1. Check for special cases (identical, opposite) first
+        // 2. Check for structural conflicts (high Jaccard = same positions modified)
+        // 3. Check for angular conflicts (high cosine = same direction)
+        // 4. Otherwise check for ambiguous/low-conflict cases
         let (class, action) = if similarity >= self.config.identical_threshold && all_keys_overlap {
+            // Identical: same direction, same keys
             (ConflictClass::Identical, MergeAction::Deduplicate)
         } else if similarity <= self.config.opposite_threshold && all_keys_overlap {
+            // Opposite: cancel out
             (ConflictClass::Opposite, MergeAction::Cancel)
-        } else if similarity.abs() < self.config.orthogonal_threshold {
+        } else if similarity.abs() < self.config.orthogonal_threshold
+            && structural_overlap < self.config.structural_conflict_threshold
+        {
+            // Truly orthogonal: different directions AND different positions
             (ConflictClass::Orthogonal, MergeAction::VectorAdd)
         } else if similarity >= self.config.conflict_threshold {
+            // Angular conflict: pointing same direction
             (ConflictClass::Conflicting, MergeAction::Reject)
-        } else if has_overlap && !self.config.allow_key_overlap_merge {
+        } else if structural_overlap >= self.config.structural_conflict_threshold {
+            // Structural conflict: modifying same positions (even if different values)
+            // This catches conflicts that cosine misses
+            (ConflictClass::Conflicting, MergeAction::Reject)
+        } else if has_key_overlap && !self.config.allow_key_overlap_merge {
+            // Key overlap without structural/angular conflict - ambiguous
             (ConflictClass::Ambiguous, MergeAction::Reject)
         } else {
+            // Low conflict: can merge with weighted average
             (
                 ConflictClass::LowConflict,
                 MergeAction::WeightedAverage {
@@ -407,6 +424,7 @@ impl ConsensusManager {
         ConflictResult {
             class,
             similarity,
+            structural_overlap,
             overlapping_keys,
             can_merge: class.can_merge(),
             action,
@@ -831,17 +849,21 @@ mod tests {
         let manager = ConsensusManager::default_config();
 
         let keys: HashSet<String> = ["shared"].iter().map(|s| s.to_string()).collect();
-        // Mid-range similarity (0.1 to 0.7) with key overlap
-        // cos([1,0.5,0], [0.2,0.9,0]) should be in mid-range
-        // dot = 0.2 + 0.45 = 0.65
-        // mag1 = sqrt(1+0.25) = 1.118
-        // mag2 = sqrt(0.04+0.81) = 0.922
-        // sim = 0.65/(1.118*0.922) = 0.63 which is in [0.1, 0.7)
-        let d1 = DeltaVector::new(vec![1.0, 0.5, 0.0], keys.clone(), 1);
-        let d2 = DeltaVector::new(vec![0.2, 0.9, 0.0], keys, 2);
+        // For Ambiguous classification:
+        // - Cosine must be in [orthogonal_threshold, conflict_threshold) = [0.1, 0.7)
+        // - Structural overlap (Jaccard) must be < structural_conflict_threshold (0.5)
+        // - Must have key overlap
+        //
+        // To get Jaccard < 0.5 with ONE shared position, d2 must have 3+ non-zero positions:
+        // d1: [1, 0, 0, 0, 0] - position 0 (1 position)
+        // d2: [0.3, 0, 0.5, 0, 0.8] - positions 0, 2, 4 (3 positions)
+        // Intersection = 1, Union = 4, Jaccard = 1/4 = 0.25 < 0.5
+        // Cosine = 0.3 / (1 * sqrt(0.09+0.25+0.64)) = 0.3 / 0.99 ~ 0.30
+        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0, 0.0, 0.0], keys.clone(), 1);
+        let d2 = DeltaVector::new(vec![0.3, 0.0, 0.5, 0.0, 0.8], keys, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
-        // With default config, key overlap + mid-similarity = Ambiguous
+        // cos ~ 0.30, Jaccard = 0.25, has key overlap -> Ambiguous
         assert_eq!(result.class, ConflictClass::Ambiguous);
         assert!(!result.can_merge);
     }
@@ -917,10 +939,21 @@ mod tests {
         // Use different keys so they're not classified as Identical
         let keys1: HashSet<String> = ["k1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["k2"].iter().map(|s| s.to_string()).collect();
+        // For index 1 to be orthogonal to both 0 and 2, it must:
+        // - Have low cosine similarity with both (< 0.1)
+        // - Have low structural overlap with both (Jaccard < 0.5)
+        //
+        // Index 0: [1, 0, 0] - position 0
+        // Index 2: [0.9, 0.1, 0] - positions 0 and 1
+        // Previous index 1: [0, 1, 0] - position 1 -> Jaccard with index 2 = 1/2 = 0.5 (at threshold!)
+        //
+        // Fix: Use position 2 for index 1: [0, 0, 1]
+        // - vs Index 0: Jaccard = 0, Cosine = 0 -> Orthogonal
+        // - vs Index 2: Jaccard = 0, Cosine = 0 -> Orthogonal
         let deltas = vec![
             DeltaVector::new(vec![1.0, 0.0, 0.0], keys1.clone(), 1),
-            DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal to all
-            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3),  // Conflicts with 0 (high sim)
+            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 2), // Orthogonal to all (position 2)
+            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3),  // Conflicts with 0 (high cosine)
         ];
 
         let orthogonal = manager.find_orthogonal_set(&deltas);
@@ -992,6 +1025,7 @@ mod tests {
         let result = ConflictResult {
             class: ConflictClass::Orthogonal,
             similarity: 0.05,
+            structural_overlap: 0.0,
             overlapping_keys: HashSet::new(),
             can_merge: true,
             action: MergeAction::VectorAdd,
@@ -1214,32 +1248,31 @@ mod tests {
 
     #[test]
     fn test_low_conflict_no_key_overlap() {
-        // Configure to allow merge with overlap (then test non-overlap path)
+        // Configure to disallow merge with key overlap
         let config = ConsensusConfig {
             allow_key_overlap_merge: false,
             ..Default::default()
         };
         let manager = ConsensusManager::new(config);
 
-        // No key overlap, mid-range similarity
+        // For LowConflict classification:
+        // - Cosine must be in [orthogonal_threshold, conflict_threshold) = [0.1, 0.7)
+        // - Structural overlap (Jaccard) must be < structural_conflict_threshold (0.5)
+        // - NO key overlap
+        //
+        // To get Jaccard < 0.5 with ONE shared position, d2 must have 3+ non-zero positions:
+        // d1: [1, 0, 0, 0, 0] - position 0 (1 position)
+        // d2: [0.3, 0, 0.5, 0, 0.8] - positions 0, 2, 4 (3 positions)
+        // Intersection = 1, Union = 4, Jaccard = 1/4 = 0.25 < 0.5
+        // Cosine = 0.3 / (1 * sqrt(0.09+0.25+0.64)) = 0.3 / 0.99 ~ 0.30
         let keys1: HashSet<String> = ["key1"].iter().map(|s| s.to_string()).collect();
         let keys2: HashSet<String> = ["key2"].iter().map(|s| s.to_string()).collect();
 
-        // cos = 0.5 * 1 + 0.5 * 0.5 = 0.75... wait need to calculate carefully
-        // Let's use vectors that give ~0.5 similarity
-        // [1, 0.5] and [0.5, 1] -> dot = 0.5 + 0.5 = 1.0
-        // |v1| = sqrt(1 + 0.25) = 1.118
-        // |v2| = sqrt(0.25 + 1) = 1.118
-        // cos = 1.0 / (1.118 * 1.118) = 0.8 -> still above conflict threshold
-
-        // Try [1,0] and [0.7, 0.7] -> dot = 0.7, |v1|=1, |v2|=0.99, cos=0.707 -> above 0.7
-
-        // Let's try [1, 0, 0] and [0.5, 0.86, 0] -> dot=0.5, |v1|=1, |v2|~=1, cos=0.5
-        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1);
-        let d2 = DeltaVector::new(vec![0.5, 0.866, 0.0], keys2, 2);
+        let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0, 0.0, 0.0], keys1, 1);
+        let d2 = DeltaVector::new(vec![0.3, 0.0, 0.5, 0.0, 0.8], keys2, 2);
 
         let result = manager.detect_conflict(&d1, &d2);
-        // cos ~ 0.5, no key overlap -> LowConflict
+        // cos ~ 0.30, Jaccard = 0.25, no key overlap -> LowConflict
         assert_eq!(result.class, ConflictClass::LowConflict);
         assert!(result.can_merge);
     }
@@ -1264,6 +1297,7 @@ mod tests {
         let result = ConflictResult {
             class: ConflictClass::Conflicting,
             similarity: 0.85,
+            structural_overlap: 0.0,
             overlapping_keys: HashSet::new(),
             can_merge: false,
             action: MergeAction::Reject,

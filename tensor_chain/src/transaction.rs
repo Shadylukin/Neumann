@@ -19,6 +19,7 @@ use tensor_store::TensorStore;
 
 use crate::block::Transaction as ChainTransaction;
 use crate::consensus::DeltaVector;
+use crate::embedding::EmbeddingState;
 use crate::error::{ChainError, Result};
 
 /// Default embedding dimension for state snapshots.
@@ -26,60 +27,79 @@ pub const DEFAULT_EMBEDDING_DIM: usize = 128;
 
 /// Embedding state for a transaction workspace.
 ///
-/// Tracks the semantic representation of state before and after transaction
-/// execution, enabling delta-based conflict detection.
+/// Wraps EmbeddingState to provide a mutable API for transaction lifecycle.
+/// Uses type-safe state machine internally, eliminating Option ceremony.
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceEmbedding {
-    /// Embedding of state at begin() time.
-    pub before: Vec<f32>,
-    /// Embedding of state at commit() time (computed lazily).
-    pub after: Option<Vec<f32>>,
-    /// Delta embedding (after - before), computed when both are available.
-    pub delta: Option<Vec<f32>>,
+    state: EmbeddingState,
 }
 
 impl WorkspaceEmbedding {
     /// Create a new workspace embedding from the initial state.
     pub fn new(before: Vec<f32>) -> Self {
         Self {
-            before,
-            after: None,
-            delta: None,
+            state: EmbeddingState::from_dense(&before),
         }
     }
 
     /// Create an empty embedding (for stores without embeddings).
     pub fn empty(dim: usize) -> Self {
         Self {
-            before: vec![0.0; dim],
-            after: None,
-            delta: None,
+            state: EmbeddingState::empty(dim),
         }
     }
 
     /// Set the after-state embedding and compute delta.
+    ///
+    /// If dimensions mismatch or delta already computed, this is a no-op.
     pub fn set_after(&mut self, after: Vec<f32>) {
-        if self.before.len() == after.len() {
-            let delta: Vec<f32> = after
-                .iter()
-                .zip(self.before.iter())
-                .map(|(a, b)| a - b)
-                .collect();
-            self.delta = Some(delta);
+        let current = self.state.clone();
+        if let Ok(computed) = current.compute_from_dense(&after) {
+            self.state = computed;
         }
-        self.after = Some(after);
+        // On error (dimension mismatch or already computed): keep original state
     }
 
-    /// Get the delta embedding, or compute a zero delta if not available.
+    /// Get the delta embedding, or zeros if not available.
     pub fn delta_or_zero(&self) -> Vec<f32> {
-        self.delta
-            .clone()
-            .unwrap_or_else(|| vec![0.0; self.before.len()])
+        self.state.delta_or_zero()
     }
 
     /// Check if the delta has been computed.
     pub fn has_delta(&self) -> bool {
-        self.delta.is_some()
+        self.state.is_computed()
+    }
+
+    /// Get the before-state embedding as a dense vector.
+    pub fn before(&self) -> Vec<f32> {
+        self.state.before().to_dense()
+    }
+
+    /// Get the after-state embedding as a dense vector, if computed.
+    pub fn after(&self) -> Option<Vec<f32>> {
+        self.state.after().map(|v| v.to_dense())
+    }
+
+    /// Get the delta embedding as a dense vector, if computed.
+    pub fn delta(&self) -> Option<Vec<f32>> {
+        self.state.delta().map(|v| v.to_dense())
+    }
+
+    /// Get the dimension of the embedding space.
+    pub fn dimension(&self) -> usize {
+        self.state.dimension()
+    }
+
+    /// Get the underlying EmbeddingState (for advanced usage).
+    pub fn state(&self) -> &EmbeddingState {
+        &self.state
+    }
+
+    /// Set the before-state embedding, resetting to Initial state.
+    ///
+    /// This is used when capturing the initial state after workspace creation.
+    pub fn set_before(&mut self, before: Vec<f32>) {
+        self.state = EmbeddingState::from_dense(&before);
     }
 }
 
@@ -265,7 +285,7 @@ impl TransactionWorkspace {
 
     /// Set the before-state embedding (captured at transaction begin).
     pub fn set_before_embedding(&self, embedding: Vec<f32>) {
-        self.embedding.write().before = embedding;
+        self.embedding.write().set_before(embedding);
     }
 
     /// Compute the delta embedding from the current state.
@@ -600,9 +620,9 @@ mod tests {
         let workspace = TransactionWorkspace::begin(&store).unwrap();
 
         let embedding = workspace.embedding();
-        assert_eq!(embedding.before.len(), DEFAULT_EMBEDDING_DIM);
-        assert!(embedding.after.is_none());
-        assert!(embedding.delta.is_none());
+        assert_eq!(embedding.dimension(), DEFAULT_EMBEDDING_DIM);
+        assert!(embedding.after().is_none());
+        assert!(embedding.delta().is_none());
         assert!(!workspace.has_delta());
     }
 
@@ -620,11 +640,11 @@ mod tests {
         workspace.compute_delta(after.clone());
 
         let embedding = workspace.embedding();
-        assert_eq!(embedding.before, before);
-        assert_eq!(embedding.after, Some(after));
-        assert!(embedding.delta.is_some());
+        assert_eq!(embedding.before(), before);
+        assert_eq!(embedding.after(), Some(after));
+        assert!(embedding.delta().is_some());
 
-        let delta = embedding.delta.unwrap();
+        let delta = embedding.delta().unwrap();
         assert_eq!(delta, vec![0.0, 1.0, 0.0, 0.0]);
         assert!(workspace.has_delta());
     }
@@ -724,17 +744,17 @@ mod tests {
         let before = vec![1.0, 2.0, 3.0];
         let embedding = WorkspaceEmbedding::new(before.clone());
 
-        assert_eq!(embedding.before, before);
-        assert!(embedding.after.is_none());
-        assert!(embedding.delta.is_none());
+        assert_eq!(embedding.before(), before);
+        assert!(embedding.after().is_none());
+        assert!(embedding.delta().is_none());
     }
 
     #[test]
     fn test_workspace_embedding_empty() {
         let embedding = WorkspaceEmbedding::empty(8);
 
-        assert_eq!(embedding.before.len(), 8);
-        assert!(embedding.before.iter().all(|&x| x == 0.0));
+        assert_eq!(embedding.dimension(), 8);
+        assert!(embedding.before().iter().all(|&x| x == 0.0));
     }
 
     #[test]
@@ -755,12 +775,16 @@ mod tests {
     fn test_workspace_embedding_set_after_mismatched_dimensions() {
         let mut embedding = WorkspaceEmbedding::new(vec![1.0, 2.0, 3.0]);
 
-        // Set after with different dimension - delta should NOT be computed
+        // Set after with different dimension - operation is a no-op
         embedding.set_after(vec![1.0, 2.0]); // Only 2 dimensions vs 3
 
-        assert!(embedding.after.is_some()); // after is still set
-        assert!(embedding.delta.is_none()); // but delta is not computed
+        // With EmbeddingState, mismatched dimensions are silently ignored
+        // The state remains in Initial, so after and delta are both None
+        assert!(embedding.after().is_none());
+        assert!(embedding.delta().is_none());
         assert!(!embedding.has_delta());
+        // Before state is preserved
+        assert_eq!(embedding.dimension(), 3);
     }
 
     #[test]
@@ -775,9 +799,9 @@ mod tests {
     #[test]
     fn test_workspace_embedding_default_derive() {
         let embedding = WorkspaceEmbedding::default();
-        assert!(embedding.before.is_empty());
-        assert!(embedding.after.is_none());
-        assert!(embedding.delta.is_none());
+        assert_eq!(embedding.dimension(), 0);
+        assert!(embedding.after().is_none());
+        assert!(embedding.delta().is_none());
     }
 
     #[test]

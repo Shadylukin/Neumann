@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
+use tensor_store::SparseVector;
 
 use crate::block::{NodeId, Transaction};
 use crate::consensus::{ConsensusManager, DeltaVector};
@@ -167,8 +168,8 @@ pub struct PrepareRequest {
     pub coordinator: NodeId,
     /// Operations to execute on this shard.
     pub operations: Vec<Transaction>,
-    /// Delta embedding computed by coordinator (for conflict detection).
-    pub delta_embedding: Vec<f32>,
+    /// Delta embedding computed by coordinator (for conflict detection, sparse for efficiency).
+    pub delta_embedding: SparseVector,
     /// Timeout in milliseconds.
     pub timeout_ms: u64,
 }
@@ -539,8 +540,8 @@ impl DistributedTxCoordinator {
             },
         };
 
-        // Compute delta from request embedding
-        let delta = DeltaVector::new(
+        // Compute delta from request embedding (already sparse)
+        let delta = DeltaVector::from_sparse(
             request.delta_embedding.clone(),
             keys.iter().cloned().collect(),
             request.tx_id,
@@ -797,7 +798,7 @@ impl TxParticipant {
             },
         };
 
-        let delta = DeltaVector::new(
+        let delta = DeltaVector::from_sparse(
             request.delta_embedding,
             keys.into_iter().collect(),
             request.tx_id,
@@ -1004,7 +1005,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
             timeout_ms: 5000,
         };
 
@@ -1136,7 +1137,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
             timeout_ms: 5000,
         };
 
@@ -1160,7 +1161,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
             timeout_ms: 5000,
         };
 
@@ -1408,7 +1409,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
             timeout_ms: 5000,
         };
 
@@ -1423,7 +1424,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![2],
             }],
-            delta_embedding: vec![0.0, 1.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[0.0, 1.0, 0.0]),
             timeout_ms: 5000,
         };
 
@@ -1443,7 +1444,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         };
 
@@ -1458,7 +1459,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![2],
             }],
-            delta_embedding: vec![0.0, 1.0],
+            delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
             timeout_ms: 5000,
         };
 
@@ -1493,7 +1494,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         };
 
@@ -1698,7 +1699,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0], // Same direction
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]), // Same direction
             timeout_ms: 5000,
         };
 
@@ -1781,7 +1782,7 @@ mod tests {
             tx_id: 1,
             coordinator: "node1".to_string(),
             operations: vec![],
-            delta_embedding: vec![1.0],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         };
         let _ = format!("{:?}", request);

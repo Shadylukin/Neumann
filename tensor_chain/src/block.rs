@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tensor_store::SparseVector;
 
 use crate::error::{ChainError, Result};
 
@@ -33,7 +34,7 @@ pub struct BlockHeader {
     pub state_root: BlockHash,
 
     /// Semantic embedding of block contents (for similarity consensus).
-    pub delta_embedding: Vec<f32>,
+    pub delta_embedding: SparseVector,
 
     /// Quantized codebook indices (for compact representation).
     pub quantized_codes: Vec<u16>,
@@ -67,7 +68,7 @@ impl BlockHeader {
             prev_hash,
             tx_root,
             state_root,
-            delta_embedding: Vec::new(),
+            delta_embedding: SparseVector::new(0),
             quantized_codes: Vec::new(),
             timestamp,
             proposer,
@@ -85,10 +86,9 @@ impl BlockHeader {
         hasher.update(self.tx_root);
         hasher.update(self.state_root);
 
-        // Hash embedding as bytes
-        for val in &self.delta_embedding {
-            hasher.update(val.to_le_bytes());
-        }
+        // Hash embedding (serialize sparse vector for deterministic hashing)
+        let embedding_bytes = bincode::serialize(&self.delta_embedding).unwrap_or_default();
+        hasher.update(&embedding_bytes);
 
         // Hash quantized codes
         for code in &self.quantized_codes {
@@ -102,8 +102,14 @@ impl BlockHeader {
     }
 
     /// Set the delta embedding for this block.
-    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+    pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
+        self
+    }
+
+    /// Set the delta embedding from a dense vector.
+    pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
+        self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
@@ -416,10 +422,18 @@ mod tests {
     #[test]
     fn test_block_header_with_embedding() {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
-        let embedding = vec![1.0, 2.0, 3.0, 4.0];
+        let embedding = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
         let header = header.with_embedding(embedding.clone());
 
-        assert_eq!(header.delta_embedding, embedding);
+        assert_eq!(header.delta_embedding.to_dense(), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_block_header_with_dense_embedding() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let header = header.with_dense_embedding(&[1.0, 2.0, 3.0, 4.0]);
+
+        assert_eq!(header.delta_embedding.to_dense(), vec![1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -443,11 +457,11 @@ mod tests {
     #[test]
     fn test_block_header_hash_includes_embedding_and_codes() {
         let header1 = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
-            .with_embedding(vec![1.0, 2.0])
+            .with_dense_embedding(&[1.0, 2.0])
             .with_codes(vec![1, 2, 3]);
 
         let header2 = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
-            .with_embedding(vec![3.0, 4.0])
+            .with_dense_embedding(&[3.0, 4.0])
             .with_codes(vec![4, 5, 6]);
 
         // Different embeddings/codes should produce different hashes
@@ -457,11 +471,11 @@ mod tests {
     #[test]
     fn test_block_header_builder_chaining() {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
-            .with_embedding(vec![1.0])
+            .with_dense_embedding(&[1.0])
             .with_codes(vec![1])
             .with_signature(vec![0xFF]);
 
-        assert_eq!(header.delta_embedding, vec![1.0]);
+        assert_eq!(header.delta_embedding.to_dense(), vec![1.0]);
         assert_eq!(header.quantized_codes, vec![1]);
         assert_eq!(header.signature, vec![0xFF]);
     }
@@ -797,7 +811,7 @@ mod tests {
     #[test]
     fn test_block_header_clone_and_eq() {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
-            .with_embedding(vec![1.0])
+            .with_dense_embedding(&[1.0])
             .with_codes(vec![1])
             .with_signature(vec![0xFF]);
 

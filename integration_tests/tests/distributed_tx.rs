@@ -10,6 +10,7 @@ use tensor_chain::{
     DistributedTransaction, DistributedTxConfig, DistributedTxCoordinator, DistributedTxStats,
     LockManager, PrepareRequest, PrepareVote, TxParticipant, TxPhase,
 };
+use tensor_store::SparseVector;
 
 // ============================================================================
 // Helper Functions
@@ -229,7 +230,7 @@ fn test_coordinator_prepare_vote_yes() {
             key: "test_key".to_string(),
             data: vec![1, 2, 3],
         }],
-        delta_embedding: vec![1.0, 0.0, 0.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -442,7 +443,7 @@ fn test_participant_prepare_commit() {
             key: "local_data".to_string(),
             data: vec![1, 2, 3],
         }],
-        delta_embedding: vec![0.5, 0.5, 0.0],
+        delta_embedding: SparseVector::from_dense(&[0.5, 0.5, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -468,7 +469,7 @@ fn test_participant_prepare_abort() {
             key: "local_data".to_string(),
             data: vec![1, 2, 3],
         }],
-        delta_embedding: vec![0.5, 0.5, 0.0],
+        delta_embedding: SparseVector::from_dense(&[0.5, 0.5, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -493,7 +494,7 @@ fn test_participant_conflict_on_locked_key() {
             key: "contested_key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
 
@@ -508,7 +509,7 @@ fn test_participant_conflict_on_locked_key() {
             key: "contested_key".to_string(),
             data: vec![2],
         }],
-        delta_embedding: vec![0.0, 1.0],
+        delta_embedding: SparseVector::from_dense(&[0.0, 1.0]),
         timeout_ms: 5000,
     };
 
@@ -532,7 +533,7 @@ fn test_participant_stale_cleanup() {
             key: "key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0],
+        delta_embedding: SparseVector::from_dense(&[1.0]),
         timeout_ms: 5000,
     };
 
@@ -655,7 +656,7 @@ fn test_abort_releases_locks() {
             key: "locked_key".to_string(),
             data: vec![1],
         }],
-        delta_embedding: vec![1.0, 0.0],
+        delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
         timeout_ms: 5000,
     };
 

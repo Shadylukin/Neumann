@@ -323,15 +323,58 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Interface** (SparseVector):
 - `from_dense(vector) -> SparseVector` - Convert dense to sparse
 - `from_dense_with_threshold(vector, threshold) -> SparseVector` - Sparsify with threshold
+- `from_diff(before, after, threshold) -> SparseVector` - Compute sparse delta directly
 - `to_dense() -> Vec<f32>` - Reconstruct dense
 - `dot(other) -> f32` - Sparse-sparse dot product O(nnz)
 - `dot_dense(other) -> f32` - Sparse-dense dot product O(nnz)
 - `cosine_similarity(other) -> f32` - Cosine similarity
+- `sub(other) -> SparseVector` - Sparse subtraction
+- `weighted_average(other, w1, w2) -> SparseVector` - Weighted combination
+- `project_orthogonal(direction) -> SparseVector` - Orthogonal projection
 
-**Interface** (DeltaVector):
+**Geometric Distance Metrics**:
+- `angular_distance(other) -> f32` - Angle-based distance
+- `geodesic_distance(other) -> f32` - Distance on unit sphere
+- `jaccard_index(other) -> f32` - Structural overlap (shared non-zero positions)
+- `overlap_coefficient(other) -> f32` - Normalized overlap
+- `weighted_jaccard(other) -> f32` - Value-weighted Jaccard
+- `euclidean_distance(other) -> f32` - L2 distance
+
+**DistanceMetric Enum**:
+- `Cosine` - Angular similarity (default)
+- `Angular` - Angular distance
+- `Geodesic` - Spherical distance
+- `Jaccard` - Structural overlap
+- `Overlap` - Normalized overlap
+- `Euclidean` - L2 distance
+- `Composite(GeometricConfig)` - Weighted combination of metrics
+
+**Interface** (DeltaVector - Consensus):
+- `new(delta: SparseVector, keys, tx_id) -> DeltaVector` - Create from sparse delta
+- `from_sparse(delta: SparseVector, keys, tx_id) -> DeltaVector` - Explicit sparse constructor
+- `from_dense(delta: Vec<f32>, keys, tx_id) -> DeltaVector` - Convert dense to sparse
+- `magnitude() -> f32` - Delta magnitude
+- `cosine_similarity(other) -> f32` - Similarity between deltas
+- `add(other) -> DeltaVector` - Orthogonal merge via vector addition
+- `weighted_average(other, w1, w2) -> DeltaVector` - Low-conflict merge
+- `project_non_conflicting(direction) -> DeltaVector` - Remove conflicting component
+- `structural_similarity(other) -> f32` - Jaccard index of affected positions
+
+**Interface** (DeltaVector - Storage):
 - `from_dense_with_reference(vector, archetype, id, threshold) -> DeltaVector` - Delta encode
 - `to_dense(archetype) -> Vec<f32>` - Reconstruct via archetype + delta
 - `dot_dense_with_precomputed(query, arch_dot_query) -> f32` - O(nnz) with precomputed
+
+**EmbeddingState** (Type-safe embedding lifecycle):
+- `Initial { before: SparseVector }` - Transaction started, before-state captured
+- `Computed { before, after, delta: SparseVector }` - Ready to commit, delta computed
+- `new(before) -> Initial` - Create initial state
+- `from_dense(before) -> Initial` - Create from dense vector
+- `compute(after) -> Result<Computed>` - Transition to computed state
+- `compute_with_threshold(after, threshold) -> Result<Computed>` - Sparse delta computation
+- `before() -> &SparseVector` - Always available
+- `delta() -> Option<&SparseVector>` - Only in Computed state
+- `is_computed() -> bool` - Check state
 
 **Interface** (ArchetypeRegistry + K-means):
 - `discover_archetypes(vectors, k, config) -> usize` - K-means clustering
@@ -546,7 +589,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Features**:
 - Semantic transactions with delta embedding tracking
 - Hierarchical codebooks (Global static + Local EMA-adaptive)
-- Cosine similarity-based conflict detection
+- Cosine similarity-based conflict detection with configurable metrics
 - Orthogonal transaction auto-merge via vector addition
 - Tensor-Raft consensus with similarity fast-path
 - Two-phase finality (Raft quorum -> checkpointed)
@@ -554,6 +597,8 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Static cluster membership with health checking
 - Delta-compressed replication (4-10x bandwidth reduction)
 - 2PC distributed transactions with delta-based conflict resolution
+- EmbeddingState machine for type-safe transaction embedding lifecycle
+- Sparse network messages (8-10x bandwidth reduction for typical deltas)
 
 **Test Coverage**: >95% across all modules (validation.rs: 100%, block.rs: 99.44%, codebook.rs: 99.36%, etc.)
 
@@ -801,11 +846,12 @@ Neumann/
       block.rs               # Block, BlockHeader, Transaction types
       chain.rs               # Chain linked via graph edges
       transaction.rs         # Workspace isolation, delta tracking
+      embedding.rs           # EmbeddingState machine (Initial, Computed)
       codebook.rs            # GlobalCodebook, LocalCodebook, CodebookManager
       validation.rs          # TransitionValidator, FastPathValidator
-      consensus.rs           # Semantic conflict detection, auto-merge
+      consensus.rs           # Semantic conflict detection, auto-merge (sparse DeltaVector)
       raft.rs                # Tensor-Raft consensus state machine
-      network.rs             # Transport trait, MemoryTransport
+      network.rs             # Transport trait, MemoryTransport (sparse messages)
       membership.rs          # Cluster membership and health checking
       delta_replication.rs   # Delta-compressed state replication
       distributed_tx.rs      # 2PC coordinator, LockManager

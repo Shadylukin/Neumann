@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tensor_store::SparseVector;
 use tokio::sync::mpsc;
 
 use crate::block::{Block, BlockHash, NodeId};
@@ -79,7 +80,7 @@ pub struct RequestVote {
     /// Term of candidate's last log entry.
     pub last_log_term: u64,
     /// Similarity embedding of candidate's state (for tie-breaking).
-    pub state_embedding: Vec<f32>,
+    pub state_embedding: SparseVector,
 }
 
 /// Response to vote request.
@@ -108,8 +109,8 @@ pub struct AppendEntries {
     pub entries: Vec<LogEntry>,
     /// Leader's commit index.
     pub leader_commit: u64,
-    /// Block embedding for similarity fast-path.
-    pub block_embedding: Option<Vec<f32>>,
+    /// Block embedding for similarity fast-path (sparse for bandwidth efficiency).
+    pub block_embedding: Option<SparseVector>,
 }
 
 /// Response to append entries.
@@ -199,8 +200,8 @@ pub struct TxPrepareMsg {
     pub shard_id: usize,
     /// Operations to execute on this shard.
     pub operations: Vec<crate::block::Transaction>,
-    /// Delta embedding for conflict detection.
-    pub delta_embedding: Vec<f32>,
+    /// Delta embedding for conflict detection (sparse for bandwidth efficiency).
+    pub delta_embedding: SparseVector,
     /// Timeout in milliseconds.
     pub timeout_ms: u64,
 }
@@ -223,8 +224,8 @@ pub enum TxVote {
     Yes {
         /// Lock handle for the prepared transaction.
         lock_handle: u64,
-        /// Delta computed by participant.
-        delta: Vec<f32>,
+        /// Delta computed by participant (sparse for bandwidth efficiency).
+        delta: SparseVector,
         /// Keys affected by this transaction.
         affected_keys: Vec<String>,
     },
@@ -492,8 +493,7 @@ impl MessageHandler for TxHandler {
                 let tx_vote = match vote {
                     crate::distributed_tx::PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
                         lock_handle,
-                        // Convert sparse to dense for network message (Phase 4 will make this sparse)
-                        delta: delta.to_dense(delta.sparse().dimension()),
+                        delta: delta.sparse().clone(),
                         affected_keys: delta.affected_keys.into_iter().collect(),
                     },
                     crate::distributed_tx::PrepareVote::No { reason } => TxVote::No { reason },
@@ -573,7 +573,7 @@ mod tests {
             candidate_id: "candidate".to_string(),
             last_log_index: 10,
             last_log_term: 1,
-            state_embedding: vec![0.1, 0.2, 0.3],
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
         });
 
         let bytes = bincode::serialize(&msg).unwrap();
@@ -650,7 +650,7 @@ mod tests {
             prev_log_term: 2,
             entries: vec![],
             leader_commit: 8,
-            block_embedding: Some(vec![0.1, 0.2, 0.3]),
+            block_embedding: Some(SparseVector::from_dense(&[0.1, 0.2, 0.3])),
         });
 
         let bytes = bincode::serialize(&msg).unwrap();
@@ -792,7 +792,7 @@ mod tests {
                 key: "key1".to_string(),
                 data: vec![1, 2, 3],
             }],
-            delta_embedding: vec![0.5, 0.5],
+            delta_embedding: SparseVector::from_dense(&[0.5, 0.5]),
             timeout_ms: 5000,
         });
 
@@ -815,7 +815,7 @@ mod tests {
             shard_id: 1,
             vote: TxVote::Yes {
                 lock_handle: 456,
-                delta: vec![0.1, 0.2],
+                delta: SparseVector::from_dense(&[0.1, 0.2]),
                 affected_keys: vec!["key1".to_string()],
             },
         });
@@ -839,7 +839,7 @@ mod tests {
     fn test_tx_vote_variants_serialization() {
         let yes = TxVote::Yes {
             lock_handle: 1,
-            delta: vec![0.1],
+            delta: SparseVector::from_dense(&[0.1]),
             affected_keys: vec!["k1".to_string()],
         };
         let bytes = bincode::serialize(&yes).unwrap();
@@ -1067,7 +1067,7 @@ mod tests {
             candidate_id: "c1".to_string(),
             last_log_index: 5,
             last_log_term: 1,
-            state_embedding: vec![0.1, 0.2],
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2]),
         });
 
         let cloned = msg.clone();
@@ -1097,7 +1097,7 @@ mod tests {
             candidate_id: "cand".to_string(),
             last_log_index: 10,
             last_log_term: 4,
-            state_embedding: vec![0.1, 0.2, 0.3],
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
         };
         let cloned = rv.clone();
         assert_eq!(rv.term, cloned.term);
@@ -1238,7 +1238,7 @@ mod tests {
             coordinator: "coord".to_string(),
             shard_id: 1,
             operations: vec![],
-            delta_embedding: vec![0.1],
+            delta_embedding: SparseVector::from_dense(&[0.1]),
             timeout_ms: 5000,
         };
         let cloned = msg.clone();
@@ -1268,7 +1268,7 @@ mod tests {
     fn test_tx_vote_debug_clone() {
         let yes = TxVote::Yes {
             lock_handle: 1,
-            delta: vec![0.1],
+            delta: SparseVector::from_dense(&[0.1]),
             affected_keys: vec!["k1".to_string()],
         };
         let cloned = yes.clone();
@@ -1340,7 +1340,7 @@ mod tests {
                 candidate_id: "c".to_string(),
                 last_log_index: 0,
                 last_log_term: 0,
-                state_embedding: vec![],
+                state_embedding: SparseVector::new(0),
             }),
             Message::RequestVoteResponse(RequestVoteResponse {
                 term: 1,
@@ -1390,7 +1390,7 @@ mod tests {
                 coordinator: "c".to_string(),
                 shard_id: 0,
                 operations: vec![],
-                delta_embedding: vec![],
+                delta_embedding: SparseVector::new(0),
                 timeout_ms: 1000,
             }),
             Message::TxPrepareResponse(TxPrepareResponseMsg {
@@ -1440,7 +1440,7 @@ mod tests {
                 key: "test_key".to_string(),
                 data: vec![1, 2, 3],
             }],
-            delta_embedding: vec![1.0, 0.0, 0.0],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
             timeout_ms: 5000,
         });
 
@@ -1473,7 +1473,7 @@ mod tests {
                 key: "test_key".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         });
         handler.handle(&"coordinator".to_string(), &prepare_msg);
@@ -1513,7 +1513,7 @@ mod tests {
                 key: "test_key".to_string(),
                 data: vec![1],
             }],
-            delta_embedding: vec![1.0],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
             timeout_ms: 5000,
         });
         handler.handle(&"coordinator".to_string(), &prepare_msg);

@@ -231,7 +231,7 @@ async fn test_raft_follower_rejects_stale_term() {
         candidate_id: "node1".to_string(),
         last_log_index: 0,
         last_log_term: 0,
-        state_embedding: Vec::new(), // Empty embedding
+        state_embedding: tensor_store::SparseVector::new(0), // Empty embedding
     });
 
     let response = node2.handle_message(&"node1".to_string(), &request);

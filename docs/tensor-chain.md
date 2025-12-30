@@ -44,14 +44,16 @@ tensor_chain/
   block.rs            # Block, BlockHeader, Transaction types
   chain.rs            # Chain linked via graph edges
   transaction.rs      # Workspace isolation, delta tracking
+  embedding.rs        # EmbeddingState machine (Initial, Computed)
   codebook.rs         # GlobalCodebook, LocalCodebook, CodebookManager
   validation.rs       # TransitionValidator
-  consensus.rs        # Semantic conflict detection, auto-merge
+  consensus.rs        # Semantic conflict detection, auto-merge (sparse DeltaVector)
   raft.rs             # Tensor-Raft consensus state machine
-  network.rs          # Transport trait, MemoryTransport
+  network.rs          # Transport trait, MemoryTransport (sparse messages)
   error.rs            # ChainError types
   membership.rs       # Cluster membership and health checking
   delta_replication.rs # Delta-compressed state replication
+  distributed_tx.rs   # 2PC coordinator, LockManager
   tcp/
     mod.rs            # Module exports
     config.rs         # TCP transport configuration
@@ -235,16 +237,47 @@ Storage format:
 
 ## Semantic Conflict Detection
 
-Conflicts classified by cosine similarity of delta embeddings:
+### Hybrid Detection (Cosine + Jaccard)
 
-| cos(d1, d2) | Key Overlap | Class | Action |
-|-------------|-------------|-------|--------|
-| < 0.1 | Any | Orthogonal | Auto-merge (vector add) |
-| 0.1-0.7 | None | LowConflict | Weighted merge |
-| 0.1-0.7 | Some | Ambiguous | Reject |
-| >= 0.7 | Any | Conflicting | Reject |
-| ~1.0 | All | Identical | Deduplicate |
-| <= -0.95 | All | Opposite | Cancel (no-op) |
+The consensus system uses **hybrid detection** combining two complementary metrics:
+
+1. **Cosine similarity**: Measures angular conflict (same direction = conflict)
+2. **Jaccard index**: Measures structural conflict (same positions modified = likely conflict)
+
+This catches conflicts that pure cosine misses: two deltas modifying the same embedding positions are in conflict even if their values point in different directions.
+
+### Classification Table
+
+| Cosine | Jaccard | Key Overlap | Class | Action |
+|--------|---------|-------------|-------|--------|
+| < 0.1 | < 0.5 | Any | Orthogonal | Auto-merge (vector add) |
+| 0.1-0.7 | < 0.5 | None | LowConflict | Weighted merge |
+| 0.1-0.7 | < 0.5 | Some | Ambiguous | Reject |
+| >= 0.7 | Any | Any | Conflicting | Reject (angular conflict) |
+| Any | >= 0.5 | Any | Conflicting | Reject (structural conflict) |
+| ~1.0 | 1.0 | All | Identical | Deduplicate |
+| <= -0.95 | 1.0 | All | Opposite | Cancel (no-op) |
+
+### Why Hybrid Detection?
+
+**Cosine alone misses structural conflicts:**
+```
+d1 = [1.0, 0.0, 0.0]  // modifies position 0
+d2 = [0.5, 0.0, 0.0]  // also modifies position 0
+cosine(d1, d2) = 1.0  // High similarity -> Conflicting (CORRECT)
+
+d1 = [1.0, 0.0, 0.0]  // modifies position 0
+d2 = [-0.5, 0.0, 0.0] // also modifies position 0, opposite direction
+cosine(d1, d2) = -1.0 // Opposite
+// But they're BOTH modifying the same position!
+```
+
+**Jaccard catches structural overlap:**
+```
+d1 = [1.0, 0.0, 0.0]  // non-zero at position 0
+d2 = [-0.5, 0.0, 0.0] // non-zero at position 0
+jaccard(d1, d2) = 1.0 // 100% structural overlap -> Conflicting
+```
 
 ### Using the Consensus Manager
 
@@ -261,35 +294,139 @@ let d1 = DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1);
 let keys2: HashSet<String> = ["users:2"].iter().map(|s| s.to_string()).collect();
 let d2 = DeltaVector::new(vec![0.0, 1.0, 0.0], keys2, 2);
 
-// Detect conflict
+// Detect conflict - uses hybrid detection (cosine + jaccard)
 let result = manager.detect_conflict(&d1, &d2);
-println!("Class: {:?}, Can merge: {}", result.class, result.can_merge);
+println!("Class: {:?}", result.class);
+println!("Cosine similarity: {:.3}", result.similarity);
+println!("Structural overlap (Jaccard): {:.3}", result.structural_overlap);
+println!("Can merge: {}", result.can_merge);
 
 // Attempt merge
 let merge_result = manager.merge(&d1, &d2);
 if merge_result.success {
     let merged = merge_result.merged_delta.unwrap();
-    println!("Merged vector: {:?}", merged.vector);
+    println!("Merged successfully via {:?}", merge_result.action);
 }
 
 // Merge multiple deltas
 let all_result = manager.merge_all(&[d1, d2, d3]);
 ```
 
-### Delta Vector Operations
+### ConsensusConfig
 
 ```rust
-// Vector addition (orthogonal merge)
-let sum = d1.add(&d2);
+pub struct ConsensusConfig {
+    pub orthogonal_threshold: f32,          // Default: 0.1 - below this = orthogonal
+    pub conflict_threshold: f32,            // Default: 0.7 - above this = conflicting
+    pub identical_threshold: f32,           // Default: 0.99 - above this = identical
+    pub opposite_threshold: f32,            // Default: -0.95 - below this = opposite
+    pub allow_key_overlap_merge: bool,      // Default: false
+    pub structural_conflict_threshold: f32, // Default: 0.5 - Jaccard >= this = conflict
+    pub sparsity_threshold: f32,            // Default: 1e-6
+}
+```
 
-// Weighted average (low-conflict merge)
-let avg = d1.weighted_average(&d2, 0.5, 0.5);
+### Delta Vector Operations
 
-// Project out conflicting component
+DeltaVector uses `SparseVector` internally for 8-10x bandwidth reduction:
+
+```rust
+use tensor_chain::{DeltaVector, ConsensusConfig};
+use tensor_store::SparseVector;
+use std::collections::HashSet;
+
+// Create from sparse (preferred for efficiency)
+let sparse_delta = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+let keys: HashSet<String> = ["key1".to_string()].into_iter().collect();
+let d1 = DeltaVector::from_sparse(sparse_delta, keys, 1);
+
+// Or from dense (converts to sparse internally)
+let d2 = DeltaVector::from_dense(vec![0.0, 1.0, 0.0], vec!["key2".to_string()], 2);
+
+// Geometric operations
+let sum = d1.add(&d2);                           // Orthogonal merge
+let avg = d1.weighted_average(&d2, 0.5, 0.5);   // Low-conflict merge
 let safe = d1.project_non_conflicting(&conflict_direction);
+
+// Similarity metrics
+let cosine = d1.cosine_similarity(&d2);          // Angular similarity
+let jaccard = d1.structural_similarity(&d2);    // Shared non-zero positions
+let magnitude = d1.magnitude();
 
 // Scale delta
 let scaled = d1.scale(0.5);
+```
+
+## EmbeddingState Machine
+
+Type-safe embedding lifecycle management that eliminates `Option<Vec<f32>>` ceremony:
+
+```rust
+use tensor_chain::EmbeddingState;
+use tensor_store::SparseVector;
+
+// Create initial state (before-state only)
+let state = EmbeddingState::from_dense(&[1.0, 2.0, 3.0]);
+assert!(!state.is_computed());
+assert!(state.delta().is_none());
+
+// Before is always available
+let before: &SparseVector = state.before();
+
+// Transition to computed state
+let after = SparseVector::from_dense(&[1.5, 2.0, 3.5]);
+let computed = state.compute(after)?;
+
+// Now delta is available
+assert!(computed.is_computed());
+let delta: &SparseVector = computed.delta().unwrap();
+
+// Sparse threshold for efficient delta computation
+let state2 = EmbeddingState::from_dense(&before_values);
+let computed2 = state2.compute_with_threshold(&after_values, 0.01)?;
+// Only differences > 0.01 are stored in delta
+```
+
+### State Transitions
+
+```
+                    +-----------+
+                    |  Initial  |
+                    |  {before} |
+                    +-----+-----+
+                          |
+                   compute(after)
+                          |
+                          v
+                    +-----------+
+                    | Computed  |
+                    | {before,  |
+                    |  after,   |
+                    |  delta}   |
+                    +-----------+
+```
+
+### WorkspaceEmbedding
+
+Transaction workspaces use `EmbeddingState` internally:
+
+```rust
+use tensor_chain::TransactionWorkspace;
+
+let tx = chain.begin()?;
+
+// Set before-state (internally uses EmbeddingState::Initial)
+tx.set_before_embedding(current_state);
+
+// After operations, set after-state (transitions to Computed)
+tx.add_operation(Transaction::Put { key: "k1".to_string(), data: vec![1, 2, 3] })?;
+tx.set_after_embedding(new_state);
+
+// Delta is now available
+if let Some(delta) = tx.delta() {
+    let delta_vector = tx.to_delta_vector();
+    println!("Delta magnitude: {}", delta_vector.magnitude());
+}
 ```
 
 ## Tensor-Raft Consensus
@@ -378,6 +515,60 @@ transport.broadcast(message).await?;
 // Receive messages
 let (from, msg) = transport.recv().await?;
 ```
+
+### Sparse Network Messages
+
+Network messages use `SparseVector` for 8-10x bandwidth reduction:
+
+```rust
+use tensor_chain::network::{Message, RequestVote, AppendEntries, TxPrepareMsg, TxVote};
+use tensor_store::SparseVector;
+
+// RequestVote with sparse state embedding
+let vote = RequestVote {
+    term: 1,
+    candidate_id: "node1".to_string(),
+    last_log_index: 10,
+    last_log_term: 1,
+    state_embedding: SparseVector::from_dense(&[0.1, 0.0, 0.2, 0.0]),
+};
+
+// AppendEntries with optional sparse block embedding
+let ae = AppendEntries {
+    term: 1,
+    leader_id: "leader".to_string(),
+    prev_log_index: 9,
+    prev_log_term: 1,
+    entries: vec![],
+    leader_commit: 8,
+    block_embedding: Some(SparseVector::from_dense(&[0.3, 0.0, 0.0, 0.4])),
+};
+
+// 2PC messages use sparse embeddings
+let prepare = TxPrepareMsg {
+    tx_id: 42,
+    coordinator: "coord".to_string(),
+    shard_id: 0,
+    operations: vec![],
+    delta_embedding: SparseVector::from_dense(&[0.5, 0.0, 0.0]),
+    timeout_ms: 5000,
+};
+
+// Vote response with sparse delta
+let vote = TxVote::Yes {
+    lock_handle: 123,
+    delta: SparseVector::from_dense(&[0.1, 0.0, 0.2]),
+    affected_keys: vec!["key1".to_string()],
+};
+```
+
+**Bandwidth Savings:**
+| Message Type | Dense 768d | Sparse 5% | Reduction |
+|--------------|------------|-----------|-----------|
+| RequestVote | 3,072 B | ~300 B | 10x |
+| AppendEntries | 3,072 B | ~300 B | 10x |
+| TxPrepareMsg | 3,072 B | ~300 B | 10x |
+| TxVote::Yes | 3,072 B | ~300 B | 10x |
 
 ## TCP Transport
 
@@ -882,7 +1073,7 @@ All modules meet the 95% minimum coverage threshold required for critical infras
 
 ## Unique Value Propositions
 
-1. **Semantic Conflict Detection**: Cosine similarity catches logical conflicts even when bytes differ
+1. **Hybrid Conflict Detection**: Cosine + Jaccard catches both angular AND structural conflicts
 2. **100x Compression Potential**: Int8 quantization (4x) + codebook discretization (8-32x)
 3. **Queryable History**: Vector search over chain ("find transactions like X")
 4. **Tensor-Native Smart Contracts**: Constraints as geometric bounds, not bytecode
@@ -891,6 +1082,9 @@ All modules meet the 95% minimum coverage threshold required for critical infras
 7. **Delta Replication**: 4-10x bandwidth reduction via archetype-based encoding
 8. **Semantic Sharding**: Route data by embedding similarity, not just hash
 9. **Orthogonal Transaction Merge**: Auto-merge non-conflicting concurrent updates
+10. **Sparse Network Messages**: 8-10x bandwidth reduction via SparseVector encoding
+11. **Type-Safe Embedding Lifecycle**: EmbeddingState machine eliminates Option ceremony
+12. **Automatic Conflict Tuning**: System uses optimal detection strategy without configuration
 
 ## Cross-Shard Distributed Transactions
 
@@ -1027,28 +1221,29 @@ let stale = participant.cleanup_stale(Duration::from_secs(30));
 
 ### 2PC Network Messages
 
-Messages for distributed transaction coordination:
+Messages for distributed transaction coordination (using sparse embeddings):
 
 ```rust
 use tensor_chain::{TxPrepareMsg, TxPrepareResponseMsg, TxCommitMsg, TxAbortMsg, TxAckMsg, TxVote};
+use tensor_store::SparseVector;
 
-// Prepare request
+// Prepare request (sparse delta embedding)
 let prepare = Message::TxPrepare(TxPrepareMsg {
     tx_id: 1,
     coordinator: "node1".to_string(),
     shard_id: 0,
     operations: vec![/* transactions */],
-    delta_embedding: vec![0.1, 0.2, 0.3],
+    delta_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
     timeout_ms: 5000,
 });
 
-// Vote response
+// Vote response (sparse delta)
 let response = Message::TxPrepareResponse(TxPrepareResponseMsg {
     tx_id: 1,
     shard_id: 0,
     vote: TxVote::Yes {
         lock_handle: 123,
-        delta: vec![0.1, 0.2, 0.3],
+        delta: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
         affected_keys: vec!["key1".to_string()],
     },
 });

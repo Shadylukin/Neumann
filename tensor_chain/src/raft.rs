@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::RwLock;
+use tensor_store::SparseVector;
 
 use crate::block::{Block, NodeId};
 use crate::error::{ChainError, Result};
@@ -141,8 +142,8 @@ impl FastPathStats {
 /// State for fast-path validation per leader.
 #[derive(Debug)]
 pub struct FastPathState {
-    /// Recent embeddings per leader.
-    leader_embeddings: RwLock<HashMap<NodeId, Vec<Vec<f32>>>>,
+    /// Recent embeddings per leader (sparse for memory efficiency).
+    leader_embeddings: RwLock<HashMap<NodeId, Vec<SparseVector>>>,
     /// Maximum number of embeddings to keep per leader.
     max_history: usize,
     /// Statistics.
@@ -165,8 +166,8 @@ impl FastPathState {
         }
     }
 
-    /// Add an embedding for a leader.
-    pub fn add_embedding(&self, leader: &NodeId, embedding: Vec<f32>) {
+    /// Add an embedding for a leader (sparse).
+    pub fn add_embedding(&self, leader: &NodeId, embedding: SparseVector) {
         let mut embeddings = self.leader_embeddings.write();
         let history = embeddings.entry(leader.clone()).or_default();
 
@@ -178,8 +179,22 @@ impl FastPathState {
         }
     }
 
-    /// Get embeddings for a leader.
+    /// Add an embedding for a leader from dense vector.
+    pub fn add_dense_embedding(&self, leader: &NodeId, embedding: Vec<f32>) {
+        self.add_embedding(leader, SparseVector::from_dense(&embedding));
+    }
+
+    /// Get embeddings for a leader (returns dense for fast-path validation compatibility).
     pub fn get_embeddings(&self, leader: &NodeId) -> Vec<Vec<f32>> {
+        self.leader_embeddings
+            .read()
+            .get(leader)
+            .map(|sparse_vecs| sparse_vecs.iter().map(|sv| sv.to_dense()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get sparse embeddings for a leader.
+    pub fn get_sparse_embeddings(&self, leader: &NodeId) -> Vec<SparseVector> {
         self.leader_embeddings
             .read()
             .get(leader)
@@ -226,8 +241,8 @@ pub struct RaftNode {
     last_heartbeat: RwLock<Instant>,
     /// Votes received in current election.
     votes_received: RwLock<Vec<NodeId>>,
-    /// State embedding for similarity-based tie-breaking.
-    state_embedding: RwLock<Vec<f32>>,
+    /// State embedding for similarity-based tie-breaking (sparse for efficiency).
+    state_embedding: RwLock<SparseVector>,
     /// Finalized height (checkpointed).
     finalized_height: AtomicU64,
     /// Fast-path validation state.
@@ -264,7 +279,7 @@ impl RaftNode {
             transport,
             last_heartbeat: RwLock::new(Instant::now()),
             votes_received: RwLock::new(Vec::new()),
-            state_embedding: RwLock::new(Vec::new()),
+            state_embedding: RwLock::new(SparseVector::new(0)),
             finalized_height: AtomicU64::new(0),
             fast_path_state: FastPathState::default(),
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
@@ -383,8 +398,13 @@ impl RaftNode {
     }
 
     /// Update state embedding (rolling hash of recent state).
-    pub fn update_state_embedding(&self, embedding: Vec<f32>) {
+    pub fn update_state_embedding(&self, embedding: SparseVector) {
         *self.state_embedding.write() = embedding;
+    }
+
+    /// Update state embedding from a dense vector.
+    pub fn update_state_embedding_dense(&self, embedding: Vec<f32>) {
+        *self.state_embedding.write() = SparseVector::from_dense(&embedding);
     }
 
     /// Handle a received message.
@@ -514,11 +534,13 @@ impl RaftNode {
 
             // Check if we can use fast-path using the validator
             if self.config.enable_fast_path && ae.block_embedding.is_some() {
-                let embedding = ae.block_embedding.as_ref().unwrap();
+                let sparse_embedding = ae.block_embedding.as_ref().unwrap();
+                // FastPathValidator still uses dense for similarity computation
+                let dense_embedding = sparse_embedding.to_dense();
                 let history = self.fast_path_state.get_embeddings(&ae.leader_id);
                 let result = self
                     .fast_path_validator
-                    .check_fast_path(embedding, &history);
+                    .check_fast_path(&dense_embedding, &history);
 
                 used_fast_path = result.can_use_fast_path;
 
@@ -536,9 +558,9 @@ impl RaftNode {
                 // Record this validation for periodic full validation tracking
                 self.fast_path_validator.record_validation(used_fast_path);
 
-                // Track embedding for future fast-path checks
+                // Track embedding for future fast-path checks (store as sparse)
                 self.fast_path_state
-                    .add_embedding(&ae.leader_id, embedding.clone());
+                    .add_embedding(&ae.leader_id, sparse_embedding.clone());
             }
 
             // Check log consistency
@@ -721,7 +743,7 @@ impl RaftNode {
             return Err(ChainError::ConsensusError("not leader".to_string()));
         }
 
-        // Capture embedding before moving block
+        // Capture sparse embedding before moving block
         let embedding = block.header.delta_embedding.clone();
 
         let mut persistent = self.persistent.write();
@@ -731,7 +753,7 @@ impl RaftNode {
         let entry = LogEntry { term, index, block };
         persistent.log.push(entry);
 
-        // Track embedding for fast-path validation by followers
+        // Track embedding for fast-path validation by followers (already sparse)
         self.fast_path_state.add_embedding(&self.node_id, embedding);
 
         Ok(index)
@@ -781,7 +803,7 @@ impl RaftNode {
     pub fn get_entries_for_follower(
         &self,
         follower: &NodeId,
-    ) -> (u64, u64, Vec<LogEntry>, Option<Vec<f32>>) {
+    ) -> (u64, u64, Vec<LogEntry>, Option<SparseVector>) {
         let persistent = self.persistent.read();
         let leader_state = self.leader_state.read();
 
@@ -809,10 +831,8 @@ impl RaftNode {
             Vec::new()
         };
 
-        // Extract embedding from last entry for fast-path
-        let block_embedding = entries
-            .last()
-            .map(|e| e.block.header.delta_embedding.clone());
+        // Extract embedding from last entry for fast-path (already sparse)
+        let block_embedding = entries.last().map(|e| e.block.header.delta_embedding.clone());
 
         (prev_log_index, prev_log_term, entries, block_embedding)
     }
@@ -1034,7 +1054,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
@@ -1229,8 +1249,8 @@ mod tests {
         let state = FastPathState::new(3);
         let leader = "leader1".to_string();
 
-        state.add_embedding(&leader, vec![1.0, 0.0, 0.0]);
-        state.add_embedding(&leader, vec![0.0, 1.0, 0.0]);
+        state.add_dense_embedding(&leader, vec![1.0, 0.0, 0.0]);
+        state.add_dense_embedding(&leader, vec![0.0, 1.0, 0.0]);
 
         assert_eq!(state.leader_history_size(&leader), 2);
 
@@ -1245,9 +1265,9 @@ mod tests {
         let state = FastPathState::new(2);
         let leader = "leader1".to_string();
 
-        state.add_embedding(&leader, vec![1.0, 0.0, 0.0]);
-        state.add_embedding(&leader, vec![0.0, 1.0, 0.0]);
-        state.add_embedding(&leader, vec![0.0, 0.0, 1.0]);
+        state.add_dense_embedding(&leader, vec![1.0, 0.0, 0.0]);
+        state.add_dense_embedding(&leader, vec![0.0, 1.0, 0.0]);
+        state.add_dense_embedding(&leader, vec![0.0, 0.0, 1.0]);
 
         // Should only keep last 2
         assert_eq!(state.leader_history_size(&leader), 2);
@@ -1261,8 +1281,8 @@ mod tests {
     fn test_fast_path_state_multiple_leaders() {
         let state = FastPathState::new(5);
 
-        state.add_embedding(&"leader1".to_string(), vec![1.0, 0.0]);
-        state.add_embedding(&"leader2".to_string(), vec![0.0, 1.0]);
+        state.add_dense_embedding(&"leader1".to_string(), vec![1.0, 0.0]);
+        state.add_dense_embedding(&"leader2".to_string(), vec![0.0, 1.0]);
 
         assert_eq!(state.leader_history_size(&"leader1".to_string()), 1);
         assert_eq!(state.leader_history_size(&"leader2".to_string()), 1);
@@ -1273,7 +1293,7 @@ mod tests {
         let state = FastPathState::new(5);
         let leader = "leader1".to_string();
 
-        state.add_embedding(&leader, vec![1.0, 0.0]);
+        state.add_dense_embedding(&leader, vec![1.0, 0.0]);
         assert_eq!(state.leader_history_size(&leader), 1);
 
         state.clear_leader(&leader);
@@ -1558,11 +1578,11 @@ mod tests {
             *node.current_leader.write() = Some("node2".to_string());
             // Need at least 3 embeddings for fast-path to be considered
             node.fast_path_state
-                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
             node.fast_path_state
-                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
             node.fast_path_state
-                .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+                .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         }
 
         // Send append entries with similar embedding
@@ -1573,7 +1593,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[1.0, 0.0, 0.0])),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
@@ -1601,11 +1621,11 @@ mod tests {
 
         // Build up history for node2
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         *node.current_leader.write() = Some("node2".to_string());
 
         // Now receive from node3 - should trigger leader change cleanup
@@ -1616,7 +1636,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[1.0, 0.0, 0.0])),
         };
 
         let response = node.handle_message(&"node3".to_string(), &Message::AppendEntries(ae));
@@ -1652,7 +1672,7 @@ mod tests {
 
         // Only 1 embedding in history (need 3 minimum)
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         *node.current_leader.write() = Some("node2".to_string());
 
         let ae = AppendEntries {
@@ -1662,7 +1682,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[1.0, 0.0, 0.0])),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
@@ -1693,11 +1713,11 @@ mod tests {
         *node.current_leader.write() = Some("node2".to_string());
         // Add sufficient history
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
 
         // Orthogonal vector - low similarity
         let ae = AppendEntries {
@@ -1707,7 +1727,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![0.0, 1.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[0.0, 1.0, 0.0])),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae));
@@ -1739,11 +1759,11 @@ mod tests {
         *node.current_leader.write() = Some("node2".to_string());
         // Add sufficient history for fast-path
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
-            .add_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
+            .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
 
         // Send similar embedding - should use fast-path
         let ae = AppendEntries {
@@ -1753,7 +1773,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![1.0, 0.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[1.0, 0.0, 0.0])),
         };
 
         node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae.clone()));
@@ -1771,7 +1791,7 @@ mod tests {
             prev_log_term: 0,
             entries: vec![],
             leader_commit: 0,
-            block_embedding: Some(vec![0.0, 1.0, 0.0]),
+            block_embedding: Some(SparseVector::from_dense(&[0.0, 1.0, 0.0])),
         };
 
         node.handle_message(&"node2".to_string(), &Message::AppendEntries(ae2));
@@ -1807,10 +1827,10 @@ mod tests {
     fn test_update_state_embedding() {
         let node = create_test_node("node1", vec!["node2".to_string()]);
 
-        node.update_state_embedding(vec![1.0, 2.0, 3.0]);
+        node.update_state_embedding_dense(vec![1.0, 2.0, 3.0]);
 
         let embedding = node.state_embedding.read();
-        assert_eq!(*embedding, vec![1.0, 2.0, 3.0]);
+        assert_eq!(embedding.to_dense(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -2026,7 +2046,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
@@ -2049,7 +2069,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response1 = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv1));
@@ -2063,7 +2083,7 @@ mod tests {
             candidate_id: "node3".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response2 = node.handle_message(&"node3".to_string(), &Message::RequestVote(rv2));
@@ -2094,7 +2114,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 1,
             last_log_term: 2, // Our log has term 3
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
@@ -2454,7 +2474,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
@@ -2507,7 +2527,7 @@ mod tests {
             candidate_id: "node2".to_string(),
             last_log_index: 0,
             last_log_term: 0,
-            state_embedding: vec![],
+            state_embedding: SparseVector::new(0),
         };
 
         let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));

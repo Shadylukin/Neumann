@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use graph_engine::GraphEngine;
 use parking_lot::RwLock;
+use tensor_store::SparseVector;
 
 use crate::block::{Block, BlockHash, BlockHeader, NodeId, Transaction};
 use crate::error::{ChainError, Result};
@@ -232,7 +233,7 @@ impl Chain {
             prev_hash: self.tip_hash(),
             proposer: self.node_id.clone(),
             transactions: Vec::new(),
-            delta_embedding: Vec::new(),
+            delta_embedding: SparseVector::new(0),
             quantized_codes: Vec::new(),
         }
     }
@@ -337,7 +338,7 @@ pub struct BlockBuilder {
     prev_hash: BlockHash,
     proposer: NodeId,
     transactions: Vec<Transaction>,
-    delta_embedding: Vec<f32>,
+    delta_embedding: SparseVector,
     quantized_codes: Vec<u16>,
 }
 
@@ -354,9 +355,15 @@ impl BlockBuilder {
         self
     }
 
-    /// Set the delta embedding.
-    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
+    /// Set the delta embedding (sparse).
+    pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
+        self
+    }
+
+    /// Set the delta embedding from a dense vector.
+    pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
+        self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
@@ -469,13 +476,13 @@ mod tests {
             .add_transaction(Transaction::Delete {
                 key: "k2".to_string(),
             })
-            .with_embedding(vec![0.1, 0.2, 0.3])
+            .with_dense_embedding(&[0.1, 0.2, 0.3])
             .with_codes(vec![1, 2, 3])
             .build();
 
         assert_eq!(block.header.height, 1);
         assert_eq!(block.transactions.len(), 2);
-        assert_eq!(block.header.delta_embedding.len(), 3);
+        assert_eq!(block.header.delta_embedding.dimension(), 3);
         assert_eq!(block.header.quantized_codes.len(), 3);
     }
 
