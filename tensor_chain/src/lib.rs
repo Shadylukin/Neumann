@@ -855,6 +855,7 @@ impl TensorChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tensor_store::SparseVector;
 
     #[test]
     fn test_tensor_chain_basic() {
@@ -1453,5 +1454,75 @@ mod tests {
         let block = chain.get_tip().unwrap().unwrap();
         assert!(!block.header.quantized_codes.is_empty());
         assert_eq!(block.header.quantized_codes[0], 0); // Should quantize to centroid 0
+    }
+
+    #[test]
+    fn test_geometric_routing_config_disabled() {
+        let config = GeometricRoutingConfig::disabled();
+        assert!(!config.enabled);
+        assert!((config.min_similarity - 0.5).abs() < 0.001);
+        assert!(config.fallback_to_hash);
+    }
+
+    #[test]
+    fn test_geometric_routing_config_accessors() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        // Access geometric routing config
+        let geo_config = chain.geometric_routing_config();
+        assert!(geo_config.enabled);
+        assert!((geo_config.min_similarity - 0.5).abs() < 0.001);
+
+        // Check is_geometric_routing_enabled
+        assert!(chain.is_geometric_routing_enabled());
+    }
+
+    #[test]
+    fn test_geometric_routing_config_disabled_chain() {
+        let config =
+            ChainConfig::new("node1").with_geometric_routing(GeometricRoutingConfig::disabled());
+        let store = TensorStore::new();
+        let chain = TensorChain::with_config(store, config);
+
+        assert!(!chain.is_geometric_routing_enabled());
+    }
+
+    #[test]
+    fn test_route_by_embedding_disabled() {
+        let config =
+            ChainConfig::new("node1").with_geometric_routing(GeometricRoutingConfig::disabled());
+        let store = TensorStore::new();
+        let chain = TensorChain::with_config(store, config);
+
+        let embedding = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let routed = chain.route_by_embedding(&embedding);
+
+        // When disabled, should return local node
+        assert_eq!(routed, "node1");
+    }
+
+    #[test]
+    fn test_route_by_embedding_empty() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let embedding = SparseVector::from_dense(&[]);
+        let routed = chain.route_by_embedding(&embedding);
+
+        // Empty embedding returns local node
+        assert_eq!(routed, "node1");
+    }
+
+    #[test]
+    fn test_route_by_embedding_enabled() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let embedding = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let routed = chain.route_by_embedding(&embedding);
+
+        // Without peers, routes to local node
+        assert_eq!(routed, "node1");
     }
 }

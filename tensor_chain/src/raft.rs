@@ -2586,4 +2586,240 @@ mod tests {
             panic!("expected RequestVoteResponse");
         }
     }
+
+    #[test]
+    fn test_geometric_vote_bias_enabled() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig {
+            enable_geometric_tiebreak: true,
+            geometric_tiebreak_threshold: 0.3,
+            ..Default::default()
+        };
+
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Set local embedding
+        node.update_state_embedding(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+
+        // Similar embedding should have high bias
+        let similar = SparseVector::from_dense(&[0.9, 0.1, 0.0]);
+        let bias = node.geometric_vote_bias(&similar);
+        assert!(bias > 0.5, "Similar embeddings should have high bias");
+
+        // Orthogonal embedding should have neutral bias
+        let orthogonal = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+        let orthogonal_bias = node.geometric_vote_bias(&orthogonal);
+        assert!(
+            (orthogonal_bias - 0.5).abs() < 0.1,
+            "Orthogonal embeddings should have neutral bias"
+        );
+    }
+
+    #[test]
+    fn test_geometric_vote_bias_disabled() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig {
+            enable_geometric_tiebreak: false,
+            ..Default::default()
+        };
+
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Should return neutral bias when disabled
+        let embedding = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let bias = node.geometric_vote_bias(&embedding);
+        assert!(
+            (bias - 0.5).abs() < 0.001,
+            "Should return 0.5 when disabled"
+        );
+    }
+
+    #[test]
+    fn test_geometric_vote_bias_empty_embeddings() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig {
+            enable_geometric_tiebreak: true,
+            ..Default::default()
+        };
+
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Local embedding is empty by default
+        let candidate = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let bias = node.geometric_vote_bias(&candidate);
+        assert!(
+            (bias - 0.5).abs() < 0.001,
+            "Should return 0.5 for empty local embedding"
+        );
+
+        // Set local embedding but use empty candidate
+        node.update_state_embedding(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let empty_candidate = SparseVector::new(0);
+        let bias2 = node.geometric_vote_bias(&empty_candidate);
+        assert!(
+            (bias2 - 0.5).abs() < 0.001,
+            "Should return 0.5 for empty candidate embedding"
+        );
+    }
+
+    #[test]
+    fn test_geometric_tiebreak_in_request_vote() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig {
+            enable_geometric_tiebreak: true,
+            geometric_tiebreak_threshold: 0.3,
+            ..Default::default()
+        };
+
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Set local embedding
+        node.update_state_embedding(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+
+        // Request vote with similar embedding (should pass geometric tiebreak)
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::from_dense(&[0.9, 0.1, 0.0]),
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
+
+        if let Some(Message::RequestVoteResponse(rvr)) = response {
+            // Vote should be granted because logs are equal and geometric bias is high
+            assert!(rvr.vote_granted);
+        } else {
+            panic!("expected RequestVoteResponse");
+        }
+    }
+
+    #[test]
+    fn test_raft_config_geometric_defaults() {
+        let config = RaftConfig::default();
+        assert!(config.enable_geometric_tiebreak);
+        assert!((config.geometric_tiebreak_threshold - 0.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_fast_path_state_get_sparse_embeddings() {
+        let state = FastPathState::new(5);
+        let leader = "leader1".to_string();
+
+        // Initially empty
+        let sparse = state.get_sparse_embeddings(&leader);
+        assert!(sparse.is_empty());
+
+        // Add embedding and retrieve
+        state.add_embedding(&leader, SparseVector::from_dense(&[1.0, 2.0, 3.0]));
+        let sparse = state.get_sparse_embeddings(&leader);
+        assert_eq!(sparse.len(), 1);
+        assert_eq!(sparse[0].dimension(), 3);
+    }
+
+    #[test]
+    fn test_raft_node_transport_accessor() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string(), "node3".to_string()],
+            transport.clone(),
+            RaftConfig::default(),
+        );
+
+        let t = node.transport();
+        assert_eq!(t.local_id(), "node1");
+    }
+
+    #[test]
+    fn test_raft_node_last_log_index() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Initially empty
+        assert_eq!(node.last_log_index(), 0);
+
+        // Append an entry
+        {
+            let mut persistent = node.persistent.write();
+            persistent.log.push(LogEntry {
+                term: 1,
+                index: 1,
+                block: Block::genesis("node1".to_string()),
+            });
+        }
+
+        assert_eq!(node.last_log_index(), 1);
+    }
+
+    #[test]
+    fn test_raft_node_get_entries_for_follower() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add some entries and become leader
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+            persistent.log.push(LogEntry {
+                term: 1,
+                index: 1,
+                block: Block::genesis("node1".to_string()),
+            });
+            persistent.log.push(LogEntry {
+                term: 1,
+                index: 2,
+                block: Block::genesis("node1".to_string()),
+            });
+        }
+        node.become_leader();
+
+        // After becoming leader, next_index = log.len() + 1, so no entries to send
+        let (prev_idx, prev_term, entries, _embedding) =
+            node.get_entries_for_follower(&"node2".to_string());
+        // prev_log is the last entry (index 2, term 1)
+        assert_eq!(prev_idx, 2);
+        assert_eq!(prev_term, 1);
+        // No new entries since next_index is already at end
+        assert!(entries.is_empty());
+
+        // Manually set next_index to 1 to get all entries
+        {
+            let mut ls = node.leader_state.write();
+            if let Some(ref mut leader_state) = *ls {
+                leader_state.next_index.insert("node2".to_string(), 1);
+            }
+        }
+
+        let (prev_idx, prev_term, entries, _embedding) =
+            node.get_entries_for_follower(&"node2".to_string());
+        assert_eq!(prev_idx, 0);
+        assert_eq!(prev_term, 0);
+        assert_eq!(entries.len(), 2);
+    }
 }

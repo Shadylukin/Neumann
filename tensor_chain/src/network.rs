@@ -1597,4 +1597,155 @@ mod tests {
         let response = handler.handle(&"peer".to_string(), &ping_msg);
         assert!(response.is_none());
     }
+
+    #[test]
+    fn test_tx_handler_prepare_conflict() {
+        use crate::block::Transaction;
+        use crate::distributed_tx::TxParticipant;
+        use std::sync::Arc;
+
+        let participant = Arc::new(TxParticipant::new());
+        let handler = TxHandler::new(participant);
+
+        // First prepare succeeds
+        let prepare_msg1 = Message::TxPrepare(TxPrepareMsg {
+            tx_id: 1,
+            coordinator: "coordinator".to_string(),
+            shard_id: 0,
+            operations: vec![Transaction::Put {
+                key: "conflict_key".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
+            timeout_ms: 5000,
+        });
+
+        let response1 = handler.handle(&"coordinator".to_string(), &prepare_msg1);
+        assert!(response1.is_some());
+        if let Some(Message::TxPrepareResponse(resp)) = response1 {
+            assert!(matches!(resp.vote, TxVote::Yes { .. }));
+        }
+
+        // Second prepare on same key should return Conflict
+        let prepare_msg2 = Message::TxPrepare(TxPrepareMsg {
+            tx_id: 2,
+            coordinator: "coordinator".to_string(),
+            shard_id: 0,
+            operations: vec![Transaction::Put {
+                key: "conflict_key".to_string(),
+                data: vec![2],
+            }],
+            delta_embedding: SparseVector::from_dense(&[0.0, 1.0, 0.0]),
+            timeout_ms: 5000,
+        });
+
+        let response2 = handler.handle(&"coordinator".to_string(), &prepare_msg2);
+        assert!(response2.is_some());
+        if let Some(Message::TxPrepareResponse(resp)) = response2 {
+            assert!(matches!(resp.vote, TxVote::Conflict { .. }));
+        }
+    }
+
+    #[test]
+    fn test_message_routing_embedding_request_vote() {
+        let msg = Message::RequestVote(RequestVote {
+            term: 1,
+            candidate_id: "c1".to_string(),
+            last_log_index: 5,
+            last_log_term: 1,
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
+        });
+
+        let embedding = msg.routing_embedding();
+        assert!(embedding.is_some());
+        assert_eq!(embedding.unwrap().dimension(), 3);
+        assert!(msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_append_entries_with() {
+        let msg = Message::AppendEntries(AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(SparseVector::from_dense(&[0.5, 0.5])),
+        });
+
+        let embedding = msg.routing_embedding();
+        assert!(embedding.is_some());
+        assert_eq!(embedding.unwrap().dimension(), 2);
+        assert!(msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_append_entries_without() {
+        let msg = Message::AppendEntries(AppendEntries {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        });
+
+        let embedding = msg.routing_embedding();
+        assert!(embedding.is_none());
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_tx_prepare() {
+        let msg = Message::TxPrepare(TxPrepareMsg {
+            tx_id: 1,
+            coordinator: "coord".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]),
+            timeout_ms: 1000,
+        });
+
+        let embedding = msg.routing_embedding();
+        assert!(embedding.is_some());
+        assert_eq!(embedding.unwrap().dimension(), 4);
+        assert!(msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_ping() {
+        let msg = Message::Ping { term: 1 };
+        assert!(msg.routing_embedding().is_none());
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_pong() {
+        let msg = Message::Pong { term: 1 };
+        assert!(msg.routing_embedding().is_none());
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_tx_commit() {
+        let msg = Message::TxCommit(TxCommitMsg {
+            tx_id: 1,
+            shards: vec![0],
+        });
+        assert!(msg.routing_embedding().is_none());
+        assert!(!msg.has_routing_embedding());
+    }
+
+    #[test]
+    fn test_message_routing_embedding_tx_abort() {
+        let msg = Message::TxAbort(TxAbortMsg {
+            tx_id: 1,
+            reason: "test".to_string(),
+            shards: vec![0],
+        });
+        assert!(msg.routing_embedding().is_none());
+        assert!(!msg.has_routing_embedding());
+    }
 }

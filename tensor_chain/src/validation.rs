@@ -1043,7 +1043,7 @@ mod tests {
         let validator = TransitionValidator::new(global, config);
 
         // Register a local codebook with a different centroid
-        let mut local = LocalCodebook::new("domain", 3, 10, 0.9);
+        let local = LocalCodebook::new("domain", 3, 10, 0.9);
         local.quantize_and_update(&[0.0, 1.0, 0.0], 0.1);
         validator.register_local("domain", local);
 

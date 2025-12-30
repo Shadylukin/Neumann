@@ -272,4 +272,165 @@ mod tests {
         assert!(config.structural_weight > config.cosine_weight);
         assert!(config.structural_weight > config.magnitude_weight);
     }
+
+    #[test]
+    fn metric_higher_is_better_all_variants() {
+        // Similarity metrics (higher = better)
+        assert!(DistanceMetric::Cosine.higher_is_better());
+        assert!(DistanceMetric::Jaccard.higher_is_better());
+        assert!(DistanceMetric::Overlap.higher_is_better());
+        assert!(DistanceMetric::WeightedJaccard.higher_is_better());
+        assert!(DistanceMetric::Composite(GeometricConfig::default()).higher_is_better());
+
+        // Distance metrics (lower = better)
+        assert!(!DistanceMetric::Angular.higher_is_better());
+        assert!(!DistanceMetric::Geodesic.higher_is_better());
+        assert!(!DistanceMetric::Euclidean.higher_is_better());
+        assert!(!DistanceMetric::Manhattan.higher_is_better());
+    }
+
+    #[test]
+    fn metric_compute_angular() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[1.0, 0.0]);
+        let dist = DistanceMetric::Angular.compute(&a, &b);
+        assert!(dist.abs() < 1e-5); // Same direction = 0 angle
+    }
+
+    #[test]
+    fn metric_compute_geodesic() {
+        let a = SparseVector::from_dense(&[1.0, 0.0]);
+        let b = SparseVector::from_dense(&[1.0, 0.0]);
+        let dist = DistanceMetric::Geodesic.compute(&a, &b);
+        assert!(dist.abs() < 1e-5);
+    }
+
+    #[test]
+    fn metric_compute_overlap() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        let b = SparseVector::from_dense(&[3.0, 0.0, 4.0]);
+        let sim = DistanceMetric::Overlap.compute(&a, &b);
+        assert!((sim - 1.0).abs() < 1e-6); // Same non-zero positions
+    }
+
+    #[test]
+    fn metric_compute_weighted_jaccard() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let sim = DistanceMetric::WeightedJaccard.compute(&a, &b);
+        assert!((sim - 1.0).abs() < 1e-6); // Identical
+    }
+
+    #[test]
+    fn metric_compute_euclidean() {
+        let a = SparseVector::from_dense(&[0.0, 0.0]);
+        let b = SparseVector::from_dense(&[3.0, 4.0]);
+        let dist = DistanceMetric::Euclidean.compute(&a, &b);
+        assert!((dist - 5.0).abs() < 1e-6); // 3-4-5 triangle
+    }
+
+    #[test]
+    fn metric_compute_manhattan() {
+        let a = SparseVector::from_dense(&[0.0, 0.0]);
+        let b = SparseVector::from_dense(&[3.0, 4.0]);
+        let dist = DistanceMetric::Manhattan.compute(&a, &b);
+        assert!((dist - 7.0).abs() < 1e-6); // 3 + 4 = 7
+    }
+
+    #[test]
+    fn metric_compute_composite() {
+        let config = GeometricConfig::default();
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0]);
+        let sim = DistanceMetric::Composite(config).compute(&a, &b);
+        assert!((sim - 1.0).abs() < 1e-6); // Identical
+    }
+
+    #[test]
+    fn to_similarity_jaccard() {
+        let metric = DistanceMetric::Jaccard;
+        // Jaccard already returns [0, 1], so to_similarity is identity
+        assert!((metric.to_similarity(0.5) - 0.5).abs() < 1e-6);
+        assert!((metric.to_similarity(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn to_similarity_overlap() {
+        let metric = DistanceMetric::Overlap;
+        assert!((metric.to_similarity(0.75) - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn to_similarity_weighted_jaccard() {
+        let metric = DistanceMetric::WeightedJaccard;
+        assert!((metric.to_similarity(0.8) - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn to_similarity_composite() {
+        let metric = DistanceMetric::Composite(GeometricConfig::default());
+        assert!((metric.to_similarity(0.6) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn to_similarity_geodesic() {
+        let metric = DistanceMetric::Geodesic;
+        assert!((metric.to_similarity(0.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn to_similarity_manhattan() {
+        let metric = DistanceMetric::Manhattan;
+        assert!((metric.to_similarity(0.0) - 1.0).abs() < 1e-6);
+        assert!((metric.to_similarity(1.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn composite_zero_weight() {
+        let config = GeometricConfig {
+            cosine_weight: 0.0,
+            structural_weight: 0.0,
+            magnitude_weight: 0.0,
+        };
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0]);
+        let score = config.compute(&a, &b);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn metric_default() {
+        let metric = DistanceMetric::default();
+        assert_eq!(metric, DistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn metric_serde() {
+        let metric = DistanceMetric::Angular;
+        let serialized = bincode::serialize(&metric).unwrap();
+        let deserialized: DistanceMetric = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized, metric);
+    }
+
+    #[test]
+    fn config_serde() {
+        let config = GeometricConfig::default();
+        let serialized = bincode::serialize(&config).unwrap();
+        let deserialized: GeometricConfig = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized, config);
+    }
+
+    #[test]
+    fn metric_clone() {
+        let metric = DistanceMetric::Composite(GeometricConfig::default());
+        let cloned = metric.clone();
+        assert_eq!(cloned, metric);
+    }
+
+    #[test]
+    fn metric_debug() {
+        let metric = DistanceMetric::Euclidean;
+        let debug = format!("{:?}", metric);
+        assert!(debug.contains("Euclidean"));
+    }
 }
