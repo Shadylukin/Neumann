@@ -207,10 +207,11 @@ impl ClusterOrchestrator {
         // Initialize chain (creates genesis if needed)
         chain.initialize()?;
 
-        // 9. Create state machine
+        // 9. Create state machine with store for transaction application
         let state_machine = Arc::new(TensorStateMachine::with_threshold(
             chain.clone(),
             raft.clone(),
+            store.clone(),
             config.fast_path_threshold,
         ));
 

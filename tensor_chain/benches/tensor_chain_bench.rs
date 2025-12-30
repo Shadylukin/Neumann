@@ -575,22 +575,10 @@ fn bench_sparsity_comparison(c: &mut Criterion) {
 
     // Also measure the actual sparsity achieved
     println!("\n--- Sparsity Analysis ---");
-    println!(
-        "10% target: actual nnz = {}",
-        dense_deltas[0].sparse().nnz()
-    );
-    println!(
-        "50% target: actual nnz = {}",
-        medium_deltas[0].sparse().nnz()
-    );
-    println!(
-        "90% target: actual nnz = {}",
-        sparse_deltas[0].sparse().nnz()
-    );
-    println!(
-        "99% target: actual nnz = {}",
-        very_sparse_deltas[0].sparse().nnz()
-    );
+    println!("10% target: actual nnz = {}", dense_deltas[0].nnz());
+    println!("50% target: actual nnz = {}", medium_deltas[0].nnz());
+    println!("90% target: actual nnz = {}", sparse_deltas[0].nnz());
+    println!("99% target: actual nnz = {}", very_sparse_deltas[0].nnz());
 
     group.finish();
 }
@@ -656,7 +644,7 @@ fn bench_conflict_operation_breakdown(c: &mut Criterion) {
     });
 
     group.bench_function("project_orthogonal_sparse", |b| {
-        b.iter(|| black_box(d1.project_non_conflicting(d2.sparse())))
+        b.iter(|| black_box(d1.project_non_conflicting(&d2.delta)))
     });
 
     // The full detect_conflict call (combines cosine + key overlap + classification)
@@ -969,7 +957,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
     let mix_avg_nnz: f32 = realistic_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
     let mix_avg_sparsity: f32 = realistic_deltas
         .iter()
-        .map(|d| d.sparse().sparsity())
+        .map(|d| d.sparsity())
         .sum::<f32>()
         / 100.0;
 

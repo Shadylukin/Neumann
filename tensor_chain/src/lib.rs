@@ -588,7 +588,7 @@ impl TensorChain {
         let candidates_to_merge: Vec<_> = candidates.into_iter().take(max_merge).collect();
 
         // Track original delta for validation (convert to dense for compatibility)
-        let dim = delta.sparse().dimension();
+        let dim = delta.dimension();
         let original_delta = delta.to_dense(dim);
 
         // Merge each orthogonal candidate
@@ -604,7 +604,7 @@ impl TensorChain {
             // Validate merged state using transition validator (if codebook has entries)
             // Skip validation if codebook is empty (learning mode)
             if !self.codebook_manager.global().is_empty() {
-                let tentative_dim = tentative_delta.sparse().dimension();
+                let tentative_dim = tentative_delta.dimension();
                 let validation = self.transition_validator.validate_transition(
                     "chain",
                     &original_delta,
@@ -627,7 +627,7 @@ impl TensorChain {
         }
 
         // Convert sparse delta to dense for return (Phase 4 will make this sparse)
-        let final_dim = delta.sparse().dimension();
+        let final_dim = delta.dimension();
         Ok((all_operations, delta.to_dense(final_dim), merged_workspaces))
     }
 

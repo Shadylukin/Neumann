@@ -539,7 +539,7 @@ impl MessageHandler for TxHandler {
                 let tx_vote = match vote {
                     crate::distributed_tx::PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
                         lock_handle,
-                        delta: delta.sparse().clone(),
+                        delta: delta.delta.clone(),
                         affected_keys: delta.affected_keys.into_iter().collect(),
                     },
                     crate::distributed_tx::PrepareVote::No { reason } => TxVote::No { reason },

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use tensor_store::SparseVector;
 
 use crate::codebook::{CodebookConfig, GlobalCodebook, LocalCodebook};
 use crate::error::{ChainError, Result};
@@ -180,7 +181,8 @@ impl TransitionValidator {
             .sqrt();
 
         // Compute direction similarity
-        let direction_similarity = cosine_similarity(from, to);
+        let direction_similarity =
+            SparseVector::from_dense(from).cosine_similarity(&SparseVector::from_dense(to));
 
         // Determine validity
         let (is_valid, rejection_reason) = if self.config.strict_transition {
@@ -309,18 +311,6 @@ impl TransitionValidator {
     }
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let mag_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let mag_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if mag_a == 0.0 || mag_b == 0.0 {
-        0.0
-    } else {
-        dot / (mag_a * mag_b)
-    }
-}
-
 /// Mode for validation - controls how thorough validation should be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ValidationMode {
@@ -431,9 +421,10 @@ impl FastPathValidator {
         }
 
         // Check similarity with recent embeddings
+        let block_vec = SparseVector::from_dense(block_embedding);
         let max_similarity = recent_embeddings
             .iter()
-            .map(|emb| cosine_similarity(block_embedding, emb))
+            .map(|emb| block_vec.cosine_similarity(&SparseVector::from_dense(emb)))
             .fold(0.0f32, |max, sim| max.max(sim));
 
         if max_similarity >= self.similarity_threshold {
@@ -962,14 +953,17 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity_zero_magnitude() {
-        // Zero magnitude vectors
-        let sim = cosine_similarity(&[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
+        // Zero magnitude vectors - tests SparseVector behavior
+        let zero = SparseVector::from_dense(&[0.0, 0.0, 0.0]);
+        let unit = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+
+        let sim = zero.cosine_similarity(&unit);
         assert_eq!(sim, 0.0);
 
-        let sim = cosine_similarity(&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0]);
+        let sim = unit.cosine_similarity(&zero);
         assert_eq!(sim, 0.0);
 
-        let sim = cosine_similarity(&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]);
+        let sim = zero.cosine_similarity(&zero);
         assert_eq!(sim, 0.0);
     }
 

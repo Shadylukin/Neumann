@@ -354,3 +354,201 @@ fn test_transition_validator_with_codebook() {
     let validation = validator.validate_transition("test", &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]);
     assert!(!validation.is_valid);
 }
+
+#[test]
+fn test_state_machine_transaction_persistence() {
+    use std::sync::Arc;
+    use tensor_chain::{
+        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+    };
+    use tensor_chain::network::MemoryTransport;
+    use tensor_store::{SparseVector, TensorStore, TensorValue};
+    use graph_engine::GraphEngine;
+
+    // Set up components
+    let store = TensorStore::new();
+    let graph = Arc::new(GraphEngine::with_store(store.clone()));
+    let chain = Arc::new(Chain::new(graph, "test_node".to_string()));
+    chain.initialize().unwrap();
+
+    // Get genesis block hash for valid prev_hash
+    let genesis = chain.get_tip().unwrap().unwrap();
+    let prev_hash = genesis.hash();
+
+    let transport = Arc::new(MemoryTransport::new("test_node".to_string()));
+    let raft = Arc::new(RaftNode::new(
+        "test_node".to_string(),
+        vec![],
+        transport,
+        RaftConfig::default(),
+    ));
+
+    let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+    // Create a block with Put transaction using valid prev_hash
+    let block = Block {
+        header: BlockHeader {
+            height: 1,
+            prev_hash,
+            tx_root: [0u8; 32],
+            state_root: [0u8; 32],
+            timestamp: 0,
+            proposer: "test".to_string(),
+            signature: vec![],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
+            quantized_codes: vec![],
+        },
+        transactions: vec![Transaction::Put {
+            key: "test_key".to_string(),
+            data: vec![42, 43, 44],
+        }],
+        signatures: vec![],
+    };
+
+    // Apply block (this will also append to chain)
+    state_machine.apply_block(&block).unwrap();
+
+    // Verify data was persisted to store
+    let retrieved = store.get("test_key").expect("Key should exist");
+    let data_val = retrieved.get("data").expect("Should have data field");
+    if let TensorValue::Scalar(tensor_store::ScalarValue::Bytes(bytes)) = data_val {
+        assert_eq!(bytes, &vec![42, 43, 44], "Data should match");
+    } else {
+        panic!("Expected Bytes scalar value");
+    }
+}
+
+#[test]
+fn test_state_machine_embed_transaction_persistence() {
+    use std::sync::Arc;
+    use tensor_chain::{
+        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+    };
+    use tensor_chain::network::MemoryTransport;
+    use tensor_store::{SparseVector, TensorStore, TensorValue};
+    use graph_engine::GraphEngine;
+
+    // Set up components
+    let store = TensorStore::new();
+    let graph = Arc::new(GraphEngine::with_store(store.clone()));
+    let chain = Arc::new(Chain::new(graph, "test_node".to_string()));
+    chain.initialize().unwrap();
+
+    // Get genesis block hash for valid prev_hash
+    let genesis = chain.get_tip().unwrap().unwrap();
+    let prev_hash = genesis.hash();
+
+    let transport = Arc::new(MemoryTransport::new("test_node".to_string()));
+    let raft = Arc::new(RaftNode::new(
+        "test_node".to_string(),
+        vec![],
+        transport,
+        RaftConfig::default(),
+    ));
+
+    let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+    // Create a block with Embed transaction
+    let embedding = vec![0.1, 0.2, 0.3, 0.4];
+    let block = Block {
+        header: BlockHeader {
+            height: 1,
+            prev_hash,
+            tx_root: [0u8; 32],
+            state_root: [0u8; 32],
+            timestamp: 0,
+            proposer: "test".to_string(),
+            signature: vec![],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
+            quantized_codes: vec![],
+        },
+        transactions: vec![Transaction::Embed {
+            key: "doc_1".to_string(),
+            vector: embedding.clone(),
+        }],
+        signatures: vec![],
+    };
+
+    // Apply block (this will also append to chain)
+    state_machine.apply_block(&block).unwrap();
+
+    // Verify embedding was persisted with correct key prefix
+    let retrieved = store.get("emb:doc_1").expect("Embedding key should exist");
+    let vec_val = retrieved.get("vector").expect("Should have vector field");
+    if let TensorValue::Vector(vec) = vec_val {
+        assert_eq!(vec, &embedding, "Embedding should match");
+    } else {
+        panic!("Expected Vector value");
+    }
+}
+
+#[test]
+fn test_state_machine_node_create_persistence() {
+    use std::sync::Arc;
+    use tensor_chain::{
+        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+    };
+    use tensor_chain::network::MemoryTransport;
+    use tensor_store::{SparseVector, TensorStore, TensorValue, ScalarValue};
+    use graph_engine::GraphEngine;
+
+    // Set up components
+    let store = TensorStore::new();
+    let graph = Arc::new(GraphEngine::with_store(store.clone()));
+    let chain = Arc::new(Chain::new(graph, "test_node".to_string()));
+    chain.initialize().unwrap();
+
+    // Get genesis block hash for valid prev_hash
+    let genesis = chain.get_tip().unwrap().unwrap();
+    let prev_hash = genesis.hash();
+
+    let transport = Arc::new(MemoryTransport::new("test_node".to_string()));
+    let raft = Arc::new(RaftNode::new(
+        "test_node".to_string(),
+        vec![],
+        transport,
+        RaftConfig::default(),
+    ));
+
+    let state_machine = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+    // Create a block with NodeCreate transaction
+    let block = Block {
+        header: BlockHeader {
+            height: 1,
+            prev_hash,
+            tx_root: [0u8; 32],
+            state_root: [0u8; 32],
+            timestamp: 0,
+            proposer: "test".to_string(),
+            signature: vec![],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0]),
+            quantized_codes: vec![],
+        },
+        transactions: vec![Transaction::NodeCreate {
+            key: "user_123".to_string(),
+            label: "User".to_string(),
+        }],
+        signatures: vec![],
+    };
+
+    // Apply block (this will also append to chain)
+    state_machine.apply_block(&block).unwrap();
+
+    // Verify node was persisted with correct key prefix
+    let retrieved = store.get("node:user_123").expect("Node key should exist");
+
+    let label_val = retrieved.get("_label").expect("Should have _label field");
+    if let TensorValue::Scalar(ScalarValue::String(label)) = label_val {
+        assert_eq!(label, "User", "Label should match");
+    } else {
+        panic!("Expected String scalar value for label");
+    }
+
+    let type_val = retrieved.get("_type").expect("Should have _type field");
+    if let TensorValue::Scalar(ScalarValue::String(typ)) = type_val {
+        assert_eq!(typ, "node", "Type should be 'node'");
+    } else {
+        panic!("Expected String scalar value for type");
+    }
+}

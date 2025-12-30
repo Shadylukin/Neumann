@@ -63,7 +63,7 @@ pub use streaming::{BlobReader, BlobWriter};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tensor_store::{ScalarValue, TensorStore, TensorValue};
+use tensor_store::{ScalarValue, SparseVector, TensorStore, TensorValue};
 use tokio::task::JoinHandle;
 
 #[cfg(feature = "vector")]
@@ -430,7 +430,8 @@ impl BlobStore {
             if let Ok(tensor) = self.store.get(&meta_key) {
                 if let Some(stored_embedding) = get_vector(&tensor, "_embedding") {
                     if stored_embedding.len() == embedding.len() {
-                        let similarity = cosine_similarity(embedding, &stored_embedding);
+                        let similarity = SparseVector::from_dense(embedding)
+                            .cosine_similarity(&SparseVector::from_dense(&stored_embedding));
                         let id = get_string(&tensor, "_id").unwrap_or_default();
                         let filename = get_string(&tensor, "_filename").unwrap_or_default();
                         results.push(SimilarArtifact {
@@ -581,20 +582,6 @@ impl BlobStore {
             dedup_ratio,
             orphaned_chunks,
         })
-    }
-}
-
-/// Compute cosine similarity between two vectors.
-#[cfg(feature = "vector")]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if norm_a > 0.0 && norm_b > 0.0 {
-        dot / (norm_a * norm_b)
-    } else {
-        0.0
     }
 }
 

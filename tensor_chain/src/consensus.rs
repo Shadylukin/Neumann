@@ -17,6 +17,7 @@
 //! | <= -0.95    | All         | Opposite       | Cancel (no-op) |
 
 use std::collections::HashSet;
+use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
@@ -204,19 +205,9 @@ impl DeltaVector {
         }
     }
 
-    /// Get the magnitude of the delta.
-    pub fn magnitude(&self) -> f32 {
-        self.delta.magnitude()
-    }
-
     /// Check if this delta is empty (no changes).
     pub fn is_empty(&self) -> bool {
-        self.delta.nnz() == 0
-    }
-
-    /// Get the number of non-zero positions in the delta.
-    pub fn nnz(&self) -> usize {
-        self.delta.nnz()
+        self.nnz() == 0
     }
 
     /// Get the dense representation of the delta.
@@ -340,15 +331,13 @@ impl DeltaVector {
         let delta = self.delta.scale(factor);
         DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
     }
+}
 
-    /// Get access to the underlying sparse vector.
-    pub fn sparse(&self) -> &SparseVector {
+impl Deref for DeltaVector {
+    type Target = SparseVector;
+
+    fn deref(&self) -> &Self::Target {
         &self.delta
-    }
-
-    /// Get the dimension of the underlying sparse vector.
-    pub fn dimension(&self) -> usize {
-        self.delta.dimension()
     }
 }
 

@@ -27,6 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tensor_store::{KMeans, KMeansConfig};
 
 use crate::error::{ChainError, Result};
 
@@ -190,30 +191,12 @@ impl GlobalCodebook {
             return Self::new(0);
         }
 
-        let dimension = vectors[0].len();
-        let k = k.min(vectors.len());
-
-        // K-means++ initialization
-        let mut centroids = kmeans_plusplus_init(vectors, k);
-
-        // K-means iterations
-        for _ in 0..max_iterations {
-            let assignments = assign_to_nearest(vectors, &centroids);
-            let new_centroids = update_centroids(vectors, &assignments, k, dimension);
-
-            // Check convergence
-            let max_movement = centroids
-                .iter()
-                .zip(new_centroids.iter())
-                .map(|(old, new)| euclidean_distance(old, new))
-                .fold(0.0f32, f32::max);
-
-            centroids = new_centroids;
-
-            if max_movement < 1e-4 {
-                break;
-            }
-        }
+        let config = KMeansConfig {
+            max_iterations,
+            ..KMeansConfig::default()
+        };
+        let kmeans = KMeans::new(config);
+        let centroids = kmeans.fit(vectors, k);
 
         Self::from_centroids(centroids)
     }
@@ -700,113 +683,6 @@ fn current_timestamp_millis() -> u64 {
         .as_millis() as u64
 }
 
-fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f32>()
-        .sqrt()
-}
-
-fn kmeans_plusplus_init(vectors: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
-    if vectors.is_empty() || k == 0 {
-        return Vec::new();
-    }
-
-    let mut centroids = Vec::with_capacity(k);
-    let mut rng_state: u64 = 42;
-
-    // Select first centroid randomly
-    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-    let first_idx = (rng_state as usize) % vectors.len();
-    centroids.push(vectors[first_idx].clone());
-
-    // Select remaining centroids
-    let mut distances = vec![f32::MAX; vectors.len()];
-
-    for _ in 1..k {
-        // Update distances to nearest centroid
-        for (i, vector) in vectors.iter().enumerate() {
-            let dist = euclidean_distance(vector, centroids.last().unwrap());
-            distances[i] = distances[i].min(dist * dist);
-        }
-
-        // Select next centroid with probability proportional to distance squared
-        let total_dist: f32 = distances.iter().sum();
-        if total_dist == 0.0 {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let idx = (rng_state as usize) % vectors.len();
-            centroids.push(vectors[idx].clone());
-        } else {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let threshold = (rng_state as f32 / u64::MAX as f32) * total_dist;
-
-            let mut cumulative = 0.0;
-            let mut selected = false;
-            for (i, &d) in distances.iter().enumerate() {
-                cumulative += d;
-                if cumulative >= threshold {
-                    centroids.push(vectors[i].clone());
-                    selected = true;
-                    break;
-                }
-            }
-
-            // Fallback if we didn't select (numerical issues)
-            if !selected {
-                centroids.push(vectors[vectors.len() - 1].clone());
-            }
-        }
-    }
-
-    centroids
-}
-
-fn assign_to_nearest(vectors: &[Vec<f32>], centroids: &[Vec<f32>]) -> Vec<usize> {
-    vectors
-        .iter()
-        .map(|v| {
-            centroids
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    let da = euclidean_distance(v, a);
-                    let db = euclidean_distance(v, b);
-                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i)
-                .unwrap_or(0)
-        })
-        .collect()
-}
-
-fn update_centroids(
-    vectors: &[Vec<f32>],
-    assignments: &[usize],
-    k: usize,
-    dim: usize,
-) -> Vec<Vec<f32>> {
-    let mut centroids = vec![vec![0.0; dim]; k];
-    let mut counts = vec![0usize; k];
-
-    for (i, &cluster) in assignments.iter().enumerate() {
-        for (j, &val) in vectors[i].iter().enumerate() {
-            centroids[cluster][j] += val;
-        }
-        counts[cluster] += 1;
-    }
-
-    for (i, count) in counts.iter().enumerate() {
-        if *count > 0 {
-            for val in &mut centroids[i] {
-                *val /= *count as f32;
-            }
-        }
-    }
-
-    centroids
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,12 +1103,6 @@ mod tests {
         let vectors = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.0]];
         let codebook = GlobalCodebook::from_kmeans(&vectors, 2, 10);
         assert!(codebook.len() <= 2);
-    }
-
-    #[test]
-    fn test_euclidean_distance() {
-        let d = euclidean_distance(&[0.0, 0.0], &[3.0, 4.0]);
-        assert!((d - 5.0).abs() < 0.001);
     }
 
     #[test]
