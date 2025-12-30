@@ -67,7 +67,7 @@ tensor_chain/
 
 ### 1. Begin Transaction
 
-Creates an isolated workspace using tensor_checkpoint:
+Creates an isolated workspace for tracking operations:
 
 ```rust
 let tx = chain.begin()?;  // Returns Arc<TransactionWorkspace>
@@ -430,7 +430,32 @@ Messages use length-delimited framing:
 
 ## Cluster Membership
 
-Static cluster configuration with health checking and failure detection.
+Static cluster configuration with health checking and failure detection. The membership system integrates with Raft to provide health-aware leader election.
+
+### Membership-Aware Raft Voting
+
+When a MembershipManager is attached to a RaftNode, votes are only granted to healthy candidates:
+
+```rust
+use tensor_chain::{RaftNode, RaftConfig, MembershipManager, ClusterConfig};
+use std::sync::Arc;
+
+// Create membership manager
+let membership = Arc::new(MembershipManager::new(cluster_config, transport.clone()));
+
+// Create Raft node with membership
+let node = RaftNode::with_membership(
+    "node1".to_string(),
+    vec!["node2".to_string(), "node3".to_string()],
+    transport,
+    RaftConfig::default(),
+    membership.clone(),
+);
+
+// Node will:
+// 1. Reject votes from unhealthy candidates
+// 2. Skip unhealthy peers when sending heartbeats
+```
 
 ### Configuration
 
@@ -546,6 +571,42 @@ for update in batch.iter() {
 }
 ```
 
+### Int8 Quantization for Delta Updates
+
+Delta updates can be further compressed using int8 quantization, reducing bandwidth by ~4x:
+
+```rust
+use tensor_chain::{DeltaUpdate, QuantizedDeltaUpdate, DeltaReplicationConfig};
+
+// Enable quantization in config
+let config = DeltaReplicationConfig::default().with_quantization();
+
+// Create a delta update
+let update = DeltaUpdate::full("users:123", &embedding, version);
+
+// Quantize for transmission
+if let Some(quantized) = update.quantize() {
+    // Serialize quantized update (4x smaller than f32)
+    let bytes = bincode::serialize(&quantized)?;
+
+    // Compression ratio
+    println!("Compression: {:.1}x", quantized.compression_ratio());
+    println!("Memory: {} bytes", quantized.memory_bytes());
+}
+
+// Dequantize on receiver
+let restored = quantized.dequantize();
+// Error < 2% for normalized values
+
+// Or decode directly with registry
+let full_embedding = quantized.decode(&registry)?;
+```
+
+Quantization error bounds:
+- Normalized values [0, 1]: < 1% error
+- General f32 values: < 2% error
+- Preserves semantic similarity for downstream operations
+
 ### Compression Statistics
 
 | Data Pattern | Compression Ratio | Notes |
@@ -554,6 +615,7 @@ for update in batch.iter() {
 | Clustered (k=10) | 3-5x | Moderate clustering |
 | Highly clustered (k=3) | 6-10x | Strong archetypes |
 | Incremental updates | 10-20x | Sparse deltas |
+| Int8 quantization | 4x | On top of delta encoding |
 
 ## Chain Operations
 
@@ -806,7 +868,7 @@ All modules meet the 95% minimum coverage threshold required for critical infras
 ## Dependencies
 
 - `tensor_store`: Core storage layer (includes ArchetypeRegistry for delta encoding)
-- `tensor_checkpoint`: Workspace isolation
+- `tensor_compress`: Int8 quantization for delta embeddings
 - `graph_engine`: Block linking via edges
 - `parking_lot`: Lock primitives
 - `sha2`: Block hashing (SHA-256)

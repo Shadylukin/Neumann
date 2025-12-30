@@ -16,6 +16,7 @@ pub use delta::{
 };
 pub use quantize::{
     dequantize_binary, dequantize_int8, quantize_binary, quantize_int8, QuantizationError,
+    QuantizedBinary, QuantizedInt8,
 };
 pub use rle::{rle_decode, rle_encode, RleEncoded};
 

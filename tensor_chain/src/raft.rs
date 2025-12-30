@@ -14,6 +14,7 @@ use parking_lot::RwLock;
 
 use crate::block::{Block, NodeId};
 use crate::error::{ChainError, Result};
+use crate::membership::MembershipManager;
 use crate::network::{
     AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
     Transport,
@@ -217,7 +218,6 @@ pub struct RaftNode {
     /// List of peer node IDs.
     peers: RwLock<Vec<NodeId>>,
     /// Transport for network communication.
-    #[allow(dead_code)] // Will be used for async message sending
     transport: Arc<dyn Transport>,
     /// Configuration.
     config: RaftConfig,
@@ -233,6 +233,8 @@ pub struct RaftNode {
     fast_path_state: FastPathState,
     /// Fast-path validator for replication.
     fast_path_validator: FastPathValidator,
+    /// Optional membership manager for health-aware voting.
+    membership: Option<Arc<MembershipManager>>,
 }
 
 impl RaftNode {
@@ -266,6 +268,33 @@ impl RaftNode {
             fast_path_state: FastPathState::default(),
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
             config,
+            membership: None,
+        }
+    }
+
+    /// Create a new Raft node with membership manager.
+    pub fn with_membership(
+        node_id: NodeId,
+        peers: Vec<NodeId>,
+        transport: Arc<dyn Transport>,
+        config: RaftConfig,
+        membership: Arc<MembershipManager>,
+    ) -> Self {
+        let mut node = Self::new(node_id, peers, transport, config);
+        node.membership = Some(membership);
+        node
+    }
+
+    /// Set the membership manager.
+    pub fn set_membership(&mut self, membership: Arc<MembershipManager>) {
+        self.membership = Some(membership);
+    }
+
+    /// Check if a node is healthy according to membership.
+    fn is_peer_healthy(&self, peer_id: &NodeId) -> bool {
+        match &self.membership {
+            Some(membership) => membership.view().is_healthy(peer_id),
+            None => true, // No membership manager = assume all peers healthy
         }
     }
 
@@ -317,6 +346,21 @@ impl RaftNode {
     /// Get fast-path state.
     pub fn fast_path_state(&self) -> &FastPathState {
         &self.fast_path_state
+    }
+
+    /// Get a reference to the transport layer.
+    pub fn transport(&self) -> &Arc<dyn Transport> {
+        &self.transport
+    }
+
+    /// Get the last log index.
+    pub fn last_log_index(&self) -> u64 {
+        let log = &self.persistent.read().log;
+        if log.is_empty() {
+            0
+        } else {
+            log[log.len() - 1].index
+        }
     }
 
     /// Calculate quorum size (majority of total nodes).
@@ -376,9 +420,13 @@ impl RaftNode {
         // 1. Term is current
         // 2. Haven't voted or voted for this candidate
         // 3. Candidate's log is at least as up-to-date
+        // 4. Candidate is healthy (if membership manager is configured)
         if rv.term == persistent.current_term {
             let can_vote = persistent.voted_for.is_none()
                 || persistent.voted_for.as_ref() == Some(&rv.candidate_id);
+
+            // Check candidate health - don't vote for unhealthy candidates
+            let candidate_healthy = self.is_peer_healthy(&rv.candidate_id);
 
             // Compute last log info from the lock we already hold
             let (last_log_index, last_log_term) = if persistent.log.is_empty() {
@@ -390,7 +438,7 @@ impl RaftNode {
             let log_ok = rv.last_log_term > last_log_term
                 || (rv.last_log_term == last_log_term && rv.last_log_index >= last_log_index);
 
-            if can_vote && log_ok {
+            if can_vote && log_ok && candidate_healthy {
                 vote_granted = true;
                 persistent.voted_for = Some(rv.candidate_id.clone());
                 *self.last_heartbeat.write() = Instant::now();
@@ -608,7 +656,8 @@ impl RaftNode {
     }
 
     /// Become leader after winning election.
-    fn become_leader(&self) {
+    /// This is public to allow testing scenarios.
+    pub fn become_leader(&self) {
         *self.state.write() = RaftState::Leader;
         *self.current_leader.write() = Some(self.node_id.clone());
 
@@ -755,6 +804,179 @@ impl RaftNode {
         let block_embedding = entries.last().map(|e| e.block.header.delta_embedding.clone());
 
         (prev_log_index, prev_log_term, entries, block_embedding)
+    }
+
+    // ========== Async Transport Methods ==========
+
+    /// Send a message to a specific peer via transport.
+    pub async fn send_to_peer(&self, peer: &NodeId, msg: Message) -> Result<()> {
+        self.transport.send(peer, msg).await
+    }
+
+    /// Broadcast a message to all peers via transport.
+    pub async fn broadcast_to_peers(&self, msg: Message) -> Result<()> {
+        self.transport.broadcast(msg).await
+    }
+
+    /// Start an election and broadcast RequestVote to all peers.
+    pub async fn start_election_async(&self) -> Result<()> {
+        // Build the RequestVote message in a sync block (no await)
+        let request = {
+            let mut persistent = self.persistent.write();
+            persistent.current_term += 1;
+            persistent.voted_for = Some(self.node_id.clone());
+
+            *self.state.write() = RaftState::Candidate;
+            *self.votes_received.write() = vec![self.node_id.clone()]; // Vote for self
+
+            let (last_log_index, last_log_term) = if persistent.log.is_empty() {
+                (0, 0)
+            } else {
+                let last = &persistent.log[persistent.log.len() - 1];
+                (last.index, last.term)
+            };
+            let term = persistent.current_term;
+            let state_embedding = self.state_embedding.read().clone();
+
+            Message::RequestVote(RequestVote {
+                term,
+                candidate_id: self.node_id.clone(),
+                last_log_index,
+                last_log_term,
+                state_embedding,
+            })
+        }; // All locks dropped here
+
+        // Now broadcast via transport (async)
+        self.transport.broadcast(request).await
+    }
+
+    /// Send heartbeats (AppendEntries) to all followers.
+    pub async fn send_heartbeats(&self) -> Result<()> {
+        // Build all messages in a sync block (no await)
+        let messages: Vec<(NodeId, Message)> = {
+            if *self.state.read() != RaftState::Leader {
+                return Ok(());
+            }
+
+            let peers = self.peers.read().clone();
+            let term = self.persistent.read().current_term;
+            let commit_index = self.volatile.read().commit_index;
+
+            peers
+                .into_iter()
+                // Skip unhealthy peers - they won't respond anyway
+                .filter(|peer| self.is_peer_healthy(peer))
+                .map(|peer| {
+                    let (prev_log_index, prev_log_term, entries, block_embedding) =
+                        self.get_entries_for_follower(&peer);
+
+                    let ae = Message::AppendEntries(AppendEntries {
+                        term,
+                        leader_id: self.node_id.clone(),
+                        prev_log_index,
+                        prev_log_term,
+                        entries,
+                        leader_commit: commit_index,
+                        block_embedding,
+                    });
+
+                    (peer, ae)
+                })
+                .collect()
+        }; // All locks dropped here
+
+        // Now send messages (async)
+        for (peer, msg) in messages {
+            // Send to peer, ignore failures (peer may be down)
+            let _ = self.transport.send(&peer, msg).await;
+        }
+
+        Ok(())
+    }
+
+    /// Propose a block and replicate to followers (async version).
+    pub async fn propose_async(&self, block: Block) -> Result<u64> {
+        // First, add to local log (sync part)
+        let index = self.propose(block)?;
+
+        // Then replicate to followers
+        self.send_heartbeats().await?;
+
+        Ok(index)
+    }
+
+    /// Handle incoming message and optionally send response.
+    pub async fn handle_message_async(&self, from: &NodeId, msg: Message) -> Result<()> {
+        if let Some(response) = self.handle_message(from, &msg) {
+            self.transport.send(from, response).await?;
+        }
+        Ok(())
+    }
+
+    /// Tick the Raft node - check for election timeout (async version).
+    pub async fn tick_async(&self) -> Result<()> {
+        let elapsed = self.last_heartbeat.read().elapsed().as_millis() as u64;
+        let state = *self.state.read();
+
+        match state {
+            RaftState::Follower | RaftState::Candidate => {
+                // Check election timeout
+                let timeout = self.config.election_timeout.0
+                    + rand::random::<u64>() % (self.config.election_timeout.1 - self.config.election_timeout.0);
+                if elapsed > timeout {
+                    self.start_election_async().await?;
+                }
+            }
+            RaftState::Leader => {
+                // Send heartbeats
+                if elapsed > self.config.heartbeat_interval {
+                    self.send_heartbeats().await?;
+                    *self.last_heartbeat.write() = Instant::now();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Main event loop - process messages and handle timeouts.
+    ///
+    /// This runs the Raft protocol, handling:
+    /// - Incoming messages from peers
+    /// - Election timeouts (start election if no heartbeat)
+    /// - Heartbeat sending (if leader)
+    pub async fn run(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
+        let tick_interval = std::time::Duration::from_millis(self.config.heartbeat_interval / 2);
+        let mut ticker = tokio::time::interval(tick_interval);
+
+        loop {
+            tokio::select! {
+                // Handle shutdown signal
+                _ = shutdown.recv() => {
+                    break;
+                }
+
+                // Periodic tick for elections/heartbeats
+                _ = ticker.tick() => {
+                    self.tick_async().await?;
+                }
+
+                // Handle incoming messages
+                result = self.transport.recv() => {
+                    match result {
+                        Ok((from, msg)) => {
+                            self.handle_message_async(&from, msg).await?;
+                        }
+                        Err(e) => {
+                            // Log error but continue running
+                            tracing::warn!("Error receiving message: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -2079,5 +2301,176 @@ mod tests {
 
         // Should NOT advance because entry is from old term (term 1, current is 2)
         assert_eq!(node.commit_index(), 0);
+    }
+
+    #[test]
+    fn test_is_peer_healthy_no_membership() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Without membership manager, all peers are considered healthy
+        assert!(node.is_peer_healthy(&"node2".to_string()));
+        assert!(node.is_peer_healthy(&"unknown".to_string()));
+    }
+
+    #[test]
+    fn test_with_membership_constructor() {
+        use crate::membership::{ClusterConfig, LocalNodeConfig, MembershipManager};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9100".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9101".parse().unwrap());
+
+        let membership = Arc::new(MembershipManager::new(config, transport.clone()));
+
+        let node = RaftNode::with_membership(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            membership,
+        );
+
+        // Membership should be set
+        assert!(node.membership.is_some());
+    }
+
+    #[test]
+    fn test_set_membership() {
+        use crate::membership::{ClusterConfig, LocalNodeConfig, MembershipManager};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport.clone(),
+            RaftConfig::default(),
+        );
+
+        assert!(node.membership.is_none());
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9100".parse().unwrap(),
+            },
+        );
+        let membership = Arc::new(MembershipManager::new(config, transport));
+        node.set_membership(membership);
+
+        assert!(node.membership.is_some());
+    }
+
+    #[test]
+    fn test_request_vote_rejected_for_unhealthy_candidate() {
+        use crate::membership::{ClusterConfig, HealthConfig, LocalNodeConfig, MembershipManager};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+
+        // Create membership with node2 that will be marked as failed
+        let health_config = HealthConfig {
+            startup_grace_ms: 0, // No grace period
+            failure_threshold: 1,
+            ..Default::default()
+        };
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9100".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9101".parse().unwrap())
+        .with_health(health_config);
+
+        let membership = Arc::new(MembershipManager::new(config, transport.clone()));
+
+        // Mark node2 as failed
+        membership.mark_failed(&"node2".to_string());
+
+        let node = RaftNode::with_membership(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            membership,
+        );
+
+        // Request vote from unhealthy node2
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: vec![],
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
+
+        if let Some(Message::RequestVoteResponse(rvr)) = response {
+            // Vote should be denied because candidate is unhealthy
+            assert!(!rvr.vote_granted);
+        } else {
+            panic!("expected RequestVoteResponse");
+        }
+    }
+
+    #[test]
+    fn test_request_vote_granted_for_healthy_candidate() {
+        use crate::membership::{ClusterConfig, HealthConfig, LocalNodeConfig, MembershipManager};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+
+        let health_config = HealthConfig {
+            startup_grace_ms: 0,
+            failure_threshold: 3,
+            ..Default::default()
+        };
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9100".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9101".parse().unwrap())
+        .with_health(health_config);
+
+        let membership = Arc::new(MembershipManager::new(config, transport.clone()));
+
+        // Mark node2 as healthy
+        membership.mark_healthy(&"node2".to_string());
+
+        let node = RaftNode::with_membership(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            membership,
+        );
+
+        // Request vote from healthy node2
+        let rv = RequestVote {
+            term: 1,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: vec![],
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::RequestVote(rv));
+
+        if let Some(Message::RequestVoteResponse(rvr)) = response {
+            // Vote should be granted because candidate is healthy
+            assert!(rvr.vote_granted);
+        } else {
+            panic!("expected RequestVoteResponse");
+        }
     }
 }

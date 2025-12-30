@@ -184,3 +184,19 @@ path = "fuzz_targets/lock_manager.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 6: Phase 4 targets - Distributed Systems Finalization
+
+[[bin]]
+name = "delta_quantize"
+path = "fuzz_targets/delta_quantize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raft_messages"
+path = "fuzz_targets/raft_messages.rs"
+test = false
+doc = false
+bench = false

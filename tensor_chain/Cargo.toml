@@ -15,11 +15,8 @@ description = "Tensor-native blockchain with semantic conflict detection and aut
 [dependencies]
 # Core Neumann modules
 tensor_store = { path = "../tensor_store" }
-tensor_checkpoint = { path = "../tensor_checkpoint" }
 tensor_compress = { path = "../tensor_compress" }
-tensor_vault = { path = "../tensor_vault" }
 graph_engine = { path = "../graph_engine" }
-tensor_blob = { path = "../tensor_blob" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

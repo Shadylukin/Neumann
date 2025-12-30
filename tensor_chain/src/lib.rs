@@ -65,7 +65,8 @@ pub use consensus::{
     MergeAction, MergeResult,
 };
 pub use delta_replication::{
-    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, ReplicationStats,
+    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate,
+    QuantizedDeltaUpdate, ReplicationStats,
 };
 pub use error::{ChainError, Result};
 pub use membership::{
@@ -73,9 +74,9 @@ pub use membership::{
     MembershipManager, NodeHealth, NodeStatus, PeerNodeConfig,
 };
 pub use network::{
-    AppendEntries, AppendEntriesResponse, LogEntry, MemoryTransport, Message, NetworkManager,
-    PeerConfig, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg,
-    TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    AppendEntries, AppendEntriesResponse, LogEntry, MemoryTransport, Message, MessageHandler,
+    NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport, TxAbortMsg,
+    TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
 pub use tcp::{
@@ -99,6 +100,68 @@ use std::sync::Arc;
 
 use graph_engine::GraphEngine;
 use tensor_store::TensorStore;
+use tokio::sync::broadcast;
+
+/// Handle for a running Raft consensus node.
+///
+/// Provides methods to interact with and shut down the Raft node.
+/// The node runs in a background tokio task.
+pub struct RaftHandle {
+    /// Shutdown signal sender.
+    shutdown_tx: broadcast::Sender<()>,
+    /// Join handle for the background task.
+    join_handle: tokio::task::JoinHandle<Result<()>>,
+    /// Node ID of this Raft instance.
+    node_id: NodeId,
+}
+
+impl RaftHandle {
+    /// Create a new RaftHandle by spawning the RaftNode's run loop.
+    pub fn spawn(node: Arc<RaftNode>) -> Self {
+        let node_id = node.node_id().to_string();
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let join_handle = tokio::spawn(async move {
+            node.run(shutdown_rx).await
+        });
+
+        Self {
+            shutdown_tx,
+            join_handle,
+            node_id,
+        }
+    }
+
+    /// Get the node ID.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Signal the Raft node to shut down gracefully.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(());
+    }
+
+    /// Check if the Raft node task has finished.
+    pub fn is_finished(&self) -> bool {
+        self.join_handle.is_finished()
+    }
+
+    /// Wait for the Raft node to finish and return its result.
+    pub async fn join(self) -> Result<()> {
+        match self.join_handle.await {
+            Ok(result) => result,
+            Err(e) => Err(ChainError::ConsensusError(format!("Raft task panicked: {}", e))),
+        }
+    }
+
+    /// Shut down and wait for the Raft node to finish.
+    pub async fn shutdown_and_wait(self) -> Result<()> {
+        self.shutdown();
+        self.join()
+        .await
+    }
+}
 
 /// Configuration for automatic merging of orthogonal transactions.
 #[derive(Debug, Clone)]
