@@ -31,12 +31,13 @@ pub mod distributed;
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
     self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
-    CacheStmt, ChainOp, ChainStmt, CheckpointStmt, CheckpointsStmt, DeleteStmt, DescribeStmt,
-    DescribeTarget, Direction as ParsedDirection, DistanceMetric as ParsedDistanceMetric, EdgeOp,
-    EdgeStmt, EmbedOp, EmbedStmt, EntityOp, EntityStmt, Expr, ExprKind, FindPattern, FindStmt,
-    InsertSource, InsertStmt, Literal, NeighborsStmt, NodeOp, NodeStmt, PathStmt, Property,
-    RollbackStmt, SelectStmt, SimilarQuery, SimilarStmt, Statement, StatementKind, TableRefKind,
-    UpdateStmt, VaultOp, VaultStmt,
+    CacheStmt, ChainOp, ChainStmt, CheckpointStmt, CheckpointsStmt, ClusterOp, ClusterStmt,
+    DeleteStmt, DescribeStmt, DescribeTarget, Direction as ParsedDirection,
+    DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt, EmbedOp, EmbedStmt, EntityOp,
+    EntityStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt, JoinCondition,
+    JoinKind, Literal, NeighborsStmt, NodeOp, NodeStmt, NullsOrder, PathStmt, Property,
+    RollbackStmt, SelectStmt, SimilarQuery, SimilarStmt, SortDirection, Statement, StatementKind,
+    TableRefKind, UpdateStmt, VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -55,6 +56,16 @@ use tensor_unified::{
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use tokio::runtime::Runtime;
 use vector_engine::{DistanceMetric as VectorDistanceMetric, HNSWIndex, VectorEngine, VectorError};
+
+/// Aggregate function types for SELECT queries.
+#[derive(Debug, Clone)]
+enum AggregateFunc {
+    Count(Option<String>), // None = COUNT(*), Some(col) = COUNT(col)
+    Sum(String),
+    Avg(String),
+    Min(String),
+    Max(String),
+}
 
 /// Error types for query routing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1068,6 +1079,9 @@ impl QueryRouter {
             // Chain statements
             StatementKind::Chain(chain) => self.exec_chain(chain),
 
+            // Cluster statements
+            StatementKind::Cluster(cluster) => self.exec_cluster(cluster),
+
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
         }
@@ -1899,6 +1913,42 @@ impl QueryRouter {
         }
     }
 
+    // ========== Cluster Execution ==========
+
+    fn exec_cluster(&self, stmt: &ClusterStmt) -> Result<QueryResult> {
+        // Cluster functionality requires ClusterOrchestrator integration
+        // For now, provide placeholder responses
+        match &stmt.operation {
+            ClusterOp::Connect { addresses: _ } => {
+                // Would initialize ClusterOrchestrator and connect
+                Err(RouterError::InvalidArgument(
+                    "CLUSTER CONNECT requires distributed mode".to_string(),
+                ))
+            },
+            ClusterOp::Disconnect => Err(RouterError::InvalidArgument(
+                "CLUSTER DISCONNECT requires distributed mode".to_string(),
+            )),
+            ClusterOp::Status => {
+                // Return basic status info
+                Ok(QueryResult::Value(
+                    "Cluster: single-node mode (not connected)".to_string(),
+                ))
+            },
+            ClusterOp::Nodes => {
+                // Would list cluster nodes
+                Ok(QueryResult::Value(
+                    "No cluster nodes (single-node mode)".to_string(),
+                ))
+            },
+            ClusterOp::Leader => {
+                // Would return current Raft leader
+                Ok(QueryResult::Value(
+                    "No leader (single-node mode)".to_string(),
+                ))
+            },
+        }
+    }
+
     // ========== AST-Based Execution Methods ==========
 
     fn exec_select(&self, select: &SelectStmt) -> Result<QueryResult> {
@@ -1916,11 +1966,21 @@ impl QueryRouter {
             },
         };
 
+        // Handle JOINs if present
+        if !from.joins.is_empty() {
+            return self.exec_select_with_joins(select, table_name, from);
+        }
+
         let condition = if let Some(ref where_expr) = select.where_clause {
             self.expr_to_condition(where_expr)?
         } else {
             Condition::True
         };
+
+        // Check for aggregate functions in SELECT
+        if let Some(agg_result) = self.try_exec_aggregates(select, table_name, &condition)? {
+            return Ok(agg_result);
+        }
 
         // Extract column projection from SELECT clause
         let projection = self.extract_projection(&select.columns)?;
@@ -1934,6 +1994,23 @@ impl QueryRouter {
             .relational
             .select_columnar(table_name, condition, options)?;
 
+        // Apply ORDER BY clause if present
+        if !select.order_by.is_empty() {
+            self.sort_rows(&mut rows, &select.order_by);
+        }
+
+        // Apply OFFSET clause if present
+        if let Some(ref offset_expr) = select.offset {
+            if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &offset_expr.kind {
+                let offset = *n as usize;
+                if offset < rows.len() {
+                    rows = rows.into_iter().skip(offset).collect();
+                } else {
+                    rows.clear();
+                }
+            }
+        }
+
         // Apply LIMIT clause if present
         if let Some(ref limit_expr) = select.limit {
             if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &limit_expr.kind {
@@ -1943,6 +2020,705 @@ impl QueryRouter {
         }
 
         Ok(QueryResult::Rows(rows))
+    }
+
+    fn exec_select_with_joins(
+        &self,
+        select: &SelectStmt,
+        left_table: &str,
+        from: &neumann_parser::FromClause,
+    ) -> Result<QueryResult> {
+        // For now, support only single JOIN (A JOIN B)
+        // Multi-join (A JOIN B JOIN C) would require iterative approach
+        if from.joins.len() > 1 {
+            return Err(RouterError::ParseError(
+                "Multiple JOINs not yet supported; use single JOIN".to_string(),
+            ));
+        }
+
+        let join = &from.joins[0];
+        let right_table = match &join.table.kind {
+            TableRefKind::Table(ident) => &ident.name,
+            TableRefKind::Subquery(_) => {
+                return Err(RouterError::ParseError(
+                    "Subquery JOINs not yet supported".to_string(),
+                ))
+            },
+        };
+
+        // Get table aliases or use table names
+        let left_alias: &str = match &from.table.alias {
+            Some(a) => &a.name,
+            None => left_table,
+        };
+        let right_alias: &str = match &join.table.alias {
+            Some(a) => &a.name,
+            None => right_table,
+        };
+
+        // Execute the appropriate join type
+        let mut rows: Vec<Row> = match join.kind {
+            JoinKind::Inner => {
+                let (on_a, on_b) =
+                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                let pairs = self
+                    .relational
+                    .join(left_table, right_table, &on_a, &on_b)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(Some(&a), Some(&b), left_alias, right_alias))
+                    .collect()
+            },
+            JoinKind::Left => {
+                let (on_a, on_b) =
+                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                let pairs = self
+                    .relational
+                    .left_join(left_table, right_table, &on_a, &on_b)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(Some(&a), b.as_ref(), left_alias, right_alias))
+                    .collect()
+            },
+            JoinKind::Right => {
+                let (on_a, on_b) =
+                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                let pairs = self
+                    .relational
+                    .right_join(left_table, right_table, &on_a, &on_b)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(a.as_ref(), Some(&b), left_alias, right_alias))
+                    .collect()
+            },
+            JoinKind::Full => {
+                let (on_a, on_b) =
+                    self.get_join_columns(&join.condition, left_table, right_table)?;
+                let pairs = self
+                    .relational
+                    .full_join(left_table, right_table, &on_a, &on_b)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(a.as_ref(), b.as_ref(), left_alias, right_alias))
+                    .collect()
+            },
+            JoinKind::Cross => {
+                let pairs = self.relational.cross_join(left_table, right_table)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(Some(&a), Some(&b), left_alias, right_alias))
+                    .collect()
+            },
+            JoinKind::Natural => {
+                let pairs = self.relational.natural_join(left_table, right_table)?;
+                pairs
+                    .into_iter()
+                    .map(|(a, b)| self.merge_rows(Some(&a), Some(&b), left_alias, right_alias))
+                    .collect()
+            },
+        };
+
+        // Apply WHERE clause if present
+        if let Some(ref where_expr) = select.where_clause {
+            rows = rows
+                .into_iter()
+                .filter(|row| self.evaluate_join_condition(where_expr, row))
+                .collect();
+        }
+
+        // Apply ORDER BY clause if present
+        if !select.order_by.is_empty() {
+            self.sort_rows(&mut rows, &select.order_by);
+        }
+
+        // Apply OFFSET clause if present
+        if let Some(ref offset_expr) = select.offset {
+            if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &offset_expr.kind {
+                let offset = *n as usize;
+                if offset < rows.len() {
+                    rows = rows.into_iter().skip(offset).collect();
+                } else {
+                    rows.clear();
+                }
+            }
+        }
+
+        // Apply LIMIT clause if present
+        if let Some(ref limit_expr) = select.limit {
+            if let ExprKind::Literal(neumann_parser::Literal::Integer(n)) = &limit_expr.kind {
+                let limit = *n as usize;
+                rows.truncate(limit);
+            }
+        }
+
+        Ok(QueryResult::Rows(rows))
+    }
+
+    fn get_join_columns(
+        &self,
+        condition: &Option<JoinCondition>,
+        _left_table: &str,
+        _right_table: &str,
+    ) -> Result<(String, String)> {
+        match condition {
+            Some(cond) => self.extract_join_columns(cond),
+            None => Err(RouterError::ParseError(
+                "JOIN requires ON or USING clause (except CROSS/NATURAL)".to_string(),
+            )),
+        }
+    }
+
+    fn evaluate_join_condition(&self, expr: &Expr, row: &Row) -> bool {
+        match &expr.kind {
+            ExprKind::Binary(left, op, right) => {
+                let left_val = self.get_row_value(left, row);
+                let right_val = self.get_row_value(right, row);
+                match (left_val, right_val) {
+                    (Some(l), Some(r)) => match op {
+                        BinaryOp::Eq => l == r,
+                        BinaryOp::Ne => l != r,
+                        BinaryOp::Lt => {
+                            self.compare_values(&l, &r) == Some(std::cmp::Ordering::Less)
+                        },
+                        BinaryOp::Le => matches!(
+                            self.compare_values(&l, &r),
+                            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                        ),
+                        BinaryOp::Gt => {
+                            self.compare_values(&l, &r) == Some(std::cmp::Ordering::Greater)
+                        },
+                        BinaryOp::Ge => matches!(
+                            self.compare_values(&l, &r),
+                            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                        ),
+                        BinaryOp::And => l.is_truthy() && r.is_truthy(),
+                        BinaryOp::Or => l.is_truthy() || r.is_truthy(),
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            },
+            ExprKind::Ident(_) | ExprKind::Qualified(_, _) => self
+                .get_row_value(expr, row)
+                .map(|v| v.is_truthy())
+                .unwrap_or(false),
+            _ => true,
+        }
+    }
+
+    fn compare_values(&self, a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
+            (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
+            // Cross-type numeric comparisons
+            (Value::Int(x), Value::Float(y)) => (*x as f64).partial_cmp(y),
+            (Value::Float(x), Value::Int(y)) => x.partial_cmp(&(*y as f64)),
+            (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+            (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+            _ => None,
+        }
+    }
+
+    fn sort_rows(&self, rows: &mut [Row], order_by: &[neumann_parser::OrderByItem]) {
+        rows.sort_by(|a, b| {
+            for item in order_by {
+                let val_a = self.get_sort_value(&item.expr, a);
+                let val_b = self.get_sort_value(&item.expr, b);
+
+                let cmp = self.compare_values_with_nulls(&val_a, &val_b, item.nulls);
+                let cmp = match item.direction {
+                    SortDirection::Asc => cmp,
+                    SortDirection::Desc => cmp.reverse(),
+                };
+
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+    }
+
+    fn get_sort_value(&self, expr: &Expr, row: &Row) -> Option<Value> {
+        match &expr.kind {
+            ExprKind::Ident(ident) => {
+                // Try exact match first, then suffix match for table.column
+                row.values
+                    .iter()
+                    .find(|(col, _)| col == &ident.name)
+                    .or_else(|| {
+                        row.values
+                            .iter()
+                            .find(|(col, _)| col.ends_with(&format!(".{}", ident.name)))
+                    })
+                    .map(|(_, v)| v.clone())
+            },
+            ExprKind::Qualified(table_expr, col) => {
+                if let ExprKind::Ident(table) = &table_expr.kind {
+                    let full_name = format!("{}.{}", table.name, col.name);
+                    row.values
+                        .iter()
+                        .find(|(c, _)| c == &full_name)
+                        .map(|(_, v)| v.clone())
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn compare_values_with_nulls(
+        &self,
+        a: &Option<Value>,
+        b: &Option<Value>,
+        nulls_order: Option<NullsOrder>,
+    ) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        match (a, b) {
+            (None, None) | (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
+            (None, _) | (Some(Value::Null), _) => match nulls_order.unwrap_or(NullsOrder::Last) {
+                NullsOrder::First => Ordering::Less,
+                NullsOrder::Last => Ordering::Greater,
+            },
+            (_, None) | (_, Some(Value::Null)) => match nulls_order.unwrap_or(NullsOrder::Last) {
+                NullsOrder::First => Ordering::Greater,
+                NullsOrder::Last => Ordering::Less,
+            },
+            (Some(va), Some(vb)) => self.compare_values(va, vb).unwrap_or(Ordering::Equal),
+        }
+    }
+
+    // ========== Aggregate Function Handling ==========
+
+    fn try_exec_aggregates(
+        &self,
+        select: &SelectStmt,
+        table_name: &str,
+        condition: &Condition,
+    ) -> Result<Option<QueryResult>> {
+        // Check if any column is an aggregate function
+        let mut aggregates: Vec<(String, AggregateFunc)> = Vec::new();
+        let mut non_agg_columns: Vec<(String, Expr)> = Vec::new();
+
+        for item in &select.columns {
+            if let Some(agg) = self.parse_aggregate(&item.expr) {
+                let alias = item
+                    .alias
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| self.aggregate_default_name(&item.expr));
+                aggregates.push((alias, agg));
+            } else {
+                let alias = item
+                    .alias
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_else(|| {
+                        self.expr_to_column_name(&item.expr)
+                            .unwrap_or_else(|_| "?".to_string())
+                    });
+                non_agg_columns.push((alias, item.expr.clone()));
+            }
+        }
+
+        // If GROUP BY is present, handle grouped aggregation
+        if !select.group_by.is_empty() {
+            return self.exec_grouped_aggregates(
+                select,
+                table_name,
+                condition,
+                &aggregates,
+                &non_agg_columns,
+            );
+        }
+
+        if aggregates.is_empty() {
+            return Ok(None);
+        }
+
+        // Compute aggregate values for the whole table
+        let mut values: Vec<(String, Value)> = Vec::new();
+
+        for (alias, agg) in aggregates {
+            let val = match agg {
+                AggregateFunc::Count(col) => {
+                    let count = if col.is_none() {
+                        self.relational.count(table_name, condition.clone())?
+                    } else {
+                        self.relational.count_column(
+                            table_name,
+                            &col.unwrap(),
+                            condition.clone(),
+                        )?
+                    };
+                    Value::Int(count as i64)
+                },
+                AggregateFunc::Sum(col) => {
+                    let sum = self.relational.sum(table_name, &col, condition.clone())?;
+                    Value::Float(sum)
+                },
+                AggregateFunc::Avg(col) => {
+                    match self.relational.avg(table_name, &col, condition.clone())? {
+                        Some(avg) => Value::Float(avg),
+                        None => Value::Null,
+                    }
+                },
+                AggregateFunc::Min(col) => self
+                    .relational
+                    .min(table_name, &col, condition.clone())?
+                    .unwrap_or(Value::Null),
+                AggregateFunc::Max(col) => self
+                    .relational
+                    .max(table_name, &col, condition.clone())?
+                    .unwrap_or(Value::Null),
+            };
+            values.push((alias, val));
+        }
+
+        // Return single row with aggregate results
+        let row = Row { id: 0, values };
+        Ok(Some(QueryResult::Rows(vec![row])))
+    }
+
+    fn exec_grouped_aggregates(
+        &self,
+        select: &SelectStmt,
+        table_name: &str,
+        condition: &Condition,
+        aggregates: &[(String, AggregateFunc)],
+        non_agg_columns: &[(String, Expr)],
+    ) -> Result<Option<QueryResult>> {
+        use std::collections::HashMap;
+
+        // Get all rows matching the WHERE condition
+        let rows = self.relational.select_columnar(
+            table_name,
+            condition.clone(),
+            ColumnarScanOptions {
+                projection: None,
+                prefer_columnar: true,
+            },
+        )?;
+
+        // Extract group key column names from GROUP BY expressions
+        let group_key_names: Vec<String> = select
+            .group_by
+            .iter()
+            .filter_map(|expr| self.expr_to_column_name(expr).ok())
+            .collect();
+
+        // Group rows by GROUP BY column values (use string key since Value doesn't impl Hash)
+        let mut groups: HashMap<String, (Vec<Value>, Vec<&Row>)> = HashMap::new();
+        for row in &rows {
+            let group_key: Vec<Value> = group_key_names
+                .iter()
+                .map(|col| {
+                    row.values
+                        .iter()
+                        .find(|(c, _)| c == col)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Value::Null)
+                })
+                .collect();
+            let key_str = self.values_to_group_key(&group_key);
+            groups
+                .entry(key_str)
+                .or_insert_with(|| (group_key, Vec::new()))
+                .1
+                .push(row);
+        }
+
+        // Compute aggregates for each group
+        let mut result_rows: Vec<Row> = Vec::new();
+
+        for (_, (_group_key, group_rows)) in groups {
+            let mut values: Vec<(String, Value)> = Vec::new();
+
+            // Add non-aggregate columns (group key columns)
+            for (alias, expr) in non_agg_columns {
+                let val = if let Some(first_row) = group_rows.first() {
+                    self.get_row_value(expr, first_row).unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
+                values.push((alias.clone(), val));
+            }
+
+            // Compute aggregates for this group
+            for (alias, agg) in aggregates {
+                let val = self.compute_aggregate_for_group(agg, &group_rows)?;
+                values.push((alias.clone(), val));
+            }
+
+            let row = Row { id: 0, values };
+
+            // Apply HAVING filter if present
+            if let Some(ref having_expr) = select.having {
+                if !self.evaluate_join_condition(having_expr, &row) {
+                    continue;
+                }
+            }
+
+            result_rows.push(row);
+        }
+
+        Ok(Some(QueryResult::Rows(result_rows)))
+    }
+
+    fn compute_aggregate_for_group(&self, agg: &AggregateFunc, rows: &[&Row]) -> Result<Value> {
+        match agg {
+            AggregateFunc::Count(col) => {
+                let count = if col.is_none() {
+                    rows.len() as u64
+                } else {
+                    rows.iter()
+                        .filter(|r| {
+                            r.values.iter().any(|(c, v)| {
+                                c == col.as_ref().unwrap() && !matches!(v, Value::Null)
+                            })
+                        })
+                        .count() as u64
+                };
+                Ok(Value::Int(count as i64))
+            },
+            AggregateFunc::Sum(col) => {
+                let mut sum = 0.0;
+                for row in rows {
+                    if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
+                        match val {
+                            Value::Int(i) => sum += *i as f64,
+                            Value::Float(f) => sum += *f,
+                            _ => {},
+                        }
+                    }
+                }
+                Ok(Value::Float(sum))
+            },
+            AggregateFunc::Avg(col) => {
+                let mut sum = 0.0;
+                let mut count = 0;
+                for row in rows {
+                    if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
+                        match val {
+                            Value::Int(i) => {
+                                sum += *i as f64;
+                                count += 1;
+                            },
+                            Value::Float(f) => {
+                                sum += *f;
+                                count += 1;
+                            },
+                            _ => {},
+                        }
+                    }
+                }
+                if count == 0 {
+                    Ok(Value::Null)
+                } else {
+                    Ok(Value::Float(sum / count as f64))
+                }
+            },
+            AggregateFunc::Min(col) => {
+                let mut min_val: Option<Value> = None;
+                for row in rows {
+                    if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
+                        if matches!(val, Value::Null) {
+                            continue;
+                        }
+                        min_val = Some(match &min_val {
+                            None => val.clone(),
+                            Some(current) => match (current, val) {
+                                (Value::Int(a), Value::Int(b)) => {
+                                    if b < a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                (Value::Float(a), Value::Float(b)) => {
+                                    if b < a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                (Value::String(a), Value::String(b)) => {
+                                    if b < a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                _ => current.clone(),
+                            },
+                        });
+                    }
+                }
+                Ok(min_val.unwrap_or(Value::Null))
+            },
+            AggregateFunc::Max(col) => {
+                let mut max_val: Option<Value> = None;
+                for row in rows {
+                    if let Some((_, val)) = row.values.iter().find(|(c, _)| c == col) {
+                        if matches!(val, Value::Null) {
+                            continue;
+                        }
+                        max_val = Some(match &max_val {
+                            None => val.clone(),
+                            Some(current) => match (current, val) {
+                                (Value::Int(a), Value::Int(b)) => {
+                                    if b > a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                (Value::Float(a), Value::Float(b)) => {
+                                    if b > a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                (Value::String(a), Value::String(b)) => {
+                                    if b > a {
+                                        val.clone()
+                                    } else {
+                                        current.clone()
+                                    }
+                                },
+                                _ => current.clone(),
+                            },
+                        });
+                    }
+                }
+                Ok(max_val.unwrap_or(Value::Null))
+            },
+        }
+    }
+
+    fn values_to_group_key(&self, values: &[Value]) -> String {
+        values
+            .iter()
+            .map(|v| match v {
+                Value::Null => "NULL".to_string(),
+                Value::Int(i) => format!("I:{}", i),
+                Value::Float(f) => format!("F:{}", f),
+                Value::String(s) => format!("S:{}", s),
+                Value::Bool(b) => format!("B:{}", b),
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    fn parse_aggregate(&self, expr: &Expr) -> Option<AggregateFunc> {
+        if let ExprKind::Call(call) = &expr.kind {
+            let name = call.name.name.to_uppercase();
+            match name.as_str() {
+                "COUNT" => {
+                    if call.args.is_empty() {
+                        Some(AggregateFunc::Count(None))
+                    } else if let ExprKind::Wildcard = &call.args[0].kind {
+                        Some(AggregateFunc::Count(None))
+                    } else {
+                        let col = self.expr_to_column_name(&call.args[0]).ok()?;
+                        Some(AggregateFunc::Count(Some(col)))
+                    }
+                },
+                "SUM" => {
+                    if call.args.is_empty() {
+                        return None;
+                    }
+                    let col = self.expr_to_column_name(&call.args[0]).ok()?;
+                    Some(AggregateFunc::Sum(col))
+                },
+                "AVG" => {
+                    if call.args.is_empty() {
+                        return None;
+                    }
+                    let col = self.expr_to_column_name(&call.args[0]).ok()?;
+                    Some(AggregateFunc::Avg(col))
+                },
+                "MIN" => {
+                    if call.args.is_empty() {
+                        return None;
+                    }
+                    let col = self.expr_to_column_name(&call.args[0]).ok()?;
+                    Some(AggregateFunc::Min(col))
+                },
+                "MAX" => {
+                    if call.args.is_empty() {
+                        return None;
+                    }
+                    let col = self.expr_to_column_name(&call.args[0]).ok()?;
+                    Some(AggregateFunc::Max(col))
+                },
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    fn aggregate_default_name(&self, expr: &Expr) -> String {
+        if let ExprKind::Call(call) = &expr.kind {
+            let name = call.name.name.to_uppercase();
+            if call.args.is_empty() {
+                format!("{}(*)", name)
+            } else if let ExprKind::Wildcard = &call.args[0].kind {
+                format!("{}(*)", name)
+            } else if let Ok(col) = self.expr_to_column_name(&call.args[0]) {
+                format!("{}({})", name, col)
+            } else {
+                format!("{}(?)", name)
+            }
+        } else {
+            "?".to_string()
+        }
+    }
+
+    fn get_row_value(&self, expr: &Expr, row: &Row) -> Option<Value> {
+        match &expr.kind {
+            ExprKind::Literal(lit) => Some(match lit {
+                Literal::Null => Value::Null,
+                Literal::Boolean(b) => Value::Bool(*b),
+                Literal::Integer(i) => Value::Int(*i),
+                Literal::Float(f) => Value::Float(*f),
+                Literal::String(s) => Value::String(s.clone()),
+            }),
+            ExprKind::Ident(ident) => {
+                // Try to find the column directly or with table prefix
+                row.values
+                    .iter()
+                    .find(|(col, _)| {
+                        col == &ident.name || col.ends_with(&format!(".{}", ident.name))
+                    })
+                    .map(|(_, v)| v.clone())
+            },
+            ExprKind::Qualified(table_expr, col) => {
+                if let ExprKind::Ident(table) = &table_expr.kind {
+                    let full_name = format!("{}.{}", table.name, col.name);
+                    row.values
+                        .iter()
+                        .find(|(c, _)| c == &full_name)
+                        .map(|(_, v)| v.clone())
+                } else {
+                    None
+                }
+            },
+            ExprKind::Call(_) => {
+                // For aggregate functions like COUNT(*), SUM(col), etc.
+                // Look up by the computed column name
+                let col_name = self.aggregate_default_name(expr);
+                row.values
+                    .iter()
+                    .find(|(c, _)| c == &col_name)
+                    .map(|(_, v)| v.clone())
+            },
+            _ => None,
+        }
     }
 
     fn extract_projection(
@@ -2942,6 +3718,74 @@ impl QueryRouter {
             ExprKind::Literal(Literal::String(s)) => Ok(s.clone()),
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
             _ => Err(RouterError::InvalidArgument("Expected string".to_string())),
+        }
+    }
+
+    /// Extracts column names from a JOIN ON condition like `a.col = b.col`.
+    /// Returns (left_column, right_column).
+    fn extract_join_columns(&self, condition: &JoinCondition) -> Result<(String, String)> {
+        match condition {
+            JoinCondition::On(expr) => match &expr.kind {
+                ExprKind::Binary(left, BinaryOp::Eq, right) => {
+                    let left_col = self.extract_column_from_expr(left)?;
+                    let right_col = self.extract_column_from_expr(right)?;
+                    Ok((left_col, right_col))
+                },
+                _ => Err(RouterError::ParseError(
+                    "JOIN ON condition must be an equality comparison (a.col = b.col)".to_string(),
+                )),
+            },
+            JoinCondition::Using(cols) => {
+                if cols.len() == 1 {
+                    let col = cols[0].name.clone();
+                    Ok((col.clone(), col))
+                } else {
+                    Err(RouterError::ParseError(
+                        "JOIN USING with multiple columns not yet supported".to_string(),
+                    ))
+                }
+            },
+        }
+    }
+
+    fn extract_column_from_expr(&self, expr: &Expr) -> Result<String> {
+        match &expr.kind {
+            ExprKind::Ident(ident) => Ok(ident.name.clone()),
+            ExprKind::Qualified(_, col) => Ok(col.name.clone()),
+            _ => Err(RouterError::ParseError(
+                "Expected column reference in JOIN condition".to_string(),
+            )),
+        }
+    }
+
+    fn merge_rows(
+        &self,
+        row_a: Option<&Row>,
+        row_b: Option<&Row>,
+        table_a: &str,
+        table_b: &str,
+    ) -> Row {
+        let mut values = Vec::new();
+
+        // Add columns from table A
+        if let Some(r) = row_a {
+            values.push((format!("{}._id", table_a), Value::Int(r.id as i64)));
+            for (col, val) in &r.values {
+                values.push((format!("{}.{}", table_a, col), val.clone()));
+            }
+        }
+
+        // Add columns from table B
+        if let Some(r) = row_b {
+            values.push((format!("{}._id", table_b), Value::Int(r.id as i64)));
+            for (col, val) in &r.values {
+                values.push((format!("{}.{}", table_b, col), val.clone()));
+            }
+        }
+
+        Row {
+            id: row_a.map(|r| r.id).or(row_b.map(|r| r.id)).unwrap_or(0),
+            values,
         }
     }
 
@@ -11028,6 +11872,1132 @@ mod tests {
             assert_eq!(analysis.total_transitions, 0);
         } else {
             panic!("expected ANALYZE CODEBOOK TRANSITIONS result");
+        }
+    }
+
+    // ========== JOIN Integration Tests ==========
+
+    fn setup_join_tables(router: &QueryRouter) {
+        router
+            .execute_parsed("CREATE TABLE users (id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("CREATE TABLE orders (id INT, user_id INT, amount INT)")
+            .unwrap();
+
+        router
+            .execute_parsed("INSERT INTO users (id, name) VALUES (1, 'Alice')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO users (id, name) VALUES (2, 'Bob')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO users (id, name) VALUES (3, 'Charlie')")
+            .unwrap();
+
+        router
+            .execute_parsed("INSERT INTO orders (id, user_id, amount) VALUES (101, 1, 100)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO orders (id, user_id, amount) VALUES (102, 1, 200)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO orders (id, user_id, amount) VALUES (103, 2, 150)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO orders (id, user_id, amount) VALUES (104, 99, 50)")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_inner_join_via_router() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt =
+            parser::parse("SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id")
+                .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Alice has 2 orders, Bob has 1 order
+            let alice_orders: Vec<_> = rows
+                .iter()
+                .filter(|r| {
+                    r.values
+                        .iter()
+                        .any(|(k, v)| k == "users.name" && v == &Value::String("Alice".to_string()))
+                })
+                .collect();
+            assert_eq!(alice_orders.len(), 2);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_left_join_via_router() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt =
+            parser::parse("SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id")
+                .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // Alice: 2 orders, Bob: 1 order, Charlie: 0 orders (NULL) = 4 rows total
+            assert_eq!(rows.len(), 4);
+
+            // Charlie should appear with no order data
+            let charlie_row = rows
+                .iter()
+                .find(|r| {
+                    r.values.iter().any(|(k, v)| {
+                        k == "users.name" && v == &Value::String("Charlie".to_string())
+                    })
+                })
+                .expect("Charlie should be in result");
+
+            // Charlie's row should not have orders._id (since no matching order)
+            let has_orders_id = charlie_row.values.iter().any(|(k, _)| k == "orders._id");
+            assert!(!has_orders_id, "Charlie should not have orders._id");
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_right_join_via_router() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt =
+            parser::parse("SELECT * FROM users RIGHT JOIN orders ON users.id = orders.user_id")
+                .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // All 4 orders appear: 3 with matching users, 1 (user_id=99) without
+            assert_eq!(rows.len(), 4);
+
+            // Order 104 (user_id=99) should have no user data
+            let orphan_order = rows
+                .iter()
+                .find(|r| {
+                    r.values
+                        .iter()
+                        .any(|(k, v)| k == "orders.id" && v == &Value::Int(104))
+                })
+                .expect("Order 104 should be in result");
+
+            let has_user_id = orphan_order.values.iter().any(|(k, _)| k == "users._id");
+            assert!(!has_user_id, "Orphan order should not have users._id");
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_full_join_via_router() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt =
+            parser::parse("SELECT * FROM users FULL JOIN orders ON users.id = orders.user_id")
+                .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // 3 matched + 1 unmatched user (Charlie) + 1 unmatched order (104) = 5 rows
+            assert_eq!(rows.len(), 5);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_cross_join_via_router() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt = parser::parse("SELECT * FROM users CROSS JOIN orders").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // 3 users * 4 orders = 12 rows
+            assert_eq!(rows.len(), 12);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_natural_join_via_router() {
+        let router = QueryRouter::new();
+
+        router
+            .execute_parsed("CREATE TABLE departments (dept_id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("CREATE TABLE employees (emp_id INT, dept_id INT, name TEXT)")
+            .unwrap();
+
+        router
+            .execute_parsed("INSERT INTO departments (dept_id, name) VALUES (1, 'Engineering')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO departments (dept_id, name) VALUES (2, 'Sales')")
+            .unwrap();
+
+        router
+            .execute_parsed(
+                "INSERT INTO employees (emp_id, dept_id, name) VALUES (100, 1, 'Alice')",
+            )
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO employees (emp_id, dept_id, name) VALUES (101, 1, 'Bob')")
+            .unwrap();
+        router
+            .execute_parsed(
+                "INSERT INTO employees (emp_id, dept_id, name) VALUES (102, 2, 'Charlie')",
+            )
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM departments NATURAL JOIN employees").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // NATURAL JOIN matches on common columns: dept_id AND name
+            // Engineering has dept_id=1, name="Engineering"
+            // Employees have dept_id=1 with name="Alice" or "Bob" - no match on name
+            // This should result in 0 matches because name differs
+            assert_eq!(rows.len(), 0);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_join_with_where_clause() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt = parser::parse(
+            "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id WHERE orders.amount > 100"
+        ).unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // Only orders with amount > 100: order 102 (200) and order 103 (150)
+            assert_eq!(rows.len(), 2);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_join_with_limit() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt = parser::parse(
+            "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id LIMIT 2",
+        )
+        .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 2);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_join_using_clause() {
+        let router = QueryRouter::new();
+
+        router
+            .execute_parsed("CREATE TABLE products (product_id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("CREATE TABLE sales (sale_id INT, product_id INT, qty INT)")
+            .unwrap();
+
+        router
+            .execute_parsed("INSERT INTO products (product_id, name) VALUES (1, 'Widget')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO products (product_id, name) VALUES (2, 'Gadget')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO sales (sale_id, product_id, qty) VALUES (100, 1, 10)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO sales (sale_id, product_id, qty) VALUES (101, 1, 5)")
+            .unwrap();
+
+        let stmt =
+            parser::parse("SELECT * FROM products INNER JOIN sales USING (product_id)").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // Widget has 2 sales
+            assert_eq!(rows.len(), 2);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    // ========== ORDER BY and OFFSET Tests ==========
+
+    #[test]
+    fn test_order_by_asc() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, name TEXT, price INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (1, 'Apple', 100)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (2, 'Banana', 50)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (3, 'Cherry', 200)")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY price ASC").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Check order: Banana (50), Apple (100), Cherry (200)
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Banana".to_string())
+            );
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Apple".to_string())
+            );
+            assert_eq!(
+                rows[2].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Cherry".to_string())
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_order_by_desc() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, name TEXT, price INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (1, 'Apple', 100)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (2, 'Banana', 50)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name, price) VALUES (3, 'Cherry', 200)")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY price DESC").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Check order: Cherry (200), Apple (100), Banana (50)
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Cherry".to_string())
+            );
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Apple".to_string())
+            );
+            assert_eq!(
+                rows[2].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Banana".to_string())
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_order_by_string() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (1, 'Cherry')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (2, 'Apple')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (3, 'Banana')")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY name").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Alphabetical order: Apple, Banana, Cherry
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Apple".to_string())
+            );
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Banana".to_string())
+            );
+            assert_eq!(
+                rows[2].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("Cherry".to_string())
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_order_by_multiple_columns() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, category TEXT, price INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, category, price) VALUES (1, 'Fruit', 100)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, category, price) VALUES (2, 'Fruit', 50)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, category, price) VALUES (3, 'Veggie', 75)")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY category ASC, price DESC").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Fruit category first (sorted by price desc), then Veggie
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "id").unwrap().1,
+                Value::Int(1)
+            ); // Fruit, 100
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "id").unwrap().1,
+                Value::Int(2)
+            ); // Fruit, 50
+            assert_eq!(
+                rows[2].values.iter().find(|(k, _)| k == "id").unwrap().1,
+                Value::Int(3)
+            ); // Veggie, 75
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_offset() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (1, 'A')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (2, 'B')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (3, 'C')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (4, 'D')")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY id OFFSET 2").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("C".to_string())
+            );
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("D".to_string())
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_order_by_with_limit_and_offset() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT, name TEXT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (1, 'A')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (2, 'B')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (3, 'C')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (4, 'D')")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id, name) VALUES (5, 'E')")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items ORDER BY id LIMIT 2 OFFSET 1").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // Skip 1, take 2: B, C
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows[0].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("B".to_string())
+            );
+            assert_eq!(
+                rows[1].values.iter().find(|(k, _)| k == "name").unwrap().1,
+                Value::String("C".to_string())
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_offset_beyond_rows() {
+        let router = QueryRouter::new();
+        router
+            .execute_parsed("CREATE TABLE items (id INT)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id) VALUES (1)")
+            .unwrap();
+        router
+            .execute_parsed("INSERT INTO items (id) VALUES (2)")
+            .unwrap();
+
+        let stmt = parser::parse("SELECT * FROM items OFFSET 10").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 0);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_order_by_with_join() {
+        let router = QueryRouter::new();
+        setup_join_tables(&router);
+
+        let stmt = parser::parse(
+            "SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id ORDER BY orders.amount DESC"
+        ).unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+            // Order by amount DESC: 200, 150, 100
+            let amounts: Vec<_> = rows
+                .iter()
+                .map(|r| {
+                    r.values
+                        .iter()
+                        .find(|(k, _)| k == "orders.amount")
+                        .unwrap()
+                        .1
+                        .clone()
+                })
+                .collect();
+            assert_eq!(
+                amounts,
+                vec![Value::Int(200), Value::Int(150), Value::Int(100)]
+            );
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    // ========== Aggregate Function Tests ==========
+
+    fn setup_aggregate_table(router: &QueryRouter) {
+        router
+            .execute_parsed("CREATE TABLE sales (id INT, product TEXT, amount INT, price FLOAT)")
+            .unwrap();
+        router
+            .execute_parsed(
+                "INSERT INTO sales (id, product, amount, price) VALUES (1, 'Apple', 10, 1.50)",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "INSERT INTO sales (id, product, amount, price) VALUES (2, 'Banana', 20, 0.75)",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "INSERT INTO sales (id, product, amount, price) VALUES (3, 'Cherry', 15, 2.00)",
+            )
+            .unwrap();
+        router
+            .execute_parsed(
+                "INSERT INTO sales (id, product, amount, price) VALUES (4, 'Apple', 5, 1.50)",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_count_star() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT COUNT(*) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let count = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "COUNT(*)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(count, Value::Int(4));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_count_column() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT COUNT(product) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let count = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "COUNT(product)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(count, Value::Int(4));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_sum() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT SUM(amount) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let sum = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "SUM(amount)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(sum, Value::Float(50.0)); // 10 + 20 + 15 + 5
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_avg() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT AVG(amount) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let avg = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "AVG(amount)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(avg, Value::Float(12.5)); // 50 / 4
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_min() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT MIN(amount) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let min = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "MIN(amount)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(min, Value::Int(5));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_max() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT MAX(amount) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let max = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "MAX(amount)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(max, Value::Int(20));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_multiple_aggregates() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT COUNT(*), SUM(amount), AVG(price) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let count = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "COUNT(*)")
+                .unwrap()
+                .1
+                .clone();
+            let sum = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "SUM(amount)")
+                .unwrap()
+                .1
+                .clone();
+            let avg = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "AVG(price)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(count, Value::Int(4));
+            assert_eq!(sum, Value::Float(50.0));
+            // avg price: (1.50 + 0.75 + 2.00 + 1.50) / 4 = 1.4375
+            if let Value::Float(f) = avg {
+                assert!((f - 1.4375).abs() < 0.0001);
+            } else {
+                panic!("expected Float");
+            }
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_with_where() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT COUNT(*), SUM(amount) FROM sales WHERE product = 'Apple'")
+            .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let count = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "COUNT(*)")
+                .unwrap()
+                .1
+                .clone();
+            let sum = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "SUM(amount)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(count, Value::Int(2)); // Two Apple rows
+            assert_eq!(sum, Value::Float(15.0)); // 10 + 5
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_with_alias() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT COUNT(*) AS total_count FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let count = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "total_count")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(count, Value::Int(4));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_min_max_string() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT MIN(product), MAX(product) FROM sales").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1);
+            let min = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "MIN(product)")
+                .unwrap()
+                .1
+                .clone();
+            let max = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "MAX(product)")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(min, Value::String("Apple".to_string()));
+            assert_eq!(max, Value::String("Cherry".to_string()));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_single_column() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        // Group by product, count per product
+        let stmt = parser::parse("SELECT product, COUNT(*) FROM sales GROUP BY product").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3); // Apple, Banana, Cherry
+
+            // Find each product's count
+            let get_count = |product: &str| -> i64 {
+                rows.iter()
+                    .find(|r| {
+                        r.values.iter().any(|(k, v)| {
+                            k == "product" && *v == Value::String(product.to_string())
+                        })
+                    })
+                    .and_then(|r| r.values.iter().find(|(k, _)| k == "COUNT(*)"))
+                    .map(|(_, v)| if let Value::Int(i) = v { *i } else { 0 })
+                    .unwrap_or(0)
+            };
+
+            assert_eq!(get_count("Apple"), 2);
+            assert_eq!(get_count("Banana"), 1);
+            assert_eq!(get_count("Cherry"), 1);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_with_sum() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt =
+            parser::parse("SELECT product, SUM(amount) FROM sales GROUP BY product").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+
+            let get_sum = |product: &str| -> f64 {
+                rows.iter()
+                    .find(|r| {
+                        r.values.iter().any(|(k, v)| {
+                            k == "product" && *v == Value::String(product.to_string())
+                        })
+                    })
+                    .and_then(|r| r.values.iter().find(|(k, _)| k == "SUM(amount)"))
+                    .map(|(_, v)| if let Value::Float(f) = v { *f } else { 0.0 })
+                    .unwrap_or(0.0)
+            };
+
+            assert_eq!(get_sum("Apple"), 15.0); // 10 + 5
+            assert_eq!(get_sum("Banana"), 20.0); // Single row with amount=20
+            assert_eq!(get_sum("Cherry"), 15.0); // Single row with amount=15
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_with_avg() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt =
+            parser::parse("SELECT product, AVG(amount) FROM sales GROUP BY product").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+
+            let get_avg = |product: &str| -> f64 {
+                rows.iter()
+                    .find(|r| {
+                        r.values.iter().any(|(k, v)| {
+                            k == "product" && *v == Value::String(product.to_string())
+                        })
+                    })
+                    .and_then(|r| r.values.iter().find(|(k, _)| k == "AVG(amount)"))
+                    .map(|(_, v)| if let Value::Float(f) = v { *f } else { 0.0 })
+                    .unwrap_or(0.0)
+            };
+
+            assert_eq!(get_avg("Apple"), 7.5); // (10 + 5) / 2
+            assert_eq!(get_avg("Banana"), 20.0); // Single row
+            assert_eq!(get_avg("Cherry"), 15.0); // Single row
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_with_having() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        // Only groups with count > 1
+        let stmt = parser::parse(
+            "SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) > 1",
+        )
+        .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1); // Only Apple has count > 1
+            let product = rows[0]
+                .values
+                .iter()
+                .find(|(k, _)| k == "product")
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(product, Value::String("Apple".to_string()));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_with_having_sum() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        // Only groups with sum > 15
+        let stmt = parser::parse(
+            "SELECT product, SUM(amount) FROM sales GROUP BY product HAVING SUM(amount) > 15",
+        )
+        .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 1); // Only Banana (20) has sum > 15
+
+            let products: Vec<String> = rows
+                .iter()
+                .filter_map(|r| r.values.iter().find(|(k, _)| k == "product"))
+                .filter_map(|(_, v)| {
+                    if let Value::String(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            assert!(products.contains(&"Banana".to_string()));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_with_where_and_having() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        // Filter rows first (WHERE amount > 5), then group, then filter groups (HAVING)
+        let stmt = parser::parse("SELECT product, COUNT(*), SUM(amount) FROM sales WHERE amount > 5 GROUP BY product HAVING COUNT(*) >= 1").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            // After WHERE amount > 5: Apple(10), Banana(8), Cherry(12)
+            // Each product has count=1, sum equals the single value
+            assert_eq!(rows.len(), 3);
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_group_by_multiple_aggregates() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        let stmt = parser::parse("SELECT product, COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM sales GROUP BY product").unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 3);
+
+            // Find Apple row and check all aggregates
+            let apple_row = rows
+                .iter()
+                .find(|r| {
+                    r.values
+                        .iter()
+                        .any(|(k, v)| k == "product" && *v == Value::String("Apple".to_string()))
+                })
+                .expect("Apple row not found");
+
+            let count = apple_row
+                .values
+                .iter()
+                .find(|(k, _)| k == "COUNT(*)")
+                .unwrap()
+                .1
+                .clone();
+            let sum = apple_row
+                .values
+                .iter()
+                .find(|(k, _)| k == "SUM(amount)")
+                .unwrap()
+                .1
+                .clone();
+            let avg = apple_row
+                .values
+                .iter()
+                .find(|(k, _)| k == "AVG(amount)")
+                .unwrap()
+                .1
+                .clone();
+            let min = apple_row
+                .values
+                .iter()
+                .find(|(k, _)| k == "MIN(amount)")
+                .unwrap()
+                .1
+                .clone();
+            let max = apple_row
+                .values
+                .iter()
+                .find(|(k, _)| k == "MAX(amount)")
+                .unwrap()
+                .1
+                .clone();
+
+            assert_eq!(count, Value::Int(2));
+            assert_eq!(sum, Value::Float(15.0));
+            assert_eq!(avg, Value::Float(7.5));
+            // MIN/MAX preserve the original column type (INT)
+            assert_eq!(min, Value::Int(5));
+            assert_eq!(max, Value::Int(10));
+        } else {
+            panic!("expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_having_without_matching_groups() {
+        let router = QueryRouter::new();
+        setup_aggregate_table(&router);
+
+        // No groups have count > 10
+        let stmt = parser::parse(
+            "SELECT product, COUNT(*) FROM sales GROUP BY product HAVING COUNT(*) > 10",
+        )
+        .unwrap();
+        let result = router.execute_statement(&stmt).unwrap();
+
+        if let QueryResult::Rows(rows) = result {
+            assert_eq!(rows.len(), 0); // No groups match
+        } else {
+            panic!("expected Rows result");
         }
     }
 }

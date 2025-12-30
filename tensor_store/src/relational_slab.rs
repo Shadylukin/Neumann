@@ -17,6 +17,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Range operation for B-tree index queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
 /// Row identifier within a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RowId(pub u64);
@@ -330,6 +339,65 @@ impl TableStorage {
             })
             .unwrap_or_default()
     }
+
+    fn index_range(&self, column: &str, op: RangeOp, key: i64) -> Vec<RowId> {
+        let Some(index) = self.hash_indexes.get(column) else {
+            return Vec::new();
+        };
+
+        let alive = &self.alive;
+        let filter_alive = |rows: &Vec<RowId>| -> Vec<RowId> {
+            rows.iter()
+                .filter(|r| alive[r.as_u64() as usize])
+                .copied()
+                .collect()
+        };
+
+        let mut result = Vec::new();
+
+        match op {
+            RangeOp::Lt => {
+                for (_, rows) in index.range(..key) {
+                    result.extend(filter_alive(rows));
+                }
+            },
+            RangeOp::Le => {
+                for (_, rows) in index.range(..=key) {
+                    result.extend(filter_alive(rows));
+                }
+            },
+            RangeOp::Gt => {
+                for (_, rows) in
+                    index.range((std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+                {
+                    result.extend(filter_alive(rows));
+                }
+            },
+            RangeOp::Ge => {
+                for (_, rows) in index.range(key..) {
+                    result.extend(filter_alive(rows));
+                }
+            },
+        }
+
+        result
+    }
+
+    fn index_between(&self, column: &str, min: i64, max: i64) -> Vec<RowId> {
+        let Some(index) = self.hash_indexes.get(column) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        for (_, rows) in index.range(min..=max) {
+            for row_id in rows {
+                if self.alive[row_id.as_u64() as usize] {
+                    result.push(*row_id);
+                }
+            }
+        }
+        result
+    }
 }
 
 /// Columnar storage for relational tables.
@@ -483,6 +551,38 @@ impl RelationalSlab {
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
         Ok(storage.index_lookup(column, key))
+    }
+
+    /// Range query on indexed column using B-tree's O(log n) range operations.
+    pub fn index_range(
+        &self,
+        table: &str,
+        column: &str,
+        op: RangeOp,
+        key: i64,
+    ) -> Result<Vec<RowId>, RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        Ok(storage.index_range(column, op, key))
+    }
+
+    /// Range query for values between min and max (inclusive).
+    pub fn index_between(
+        &self,
+        table: &str,
+        column: &str,
+        min: i64,
+        max: i64,
+    ) -> Result<Vec<RowId>, RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        Ok(storage.index_between(column, min, max))
     }
 
     /// Get the number of live rows in a table.
@@ -1184,5 +1284,145 @@ mod tests {
         assert!(!ColumnValue::Float(1.0).is_null());
         assert!(!ColumnValue::Bool(true).is_null());
         assert!(!ColumnValue::String("test".to_string()).is_null());
+    }
+
+    #[test]
+    fn test_index_range_lt() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        let results = slab.index_range("users", "id", RangeOp::Lt, 5).unwrap();
+        assert_eq!(results.len(), 5); // ids 0, 1, 2, 3, 4
+    }
+
+    #[test]
+    fn test_index_range_le() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        let results = slab.index_range("users", "id", RangeOp::Le, 5).unwrap();
+        assert_eq!(results.len(), 6); // ids 0, 1, 2, 3, 4, 5
+    }
+
+    #[test]
+    fn test_index_range_gt() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        let results = slab.index_range("users", "id", RangeOp::Gt, 5).unwrap();
+        assert_eq!(results.len(), 4); // ids 6, 7, 8, 9
+    }
+
+    #[test]
+    fn test_index_range_ge() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        let results = slab.index_range("users", "id", RangeOp::Ge, 5).unwrap();
+        assert_eq!(results.len(), 5); // ids 5, 6, 7, 8, 9
+    }
+
+    #[test]
+    fn test_index_between() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        let results = slab.index_between("users", "id", 3, 7).unwrap();
+        assert_eq!(results.len(), 5); // ids 3, 4, 5, 6, 7
+    }
+
+    #[test]
+    fn test_index_range_with_deleted_rows() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..10 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("users", "id").unwrap();
+
+        // Delete some rows
+        slab.delete("users", RowId::new(3)).unwrap();
+        slab.delete("users", RowId::new(5)).unwrap();
+
+        let results = slab.index_range("users", "id", RangeOp::Lt, 7).unwrap();
+        assert_eq!(results.len(), 5); // ids 0, 1, 2, 4, 6 (3, 5 deleted)
+    }
+
+    #[test]
+    fn test_index_range_no_index() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..5 {
+            slab.insert("users", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        // No index created
+        let results = slab.index_range("users", "id", RangeOp::Lt, 3).unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_index_range_performance() {
+        let slab = RelationalSlab::new();
+        slab.create_table("perf", create_test_schema()).unwrap();
+
+        let count = 10_000;
+        for i in 0..count {
+            slab.insert("perf", create_test_row(i, &format!("User{}", i), 20))
+                .unwrap();
+        }
+
+        slab.create_index("perf", "id").unwrap();
+
+        let start = Instant::now();
+        let results = slab.index_range("perf", "id", RangeOp::Lt, 100).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(results.len(), 100);
+        assert!(
+            elapsed.as_micros() < 5000,
+            "Range query took {:?}, expected < 5ms",
+            elapsed
+        );
     }
 }

@@ -1,6 +1,7 @@
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
@@ -80,7 +81,6 @@ mod simd {
         }
     }
 
-    /// SIMD-accelerated filter: values > threshold.
     #[inline]
     pub fn filter_gt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -113,8 +113,6 @@ mod simd {
         }
     }
 
-    /// SIMD-accelerated filter: values >= threshold.
-    /// Implemented as (v > threshold) | (v == threshold).
     #[inline]
     pub fn filter_ge_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -148,7 +146,6 @@ mod simd {
         }
     }
 
-    /// SIMD-accelerated filter: values == target.
     #[inline]
     pub fn filter_eq_i64(values: &[i64], target: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -181,8 +178,6 @@ mod simd {
         }
     }
 
-    /// SIMD-accelerated filter: values != target.
-    /// Implemented as NOT(v == target).
     #[inline]
     pub fn filter_ne_i64(values: &[i64], target: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -215,7 +210,6 @@ mod simd {
         }
     }
 
-    /// Combine two bitmaps with AND.
     #[inline]
     pub fn bitmap_and(a: &[u64], b: &[u64], result: &mut [u64]) {
         for i in 0..a.len().min(b.len()).min(result.len()) {
@@ -223,7 +217,6 @@ mod simd {
         }
     }
 
-    /// Combine two bitmaps with OR.
     #[inline]
     pub fn bitmap_or(a: &[u64], b: &[u64], result: &mut [u64]) {
         for i in 0..a.len().min(b.len()).min(result.len()) {
@@ -231,13 +224,11 @@ mod simd {
         }
     }
 
-    /// Count set bits in bitmap.
     #[inline]
     pub fn popcount(bitmap: &[u64]) -> usize {
         bitmap.iter().map(|w| w.count_ones() as usize).sum()
     }
 
-    /// Extract indices of set bits from bitmap.
     pub fn selected_indices(bitmap: &[u64], max_count: usize) -> Vec<usize> {
         let mut indices = Vec::with_capacity(max_count.min(1024));
         for (word_idx, &word) in bitmap.iter().enumerate() {
@@ -252,7 +243,6 @@ mod simd {
         indices
     }
 
-    /// Allocate a bitmap with enough words for n bits.
     #[inline]
     pub fn bitmap_words(n: usize) -> usize {
         n.div_ceil(64)
@@ -432,8 +422,15 @@ impl Value {
         }
     }
 
-    /// Returns a key that sorts lexicographically in the same order as the value.
-    /// Used for B-tree indexes to enable range queries via prefix scans.
+    fn partial_cmp_value(&self, other: &Value) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
+    }
+
     fn sortable_key(&self) -> String {
         match self {
             Value::Null => "0".to_string(),
@@ -461,6 +458,16 @@ impl Value {
                     "b0".to_string()
                 }
             },
+        }
+    }
+
+    pub fn is_truthy(&self) -> bool {
+        match self {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Int(i) => *i != 0,
+            Value::Float(f) => *f != 0.0,
+            Value::String(s) => !s.is_empty(),
         }
     }
 }
@@ -494,7 +501,6 @@ impl Row {
             .map(|(_, v)| v.clone())
     }
 
-    /// Check if a column exists in this row.
     pub fn contains(&self, column: &str) -> bool {
         self.values.iter().any(|(k, _)| k == column)
     }
@@ -523,65 +529,53 @@ impl Condition {
     }
 
     pub fn evaluate(&self, row: &Row) -> bool {
+        use std::cmp::Ordering;
         match self {
             Condition::True => true,
             Condition::Eq(col, val) => row.get_with_id(col).as_ref() == Some(val),
             Condition::Ne(col, val) => row.get_with_id(col).as_ref() != Some(val),
-            Condition::Lt(col, val) => self.compare_lt(row, col, val),
-            Condition::Le(col, val) => self.compare_le(row, col, val),
-            Condition::Gt(col, val) => self.compare_gt(row, col, val),
-            Condition::Ge(col, val) => self.compare_ge(row, col, val),
+            Condition::Lt(col, val) => self.compare_ord(row, col, val, Ordering::Less),
+            Condition::Le(col, val) => self.compare_ord_le(row, col, val),
+            Condition::Gt(col, val) => self.compare_ord(row, col, val, Ordering::Greater),
+            Condition::Ge(col, val) => self.compare_ord_ge(row, col, val),
             Condition::And(a, b) => a.evaluate(row) && b.evaluate(row),
             Condition::Or(a, b) => a.evaluate(row) || b.evaluate(row),
         }
     }
 
-    fn compare_lt(&self, row: &Row, col: &str, val: &Value) -> bool {
-        match (row.get_with_id(col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a < *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a < *b,
-            (Some(Value::String(a)), Value::String(b)) => a < *b,
-            _ => false,
-        }
+    fn compare_ord(&self, row: &Row, col: &str, val: &Value, ord: std::cmp::Ordering) -> bool {
+        row.get_with_id(col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o == ord)
+            .unwrap_or(false)
     }
 
-    fn compare_le(&self, row: &Row, col: &str, val: &Value) -> bool {
-        match (row.get_with_id(col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a <= *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a <= *b,
-            (Some(Value::String(a)), Value::String(b)) => a <= *b,
-            _ => false,
-        }
+    fn compare_ord_le(&self, row: &Row, col: &str, val: &Value) -> bool {
+        row.get_with_id(col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o != std::cmp::Ordering::Greater)
+            .unwrap_or(false)
     }
 
-    fn compare_gt(&self, row: &Row, col: &str, val: &Value) -> bool {
-        match (row.get_with_id(col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a > *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a > *b,
-            (Some(Value::String(a)), Value::String(b)) => a > *b,
-            _ => false,
-        }
+    fn compare_ord_ge(&self, row: &Row, col: &str, val: &Value) -> bool {
+        row.get_with_id(col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o != std::cmp::Ordering::Less)
+            .unwrap_or(false)
     }
 
-    fn compare_ge(&self, row: &Row, col: &str, val: &Value) -> bool {
-        match (row.get_with_id(col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a >= *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a >= *b,
-            (Some(Value::String(a)), Value::String(b)) => a >= *b,
-            _ => false,
-        }
-    }
-
-    /// Evaluate condition directly on TensorData without intermediate Row conversion.
-    /// This avoids HashMap allocation and cloning for rows that don't match.
+    /// Evaluates directly on TensorData without intermediate Row conversion.
     pub fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
+        use std::cmp::Ordering;
         match self {
             Condition::True => true,
             Condition::Eq(col, val) => Self::tensor_field_eq(tensor, col, val),
             Condition::Ne(col, val) => !Self::tensor_field_eq(tensor, col, val),
-            Condition::Lt(col, val) => Self::tensor_compare_lt(tensor, col, val),
+            Condition::Lt(col, val) => Self::tensor_compare_ord(tensor, col, val, Ordering::Less),
             Condition::Le(col, val) => Self::tensor_compare_le(tensor, col, val),
-            Condition::Gt(col, val) => Self::tensor_compare_gt(tensor, col, val),
+            Condition::Gt(col, val) => {
+                Self::tensor_compare_ord(tensor, col, val, Ordering::Greater)
+            },
             Condition::Ge(col, val) => Self::tensor_compare_ge(tensor, col, val),
             Condition::And(a, b) => a.evaluate_tensor(tensor) && b.evaluate_tensor(tensor),
             Condition::Or(a, b) => a.evaluate_tensor(tensor) || b.evaluate_tensor(tensor),
@@ -607,40 +601,30 @@ impl Condition {
         Self::tensor_get_value(tensor, col).as_ref() == Some(val)
     }
 
-    fn tensor_compare_lt(tensor: &TensorData, col: &str, val: &Value) -> bool {
-        match (Self::tensor_get_value(tensor, col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a < *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a < *b,
-            (Some(Value::String(a)), Value::String(b)) => a < *b,
-            _ => false,
-        }
+    fn tensor_compare_ord(
+        tensor: &TensorData,
+        col: &str,
+        val: &Value,
+        ord: std::cmp::Ordering,
+    ) -> bool {
+        Self::tensor_get_value(tensor, col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o == ord)
+            .unwrap_or(false)
     }
 
     fn tensor_compare_le(tensor: &TensorData, col: &str, val: &Value) -> bool {
-        match (Self::tensor_get_value(tensor, col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a <= *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a <= *b,
-            (Some(Value::String(a)), Value::String(b)) => a <= *b,
-            _ => false,
-        }
-    }
-
-    fn tensor_compare_gt(tensor: &TensorData, col: &str, val: &Value) -> bool {
-        match (Self::tensor_get_value(tensor, col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a > *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a > *b,
-            (Some(Value::String(a)), Value::String(b)) => a > *b,
-            _ => false,
-        }
+        Self::tensor_get_value(tensor, col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o != std::cmp::Ordering::Greater)
+            .unwrap_or(false)
     }
 
     fn tensor_compare_ge(tensor: &TensorData, col: &str, val: &Value) -> bool {
-        match (Self::tensor_get_value(tensor, col), val) {
-            (Some(Value::Int(a)), Value::Int(b)) => a >= *b,
-            (Some(Value::Float(a)), Value::Float(b)) => a >= *b,
-            (Some(Value::String(a)), Value::String(b)) => a >= *b,
-            _ => false,
-        }
+        Self::tensor_get_value(tensor, col)
+            .and_then(|v| v.partial_cmp_value(val))
+            .map(|o| o != std::cmp::Ordering::Less)
+            .unwrap_or(false)
     }
 }
 
@@ -704,19 +688,14 @@ pub type Result<T> = std::result::Result<T, RelationalError>;
 // Columnar Storage Types
 // ============================================================================
 
-/// Type-specific column value storage for SIMD operations.
 #[derive(Debug, Clone)]
 pub enum ColumnValues {
-    /// i64 values packed for SIMD.
     Int(Vec<i64>),
-    /// f64 values packed for SIMD.
     Float(Vec<f64>),
-    /// String dictionary: indices point into dict.
     String {
         dict: Vec<String>,
         indices: Vec<u32>,
     },
-    /// Booleans packed as bits (1 bit per value).
     Bool(Vec<u64>),
 }
 
@@ -735,14 +714,12 @@ impl ColumnValues {
     }
 }
 
-/// Null tracking for columnar data.
 #[derive(Debug, Clone)]
 pub enum NullBitmap {
-    /// No nulls in column.
     None,
-    /// Dense bitmap: 1 bit per row, bit=1 means null.
+    /// Dense bitmap: bit=1 means null.
     Dense(Vec<u64>),
-    /// Sparse: list of null positions (when nulls < 10% of rows).
+    /// List of null positions (when nulls < 10% of rows).
     Sparse(Vec<u64>),
 }
 
@@ -768,16 +745,11 @@ impl NullBitmap {
     }
 }
 
-/// Packed columnar data for vectorized operations.
 #[derive(Debug, Clone)]
 pub struct ColumnData {
-    /// Column name.
     pub name: String,
-    /// Row IDs corresponding to each value (for row reconstruction).
     pub row_ids: Vec<u64>,
-    /// Null positions.
     pub nulls: NullBitmap,
-    /// Typed column values.
     pub values: ColumnValues,
 }
 
@@ -803,13 +775,10 @@ impl ColumnData {
     }
 }
 
-/// Selection vector: tracks which rows pass a filter.
 /// Enables late materialization by deferring row reconstruction.
 #[derive(Debug, Clone)]
 pub struct SelectionVector {
-    /// Bitmap where bit i = 1 means row i is selected.
     bitmap: Vec<u64>,
-    /// Number of rows in the selection (for sizing).
     row_count: usize,
 }
 
@@ -881,18 +850,75 @@ impl SelectionVector {
     }
 }
 
-/// Options for columnar scan operations.
 #[derive(Debug, Clone, Default)]
 pub struct ColumnarScanOptions {
-    /// Columns to project (None = all columns).
     pub projection: Option<Vec<String>>,
-    /// Use columnar path if available.
     pub prefer_columnar: bool,
 }
+
+/// Key for in-memory B-tree indexes: (table, column) -> BTreeMap<value, row_ids>
+type BTreeIndexKey = (String, String);
 
 pub struct RelationalEngine {
     store: TensorStore,
     row_counters: std::sync::RwLock<HashMap<String, AtomicU64>>,
+    /// In-memory B-tree indexes for O(log n) range queries.
+    /// Maps (table, column) to a BTreeMap of value -> row_ids.
+    btree_indexes: RwLock<HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>>>,
+}
+
+/// Ordered key for B-tree indexes with correct comparison semantics.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OrderedKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(OrderedFloat),
+    String(String),
+}
+
+/// Wrapper for f64 that implements total ordering (NaN is less than all values).
+#[derive(Debug, Clone, Copy)]
+pub struct OrderedFloat(pub f64);
+
+impl PartialEq for OrderedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for OrderedFloat {}
+
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.0.is_nan(), other.0.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => self
+                .0
+                .partial_cmp(&other.0)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        }
+    }
+}
+
+impl OrderedKey {
+    fn from_value(value: &Value) -> Self {
+        match value {
+            Value::Null => OrderedKey::Null,
+            Value::Bool(b) => OrderedKey::Bool(*b),
+            Value::Int(i) => OrderedKey::Int(*i),
+            Value::Float(f) => OrderedKey::Float(OrderedFloat(*f)),
+            Value::String(s) => OrderedKey::String(s.clone()),
+        }
+    }
 }
 
 impl RelationalEngine {
@@ -903,6 +929,7 @@ impl RelationalEngine {
         Self {
             store: TensorStore::new(),
             row_counters: std::sync::RwLock::new(HashMap::new()),
+            btree_indexes: RwLock::new(HashMap::new()),
         }
     }
 
@@ -910,6 +937,7 @@ impl RelationalEngine {
         Self {
             store,
             row_counters: std::sync::RwLock::new(HashMap::new()),
+            btree_indexes: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1006,7 +1034,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    /// Gets the schema for a table.
     pub fn get_schema(&self, table: &str) -> Result<Schema> {
         let meta_key = Self::table_meta_key(table);
         let meta = self
@@ -1048,7 +1075,6 @@ impl RelationalEngine {
         Ok(Schema::new(columns))
     }
 
-    /// Lists all tables in the database.
     pub fn list_tables(&self) -> Vec<String> {
         self.store
             .scan("_meta:table:")
@@ -1060,14 +1086,14 @@ impl RelationalEngine {
     fn next_row_id(&self, table: &str) -> u64 {
         let counters = self.row_counters.read().unwrap();
         if let Some(counter) = counters.get(table) {
-            counter.fetch_add(1, Ordering::SeqCst) + 1
+            counter.fetch_add(1, Ordering::Relaxed) + 1
         } else {
             drop(counters);
             let mut counters = self.row_counters.write().unwrap();
             let counter = counters
                 .entry(table.to_string())
                 .or_insert_with(|| AtomicU64::new(0));
-            counter.fetch_add(1, Ordering::SeqCst) + 1
+            counter.fetch_add(1, Ordering::Relaxed) + 1
         }
     }
 
@@ -1441,7 +1467,7 @@ impl RelationalEngine {
         let rows_b = self.select(table_b, Condition::True)?;
 
         // Build hash index on right table (rows_b)
-        let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
             if let Some(val) = row.get_with_id(on_b) {
                 let hash = val.hash_key();
@@ -1496,6 +1522,347 @@ impl RelationalEngine {
         };
 
         Ok(results)
+    }
+
+    /// LEFT JOIN: Returns all rows from table_a, with matching rows from table_b.
+    /// If no match, the table_b side is None.
+    pub fn left_join(
+        &self,
+        table_a: &str,
+        table_b: &str,
+        on_a: &str,
+        on_b: &str,
+    ) -> Result<Vec<(Row, Option<Row>)>> {
+        let _ = self.get_schema(table_a)?;
+        let _ = self.get_schema(table_b)?;
+
+        let rows_a = self.select(table_a, Condition::True)?;
+        let rows_b = self.select(table_b, Condition::True)?;
+
+        // Build hash index on right table
+        let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
+        for (i, row) in rows_b.iter().enumerate() {
+            if let Some(val) = row.get_with_id(on_b) {
+                index.entry(val.hash_key()).or_default().push(i);
+            }
+        }
+
+        let mut results = Vec::new();
+        for row_a in &rows_a {
+            let mut matched = false;
+            if let Some(val) = row_a.get_with_id(on_a) {
+                if let Some(indices) = index.get(&val.hash_key()) {
+                    for &i in indices {
+                        let row_b = &rows_b[i];
+                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                            results.push((row_a.clone(), Some(row_b.clone())));
+                            matched = true;
+                        }
+                    }
+                }
+            }
+            if !matched {
+                results.push((row_a.clone(), None));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// RIGHT JOIN: Returns all rows from table_b, with matching rows from table_a.
+    /// If no match, the table_a side is None.
+    pub fn right_join(
+        &self,
+        table_a: &str,
+        table_b: &str,
+        on_a: &str,
+        on_b: &str,
+    ) -> Result<Vec<(Option<Row>, Row)>> {
+        let _ = self.get_schema(table_a)?;
+        let _ = self.get_schema(table_b)?;
+
+        let rows_a = self.select(table_a, Condition::True)?;
+        let rows_b = self.select(table_b, Condition::True)?;
+
+        // Build hash index on left table
+        let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_a.len());
+        for (i, row) in rows_a.iter().enumerate() {
+            if let Some(val) = row.get_with_id(on_a) {
+                index.entry(val.hash_key()).or_default().push(i);
+            }
+        }
+
+        let mut results = Vec::new();
+        for row_b in &rows_b {
+            let mut matched = false;
+            if let Some(val) = row_b.get_with_id(on_b) {
+                if let Some(indices) = index.get(&val.hash_key()) {
+                    for &i in indices {
+                        let row_a = &rows_a[i];
+                        if row_a.get_with_id(on_a) == Some(val.clone()) {
+                            results.push((Some(row_a.clone()), row_b.clone()));
+                            matched = true;
+                        }
+                    }
+                }
+            }
+            if !matched {
+                results.push((None, row_b.clone()));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// FULL OUTER JOIN: Returns all rows from both tables.
+    /// Rows that don't match get None on the non-matching side.
+    pub fn full_join(
+        &self,
+        table_a: &str,
+        table_b: &str,
+        on_a: &str,
+        on_b: &str,
+    ) -> Result<Vec<(Option<Row>, Option<Row>)>> {
+        let _ = self.get_schema(table_a)?;
+        let _ = self.get_schema(table_b)?;
+
+        let rows_a = self.select(table_a, Condition::True)?;
+        let rows_b = self.select(table_b, Condition::True)?;
+
+        // Build hash index on right table
+        let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
+        for (i, row) in rows_b.iter().enumerate() {
+            if let Some(val) = row.get_with_id(on_b) {
+                index.entry(val.hash_key()).or_default().push(i);
+            }
+        }
+
+        // Track which rows from B were matched
+        let mut matched_b: HashSet<usize> = HashSet::new();
+        let mut results = Vec::new();
+
+        // Process all rows from A (left join portion)
+        for row_a in &rows_a {
+            let mut matched = false;
+            if let Some(val) = row_a.get_with_id(on_a) {
+                if let Some(indices) = index.get(&val.hash_key()) {
+                    for &i in indices {
+                        let row_b = &rows_b[i];
+                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                            results.push((Some(row_a.clone()), Some(row_b.clone())));
+                            matched_b.insert(i);
+                            matched = true;
+                        }
+                    }
+                }
+            }
+            if !matched {
+                results.push((Some(row_a.clone()), None));
+            }
+        }
+
+        // Add unmatched rows from B
+        for (i, row_b) in rows_b.iter().enumerate() {
+            if !matched_b.contains(&i) {
+                results.push((None, Some(row_b.clone())));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// CROSS JOIN: Returns the cartesian product of both tables.
+    /// Every row from table_a is paired with every row from table_b.
+    pub fn cross_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
+        let _ = self.get_schema(table_a)?;
+        let _ = self.get_schema(table_b)?;
+
+        let rows_a = self.select(table_a, Condition::True)?;
+        let rows_b = self.select(table_b, Condition::True)?;
+
+        let mut results = Vec::with_capacity(rows_a.len() * rows_b.len());
+        for row_a in &rows_a {
+            for row_b in &rows_b {
+                results.push((row_a.clone(), row_b.clone()));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// NATURAL JOIN: Joins on all columns with the same name.
+    /// Returns rows where all common columns have equal values.
+    pub fn natural_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
+        let schema_a = self.get_schema(table_a)?;
+        let schema_b = self.get_schema(table_b)?;
+
+        // Find common column names (excluding _id)
+        let cols_a: HashSet<_> = schema_a.columns.iter().map(|c| c.name.as_str()).collect();
+        let cols_b: HashSet<_> = schema_b.columns.iter().map(|c| c.name.as_str()).collect();
+        let common_cols: Vec<_> = cols_a.intersection(&cols_b).copied().collect();
+
+        if common_cols.is_empty() {
+            // No common columns = cross join
+            return self.cross_join(table_a, table_b);
+        }
+
+        let rows_a = self.select(table_a, Condition::True)?;
+        let rows_b = self.select(table_b, Condition::True)?;
+
+        // Build composite hash index on right table using all common columns
+        let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
+        for (i, row) in rows_b.iter().enumerate() {
+            let mut composite_key = String::new();
+            for col in &common_cols {
+                if let Some(val) = row.get_with_id(col) {
+                    composite_key.push_str(&val.hash_key());
+                    composite_key.push('\0');
+                }
+            }
+            index.entry(composite_key).or_default().push(i);
+        }
+
+        // Probe from left table
+        let mut results = Vec::new();
+        for row_a in &rows_a {
+            let mut composite_key = String::new();
+            let mut all_cols_present = true;
+            for col in &common_cols {
+                if let Some(val) = row_a.get_with_id(col) {
+                    composite_key.push_str(&val.hash_key());
+                    composite_key.push('\0');
+                } else {
+                    all_cols_present = false;
+                    break;
+                }
+            }
+
+            if !all_cols_present {
+                continue;
+            }
+
+            if let Some(indices) = index.get(&composite_key) {
+                for &i in indices {
+                    let row_b = &rows_b[i];
+                    // Verify all common columns match
+                    let all_match = common_cols
+                        .iter()
+                        .all(|col| row_a.get_with_id(col) == row_b.get_with_id(col));
+                    if all_match {
+                        results.push((row_a.clone(), row_b.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    // ========== Aggregate Functions ==========
+
+    pub fn count(&self, table: &str, condition: Condition) -> Result<u64> {
+        let rows = self.select(table, condition)?;
+        Ok(rows.len() as u64)
+    }
+
+    pub fn count_column(&self, table: &str, column: &str, condition: Condition) -> Result<u64> {
+        let rows = self.select(table, condition)?;
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.get(column)
+                    .map(|v| !matches!(v, Value::Null))
+                    .unwrap_or(false)
+            })
+            .count();
+        Ok(count as u64)
+    }
+
+    pub fn sum(&self, table: &str, column: &str, condition: Condition) -> Result<f64> {
+        let rows = self.select(table, condition)?;
+        let mut total = 0.0;
+        for row in &rows {
+            if let Some(val) = row.get(column) {
+                match val {
+                    Value::Int(i) => total += *i as f64,
+                    Value::Float(f) => total += *f,
+                    _ => {},
+                }
+            }
+        }
+        Ok(total)
+    }
+
+    pub fn avg(&self, table: &str, column: &str, condition: Condition) -> Result<Option<f64>> {
+        let rows = self.select(table, condition)?;
+        let mut total = 0.0;
+        let mut count = 0u64;
+        for row in &rows {
+            if let Some(val) = row.get(column) {
+                match val {
+                    Value::Int(i) => {
+                        total += *i as f64;
+                        count += 1;
+                    },
+                    Value::Float(f) => {
+                        total += *f;
+                        count += 1;
+                    },
+                    _ => {},
+                }
+            }
+        }
+        if count == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(total / count as f64))
+        }
+    }
+
+    pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
+        let rows = self.select(table, condition)?;
+        let mut min_val: Option<Value> = None;
+        for row in &rows {
+            if let Some(val) = row.get(column) {
+                if matches!(val, Value::Null) {
+                    continue;
+                }
+                min_val = match &min_val {
+                    None => Some(val.clone()),
+                    Some(current) => {
+                        if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Less) {
+                            Some(val.clone())
+                        } else {
+                            min_val
+                        }
+                    },
+                };
+            }
+        }
+        Ok(min_val)
+    }
+
+    pub fn max(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
+        let rows = self.select(table, condition)?;
+        let mut max_val: Option<Value> = None;
+        for row in &rows {
+            if let Some(val) = row.get(column) {
+                if matches!(val, Value::Null) {
+                    continue;
+                }
+                max_val = match &max_val {
+                    None => Some(val.clone()),
+                    Some(current) => {
+                        if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Greater) {
+                            Some(val.clone())
+                        } else {
+                            max_val
+                        }
+                    },
+                };
+            }
+        }
+        Ok(max_val)
     }
 
     pub fn drop_table(&self, table: &str) -> Result<()> {
@@ -1628,6 +1995,12 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
+        // Initialize in-memory BTreeMap for this index
+        {
+            let key = (table.to_string(), column.to_string());
+            self.btree_indexes.write().entry(key).or_default();
+        }
+
         // Build index from existing data using reference-based iteration
         let prefix = Self::row_prefix(table);
         let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
@@ -1644,13 +2017,11 @@ impl RelationalEngine {
         Ok(())
     }
 
-    /// Check if a B-tree index exists on a column.
     pub fn has_btree_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::btree_meta_key(table, column);
         self.store.exists(&meta_key)
     }
 
-    /// Drop a B-tree index from a column.
     pub fn drop_btree_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
 
@@ -1662,7 +2033,13 @@ impl RelationalEngine {
             });
         }
 
-        // Delete all B-tree index entries
+        // Remove from in-memory BTreeMap
+        {
+            let key = (table.to_string(), column.to_string());
+            self.btree_indexes.write().remove(&key);
+        }
+
+        // Delete all B-tree index entries from TensorStore
         let prefix = Self::btree_prefix(table, column);
         let keys = self.store.scan(&prefix);
         for key in keys {
@@ -1675,7 +2052,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    /// Get all B-tree indexed columns for a table.
     pub fn get_btree_indexed_columns(&self, table: &str) -> Vec<String> {
         let prefix = "_btree:".to_string() + table + ":";
         self.store
@@ -1695,7 +2071,6 @@ impl RelationalEngine {
             .collect()
     }
 
-    /// Drop an index from a column.
     pub fn drop_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
 
@@ -1720,13 +2095,11 @@ impl RelationalEngine {
         Ok(())
     }
 
-    /// Check if an index exists on a column.
     pub fn has_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::index_meta_key(table, column);
         self.store.exists(&meta_key)
     }
 
-    /// Get all indexed columns for a table.
     pub fn get_indexed_columns(&self, table: &str) -> Vec<String> {
         let prefix = format!("_idx:{}:", table);
         let mut columns = HashSet::new();
@@ -1826,12 +2199,25 @@ impl RelationalEngine {
         self.get_btree_indexed_columns(table)
     }
 
-    // Internal: Add a row ID to a B-tree index
     fn btree_index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
-        let sortable = value.sortable_key();
-        let key = Self::btree_entry_key(table, column, &sortable);
+        // Add to in-memory BTreeMap for O(log n) range queries
+        let key = (table.to_string(), column.to_string());
+        let ordered_key = OrderedKey::from_value(value);
 
-        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&key) {
+        {
+            let mut indexes = self.btree_indexes.write();
+            let btree = indexes.entry(key).or_default();
+            let ids = btree.entry(ordered_key).or_default();
+            if !ids.contains(&row_id) {
+                ids.push(row_id);
+            }
+        }
+
+        // Also persist to TensorStore for recovery
+        let sortable = value.sortable_key();
+        let store_key = Self::btree_entry_key(table, column, &sortable);
+
+        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&store_key) {
             self.tensor_to_id_list(&tensor)
         } else {
             Vec::new()
@@ -1839,13 +2225,12 @@ impl RelationalEngine {
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
-            self.store.put(&key, self.id_list_to_tensor(&ids))?;
+            self.store.put(&store_key, self.id_list_to_tensor(&ids))?;
         }
 
         Ok(())
     }
 
-    // Internal: Remove a row ID from a B-tree index
     fn btree_index_remove(
         &self,
         table: &str,
@@ -1853,17 +2238,34 @@ impl RelationalEngine {
         value: &Value,
         row_id: u64,
     ) -> Result<()> {
-        let sortable = value.sortable_key();
-        let key = Self::btree_entry_key(table, column, &sortable);
+        // Remove from in-memory BTreeMap
+        let key = (table.to_string(), column.to_string());
+        let ordered_key = OrderedKey::from_value(value);
 
-        if let Ok(tensor) = self.store.get(&key) {
+        {
+            let mut indexes = self.btree_indexes.write();
+            if let Some(btree) = indexes.get_mut(&key) {
+                if let Some(ids) = btree.get_mut(&ordered_key) {
+                    ids.retain(|&id| id != row_id);
+                    if ids.is_empty() {
+                        btree.remove(&ordered_key);
+                    }
+                }
+            }
+        }
+
+        // Also remove from TensorStore
+        let sortable = value.sortable_key();
+        let store_key = Self::btree_entry_key(table, column, &sortable);
+
+        if let Ok(tensor) = self.store.get(&store_key) {
             let mut ids = self.tensor_to_id_list(&tensor);
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
-                self.store.delete(&key)?;
+                self.store.delete(&store_key)?;
             } else {
-                self.store.put(&key, self.id_list_to_tensor(&ids))?;
+                self.store.put(&store_key, self.id_list_to_tensor(&ids))?;
             }
         }
 
@@ -1871,7 +2273,7 @@ impl RelationalEngine {
     }
 
     /// B-tree range lookup: returns row IDs matching the range condition.
-    /// Uses sortable keys to scan the appropriate range.
+    /// Uses in-memory BTreeMap for O(log n) range operations.
     fn btree_range_lookup(
         &self,
         table: &str,
@@ -1883,32 +2285,35 @@ impl RelationalEngine {
             return None;
         }
 
-        let prefix = Self::btree_prefix(table, column);
-        let target_key = value.sortable_key();
-        let all_keys = self.store.scan(&prefix);
+        let key = (table.to_string(), column.to_string());
+        let target = OrderedKey::from_value(value);
+        let indexes = self.btree_indexes.read();
 
-        // Sort keys to ensure correct ordering
-        let mut sorted_keys: Vec<_> = all_keys.into_iter().collect();
-        sorted_keys.sort();
-
+        let btree = indexes.get(&key)?;
         let mut result_ids = Vec::new();
 
-        for key in sorted_keys {
-            // Extract the sortable value part from the key
-            let entry_sortable = key.strip_prefix(&prefix)?;
-
-            let matches = match op {
-                RangeOp::Lt => entry_sortable < target_key.as_str(),
-                RangeOp::Le => entry_sortable <= target_key.as_str(),
-                RangeOp::Gt => entry_sortable > target_key.as_str(),
-                RangeOp::Ge => entry_sortable >= target_key.as_str(),
-            };
-
-            if matches {
-                if let Ok(tensor) = self.store.get(&key) {
-                    result_ids.extend(self.tensor_to_id_list(&tensor));
+        match op {
+            RangeOp::Lt => {
+                for (_, ids) in btree.range(..target) {
+                    result_ids.extend(ids);
                 }
-            }
+            },
+            RangeOp::Le => {
+                for (_, ids) in btree.range(..=target) {
+                    result_ids.extend(ids);
+                }
+            },
+            RangeOp::Gt => {
+                use std::ops::Bound;
+                for (_, ids) in btree.range((Bound::Excluded(target), Bound::Unbounded)) {
+                    result_ids.extend(ids);
+                }
+            },
+            RangeOp::Ge => {
+                for (_, ids) in btree.range(target..) {
+                    result_ids.extend(ids);
+                }
+            },
         }
 
         Some(result_ids)
@@ -1934,7 +2339,6 @@ impl RelationalEngine {
         format!("_col:{}:{}:meta", table, column)
     }
 
-    /// Check if columnar data exists for a table.
     pub fn has_columnar_data(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::column_meta_key(table, column);
         self.store.exists(&meta_key)
@@ -2225,7 +2629,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    /// Load columnar data for a column.
     pub fn load_column_data(&self, table: &str, column: &str) -> Result<ColumnData> {
         // Load row IDs
         let ids_key = Self::column_ids_key(table, column);
@@ -2325,7 +2728,6 @@ impl RelationalEngine {
         })
     }
 
-    /// Drop materialized columnar data for a column.
     pub fn drop_columnar_data(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.store.delete(&Self::column_data_key(table, column));
         let _ = self.store.delete(&Self::column_ids_key(table, column));
@@ -5799,5 +6201,322 @@ mod tests {
             .delete_rows("users", Condition::Eq("age".into(), Value::Int(25)))
             .unwrap();
         assert_eq!(count, 500);
+    }
+
+    // ========================================================================
+    // JOIN Tests
+    // ========================================================================
+
+    fn create_orders_table(engine: &RelationalEngine) {
+        let schema = Schema::new(vec![
+            Column::new("order_id", ColumnType::Int),
+            Column::new("user_id", ColumnType::Int),
+            Column::new("amount", ColumnType::Float),
+        ]);
+        engine.create_table("orders", schema).unwrap();
+    }
+
+    #[test]
+    fn test_inner_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // Users: _id will be 1, 2, 3 for these three
+        for (name, age) in [("Alice", 25), ("Bob", 30), ("Carol", 35)] {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("age".to_string(), Value::Int(age));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Orders: user_id matches the _id of users (1=Alice, 2=Bob)
+        // Alice gets 2 orders, Bob gets 1, Carol gets 0
+        let order_data = [(1i64, 100.0), (1i64, 200.0), (2i64, 150.0)];
+        for (idx, (user_id, amount)) in order_data.iter().enumerate() {
+            let mut values = HashMap::new();
+            values.insert("order_id".to_string(), Value::Int(idx as i64));
+            values.insert("user_id".to_string(), Value::Int(*user_id));
+            values.insert("amount".to_string(), Value::Float(*amount));
+            engine.insert("orders", values).unwrap();
+        }
+
+        let results = engine.join("users", "orders", "_id", "user_id").unwrap();
+        assert_eq!(results.len(), 3); // Alice x2 + Bob x1
+
+        // Verify Alice (id=1) appears twice
+        let alice_joins: Vec<_> = results.iter().filter(|(u, _)| u.id == 1).collect();
+        assert_eq!(alice_joins.len(), 2);
+    }
+
+    #[test]
+    fn test_left_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // Users: Alice (_id=1), Bob (_id=2), Carol (_id=3)
+        for (name, age) in [("Alice", 25), ("Bob", 30), ("Carol", 35)] {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("age".to_string(), Value::Int(age));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Orders: Only Alice (user_id=1) has orders
+        let mut values = HashMap::new();
+        values.insert("order_id".to_string(), Value::Int(1));
+        values.insert("user_id".to_string(), Value::Int(1)); // Alice
+        values.insert("amount".to_string(), Value::Float(100.0));
+        engine.insert("orders", values).unwrap();
+
+        let results = engine
+            .left_join("users", "orders", "_id", "user_id")
+            .unwrap();
+
+        // All 3 users should appear
+        assert_eq!(results.len(), 3);
+
+        // Alice (id=1) has a match
+        let alice = results.iter().find(|(u, _)| u.id == 1).unwrap();
+        assert!(alice.1.is_some());
+
+        // Bob (id=2) has None
+        let bob = results.iter().find(|(u, _)| u.id == 2).unwrap();
+        assert!(bob.1.is_none());
+    }
+
+    #[test]
+    fn test_right_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // Only Alice (_id=1)
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(25));
+        engine.insert("users", values).unwrap();
+
+        // Orders for user 1 (Alice) and user 99 (doesn't exist)
+        for (user_id, amount) in [(1i64, 100.0), (99i64, 200.0)] {
+            let mut values = HashMap::new();
+            values.insert("order_id".to_string(), Value::Int(user_id));
+            values.insert("user_id".to_string(), Value::Int(user_id));
+            values.insert("amount".to_string(), Value::Float(amount));
+            engine.insert("orders", values).unwrap();
+        }
+
+        let results = engine
+            .right_join("users", "orders", "_id", "user_id")
+            .unwrap();
+
+        // Both orders should appear
+        assert_eq!(results.len(), 2);
+
+        // Order for Alice has a user
+        let with_user: Vec<_> = results.iter().filter(|(u, _)| u.is_some()).collect();
+        assert_eq!(with_user.len(), 1);
+
+        // Order for user 99 has None
+        let without_user: Vec<_> = results.iter().filter(|(u, _)| u.is_none()).collect();
+        assert_eq!(without_user.len(), 1);
+    }
+
+    #[test]
+    fn test_full_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // Alice (_id=1) and Bob (_id=2)
+        for (name, age) in [("Alice", 25), ("Bob", 30)] {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("age".to_string(), Value::Int(age));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Orders for Alice (user_id=1) and user 99 (doesn't exist)
+        for (user_id, amount) in [(1i64, 100.0), (99i64, 200.0)] {
+            let mut values = HashMap::new();
+            values.insert("order_id".to_string(), Value::Int(user_id));
+            values.insert("user_id".to_string(), Value::Int(user_id));
+            values.insert("amount".to_string(), Value::Float(amount));
+            engine.insert("orders", values).unwrap();
+        }
+
+        let results = engine
+            .full_join("users", "orders", "_id", "user_id")
+            .unwrap();
+
+        // Alice matched, Bob unmatched, Order 99 unmatched = 3 rows
+        assert_eq!(results.len(), 3);
+
+        // Alice has both
+        let matched: Vec<_> = results
+            .iter()
+            .filter(|(a, b)| a.is_some() && b.is_some())
+            .collect();
+        assert_eq!(matched.len(), 1);
+
+        // Bob has no order (Some, None)
+        let left_only: Vec<_> = results
+            .iter()
+            .filter(|(a, b)| a.is_some() && b.is_none())
+            .collect();
+        assert_eq!(left_only.len(), 1);
+
+        // Order 99 has no user (None, Some)
+        let right_only: Vec<_> = results
+            .iter()
+            .filter(|(a, b)| a.is_none() && b.is_some())
+            .collect();
+        assert_eq!(right_only.len(), 1);
+    }
+
+    #[test]
+    fn test_cross_join() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // 2 users
+        for (name, age) in [("Alice", 25), ("Bob", 30)] {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("age".to_string(), Value::Int(age));
+            engine.insert("users", values).unwrap();
+        }
+
+        // 3 orders
+        for i in 0..3 {
+            let mut values = HashMap::new();
+            values.insert("order_id".to_string(), Value::Int(i));
+            values.insert("user_id".to_string(), Value::Int(i));
+            values.insert("amount".to_string(), Value::Float(100.0));
+            engine.insert("orders", values).unwrap();
+        }
+
+        let results = engine.cross_join("users", "orders").unwrap();
+
+        // 2 users x 3 orders = 6 rows
+        assert_eq!(results.len(), 6);
+    }
+
+    #[test]
+    fn test_natural_join() {
+        let engine = RelationalEngine::new();
+
+        // Create two tables with a common column "dept_id"
+        let schema_a = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("dept_id", ColumnType::Int),
+        ]);
+        engine.create_table("employees", schema_a).unwrap();
+
+        let schema_b = Schema::new(vec![
+            Column::new("dept_id", ColumnType::Int),
+            Column::new("dept_name", ColumnType::String),
+        ]);
+        engine.create_table("departments", schema_b).unwrap();
+
+        // Employees
+        for (name, dept) in [("Alice", 1), ("Bob", 1), ("Carol", 2)] {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(name.to_string()));
+            values.insert("dept_id".to_string(), Value::Int(dept));
+            engine.insert("employees", values).unwrap();
+        }
+
+        // Departments
+        for (id, name) in [(1, "Engineering"), (2, "Sales")] {
+            let mut values = HashMap::new();
+            values.insert("dept_id".to_string(), Value::Int(id));
+            values.insert("dept_name".to_string(), Value::String(name.to_string()));
+            engine.insert("departments", values).unwrap();
+        }
+
+        let results = engine.natural_join("employees", "departments").unwrap();
+
+        // All 3 employees should match
+        assert_eq!(results.len(), 3);
+
+        // Verify Engineering has 2 employees
+        let eng_count = results
+            .iter()
+            .filter(|(_, d)| {
+                d.get_with_id("dept_name") == Some(Value::String("Engineering".into()))
+            })
+            .count();
+        assert_eq!(eng_count, 2);
+    }
+
+    #[test]
+    fn test_natural_join_no_common_columns() {
+        let engine = RelationalEngine::new();
+
+        let schema_a = Schema::new(vec![Column::new("a_col", ColumnType::Int)]);
+        engine.create_table("table_a", schema_a).unwrap();
+
+        let schema_b = Schema::new(vec![Column::new("b_col", ColumnType::Int)]);
+        engine.create_table("table_b", schema_b).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("a_col".to_string(), Value::Int(1));
+        engine.insert("table_a", values).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("b_col".to_string(), Value::Int(2));
+        engine.insert("table_b", values).unwrap();
+
+        // No common columns = cross join
+        let results = engine.natural_join("table_a", "table_b").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_left_join_empty_right() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // One user, no orders
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(25));
+        engine.insert("users", values).unwrap();
+
+        let results = engine
+            .left_join("users", "orders", "_id", "user_id")
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].1.is_none());
+    }
+
+    #[test]
+    fn test_join_with_multiple_matches() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        create_orders_table(&engine);
+
+        // One user (Alice, _id=1)
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".into()));
+        values.insert("age".to_string(), Value::Int(25));
+        engine.insert("users", values).unwrap();
+
+        // 5 orders for Alice (user_id=1)
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("order_id".to_string(), Value::Int(i));
+            values.insert("user_id".to_string(), Value::Int(1)); // Alice's _id
+            values.insert("amount".to_string(), Value::Float(100.0 * (i + 1) as f64));
+            engine.insert("orders", values).unwrap();
+        }
+
+        let results = engine.join("users", "orders", "_id", "user_id").unwrap();
+        assert_eq!(results.len(), 5);
     }
 }

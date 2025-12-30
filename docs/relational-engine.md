@@ -145,18 +145,62 @@ engine.select("users", Condition::Eq("_id".into(), Value::Int(5)))?;
 
 ### Joins
 
-Join two tables on matching column values:
+Join two tables on matching column values. All 6 SQL join types are supported:
 
 ```rust
-// SELECT * FROM users JOIN posts ON users._id = posts.user_id
+// INNER JOIN - rows that match in both tables
 let joined = engine.join("users", "posts", "_id", "user_id")?;
-
 for (user, post) in joined {
     println!("User {} wrote: {}", user.id, post.get("title"));
 }
+
+// LEFT JOIN - all left rows, matched right rows (or None)
+let joined = engine.left_join("users", "posts", "_id", "user_id")?;
+for (user, post) in joined {
+    match post {
+        Some(p) => println!("User {} wrote: {}", user.id, p.get("title")),
+        None => println!("User {} has no posts", user.id),
+    }
+}
+
+// RIGHT JOIN - matched left rows (or None), all right rows
+let joined = engine.right_join("users", "posts", "_id", "user_id")?;
+
+// FULL JOIN - all rows from both tables, matched where possible
+let joined = engine.full_join("users", "posts", "_id", "user_id")?;
+
+// CROSS JOIN - Cartesian product of both tables
+let joined = engine.cross_join("users", "posts")?;
+
+// NATURAL JOIN - automatic join on common column names
+let joined = engine.natural_join("users", "user_profiles")?;
 ```
 
-Uses hash join algorithm: O(n+m) instead of O(n*m) nested loop. Currently implements inner join (rows must match in both tables).
+All joins use hash join algorithm: O(n+m) instead of O(n*m) nested loop.
+
+### Aggregate Functions
+
+Aggregate functions compute summary values over rows:
+
+```rust
+// COUNT(*) - count all rows
+let count = engine.count("users", Condition::True)?;
+
+// COUNT(column) - count non-null values
+let count = engine.count_column("users", "email", Condition::True)?;
+
+// SUM - sum numeric column
+let total = engine.sum("orders", "amount", Condition::Eq("status".into(), Value::String("paid".into())))?;
+
+// AVG - average of numeric column
+let avg = engine.avg("orders", "amount", Condition::True)?;  // -> Option<f64>
+
+// MIN/MAX - minimum/maximum value
+let min = engine.min("products", "price", Condition::True)?;  // -> Option<Value>
+let max = engine.max("products", "price", Condition::True)?;
+```
+
+Aggregates support any condition for filtering rows before computation.
 
 ### Indexes
 
@@ -215,6 +259,51 @@ engine.select("users", Condition::Lt("age".into(), Value::Int(65)))?;
 - Range conditions (`Lt`, `Le`, `Gt`, `Ge`) benefit from B-tree indexes
 - Uses sortable key encoding for correct ordering of integers, floats, and strings
 
+## Columnar Architecture
+
+The relational engine uses a columnar storage model optimized for analytical queries:
+
+### SIMD-Accelerated Filtering
+
+Column data is stored in contiguous arrays enabling SIMD vectorized comparisons:
+
+```rust
+// Internal: 8-wide SIMD comparison for i64 columns
+fn filter_gt_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+fn filter_ge_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+fn filter_lt_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+fn filter_le_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+fn filter_eq_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+fn filter_ne_i64(values: &[i64], threshold: i64, bitmap: &mut [u64])
+```
+
+### Selection Vectors
+
+Query results use selection vectors to avoid copying data:
+
+```rust
+// SelectionVector tracks which rows match without materializing
+let selection = engine.select_columnar("users", condition, options)?;
+
+// Only selected rows are returned
+for row in selection {
+    // Row data is lazily extracted
+}
+```
+
+### Column Data Types
+
+```rust
+pub enum ColumnData {
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    String(Vec<String>),
+    Bool(Vec<bool>),
+}
+```
+
+Each column type supports null bitmaps for efficient NULL handling.
+
 ## Storage Model
 
 Tables, rows, and indexes are stored in Tensor Store:
@@ -253,14 +342,18 @@ Index entries map value hashes to lists of row IDs, enabling O(1) lookup.
 |-----------|------------|-------|
 | `insert` | O(1) + O(k) | Schema validation + store put + k index updates |
 | `batch_insert` | O(n) + O(n*k) | Single schema lookup, 59x faster than n inserts |
-| `select` (no index) | O(n) | Full table scan with filter |
-| `select` (with index) | O(1) | Direct lookup via hash index |
+| `select` (no index) | O(n) | Full table scan with SIMD filter |
+| `select` (hash index) | O(1) | Direct lookup via hash index |
+| `select` (btree range) | O(log n + m) | B-tree lookup + m matching rows |
 | `update` | O(n) + O(k) | Scan + conditional update + index maintenance |
 | `delete_rows` | O(n) + O(k) | Scan + conditional delete + index removal |
-| `join` | O(n+m) | Hash join |
+| `join` | O(n+m) | Hash join for all 6 join types |
+| `left/right/full_join` | O(n+m) | Hash join with null padding |
+| `cross_join` | O(n*m) | Cartesian product |
+| `count/sum/avg/min/max` | O(n) | Single pass over matching rows |
 | `create_index` | O(n) | Scan all rows to build index |
 
-Where k = number of indexes on the table.
+Where k = number of indexes on the table, n = rows in left table, m = rows in right table.
 
 ## Test Coverage
 
@@ -316,15 +409,88 @@ Where k = number of indexes on the table.
 | `relational_condition` | evaluate() vs evaluate_tensor() consistency with arbitrary inputs |
 | `relational_engine_ops` | Engine CRUD operations with arbitrary inputs |
 
-## Future Considerations
+## SQL Features via Query Router
 
-Not implemented (out of scope for Module 2):
+When using the relational engine through `query_router`, additional SQL features are available:
 
-- ~~**B-tree indexes**~~: Implemented - range query acceleration for Lt, Le, Gt, Ge conditions
+### ORDER BY and OFFSET
+
+Sort results and skip rows for pagination:
+
+```sql
+-- Sort by single column
+SELECT * FROM users ORDER BY age ASC;
+
+-- Sort by multiple columns
+SELECT * FROM users ORDER BY department DESC, name ASC;
+
+-- Null handling
+SELECT * FROM users ORDER BY email NULLS FIRST;
+
+-- Pagination with LIMIT and OFFSET
+SELECT * FROM users ORDER BY created_at DESC LIMIT 10 OFFSET 20;
+```
+
+### GROUP BY and HAVING
+
+Group rows and filter groups:
+
+```sql
+-- Group by single column with aggregates
+SELECT department, COUNT(*), AVG(salary) FROM employees GROUP BY department;
+
+-- Filter groups with HAVING
+SELECT product, SUM(quantity) as total
+FROM orders
+GROUP BY product
+HAVING SUM(quantity) > 100;
+
+-- Combine WHERE (row filter) with HAVING (group filter)
+SELECT category, COUNT(*)
+FROM products
+WHERE active = true
+GROUP BY category
+HAVING COUNT(*) >= 5;
+```
+
+### All JOIN Types
+
+```sql
+-- INNER JOIN
+SELECT u.name, o.amount FROM users u INNER JOIN orders o ON u.id = o.user_id;
+
+-- LEFT/RIGHT/FULL OUTER JOIN
+SELECT u.name, o.amount FROM users u LEFT JOIN orders o ON u.id = o.user_id;
+
+-- CROSS JOIN (Cartesian product)
+SELECT * FROM sizes CROSS JOIN colors;
+
+-- NATURAL JOIN (on common columns)
+SELECT * FROM users NATURAL JOIN profiles;
+```
+
+## Feature Summary
+
+### Implemented
+
+| Feature | Description |
+|---------|-------------|
+| Hash indexes | O(1) equality lookups |
+| B-tree indexes | O(log n) range query acceleration |
+| All 6 JOIN types | INNER, LEFT, RIGHT, FULL, CROSS, NATURAL |
+| Aggregate functions | COUNT, SUM, AVG, MIN, MAX |
+| ORDER BY | Multi-column sorting with ASC/DESC, NULLS FIRST/LAST |
+| LIMIT/OFFSET | Pagination support |
+| GROUP BY + HAVING | Row grouping with aggregate filtering |
+| Columnar storage | SIMD-accelerated filtering with selection vectors |
+| Batch operations | 59x faster bulk inserts |
+
+### Future Considerations
+
+Not yet implemented:
+
 - **Query Optimization**: Cost-based query planning
-- **Transactions**: ACID guarantees
-- **Foreign Keys**: Referential integrity
-- **Aggregations**: COUNT, SUM, AVG, etc.
-- **Sorting**: ORDER BY
-- **Pagination**: LIMIT, OFFSET
-- ~~**Hash joins**~~: Implemented - O(n+m) hash join algorithm
+- **Transactions**: ACID guarantees with rollback
+- **Foreign Keys**: Referential integrity constraints
+- **Subqueries**: Nested SELECT statements
+- **Window Functions**: OVER(), PARTITION BY
