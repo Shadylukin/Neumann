@@ -314,6 +314,141 @@ impl RaftNode {
         self.membership = Some(membership);
     }
 
+    // ========== Persistence Methods ==========
+
+    /// Key for persisting Raft state in TensorStore.
+    fn persistence_key(node_id: &str) -> String {
+        format!("_raft:state:{}", node_id)
+    }
+
+    /// Save persistent state to TensorStore.
+    ///
+    /// Stores term, voted_for, log entries, and state embedding.
+    /// Use `save_snapshot_compressed()` for tensor-native compression.
+    pub fn save_to_store(&self, store: &tensor_store::TensorStore) -> Result<()> {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let persistent = self.persistent.read();
+        let key = Self::persistence_key(&self.node_id);
+
+        let mut data = TensorData::new();
+
+        // Store current term
+        data.set(
+            "term",
+            TensorValue::Scalar(ScalarValue::Int(persistent.current_term as i64)),
+        );
+
+        // Store voted_for if present
+        if let Some(ref voted_for) = persistent.voted_for {
+            data.set(
+                "voted_for",
+                TensorValue::Scalar(ScalarValue::String(voted_for.clone())),
+            );
+        }
+
+        // Serialize log entries as bytes
+        let log_bytes = bincode::serialize(&persistent.log)
+            .map_err(|e| ChainError::SerializationError(format!("Raft log: {}", e)))?;
+        data.set("log", TensorValue::Scalar(ScalarValue::Bytes(log_bytes)));
+
+        // Store state embedding for geometric recovery
+        let state_embedding = self.state_embedding.read();
+        if state_embedding.nnz() > 0 {
+            data.set("_embedding", TensorValue::Sparse(state_embedding.clone()));
+        }
+
+        store
+            .put(&key, data)
+            .map_err(|e| ChainError::StorageError(e.to_string()))
+    }
+
+    /// Load persistent state from TensorStore.
+    ///
+    /// Returns (term, voted_for, log) if state exists.
+    pub fn load_from_store(
+        node_id: &str,
+        store: &tensor_store::TensorStore,
+    ) -> Option<(u64, Option<NodeId>, Vec<LogEntry>)> {
+        use tensor_store::{ScalarValue, TensorValue};
+
+        let key = Self::persistence_key(node_id);
+        let data = store.get(&key).ok()?;
+
+        // Load term
+        let term = match data.get("term") {
+            Some(TensorValue::Scalar(ScalarValue::Int(t))) => *t as u64,
+            _ => return None,
+        };
+
+        // Load voted_for
+        let voted_for = match data.get("voted_for") {
+            Some(TensorValue::Scalar(ScalarValue::String(v))) => Some(v.clone()),
+            _ => None,
+        };
+
+        // Load log entries
+        let log = match data.get("log") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
+                bincode::deserialize(bytes).ok()?
+            },
+            _ => Vec::new(),
+        };
+
+        Some((term, voted_for, log))
+    }
+
+    /// Create a Raft node, loading persisted state from store if available.
+    pub fn with_store(
+        node_id: NodeId,
+        peers: Vec<NodeId>,
+        transport: Arc<dyn Transport>,
+        config: RaftConfig,
+        store: &tensor_store::TensorStore,
+    ) -> Self {
+        let (term, voted_for, log) =
+            Self::load_from_store(&node_id, store).unwrap_or((0, None, Vec::new()));
+
+        Self::with_state(node_id, peers, transport, config, term, voted_for, log)
+    }
+
+    /// Create a Raft node with explicit initial state.
+    pub fn with_state(
+        node_id: NodeId,
+        peers: Vec<NodeId>,
+        transport: Arc<dyn Transport>,
+        config: RaftConfig,
+        term: u64,
+        voted_for: Option<NodeId>,
+        log: Vec<LogEntry>,
+    ) -> Self {
+        Self {
+            node_id,
+            state: RwLock::new(RaftState::Follower),
+            persistent: RwLock::new(PersistentState {
+                current_term: term,
+                voted_for,
+                log,
+            }),
+            volatile: RwLock::new(VolatileState {
+                commit_index: 0,
+                last_applied: 0,
+            }),
+            leader_state: RwLock::new(None),
+            current_leader: RwLock::new(None),
+            peers: RwLock::new(peers),
+            transport,
+            last_heartbeat: RwLock::new(Instant::now()),
+            votes_received: RwLock::new(Vec::new()),
+            state_embedding: RwLock::new(SparseVector::new(0)),
+            finalized_height: AtomicU64::new(0),
+            fast_path_state: FastPathState::default(),
+            fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
+            config,
+            membership: None,
+        }
+    }
+
     /// Check if a node is healthy according to membership.
     fn is_peer_healthy(&self, peer_id: &NodeId) -> bool {
         match &self.membership {
@@ -2821,5 +2956,174 @@ mod tests {
         assert_eq!(prev_idx, 0);
         assert_eq!(prev_term, 0);
         assert_eq!(entries.len(), 2);
+    }
+
+    // ========== Persistence Tests ==========
+
+    #[test]
+    fn test_save_load_from_store() {
+        let store = tensor_store::TensorStore::new();
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Set up some state
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 5;
+            persistent.voted_for = Some("node2".to_string());
+            persistent.log.push(LogEntry {
+                term: 1,
+                index: 1,
+                block: Block::genesis("node1".to_string()),
+            });
+        }
+
+        // Save to store
+        node.save_to_store(&store).unwrap();
+
+        // Load from store
+        let (term, voted_for, log) = RaftNode::load_from_store("node1", &store).unwrap();
+
+        assert_eq!(term, 5);
+        assert_eq!(voted_for, Some("node2".to_string()));
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].term, 1);
+        assert_eq!(log[0].index, 1);
+    }
+
+    #[test]
+    fn test_load_from_empty_store() {
+        let store = tensor_store::TensorStore::new();
+
+        // No state saved - should return None
+        let result = RaftNode::load_from_store("node1", &store);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_with_store_loads_state() {
+        let store = tensor_store::TensorStore::new();
+
+        // First node saves state
+        let node1 = create_test_node("node1", vec!["node2".to_string()]);
+        {
+            let mut persistent = node1.persistent.write();
+            persistent.current_term = 10;
+            persistent.voted_for = Some("node3".to_string());
+            persistent.log.push(LogEntry {
+                term: 5,
+                index: 1,
+                block: Block::genesis("node1".to_string()),
+            });
+            persistent.log.push(LogEntry {
+                term: 8,
+                index: 2,
+                block: Block::genesis("node1".to_string()),
+            });
+        }
+        node1.save_to_store(&store).unwrap();
+
+        // Second node loads state via with_store
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = RaftNode::with_store(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            &store,
+        );
+
+        // Verify state was loaded
+        assert_eq!(node2.current_term(), 10);
+        assert_eq!(node2.log_length(), 2);
+    }
+
+    #[test]
+    fn test_with_store_empty_store() {
+        let store = tensor_store::TensorStore::new();
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+
+        // Create node from empty store
+        let node = RaftNode::with_store(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            &store,
+        );
+
+        // Should have default state
+        assert_eq!(node.current_term(), 0);
+        assert_eq!(node.log_length(), 0);
+    }
+
+    #[test]
+    fn test_with_state() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let log = vec![LogEntry {
+            term: 3,
+            index: 1,
+            block: Block::genesis("node1".to_string()),
+        }];
+
+        let node = RaftNode::with_state(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+            7,
+            Some("node3".to_string()),
+            log,
+        );
+
+        assert_eq!(node.current_term(), 7);
+        assert_eq!(node.log_length(), 1);
+    }
+
+    #[test]
+    fn test_persistence_preserves_embedding() {
+        let store = tensor_store::TensorStore::new();
+        let node = create_test_node("node1", vec![]);
+
+        // Set state embedding
+        node.update_state_embedding_dense(vec![1.0, 0.5, 0.25, 0.125]);
+
+        // Set up term so there's state to save
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+        }
+
+        // Save to store
+        node.save_to_store(&store).unwrap();
+
+        // Verify embedding was stored
+        let data = store.get("_raft:state:node1").unwrap();
+        assert!(data.get("_embedding").is_some());
+    }
+
+    #[test]
+    fn test_save_without_voted_for() {
+        let store = tensor_store::TensorStore::new();
+        let node = create_test_node("node1", vec![]);
+
+        // Set term but not voted_for
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 3;
+            persistent.voted_for = None;
+        }
+
+        node.save_to_store(&store).unwrap();
+
+        // Load and verify voted_for is None
+        let (term, voted_for, _log) = RaftNode::load_from_store("node1", &store).unwrap();
+        assert_eq!(term, 3);
+        assert!(voted_for.is_none());
+    }
+
+    #[test]
+    fn test_persistence_key() {
+        let key = RaftNode::persistence_key("my_node");
+        assert_eq!(key, "_raft:state:my_node");
     }
 }

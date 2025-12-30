@@ -41,6 +41,7 @@
 
 pub mod block;
 pub mod chain;
+pub mod cluster;
 pub mod codebook;
 pub mod consensus;
 pub mod delta_replication;
@@ -51,6 +52,7 @@ pub mod geometric_membership;
 pub mod membership;
 pub mod network;
 pub mod raft;
+pub mod state_machine;
 pub mod tcp;
 pub mod transaction;
 pub mod validation;
@@ -58,6 +60,10 @@ pub mod validation;
 // Re-exports
 pub use block::{Block, BlockHash, BlockHeader, NodeId, Transaction, ValidatorSignature};
 pub use chain::{BlockBuilder, Chain, ChainIterator};
+pub use cluster::{
+    ClusterOrchestrator, LocalNodeConfig as ClusterNodeConfig, OrchestratorConfig,
+    PeerConfig as ClusterPeerConfig,
+};
 pub use codebook::{
     CodebookConfig, CodebookEntry, CodebookManager, GlobalCodebook, HierarchicalQuantization,
     LocalCodebook, LocalCodebookStats, PruningStrategy,
@@ -88,6 +94,7 @@ pub use network::{
     TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
+pub use state_machine::TensorStateMachine;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
     TcpTransportConfig, TlsConfig, TransportStats,
