@@ -3,11 +3,15 @@ name = "relational_engine"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+test-internals = []
+
 [dependencies]
 tensor_store = { path = "../tensor_store" }
 rayon = "1.10"
 wide = "0.7"
 serde = { version = "1", features = ["derive"] }
+parking_lot = "0.12"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

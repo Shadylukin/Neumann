@@ -6,12 +6,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
-/// SIMD-accelerated filtering for columnar operations.
 mod simd {
     use wide::{i64x4, CmpEq, CmpGt, CmpLt};
 
-    /// SIMD-accelerated filter: values < threshold.
-    /// Sets bits in result bitmap for matching positions.
     #[inline]
     pub fn filter_lt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -28,7 +25,6 @@ mod simd {
             let cmp = v.cmp_lt(threshold_vec);
             let mask_arr: [i64; 4] = cmp.into();
 
-            // Convert comparison results to bits
             for (j, &m) in mask_arr.iter().enumerate() {
                 if m != 0 {
                     let bit_pos = offset + j;
@@ -37,7 +33,6 @@ mod simd {
             }
         }
 
-        // Handle remainder with scalar
         let start = chunks * 4;
         for i in start..values.len() {
             if values[i] < threshold {
@@ -46,8 +41,6 @@ mod simd {
         }
     }
 
-    /// SIMD-accelerated filter: values <= threshold.
-    /// Implemented as (v < threshold) | (v == threshold).
     #[inline]
     pub fn filter_le_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
         let chunks = values.len() / 4;
@@ -61,7 +54,6 @@ mod simd {
                 values[offset + 2],
                 values[offset + 3],
             ]);
-            // cmp_le = cmp_lt | cmp_eq
             let lt: [i64; 4] = v.cmp_lt(threshold_vec).into();
             let eq: [i64; 4] = v.cmp_eq(threshold_vec).into();
 
@@ -126,7 +118,6 @@ mod simd {
                 values[offset + 2],
                 values[offset + 3],
             ]);
-            // cmp_ge = cmp_gt | cmp_eq
             let gt: [i64; 4] = v.cmp_gt(threshold_vec).into();
             let eq: [i64; 4] = v.cmp_eq(threshold_vec).into();
 
@@ -191,7 +182,6 @@ mod simd {
                 values[offset + 2],
                 values[offset + 3],
             ]);
-            // cmp_ne = !cmp_eq (if eq mask is 0, then ne)
             let eq: [i64; 4] = v.cmp_eq(target_vec).into();
 
             for (j, &eq_val) in eq.iter().enumerate() {
@@ -225,6 +215,7 @@ mod simd {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn popcount(bitmap: &[u64]) -> usize {
         bitmap.iter().map(|w| w.count_ones() as usize).sum()
     }
@@ -237,7 +228,7 @@ mod simd {
             while w != 0 {
                 let bit = w.trailing_zeros() as usize;
                 indices.push(base + bit);
-                w &= w - 1; // Clear lowest set bit
+                w &= w - 1;
             }
         }
         indices
@@ -564,8 +555,17 @@ impl Condition {
             .unwrap_or(false)
     }
 
-    /// Evaluates directly on TensorData without intermediate Row conversion.
+    #[cfg(feature = "test-internals")]
     pub fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
+        self.evaluate_tensor_impl(tensor)
+    }
+
+    #[cfg(not(feature = "test-internals"))]
+    pub(crate) fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
+        self.evaluate_tensor_impl(tensor)
+    }
+
+    fn evaluate_tensor_impl(&self, tensor: &TensorData) -> bool {
         use std::cmp::Ordering;
         match self {
             Condition::True => true,
@@ -583,7 +583,6 @@ impl Condition {
     }
 
     fn tensor_get_value(tensor: &TensorData, col: &str) -> Option<Value> {
-        // Handle special _id column
         if col == "_id" {
             if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = tensor.get("_id") {
                 return Some(Value::Int(*id));
@@ -684,12 +683,8 @@ impl From<TensorStoreError> for RelationalError {
 
 pub type Result<T> = std::result::Result<T, RelationalError>;
 
-// ============================================================================
-// Columnar Storage Types
-// ============================================================================
-
 #[derive(Debug, Clone)]
-pub enum ColumnValues {
+pub(crate) enum ColumnValues {
     Int(Vec<i64>),
     Float(Vec<f64>),
     String {
@@ -699,6 +694,7 @@ pub enum ColumnValues {
     Bool(Vec<u64>),
 }
 
+#[allow(dead_code)]
 impl ColumnValues {
     pub fn len(&self) -> usize {
         match self {
@@ -715,11 +711,9 @@ impl ColumnValues {
 }
 
 #[derive(Debug, Clone)]
-pub enum NullBitmap {
+pub(crate) enum NullBitmap {
     None,
-    /// Dense bitmap: bit=1 means null.
     Dense(Vec<u64>),
-    /// List of null positions (when nulls < 10% of rows).
     Sparse(Vec<u64>),
 }
 
@@ -747,13 +741,17 @@ impl NullBitmap {
 
 #[derive(Debug, Clone)]
 pub struct ColumnData {
-    pub name: String,
+    name: String,
     pub row_ids: Vec<u64>,
-    pub nulls: NullBitmap,
-    pub values: ColumnValues,
+    nulls: NullBitmap,
+    values: ColumnValues,
 }
 
 impl ColumnData {
+    pub fn null_count(&self) -> usize {
+        self.nulls.null_count()
+    }
+
     #[inline]
     pub fn get_value(&self, idx: usize) -> Option<Value> {
         if self.nulls.is_null(idx) {
@@ -775,18 +773,17 @@ impl ColumnData {
     }
 }
 
-/// Enables late materialization by deferring row reconstruction.
 #[derive(Debug, Clone)]
-pub struct SelectionVector {
+pub(crate) struct SelectionVector {
     bitmap: Vec<u64>,
     row_count: usize,
 }
 
+#[allow(dead_code)]
 impl SelectionVector {
     pub fn all(row_count: usize) -> Self {
         let words = simd::bitmap_words(row_count);
         let mut bitmap = vec![!0u64; words];
-        // Clear bits beyond row_count
         if !row_count.is_multiple_of(64) {
             let last_word_bits = row_count % 64;
             bitmap[words - 1] = (1u64 << last_word_bits) - 1;
@@ -861,7 +858,7 @@ type BTreeIndexKey = (String, String);
 
 pub struct RelationalEngine {
     store: TensorStore,
-    row_counters: std::sync::RwLock<HashMap<String, AtomicU64>>,
+    row_counters: RwLock<HashMap<String, AtomicU64>>,
     /// In-memory B-tree indexes for O(log n) range queries.
     /// Maps (table, column) to a BTreeMap of value -> row_ids.
     btree_indexes: RwLock<HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>>>,
@@ -928,7 +925,7 @@ impl RelationalEngine {
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
-            row_counters: std::sync::RwLock::new(HashMap::new()),
+            row_counters: RwLock::new(HashMap::new()),
             btree_indexes: RwLock::new(HashMap::new()),
         }
     }
@@ -936,7 +933,7 @@ impl RelationalEngine {
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             store,
-            row_counters: std::sync::RwLock::new(HashMap::new()),
+            row_counters: RwLock::new(HashMap::new()),
             btree_indexes: RwLock::new(HashMap::new()),
         }
     }
@@ -973,7 +970,6 @@ impl RelationalEngine {
         format!("_idx:{}:", table)
     }
 
-    // B-tree index key functions
     fn btree_meta_key(table: &str, column: &str) -> String {
         format!("_btree:{}:{}", table, column)
     }
@@ -1028,7 +1024,7 @@ impl RelationalEngine {
 
         self.store.put(meta_key, meta)?;
 
-        let mut counters = self.row_counters.write().unwrap();
+        let mut counters = self.row_counters.write();
         counters.insert(name.to_string(), AtomicU64::new(0));
 
         Ok(())
@@ -1084,12 +1080,12 @@ impl RelationalEngine {
     }
 
     fn next_row_id(&self, table: &str) -> u64 {
-        let counters = self.row_counters.read().unwrap();
+        let counters = self.row_counters.read();
         if let Some(counter) = counters.get(table) {
             counter.fetch_add(1, Ordering::Relaxed) + 1
         } else {
             drop(counters);
-            let mut counters = self.row_counters.write().unwrap();
+            let mut counters = self.row_counters.write();
             let counter = counters
                 .entry(table.to_string())
                 .or_insert_with(|| AtomicU64::new(0));
@@ -1131,7 +1127,6 @@ impl RelationalEngine {
 
         self.store.put(key, tensor)?;
 
-        // Update hash indexes
         let indexed_columns = self.get_table_indexes(table);
         for col in &indexed_columns {
             if col == "_id" {
@@ -1141,7 +1136,6 @@ impl RelationalEngine {
             }
         }
 
-        // Update B-tree indexes
         let btree_columns = self.get_table_btree_indexes(table);
         for col in &btree_columns {
             if col == "_id" {
@@ -1154,23 +1148,13 @@ impl RelationalEngine {
         Ok(row_id)
     }
 
-    /// Batch insert multiple rows at once.
-    ///
-    /// More efficient than multiple single inserts due to:
-    /// - Single schema lookup
-    /// - Upfront validation of all rows (fail-fast)
-    /// - Batched index updates
-    ///
-    /// Returns the IDs of all inserted rows.
     pub fn batch_insert(&self, table: &str, rows: Vec<HashMap<String, Value>>) -> Result<Vec<u64>> {
         if rows.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Single schema lookup for all rows
         let schema = self.get_schema(table)?;
 
-        // Validate all rows upfront (fail-fast)
         for (row_idx, values) in rows.iter().enumerate() {
             for col in &schema.columns {
                 let value = values.get(&col.name);
@@ -1195,14 +1179,10 @@ impl RelationalEngine {
             }
         }
 
-        // Get indexed columns once
         let indexed_columns = self.get_table_indexes(table);
         let btree_columns = self.get_table_btree_indexes(table);
-
-        // Pre-allocate result vector
         let mut row_ids = Vec::with_capacity(rows.len());
 
-        // Insert all rows
         for values in rows {
             let row_id = self.next_row_id(table);
             let key = Self::row_key(table, row_id);
@@ -1216,7 +1196,6 @@ impl RelationalEngine {
 
             self.store.put(key, tensor)?;
 
-            // Update hash indexes
             for col in &indexed_columns {
                 if col == "_id" {
                     self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
@@ -1225,7 +1204,6 @@ impl RelationalEngine {
                 }
             }
 
-            // Update B-tree indexes
             for col in &btree_columns {
                 if col == "_id" {
                     self.btree_index_add(table, col, &Value::Int(row_id as i64), row_id)?;
@@ -1246,7 +1224,6 @@ impl RelationalEngine {
             _ => return None,
         };
 
-        // Pre-allocate Vec based on tensor field count (minus internal fields)
         let mut values = Vec::with_capacity(tensor.len().saturating_sub(1));
         for key in tensor.keys() {
             if key.starts_with('_') {
@@ -1263,16 +1240,12 @@ impl RelationalEngine {
     pub fn select(&self, table: &str, condition: Condition) -> Result<Vec<Row>> {
         let _ = self.get_schema(table)?;
 
-        // Try to use an index for simple equality conditions
         if let Some(row_ids) = self.try_index_lookup(table, &condition) {
-            // Index hit: fetch only the matching rows with pre-allocated capacity
             let mut rows = Vec::with_capacity(row_ids.len());
             for row_id in row_ids {
                 let key = Self::row_key(table, row_id);
                 if let Ok(tensor) = self.store.get(&key) {
-                    // Evaluate condition on TensorData FIRST (avoids HashMap allocation)
                     if condition.evaluate_tensor(&tensor) {
-                        // Only materialize Row for matching rows
                         if let Some(row) = self.tensor_to_row(&tensor) {
                             rows.push(row);
                         }
@@ -1283,12 +1256,9 @@ impl RelationalEngine {
             return Ok(rows);
         }
 
-        // No index available: full table scan using reference-based iteration
-        // This avoids cloning TensorData for rows that don't match the condition
         let prefix = Self::row_prefix(table);
 
         let mut rows: Vec<Row> = self.store.scan_filter_map(&prefix, |_key, tensor| {
-            // Evaluate condition on reference - no clone unless match
             if condition.evaluate_tensor(tensor) {
                 self.tensor_to_row(tensor)
             } else {
@@ -1300,7 +1270,6 @@ impl RelationalEngine {
         Ok(rows)
     }
 
-    // Try to use an index for the given condition
     fn try_index_lookup(&self, table: &str, condition: &Condition) -> Option<Vec<u64>> {
         match condition {
             Condition::Eq(column, value) => self.index_lookup(table, column, value),
@@ -1317,9 +1286,7 @@ impl RelationalEngine {
                 self.btree_range_lookup(table, column, value, RangeOp::Ge)
             },
             Condition::And(a, b) => {
-                // Try to use index from either side
                 if let Some(ids_a) = self.try_index_lookup(table, a) {
-                    // Filter ids_a by condition b
                     Some(ids_a)
                 } else {
                     self.try_index_lookup(table, b)
@@ -1358,21 +1325,17 @@ impl RelationalEngine {
         let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
 
-        // Use reference-based iteration - only clone tensor for matching rows
         let matching_rows: Vec<(String, TensorData, Row)> =
             self.store.scan_filter_map(&prefix, |key, tensor| {
                 let row = self.tensor_to_row(tensor)?;
                 if condition.evaluate(&row) {
-                    // Only clone tensor for matching rows
                     Some((key.to_string(), tensor.clone(), row))
                 } else {
                     None
                 }
             });
 
-        // Sequential: update indexes and store (index ops are not thread-safe)
         for (key, tensor, row) in &matching_rows {
-            // Update hash indexes
             for col in &indexed_columns {
                 if let Some(new_value) = updates.get(col) {
                     if let Some(old_value) = row.get_with_id(col) {
@@ -1382,7 +1345,6 @@ impl RelationalEngine {
                 }
             }
 
-            // Update B-tree indexes
             for col in &btree_columns {
                 if let Some(new_value) = updates.get(col) {
                     if let Some(old_value) = row.get_with_id(col) {
@@ -1409,7 +1371,6 @@ impl RelationalEngine {
         let btree_columns = self.get_table_btree_indexes(table);
         let prefix = Self::row_prefix(table);
 
-        // Use reference-based iteration - only materialize matching rows
         let to_delete: Vec<(String, Row)> = self.store.scan_filter_map(&prefix, |key, tensor| {
             let row = self.tensor_to_row(tensor)?;
             if condition.evaluate(&row) {
@@ -1419,15 +1380,12 @@ impl RelationalEngine {
             }
         });
 
-        // Sequential: remove from indexes (index ops are not thread-safe)
         for (_, row) in &to_delete {
-            // Remove from hash indexes
             for col in &indexed_columns {
                 if let Some(value) = row.get_with_id(col) {
                     self.index_remove(table, col, &value, row.id)?;
                 }
             }
-            // Remove from B-tree indexes
             for col in &btree_columns {
                 if let Some(value) = row.get_with_id(col) {
                     self.btree_index_remove(table, col, &value, row.id)?;
@@ -1437,7 +1395,6 @@ impl RelationalEngine {
 
         let count = to_delete.len();
 
-        // Parallel: delete rows (store is thread-safe)
         if count >= Self::PARALLEL_THRESHOLD {
             to_delete.par_iter().for_each(|(key, _)| {
                 let _ = self.store.delete(key);
@@ -1466,7 +1423,6 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Build hash index on right table (rows_b)
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
             if let Some(val) = row.get_with_id(on_b) {
@@ -1475,7 +1431,6 @@ impl RelationalEngine {
             }
         }
 
-        // Probe from left table - parallelize for large tables
         let results = if rows_a.len() >= Self::PARALLEL_THRESHOLD {
             rows_a
                 .par_iter()
@@ -1489,7 +1444,6 @@ impl RelationalEngine {
                                     .iter()
                                     .filter_map(|&i| {
                                         let row_b = &rows_b[i];
-                                        // Verify actual equality (handle hash collisions)
                                         if row_b.get_with_id(on_b) == Some(val.clone()) {
                                             Some((row_a.clone(), row_b.clone()))
                                         } else {
@@ -1510,7 +1464,6 @@ impl RelationalEngine {
                     if let Some(indices) = index.get(&hash) {
                         for &i in indices {
                             let row_b = &rows_b[i];
-                            // Verify actual equality (handle hash collisions)
                             if row_b.get_with_id(on_b) == Some(val.clone()) {
                                 results.push((row_a.clone(), row_b.clone()));
                             }
@@ -1539,7 +1492,6 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Build hash index on right table
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
             if let Some(val) = row.get_with_id(on_b) {
@@ -1584,7 +1536,6 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Build hash index on left table
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_a.len());
         for (i, row) in rows_a.iter().enumerate() {
             if let Some(val) = row.get_with_id(on_a) {
@@ -1629,7 +1580,6 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Build hash index on right table
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
             if let Some(val) = row.get_with_id(on_b) {
@@ -1637,11 +1587,9 @@ impl RelationalEngine {
             }
         }
 
-        // Track which rows from B were matched
         let mut matched_b: HashSet<usize> = HashSet::new();
         let mut results = Vec::new();
 
-        // Process all rows from A (left join portion)
         for row_a in &rows_a {
             let mut matched = false;
             if let Some(val) = row_a.get_with_id(on_a) {
@@ -1661,7 +1609,6 @@ impl RelationalEngine {
             }
         }
 
-        // Add unmatched rows from B
         for (i, row_b) in rows_b.iter().enumerate() {
             if !matched_b.contains(&i) {
                 results.push((None, Some(row_b.clone())));
@@ -1696,20 +1643,17 @@ impl RelationalEngine {
         let schema_a = self.get_schema(table_a)?;
         let schema_b = self.get_schema(table_b)?;
 
-        // Find common column names (excluding _id)
         let cols_a: HashSet<_> = schema_a.columns.iter().map(|c| c.name.as_str()).collect();
         let cols_b: HashSet<_> = schema_b.columns.iter().map(|c| c.name.as_str()).collect();
         let common_cols: Vec<_> = cols_a.intersection(&cols_b).copied().collect();
 
         if common_cols.is_empty() {
-            // No common columns = cross join
             return self.cross_join(table_a, table_b);
         }
 
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        // Build composite hash index on right table using all common columns
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
             let mut composite_key = String::new();
@@ -1722,7 +1666,6 @@ impl RelationalEngine {
             index.entry(composite_key).or_default().push(i);
         }
 
-        // Probe from left table
         let mut results = Vec::new();
         for row_a in &rows_a {
             let mut composite_key = String::new();
@@ -1744,7 +1687,6 @@ impl RelationalEngine {
             if let Some(indices) = index.get(&composite_key) {
                 for &i in indices {
                     let row_b = &rows_b[i];
-                    // Verify all common columns match
                     let all_match = common_cols
                         .iter()
                         .all(|col| row_a.get_with_id(col) == row_b.get_with_id(col));
@@ -1757,8 +1699,6 @@ impl RelationalEngine {
 
         Ok(results)
     }
-
-    // ========== Aggregate Functions ==========
 
     pub fn count(&self, table: &str, condition: Condition) -> Result<u64> {
         let rows = self.select(table, condition)?;
@@ -1872,21 +1812,18 @@ impl RelationalEngine {
             return Err(RelationalError::TableNotFound(table.to_string()));
         }
 
-        // Delete all rows
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
         for key in keys {
             self.store.delete(&key)?;
         }
 
-        // Delete all hash indexes for this table
         let idx_prefix = Self::all_indexes_prefix(table);
         let idx_keys = self.store.scan(&idx_prefix);
         for key in idx_keys {
             self.store.delete(&key)?;
         }
 
-        // Delete all B-tree indexes for this table
         let btree_prefix = format!("_btree:{}:", table);
         let btree_keys = self.store.scan(&btree_prefix);
         for key in btree_keys {
@@ -1895,7 +1832,7 @@ impl RelationalEngine {
 
         self.store.delete(&meta_key)?;
 
-        let mut counters = self.row_counters.write().unwrap();
+        let mut counters = self.row_counters.write();
         counters.remove(table);
 
         Ok(())
@@ -1916,7 +1853,6 @@ impl RelationalEngine {
     pub fn create_index(&self, table: &str, column: &str) -> Result<()> {
         let schema = self.get_schema(table)?;
 
-        // Verify column exists (allow _id as well)
         if column != "_id" && schema.get_column(column).is_none() {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
@@ -1929,7 +1865,6 @@ impl RelationalEngine {
             });
         }
 
-        // Store index metadata
         let mut meta = TensorData::new();
         meta.set(
             "_type",
@@ -1945,7 +1880,6 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
-        // Build index from existing data using reference-based iteration
         let prefix = Self::row_prefix(table);
         let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
             let row = self.tensor_to_row(tensor)?;
@@ -1953,7 +1887,6 @@ impl RelationalEngine {
             Some((value, row.id))
         });
 
-        // Sequential: add to index (index_add is not thread-safe)
         for (value, row_id) in entries {
             self.index_add(table, column, &value, row_id)?;
         }
@@ -1966,7 +1899,6 @@ impl RelationalEngine {
     pub fn create_btree_index(&self, table: &str, column: &str) -> Result<()> {
         let schema = self.get_schema(table)?;
 
-        // Verify column exists (allow _id as well)
         if column != "_id" && schema.get_column(column).is_none() {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
@@ -1979,7 +1911,6 @@ impl RelationalEngine {
             });
         }
 
-        // Store B-tree index metadata
         let mut meta = TensorData::new();
         meta.set(
             "_type",
@@ -1995,13 +1926,11 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
-        // Initialize in-memory BTreeMap for this index
         {
             let key = (table.to_string(), column.to_string());
             self.btree_indexes.write().entry(key).or_default();
         }
 
-        // Build index from existing data using reference-based iteration
         let prefix = Self::row_prefix(table);
         let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
             let row = self.tensor_to_row(tensor)?;
@@ -2009,7 +1938,6 @@ impl RelationalEngine {
             Some((value, row.id))
         });
 
-        // Sequential: add to B-tree index
         for (value, row_id) in entries {
             self.btree_index_add(table, column, &value, row_id)?;
         }
@@ -2033,20 +1961,17 @@ impl RelationalEngine {
             });
         }
 
-        // Remove from in-memory BTreeMap
         {
             let key = (table.to_string(), column.to_string());
             self.btree_indexes.write().remove(&key);
         }
 
-        // Delete all B-tree index entries from TensorStore
         let prefix = Self::btree_prefix(table, column);
         let keys = self.store.scan(&prefix);
         for key in keys {
             self.store.delete(&key)?;
         }
 
-        // Delete metadata
         self.store.delete(&meta_key)?;
 
         Ok(())
@@ -2058,11 +1983,8 @@ impl RelationalEngine {
             .scan(&prefix)
             .into_iter()
             .filter_map(|key| {
-                // Keys are _btree:{table}:{column} for metadata
-                // or _btree:{table}:{column}:{value} for entries
                 let parts: Vec<&str> = key.split(':').collect();
                 if parts.len() == 3 {
-                    // This is metadata key
                     Some(parts[2].to_string())
                 } else {
                     None
@@ -2082,14 +2004,12 @@ impl RelationalEngine {
             });
         }
 
-        // Delete all index entries
         let prefix = Self::index_prefix(table, column);
         let keys = self.store.scan(&prefix);
         for key in keys {
             self.store.delete(&key)?;
         }
 
-        // Delete index metadata
         self.store.delete(&meta_key)?;
 
         Ok(())
@@ -2105,10 +2025,8 @@ impl RelationalEngine {
         let mut columns = HashSet::new();
 
         for key in self.store.scan(&prefix) {
-            // Keys are _idx:{table}:{column} or _idx:{table}:{column}:{value_hash}
             let parts: Vec<&str> = key.split(':').collect();
             if parts.len() >= 3 {
-                // Check if this is a meta key (exactly 3 parts) by checking the value
                 let meta_key = Self::index_meta_key(table, parts[2]);
                 if self.store.exists(&meta_key) {
                     columns.insert(parts[2].to_string());
@@ -2119,7 +2037,6 @@ impl RelationalEngine {
         columns.into_iter().collect()
     }
 
-    // Internal: Add a row ID to an index
     fn index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
@@ -2138,7 +2055,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    // Internal: Remove a row ID from an index
     fn index_remove(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
@@ -2157,7 +2073,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    // Internal: Lookup row IDs from an index
     fn index_lookup(&self, table: &str, column: &str, value: &Value) -> Option<Vec<u64>> {
         if !self.has_index(table, column) {
             return None;
@@ -2189,18 +2104,15 @@ impl RelationalEngine {
         tensor
     }
 
-    // Get indexed columns for a table (cached list)
     fn get_table_indexes(&self, table: &str) -> Vec<String> {
         self.get_indexed_columns(table)
     }
 
-    // Get B-tree indexed columns for a table
     fn get_table_btree_indexes(&self, table: &str) -> Vec<String> {
         self.get_btree_indexed_columns(table)
     }
 
     fn btree_index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
-        // Add to in-memory BTreeMap for O(log n) range queries
         let key = (table.to_string(), column.to_string());
         let ordered_key = OrderedKey::from_value(value);
 
@@ -2213,7 +2125,6 @@ impl RelationalEngine {
             }
         }
 
-        // Also persist to TensorStore for recovery
         let sortable = value.sortable_key();
         let store_key = Self::btree_entry_key(table, column, &sortable);
 
@@ -2238,7 +2149,6 @@ impl RelationalEngine {
         value: &Value,
         row_id: u64,
     ) -> Result<()> {
-        // Remove from in-memory BTreeMap
         let key = (table.to_string(), column.to_string());
         let ordered_key = OrderedKey::from_value(value);
 
@@ -2254,7 +2164,6 @@ impl RelationalEngine {
             }
         }
 
-        // Also remove from TensorStore
         let sortable = value.sortable_key();
         let store_key = Self::btree_entry_key(table, column, &sortable);
 
@@ -2319,10 +2228,6 @@ impl RelationalEngine {
         Some(result_ids)
     }
 
-    // ========================================================================
-    // Columnar Storage Methods
-    // ========================================================================
-
     fn column_data_key(table: &str, column: &str) -> String {
         format!("_col:{}:{}:data", table, column)
     }
@@ -2349,20 +2254,19 @@ impl RelationalEngine {
     pub fn materialize_columns(&self, table: &str, columns: &[&str]) -> Result<()> {
         let schema = self.get_schema(table)?;
 
-        // Validate all columns exist
         for col_name in columns {
             if schema.get_column(col_name).is_none() {
                 return Err(RelationalError::ColumnNotFound(col_name.to_string()));
             }
         }
 
-        // Scan all rows
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
 
-        // Extract and materialize each column
         for col_name in columns {
-            let col = schema.get_column(col_name).unwrap();
+            let col = schema
+                .get_column(col_name)
+                .ok_or_else(|| RelationalError::ColumnNotFound(col_name.to_string()))?;
             let column_data = self.extract_column_data(&keys, col_name, &col.column_type)?;
             self.store_column_data(table, &column_data)?;
         }
@@ -2537,14 +2441,12 @@ impl RelationalEngine {
     fn store_column_data(&self, table: &str, column_data: &ColumnData) -> Result<()> {
         let column = &column_data.name;
 
-        // Store row IDs
         let ids_key = Self::column_ids_key(table, column);
         let ids_vec: Vec<f32> = column_data.row_ids.iter().map(|&id| id as f32).collect();
         let mut ids_tensor = TensorData::new();
         ids_tensor.set("ids", TensorValue::Vector(ids_vec));
         self.store.put(ids_key, ids_tensor)?;
 
-        // Store nulls
         let nulls_key = Self::column_nulls_key(table, column);
         let mut nulls_tensor = TensorData::new();
         match &column_data.nulls {
@@ -2573,7 +2475,6 @@ impl RelationalEngine {
         }
         self.store.put(nulls_key, nulls_tensor)?;
 
-        // Store data
         let data_key = Self::column_data_key(table, column);
         let mut data_tensor = TensorData::new();
         match &column_data.values {
@@ -2582,7 +2483,6 @@ impl RelationalEngine {
                     "type",
                     TensorValue::Scalar(ScalarValue::String("int".to_string())),
                 );
-                // Store as bytes for lossless i64 storage
                 let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
                 data_tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
             },
@@ -2617,7 +2517,6 @@ impl RelationalEngine {
         }
         self.store.put(data_key, data_tensor)?;
 
-        // Store metadata
         let meta_key = Self::column_meta_key(table, column);
         let mut meta_tensor = TensorData::new();
         meta_tensor.set(
@@ -2630,7 +2529,6 @@ impl RelationalEngine {
     }
 
     pub fn load_column_data(&self, table: &str, column: &str) -> Result<ColumnData> {
-        // Load row IDs
         let ids_key = Self::column_ids_key(table, column);
         let ids_tensor = self
             .store
@@ -2641,7 +2539,6 @@ impl RelationalEngine {
             _ => return Err(RelationalError::ColumnNotFound(column.to_string())),
         };
 
-        // Load nulls
         let nulls_key = Self::column_nulls_key(table, column);
         let nulls = if let Ok(nulls_tensor) = self.store.get(&nulls_key) {
             match nulls_tensor.get("type") {
@@ -2668,7 +2565,6 @@ impl RelationalEngine {
             NullBitmap::None
         };
 
-        // Load data
         let data_key = Self::column_data_key(table, column);
         let data_tensor = self
             .store
@@ -2736,10 +2632,6 @@ impl RelationalEngine {
         Ok(())
     }
 
-    // ========================================================================
-    // Columnar Scan with Vectorized Filtering
-    // ========================================================================
-
     /// Select with columnar scan and projection support.
     ///
     /// If columnar data is available and options.prefer_columnar is true,
@@ -2751,7 +2643,6 @@ impl RelationalEngine {
         condition: Condition,
         options: ColumnarScanOptions,
     ) -> Result<Vec<Row>> {
-        // Check if we can use columnar path
         let filter_columns = Self::extract_filter_columns(&condition);
 
         let use_columnar = options.prefer_columnar
@@ -2763,7 +2654,6 @@ impl RelationalEngine {
         if use_columnar {
             self.select_columnar_impl(table, condition, options)
         } else {
-            // Fallback to row-based with projection
             self.select_with_projection(table, condition, options.projection)
         }
     }
@@ -2801,10 +2691,8 @@ impl RelationalEngine {
         condition: Condition,
         options: ColumnarScanOptions,
     ) -> Result<Vec<Row>> {
-        // Determine all columns needed: filter + projection
         let filter_columns = Self::extract_filter_columns(&condition);
 
-        // Get projection columns or all schema columns
         let projection_columns: Vec<String> = match &options.projection {
             Some(cols) => cols.clone(),
             None => {
@@ -2822,7 +2710,6 @@ impl RelationalEngine {
             },
         };
 
-        // Merge filter and projection columns (unique)
         let mut all_needed: Vec<String> = filter_columns.clone();
         for col in &projection_columns {
             if !all_needed.contains(col) {
@@ -2830,24 +2717,20 @@ impl RelationalEngine {
             }
         }
 
-        // Check if pure columnar path is possible
         let use_pure_columnar = self.all_columns_materialized(table, &all_needed);
 
-        // Load required columns for filtering
         let mut column_map: HashMap<String, ColumnData> = HashMap::new();
         for col in &filter_columns {
             let col_data = self.load_column_data(table, col)?;
             column_map.insert(col.clone(), col_data);
         }
 
-        // For pure columnar with no filter columns, load first projection column to get row_ids
         if use_pure_columnar && column_map.is_empty() && !projection_columns.is_empty() {
             let first_col = &projection_columns[0];
             let col_data = self.load_column_data(table, first_col)?;
             column_map.insert(first_col.clone(), col_data);
         }
 
-        // Get row count from first column
         let row_count = column_map
             .values()
             .next()
@@ -2858,10 +2741,8 @@ impl RelationalEngine {
             return Ok(Vec::new());
         }
 
-        // Apply vectorized filter
         let selection = self.apply_vectorized_filter(&column_map, &condition, row_count)?;
 
-        // Get row IDs from first column (clone to avoid borrow issues when adding more columns)
         let row_ids: Vec<u64> = column_map
             .values()
             .next()
@@ -2871,14 +2752,12 @@ impl RelationalEngine {
         let selected_indices = selection.selected_indices();
 
         if use_pure_columnar {
-            // Load remaining projection columns not already in column_map
             for col in &projection_columns {
                 if !column_map.contains_key(col) {
                     let col_data = self.load_column_data(table, col)?;
                     column_map.insert(col.clone(), col_data);
                 }
             }
-            // Pure columnar materialization - no row store access
             Ok(Self::materialize_from_columns(
                 &column_map,
                 &row_ids,
@@ -2886,7 +2765,6 @@ impl RelationalEngine {
                 &options.projection,
             ))
         } else {
-            // Fall back to row-based materialization
             self.materialize_selected_rows(table, &row_ids, &selected_indices, options.projection)
         }
     }
@@ -6518,5 +6396,120 @@ mod tests {
 
         let results = engine.join("users", "orders", "_id", "user_id").unwrap();
         assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_join_with_null_keys() {
+        let engine = RelationalEngine::new();
+
+        // Create tables with nullable join columns
+        let users_schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("ref_id", ColumnType::Int).nullable(),
+        ]);
+        engine.create_table("users_null", users_schema).unwrap();
+
+        let orders_schema = Schema::new(vec![
+            Column::new("order_id", ColumnType::Int),
+            Column::new("user_ref", ColumnType::Int).nullable(),
+        ]);
+        engine.create_table("orders_null", orders_schema).unwrap();
+
+        // Insert user with null ref_id
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Bob".into()));
+        values.insert("ref_id".to_string(), Value::Null);
+        engine.insert("users_null", values).unwrap();
+
+        // Insert order with null user_ref
+        let mut order = HashMap::new();
+        order.insert("order_id".to_string(), Value::Int(1));
+        order.insert("user_ref".to_string(), Value::Null);
+        engine.insert("orders_null", order).unwrap();
+
+        // Join on nullable columns - engine matches null == null
+        let results = engine
+            .join("users_null", "orders_null", "ref_id", "user_ref")
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_aggregate_overflow_i64() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("big_nums", schema).unwrap();
+
+        // Insert values near i64::MAX
+        let near_max = i64::MAX / 2;
+        for _ in 0..3 {
+            let mut values = HashMap::new();
+            values.insert("value".to_string(), Value::Int(near_max));
+            engine.insert("big_nums", values).unwrap();
+        }
+
+        // Sum would overflow, but we should handle gracefully via wrapping
+        let result = engine.sum("big_nums", "value", Condition::True);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_index_create_duplicate_name() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Create index first time - succeeds
+        engine.create_index("users", "age").unwrap();
+
+        // Create same index again - should fail
+        let result = engine.create_index("users", "age");
+        assert!(result.is_err());
+        match result {
+            Err(RelationalError::IndexAlreadyExists { table, column }) => {
+                assert_eq!(table, "users");
+                assert_eq!(column, "age");
+            },
+            _ => panic!("Expected IndexAlreadyExists error"),
+        }
+    }
+
+    #[test]
+    fn test_btree_range_empty_result() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        engine.create_btree_index("users", "age").unwrap();
+
+        // Insert some values
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{i}")));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        // Query range with no matches (age > 100)
+        let condition = Condition::Gt("age".to_string(), Value::Int(100));
+        let rows = engine.select("users", condition).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_condition_evaluate_type_mismatch() {
+        // Test that comparing incompatible types returns false
+        let row = Row {
+            id: 1,
+            values: vec![
+                ("name".to_string(), Value::String("Alice".into())),
+                ("age".to_string(), Value::Int(25)),
+            ],
+        };
+
+        // Compare string column with int value
+        let condition = Condition::Eq("name".to_string(), Value::Int(42));
+        assert!(!condition.evaluate(&row));
+
+        // Compare int column with string value
+        let condition2 = Condition::Eq("age".to_string(), Value::String("twenty".into()));
+        assert!(!condition2.evaluate(&row));
     }
 }

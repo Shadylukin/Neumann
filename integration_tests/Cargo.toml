@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 tensor_store = { path = "../tensor_store" }
 tensor_compress = { path = "../tensor_compress" }
-relational_engine = { path = "../relational_engine" }
+relational_engine = { path = "../relational_engine", features = ["test-internals"] }
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
 tensor_vault = { path = "../tensor_vault" }
