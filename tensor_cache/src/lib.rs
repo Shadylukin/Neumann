@@ -1019,4 +1019,336 @@ mod tests {
 
         assert!(cache.is_empty());
     }
+
+    #[test]
+    fn test_config_validation_invalid_eviction_batch() {
+        let config = CacheConfig {
+            eviction_batch_size: 0,
+            ..Default::default()
+        };
+        let result = Cache::with_config(config);
+        assert!(matches!(result, Err(CacheError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn test_semantic_miss() {
+        let cache = create_test_cache();
+        let embedding1 = normalize(&[1.0, 0.0, 0.0]);
+        let embedding2 = normalize(&[0.0, 1.0, 0.0]); // Orthogonal
+
+        cache
+            .put("prompt1", &embedding1, "response1", "gpt-4", None)
+            .unwrap();
+
+        // Search with orthogonal embedding - should miss semantic cache
+        let result = cache.get("nonexistent", Some(&embedding2));
+        assert!(result.is_none());
+
+        let snapshot = cache.stats_snapshot();
+        assert_eq!(snapshot.semantic_misses, 1);
+    }
+
+    #[test]
+    fn test_exact_capacity_full() {
+        let config = CacheConfig {
+            embedding_dim: 3,
+            exact_capacity: 2,
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache.put("p1", &embedding, "r1", "gpt-4", None).unwrap();
+        cache.put("p2", &embedding, "r2", "gpt-4", None).unwrap();
+
+        let result = cache.put("p3", &embedding, "r3", "gpt-4", None);
+        assert!(matches!(result, Err(CacheError::CacheFull { .. })));
+    }
+
+    #[test]
+    fn test_semantic_capacity_full() {
+        let config = CacheConfig {
+            embedding_dim: 3,
+            exact_capacity: 100,
+            semantic_capacity: 2,
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        let e1 = normalize(&[1.0, 0.0, 0.0]);
+        let e2 = normalize(&[0.0, 1.0, 0.0]);
+        let e3 = normalize(&[0.0, 0.0, 1.0]);
+
+        cache.put("p1", &e1, "r1", "gpt-4", None).unwrap();
+        cache.put("p2", &e2, "r2", "gpt-4", None).unwrap();
+
+        let result = cache.put("p3", &e3, "r3", "gpt-4", None);
+        assert!(matches!(result, Err(CacheError::CacheFull { .. })));
+    }
+
+    #[test]
+    fn test_embedding_capacity_full() {
+        let config = CacheConfig {
+            embedding_dim: 3,
+            embedding_capacity: 2,
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        cache
+            .put_embedding("src", "c1", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+        cache
+            .put_embedding("src", "c2", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+
+        let result = cache.put_embedding("src", "c3", vec![0.1, 0.2, 0.3], "model");
+        assert!(matches!(result, Err(CacheError::CacheFull { .. })));
+    }
+
+    #[test]
+    fn test_auto_metric_selection_sparse() {
+        let config = CacheConfig {
+            embedding_dim: 10,
+            auto_select_metric: true,
+            sparsity_metric_threshold: 0.5,
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        // Dense embedding (no zeros)
+        let dense = normalize(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        cache.put("dense", &dense, "dense_response", "gpt-4", None).unwrap();
+
+        // Sparse embedding (80% zeros)
+        let sparse = normalize(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        cache.put("sparse", &sparse, "sparse_response", "gpt-4", None).unwrap();
+
+        // Query with sparse should use Jaccard
+        let hit = cache.get("different", Some(&sparse));
+        if let Some(h) = hit {
+            assert_eq!(h.metric_used, Some(DistanceMetric::Jaccard));
+        }
+    }
+
+    #[test]
+    fn test_auto_metric_disabled() {
+        let config = CacheConfig {
+            embedding_dim: 10,
+            auto_select_metric: false,
+            distance_metric: DistanceMetric::Cosine,
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        let sparse = normalize(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        cache.put("sparse", &sparse, "response", "gpt-4", None).unwrap();
+
+        // Even with sparse embedding, should use Cosine since auto_select is disabled
+        let hit = cache.get("different", Some(&sparse));
+        if let Some(h) = hit {
+            assert_eq!(h.metric_used, Some(DistanceMetric::Cosine));
+        }
+    }
+
+    #[test]
+    fn test_invalidate_nonexistent() {
+        let cache = create_test_cache();
+        assert!(!cache.invalidate("nonexistent"));
+    }
+
+    #[test]
+    fn test_invalidate_version() {
+        let cache = create_test_cache();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        // Put with version
+        cache
+            .put("prompt1", &embedding, "response1", "gpt-4", None)
+            .unwrap();
+
+        // invalidate_version scans semantic cache entries
+        let removed = cache.invalidate_version("v1.0");
+        // No entries have version set via put(), so should be 0
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_invalidate_embeddings() {
+        let cache = create_test_cache();
+
+        cache
+            .put_embedding("source1", "content1", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+        cache
+            .put_embedding("source1", "content2", vec![0.4, 0.5, 0.6], "model")
+            .unwrap();
+        cache
+            .put_embedding("source2", "content1", vec![0.7, 0.8, 0.9], "model")
+            .unwrap();
+
+        // Invalidate all embeddings from source1
+        let removed = cache.invalidate_embeddings("source1");
+        assert_eq!(removed, 2);
+
+        // source2 embedding should still exist
+        assert!(cache.get_embedding("source2", "content1").is_some());
+        assert!(cache.get_embedding("source1", "content1").is_none());
+    }
+
+    #[test]
+    fn test_cleanup_expired() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache.put_simple("key", "value").unwrap();
+        cache
+            .put_embedding("src", "content", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+
+        // Wait for TTL to expire
+        std::thread::sleep(Duration::from_millis(100));
+
+        let cleaned = cache.cleanup_expired();
+        // cleanup_expired returns usize, test that it runs without panic
+        let _ = cleaned;
+    }
+
+    #[test]
+    fn test_get_expired_returns_none() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        cache.put_simple("key", "value").unwrap();
+        assert!(cache.get_simple("key").is_some());
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Should return None for expired entry
+        assert!(cache.get_simple("key").is_none());
+    }
+
+    #[test]
+    fn test_get_embedding_expired_returns_none() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+
+        cache
+            .put_embedding("src", "content", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(cache.get_embedding("src", "content").is_none());
+    }
+
+    #[test]
+    fn test_semantic_match_expired_returns_none() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Semantic lookup should return None for expired
+        let result = cache.get("different", Some(&embedding));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stats_accessor() {
+        let cache = create_test_cache();
+        let stats = cache.stats();
+        assert_eq!(stats.total_entries(), 0);
+    }
+
+    #[test]
+    fn test_config_accessor() {
+        let cache = create_test_cache();
+        let config = cache.config();
+        assert_eq!(config.embedding_dim, 3);
+    }
+
+    #[test]
+    fn test_cache_layer_debug() {
+        assert_eq!(format!("{:?}", CacheLayer::Exact), "Exact");
+        assert_eq!(format!("{:?}", CacheLayer::Semantic), "Semantic");
+        assert_eq!(format!("{:?}", CacheLayer::Embedding), "Embedding");
+    }
+
+    #[test]
+    fn test_exact_match_expired_returns_none() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Exact lookup should return None for expired
+        let result = cache.get("prompt", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_cleanup_expired_with_entries() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(10),
+            ..Default::default()
+        };
+        let cache = Cache::with_config(config).unwrap();
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        // Add entries to all layers
+        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache.put_simple("key", "value").unwrap();
+        cache
+            .put_embedding("src", "content", vec![0.1, 0.2, 0.3], "model")
+            .unwrap();
+
+        // Wait for TTL to expire
+        std::thread::sleep(Duration::from_millis(50));
+
+        // cleanup_expired should find and clean expired entries
+        let cleaned = cache.cleanup_expired();
+        assert!(cleaned > 0, "Expected to clean at least 1 expired entry");
+    }
 }

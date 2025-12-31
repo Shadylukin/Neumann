@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -6,6 +7,16 @@ pub enum CacheLayer {
     Exact,
     Semantic,
     Embedding,
+}
+
+impl fmt::Display for CacheLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exact => write!(f, "exact"),
+            Self::Semantic => write!(f, "semantic"),
+            Self::Embedding => write!(f, "embedding"),
+        }
+    }
 }
 
 /// Thread-safe cache statistics with atomic counters.
