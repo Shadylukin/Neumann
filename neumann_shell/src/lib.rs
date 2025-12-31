@@ -241,6 +241,16 @@ impl Shell {
             return self.handle_cache_init();
         }
 
+        // Handle CLUSTER CONNECT command
+        if lower.starts_with("cluster connect") {
+            return self.handle_cluster_connect(trimmed);
+        }
+
+        // Handle CLUSTER DISCONNECT command
+        if lower == "cluster disconnect" {
+            return self.handle_cluster_disconnect();
+        }
+
         // Execute as query
         match self.router.execute_parsed(trimmed) {
             Ok(result) => {
@@ -478,6 +488,115 @@ impl Shell {
         match self.router.init_cache_default() {
             Ok(()) => CommandResult::Output("Cache initialized".to_string()),
             Err(e) => CommandResult::Error(format!("Failed to initialize cache: {e}")),
+        }
+    }
+
+    /// Handles the CLUSTER CONNECT command.
+    ///
+    /// Syntax: CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]
+    /// Example: CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'
+    fn handle_cluster_connect(&mut self, input: &str) -> CommandResult {
+        // Parse the command arguments
+        let args = input.trim();
+        let args = args
+            .strip_prefix("cluster connect")
+            .or_else(|| args.strip_prefix("CLUSTER CONNECT"))
+            .unwrap_or(args)
+            .trim();
+
+        if args.is_empty() {
+            return CommandResult::Error(
+                "Usage: CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]\n\
+                 Example: CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'"
+                    .to_string(),
+            );
+        }
+
+        // Parse quoted strings
+        let mut addresses: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut in_quote = false;
+        let mut quote_char = '"';
+
+        for c in args.chars() {
+            match c {
+                '\'' | '"' if !in_quote => {
+                    in_quote = true;
+                    quote_char = c;
+                },
+                c if c == quote_char && in_quote => {
+                    in_quote = false;
+                    if !current.is_empty() {
+                        addresses.push(current.clone());
+                        current.clear();
+                    }
+                },
+                _ if in_quote => current.push(c),
+                ' ' | ',' => {},
+                _ => current.push(c),
+            }
+        }
+        if !current.is_empty() {
+            addresses.push(current);
+        }
+
+        if addresses.is_empty() {
+            return CommandResult::Error("No addresses provided".to_string());
+        }
+
+        // Parse first address as local node
+        let local = &addresses[0];
+        let (node_id, bind_addr) = match Self::parse_node_address(local) {
+            Ok(parsed) => parsed,
+            Err(e) => return CommandResult::Error(format!("Invalid local address: {e}")),
+        };
+
+        // Parse remaining addresses as peers
+        let mut peers: Vec<(String, std::net::SocketAddr)> = Vec::new();
+        for addr in &addresses[1..] {
+            match Self::parse_node_address(addr) {
+                Ok((peer_id, peer_addr)) => peers.push((peer_id, peer_addr)),
+                Err(e) => return CommandResult::Error(format!("Invalid peer address '{}': {e}", addr)),
+            }
+        }
+
+        // Initialize cluster
+        match self.router.init_cluster(&node_id, bind_addr, &peers) {
+            Ok(()) => {
+                let peer_count = peers.len();
+                CommandResult::Output(format!(
+                    "Cluster initialized: {} @ {} with {} peer(s)",
+                    node_id, bind_addr, peer_count
+                ))
+            },
+            Err(e) => CommandResult::Error(format!("Failed to connect to cluster: {e}")),
+        }
+    }
+
+    /// Parse a node address in the format "node_id@host:port".
+    fn parse_node_address(s: &str) -> std::result::Result<(String, std::net::SocketAddr), String> {
+        let parts: Vec<&str> = s.splitn(2, '@').collect();
+        if parts.len() != 2 {
+            return Err("Expected format 'node_id@host:port'".to_string());
+        }
+
+        let node_id = parts[0].to_string();
+        let addr: std::net::SocketAddr = parts[1]
+            .parse()
+            .map_err(|e| format!("Invalid address '{}': {}", parts[1], e))?;
+
+        Ok((node_id, addr))
+    }
+
+    /// Handles the CLUSTER DISCONNECT command.
+    fn handle_cluster_disconnect(&mut self) -> CommandResult {
+        if !self.router.is_cluster_active() {
+            return CommandResult::Error("Not connected to cluster".to_string());
+        }
+
+        match self.router.shutdown_cluster() {
+            Ok(()) => CommandResult::Output("Disconnected from cluster".to_string()),
+            Err(e) => CommandResult::Error(format!("Failed to disconnect: {e}")),
         }
     }
 

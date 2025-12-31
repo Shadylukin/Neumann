@@ -44,10 +44,14 @@ use relational_engine::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
-use tensor_chain::{ChainError, TensorChain};
+use tensor_chain::{
+    ChainError, ClusterNodeConfig, ClusterOrchestrator, ClusterPeerConfig, OrchestratorConfig,
+    TensorChain,
+};
 use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
 use tensor_store::TensorStore;
 use tensor_unified::{
@@ -449,6 +453,10 @@ pub struct QueryRouter {
     checkpoint: Option<Arc<tokio::sync::Mutex<CheckpointManager>>>,
     /// Optional tensor chain (requires initialization)
     chain: Option<Arc<TensorChain>>,
+    /// Optional cluster orchestrator for distributed mode
+    cluster: Option<Arc<ClusterOrchestrator>>,
+    /// Tokio runtime for async cluster operations (shared with blob)
+    cluster_runtime: Option<Arc<Runtime>>,
 }
 
 impl QueryRouter {
@@ -467,6 +475,8 @@ impl QueryRouter {
             hnsw_index: None,
             checkpoint: None,
             chain: None,
+            cluster: None,
+            cluster_runtime: None,
         }
     }
 
@@ -489,6 +499,8 @@ impl QueryRouter {
             hnsw_index: None,
             checkpoint: None,
             chain: None,
+            cluster: None,
+            cluster_runtime: None,
         }
     }
 
@@ -519,6 +531,8 @@ impl QueryRouter {
             hnsw_index: None,
             checkpoint: None,
             chain: None,
+            cluster: None,
+            cluster_runtime: None,
         }
     }
 
@@ -669,6 +683,73 @@ impl QueryRouter {
             })?;
         }
         Ok(())
+    }
+
+    /// Initialize cluster mode and connect to peers.
+    ///
+    /// This starts the cluster orchestrator with Raft consensus, TCP transport,
+    /// and membership management.
+    ///
+    /// # Arguments
+    /// * `node_id` - Unique identifier for this node
+    /// * `bind_addr` - Address to bind for incoming connections
+    /// * `peers` - List of (node_id, address) tuples for peer nodes
+    pub fn init_cluster(
+        &mut self,
+        node_id: &str,
+        bind_addr: SocketAddr,
+        peers: &[(String, SocketAddr)],
+    ) -> Result<()> {
+        if self.cluster.is_some() {
+            return Err(RouterError::InvalidArgument(
+                "Cluster already initialized".to_string(),
+            ));
+        }
+
+        // Create runtime for async cluster operations
+        let runtime = Runtime::new()
+            .map_err(|e| RouterError::ChainError(format!("Failed to create runtime: {e}")))?;
+
+        // Build cluster configuration
+        let local_config = ClusterNodeConfig::new(node_id, bind_addr);
+        let peer_configs: Vec<ClusterPeerConfig> = peers
+            .iter()
+            .map(|(id, addr)| ClusterPeerConfig::new(id.clone(), *addr))
+            .collect();
+
+        let config = OrchestratorConfig::new(local_config, peer_configs);
+
+        // Start cluster orchestrator
+        let orchestrator = runtime
+            .block_on(ClusterOrchestrator::start(config))
+            .map_err(|e| RouterError::ChainError(e.to_string()))?;
+
+        self.cluster = Some(Arc::new(orchestrator));
+        self.cluster_runtime = Some(Arc::new(runtime));
+        Ok(())
+    }
+
+    /// Shutdown the cluster gracefully.
+    pub fn shutdown_cluster(&mut self) -> Result<()> {
+        if let (Some(cluster), Some(runtime)) = (self.cluster.as_ref(), self.cluster_runtime.as_ref())
+        {
+            runtime
+                .block_on(cluster.shutdown())
+                .map_err(|e| RouterError::ChainError(e.to_string()))?;
+        }
+        self.cluster = None;
+        self.cluster_runtime = None;
+        Ok(())
+    }
+
+    /// Check if cluster mode is active.
+    pub fn is_cluster_active(&self) -> bool {
+        self.cluster.is_some()
+    }
+
+    /// Get reference to cluster orchestrator (if initialized).
+    pub fn cluster(&self) -> Option<&Arc<ClusterOrchestrator>> {
+        self.cluster.as_ref()
     }
 
     /// Get reference to checkpoint manager (if initialized).
@@ -1916,35 +1997,104 @@ impl QueryRouter {
     // ========== Cluster Execution ==========
 
     fn exec_cluster(&self, stmt: &ClusterStmt) -> Result<QueryResult> {
-        // Cluster functionality requires ClusterOrchestrator integration
-        // For now, provide placeholder responses
         match &stmt.operation {
-            ClusterOp::Connect { addresses: _ } => {
-                // Would initialize ClusterOrchestrator and connect
+            ClusterOp::Connect { addresses } => {
+                // CLUSTER CONNECT needs &mut self, so we guide users to use shell or API
+                let addr_str = self.eval_string_expr(addresses)?;
+                Err(RouterError::InvalidArgument(format!(
+                    "CLUSTER CONNECT '{}' requires shell support. Use the shell command or call router.init_cluster() from code.",
+                    addr_str
+                )))
+            },
+            ClusterOp::Disconnect => {
+                // CLUSTER DISCONNECT also needs &mut self
+                if self.cluster.is_none() {
+                    return Err(RouterError::InvalidArgument(
+                        "Not connected to cluster".to_string(),
+                    ));
+                }
                 Err(RouterError::InvalidArgument(
-                    "CLUSTER CONNECT requires distributed mode".to_string(),
+                    "CLUSTER DISCONNECT requires shell support. Use the shell command or call router.shutdown_cluster() from code.".to_string(),
                 ))
             },
-            ClusterOp::Disconnect => Err(RouterError::InvalidArgument(
-                "CLUSTER DISCONNECT requires distributed mode".to_string(),
-            )),
             ClusterOp::Status => {
-                // Return basic status info
-                Ok(QueryResult::Value(
-                    "Cluster: single-node mode (not connected)".to_string(),
-                ))
+                if let Some(cluster) = &self.cluster {
+                    let node_id = cluster.node_id();
+                    let is_leader = cluster.is_leader();
+                    let leader = cluster
+                        .current_leader()
+                        .unwrap_or_else(|| "(unknown)".to_string());
+                    let height = cluster.chain_height();
+                    let commit_idx = cluster.commit_index();
+
+                    let status = format!(
+                        "Cluster Status:\n  Node ID: {}\n  Role: {}\n  Leader: {}\n  Chain Height: {}\n  Commit Index: {}",
+                        node_id,
+                        if is_leader { "Leader" } else { "Follower" },
+                        leader,
+                        height,
+                        commit_idx
+                    );
+                    Ok(QueryResult::Value(status))
+                } else {
+                    Ok(QueryResult::Value(
+                        "Cluster: single-node mode (not connected)".to_string(),
+                    ))
+                }
             },
             ClusterOp::Nodes => {
-                // Would list cluster nodes
-                Ok(QueryResult::Value(
-                    "No cluster nodes (single-node mode)".to_string(),
-                ))
+                if let Some(cluster) = &self.cluster {
+                    let membership = cluster.membership();
+                    let view = membership.view();
+                    let local_id = cluster.node_id();
+
+                    let mut nodes = vec![format!("  {} (self)", local_id)];
+                    for node in &view.nodes {
+                        if &node.node_id != local_id {
+                            let status = if view.healthy_nodes.contains(&node.node_id) {
+                                "healthy"
+                            } else if view.failed_nodes.contains(&node.node_id) {
+                                "failed"
+                            } else {
+                                "unknown"
+                            };
+                            nodes.push(format!("  {} - {}", node.node_id, status));
+                        }
+                    }
+
+                    Ok(QueryResult::Value(format!(
+                        "Cluster Nodes ({}):\n{}",
+                        nodes.len(),
+                        nodes.join("\n")
+                    )))
+                } else {
+                    Ok(QueryResult::Value(
+                        "No cluster nodes (single-node mode)".to_string(),
+                    ))
+                }
             },
             ClusterOp::Leader => {
-                // Would return current Raft leader
-                Ok(QueryResult::Value(
-                    "No leader (single-node mode)".to_string(),
-                ))
+                if let Some(cluster) = &self.cluster {
+                    let leader = cluster.current_leader();
+                    let is_self = cluster.is_leader();
+
+                    match leader {
+                        Some(leader_id) => {
+                            if is_self {
+                                Ok(QueryResult::Value(format!("Leader: {} (this node)", leader_id)))
+                            } else {
+                                Ok(QueryResult::Value(format!("Leader: {}", leader_id)))
+                            }
+                        },
+                        None => Ok(QueryResult::Value(
+                            "No leader elected (election in progress)".to_string(),
+                        )),
+                    }
+                } else {
+                    Ok(QueryResult::Value(
+                        "No leader (single-node mode)".to_string(),
+                    ))
+                }
             },
         }
     }
