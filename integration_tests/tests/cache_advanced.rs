@@ -15,10 +15,10 @@ fn test_cache_ttl_expiration() {
         default_ttl: Duration::from_millis(100),
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Store entry
-    cache.put_simple("ttl_key", "ttl_value");
+    cache.put_simple("ttl_key", "ttl_value").unwrap();
 
     // Immediately available
     assert!(cache.get_simple("ttl_key").is_some());
@@ -43,7 +43,7 @@ fn test_cache_semantic_similarity() {
         embedding_dim: 32,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Store entries with embeddings
     let embeddings = sample_embeddings(5, 32);
@@ -114,13 +114,13 @@ fn test_cache_eviction_under_pressure() {
         exact_capacity: 100,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Add more entries than capacity
     for i in 0..200 {
         let key = format!("key_{}", i);
         let value = format!("value_{}", i);
-        cache.put_simple(&key, &value);
+        let _ = cache.put_simple(&key, &value);
     }
 
     // Cache should have evicted some entries
@@ -146,12 +146,14 @@ fn test_cache_multi_layer_stats() {
         embedding_dim: 32,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Add entries to different layers
     // Simple layer (exact cache)
     for i in 0..10 {
-        cache.put_simple(&format!("simple_{}", i), &format!("value_{}", i));
+        cache
+            .put_simple(&format!("simple_{}", i), &format!("value_{}", i))
+            .unwrap();
     }
 
     // Semantic layer - use put() with embeddings
@@ -208,14 +210,14 @@ fn test_cache_background_eviction() {
         eviction_interval: Duration::from_millis(50),
         ..Default::default()
     };
-    let cache = Arc::new(Cache::with_config(config));
+    let cache = Arc::new(Cache::with_config(config).unwrap());
 
     // Start eviction (if available)
     // Note: start_eviction may not be public, so we test passive eviction
 
-    // Fill cache beyond capacity
+    // Fill cache beyond capacity (some may fail due to capacity limits)
     for i in 0..100 {
-        cache.put_simple(&format!("evict_key_{}", i), &format!("evict_value_{}", i));
+        let _ = cache.put_simple(&format!("evict_key_{}", i), &format!("evict_value_{}", i));
     }
 
     // Wait for potential background eviction

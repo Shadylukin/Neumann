@@ -1,56 +1,47 @@
-//! Error types for the cache module.
-
 use thiserror::Error;
 
-/// Errors that can occur during cache operations.
-#[derive(Debug, Error, Clone, PartialEq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum CacheError {
-    /// Cache entry not found.
     #[error("cache entry not found: {0}")]
     NotFound(String),
 
-    /// Embedding dimension mismatch.
     #[error("embedding dimension mismatch: expected {expected}, got {got}")]
     DimensionMismatch { expected: usize, got: usize },
 
-    /// Storage error from underlying tensor store.
     #[error("storage error: {0}")]
     StorageError(String),
 
-    /// Serialization or deserialization error.
     #[error("serialization error: {0}")]
     SerializationError(String),
 
-    /// Tokenizer initialization or counting error.
     #[error("tokenizer error: {0}")]
     TokenizerError(String),
 
-    /// Cache is full and cannot accept more entries.
     #[error("cache full: {current} entries >= {capacity} capacity")]
     CacheFull { current: usize, capacity: usize },
 
-    /// Invalid configuration provided.
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
-    /// Operation was cancelled or interrupted.
     #[error("operation cancelled: {0}")]
     Cancelled(String),
+
+    #[error("lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 impl From<tensor_store::TensorStoreError> for CacheError {
     fn from(e: tensor_store::TensorStoreError) -> Self {
-        CacheError::StorageError(e.to_string())
+        Self::StorageError(e.to_string())
     }
 }
 
 impl From<bincode::Error> for CacheError {
     fn from(e: bincode::Error) -> Self {
-        CacheError::SerializationError(e.to_string())
+        Self::SerializationError(e.to_string())
     }
 }
 
-/// Result type for cache operations.
 pub type Result<T> = std::result::Result<T, CacheError>;
 
 #[cfg(test)]
@@ -121,7 +112,6 @@ mod tests {
 
     #[test]
     fn test_from_bincode_error() {
-        // Create a bincode error by trying to deserialize invalid data
         let invalid_data = b"not valid bincode";
         let result: std::result::Result<String, bincode::Error> =
             bincode::deserialize(invalid_data);

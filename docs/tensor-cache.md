@@ -77,7 +77,7 @@ let config = CacheConfig {
     output_cost_per_1k: 0.015,
 };
 
-let cache = Cache::with_config(config);
+let cache = Cache::with_config(config)?;
 ```
 
 ### Configuration Presets

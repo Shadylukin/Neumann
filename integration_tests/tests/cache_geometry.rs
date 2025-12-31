@@ -28,7 +28,7 @@ fn test_cache_with_cosine_metric() {
         auto_select_metric: false,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     let embeddings = sample_embeddings_normalized(3, 32);
 
@@ -68,7 +68,7 @@ fn test_cache_with_jaccard_metric() {
         semantic_threshold: 0.3, // Lower for Jaccard on dense vectors
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     let embeddings = sample_embeddings_normalized(3, 32);
 
@@ -96,7 +96,7 @@ fn test_cache_auto_metric_selection_dense() {
         sparsity_metric_threshold: 0.7,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Dense embedding (low sparsity)
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
@@ -120,7 +120,7 @@ fn test_cache_auto_metric_selection_sparse() {
         semantic_threshold: 0.3,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Sparse embedding (>70% zeros)
     let embedding = create_sparse_embedding(32, 0.8);
@@ -141,7 +141,7 @@ fn test_cache_get_with_explicit_metric() {
         semantic_threshold: 0.3,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
 
@@ -171,7 +171,7 @@ fn test_cache_sparse_embeddings_preset() {
     assert!(config.auto_select_metric);
     assert!((config.sparsity_metric_threshold - 0.5).abs() < 0.001);
 
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Should be functional
     let embedding = create_sparse_embedding(32, 0.8);
@@ -207,7 +207,7 @@ fn test_cache_hit_similarity_range() {
         embedding_dim: 32,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     let embeddings = sample_embeddings_normalized(2, 32);
 
@@ -227,7 +227,7 @@ fn test_cache_metric_used_in_exact_vs_semantic() {
         embedding_dim: 32,
         ..Default::default()
     };
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     let embedding = sample_embeddings_normalized(1, 32)[0].clone();
 

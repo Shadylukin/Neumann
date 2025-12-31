@@ -35,7 +35,7 @@ fn create_sparse_vector(dim: usize, sparsity: f32, seed: usize) -> Vec<f32> {
 fn bench_exact_lookup(c: &mut Criterion) {
     let mut config = CacheConfig::default();
     config.embedding_dim = 128;
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Pre-populate with 1000 entries
     for i in 0..1000 {
@@ -64,7 +64,7 @@ fn bench_semantic_lookup(c: &mut Criterion) {
     let mut config = CacheConfig::default();
     config.embedding_dim = 128;
     config.semantic_threshold = 0.8;
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Pre-populate
     for i in 0..1000 {
@@ -97,7 +97,7 @@ fn bench_put(c: &mut Criterion) {
 
     for size in [100, 1000, 10000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            let cache = Cache::with_config(config.clone());
+            let cache = Cache::with_config(config.clone()).unwrap();
 
             // Pre-populate
             for i in 0..size {
@@ -126,7 +126,7 @@ fn bench_put(c: &mut Criterion) {
 
 fn bench_embedding_cache(c: &mut Criterion) {
     let config = CacheConfig::default();
-    let cache = Cache::with_config(config);
+    let cache = Cache::with_config(config).unwrap();
 
     // Pre-populate
     for i in 0..1000 {
@@ -159,7 +159,7 @@ fn bench_eviction(c: &mut Criterion) {
             config.embedding_dim = 64;
             config.exact_capacity = size * 2;
             config.semantic_capacity = size * 2;
-            let cache = Cache::with_config(config);
+            let cache = Cache::with_config(config).unwrap();
 
             // Pre-populate
             for i in 0..size {
@@ -227,7 +227,7 @@ fn bench_semantic_with_metrics(c: &mut Criterion) {
             config.semantic_threshold = 0.3; // Lower for non-cosine metrics
             config.distance_metric = metric.clone();
             config.auto_select_metric = false;
-            let cache = Cache::with_config(config);
+            let cache = Cache::with_config(config).unwrap();
 
             // Pre-populate
             for i in 0..1000 {
@@ -260,7 +260,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
         let mut config = CacheConfig::default();
         config.embedding_dim = 128;
         config.auto_select_metric = true;
-        let cache = Cache::with_config(config);
+        let cache = Cache::with_config(config).unwrap();
 
         for i in 0..1000 {
             let embedding = normalize(&create_test_vector(128, i));
@@ -284,7 +284,7 @@ fn bench_sparse_vs_dense(c: &mut Criterion) {
         let mut config = CacheConfig::sparse_embeddings();
         config.embedding_dim = 128;
         config.semantic_threshold = 0.3;
-        let cache = Cache::with_config(config);
+        let cache = Cache::with_config(config).unwrap();
 
         for i in 0..1000 {
             let embedding = create_sparse_vector(128, 0.8, i);
@@ -319,7 +319,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
         let mut config = CacheConfig::default();
         config.embedding_dim = 128;
         config.auto_select_metric = true;
-        let cache = Cache::with_config(config);
+        let cache = Cache::with_config(config).unwrap();
 
         for i in 0..100 {
             let embedding = normalize(&create_test_vector(128, i));
@@ -343,7 +343,7 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
         config.embedding_dim = 128;
         config.auto_select_metric = true;
         config.semantic_threshold = 0.3;
-        let cache = Cache::with_config(config);
+        let cache = Cache::with_config(config).unwrap();
 
         for i in 0..100 {
             let embedding = create_sparse_vector(128, 0.8, i);

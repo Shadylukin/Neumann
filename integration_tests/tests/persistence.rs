@@ -264,7 +264,7 @@ fn test_cache_entries_are_ephemeral() {
     use tensor_cache::{Cache, CacheConfig};
 
     let cache = Cache::new();
-    cache.put_simple("key1", "value1");
+    cache.put_simple("key1", "value1").unwrap();
 
     // Cache hit works in same instance
     let result = cache.get_simple("key1");
@@ -272,7 +272,7 @@ fn test_cache_entries_are_ephemeral() {
     assert_eq!(result.unwrap(), "value1");
 
     // New cache instance starts empty (entries don't persist)
-    let cache2 = Cache::with_config(CacheConfig::default());
+    let cache2 = Cache::with_config(CacheConfig::default()).unwrap();
     let result2 = cache2.get_simple("key1");
     assert!(result2.is_none());
 }

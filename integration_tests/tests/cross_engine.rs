@@ -179,7 +179,7 @@ fn test_cache_with_relational_queries() {
 
     // Cache the result
     let result_str = format!("{:?}", result);
-    cache.put_simple(query, &result_str);
+    cache.put_simple(query, &result_str).unwrap();
 
     // Verify cache hit
     let cached = cache.get_simple(query);

@@ -1,5 +1,3 @@
-//! Background eviction manager for cache maintenance.
-
 use crate::config::{CacheConfig, EvictionStrategy};
 use crate::stats::CacheStats;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,25 +13,20 @@ pub struct EvictionHandle {
 }
 
 impl EvictionHandle {
-    /// Signal the eviction task to stop.
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(()).await;
     }
 
-    /// Check if the eviction task is running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
 }
 
-/// Configuration for the eviction manager.
 #[derive(Debug, Clone)]
 pub struct EvictionConfig {
-    /// How often to run eviction.
     pub interval: Duration,
-    /// How many entries to consider per eviction cycle.
     pub batch_size: usize,
-    /// Eviction strategy to use.
     pub strategy: EvictionStrategy,
 }
 
@@ -47,26 +40,19 @@ impl From<&CacheConfig> for EvictionConfig {
     }
 }
 
-/// Calculate eviction scores based on the configured strategy.
+/// Calculates eviction priority scores. Lower scores are evicted first.
 pub struct EvictionScorer {
     strategy: EvictionStrategy,
 }
 
 impl EvictionScorer {
-    /// Create a new eviction scorer.
-    pub fn new(strategy: EvictionStrategy) -> Self {
+    #[must_use]
+    pub const fn new(strategy: EvictionStrategy) -> Self {
         Self { strategy }
     }
 
-    /// Calculate the eviction score for an entry.
-    ///
-    /// Lower scores are evicted first.
-    ///
-    /// # Arguments
-    /// * `last_access_secs` - Seconds since last access
-    /// * `access_count` - Number of times accessed
-    /// * `cost_per_hit` - Estimated cost saved per hit (in dollars)
-    /// * `size_bytes` - Size of the entry in bytes
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn score(
         &self,
         last_access_secs: f64,
@@ -75,18 +61,9 @@ impl EvictionScorer {
         size_bytes: usize,
     ) -> f64 {
         match self.strategy {
-            EvictionStrategy::LRU => {
-                // Lower recency = lower score = evict first
-                // Negate so older entries have lower scores
-                -last_access_secs
-            },
-            EvictionStrategy::LFU => {
-                // Lower frequency = lower score = evict first
-                access_count as f64
-            },
+            EvictionStrategy::LRU => -last_access_secs,
+            EvictionStrategy::LFU => access_count as f64,
             EvictionStrategy::CostBased => {
-                // Lower cost efficiency = lower score = evict first
-                // cost_per_hit / size_bytes
                 if size_bytes == 0 {
                     0.0
                 } else {
@@ -98,65 +75,53 @@ impl EvictionScorer {
                 lfu_weight,
                 cost_weight,
             } => {
-                // Normalize weights
-                let total = (lru_weight + lfu_weight + cost_weight) as f64;
-                let recency_weight = lru_weight as f64 / total;
-                let frequency_weight = lfu_weight as f64 / total;
-                let cost_weight_norm = cost_weight as f64 / total;
+                let total = f64::from(lru_weight) + f64::from(lfu_weight) + f64::from(cost_weight);
+                let recency_w = f64::from(lru_weight) / total;
+                let frequency_w = f64::from(lfu_weight) / total;
+                let cost_w = f64::from(cost_weight) / total;
 
-                // Normalize each component to [0, 1] range approximately
-                // For LRU: 1 / (1 + age_in_minutes) - higher is better (more recent)
                 let age_minutes = last_access_secs / 60.0;
                 let recency_score = 1.0 / (1.0 + age_minutes);
-
-                // For LFU: log2(1 + access_count) - higher is better
                 let frequency_score = (1.0 + access_count as f64).log2();
-
-                // For cost: cost_per_hit - higher is better
                 let cost_score = cost_per_hit;
 
-                // Combine with weights
-                recency_score * recency_weight
-                    + frequency_score * frequency_weight
-                    + cost_score * cost_weight_norm
+                recency_score
+                    .mul_add(recency_w, frequency_score * frequency_w)
+                    .mul_add(1.0, cost_score * cost_w)
             },
         }
     }
 }
 
-/// Manages background eviction for the cache.
+/// Manages background eviction for cache maintenance.
 pub struct EvictionManager {
     config: EvictionConfig,
     stats: Arc<CacheStats>,
 }
 
 impl EvictionManager {
-    /// Create a new eviction manager.
-    pub fn new(config: EvictionConfig, stats: Arc<CacheStats>) -> Self {
+    #[must_use]
+    pub const fn new(config: EvictionConfig, stats: Arc<CacheStats>) -> Self {
         Self { config, stats }
     }
 
-    /// Create from cache config.
+    #[must_use]
     pub fn from_cache_config(config: &CacheConfig, stats: Arc<CacheStats>) -> Self {
         Self::new(EvictionConfig::from(config), stats)
     }
 
-    /// Get the eviction configuration.
-    pub fn config(&self) -> &EvictionConfig {
+    #[must_use]
+    pub const fn config(&self) -> &EvictionConfig {
         &self.config
     }
 
-    /// Get the eviction scorer for the configured strategy.
-    pub fn scorer(&self) -> EvictionScorer {
+    #[must_use]
+    pub const fn scorer(&self) -> EvictionScorer {
         EvictionScorer::new(self.config.strategy)
     }
 
-    /// Start the background eviction task.
-    ///
-    /// Returns a handle that can be used to stop the task.
-    ///
-    /// The `evict_fn` is called on each cycle and should return the number
-    /// of entries evicted.
+    /// Start background eviction. The `evict_fn` is called each cycle and should
+    /// return the number of entries evicted.
     pub fn start<F>(&self, evict_fn: F) -> EvictionHandle
     where
         F: Fn(usize) -> usize + Send + 'static,
@@ -203,7 +168,6 @@ mod tests {
     fn test_lru_scoring() {
         let scorer = EvictionScorer::new(EvictionStrategy::LRU);
 
-        // Older entries should have lower (more negative) scores
         let old_score = scorer.score(3600.0, 100, 0.5, 1000);
         let new_score = scorer.score(60.0, 100, 0.5, 1000);
 
@@ -214,7 +178,6 @@ mod tests {
     fn test_lfu_scoring() {
         let scorer = EvictionScorer::new(EvictionStrategy::LFU);
 
-        // Less accessed entries should have lower scores
         let low_freq = scorer.score(60.0, 1, 0.5, 1000);
         let high_freq = scorer.score(60.0, 100, 0.5, 1000);
 
@@ -225,9 +188,8 @@ mod tests {
     fn test_cost_scoring() {
         let scorer = EvictionScorer::new(EvictionStrategy::CostBased);
 
-        // Lower cost efficiency should have lower scores
-        let low_value = scorer.score(60.0, 10, 0.001, 10000); // Low cost, large size
-        let high_value = scorer.score(60.0, 10, 0.1, 100); // High cost, small size
+        let low_value = scorer.score(60.0, 10, 0.001, 10000);
+        let high_value = scorer.score(60.0, 10, 0.1, 100);
 
         assert!(low_value < high_value);
     }
@@ -240,10 +202,7 @@ mod tests {
             cost_weight: 30,
         });
 
-        // Entry that's old, rarely accessed, and low value
         let bad = scorer.score(3600.0, 1, 0.001, 1000);
-
-        // Entry that's recent, frequently accessed, and high value
         let good = scorer.score(60.0, 100, 0.1, 100);
 
         assert!(bad < good);
@@ -280,12 +239,10 @@ mod tests {
 
         assert!(handle.is_running());
 
-        // Let it run a few cycles
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         handle.shutdown().await;
 
-        // Give it time to stop
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         assert!(!handle.is_running());
@@ -296,7 +253,6 @@ mod tests {
     fn test_cost_scoring_zero_size() {
         let scorer = EvictionScorer::new(EvictionStrategy::CostBased);
 
-        // Zero size should return 0
         let score = scorer.score(60.0, 10, 0.5, 0);
         assert_eq!(score, 0.0);
     }
@@ -327,7 +283,6 @@ mod tests {
         );
 
         let scorer = manager.scorer();
-        // Verify the scorer uses LFU strategy
         let low_freq = scorer.score(60.0, 1, 0.5, 1000);
         let high_freq = scorer.score(60.0, 100, 0.5, 1000);
         assert!(low_freq < high_freq);
@@ -357,22 +312,13 @@ mod tests {
             Arc::clone(&stats),
         );
 
-        let handle = manager.start(move |batch_size| {
-            // Simulate evicting 2 entries
-            if batch_size > 0 {
-                2
-            } else {
-                0
-            }
-        });
+        let handle = manager.start(move |batch_size| if batch_size > 0 { 2 } else { 0 });
 
-        // Let it run a few cycles
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         handle.shutdown().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // Eviction count should be recorded in stats
         assert!(stats.evictions() > 0);
     }
 }

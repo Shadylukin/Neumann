@@ -266,7 +266,7 @@ fn test_cache_concurrent_lookups() {
     for i in 0..50 {
         let key = format!("key{}", i);
         let value = format!("value{}", i);
-        cache.put_simple(&key, &value);
+        cache.put_simple(&key, &value).unwrap();
     }
 
     let hit_count = Arc::new(AtomicUsize::new(0));

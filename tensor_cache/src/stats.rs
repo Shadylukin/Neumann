@@ -1,19 +1,15 @@
-//! Cache statistics tracking.
-
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// Which cache layer an operation occurred in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CacheLayer {
     Exact,
     Semantic,
     Embedding,
 }
 
-/// Thread-safe cache statistics.
+/// Thread-safe cache statistics with atomic counters.
 pub struct CacheStats {
-    // Hit/miss counters
     exact_hits: AtomicU64,
     exact_misses: AtomicU64,
     semantic_hits: AtomicU64,
@@ -21,26 +17,22 @@ pub struct CacheStats {
     embedding_hits: AtomicU64,
     embedding_misses: AtomicU64,
 
-    // Cost savings
     tokens_saved_in: AtomicU64,
     tokens_saved_out: AtomicU64,
     cost_saved_microdollars: AtomicU64,
 
-    // Eviction stats
     evictions: AtomicU64,
     expirations: AtomicU64,
 
-    // Current sizes
     exact_size: AtomicUsize,
     semantic_size: AtomicUsize,
     embedding_size: AtomicUsize,
 
-    // Timing
     start_time: Instant,
 }
 
 impl CacheStats {
-    /// Create new statistics tracker.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             exact_hits: AtomicU64::new(0),
@@ -61,7 +53,6 @@ impl CacheStats {
         }
     }
 
-    /// Record a cache hit.
     pub fn record_hit(&self, layer: CacheLayer) {
         match layer {
             CacheLayer::Exact => self.exact_hits.fetch_add(1, Ordering::Relaxed),
@@ -70,7 +61,6 @@ impl CacheStats {
         };
     }
 
-    /// Record a cache miss.
     pub fn record_miss(&self, layer: CacheLayer) {
         match layer {
             CacheLayer::Exact => self.exact_misses.fetch_add(1, Ordering::Relaxed),
@@ -79,7 +69,6 @@ impl CacheStats {
         };
     }
 
-    /// Record tokens saved by a cache hit.
     pub fn record_tokens_saved(&self, input: usize, output: usize) {
         self.tokens_saved_in
             .fetch_add(input as u64, Ordering::Relaxed);
@@ -87,23 +76,19 @@ impl CacheStats {
             .fetch_add(output as u64, Ordering::Relaxed);
     }
 
-    /// Record cost saved (in micro-dollars, i.e., 1/1,000,000 of a dollar).
     pub fn record_cost_saved(&self, microdollars: u64) {
         self.cost_saved_microdollars
             .fetch_add(microdollars, Ordering::Relaxed);
     }
 
-    /// Record evictions.
     pub fn record_eviction(&self, count: usize) {
         self.evictions.fetch_add(count as u64, Ordering::Relaxed);
     }
 
-    /// Record expirations.
     pub fn record_expiration(&self, count: usize) {
         self.expirations.fetch_add(count as u64, Ordering::Relaxed);
     }
 
-    /// Update cache size for a layer.
     pub fn set_size(&self, layer: CacheLayer, size: usize) {
         match layer {
             CacheLayer::Exact => self.exact_size.store(size, Ordering::Relaxed),
@@ -112,7 +97,6 @@ impl CacheStats {
         }
     }
 
-    /// Increment cache size for a layer.
     pub fn increment_size(&self, layer: CacheLayer) {
         match layer {
             CacheLayer::Exact => self.exact_size.fetch_add(1, Ordering::Relaxed),
@@ -121,7 +105,6 @@ impl CacheStats {
         };
     }
 
-    /// Decrement cache size for a layer.
     pub fn decrement_size(&self, layer: CacheLayer) {
         match layer {
             CacheLayer::Exact => {
@@ -148,9 +131,8 @@ impl CacheStats {
         }
     }
 
-    // Getters
-
-    /// Get hit rate for a cache layer.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn hit_rate(&self, layer: CacheLayer) -> f64 {
         let (hits, misses) = match layer {
             CacheLayer::Exact => (
@@ -175,14 +157,14 @@ impl CacheStats {
         }
     }
 
-    /// Get total entries across all layers.
+    #[must_use]
     pub fn total_entries(&self) -> usize {
         self.exact_size.load(Ordering::Relaxed)
             + self.semantic_size.load(Ordering::Relaxed)
             + self.embedding_size.load(Ordering::Relaxed)
     }
 
-    /// Get current size for a layer.
+    #[must_use]
     pub fn size(&self, layer: CacheLayer) -> usize {
         match layer {
             CacheLayer::Exact => self.exact_size.load(Ordering::Relaxed),
@@ -191,7 +173,7 @@ impl CacheStats {
         }
     }
 
-    /// Get total tokens saved.
+    #[must_use]
     pub fn tokens_saved(&self) -> (u64, u64) {
         (
             self.tokens_saved_in.load(Ordering::Relaxed),
@@ -199,22 +181,23 @@ impl CacheStats {
         )
     }
 
-    /// Get estimated cost saved in dollars.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn cost_saved_dollars(&self) -> f64 {
         self.cost_saved_microdollars.load(Ordering::Relaxed) as f64 / 1_000_000.0
     }
 
-    /// Get total evictions.
+    #[must_use]
     pub fn evictions(&self) -> u64 {
         self.evictions.load(Ordering::Relaxed)
     }
 
-    /// Get total expirations.
+    #[must_use]
     pub fn expirations(&self) -> u64 {
         self.expirations.load(Ordering::Relaxed)
     }
 
-    /// Get hits for a layer.
+    #[must_use]
     pub fn hits(&self, layer: CacheLayer) -> u64 {
         match layer {
             CacheLayer::Exact => self.exact_hits.load(Ordering::Relaxed),
@@ -223,7 +206,7 @@ impl CacheStats {
         }
     }
 
-    /// Get misses for a layer.
+    #[must_use]
     pub fn misses(&self, layer: CacheLayer) -> u64 {
         match layer {
             CacheLayer::Exact => self.exact_misses.load(Ordering::Relaxed),
@@ -232,12 +215,12 @@ impl CacheStats {
         }
     }
 
-    /// Get uptime in seconds.
+    #[must_use]
     pub fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
     }
 
-    /// Create a snapshot of current stats for reporting.
+    #[must_use]
     pub fn snapshot(&self) -> StatsSnapshot {
         StatsSnapshot {
             exact_hits: self.exact_hits.load(Ordering::Relaxed),
@@ -265,7 +248,7 @@ impl Default for CacheStats {
     }
 }
 
-/// A point-in-time snapshot of cache statistics.
+/// Point-in-time snapshot of cache statistics for reporting.
 #[derive(Debug, Clone)]
 pub struct StatsSnapshot {
     pub exact_hits: u64,
@@ -286,7 +269,8 @@ pub struct StatsSnapshot {
 }
 
 impl StatsSnapshot {
-    /// Get hit rate for a specific layer.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn hit_rate(&self, layer: CacheLayer) -> f64 {
         let (hits, misses) = match layer {
             CacheLayer::Exact => (self.exact_hits, self.exact_misses),
@@ -301,8 +285,8 @@ impl StatsSnapshot {
         }
     }
 
-    /// Get total entries.
-    pub fn total_entries(&self) -> usize {
+    #[must_use]
+    pub const fn total_entries(&self) -> usize {
         self.exact_size + self.semantic_size + self.embedding_size
     }
 }
@@ -340,8 +324,8 @@ mod tests {
     fn test_cost_saved() {
         let stats = CacheStats::new();
 
-        stats.record_cost_saved(1_500_000); // $1.50
-        stats.record_cost_saved(500_000); // $0.50
+        stats.record_cost_saved(1_500_000);
+        stats.record_cost_saved(500_000);
 
         assert!((stats.cost_saved_dollars() - 2.0).abs() < 0.001);
     }
@@ -411,7 +395,6 @@ mod tests {
     fn test_decrement_size_underflow() {
         let stats = CacheStats::new();
 
-        // Should not underflow
         stats.decrement_size(CacheLayer::Exact);
         stats.decrement_size(CacheLayer::Semantic);
         stats.decrement_size(CacheLayer::Embedding);
@@ -506,7 +489,6 @@ mod tests {
     #[test]
     fn test_uptime_secs() {
         let stats = CacheStats::new();
-        // Should be very small since we just created it
         assert!(stats.uptime_secs() < 2);
     }
 
@@ -548,13 +530,11 @@ mod tests {
     fn test_hit_rate_by_layer() {
         let stats = CacheStats::new();
 
-        // Semantic layer
         stats.record_hit(CacheLayer::Semantic);
         stats.record_miss(CacheLayer::Semantic);
         stats.record_miss(CacheLayer::Semantic);
         stats.record_miss(CacheLayer::Semantic);
 
-        // Embedding layer
         stats.record_hit(CacheLayer::Embedding);
 
         assert!((stats.hit_rate(CacheLayer::Semantic) - 0.25).abs() < 0.01);

@@ -23,7 +23,7 @@
 //! // Configure cache with 3-dimensional embeddings
 //! let mut config = CacheConfig::default();
 //! config.embedding_dim = 3;
-//! let cache = Cache::with_config(config);
+//! let cache = Cache::with_config(config).unwrap();
 //!
 //! // Store a response
 //! let embedding = vec![0.1, 0.2, 0.3];
@@ -122,49 +122,62 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Create a new cache with default configuration.
+    /// # Panics
+    ///
+    /// Never panics - default configuration is always valid.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_config(CacheConfig::default())
+        Self::with_config(CacheConfig::default()).expect("default config is valid")
     }
 
-    /// Create a cache with custom configuration.
-    #[must_use]
-    pub fn with_config(config: CacheConfig) -> Self {
+    /// # Errors
+    ///
+    /// Returns `CacheError::InvalidConfig` if the configuration fails validation.
+    pub fn with_config(config: CacheConfig) -> Result<Self> {
+        config
+            .validate()
+            .map_err(CacheError::InvalidConfig)?;
+
         let stats = Arc::new(CacheStats::new());
         let store = TensorStore::new();
         let index = CacheIndex::new(config.embedding_dim, config.distance_metric.clone());
 
-        Self {
+        Ok(Self {
             store,
             index,
             stats,
             config,
-        }
+        })
     }
 
     /// Create a cache with a shared `TensorStore` (for integration with other engines).
-    #[must_use]
-    pub fn with_store(store: TensorStore, config: CacheConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `CacheError::InvalidConfig` if the configuration fails validation.
+    pub fn with_store(store: TensorStore, config: CacheConfig) -> Result<Self> {
+        config
+            .validate()
+            .map_err(CacheError::InvalidConfig)?;
+
         let stats = Arc::new(CacheStats::new());
         let index = CacheIndex::new(config.embedding_dim, config.distance_metric.clone());
 
-        Self {
+        Ok(Self {
             store,
             index,
             stats,
             config,
-        }
+        })
     }
 
-    /// Look up a cached response.
-    ///
     /// Tries exact match first, then semantic similarity if embedding is provided.
+    #[must_use]
     pub fn get(&self, prompt: &str, embedding: Option<&[f32]>) -> Option<CacheHit> {
         self.get_with_metric(prompt, embedding, None)
     }
 
-    /// Look up a cached response with a specific distance metric.
+    #[must_use]
     pub fn get_with_metric(
         &self,
         prompt: &str,
@@ -198,7 +211,6 @@ impl Cache {
             return None;
         }
 
-        // Access tracking handled by CacheRing internally
         self.stats.record_hit(CacheLayer::Exact);
 
         let response = Self::get_string_field(&data, fields::RESPONSE)?;
@@ -241,7 +253,6 @@ impl Cache {
             return None;
         }
 
-        // Access tracking handled by CacheRing internally
         self.stats.record_hit(CacheLayer::Semantic);
 
         let response = Self::get_string_field(&data, fields::RESPONSE)?;
@@ -349,7 +360,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Get a cached embedding.
+    #[must_use]
     pub fn get_embedding(&self, source: &str, content: &str) -> Option<Vec<f32>> {
         let key = Self::embedding_key(source, content);
         let data = self.store.get(&key).ok()?;
@@ -449,7 +460,7 @@ impl Cache {
         Ok(embedding)
     }
 
-    /// Simple key-value get for CLI interface.
+    #[must_use]
     pub fn get_simple(&self, key: &str) -> Option<String> {
         let cache_key = Self::exact_key(key);
         let data = self.store.get(&cache_key).ok()?;
@@ -462,7 +473,11 @@ impl Cache {
     }
 
     /// Simple key-value put for CLI interface.
-    pub fn put_simple(&self, key: &str, value: &str) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage insertion fails.
+    pub fn put_simple(&self, key: &str, value: &str) -> Result<()> {
         let cache_key = Self::exact_key(key);
         let now = Self::now_millis();
         let expires_at = now + Self::i64_from_u128(self.config.default_ttl.as_millis());
@@ -479,10 +494,11 @@ impl Cache {
             version: None,
         });
 
-        let _ = self.store.put(&cache_key, data);
+        self.store
+            .put(&cache_key, data)
+            .map_err(|e| CacheError::StorageError(e.to_string()))
     }
 
-    /// Invalidate entries by prompt.
     #[must_use]
     pub fn invalidate(&self, prompt: &str) -> bool {
         let key = Self::exact_key(prompt);
@@ -494,7 +510,6 @@ impl Cache {
         }
     }
 
-    /// Invalidate semantic cache entries by version.
     #[must_use]
     pub fn invalidate_version(&self, version: &str) -> usize {
         let keys = self.store.scan(prefixes::SEMANTIC);
@@ -515,7 +530,6 @@ impl Cache {
         removed
     }
 
-    /// Invalidate embeddings for a source.
     #[must_use]
     pub fn invalidate_embeddings(&self, source: &str) -> usize {
         let prefix = format!("{}{}:", prefixes::EMBEDDING, source);
@@ -532,28 +546,22 @@ impl Cache {
         removed
     }
 
-    /// Get cache statistics.
     #[must_use]
     pub fn stats(&self) -> &CacheStats {
         &self.stats
     }
 
-    /// Get a statistics snapshot.
     #[must_use]
     pub fn stats_snapshot(&self) -> StatsSnapshot {
         self.stats.snapshot()
     }
 
-    /// Get the configuration.
     #[must_use]
     pub const fn config(&self) -> &CacheConfig {
         &self.config
     }
 
-    /// Manually run eviction.
-    ///
-    /// Delegates to `CacheRing`'s efficient eviction which uses the configured
-    /// eviction strategy (LRU, LFU, Cost, Hybrid) with O(n log n) sorting.
+    /// Manually run eviction using the configured strategy (LRU, LFU, Cost, Hybrid).
     #[must_use]
     pub fn evict(&self, count: usize) -> usize {
         let evicted = self.store.evict_cache(count);
@@ -607,7 +615,6 @@ impl Cache {
         cleaned
     }
 
-    /// Clear all cache entries.
     pub fn clear(&self) {
         // Delete all cache entries
         for key in self.store.scan(prefixes::EXACT) {
@@ -629,13 +636,11 @@ impl Cache {
         self.stats.set_size(CacheLayer::Embedding, 0);
     }
 
-    /// Get the total number of cached entries across all layers.
     #[must_use]
     pub fn len(&self) -> usize {
         self.stats.total_entries()
     }
 
-    /// Check if the cache is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -825,7 +830,7 @@ mod tests {
     fn create_test_cache() -> Cache {
         let mut config = CacheConfig::default();
         config.embedding_dim = 3;
-        Cache::with_config(config)
+        Cache::with_config(config).unwrap()
     }
 
     fn normalize(v: &[f32]) -> Vec<f32> {
@@ -900,8 +905,8 @@ mod tests {
         cache
             .put("prompt", &embedding, "response", "gpt-4", None)
             .unwrap();
-        cache.get("prompt", None);
-        cache.get("other", None);
+        let _ = cache.get("prompt", None); // Stats test - hit
+        let _ = cache.get("other", None); // Stats test - miss
 
         let snapshot = cache.stats_snapshot();
         assert_eq!(snapshot.exact_hits, 1);
@@ -962,7 +967,7 @@ mod tests {
     #[test]
     fn test_simple_get_put() {
         let cache = create_test_cache();
-        cache.put_simple("key", "value");
+        cache.put_simple("key", "value").unwrap();
 
         let result = cache.get_simple("key").unwrap();
         assert_eq!(result, "value");
@@ -1010,7 +1015,7 @@ mod tests {
     fn test_cache_with_shared_store() {
         let store = TensorStore::new();
         let config = CacheConfig::default();
-        let cache = Cache::with_store(store, config);
+        let cache = Cache::with_store(store, config).unwrap();
 
         assert!(cache.is_empty());
     }

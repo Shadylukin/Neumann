@@ -2,20 +2,26 @@
 //!
 //! Supports both dense and sparse embeddings for memory-efficient caching.
 
+// Public API surface - methods may not be used internally but are available to consumers
 #![allow(dead_code)]
 
 use crate::error::{CacheError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 use tensor_store::{
     DistanceMetric, EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats, SparseVector,
 };
 
+fn read_lock<T>(lock: &RwLock<T>) -> Result<RwLockReadGuard<'_, T>> {
+    lock.read()
+        .map_err(|_| CacheError::LockPoisoned("HNSW index read lock".to_string()))
+}
+
 /// Cache-specific HNSW index wrapper.
 ///
 /// Provides key-to-node mapping on top of the shared HNSW implementation.
-/// Uses RwLock for the HNSW index to support clearing (which requires replacement).
+/// Uses `RwLock` for the HNSW index to support clearing (which requires replacement).
 pub struct CacheIndex {
     /// The underlying HNSW index (wrapped for clear support).
     index: RwLock<HNSWIndex>,
@@ -45,17 +51,20 @@ pub struct IndexSearchResult {
 }
 
 impl CacheIndex {
-    /// Create a new cache index.
-    pub fn new(dimension: usize) -> Self {
-        Self::with_config(dimension, HNSWConfig::default())
+    /// Create a new cache index with default configuration.
+    #[must_use]
+    pub fn new(dimension: usize, metric: DistanceMetric) -> Self {
+        Self::with_metric(dimension, HNSWConfig::default(), metric)
     }
 
     /// Create a new cache index with custom HNSW configuration.
+    #[must_use]
     pub fn with_config(dimension: usize, config: HNSWConfig) -> Self {
         Self::with_metric(dimension, config, DistanceMetric::Cosine)
     }
 
     /// Create a new cache index with custom HNSW configuration and distance metric.
+    #[must_use]
     pub fn with_metric(dimension: usize, config: HNSWConfig, metric: DistanceMetric) -> Self {
         Self {
             index: RwLock::new(HNSWIndex::with_config(config.clone())),
@@ -68,8 +77,8 @@ impl CacheIndex {
         }
     }
 
-    /// Get the distance metric used by this index.
-    pub fn metric(&self) -> &DistanceMetric {
+    #[must_use]
+    pub const fn metric(&self) -> &DistanceMetric {
         &self.distance_metric
     }
 
@@ -82,20 +91,23 @@ impl CacheIndex {
             });
         }
 
-        // Check if key already exists
-        if self.key_to_node.contains_key(key) {
+        // Check if key already exists (re-insert doesn't increase count)
+        let is_new = !self.key_to_node.contains_key(key);
+        if !is_new {
             // For simplicity, we don't update existing entries in HNSW
             // The old node remains but is orphaned (will be ignored in search)
             self.key_to_node.remove(key);
         }
 
-        let index = self.index.read().unwrap();
+        let index = read_lock(&self.index)?;
         let node_id = index.insert(embedding.to_vec());
         drop(index);
 
         self.key_to_node.insert(key.to_string(), node_id);
         self.node_to_key.insert(node_id, key.to_string());
-        self.entry_count.fetch_add(1, Ordering::Relaxed);
+        if is_new {
+            self.entry_count.fetch_add(1, Ordering::Relaxed);
+        }
 
         Ok(node_id)
     }
@@ -111,18 +123,21 @@ impl CacheIndex {
             });
         }
 
-        // Check if key already exists
-        if self.key_to_node.contains_key(key) {
+        // Check if key already exists (re-insert doesn't increase count)
+        let is_new = !self.key_to_node.contains_key(key);
+        if !is_new {
             self.key_to_node.remove(key);
         }
 
-        let index = self.index.read().unwrap();
+        let index = read_lock(&self.index)?;
         let node_id = index.insert_sparse(embedding.clone());
         drop(index);
 
         self.key_to_node.insert(key.to_string(), node_id);
         self.node_to_key.insert(node_id, key.to_string());
-        self.entry_count.fetch_add(1, Ordering::Relaxed);
+        if is_new {
+            self.entry_count.fetch_add(1, Ordering::Relaxed);
+        }
 
         Ok(node_id)
     }
@@ -177,7 +192,7 @@ impl CacheIndex {
             });
         }
 
-        let index = self.index.read().unwrap();
+        let index = read_lock(&self.index)?;
         if index.is_empty() {
             return Ok(Vec::new());
         }
@@ -196,7 +211,7 @@ impl CacheIndex {
 
                 // Re-score with the specified metric
                 let embedding = {
-                    let index = self.index.read().unwrap();
+                    let index = self.index.read().ok()?;
                     index.get_embedding(node_id)?
                 };
 
@@ -272,7 +287,7 @@ impl CacheIndex {
             });
         }
 
-        let index = self.index.read().unwrap();
+        let index = read_lock(&self.index)?;
         if index.is_empty() {
             return Ok(Vec::new());
         }
@@ -289,7 +304,7 @@ impl CacheIndex {
 
                 // Re-score with the specified metric
                 let embedding = {
-                    let index = self.index.read().unwrap();
+                    let index = self.index.read().ok()?;
                     index.get_embedding(node_id)?
                 };
 
@@ -337,8 +352,9 @@ impl CacheIndex {
     /// Remove a key from the index.
     ///
     /// Note: The HNSW node is orphaned but not removed from the graph
-    /// (HNSW doesn't support efficient deletion). The node_to_key mapping
+    /// (HNSW doesn't support efficient deletion). The `node_to_key` mapping
     /// is removed so it won't appear in search results.
+    #[must_use]
     pub fn remove(&self, key: &str) -> bool {
         if let Some((_, node_id)) = self.key_to_node.remove(key) {
             self.node_to_key.remove(&node_id);
@@ -350,32 +366,36 @@ impl CacheIndex {
     }
 
     /// Check if a key exists in the index.
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.key_to_node.contains_key(key)
     }
 
     /// Get the number of indexed entries.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entry_count.load(Ordering::Relaxed)
     }
 
     /// Check if the index is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Get the expected embedding dimension.
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
     /// Clear the index (thread-safe).
     ///
     /// Note: This creates a new HNSW index since HNSW doesn't support clearing.
+    /// Silently ignores lock poisoning to ensure cleanup proceeds.
     pub fn clear(&self) {
-        let mut index = self.index.write().unwrap();
-        *index = HNSWIndex::with_config(self.config.clone());
-        drop(index);
+        if let Ok(mut index) = self.index.write() {
+            *index = HNSWIndex::with_config(self.config.clone());
+        }
 
         self.key_to_node.clear();
         self.node_to_key.clear();
@@ -383,20 +403,24 @@ impl CacheIndex {
     }
 
     /// Get all keys in the index.
+    #[must_use]
     pub fn keys(&self) -> Vec<String> {
         self.key_to_node.iter().map(|e| e.key().clone()).collect()
     }
 
     /// Get memory usage statistics for the index.
-    pub fn memory_stats(&self) -> HNSWMemoryStats {
-        let index = self.index.read().unwrap();
-        index.memory_stats()
+    ///
+    /// Returns None if the lock is poisoned.
+    #[must_use]
+    pub fn memory_stats(&self) -> Option<HNSWMemoryStats> {
+        self.index.read().ok().map(|index| index.memory_stats())
     }
 
     /// Get the embedding storage for a key.
+    #[must_use]
     pub fn get_embedding(&self, key: &str) -> Option<EmbeddingStorage> {
         let node_id = self.key_to_node.get(key)?;
-        let index = self.index.read().unwrap();
+        let index = self.index.read().ok()?;
         index.get_embedding(*node_id)
     }
 }
@@ -423,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_search() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         index.insert("key2", &[0.0, 1.0, 0.0]).unwrap();
@@ -437,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_dimension_mismatch() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         let result = index.insert("key1", &[1.0, 0.0]);
         assert!(matches!(result, Err(CacheError::DimensionMismatch { .. })));
@@ -449,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_threshold_filtering() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         let v1 = normalize(&[1.0, 0.0, 0.0]);
         let v2 = normalize(&[0.0, 1.0, 0.0]); // orthogonal
@@ -465,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         assert!(index.contains("key1"));
@@ -482,14 +506,14 @@ mod tests {
 
     #[test]
     fn test_empty_search() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
         let results = index.search(&[1.0, 0.0, 0.0], 5, 0.0).unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_many_vectors() {
-        let index = CacheIndex::new(64);
+        let index = CacheIndex::new(64, DistanceMetric::Cosine);
 
         for i in 0..100 {
             let v = create_test_vector(64, i);
@@ -505,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_keys() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("a", &[1.0, 0.0, 0.0]).unwrap();
         index.insert("b", &[0.0, 1.0, 0.0]).unwrap();
@@ -529,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_is_empty() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
         assert!(index.is_empty());
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
@@ -538,13 +562,13 @@ mod tests {
 
     #[test]
     fn test_dimension() {
-        let index = CacheIndex::new(128);
+        let index = CacheIndex::new(128, DistanceMetric::Cosine);
         assert_eq!(index.dimension(), 128);
     }
 
     #[test]
     fn test_clear() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         index.insert("key2", &[0.0, 1.0, 0.0]).unwrap();
@@ -557,26 +581,30 @@ mod tests {
 
     #[test]
     fn test_reinsert_same_key() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
-        // Re-insert with different embedding
-        index.insert("key1", &[0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 1);
 
-        // Entry count should still be 2 (old node orphaned but counted)
-        // Note: current implementation adds to count on each insert
-        assert!(index.len() >= 1);
+        // Re-insert with different embedding should not increase count
+        index.insert("key1", &[0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(index.len(), 1, "Re-insert should not increase entry count");
+
+        // Search should find the new embedding
+        let results = index.search(&[0.0, 1.0, 0.0], 1, 0.9).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "key1");
     }
 
     #[test]
     fn test_remove_nonexistent() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
         assert!(!index.remove("nonexistent"));
     }
 
     #[test]
     fn test_contains() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         assert!(!index.contains("key1"));
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
@@ -598,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_insert_sparse_and_search() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         let sparse1 = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
         let sparse2 = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
@@ -615,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_insert_auto_dense() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         // Dense vector (no zeros) should be stored as dense
         let embedding = [0.5, 0.5, 0.5];
@@ -629,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_insert_auto_sparse() {
-        let index = CacheIndex::new(10);
+        let index = CacheIndex::new(10, DistanceMetric::Cosine);
 
         // Sparse vector (80% zeros) should be stored as sparse
         let embedding = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
@@ -643,7 +671,7 @@ mod tests {
 
     #[test]
     fn test_sparse_dimension_mismatch() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         let sparse = SparseVector::from_dense(&[1.0, 0.0]); // dimension 2
         let result = index.insert_sparse("key1", &sparse);
@@ -652,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_search_sparse_dimension_mismatch() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
 
         let query = SparseVector::from_dense(&[1.0, 0.0]); // dimension 2
@@ -662,13 +690,13 @@ mod tests {
 
     #[test]
     fn test_memory_stats() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         let sparse = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
         index.insert_sparse("key2", &sparse).unwrap();
 
-        let stats = index.memory_stats();
+        let stats = index.memory_stats().unwrap();
         assert_eq!(stats.dense_count, 1);
         assert_eq!(stats.sparse_count, 1);
         assert!(stats.embedding_bytes > 0);
@@ -676,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_get_embedding() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("dense_key", &[1.0, 0.0, 0.0]).unwrap();
         let sparse = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
@@ -696,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_mixed_dense_sparse_search() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         // Insert mix of dense and sparse
         index.insert("dense1", &[1.0, 0.0, 0.0]).unwrap();
@@ -729,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_search_with_metric_override() {
-        let index = CacheIndex::new(3); // Default cosine
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
         index.insert("key2", &[0.5, 0.5, 0.0]).unwrap();
@@ -744,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_search_sparse_with_metric_override() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         let sparse1 = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
         let sparse2 = SparseVector::from_dense(&[0.5, 0.5, 0.0]);
@@ -762,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_metric_affects_ranking() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
 
         // Insert vectors with same structure but different magnitudes
         index.insert("small", &[0.1, 0.0, 0.0]).unwrap();
@@ -806,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_result_includes_metric_used() {
-        let index = CacheIndex::new(3);
+        let index = CacheIndex::new(3, DistanceMetric::Cosine);
         index.insert("key1", &[1.0, 0.0, 0.0]).unwrap();
 
         let results = index.search(&[1.0, 0.0, 0.0], 1, 0.0).unwrap();
