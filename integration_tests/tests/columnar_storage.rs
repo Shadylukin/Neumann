@@ -370,7 +370,7 @@ fn test_columnar_with_nulls() {
     assert_eq!(column_data.row_ids.len(), 20);
 
     // Check null tracking
-    let null_count = column_data.nulls.null_count();
+    let null_count = column_data.null_count();
     assert_eq!(null_count, 7); // 0, 3, 6, 9, 12, 15, 18
 }
 
