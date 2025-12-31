@@ -365,6 +365,261 @@ fn bench_auto_metric_selection(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_invalidation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("invalidation");
+
+    // Invalidate by prompt
+    group.bench_function("invalidate_single", |b| {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 64;
+        config.exact_capacity = 10_000;
+        let cache = Cache::with_config(config).unwrap();
+
+        for i in 0..1000 {
+            let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+        }
+
+        let mut counter = 0;
+        b.iter(|| {
+            let key = format!("key_{}", counter % 1000);
+            let _ = black_box(cache.invalidate(&key));
+            // Re-add to keep cache populated
+            let _ = cache.put_simple(&key, "new_value");
+            counter += 1;
+        })
+    });
+
+    // Invalidate by version (scans semantic entries)
+    group.bench_function("invalidate_version", |b| {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 64;
+        config.semantic_capacity = 10_000;
+        let cache = Cache::with_config(config).unwrap();
+
+        for i in 0..1000 {
+            let embedding = normalize(&create_test_vector(64, i));
+            let _ = cache.put(
+                &format!("prompt_{}", i),
+                &embedding,
+                &format!("response_{}", i),
+                "model",
+                None,
+            );
+        }
+
+        b.iter(|| black_box(cache.invalidate_version("nonexistent_version")))
+    });
+
+    // Invalidate embeddings by source
+    group.bench_function("invalidate_embeddings", |b| {
+        let cache = Cache::new();
+
+        for i in 0..1000 {
+            let _ = cache.put_embedding(
+                &format!("source_{}", i % 10),
+                &format!("content_{}", i),
+                create_test_vector(1536, i),
+                "model",
+            );
+        }
+
+        b.iter(|| black_box(cache.invalidate_embeddings("nonexistent_source")))
+    });
+
+    group.finish();
+}
+
+fn bench_cleanup_expired(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cleanup_expired");
+    group.measurement_time(Duration::from_secs(5));
+
+    for size in [100, 500, 1000].iter() {
+        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
+            let mut config = CacheConfig::default();
+            config.embedding_dim = 64;
+            config.default_ttl = Duration::from_millis(1); // Very short TTL
+            config.exact_capacity = size * 2;
+            config.semantic_capacity = size * 2;
+            config.embedding_capacity = size * 2;
+            let cache = Cache::with_config(config).unwrap();
+
+            // Pre-populate entries (they will expire quickly)
+            for i in 0..size {
+                let embedding = normalize(&create_test_vector(64, i));
+                let _ = cache.put(
+                    &format!("prompt_{}", i),
+                    &embedding,
+                    &format!("response_{}", i),
+                    "model",
+                    None,
+                );
+            }
+
+            // Wait for expiration
+            std::thread::sleep(Duration::from_millis(10));
+
+            b.iter(|| {
+                let cleaned = black_box(cache.cleanup_expired());
+                // Re-populate for next iteration
+                if cleaned > 0 {
+                    for i in 0..cleaned.min(10) {
+                        let embedding = normalize(&create_test_vector(64, i));
+                        let _ = cache.put(
+                            &format!("new_prompt_{}", i),
+                            &embedding,
+                            "response",
+                            "model",
+                            None,
+                        );
+                    }
+                }
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_eviction_strategies(c: &mut Criterion) {
+    use tensor_cache::EvictionStrategy;
+
+    let mut group = c.benchmark_group("eviction_strategies");
+    group.measurement_time(Duration::from_secs(5));
+
+    let strategies = [
+        ("lru", EvictionStrategy::LRU),
+        ("lfu", EvictionStrategy::LFU),
+        ("cost_based", EvictionStrategy::CostBased),
+        (
+            "hybrid",
+            EvictionStrategy::Hybrid {
+                lru_weight: 40,
+                lfu_weight: 30,
+                cost_weight: 30,
+            },
+        ),
+    ];
+
+    for (name, strategy) in strategies.iter() {
+        group.bench_function(*name, |b| {
+            let mut config = CacheConfig::default();
+            config.embedding_dim = 64;
+            config.exact_capacity = 2000;
+            config.semantic_capacity = 2000;
+            config.eviction_strategy = strategy.clone();
+            let cache = Cache::with_config(config).unwrap();
+
+            // Pre-populate
+            for i in 0..1000 {
+                let embedding = normalize(&create_test_vector(64, i));
+                let _ = cache.put(
+                    &format!("prompt_{}", i),
+                    &embedding,
+                    &format!("response_{}", i),
+                    "model",
+                    None,
+                );
+            }
+
+            b.iter(|| black_box(cache.evict(50)))
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_capacity_pressure(c: &mut Criterion) {
+    let mut group = c.benchmark_group("capacity_pressure");
+
+    // Benchmark at different fill levels
+    for fill_pct in [50, 90, 99].iter() {
+        group.bench_function(format!("fill_{}pct", fill_pct), |b| {
+            let capacity = 1000;
+            let fill_count = capacity * fill_pct / 100;
+
+            let mut config = CacheConfig::default();
+            config.embedding_dim = 64;
+            config.exact_capacity = capacity;
+            let cache = Cache::with_config(config).unwrap();
+
+            // Fill to target percentage
+            for i in 0..fill_count {
+                let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+            }
+
+            let mut counter = fill_count;
+            b.iter(|| {
+                // Try to add one more (may fail if at capacity)
+                let key = format!("key_{}", counter);
+                let result = cache.put_simple(&key, "value");
+                if result.is_ok() {
+                    // Remove it to maintain fill level
+                    let _ = cache.invalidate(&key);
+                }
+                counter += 1;
+                black_box(result)
+            })
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_concurrent_workload(c: &mut Criterion) {
+    use std::sync::Arc;
+
+    let mut group = c.benchmark_group("concurrent");
+    group.measurement_time(Duration::from_secs(10));
+
+    // Pre-create cache outside benchmark
+    let config = CacheConfig::default();
+    let cache = Arc::new(Cache::with_config(config).unwrap());
+
+    // Pre-populate
+    for i in 0..1000 {
+        let _ = cache.put_simple(&format!("key_{}", i), &format!("value_{}", i));
+    }
+
+    group.bench_function("read_heavy_4_readers", |b| {
+        b.iter(|| {
+            // Simulate concurrent reads
+            for i in 0..100 {
+                let _ = black_box(cache.get_simple(&format!("key_{}", i % 1000)));
+            }
+        })
+    });
+
+    group.bench_function("write_heavy_4_writers", |b| {
+        let mut counter = 0;
+        b.iter(|| {
+            // Simulate concurrent writes
+            for _ in 0..100 {
+                let key = format!("write_key_{}", counter % 10000);
+                let _ = black_box(cache.put_simple(&key, "value"));
+                counter += 1;
+            }
+        })
+    });
+
+    group.bench_function("mixed_read_write", |b| {
+        let mut counter = 0;
+        b.iter(|| {
+            // Mixed workload: 70% reads, 30% writes
+            for i in 0..100 {
+                if i % 10 < 7 {
+                    let _ = black_box(cache.get_simple(&format!("key_{}", i % 1000)));
+                } else {
+                    let key = format!("mixed_key_{}", counter % 10000);
+                    let _ = black_box(cache.put_simple(&key, "value"));
+                    counter += 1;
+                }
+            }
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exact_lookup,
@@ -376,5 +631,10 @@ criterion_group!(
     bench_semantic_with_metrics,
     bench_sparse_vs_dense,
     bench_auto_metric_selection,
+    bench_invalidation,
+    bench_cleanup_expired,
+    bench_eviction_strategies,
+    bench_capacity_pressure,
+    bench_concurrent_workload,
 );
 criterion_main!(benches);
