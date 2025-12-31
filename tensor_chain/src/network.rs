@@ -5,7 +5,8 @@
 //! - `MemoryTransport` for testing
 //! - Message types for Raft and sync protocols
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -347,7 +348,7 @@ pub trait GeometricTransport: Transport {
     ) -> Result<()>;
 }
 
-/// In-memory transport for testing.
+/// In-memory transport for testing with partition injection support.
 pub struct MemoryTransport {
     /// Local node ID.
     local_id: NodeId,
@@ -357,6 +358,10 @@ pub struct MemoryTransport {
     peers: RwLock<HashMap<NodeId, mpsc::Sender<(NodeId, Message)>>>,
     /// Sender for this node (given to peers).
     local_sender: mpsc::Sender<(NodeId, Message)>,
+    /// Partitioned peers - messages to/from these nodes are dropped.
+    partitioned: RwLock<HashSet<NodeId>>,
+    /// Message drop counter for testing assertions.
+    dropped_messages: AtomicU64,
 }
 
 impl MemoryTransport {
@@ -368,6 +373,8 @@ impl MemoryTransport {
             receiver: RwLock::new(rx),
             peers: RwLock::new(HashMap::new()),
             local_sender: tx,
+            partitioned: RwLock::new(HashSet::new()),
+            dropped_messages: AtomicU64::new(0),
         }
     }
 
@@ -380,11 +387,59 @@ impl MemoryTransport {
     pub fn connect_to(&self, other_id: NodeId, sender: mpsc::Sender<(NodeId, Message)>) {
         self.peers.write().insert(other_id, sender);
     }
+
+    /// Simulate network partition - messages to this peer will be dropped.
+    pub fn partition(&self, peer_id: &NodeId) {
+        self.partitioned.write().insert(peer_id.clone());
+    }
+
+    /// Heal partition - restore communication with peer.
+    pub fn heal(&self, peer_id: &NodeId) {
+        self.partitioned.write().remove(peer_id);
+    }
+
+    /// Check if a peer is partitioned.
+    pub fn is_partitioned(&self, peer_id: &NodeId) -> bool {
+        self.partitioned.read().contains(peer_id)
+    }
+
+    /// Get count of dropped messages due to partition.
+    pub fn dropped_message_count(&self) -> u64 {
+        self.dropped_messages.load(Ordering::Relaxed)
+    }
+
+    /// Get all partitioned peers.
+    pub fn partitioned_peers(&self) -> Vec<NodeId> {
+        self.partitioned.read().iter().cloned().collect()
+    }
+
+    /// Partition from all connected peers (total isolation).
+    pub fn partition_all(&self) {
+        let peer_ids: Vec<_> = self.peers.read().keys().cloned().collect();
+        let mut partitioned = self.partitioned.write();
+        for peer_id in peer_ids {
+            partitioned.insert(peer_id);
+        }
+    }
+
+    /// Heal all partitions.
+    pub fn heal_all(&self) {
+        self.partitioned.write().clear();
+    }
 }
 
 #[async_trait]
 impl Transport for MemoryTransport {
     async fn send(&self, to: &NodeId, msg: Message) -> Result<()> {
+        // Check if peer is partitioned - silently drop message
+        if self.partitioned.read().contains(to) {
+            self.dropped_messages.fetch_add(1, Ordering::Relaxed);
+            return Err(ChainError::NetworkError(format!(
+                "network partition: {} -> {}",
+                self.local_id, to
+            )));
+        }
+
         let sender = {
             let peers = self.peers.read();
             peers
@@ -402,9 +457,14 @@ impl Transport for MemoryTransport {
     }
 
     async fn broadcast(&self, msg: Message) -> Result<()> {
+        let partitioned = self.partitioned.read().clone();
         let senders: Vec<_> = {
             let peers = self.peers.read();
-            peers.values().cloned().collect()
+            peers
+                .iter()
+                .filter(|(id, _)| !partitioned.contains(*id))
+                .map(|(_, sender)| sender.clone())
+                .collect()
         };
 
         for sender in senders {
@@ -1747,5 +1807,159 @@ mod tests {
         });
         assert!(msg.routing_embedding().is_none());
         assert!(!msg.has_routing_embedding());
+    }
+
+    // =========================================================================
+    // Partition Injection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_partition_basic() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+
+        t1.connect_to("node2".to_string(), t2.sender());
+
+        // Initially not partitioned
+        assert!(!t1.is_partitioned(&"node2".to_string()));
+        assert!(t1.partitioned_peers().is_empty());
+
+        // Partition
+        t1.partition(&"node2".to_string());
+        assert!(t1.is_partitioned(&"node2".to_string()));
+        assert_eq!(t1.partitioned_peers().len(), 1);
+
+        // Heal
+        t1.heal(&"node2".to_string());
+        assert!(!t1.is_partitioned(&"node2".to_string()));
+        assert!(t1.partitioned_peers().is_empty());
+    }
+
+    #[test]
+    fn test_partition_all_and_heal_all() {
+        let t1 = MemoryTransport::new("node1".to_string());
+        let t2 = MemoryTransport::new("node2".to_string());
+        let t3 = MemoryTransport::new("node3".to_string());
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        // Partition all
+        t1.partition_all();
+        assert!(t1.is_partitioned(&"node2".to_string()));
+        assert!(t1.is_partitioned(&"node3".to_string()));
+        assert_eq!(t1.partitioned_peers().len(), 2);
+
+        // Heal all
+        t1.heal_all();
+        assert!(!t1.is_partitioned(&"node2".to_string()));
+        assert!(!t1.is_partitioned(&"node3".to_string()));
+        assert!(t1.partitioned_peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_partition_blocks_send() {
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t2.connect_to("node1".to_string(), t1.sender());
+
+        // Send works before partition
+        let result = t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(t1.dropped_message_count(), 0);
+
+        // Partition
+        t1.partition(&"node2".to_string());
+
+        // Send fails after partition
+        let result = t1
+            .send(&"node2".to_string(), Message::Ping { term: 2 })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(t1.dropped_message_count(), 1);
+
+        // Heal and send works again
+        t1.heal(&"node2".to_string());
+        let result = t1
+            .send(&"node2".to_string(), Message::Ping { term: 3 })
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(t1.dropped_message_count(), 1); // Still 1
+    }
+
+    #[tokio::test]
+    async fn test_partition_is_asymmetric() {
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t2.connect_to("node1".to_string(), t1.sender());
+
+        // Partition only on t1 side
+        t1.partition(&"node2".to_string());
+
+        // t1 -> t2 fails
+        assert!(t1
+            .send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await
+            .is_err());
+
+        // t2 -> t1 still works (asymmetric)
+        assert!(t2
+            .send(&"node1".to_string(), Message::Ping { term: 1 })
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_skips_partitioned() {
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        let t3 = Arc::new(MemoryTransport::new("node3".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.connect_to("node3".to_string(), t3.sender());
+
+        // Partition node2 only
+        t1.partition(&"node2".to_string());
+
+        // Broadcast from t1
+        t1.broadcast(Message::Ping { term: 1 }).await.unwrap();
+
+        // t3 should receive (not partitioned)
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), t3.recv()).await;
+        assert!(result.is_ok());
+
+        // t2 should NOT receive (partitioned)
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), t2.recv()).await;
+        assert!(result.is_err()); // Timeout
+    }
+
+    #[tokio::test]
+    async fn test_dropped_message_counter() {
+        let t1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let t2 = Arc::new(MemoryTransport::new("node2".to_string()));
+
+        t1.connect_to("node2".to_string(), t2.sender());
+        t1.partition(&"node2".to_string());
+
+        // Send 5 messages - all dropped
+        for _ in 0..5 {
+            let _ = t1
+                .send(&"node2".to_string(), Message::Ping { term: 1 })
+                .await;
+        }
+        assert_eq!(t1.dropped_message_count(), 5);
+
+        // Heal and send - should not increment
+        t1.heal(&"node2".to_string());
+        t1.send(&"node2".to_string(), Message::Ping { term: 1 })
+            .await
+            .unwrap();
+        assert_eq!(t1.dropped_message_count(), 5);
     }
 }

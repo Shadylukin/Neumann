@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 tensor_store = { path = "../tensor_store" }
 tensor_compress = { path = "../tensor_compress" }
+tensor_chain = { path = "../tensor_chain" }
 relational_engine = { path = "../relational_engine" }
 graph_engine = { path = "../graph_engine" }
 vector_engine = { path = "../vector_engine" }
