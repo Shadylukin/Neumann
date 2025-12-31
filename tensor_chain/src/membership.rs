@@ -305,6 +305,14 @@ impl MembershipManager {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         let mut nodes = HashMap::new();
+
+        // Add local node (always healthy)
+        let mut local_status =
+            NodeStatus::new(config.local.node_id.clone(), config.local.bind_address);
+        local_status.health = NodeHealth::Healthy;
+        nodes.insert(config.local.node_id.clone(), local_status);
+
+        // Add peer nodes
         for peer in &config.peers {
             nodes.insert(
                 peer.node_id.clone(),
@@ -356,9 +364,15 @@ impl MembershipManager {
         &self.config.cluster_id
     }
 
-    /// Get all peer node IDs.
+    /// Get all peer node IDs (excludes local node).
     pub fn peer_ids(&self) -> Vec<NodeId> {
-        self.nodes.read().keys().cloned().collect()
+        let local_id = &self.config.local.node_id;
+        self.nodes
+            .read()
+            .keys()
+            .filter(|k| *k != local_id)
+            .cloned()
+            .collect()
     }
 
     /// Start the health checking loop.
@@ -742,9 +756,11 @@ mod tests {
         let manager = MembershipManager::new(config, transport);
 
         let view = manager.view();
-        assert_eq!(view.total_count(), 2);
-        // All nodes start as Unknown
-        assert_eq!(view.healthy_count(), 0);
+        // 3 nodes: local + 2 peers
+        assert_eq!(view.total_count(), 3);
+        // Local node starts as Healthy, peers as Unknown
+        assert_eq!(view.healthy_count(), 1);
+        assert!(view.is_healthy(&"node1".to_string()));
     }
 
     #[tokio::test]

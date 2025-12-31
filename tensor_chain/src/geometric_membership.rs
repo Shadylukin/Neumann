@@ -112,10 +112,12 @@ impl GeometricMembershipManager {
     pub fn ranked_peers(&self, query: &SparseVector) -> Vec<RankedPeer> {
         let view = self.view();
         let embeddings = self.peer_embeddings.read();
+        let local_id = self.inner.local_id();
 
         let mut peers: Vec<RankedPeer> = view
             .nodes
             .iter()
+            .filter(|status| &status.node_id != local_id)
             .map(|status| {
                 let health_score = match status.health {
                     NodeHealth::Healthy => 1.0,
@@ -334,8 +336,8 @@ mod tests {
     fn test_view() {
         let manager = create_test_manager();
         let view = manager.view();
-        // View should have peer nodes
-        assert!(view.total_count() <= 2);
+        // View should have local node + peer nodes
+        assert_eq!(view.total_count(), 3);
     }
 
     #[test]

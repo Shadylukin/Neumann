@@ -168,13 +168,15 @@ async fn test_membership_detects_node_failure() {
     manager.mark_healthy(&"node3".to_string());
 
     let view = manager.view();
-    assert_eq!(view.healthy_count(), 2);
+    // 3 healthy: local node1 + node2 + node3
+    assert_eq!(view.healthy_count(), 3);
 
     // Simulate node2 failure
     manager.mark_failed(&"node2".to_string());
 
     let view = manager.view();
-    assert_eq!(view.healthy_count(), 1);
+    // 2 healthy: local node1 + node3
+    assert_eq!(view.healthy_count(), 2);
     assert!(!view.is_healthy(&"node2".to_string()));
     assert!(view.is_healthy(&"node3".to_string()));
 
@@ -405,14 +407,17 @@ async fn test_membership_multiple_peers() {
     manager.mark_healthy(&"node4".to_string());
 
     let view = manager.view();
-    assert_eq!(view.total_count(), 3);
-    assert_eq!(view.healthy_count(), 3);
+    // 4 total: local node1 + 3 peers
+    assert_eq!(view.total_count(), 4);
+    // 4 healthy: local + all peers
+    assert_eq!(view.healthy_count(), 4);
 
     // Fail one node
     manager.mark_failed(&"node3".to_string());
 
     let view = manager.view();
-    assert_eq!(view.healthy_count(), 2);
+    // 3 healthy: local + node2 + node4
+    assert_eq!(view.healthy_count(), 3);
     assert_eq!(view.failed_nodes.len(), 1);
     assert!(view.failed_nodes.contains(&"node3".to_string()));
 }
@@ -433,12 +438,14 @@ async fn test_membership_cluster_view_contents() {
 
     let view = manager.view();
 
-    // Check view contents
-    assert_eq!(view.total_count(), 2);
-    assert_eq!(view.healthy_count(), 1);
+    // Check view contents (3 total: local + 2 peers)
+    assert_eq!(view.total_count(), 3);
+    // 2 healthy: local node1 + node2
+    assert_eq!(view.healthy_count(), 2);
+    assert!(view.is_healthy(&"node1".to_string())); // local node
     assert!(view.is_healthy(&"node2".to_string()));
     assert!(!view.is_healthy(&"node3".to_string()));
-    assert_eq!(view.healthy_nodes.len(), 1);
+    assert_eq!(view.healthy_nodes.len(), 2);
     assert_eq!(view.failed_nodes.len(), 1);
 }
 
