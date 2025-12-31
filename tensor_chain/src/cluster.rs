@@ -398,6 +398,51 @@ impl ClusterOrchestrator {
     pub fn transport(&self) -> &TcpTransport {
         &self.transport
     }
+
+    /// Send a query request to a remote node and await the response.
+    pub async fn send_query(
+        &self,
+        target: &NodeId,
+        request: QueryRequest,
+    ) -> Result<QueryResponse> {
+        use std::time::Duration;
+
+        let query_id = request.query_id;
+        let timeout_ms = request.timeout_ms;
+
+        // Send the query request
+        self.transport
+            .send(target, Message::QueryRequest(request))
+            .await?;
+
+        // Wait for response with timeout
+        // In a production system, we'd use a response correlation map
+        // For now, we'll use a simple polling approach via the transport receiver
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                return Err(ChainError::NetworkError(format!(
+                    "Query timeout after {}ms",
+                    timeout_ms
+                )));
+            }
+
+            // Check for response in incoming messages
+            if let Ok(Ok(Some((from, msg)))) = tokio::time::timeout(
+                Duration::from_millis(50),
+                self.transport.receive_one(),
+            )
+            .await
+            {
+                if let Message::QueryResponse(response) = msg {
+                    if response.query_id == query_id && &from == target {
+                        return Ok(response);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

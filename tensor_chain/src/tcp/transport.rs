@@ -401,6 +401,19 @@ impl TcpTransport {
             connection_count,
         }
     }
+
+    /// Try to receive a single message without blocking.
+    /// Returns None if no message is immediately available.
+    pub async fn receive_one(&self) -> Result<Option<(NodeId, Message)>> {
+        let mut rx = self.incoming_rx.lock().await;
+        match rx.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                Err(ChainError::NetworkError("transport closed".to_string()))
+            }
+        }
+    }
 }
 
 /// Transport statistics.

@@ -27,6 +27,10 @@
 //! - `FIND <entity> WHERE <condition> SIMILAR TO <key> CONNECTED TO <entity>`
 
 pub mod distributed;
+pub use distributed::{
+    DistributedQueryConfig, MergeStrategy, QueryPlan, QueryPlanner, ResultMerger, ShardId,
+    ShardResult,
+};
 
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
@@ -53,7 +57,7 @@ use tensor_chain::{
     QueryExecutor, TensorChain,
 };
 use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
-use tensor_store::TensorStore;
+use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner, TensorStore};
 use tensor_unified::{
     UnifiedEngine, UnifiedError, UnifiedItem, UnifiedResult as TensorUnifiedResult,
 };
@@ -457,6 +461,12 @@ pub struct QueryRouter {
     cluster: Option<Arc<ClusterOrchestrator>>,
     /// Tokio runtime for async cluster operations (shared with blob)
     cluster_runtime: Option<Arc<Runtime>>,
+    /// Query planner for distributed execution
+    distributed_planner: Option<Arc<QueryPlanner>>,
+    /// Distributed query configuration
+    distributed_config: DistributedQueryConfig,
+    /// Local shard ID in the cluster
+    local_shard_id: ShardId,
 }
 
 impl QueryRouter {
@@ -477,6 +487,9 @@ impl QueryRouter {
             chain: None,
             cluster: None,
             cluster_runtime: None,
+            distributed_planner: None,
+            distributed_config: DistributedQueryConfig::default(),
+            local_shard_id: 0,
         }
     }
 
@@ -501,6 +514,9 @@ impl QueryRouter {
             chain: None,
             cluster: None,
             cluster_runtime: None,
+            distributed_planner: None,
+            distributed_config: DistributedQueryConfig::default(),
+            local_shard_id: 0,
         }
     }
 
@@ -533,6 +549,9 @@ impl QueryRouter {
             chain: None,
             cluster: None,
             cluster_runtime: None,
+            distributed_planner: None,
+            distributed_config: DistributedQueryConfig::default(),
+            local_shard_id: 0,
         }
     }
 
@@ -752,8 +771,27 @@ impl QueryRouter {
             orchestrator.register_query_executor(exec);
         }
 
+        // Create consistent hash partitioner with all nodes
+        let all_nodes: Vec<String> = std::iter::once(node_id.to_string())
+            .chain(peers.iter().map(|(id, _)| id.clone()))
+            .collect();
+
+        let hash_config = ConsistentHashConfig::new(node_id);
+        let partitioner = ConsistentHashPartitioner::with_nodes(hash_config, all_nodes.clone());
+
+        // Determine local shard ID (index of this node in the sorted list)
+        let local_shard = all_nodes
+            .iter()
+            .position(|n| n == node_id)
+            .unwrap_or(0);
+
+        // Create query planner
+        let planner = QueryPlanner::new(Arc::new(partitioner), local_shard);
+
         self.cluster = Some(Arc::new(orchestrator));
         self.cluster_runtime = Some(Arc::new(runtime));
+        self.distributed_planner = Some(Arc::new(planner));
+        self.local_shard_id = local_shard;
         Ok(())
     }
 
@@ -1061,6 +1099,177 @@ impl QueryRouter {
         }
     }
 
+    /// Try to execute query via distributed routing if cluster is active.
+    /// Returns None if query should be executed locally.
+    fn try_execute_distributed(&self, command: &str) -> Option<Result<QueryResult>> {
+        let planner = self.distributed_planner.as_ref()?;
+        let cluster = self.cluster.as_ref()?;
+        let runtime = self.cluster_runtime.as_ref()?;
+
+        let plan = planner.plan(command);
+
+        match plan {
+            QueryPlan::Local { .. } => None, // Execute locally
+            QueryPlan::Remote { shard, query } => {
+                // Forward to single remote shard
+                Some(self.execute_on_shard(runtime, cluster, shard, &query))
+            }
+            QueryPlan::ScatterGather {
+                shards,
+                query,
+                merge,
+            } => {
+                // Scatter to all shards and gather results
+                Some(self.execute_scatter_gather(runtime, cluster, &shards, &query, &merge))
+            }
+        }
+    }
+
+    /// Execute a query on a single remote shard.
+    fn execute_on_shard(
+        &self,
+        runtime: &Runtime,
+        cluster: &ClusterOrchestrator,
+        shard: ShardId,
+        query: &str,
+    ) -> Result<QueryResult> {
+        let nodes = cluster.membership().view().nodes;
+        let node_id = nodes
+            .get(shard)
+            .map(|n| n.node_id.clone())
+            .ok_or_else(|| RouterError::InvalidArgument(format!("Shard {} not found", shard)))?;
+
+        // Send query to remote node via transport
+        let request = tensor_chain::QueryRequest {
+            query_id: rand::random(),
+            query: query.to_string(),
+            shard_id: shard,
+            embedding: None,
+            timeout_ms: self.distributed_config.shard_timeout_ms,
+        };
+
+        let response = runtime.block_on(async {
+            cluster
+                .send_query(&node_id, request)
+                .await
+                .map_err(|e| RouterError::ChainError(e.to_string()))
+        })?;
+
+        if response.success {
+            bincode::deserialize(&response.result)
+                .map_err(|e| RouterError::ChainError(format!("Deserialization error: {e}")))
+        } else {
+            Err(RouterError::ChainError(
+                response.error.unwrap_or_else(|| "Unknown error".to_string()),
+            ))
+        }
+    }
+
+    /// Execute scatter-gather query across multiple shards.
+    fn execute_scatter_gather(
+        &self,
+        runtime: &Runtime,
+        cluster: &ClusterOrchestrator,
+        shards: &[ShardId],
+        query: &str,
+        merge_strategy: &MergeStrategy,
+    ) -> Result<QueryResult> {
+        let nodes = cluster.membership().view().nodes;
+
+        // Collect results from all shards (including local execution for local shard)
+        let results: Vec<ShardResult> = runtime.block_on(async {
+            let mut results = Vec::with_capacity(shards.len());
+
+            for &shard in shards {
+                let start = std::time::Instant::now();
+
+                // Check if this is the local shard
+                if shard == self.local_shard_id {
+                    // Execute locally
+                    match self.execute_parsed_local(query) {
+                        Ok(result) => {
+                            results.push(ShardResult::success(
+                                shard,
+                                result,
+                                start.elapsed().as_micros() as u64,
+                            ));
+                        }
+                        Err(e) => {
+                            if self.distributed_config.fail_fast {
+                                return vec![ShardResult::error(shard, e.to_string())];
+                            }
+                            results.push(ShardResult::error(shard, e.to_string()));
+                        }
+                    }
+                    continue;
+                }
+
+                // Get node ID for remote shard
+                let node_id = match nodes.get(shard) {
+                    Some(n) => n.node_id.clone(),
+                    None => {
+                        results.push(ShardResult::error(
+                            shard,
+                            format!("Shard {} not found", shard),
+                        ));
+                        continue;
+                    }
+                };
+
+                // Send query to remote node
+                let request = tensor_chain::QueryRequest {
+                    query_id: rand::random(),
+                    query: query.to_string(),
+                    shard_id: shard,
+                    embedding: None,
+                    timeout_ms: self.distributed_config.shard_timeout_ms,
+                };
+
+                match cluster.send_query(&node_id, request).await {
+                    Ok(response) => {
+                        if response.success {
+                            match bincode::deserialize(&response.result) {
+                                Ok(result) => {
+                                    results.push(ShardResult::success(
+                                        shard,
+                                        result,
+                                        response.execution_time_us,
+                                    ));
+                                }
+                                Err(e) => {
+                                    results.push(ShardResult::error(
+                                        shard,
+                                        format!("Deserialization error: {e}"),
+                                    ));
+                                }
+                            }
+                        } else {
+                            results.push(ShardResult::error(
+                                shard,
+                                response.error.unwrap_or_else(|| "Unknown error".to_string()),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        results.push(ShardResult::error(shard, e.to_string()));
+                    }
+                }
+            }
+
+            results
+        });
+
+        // Merge results
+        ResultMerger::merge(results, merge_strategy)
+    }
+
+    /// Execute a query locally without distributed routing.
+    fn execute_parsed_local(&self, command: &str) -> Result<QueryResult> {
+        let stmt = parser::parse(command)
+            .map_err(|e| RouterError::ParseError(e.format_with_source(command)))?;
+        self.execute_statement(&stmt)
+    }
+
     /// Execute a command string using the AST-based parser.
     ///
     /// This method uses the neumann_parser crate to parse the command into an AST,
@@ -1068,6 +1277,11 @@ impl QueryRouter {
     /// Cacheable queries (SELECT, SIMILAR, NEIGHBORS, PATH) are cached if a cache is configured.
     /// Write operations (INSERT, UPDATE, DELETE) invalidate the cache.
     pub fn execute_parsed(&self, command: &str) -> Result<QueryResult> {
+        // Try distributed execution first if cluster is active
+        if let Some(result) = self.try_execute_distributed(command) {
+            return result;
+        }
+
         let stmt = parser::parse(command)
             .map_err(|e| RouterError::ParseError(e.format_with_source(command)))?;
 
