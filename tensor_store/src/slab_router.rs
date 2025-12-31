@@ -228,6 +228,13 @@ impl SlabRouter {
             }
         }
 
+        // Add from cache ring
+        for key in self.cache.scan_prefix(prefix) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+
         keys
     }
 
@@ -272,6 +279,11 @@ impl SlabRouter {
         self.metadata.clear();
         self.cache.clear();
         self.blobs.clear();
+    }
+
+    /// Evict entries from the cache ring.
+    pub fn evict_cache(&self, count: usize) -> usize {
+        self.cache.evict(count)
     }
 
     /// Get operation count for stats.

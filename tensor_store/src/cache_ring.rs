@@ -311,6 +311,68 @@ impl<V: Clone> CacheRing<V> {
         self.misses.store(0, Ordering::Relaxed);
     }
 
+    /// Evict the lowest-scored entries from the cache.
+    pub fn evict(&self, count: usize) -> usize {
+        if count == 0 {
+            return 0;
+        }
+
+        let scorer = EvictionScorer::new(self.strategy);
+        let now = Instant::now();
+
+        // Collect candidates with scores
+        let mut candidates: Vec<(usize, f64)> = {
+            let slots = self.slots.read();
+            slots
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, slot)| {
+                    slot.as_ref().map(|entry| {
+                        let age_secs = now.duration_since(entry.last_access).as_secs_f64();
+                        let score = scorer.score(
+                            age_secs,
+                            entry.access_count,
+                            entry.cost,
+                            entry.size_bytes,
+                        );
+                        (idx, score)
+                    })
+                })
+                .collect()
+        };
+
+        // Sort by score (lowest first for eviction)
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.truncate(count);
+
+        // Evict the candidates
+        let mut evicted = 0;
+        let mut slots = self.slots.write();
+        let mut index = self.index.write();
+
+        for (slot_idx, _) in candidates {
+            if let Some(ref entry) = slots[slot_idx] {
+                index.remove(&entry.key_hash);
+                slots[slot_idx] = None;
+                self.count.fetch_sub(1, Ordering::Relaxed);
+                evicted += 1;
+            }
+        }
+
+        evicted
+    }
+
+    /// Scan keys matching a prefix.
+    pub fn scan_prefix(&self, prefix: &str) -> Vec<String> {
+        let slots = self.slots.read();
+        slots
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .filter(|entry| entry.key.starts_with(prefix))
+            .map(|entry| entry.key.clone())
+            .collect()
+    }
+
     /// Get cache statistics.
     pub fn stats(&self) -> CacheStats {
         let hits = self.hits.load(Ordering::Relaxed);

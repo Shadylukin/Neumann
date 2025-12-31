@@ -50,8 +50,8 @@ pub use partitioned::{
 };
 pub use partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
 pub use relational_slab::{
-    ColumnDef, ColumnType, ColumnValue, RelationalError, RelationalSlab, RelationalSlabSnapshot,
-    Row, RowId, TableSchema,
+    ColumnDef, ColumnType, ColumnValue, RangeOp, RelationalError, RelationalSlab,
+    RelationalSlabSnapshot, Row, RowId, TableSchema,
 };
 pub use semantic_partitioner::{
     EncodedEmbedding, RoutingMethod, SemanticPartitionResult, SemanticPartitioner,
@@ -840,6 +840,14 @@ impl TensorStore {
     /// engines that need direct columnar storage access.
     pub fn router(&self) -> &SlabRouter {
         &self.router
+    }
+
+    /// Evict entries from the cache ring using the configured eviction strategy.
+    ///
+    /// Returns the number of entries actually evicted.
+    #[must_use]
+    pub fn evict_cache(&self, count: usize) -> usize {
+        self.router.evict_cache(count)
     }
 
     pub fn scan_count(&self, prefix: &str) -> usize {
