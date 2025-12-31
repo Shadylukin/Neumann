@@ -478,6 +478,14 @@ impl Cache {
     ///
     /// Returns an error if storage insertion fails.
     pub fn put_simple(&self, key: &str, value: &str) -> Result<()> {
+        let exact_count = self.stats.size(CacheLayer::Exact);
+        if exact_count >= self.config.exact_capacity {
+            return Err(CacheError::CacheFull {
+                current: exact_count,
+                capacity: self.config.exact_capacity,
+            });
+        }
+
         let cache_key = Self::exact_key(key);
         let now = Self::now_millis();
         let expires_at = now + Self::i64_from_u128(self.config.default_ttl.as_millis());
@@ -496,7 +504,10 @@ impl Cache {
 
         self.store
             .put(&cache_key, data)
-            .map_err(|e| CacheError::StorageError(e.to_string()))
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+        self.stats.increment_size(CacheLayer::Exact);
+
+        Ok(())
     }
 
     #[must_use]

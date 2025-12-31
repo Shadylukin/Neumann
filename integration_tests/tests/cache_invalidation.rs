@@ -297,3 +297,168 @@ fn test_concurrent_write_cache_invalidation() {
     // Should have original 10 + new inserts
     assert!(final_rows.len() >= 10);
 }
+
+// ========== Direct Cache API Tests ==========
+
+use std::time::Duration;
+use tensor_cache::{Cache, CacheConfig};
+
+#[test]
+fn test_cache_invalidate_version_existing() {
+    // Use embedding_dim 4 for test
+    let config = CacheConfig {
+        embedding_dim: 4,
+        ..Default::default()
+    };
+    let cache = Cache::with_config(config).unwrap();
+
+    // Store some entries (note: current API doesn't expose version parameter,
+    // so all entries have version=None)
+    let embedding = vec![0.1, 0.2, 0.3, 0.4];
+    cache
+        .put("prompt1", &embedding, "response1", "model", None)
+        .unwrap();
+    cache
+        .put("prompt2", &embedding, "response2", "model", None)
+        .unwrap();
+
+    // Verify entries exist
+    assert!(cache.get("prompt1", Some(&embedding)).is_some());
+    assert!(cache.get("prompt2", Some(&embedding)).is_some());
+
+    // Try to invalidate by version (no entries have versions set, so returns 0)
+    let invalidated = cache.invalidate_version("any_version");
+
+    // No entries should be removed since none have versions
+    assert_eq!(invalidated, 0);
+
+    // Entries should still exist
+    assert!(cache.get("prompt1", Some(&embedding)).is_some());
+    assert!(cache.get("prompt2", Some(&embedding)).is_some());
+
+    // Test invalidate() directly - removes from exact cache
+    let removed = cache.invalidate("prompt1");
+    assert!(removed);
+
+    // After invalidate(), the exact cache entry is gone, but semantic cache
+    // still has it. get() with embedding will still find it via semantic search.
+    // This documents the current behavior: invalidate() only affects exact cache.
+    let exact_only = cache.get("prompt1", None);
+    assert!(exact_only.is_none(), "Exact cache entry should be gone");
+
+    // Second entry should still exist in both caches
+    assert!(cache.get("prompt2", Some(&embedding)).is_some());
+}
+
+#[test]
+fn test_cache_invalidate_embeddings_by_source() {
+    let cache = Cache::new();
+
+    // Store embeddings from multiple sources
+    for i in 0..5 {
+        cache
+            .put_embedding("source_a", &format!("content_{}", i), vec![0.1 * i as f32; 3], "model")
+            .unwrap();
+    }
+    for i in 0..3 {
+        cache
+            .put_embedding("source_b", &format!("content_{}", i), vec![0.2 * i as f32; 3], "model")
+            .unwrap();
+    }
+
+    // Verify embeddings exist
+    assert!(cache.get_embedding("source_a", "content_0").is_some());
+    assert!(cache.get_embedding("source_b", "content_0").is_some());
+
+    // Invalidate all embeddings from source_a
+    let removed = cache.invalidate_embeddings("source_a");
+
+    // Should have removed 5 embeddings
+    assert_eq!(removed, 5);
+
+    // source_a embeddings should be gone
+    assert!(cache.get_embedding("source_a", "content_0").is_none());
+    assert!(cache.get_embedding("source_a", "content_4").is_none());
+
+    // source_b embeddings should still exist
+    assert!(cache.get_embedding("source_b", "content_0").is_some());
+}
+
+#[test]
+fn test_cache_cleanup_expired_all_layers() {
+    // Create cache with short TTL
+    let config = CacheConfig {
+        default_ttl: Duration::from_millis(20),
+        embedding_dim: 4,
+        ..Default::default()
+    };
+    let cache = Cache::with_config(config).unwrap();
+
+    // Add entries to all layers
+    // Exact layer (via put_simple)
+    cache.put_simple("exact_key", "exact_value").unwrap();
+
+    // Semantic layer (via put with embedding)
+    let embedding = vec![0.1, 0.2, 0.3, 0.4];
+    cache
+        .put("semantic_prompt", &embedding, "semantic_response", "model", None)
+        .unwrap();
+
+    // Embedding layer
+    cache
+        .put_embedding("source", "content", vec![0.5, 0.6, 0.7, 0.8], "model")
+        .unwrap();
+
+    // Wait for entries to expire
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Cleanup expired entries
+    let cleaned = cache.cleanup_expired();
+
+    // Should have cleaned entries from all layers
+    assert!(cleaned > 0, "Expected to clean at least 1 expired entry, got {}", cleaned);
+
+    // Verify entries are expired/cleaned
+    // After cleanup, expired entries should not be accessible
+    let exact_result = cache.get_simple("exact_key");
+    let semantic_result = cache.get("semantic_prompt", Some(&embedding));
+    let embedding_result = cache.get_embedding("source", "content");
+
+    // All should be None after expiration + cleanup
+    assert!(
+        exact_result.is_none() && semantic_result.is_none() && embedding_result.is_none(),
+        "Expected all entries to be expired"
+    );
+}
+
+#[test]
+fn test_cache_stats_after_invalidation() {
+    let cache = Cache::new();
+
+    // Add entries
+    for i in 0..10 {
+        cache.put_simple(&format!("stats_key_{}", i), &format!("value_{}", i)).unwrap();
+    }
+
+    // Get initial stats
+    let stats_before = cache.stats_snapshot();
+    let entries_before = stats_before.total_entries();
+    assert!(entries_before >= 10);
+
+    // Invalidate some entries
+    for i in 0..5 {
+        let _ = cache.invalidate(&format!("stats_key_{}", i));
+    }
+
+    // Stats should reflect invalidation
+    let stats_after = cache.stats_snapshot();
+    let entries_after = stats_after.total_entries();
+
+    // Entries count should have decreased
+    assert!(
+        entries_after < entries_before,
+        "Expected entries to decrease after invalidation: before={}, after={}",
+        entries_before,
+        entries_after
+    );
+}
