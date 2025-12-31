@@ -90,8 +90,9 @@ pub use membership::{
 };
 pub use network::{
     AppendEntries, AppendEntriesResponse, GeometricTransport, LogEntry, MemoryTransport, Message,
-    MessageHandler, NetworkManager, PeerConfig, RequestVote, RequestVoteResponse, Transport,
-    TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    MessageHandler, NetworkManager, PeerConfig, QueryExecutor, QueryHandler, QueryRequest,
+    QueryResponse, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg,
+    TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
 pub use state_machine::TensorStateMachine;

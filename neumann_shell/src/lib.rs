@@ -3,6 +3,7 @@
 //! Provides a readline-based interface for executing queries against the
 //! Neumann unified query engine.
 
+use parking_lot::RwLock;
 use query_router::{
     ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult,
     ChainSimilarResult, ChainTransitionAnalysis, CheckpointInfo, QueryResult, QueryRouter,
@@ -15,6 +16,8 @@ use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tensor_chain::QueryExecutor;
 use tensor_store::TensorStore;
 
 /// Write-Ahead Log for crash recovery.
@@ -97,9 +100,19 @@ pub enum CommandResult {
 
 /// Interactive shell for Neumann database.
 pub struct Shell {
-    router: QueryRouter,
+    router: Arc<RwLock<QueryRouter>>,
     config: ShellConfig,
     wal: Option<Wal>,
+}
+
+/// Wrapper to implement QueryExecutor for Arc<RwLock<QueryRouter>>.
+struct RouterExecutor(Arc<RwLock<QueryRouter>>);
+
+impl QueryExecutor for RouterExecutor {
+    fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
+        let router = self.0.read();
+        router.execute_for_cluster(query)
+    }
 }
 
 impl Shell {
@@ -107,7 +120,7 @@ impl Shell {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            router: QueryRouter::new(),
+            router: Arc::new(RwLock::new(QueryRouter::new())),
             config: ShellConfig::default(),
             wal: None,
         }
@@ -117,22 +130,28 @@ impl Shell {
     #[must_use]
     pub fn with_config(config: ShellConfig) -> Self {
         Self {
-            router: QueryRouter::new(),
+            router: Arc::new(RwLock::new(QueryRouter::new())),
             config,
             wal: None,
         }
     }
 
-    /// Returns the query router for direct access.
+    /// Returns a clone of the router Arc for shared access.
     #[must_use]
-    pub const fn router(&self) -> &QueryRouter {
-        &self.router
+    pub fn router_arc(&self) -> Arc<RwLock<QueryRouter>> {
+        Arc::clone(&self.router)
     }
 
-    /// Returns a mutable reference to the query router.
+    /// Returns a read guard to the query router for direct access.
     #[must_use]
-    pub const fn router_mut(&mut self) -> &mut QueryRouter {
-        &mut self.router
+    pub fn router(&self) -> parking_lot::RwLockReadGuard<'_, QueryRouter> {
+        self.router.read()
+    }
+
+    /// Returns a write guard to the query router for mutable access.
+    #[must_use]
+    pub fn router_mut(&self) -> parking_lot::RwLockWriteGuard<'_, QueryRouter> {
+        self.router.write()
     }
 
     /// Check if a command is a write operation that should be logged to WAL.
@@ -182,7 +201,7 @@ impl Shell {
                 continue;
             }
 
-            if let Err(e) = self.router.execute_parsed(cmd) {
+            if let Err(e) = self.router.read().execute_parsed(cmd) {
                 return Err(format!("WAL replay failed at line {}: {e}", line_num + 1));
             }
             count += 1;
@@ -252,7 +271,7 @@ impl Shell {
         }
 
         // Execute as query
-        match self.router.execute_parsed(trimmed) {
+        match self.router.read().execute_parsed(trimmed) {
             Ok(result) => {
                 // Log write commands to WAL after successful execution
                 if Self::is_write_command(trimmed) {
@@ -278,7 +297,7 @@ impl Shell {
             );
         };
 
-        let store = self.router.vector().store();
+        let store = self.router.read().vector().store().clone();
         if let Err(e) = store.save_snapshot(&p) {
             return CommandResult::Error(format!("Failed to save: {e}"));
         }
@@ -301,7 +320,7 @@ impl Shell {
             return CommandResult::Error("Usage: SAVE COMPRESSED 'path/to/file.bin'".to_string());
         };
 
-        let store = self.router.vector().store();
+        let store = self.router.read().vector().store().clone();
         let config = tensor_compress::CompressionConfig {
             vector_quantization: Some(tensor_compress::QuantMode::Int8),
             delta_encoding: true,
@@ -338,7 +357,7 @@ impl Shell {
 
         match result {
             Ok(store) => {
-                self.router = QueryRouter::with_shared_store(store);
+                *self.router.write() = QueryRouter::with_shared_store(store);
 
                 // Derive WAL path from snapshot path (e.g., data.bin -> data.log)
                 let wal_path = Path::new(&p).with_extension("log");
@@ -446,7 +465,7 @@ impl Shell {
                     },
                 };
 
-                match self.router.init_vault(&decoded) {
+                match self.router.write().init_vault(&decoded) {
                     Ok(()) => CommandResult::Output("Vault initialized".to_string()),
                     Err(e) => CommandResult::Error(format!("Failed to initialize vault: {e}")),
                 }
@@ -475,17 +494,17 @@ impl Shell {
         } else {
             return CommandResult::Output(format!(
                 "Current identity: {}",
-                self.router.current_identity()
+                self.router.read().current_identity()
             ));
         };
 
-        self.router.set_identity(identity);
+        self.router.write().set_identity(identity);
         CommandResult::Output(format!("Identity set to: {identity}"))
     }
 
     /// Initialize the cache with default configuration.
     fn handle_cache_init(&mut self) -> CommandResult {
-        match self.router.init_cache_default() {
+        match self.router.write().init_cache_default() {
             Ok(()) => CommandResult::Output("Cache initialized".to_string()),
             Err(e) => CommandResult::Error(format!("Failed to initialize cache: {e}")),
         }
@@ -560,8 +579,16 @@ impl Shell {
             }
         }
 
-        // Initialize cluster
-        match self.router.init_cluster(&node_id, bind_addr, &peers) {
+        // Create executor wrapper for distributed query handling
+        let executor: Arc<dyn QueryExecutor> = Arc::new(RouterExecutor(Arc::clone(&self.router)));
+
+        // Initialize cluster with executor
+        let result = {
+            let mut router = self.router.write();
+            router.init_cluster_with_executor(&node_id, bind_addr, &peers, Some(executor))
+        };
+
+        match result {
             Ok(()) => {
                 let peer_count = peers.len();
                 CommandResult::Output(format!(
@@ -590,11 +617,12 @@ impl Shell {
 
     /// Handles the CLUSTER DISCONNECT command.
     fn handle_cluster_disconnect(&mut self) -> CommandResult {
-        if !self.router.is_cluster_active() {
+        let is_active = self.router.read().is_cluster_active();
+        if !is_active {
             return CommandResult::Error("Not connected to cluster".to_string());
         }
 
-        match self.router.shutdown_cluster() {
+        match self.router.write().shutdown_cluster() {
             Ok(()) => CommandResult::Output("Disconnected from cluster".to_string()),
             Err(e) => CommandResult::Error(format!("Failed to disconnect: {e}")),
         }
@@ -602,7 +630,7 @@ impl Shell {
 
     /// Lists all tables in the database.
     fn list_tables(&self) -> CommandResult {
-        self.router.execute_parsed("SHOW TABLES").map_or_else(
+        self.router.read().execute_parsed("SHOW TABLES").map_or_else(
             |_| CommandResult::Output("No tables found.".to_string()),
             |result| CommandResult::Output(format_result(&result)),
         )

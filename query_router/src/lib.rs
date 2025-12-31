@@ -50,7 +50,7 @@ use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_chain::{
     ChainError, ClusterNodeConfig, ClusterOrchestrator, ClusterPeerConfig, OrchestratorConfig,
-    TensorChain,
+    QueryExecutor, TensorChain,
 };
 use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
 use tensor_store::TensorStore;
@@ -590,8 +590,14 @@ impl QueryRouter {
     }
 
     /// Initialize the LLM response cache with custom configuration.
-    pub fn init_cache_with_config(&mut self, config: CacheConfig) {
-        self.cache = Some(Arc::new(Cache::with_config(config)));
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache configuration is invalid.
+    pub fn init_cache_with_config(&mut self, config: CacheConfig) -> Result<()> {
+        let cache = Cache::with_config(config).map_err(|e| RouterError::CacheError(e.to_string()))?;
+        self.cache = Some(Arc::new(cache));
+        Ok(())
     }
 
     /// Get reference to blob store (if initialized).
@@ -700,6 +706,23 @@ impl QueryRouter {
         bind_addr: SocketAddr,
         peers: &[(String, SocketAddr)],
     ) -> Result<()> {
+        self.init_cluster_with_executor(node_id, bind_addr, peers, None)
+    }
+
+    /// Initialize cluster mode with an optional query executor.
+    ///
+    /// # Arguments
+    /// * `node_id` - Unique identifier for this node
+    /// * `bind_addr` - Address to bind for incoming connections
+    /// * `peers` - List of (node_id, address) tuples for peer nodes
+    /// * `executor` - Optional query executor for handling distributed queries
+    pub fn init_cluster_with_executor(
+        &mut self,
+        node_id: &str,
+        bind_addr: SocketAddr,
+        peers: &[(String, SocketAddr)],
+        executor: Option<Arc<dyn tensor_chain::QueryExecutor>>,
+    ) -> Result<()> {
         if self.cluster.is_some() {
             return Err(RouterError::InvalidArgument(
                 "Cluster already initialized".to_string(),
@@ -723,6 +746,11 @@ impl QueryRouter {
         let orchestrator = runtime
             .block_on(ClusterOrchestrator::start(config))
             .map_err(|e| RouterError::ChainError(e.to_string()))?;
+
+        // Register query executor if provided
+        if let Some(exec) = executor {
+            orchestrator.register_query_executor(exec);
+        }
 
         self.cluster = Some(Arc::new(orchestrator));
         self.cluster_runtime = Some(Arc::new(runtime));
@@ -1264,7 +1292,9 @@ impl QueryRouter {
             CacheOp::Put { key, value } => {
                 let key_str = self.expr_to_string(key)?;
                 let value_str = self.expr_to_string(value)?;
-                cache.put_simple(&key_str, &value_str);
+                cache
+                    .put_simple(&key_str, &value_str)
+                    .map_err(|e| RouterError::CacheError(e.to_string()))?;
                 Ok(QueryResult::Value("OK".to_string()))
             },
             CacheOp::SemanticGet { query, threshold } => {
@@ -1350,7 +1380,8 @@ impl QueryRouter {
         if let Some(cache) = self.cache.as_ref() {
             let key = Self::cache_key_for_query(command);
             if let Ok(json) = serde_json::to_string(result) {
-                cache.put_simple(&key, &json);
+                // Best-effort caching - ignore errors
+                let _ = cache.put_simple(&key, &json);
             }
         }
     }
@@ -5409,6 +5440,27 @@ struct UnifiedQueryParts {
     similar_to: Option<String>,
     connected_to: Option<String>,
     top_k: usize,
+}
+
+impl QueryRouter {
+    /// Execute a query for cluster distribution, returning serialized result.
+    ///
+    /// This is the same as QueryExecutor::execute but as a regular method
+    /// for use when the router is behind a lock.
+    pub fn execute_for_cluster(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
+        let result = self.execute_parsed(query).map_err(|e| e.to_string())?;
+        bincode::serialize(&result).map_err(|e| format!("Serialization error: {e}"))
+    }
+}
+
+/// Implementation of QueryExecutor for distributed query handling.
+///
+/// This enables the QueryRouter to receive remote queries from the cluster
+/// and execute them locally, returning serialized results.
+impl QueryExecutor for QueryRouter {
+    fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
+        self.execute_for_cluster(query)
+    }
 }
 
 #[cfg(test)]

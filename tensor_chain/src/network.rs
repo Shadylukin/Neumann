@@ -67,6 +67,12 @@ pub enum Message {
     TxAbort(TxAbortMsg),
     /// Response to commit/abort.
     TxAck(TxAckMsg),
+
+    // Distributed Query messages
+    /// Request to execute a query on a remote shard.
+    QueryRequest(QueryRequest),
+    /// Response with query results.
+    QueryResponse(QueryResponse),
 }
 
 impl Message {
@@ -294,6 +300,38 @@ pub struct TxAckMsg {
     /// Shard responding.
     pub shard_id: usize,
     /// Whether the operation succeeded.
+    pub success: bool,
+    /// Error message if failed.
+    pub error: Option<String>,
+}
+
+/// Request to execute a query on a remote shard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryRequest {
+    /// Unique query ID for correlation.
+    pub query_id: u64,
+    /// The query string to execute.
+    pub query: String,
+    /// Target shard ID.
+    pub shard_id: usize,
+    /// Optional embedding for semantic routing.
+    pub embedding: Option<SparseVector>,
+    /// Timeout in milliseconds.
+    pub timeout_ms: u64,
+}
+
+/// Response with query results from a shard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryResponse {
+    /// Query ID for correlation.
+    pub query_id: u64,
+    /// Shard that executed the query.
+    pub shard_id: usize,
+    /// Serialized query result (bincode-encoded).
+    pub result: Vec<u8>,
+    /// Execution time in microseconds.
+    pub execution_time_us: u64,
+    /// Whether the query succeeded.
     pub success: bool,
     /// Error message if failed.
     pub error: Option<String>,
@@ -562,6 +600,60 @@ impl NetworkManager {
             for (to, response) in responses {
                 self.transport.send(&to, response).await?;
             }
+        }
+    }
+}
+
+/// Trait for executing queries locally.
+///
+/// Implemented by QueryRouter to enable distributed query execution.
+/// This trait lives in tensor_chain to avoid circular dependencies.
+pub trait QueryExecutor: Send + Sync {
+    /// Execute a query and return serialized result.
+    fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String>;
+}
+
+/// Handler for distributed query messages.
+///
+/// Bridges network messages (QueryRequest, QueryResponse) to a QueryExecutor.
+pub struct QueryHandler {
+    executor: Arc<dyn QueryExecutor>,
+    local_shard_id: usize,
+}
+
+impl QueryHandler {
+    /// Create a new query handler.
+    pub fn new(executor: Arc<dyn QueryExecutor>, local_shard_id: usize) -> Self {
+        Self {
+            executor,
+            local_shard_id,
+        }
+    }
+}
+
+impl MessageHandler for QueryHandler {
+    fn handle(&self, _from: &NodeId, msg: &Message) -> Option<Message> {
+        match msg {
+            Message::QueryRequest(request) => {
+                let start = std::time::Instant::now();
+
+                let (result, success, error) = match self.executor.execute(&request.query) {
+                    Ok(bytes) => (bytes, true, None),
+                    Err(e) => (Vec::new(), false, Some(e)),
+                };
+
+                let execution_time_us = start.elapsed().as_micros() as u64;
+
+                Some(Message::QueryResponse(QueryResponse {
+                    query_id: request.query_id,
+                    shard_id: self.local_shard_id,
+                    result,
+                    execution_time_us,
+                    success,
+                    error,
+                }))
+            }
+            _ => None,
         }
     }
 }

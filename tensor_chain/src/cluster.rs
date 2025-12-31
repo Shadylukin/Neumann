@@ -17,10 +17,12 @@ use crate::chain::Chain;
 use crate::error::{ChainError, Result};
 use crate::geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager};
 use crate::membership::{ClusterConfig, MembershipManager};
-use crate::network::Transport;
+use crate::network::{Message, QueryExecutor, QueryRequest, QueryResponse, Transport};
 use crate::raft::{RaftConfig, RaftNode};
 use crate::state_machine::TensorStateMachine;
 use crate::tcp::{TcpTransport, TcpTransportConfig};
+
+use parking_lot::RwLock;
 
 use graph_engine::GraphEngine;
 
@@ -129,6 +131,10 @@ pub struct ClusterOrchestrator {
     state_machine: Arc<TensorStateMachine>,
     /// TensorStore for persistence.
     store: TensorStore,
+    /// Optional query executor for distributed query handling.
+    query_executor: RwLock<Option<Arc<dyn QueryExecutor>>>,
+    /// Local shard ID for query responses.
+    local_shard_id: usize,
 }
 
 impl ClusterOrchestrator {
@@ -224,7 +230,48 @@ impl ClusterOrchestrator {
             chain,
             state_machine,
             store,
+            query_executor: RwLock::new(None),
+            local_shard_id: 0,
         })
+    }
+
+    /// Register a query executor for handling distributed queries.
+    ///
+    /// The executor will be called when QueryRequest messages are received.
+    pub fn register_query_executor(&self, executor: Arc<dyn QueryExecutor>) {
+        *self.query_executor.write() = Some(executor);
+    }
+
+    /// Handle an incoming query request.
+    fn handle_query_request(&self, from: &NodeId, request: &QueryRequest) -> Option<Message> {
+        let executor = self.query_executor.read();
+        let executor = executor.as_ref()?;
+
+        let start = std::time::Instant::now();
+
+        let (result, success, error) = match executor.execute(&request.query) {
+            Ok(bytes) => (bytes, true, None),
+            Err(e) => (Vec::new(), false, Some(e)),
+        };
+
+        let execution_time_us = start.elapsed().as_micros() as u64;
+
+        // Log query execution
+        tracing::debug!(
+            "Executed query from {} in {}us: success={}",
+            from,
+            execution_time_us,
+            success
+        );
+
+        Some(Message::QueryResponse(QueryResponse {
+            query_id: request.query_id,
+            shard_id: self.local_shard_id,
+            result,
+            execution_time_us,
+            success,
+            error,
+        }))
     }
 
     /// Run the node until shutdown signal.
@@ -233,15 +280,38 @@ impl ClusterOrchestrator {
     /// - Raft tick loop
     /// - Membership health checks
     /// - State machine apply loop
+    /// - Query message handling
     pub async fn run(&self, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
         let raft = self.raft.clone();
         let state_machine = self.state_machine.clone();
+        let transport = self.transport.clone();
 
         // Main loop
         loop {
             tokio::select! {
                 _ = shutdown.recv() => {
                     break;
+                }
+                // Try to receive a message with timeout
+                recv_result = tokio::time::timeout(
+                    tokio::time::Duration::from_millis(10),
+                    transport.recv()
+                ) => {
+                    if let Ok(Ok((from, msg))) = recv_result {
+                        // Handle the message
+                        match &msg {
+                            Message::QueryRequest(request) => {
+                                if let Some(response) = self.handle_query_request(&from, request) {
+                                    let _ = transport.send(&from, response).await;
+                                }
+                            }
+                            // Raft messages are handled by RaftNode internally
+                            _ => {
+                                // Let Raft handle other messages
+                                let _ = raft.handle_message_async(&from, msg).await;
+                            }
+                        }
+                    }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {
                     // Tick Raft
