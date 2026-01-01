@@ -233,6 +233,14 @@ pub enum TokenKind {
     Tip,
     Block,
 
+    // === Cluster Keywords ===
+    Cluster,
+    Connect,
+    Disconnect,
+    Status,
+    Nodes,
+    Leader,
+
     // === Blob Storage Keywords ===
     Blobs,
     Info,
@@ -502,6 +510,12 @@ impl TokenKind {
                 | Transitions
                 | Tip
                 | Block
+                | Cluster
+                | Connect
+                | Disconnect
+                | Status
+                | Nodes
+                | Leader
                 | Blobs
                 | Info
                 | Link
@@ -543,6 +557,23 @@ impl TokenKind {
         matches!(
             self,
             Integer(_) | Float(_) | String(_) | True | False | Null
+        )
+    }
+
+    /// Returns true if this keyword can be used as an identifier in expression contexts.
+    /// These are domain-specific keywords that don't conflict with SQL syntax.
+    pub fn is_contextual_keyword(&self) -> bool {
+        use TokenKind::*;
+        matches!(
+            self,
+            // Cluster/network related
+            Status | Nodes | Leader | Connect | Disconnect | Cluster
+            // Blob related
+            | Blobs | Info | Link | Unlink | Links | Tag | Untag | Verify | Gc | Repair | Meta | Artifacts
+            // Chain related
+            | Height | Transitions | Tip | Block | Codebook | Global | Local | Drift | Analyze | History
+            // Transaction related
+            | Begin | Commit | Transaction
         )
     }
 
@@ -729,6 +760,14 @@ impl TokenKind {
             "TRANSITIONS" => TokenKind::Transitions,
             "TIP" => TokenKind::Tip,
             "BLOCK" => TokenKind::Block,
+
+            // Cluster keywords
+            "CLUSTER" => TokenKind::Cluster,
+            "CONNECT" => TokenKind::Connect,
+            "DISCONNECT" => TokenKind::Disconnect,
+            "STATUS" => TokenKind::Status,
+            "NODES" => TokenKind::Nodes,
+            "LEADER" => TokenKind::Leader,
 
             // Blob storage keywords
             "BLOBS" => TokenKind::Blobs,
@@ -918,6 +957,12 @@ impl TokenKind {
             Transitions => "TRANSITIONS",
             Tip => "TIP",
             Block => "BLOCK",
+            Cluster => "CLUSTER",
+            Connect => "CONNECT",
+            Disconnect => "DISCONNECT",
+            Status => "STATUS",
+            Nodes => "NODES",
+            Leader => "LEADER",
             Blobs => "BLOBS",
             Info => "INFO",
             Link => "LINK",

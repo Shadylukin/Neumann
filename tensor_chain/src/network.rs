@@ -652,7 +652,7 @@ impl MessageHandler for QueryHandler {
                     success,
                     error,
                 }))
-            }
+            },
             _ => None,
         }
     }

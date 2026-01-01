@@ -50,12 +50,13 @@ tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 
 [features]
-default = []
+default = ["tls"]
 tls = ["tokio-rustls", "rustls-pemfile"]
 
 [dev-dependencies]
 criterion = "0.5"
 tokio-test = "0.4"
+rcgen = "0.13"
 
 [[bench]]
 name = "tensor_chain_bench"

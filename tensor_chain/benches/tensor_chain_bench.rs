@@ -955,11 +955,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
         .collect();
 
     let mix_avg_nnz: f32 = realistic_deltas.iter().map(|d| d.nnz() as f32).sum::<f32>() / 100.0;
-    let mix_avg_sparsity: f32 = realistic_deltas
-        .iter()
-        .map(|d| d.sparsity())
-        .sum::<f32>()
-        / 100.0;
+    let mix_avg_sparsity: f32 = realistic_deltas.iter().map(|d| d.sparsity()).sum::<f32>() / 100.0;
 
     println!("Realistic Workload Mix (70% single-key, 20% multi-field, 10% other):");
     println!("  Avg NNZ: {:.1} / {}", mix_avg_nnz, dimension);

@@ -357,13 +357,13 @@ fn test_transition_validator_with_codebook() {
 
 #[test]
 fn test_state_machine_transaction_persistence() {
+    use graph_engine::GraphEngine;
     use std::sync::Arc;
+    use tensor_chain::network::MemoryTransport;
     use tensor_chain::{
         Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
     };
-    use tensor_chain::network::MemoryTransport;
     use tensor_store::{SparseVector, TensorStore, TensorValue};
-    use graph_engine::GraphEngine;
 
     // Set up components
     let store = TensorStore::new();
@@ -420,13 +420,13 @@ fn test_state_machine_transaction_persistence() {
 
 #[test]
 fn test_state_machine_embed_transaction_persistence() {
+    use graph_engine::GraphEngine;
     use std::sync::Arc;
+    use tensor_chain::network::MemoryTransport;
     use tensor_chain::{
         Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
     };
-    use tensor_chain::network::MemoryTransport;
     use tensor_store::{SparseVector, TensorStore, TensorValue};
-    use graph_engine::GraphEngine;
 
     // Set up components
     let store = TensorStore::new();
@@ -484,13 +484,13 @@ fn test_state_machine_embed_transaction_persistence() {
 
 #[test]
 fn test_state_machine_node_create_persistence() {
+    use graph_engine::GraphEngine;
     use std::sync::Arc;
+    use tensor_chain::network::MemoryTransport;
     use tensor_chain::{
         Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
     };
-    use tensor_chain::network::MemoryTransport;
-    use tensor_store::{SparseVector, TensorStore, TensorValue, ScalarValue};
-    use graph_engine::GraphEngine;
+    use tensor_store::{ScalarValue, SparseVector, TensorStore, TensorValue};
 
     // Set up components
     let store = TensorStore::new();

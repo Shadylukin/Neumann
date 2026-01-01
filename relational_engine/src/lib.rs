@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 mod simd {
-    use wide::{i64x4, CmpEq, CmpGt, CmpLt};
+    use wide::{f64x4, i64x4, CmpEq, CmpGt, CmpLt};
 
     #[inline]
     pub fn filter_lt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
@@ -195,6 +195,105 @@ mod simd {
         let start = chunks * 4;
         for i in start..values.len() {
             if values[i] != target {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn filter_lt_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = f64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = f64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_lt(threshold_vec);
+            let mask = cmp.move_mask();
+
+            for j in 0..4 {
+                if (mask & (1 << j)) != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] < threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn filter_gt_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = f64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = f64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_gt(threshold_vec);
+            let mask = cmp.move_mask();
+
+            for j in 0..4 {
+                if (mask & (1 << j)) != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if values[i] > threshold {
+                result[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn filter_eq_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
+        let chunks = values.len() / 4;
+        let threshold_vec = f64x4::splat(threshold);
+
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = f64x4::new([
+                values[offset],
+                values[offset + 1],
+                values[offset + 2],
+                values[offset + 3],
+            ]);
+            let cmp = v.cmp_eq(threshold_vec);
+            let mask = cmp.move_mask();
+
+            for j in 0..4 {
+                if (mask & (1 << j)) != 0 {
+                    let bit_pos = offset + j;
+                    result[bit_pos / 64] |= 1u64 << (bit_pos % 64);
+                }
+            }
+        }
+
+        let start = chunks * 4;
+        for i in start..values.len() {
+            if (values[i] - threshold).abs() < f64::EPSILON {
                 result[i / 64] |= 1u64 << (i % 64);
             }
         }
@@ -1396,9 +1495,11 @@ impl RelationalEngine {
         let count = to_delete.len();
 
         if count >= Self::PARALLEL_THRESHOLD {
-            to_delete.par_iter().for_each(|(key, _)| {
-                let _ = self.store.delete(key);
-            });
+            to_delete.par_iter().try_for_each(|(key, _)| {
+                self.store
+                    .delete(key)
+                    .map_err(|e| RelationalError::StorageError(e.to_string()))
+            })?;
         } else {
             for (key, _) in to_delete {
                 self.store.delete(&key)?;
@@ -1444,7 +1545,7 @@ impl RelationalEngine {
                                     .iter()
                                     .filter_map(|&i| {
                                         let row_b = &rows_b[i];
-                                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
                                             Some((row_a.clone(), row_b.clone()))
                                         } else {
                                             None
@@ -1457,14 +1558,15 @@ impl RelationalEngine {
                 })
                 .collect()
         } else {
-            let mut results = Vec::new();
+            let estimated_capacity = std::cmp::min(rows_a.len(), rows_b.len());
+            let mut results = Vec::with_capacity(estimated_capacity);
             for row_a in &rows_a {
                 if let Some(val) = row_a.get_with_id(on_a) {
                     let hash = val.hash_key();
                     if let Some(indices) = index.get(&hash) {
                         for &i in indices {
                             let row_b = &rows_b[i];
-                            if row_b.get_with_id(on_b) == Some(val.clone()) {
+                            if row_b.get_with_id(on_b).as_ref() == Some(&val) {
                                 results.push((row_a.clone(), row_b.clone()));
                             }
                         }
@@ -1499,14 +1601,14 @@ impl RelationalEngine {
             }
         }
 
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(rows_a.len());
         for row_a in &rows_a {
             let mut matched = false;
             if let Some(val) = row_a.get_with_id(on_a) {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
                         let row_b = &rows_b[i];
-                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
                             results.push((row_a.clone(), Some(row_b.clone())));
                             matched = true;
                         }
@@ -1543,14 +1645,14 @@ impl RelationalEngine {
             }
         }
 
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(rows_b.len());
         for row_b in &rows_b {
             let mut matched = false;
             if let Some(val) = row_b.get_with_id(on_b) {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
                         let row_a = &rows_a[i];
-                        if row_a.get_with_id(on_a) == Some(val.clone()) {
+                        if row_a.get_with_id(on_a).as_ref() == Some(&val) {
                             results.push((Some(row_a.clone()), row_b.clone()));
                             matched = true;
                         }
@@ -1588,7 +1690,7 @@ impl RelationalEngine {
         }
 
         let mut matched_b: HashSet<usize> = HashSet::new();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(rows_a.len() + rows_b.len());
 
         for row_a in &rows_a {
             let mut matched = false;
@@ -1596,7 +1698,7 @@ impl RelationalEngine {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
                         let row_b = &rows_b[i];
-                        if row_b.get_with_id(on_b) == Some(val.clone()) {
+                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
                             results.push((Some(row_a.clone()), Some(row_b.clone())));
                             matched_b.insert(i);
                             matched = true;
@@ -1666,7 +1768,8 @@ impl RelationalEngine {
             index.entry(composite_key).or_default().push(i);
         }
 
-        let mut results = Vec::new();
+        let estimated_capacity = std::cmp::min(rows_a.len(), rows_b.len());
+        let mut results = Vec::with_capacity(estimated_capacity);
         for row_a in &rows_a {
             let mut composite_key = String::new();
             let mut all_cols_present = true;
@@ -1720,38 +1823,74 @@ impl RelationalEngine {
 
     pub fn sum(&self, table: &str, column: &str, condition: Condition) -> Result<f64> {
         let rows = self.select(table, condition)?;
-        let mut total = 0.0;
-        for row in &rows {
-            if let Some(val) = row.get(column) {
-                match val {
-                    Value::Int(i) => total += *i as f64,
-                    Value::Float(f) => total += *f,
-                    _ => {},
+        let col = column.to_string();
+
+        if rows.len() >= Self::PARALLEL_THRESHOLD {
+            let total: f64 = rows
+                .par_iter()
+                .map(|row| {
+                    row.get(&col)
+                        .map(|val| match val {
+                            Value::Int(i) => *i as f64,
+                            Value::Float(f) => *f,
+                            _ => 0.0,
+                        })
+                        .unwrap_or(0.0)
+                })
+                .sum();
+            Ok(total)
+        } else {
+            let mut total = 0.0;
+            for row in &rows {
+                if let Some(val) = row.get(column) {
+                    match val {
+                        Value::Int(i) => total += *i as f64,
+                        Value::Float(f) => total += *f,
+                        _ => {},
+                    }
                 }
             }
+            Ok(total)
         }
-        Ok(total)
     }
 
     pub fn avg(&self, table: &str, column: &str, condition: Condition) -> Result<Option<f64>> {
         let rows = self.select(table, condition)?;
-        let mut total = 0.0;
-        let mut count = 0u64;
-        for row in &rows {
-            if let Some(val) = row.get(column) {
-                match val {
-                    Value::Int(i) => {
-                        total += *i as f64;
-                        count += 1;
-                    },
-                    Value::Float(f) => {
-                        total += *f;
-                        count += 1;
-                    },
-                    _ => {},
+        let col = column.to_string();
+
+        let (total, count) = if rows.len() >= Self::PARALLEL_THRESHOLD {
+            rows.par_iter()
+                .map(|row| {
+                    row.get(&col)
+                        .map(|val| match val {
+                            Value::Int(i) => (*i as f64, 1u64),
+                            Value::Float(f) => (*f, 1u64),
+                            _ => (0.0, 0u64),
+                        })
+                        .unwrap_or((0.0, 0u64))
+                })
+                .reduce(|| (0.0, 0u64), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2))
+        } else {
+            let mut total = 0.0;
+            let mut count = 0u64;
+            for row in &rows {
+                if let Some(val) = row.get(column) {
+                    match val {
+                        Value::Int(i) => {
+                            total += *i as f64;
+                            count += 1;
+                        },
+                        Value::Float(f) => {
+                            total += *f;
+                            count += 1;
+                        },
+                        _ => {},
+                    }
                 }
             }
-        }
+            (total, count)
+        };
+
         if count == 0 {
             Ok(None)
         } else {
@@ -1761,48 +1900,96 @@ impl RelationalEngine {
 
     pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
-        let mut min_val: Option<Value> = None;
-        for row in &rows {
-            if let Some(val) = row.get(column) {
-                if matches!(val, Value::Null) {
-                    continue;
-                }
-                min_val = match &min_val {
-                    None => Some(val.clone()),
-                    Some(current) => {
-                        if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Less) {
-                            Some(val.clone())
+        let col = column.to_string();
+
+        if rows.len() >= Self::PARALLEL_THRESHOLD {
+            let min_val = rows
+                .par_iter()
+                .filter_map(|row| {
+                    row.get(&col).and_then(|val| {
+                        if matches!(val, Value::Null) {
+                            None
                         } else {
-                            min_val
+                            Some(val.clone())
                         }
-                    },
-                };
+                    })
+                })
+                .reduce_with(|a, b| {
+                    if a.partial_cmp_value(&b) == Some(std::cmp::Ordering::Less) {
+                        a
+                    } else {
+                        b
+                    }
+                });
+            Ok(min_val)
+        } else {
+            let mut min_val: Option<Value> = None;
+            for row in &rows {
+                if let Some(val) = row.get(column) {
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    min_val = match &min_val {
+                        None => Some(val.clone()),
+                        Some(current) => {
+                            if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Less) {
+                                Some(val.clone())
+                            } else {
+                                min_val
+                            }
+                        },
+                    };
+                }
             }
+            Ok(min_val)
         }
-        Ok(min_val)
     }
 
     pub fn max(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
-        let mut max_val: Option<Value> = None;
-        for row in &rows {
-            if let Some(val) = row.get(column) {
-                if matches!(val, Value::Null) {
-                    continue;
-                }
-                max_val = match &max_val {
-                    None => Some(val.clone()),
-                    Some(current) => {
-                        if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Greater) {
-                            Some(val.clone())
+        let col = column.to_string();
+
+        if rows.len() >= Self::PARALLEL_THRESHOLD {
+            let max_val = rows
+                .par_iter()
+                .filter_map(|row| {
+                    row.get(&col).and_then(|val| {
+                        if matches!(val, Value::Null) {
+                            None
                         } else {
-                            max_val
+                            Some(val.clone())
                         }
-                    },
-                };
+                    })
+                })
+                .reduce_with(|a, b| {
+                    if a.partial_cmp_value(&b) == Some(std::cmp::Ordering::Greater) {
+                        a
+                    } else {
+                        b
+                    }
+                });
+            Ok(max_val)
+        } else {
+            let mut max_val: Option<Value> = None;
+            for row in &rows {
+                if let Some(val) = row.get(column) {
+                    if matches!(val, Value::Null) {
+                        continue;
+                    }
+                    max_val = match &max_val {
+                        None => Some(val.clone()),
+                        Some(current) => {
+                            if val.partial_cmp_value(current) == Some(std::cmp::Ordering::Greater) {
+                                Some(val.clone())
+                            } else {
+                                max_val
+                            }
+                        },
+                    };
+                }
             }
+            Ok(max_val)
         }
-        Ok(max_val)
     }
 
     pub fn drop_table(&self, table: &str) -> Result<()> {
@@ -2577,7 +2764,11 @@ impl RelationalEngine {
                     Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
                         let values: Vec<i64> = bytes
                             .chunks_exact(8)
-                            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                            .map(|chunk| {
+                                // chunks_exact guarantees 8 bytes, but handle gracefully
+                                let arr: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
+                                i64::from_le_bytes(arr)
+                            })
                             .collect();
                         ColumnValues::Int(values)
                     },

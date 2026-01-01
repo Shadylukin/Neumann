@@ -613,6 +613,33 @@ Messages use length-delimited framing:
 +----------------+------------------+
 ```
 
+### TLS Transport
+
+Production deployments should enable TLS for encrypted node-to-node communication:
+
+```rust
+use tensor_chain::tcp::{TcpTransportConfig, TlsConfig};
+
+let tls_config = TlsConfig {
+    cert_path: "/path/to/server.crt".into(),
+    key_path: "/path/to/server.key".into(),
+    ca_cert_path: Some("/path/to/ca.crt".into()),
+};
+
+let config = TcpTransportConfig {
+    bind_addr: "0.0.0.0:9100".parse()?,
+    tls: Some(tls_config),
+    // ... other settings
+};
+
+let transport = TcpTransport::new("node1".to_string(), config).await?;
+```
+
+TLS is enabled by default in the `tls` feature flag. The implementation uses `tokio-rustls` for async TLS and supports:
+- Server-side TLS for incoming connections
+- Client-side TLS with server name verification
+- Optional CA certificate for mutual TLS
+
 ### Features
 
 - **Persistent Connections**: Pool of 2 connections per peer for low latency
@@ -1128,6 +1155,30 @@ SHOW CODEBOOK LOCAL 'users';
 
 -- Analyze transition validity
 ANALYZE CODEBOOK TRANSITIONS;
+```
+
+### Cluster Commands
+
+Interactive shell commands for cluster management:
+
+```sql
+-- Connect to a cluster
+CLUSTER CONNECT '192.168.1.10:9100,192.168.1.11:9100,192.168.1.12:9100';
+
+-- Check cluster status
+CLUSTER STATUS;
+-- Output: "Cluster: 3 nodes, leader: node2"
+
+-- List cluster nodes
+CLUSTER NODES;
+-- Output: node1 (healthy), node2 (leader), node3 (healthy)
+
+-- Show current leader
+CLUSTER LEADER;
+-- Output: "node2"
+
+-- Disconnect from cluster
+CLUSTER DISCONNECT;
 ```
 
 ## API Reference

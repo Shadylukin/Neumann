@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::RwLock;
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::block::NodeId;
@@ -19,6 +18,7 @@ use crate::network::Message;
 use super::config::TcpTransportConfig;
 use super::error::{TcpError, TcpResult};
 use super::framing::LengthDelimitedCodec;
+use super::stream::{split_stream, DynRead, DynWrite};
 
 /// State of a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +89,10 @@ pub struct Connection {
     pub address: SocketAddr,
     /// Current state.
     state: RwLock<ConnectionState>,
-    /// Read half of the stream.
-    reader: RwLock<Option<ReadHalf<TcpStream>>>,
-    /// Write half of the stream.
-    writer: RwLock<Option<WriteHalf<TcpStream>>>,
+    /// Read half of the stream (boxed for TLS support).
+    reader: RwLock<Option<DynRead>>,
+    /// Write half of the stream (boxed for TLS support).
+    writer: RwLock<Option<DynWrite>>,
     /// Message codec.
     codec: LengthDelimitedCodec,
     /// Connection statistics.
@@ -102,15 +102,18 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Create a new connection.
-    pub fn new(
+    /// Create a new connection from any async stream (TCP or TLS).
+    pub fn new<S>(
         peer_id: NodeId,
         address: SocketAddr,
-        stream: TcpStream,
+        stream: S,
         codec: LengthDelimitedCodec,
         id: usize,
-    ) -> Self {
-        let (reader, writer) = tokio::io::split(stream);
+    ) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        let (reader, writer) = split_stream(stream);
         Self {
             peer_id,
             address,
@@ -153,8 +156,11 @@ impl Connection {
     }
 
     /// Set the stream after successful connection.
-    pub fn set_stream(&self, stream: TcpStream) {
-        let (reader, writer) = tokio::io::split(stream);
+    pub fn set_stream<S>(&self, stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        let (reader, writer) = split_stream(stream);
         *self.reader.write() = Some(reader);
         *self.writer.write() = Some(writer);
         *self.state.write() = ConnectionState::Connected;
@@ -179,12 +185,12 @@ impl Connection {
     }
 
     /// Take the reader (for spawning read task).
-    pub fn take_reader(&self) -> Option<ReadHalf<TcpStream>> {
+    pub fn take_reader(&self) -> Option<DynRead> {
         self.reader.write().take()
     }
 
     /// Take the writer (for spawning write task).
-    pub fn take_writer(&self) -> Option<WriteHalf<TcpStream>> {
+    pub fn take_writer(&self) -> Option<DynWrite> {
         self.writer.write().take()
     }
 
@@ -234,7 +240,10 @@ impl ConnectionPool {
     }
 
     /// Add a connection to the pool.
-    pub fn add_connection(&self, stream: TcpStream) -> Arc<Connection> {
+    pub fn add_connection<S>(&self, stream: S) -> Arc<Connection>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
         let id = self.connection_counter.fetch_add(1, Ordering::Relaxed);
         let conn = Arc::new(Connection::new(
             self.peer_id.clone(),

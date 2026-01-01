@@ -385,7 +385,7 @@ impl SparseVector {
 
     /// Create a sparse delta from two dense vectors.
     ///
-    /// Only stores positions where |after[i] - before[i]| > threshold.
+    /// Only stores positions where |after\[i\] - before\[i\]| > threshold.
     /// This is the core operation for eliminating dense ceremony.
     pub fn from_diff(before: &[f32], after: &[f32], threshold: f32) -> Self {
         debug_assert_eq!(before.len(), after.len());
@@ -640,7 +640,7 @@ impl SparseVector {
 
     /// Euclidean distance (L2 norm of difference).
     ///
-    /// sqrt(sum((a[i] - b[i])^2))
+    /// sqrt(sum((a\[i\] - b\[i\])^2))
     pub fn euclidean_distance(&self, other: &SparseVector) -> f32 {
         self.euclidean_distance_squared(other).sqrt()
     }
@@ -692,7 +692,7 @@ impl SparseVector {
 
     /// Manhattan distance (L1 norm of difference).
     ///
-    /// sum(|a[i] - b[i]|)
+    /// sum(|a\[i\] - b\[i\]|)
     pub fn manhattan_distance(&self, other: &SparseVector) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 

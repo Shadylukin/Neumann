@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tensor_store::{PartitionResult, Partitioner};
+use tensor_store::{PartitionResult, Partitioner, SemanticPartitioner};
 
 use crate::{QueryResult, Result, SimilarResult};
 use relational_engine::{Row, Value};
@@ -123,6 +123,8 @@ impl Default for DistributedQueryConfig {
 pub struct QueryPlanner {
     /// Partitioner for routing decisions.
     partitioner: Arc<dyn Partitioner + Send + Sync>,
+    /// Semantic partitioner for embedding-based shard routing.
+    semantic_partitioner: Option<Arc<SemanticPartitioner>>,
     /// Local shard ID (reserved for future optimizations like local-first execution).
     #[allow(dead_code)]
     local_shard: ShardId,
@@ -133,8 +135,15 @@ impl QueryPlanner {
     pub fn new(partitioner: Arc<dyn Partitioner + Send + Sync>, local_shard: ShardId) -> Self {
         Self {
             partitioner,
+            semantic_partitioner: None,
             local_shard,
         }
+    }
+
+    /// Set the semantic partitioner for embedding-based routing.
+    pub fn with_semantic_partitioner(mut self, partitioner: Arc<SemanticPartitioner>) -> Self {
+        self.semantic_partitioner = Some(partitioner);
+        self
     }
 
     /// Plan query execution.
@@ -223,10 +232,15 @@ impl QueryPlanner {
         nodes.iter().position(|n| *n == result.primary).unwrap_or(0)
     }
 
-    /// Get shards relevant to an embedding.
-    fn shards_for_embedding(&self, _embedding: &[f32]) -> Vec<ShardId> {
-        // TODO: Use SemanticPartitioner.shards_for_embedding
-        // For now, return all shards
+    /// Get shards relevant to an embedding using semantic routing.
+    fn shards_for_embedding(&self, embedding: &[f32]) -> Vec<ShardId> {
+        if let Some(sp) = &self.semantic_partitioner {
+            let results = sp.shards_for_embedding(embedding);
+            if !results.is_empty() {
+                return results.into_iter().map(|(shard, _score)| shard).collect();
+            }
+        }
+        // Fall back to all shards if no semantic partitioner or no results
         self.all_shards()
     }
 

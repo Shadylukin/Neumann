@@ -145,15 +145,18 @@ impl TensorStateMachine {
             // Key-value operations → TensorStore directly
             Transaction::Put { key, data } => {
                 let mut tensor = TensorData::new();
-                tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(data.clone())));
+                tensor.set(
+                    "data",
+                    TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
+                );
                 self.store
                     .put(key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
             Transaction::Delete { key } => {
                 // Ignore errors on delete (key may not exist)
                 let _ = self.store.delete(key);
-            }
+            },
 
             // Embedding operations → emb: prefix (VectorEngine pattern)
             Transaction::Embed { key, vector } => {
@@ -163,23 +166,29 @@ impl TensorStateMachine {
                 self.store
                     .put(storage_key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
 
             // Graph node operations → node: prefix (GraphEngine pattern)
             Transaction::NodeCreate { key, label } => {
                 let storage_key = format!("node:{}", key);
                 let mut tensor = TensorData::new();
                 tensor.set("_id", TensorValue::Scalar(ScalarValue::String(key.clone())));
-                tensor.set("_type", TensorValue::Scalar(ScalarValue::String("node".into())));
-                tensor.set("_label", TensorValue::Scalar(ScalarValue::String(label.clone())));
+                tensor.set(
+                    "_type",
+                    TensorValue::Scalar(ScalarValue::String("node".into())),
+                );
+                tensor.set(
+                    "_label",
+                    TensorValue::Scalar(ScalarValue::String(label.clone())),
+                );
                 self.store
                     .put(storage_key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
             Transaction::NodeDelete { key } => {
                 let storage_key = format!("node:{}", key);
                 let _ = self.store.delete(&storage_key);
-            }
+            },
 
             // Graph edge operations → edge: prefix
             Transaction::EdgeCreate {
@@ -189,13 +198,19 @@ impl TensorStateMachine {
             } => {
                 let storage_key = format!("edge:{}:{}:{}", from, to, edge_type);
                 let mut tensor = TensorData::new();
-                tensor.set("_from", TensorValue::Scalar(ScalarValue::String(from.clone())));
+                tensor.set(
+                    "_from",
+                    TensorValue::Scalar(ScalarValue::String(from.clone())),
+                );
                 tensor.set("_to", TensorValue::Scalar(ScalarValue::String(to.clone())));
-                tensor.set("_edge_type", TensorValue::Scalar(ScalarValue::String(edge_type.clone())));
+                tensor.set(
+                    "_edge_type",
+                    TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
+                );
                 self.store
                     .put(storage_key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
 
             // Table operations → table: prefix (RelationalEngine pattern)
             Transaction::TableInsert { table, values } => {
@@ -209,11 +224,14 @@ impl TensorStateMachine {
                         .as_nanos()
                 );
                 let mut tensor = TensorData::new();
-                tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(values.clone())));
+                tensor.set(
+                    "data",
+                    TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+                );
                 self.store
                     .put(row_key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
             Transaction::TableUpdate {
                 table,
                 row_id,
@@ -221,15 +239,18 @@ impl TensorStateMachine {
             } => {
                 let row_key = format!("table:{}:row:{}", table, row_id);
                 let mut tensor = TensorData::new();
-                tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(values.clone())));
+                tensor.set(
+                    "data",
+                    TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+                );
                 self.store
                     .put(row_key, tensor)
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            }
+            },
             Transaction::TableDelete { table, row_id } => {
                 let row_key = format!("table:{}:row:{}", table, row_id);
                 let _ = self.store.delete(&row_key);
-            }
+            },
         }
         Ok(())
     }

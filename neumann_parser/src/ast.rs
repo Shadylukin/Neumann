@@ -100,6 +100,10 @@ pub enum StatementKind {
     /// CHAIN command
     Chain(ChainStmt),
 
+    // === Cluster Statements ===
+    /// CLUSTER command
+    Cluster(ClusterStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -649,6 +653,31 @@ pub enum CacheOp {
         response: Expr,
         embedding: Vec<Expr>,
     },
+}
+
+// =============================================================================
+// Cluster Statements
+// =============================================================================
+
+/// CLUSTER command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClusterStmt {
+    pub operation: ClusterOp,
+}
+
+/// CLUSTER operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClusterOp {
+    /// Connect to cluster: `CLUSTER CONNECT 'address'`
+    Connect { addresses: Expr },
+    /// Disconnect from cluster: `CLUSTER DISCONNECT`
+    Disconnect,
+    /// Show cluster status: `CLUSTER STATUS`
+    Status,
+    /// List cluster nodes: `CLUSTER NODES`
+    Nodes,
+    /// Show current leader: `CLUSTER LEADER`
+    Leader,
 }
 
 // =============================================================================

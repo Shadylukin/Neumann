@@ -910,6 +910,60 @@ Runs on every PR:
 6. Documentation build - Doc generation
 7. Security audit - Dependency vulnerabilities
 8. Miri - Undefined behavior detection (tensor_store)
+9. Fuzz testing - 23 targets including distributed components
+
+## Distributed System Status
+
+### Complete Infrastructure (>95% tested)
+
+| Component | Status | Test Coverage |
+|-----------|--------|---------------|
+| Raft consensus | Complete | 98.47% |
+| 2PC distributed transactions | Complete | 98.78% |
+| TCP transport | Complete | 94.89% |
+| TLS encryption | Complete | Enabled by default |
+| Cluster membership | Complete | 95.0% |
+| Health checking | Complete | 95.0% |
+| Delta replication | Complete | 95.28% |
+| Semantic conflict detection | Complete | 99.01% |
+| Lock manager | Complete | 98.78% |
+| Sparse network messages | Complete | 94.51% |
+| Shell cluster commands | Complete | Parser + router |
+
+### Integration Points (Wired but not battle-tested)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| QueryPlanner with SemanticPartitioner | Wired | Routes by embedding similarity |
+| ClusterOrchestrator startup | Implemented | Ties all components together |
+| TensorStateMachine | Implemented | Applies Raft entries to chain |
+
+### Not Yet Implemented
+
+| Component | Status | Priority |
+|-----------|--------|----------|
+| Dynamic cluster membership | Not started | Medium |
+| Cross-shard query execution | Infrastructure only | High |
+| Network partition testing | Tests not written | High |
+| Production deployment | Not attempted | High |
+
+### Honest Assessment
+
+Neumann has **comprehensive distributed infrastructure** (Raft, 2PC, TCP, TLS, membership) with >95% test coverage. However, it is **not yet a true distributed database** for these reasons:
+
+1. **No real multi-node testing**: All tests use `MemoryTransport`. TCP transport works but hasn't been stress-tested across machines.
+
+2. **Query execution is single-node**: The QueryPlanner and SemanticPartitioner exist, but queries don't actually scatter to remote nodes and merge results.
+
+3. **Static cluster only**: Nodes must be configured at startup. No dynamic join/leave.
+
+4. **No partition tolerance validation**: Network partition tests haven't been written to verify split-brain behavior.
+
+To become production-ready, Neumann needs:
+- Multi-machine integration tests
+- Chaos engineering (network failures, node crashes)
+- Query scatter-gather actually wired end-to-end
+- Performance testing under load
 
 ## Versioning Strategy
 

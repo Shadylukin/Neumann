@@ -25,6 +25,9 @@ on:
       - 'tensor_vault/**'
       - 'tensor_checkpoint/**'
       - 'tensor_store/**'
+      - 'tensor_chain/**'
+      - 'tensor_cache/**'
+      - 'relational_engine/**'
       - 'fuzz/**'
 
 env:
@@ -38,16 +41,42 @@ jobs:
       fail-fast: false
       matrix:
         target:
+          # Parser targets
           - parser_parse
           - parser_parse_all
           - parser_parse_expr
           - parser_tokenize
+          # Compression targets
           - compress_ids
           - compress_rle
           - compress_snapshot
+          # Crypto target
           - vault_cipher
+          # Checkpoint target
           - checkpoint_state
+          # Storage targets
           - storage_sparse_vector
+          - slab_entity_index
+          # Distributed targets
+          - consistent_hash
+          - tcp_framing
+          - membership
+          - semantic_partition
+          - consensus_merge
+          - codebook_quantize
+          - block_validate
+          - distributed_tx_serialize
+          - distributed_tx_coordinator
+          - lock_manager
+          - delta_quantize
+          - raft_messages
+          # Relational engine targets
+          - relational_condition
+          - relational_engine_ops
+          # Cache targets
+          - cache_eviction_scorer
+          - cache_semantic_search
+          - cache_metric_roundtrip
 
     steps:
       - uses: actions/checkout@v4

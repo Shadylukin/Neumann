@@ -264,12 +264,23 @@ impl<'a> ExprParser<'a> {
 
             TokenKind::Eof => Err(ParseError::unexpected_eof(token.span, "expression")),
 
+            // Allow contextual keywords to be used as identifiers (e.g., column names like "status")
+            _ if token.kind.is_contextual_keyword() => self.parse_keyword_as_ident(),
+
             _ => Err(ParseError::unexpected(
                 token.kind.clone(),
                 token.span,
                 "expression",
             )),
         }
+    }
+
+    /// Parses a keyword token as an identifier expression.
+    fn parse_keyword_as_ident(&mut self) -> ParseResult<Expr> {
+        let token = self.advance();
+        let name = token.kind.as_str().to_lowercase();
+        let ident = Ident::new(name, token.span);
+        Ok(Expr::new(ExprKind::Ident(ident), token.span))
     }
 
     /// Parses postfix operators (IS NULL, IN, BETWEEN, LIKE).

@@ -119,6 +119,26 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Expects and returns an identifier or contextual keyword (for use in contexts like field names).
+    fn expect_ident_or_keyword(&mut self) -> ParseResult<Ident> {
+        let token = self.current.clone();
+        if let TokenKind::Ident(name) = &token.kind {
+            self.advance();
+            Ok(Ident::new(name.clone(), token.span))
+        } else if token.kind.is_contextual_keyword() {
+            self.advance();
+            // Convert keyword to lowercase string for use as identifier
+            let name = token.kind.as_str().to_lowercase();
+            Ok(Ident::new(name, token.span))
+        } else {
+            Err(ParseError::unexpected(
+                token.kind,
+                token.span,
+                "identifier",
+            ))
+        }
+    }
+
     /// Parses an expression.
     fn parse_expr(&mut self) -> ParseResult<Expr> {
         self.parse_expr_bp(0)
@@ -258,12 +278,23 @@ impl<'a> Parser<'a> {
 
             TokenKind::Eof => Err(ParseError::unexpected_eof(token.span, "expression")),
 
+            // Allow contextual keywords to be used as identifiers (e.g., column names like "status")
+            _ if token.kind.is_contextual_keyword() => self.parse_keyword_as_ident_expr(),
+
             _ => Err(ParseError::unexpected(
                 token.kind.clone(),
                 token.span,
                 "expression",
             )),
         }
+    }
+
+    /// Parses a keyword token as an identifier expression.
+    fn parse_keyword_as_ident_expr(&mut self) -> ParseResult<Expr> {
+        let token = self.advance();
+        let name = token.kind.as_str().to_lowercase();
+        let ident = Ident::new(name, token.span);
+        Ok(Expr::new(ExprKind::Ident(ident), token.span))
     }
 
     /// Parses postfix operators.
@@ -646,6 +677,9 @@ impl<'a> Parser<'a> {
             TokenKind::Begin => self.parse_begin_chain()?,
             TokenKind::Commit => self.parse_commit_chain()?,
             TokenKind::Analyze => self.parse_analyze()?,
+
+            // Cluster Statements
+            TokenKind::Cluster => self.parse_cluster()?,
 
             _ => {
                 return Err(ParseError::new(
@@ -1548,7 +1582,8 @@ impl<'a> Parser<'a> {
         let mut properties = Vec::new();
         if !self.check(&TokenKind::RBrace) {
             loop {
-                let key = self.expect_ident()?;
+                // Allow keywords as field names (e.g., status, type, etc.)
+                let key = self.expect_ident_or_keyword()?;
                 self.expect(&TokenKind::Colon)?;
                 let value = self.parse_expr()?;
                 properties.push(Property { key, value });
@@ -1839,11 +1874,8 @@ impl<'a> Parser<'a> {
                 properties,
                 embedding,
             }
-        } else if self.check(&TokenKind::Ident(String::new()))
-            && self.current.kind == TokenKind::Ident("CONNECT".to_string())
-        {
+        } else if self.eat(&TokenKind::Connect) {
             // ENTITY CONNECT 'from' -> 'to' : type
-            self.advance();
             let from_key = self.parse_expr()?;
             self.expect(&TokenKind::Arrow)?;
             let to_key = self.parse_expr()?;
@@ -2021,6 +2053,49 @@ impl<'a> Parser<'a> {
         };
 
         Ok(StatementKind::Cache(CacheStmt { operation }))
+    }
+
+    // =========================================================================
+    // Cluster Statement Parsers
+    // =========================================================================
+
+    fn parse_cluster(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Cluster)?;
+
+        let operation = match &self.current.kind {
+            TokenKind::Connect => {
+                self.advance();
+                let addresses = self.parse_expr()?;
+                ClusterOp::Connect { addresses }
+            },
+            TokenKind::Disconnect => {
+                self.advance();
+                ClusterOp::Disconnect
+            },
+            TokenKind::Status => {
+                self.advance();
+                ClusterOp::Status
+            },
+            TokenKind::Nodes => {
+                self.advance();
+                ClusterOp::Nodes
+            },
+            TokenKind::Leader => {
+                self.advance();
+                ClusterOp::Leader
+            },
+            _ => {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        found: self.current.kind.clone(),
+                        expected: "CONNECT, DISCONNECT, STATUS, NODES, or LEADER".to_string(),
+                    },
+                    self.current.span,
+                ));
+            },
+        };
+
+        Ok(StatementKind::Cluster(ClusterStmt { operation }))
     }
 
     // =========================================================================

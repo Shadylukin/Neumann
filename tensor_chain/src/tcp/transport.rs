@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -23,6 +22,7 @@ use super::config::TcpTransportConfig;
 use super::connection::{ConnectionManager, ConnectionPool};
 use super::error::{TcpError, TcpResult};
 use super::framing::{Handshake, LengthDelimitedCodec};
+use super::stream::{box_stream, DynRead, DynStream, DynWrite};
 
 /// TCP-based transport implementation.
 pub struct TcpTransport {
@@ -151,7 +151,7 @@ impl TcpTransport {
 
     /// Handle an incoming connection.
     async fn handle_incoming_connection(
-        mut stream: TcpStream,
+        stream: TcpStream,
         addr: SocketAddr,
         connections: Arc<ConnectionManager>,
         incoming_tx: mpsc::Sender<(NodeId, Message)>,
@@ -161,6 +161,33 @@ impl TcpTransport {
         // Set socket options
         Self::configure_socket(&stream, &config)?;
 
+        // Upgrade to TLS if configured (server-side)
+        #[cfg(feature = "tls")]
+        let stream: DynStream = {
+            if let Some(tls_config) = &config.tls {
+                box_stream(super::tls::wrap_server(stream, tls_config).await?)
+            } else {
+                box_stream(stream)
+            }
+        };
+
+        #[cfg(not(feature = "tls"))]
+        let stream: DynStream = box_stream(stream);
+
+        // Use a helper to work with the boxed stream
+        Self::complete_incoming_handshake(stream, addr, connections, incoming_tx, config, local_id)
+            .await
+    }
+
+    /// Complete incoming connection handshake with an already-wrapped stream.
+    async fn complete_incoming_handshake(
+        mut stream: DynStream,
+        addr: SocketAddr,
+        connections: Arc<ConnectionManager>,
+        incoming_tx: mpsc::Sender<(NodeId, Message)>,
+        config: TcpTransportConfig,
+        local_id: NodeId,
+    ) -> TcpResult<()> {
         // Read handshake
         let handshake = timeout(
             Duration::from_millis(config.connect_timeout_ms),
@@ -213,7 +240,7 @@ impl TcpTransport {
 
     /// Reader loop for a connection.
     async fn reader_loop(
-        mut reader: ReadHalf<TcpStream>,
+        mut reader: DynRead,
         peer_id: NodeId,
         incoming_tx: mpsc::Sender<(NodeId, Message)>,
         codec: LengthDelimitedCodec,
@@ -240,7 +267,7 @@ impl TcpTransport {
 
     /// Writer loop for a connection.
     async fn writer_loop(
-        mut writer: WriteHalf<TcpStream>,
+        mut writer: DynWrite,
         mut rx: mpsc::Receiver<Message>,
         codec: LengthDelimitedCodec,
     ) {
@@ -265,6 +292,20 @@ impl TcpTransport {
         // Configure socket
         Self::configure_socket(&stream, &self.config)?;
 
+        // Upgrade to TLS if configured (client-side)
+        #[cfg(feature = "tls")]
+        let stream: DynStream = {
+            if let Some(tls_config) = &self.config.tls {
+                // Use peer_id as server name for TLS verification
+                box_stream(super::tls::wrap_client(stream, tls_config, peer_id).await?)
+            } else {
+                box_stream(stream)
+            }
+        };
+
+        #[cfg(not(feature = "tls"))]
+        let stream: DynStream = box_stream(stream);
+
         // Get or create pool
         let pool = self.connections.get_or_create_pool(peer_id, address);
 
@@ -275,7 +316,7 @@ impl TcpTransport {
     /// Perform handshake and set up connection.
     async fn perform_handshake(
         &self,
-        mut stream: TcpStream,
+        mut stream: DynStream,
         peer_id: &NodeId,
         pool: Arc<ConnectionPool>,
     ) -> TcpResult<()> {
@@ -736,8 +777,9 @@ mod tests {
         let client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
-        // Split the server stream
+        // Split the server stream and box for dynamic dispatch
         let (reader, _writer) = tokio::io::split(server_stream);
+        let reader: DynRead = Box::new(reader);
 
         // Create a channel to receive messages
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
@@ -770,8 +812,9 @@ mod tests {
         let _client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
-        // Split the server stream
+        // Split the server stream and box for dynamic dispatch
         let (_reader, writer) = tokio::io::split(server_stream);
+        let writer: DynWrite = Box::new(writer);
 
         // Create a channel for outgoing messages
         let (tx, rx) = mpsc::channel::<Message>(10);
@@ -803,9 +846,10 @@ mod tests {
         let client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
-        // Split streams
+        // Split streams and box for dynamic dispatch
         let (client_reader, _) = tokio::io::split(client_stream);
         let (_, server_writer) = tokio::io::split(server_stream);
+        let server_writer: DynWrite = Box::new(server_writer);
 
         // Create channel and spawn writer
         let (tx, rx) = mpsc::channel::<Message>(10);
@@ -1040,8 +1084,9 @@ mod tests {
             .connections
             .get_or_create_pool(&"expected_peer".to_string(), addr);
 
-        // Connect
+        // Connect and box the stream for dynamic dispatch
         let stream = TcpStream::connect(addr).await.unwrap();
+        let stream: DynStream = box_stream(stream);
 
         // Perform handshake - should fail due to ID mismatch
         let result = transport
@@ -1148,8 +1193,9 @@ mod tests {
         let client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
-        // Split server stream
+        // Split server stream and box for dynamic dispatch
         let (_, server_writer) = tokio::io::split(server_stream);
+        let server_writer: DynWrite = Box::new(server_writer);
 
         // Create channel with larger buffer
         let (tx, rx) = mpsc::channel::<Message>(100);
@@ -1289,8 +1335,9 @@ mod tests {
         let mut client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
-        // Split the server stream
+        // Split the server stream and box for dynamic dispatch
         let (reader, _writer) = tokio::io::split(server_stream);
+        let reader: DynRead = Box::new(reader);
 
         // Create a channel to receive messages
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
@@ -1342,7 +1389,9 @@ mod tests {
         let mut client_stream = client_stream.unwrap();
         let (server_stream, _) = server_result.unwrap();
 
+        // Split the server stream and box for dynamic dispatch
         let (reader, _writer) = tokio::io::split(server_stream);
+        let reader: DynRead = Box::new(reader);
 
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);

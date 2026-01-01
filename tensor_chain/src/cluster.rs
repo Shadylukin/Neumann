@@ -429,16 +429,14 @@ impl ClusterOrchestrator {
             }
 
             // Check for response in incoming messages
-            if let Ok(Ok(Some((from, msg)))) = tokio::time::timeout(
+            if let Ok(Ok(Some((from, Message::QueryResponse(response))))) = tokio::time::timeout(
                 Duration::from_millis(50),
                 self.transport.receive_one(),
             )
             .await
             {
-                if let Message::QueryResponse(response) = msg {
-                    if response.query_id == query_id && &from == target {
-                        return Ok(response);
-                    }
+                if response.query_id == query_id && &from == target {
+                    return Ok(response);
                 }
             }
         }

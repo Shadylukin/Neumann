@@ -47,6 +47,9 @@ pub mod config;
 pub mod connection;
 pub mod error;
 pub mod framing;
+pub mod stream;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub mod transport;
 
 // Re-exports
@@ -56,4 +59,8 @@ pub use connection::{
 };
 pub use error::{TcpError, TcpResult};
 pub use framing::{Handshake, LengthDelimitedCodec};
+pub use stream::{box_stream, split_stream, AsyncStream, DynRead, DynStream, DynWrite};
 pub use transport::{TcpTransport, TransportStats};
+
+#[cfg(feature = "tls")]
+pub use tls::{wrap_client, wrap_server, ClientTlsStream, ServerTlsStream};
