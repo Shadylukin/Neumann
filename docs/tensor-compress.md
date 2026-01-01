@@ -86,11 +86,23 @@ let config = TTConfig {
 
 ### Performance
 
-| Dimension | Compression | Error | Decompose | Reconstruct |
-|-----------|-------------|-------|-----------|-------------|
-| 256 | 2-4x | <1% | ~100 us | ~10 us |
-| 1024 | 4-8x | <1% | ~500 us | ~50 us |
-| 4096 | 10-16x | <1% | ~2 ms | ~200 us |
+Benchmarks run on Apple M4 (aarch64, MacBook Air 24GB):
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| `tt_decompose` (4096-dim) | 118 us | SVD-based decomposition |
+| `tt_reconstruct` (4096-dim) | 1.2 ms | Full tensor reconstruction |
+| `tt_dot_product` (4096-dim) | 355 ns | In TT space, no reconstruction |
+| `tt_cosine_similarity` (4096-dim) | 969 ns | In TT space, no reconstruction |
+
+Compression ratios by dimension:
+
+| Dimension | Compression | Relative Error |
+|-----------|-------------|----------------|
+| 64 | 1.5-2x | <1% |
+| 256 | 2-4x | <1% |
+| 1024 | 4-8x | <1% |
+| 4096 | 10-16x | <1% |
 
 ## Streaming Compression
 
@@ -290,16 +302,30 @@ pub enum DeltaError {
 
 ## Test Coverage
 
-| Test Category | Count |
-|---------------|-------|
-| TT decomposition/reconstruct | 20+ |
-| TT similarity operations | 5+ |
-| Streaming roundtrip | 10+ |
-| Delta operations | 15+ |
-| Legacy quantization | 10+ |
-| Format detection | 5+ |
+**Unit Tests**: 121 tests in tensor_compress
 
-Coverage: 95%+ per module
+| Module | Tests |
+|--------|-------|
+| tensor_train | 25+ (decompose, reconstruct, similarity, arithmetic) |
+| streaming | 15+ (write, read, roundtrip, large files) |
+| incremental | 20+ (delta build, apply, merge, chain) |
+| decompose | 15+ (SVD, matrix ops) |
+| format | 10+ (serialize, version) |
+| legacy (quantize) | 10+ (int8, binary) |
+| delta/rle | 20+ (varint, runs) |
+
+**Integration Tests**: 14 tests with real engine data
+
+**Fuzz Targets**: 3 targets
+- `tt_roundtrip`: TT decomposition/reconstruction
+- `streaming_format`: Streaming I/O robustness
+- `delta_apply`: Delta application
+
+**Stress Tests**: 4 tests
+- Concurrent TT decomposition (16 threads)
+- Large streaming snapshots (10k entries)
+- Deep delta chains (100 deltas)
+- Compression ratio verification
 
 ## Dependencies
 

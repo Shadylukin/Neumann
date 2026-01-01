@@ -357,6 +357,9 @@ pub fn svd_truncated(
 /// Output: matrix of shape (r_{k-1} * n_k, remaining_product)
 pub fn left_unfold_for_tt(data: &[f32], left_size: usize, mode_size: usize) -> Matrix {
     let rows = left_size * mode_size;
+    if rows == 0 || data.is_empty() {
+        return Matrix::new(vec![], 0, 0).expect("valid empty shape");
+    }
     let cols = data.len() / rows;
     Matrix::new(data.to_vec(), rows, cols).expect("valid shape")
 }

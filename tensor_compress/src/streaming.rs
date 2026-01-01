@@ -132,6 +132,12 @@ pub struct StreamingReader<R: Read> {
     entries_read: u64,
 }
 
+/// Maximum trailer size to prevent allocation attacks (1 MB).
+const MAX_TRAILER_SIZE: u64 = 1024 * 1024;
+
+/// Maximum entry size to prevent allocation attacks (100 MB).
+const MAX_ENTRY_SIZE: usize = 100 * 1024 * 1024;
+
 impl<R: Read + Seek> StreamingReader<R> {
     /// Open a streaming snapshot, reading header from trailer.
     pub fn open(mut reader: R) -> Result<Self, FormatError> {
@@ -140,6 +146,11 @@ impl<R: Read + Seek> StreamingReader<R> {
         let mut trailer_len_bytes = [0u8; 8];
         reader.read_exact(&mut trailer_len_bytes)?;
         let trailer_len = u64::from_le_bytes(trailer_len_bytes);
+
+        // Sanity check trailer size to prevent allocation attacks
+        if trailer_len > MAX_TRAILER_SIZE {
+            return Err(FormatError::InvalidMagic);
+        }
 
         // Read trailer
         reader.seek(SeekFrom::End(-(8 + trailer_len as i64)))?;
@@ -198,6 +209,14 @@ impl<R: Read> Iterator for StreamingReader<R> {
             return Some(Err(FormatError::from(bincode::Error::from(e))));
         }
         let len = u32::from_le_bytes(len_bytes) as usize;
+
+        // Sanity check entry size to prevent allocation attacks
+        if len > MAX_ENTRY_SIZE {
+            return Some(Err(FormatError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "entry size exceeds maximum",
+            ))));
+        }
 
         // Read entry data
         let mut entry_bytes = vec![0u8; len];
