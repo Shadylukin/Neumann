@@ -996,11 +996,13 @@ impl TensorStore {
                             CompressedScalar::String(format!("bytes:{}", b.len()))
                         },
                     }),
-                    TensorValue::Vector(v) => compress_vector(v, &key, field_name, &config),
+                    TensorValue::Vector(v) => compress_vector(v, &key, field_name, &config)
+                        .map_err(|e| SnapshotError::SerializationError(e.to_string()))?,
                     TensorValue::Sparse(sv) => {
                         // Convert sparse to dense for compression, then compress
                         // Future: add native sparse compression format
                         compress_vector(&sv.to_dense(), &key, field_name, &config)
+                            .map_err(|e| SnapshotError::SerializationError(e.to_string()))?
                     },
                     TensorValue::Pointer(p) => CompressedValue::Pointer(p.clone()),
                     TensorValue::Pointers(ps) => CompressedValue::Pointers(ps.clone()),
@@ -1058,7 +1060,8 @@ impl TensorStore {
                         })
                     },
                     CompressedValue::VectorRaw(v) => TensorValue::Vector(v),
-                    CompressedValue::VectorInt8 { .. }
+                    CompressedValue::VectorTT { .. }
+                    | CompressedValue::VectorInt8 { .. }
                     | CompressedValue::VectorBinary { .. }
                     | CompressedValue::IdList(_) => {
                         let v = decompress_vector(&value)
@@ -2566,7 +2569,9 @@ mod tests {
             TensorValue::Scalar(ScalarValue::String("test".into())),
         );
         tensor.set("count", TensorValue::Scalar(ScalarValue::Int(42)));
-        tensor.set("vector", TensorValue::Vector(vec![0.1, 0.2, 0.3, 0.4]));
+        // Use 64-element vector to match TT config (64 = 4*4*4)
+        let vector_64: Vec<f32> = (0..64).map(|i| (i as f32) / 64.0).collect();
+        tensor.set("vector", TensorValue::Vector(vector_64));
         store.put("emb:test1", tensor).unwrap();
 
         let mut tensor2 = TensorData::new();
@@ -2574,7 +2579,7 @@ mod tests {
         store.put("other", tensor2).unwrap();
 
         let config = tensor_compress::CompressionConfig {
-            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            tensor_mode: Some(tensor_compress::TensorMode::tensor_train(64)),
             delta_encoding: true,
             rle_encoding: true,
         };
@@ -2605,7 +2610,7 @@ mod tests {
         store.put("emb:doc1", tensor).unwrap();
 
         let config = tensor_compress::CompressionConfig {
-            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            tensor_mode: Some(tensor_compress::TensorMode::tensor_train(768)),
             ..Default::default()
         };
 

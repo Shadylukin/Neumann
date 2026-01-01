@@ -1,0 +1,772 @@
+//! Tensor Train (TT) decomposition for high-dimensional embedding compression.
+//!
+//! Implements the TT-SVD algorithm from Oseledets (2011) for decomposing vectors
+//! into products of smaller 3D cores, achieving 10-20x compression for 4096+ dimensions.
+
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::suboptimal_flops)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::manual_is_multiple_of)]
+
+use crate::decompose::{left_unfold_for_tt, svd_truncated, DecomposeError, Matrix};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors from TT operations.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum TTError {
+    #[error("dimension {dim} cannot be reshaped to {shape:?} (product: {product})")]
+    ShapeMismatch {
+        dim: usize,
+        shape: Vec<usize>,
+        product: usize,
+    },
+    #[error("empty vector")]
+    EmptyVector,
+    #[error("invalid TT-rank: must be >= 1")]
+    InvalidRank,
+    #[error("incompatible TT shapes for operation")]
+    IncompatibleShapes,
+    #[error("decomposition error: {0}")]
+    Decompose(#[from] DecomposeError),
+}
+
+/// Configuration for TT decomposition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TTConfig {
+    /// Shape to reshape vector into (product must equal dimension).
+    /// e.g., [8, 8, 8, 8] for 4096-dim vectors.
+    pub shape: Vec<usize>,
+    /// Maximum TT-rank (controls compression vs accuracy tradeoff).
+    pub max_rank: usize,
+    /// Relative tolerance for SVD truncation (e.g., 1e-6 for high accuracy).
+    pub tolerance: f32,
+}
+
+impl TTConfig {
+    /// Create a configuration optimized for the given dimension.
+    /// Automatically determines a good tensor shape.
+    #[must_use]
+    pub fn for_dim(dim: usize) -> Self {
+        let shape = optimal_shape(dim);
+        Self {
+            shape,
+            max_rank: 8,
+            tolerance: 1e-4,
+        }
+    }
+
+    /// High compression preset (lower accuracy).
+    #[must_use]
+    pub fn high_compression(dim: usize) -> Self {
+        let shape = optimal_shape(dim);
+        Self {
+            shape,
+            max_rank: 4,
+            tolerance: 1e-2,
+        }
+    }
+
+    /// High accuracy preset (lower compression).
+    #[must_use]
+    pub fn high_accuracy(dim: usize) -> Self {
+        let shape = optimal_shape(dim);
+        Self {
+            shape,
+            max_rank: 16,
+            tolerance: 1e-6,
+        }
+    }
+}
+
+/// Find an optimal tensor shape for the given dimension.
+/// Prefers balanced shapes with small prime factors.
+fn optimal_shape(dim: usize) -> Vec<usize> {
+    // Common embedding dimensions and their optimal factorizations
+    match dim {
+        64 => vec![4, 4, 4],
+        128 => vec![4, 4, 8],
+        256 => vec![4, 8, 8],
+        384 => vec![4, 8, 12],
+        512 => vec![8, 8, 8],
+        768 => vec![8, 8, 12],
+        1024 => vec![8, 8, 16],
+        1536 => vec![8, 12, 16],
+        2048 => vec![8, 16, 16],
+        3072 => vec![8, 16, 24],
+        4096 => vec![8, 8, 8, 8],
+        8192 => vec![8, 8, 8, 16],
+        _ => factorize_balanced(dim),
+    }
+}
+
+/// Factorize a number into balanced factors for tensor shape.
+fn factorize_balanced(n: usize) -> Vec<usize> {
+    if n == 0 {
+        return vec![];
+    }
+    if n == 1 {
+        return vec![1];
+    }
+
+    // Find factors close to cube root for 3D, fourth root for 4D, etc.
+    let target_factors = ((n as f64).ln() / 2.0_f64.ln()).ceil() as usize;
+    let target_factors = target_factors.clamp(2, 6);
+
+    let mut factors = vec![];
+    let mut remaining = n;
+
+    // Try to find balanced factors
+    let target_size = (remaining as f64).powf(1.0 / target_factors as f64) as usize;
+
+    for _ in 0..target_factors - 1 {
+        // Find the largest factor <= target_size
+        let mut best_factor = 1;
+        for f in (2..=target_size.max(2)).rev() {
+            if remaining % f == 0 {
+                best_factor = f;
+                break;
+            }
+        }
+        if best_factor == 1 {
+            // Can't find good factor, try larger
+            for f in 2..=remaining {
+                if remaining % f == 0 {
+                    best_factor = f;
+                    break;
+                }
+            }
+        }
+        factors.push(best_factor);
+        remaining /= best_factor;
+        if remaining == 1 {
+            break;
+        }
+    }
+    if remaining > 1 {
+        factors.push(remaining);
+    }
+
+    // Sort for consistency
+    factors.sort_unstable();
+    factors
+}
+
+/// A single TT-core (3D tensor stored as flat array in row-major order).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TTCore {
+    /// Flattened data: r_{k-1} x n_k x r_k elements.
+    pub data: Vec<f32>,
+    /// Shape: (left_rank, mode_size, right_rank).
+    pub shape: (usize, usize, usize),
+}
+
+impl TTCore {
+    pub fn new(data: Vec<f32>, left_rank: usize, mode_size: usize, right_rank: usize) -> Self {
+        debug_assert_eq!(data.len(), left_rank * mode_size * right_rank);
+        Self {
+            data,
+            shape: (left_rank, mode_size, right_rank),
+        }
+    }
+
+    #[inline]
+    pub fn left_rank(&self) -> usize {
+        self.shape.0
+    }
+
+    #[inline]
+    pub fn mode_size(&self) -> usize {
+        self.shape.1
+    }
+
+    #[inline]
+    pub fn right_rank(&self) -> usize {
+        self.shape.2
+    }
+
+    /// Get element at position (i, j, k).
+    #[inline]
+    pub fn get(&self, i: usize, j: usize, k: usize) -> f32 {
+        let idx = i * self.shape.1 * self.shape.2 + j * self.shape.2 + k;
+        self.data[idx]
+    }
+
+    /// Get the j-th slice as a left_rank x right_rank matrix.
+    pub fn slice(&self, j: usize) -> Matrix {
+        let (r1, _, r2) = self.shape;
+        let mut data = vec![0.0; r1 * r2];
+        for i in 0..r1 {
+            for k in 0..r2 {
+                data[i * r2 + k] = self.get(i, j, k);
+            }
+        }
+        Matrix::new(data, r1, r2).expect("valid shape")
+    }
+
+    /// Total number of elements in this core.
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
+}
+
+/// Complete TT-decomposition of a vector.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TTVector {
+    /// The TT-cores G_1, G_2, ..., G_n.
+    pub cores: Vec<TTCore>,
+    /// Original vector dimension.
+    pub original_dim: usize,
+    /// Tensor shape used for decomposition.
+    pub shape: Vec<usize>,
+    /// TT-ranks: [1, r_1, r_2, ..., r_{n-1}, 1].
+    pub ranks: Vec<usize>,
+}
+
+impl TTVector {
+    /// Total storage size in floats.
+    #[must_use]
+    pub fn storage_size(&self) -> usize {
+        self.cores.iter().map(TTCore::size).sum()
+    }
+
+    /// Compression ratio compared to original dense vector.
+    #[must_use]
+    pub fn compression_ratio(&self) -> f32 {
+        self.original_dim as f32 / self.storage_size() as f32
+    }
+
+    /// Number of TT-cores.
+    #[must_use]
+    pub fn num_cores(&self) -> usize {
+        self.cores.len()
+    }
+
+    /// Maximum rank across all cores.
+    #[must_use]
+    pub fn max_rank(&self) -> usize {
+        self.ranks.iter().copied().max().unwrap_or(1)
+    }
+}
+
+/// Decompose a vector into TT format using TT-SVD algorithm.
+///
+/// The vector is first reshaped according to the config shape, then decomposed
+/// into a train of 3D cores using successive SVD truncations.
+pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTError> {
+    if vector.is_empty() {
+        return Err(TTError::EmptyVector);
+    }
+
+    let product: usize = config.shape.iter().product();
+    if product != vector.len() {
+        return Err(TTError::ShapeMismatch {
+            dim: vector.len(),
+            shape: config.shape.clone(),
+            product,
+        });
+    }
+
+    if config.max_rank < 1 {
+        return Err(TTError::InvalidRank);
+    }
+
+    let n = config.shape.len();
+    let mut cores = Vec::with_capacity(n);
+    let mut ranks = vec![1];
+
+    // Start with the full vector
+    let mut current_data = vector.to_vec();
+    let mut left_rank = 1;
+
+    // TT-SVD: sweep left to right
+    for k in 0..n - 1 {
+        let mode_size = config.shape[k];
+        let remaining_product: usize = config.shape[k + 1..].iter().product();
+
+        // Reshape to (left_rank * mode_size) x (remaining_product)
+        let m = left_unfold_for_tt(&current_data, left_rank, mode_size);
+
+        // Truncated SVD
+        let svd_result = svd_truncated(&m, config.max_rank, config.tolerance)?;
+
+        // Determine new rank
+        let new_rank = svd_result.rank.min(config.max_rank);
+        ranks.push(new_rank);
+
+        // Build core from U (reshaped to left_rank x mode_size x new_rank)
+        let mut core_data = vec![0.0; left_rank * mode_size * new_rank];
+        for i in 0..left_rank {
+            for j in 0..mode_size {
+                for r in 0..new_rank {
+                    let u_row = i * mode_size + j;
+                    if r < svd_result.u.cols {
+                        core_data[i * mode_size * new_rank + j * new_rank + r] =
+                            svd_result.u.get(u_row, r);
+                    }
+                }
+            }
+        }
+        cores.push(TTCore::new(core_data, left_rank, mode_size, new_rank));
+
+        // Prepare data for next iteration: S * Vt
+        let mut next_data = vec![0.0; new_rank * remaining_product];
+        for r in 0..new_rank {
+            for j in 0..remaining_product {
+                if r < svd_result.s.len() && r < svd_result.vt.rows {
+                    next_data[r * remaining_product + j] =
+                        svd_result.s[r] * svd_result.vt.get(r, j);
+                }
+            }
+        }
+
+        current_data = next_data;
+        left_rank = new_rank;
+    }
+
+    // Last core: whatever remains
+    let last_mode_size = config.shape[n - 1];
+    ranks.push(1);
+
+    // Reshape remaining data to (left_rank, last_mode_size, 1)
+    let mut last_core_data = vec![0.0; left_rank * last_mode_size];
+    for i in 0..left_rank.min(current_data.len() / last_mode_size) {
+        for j in 0..last_mode_size {
+            let idx = i * last_mode_size + j;
+            if idx < current_data.len() {
+                last_core_data[i * last_mode_size + j] = current_data[idx];
+            }
+        }
+    }
+    cores.push(TTCore::new(last_core_data, left_rank, last_mode_size, 1));
+
+    Ok(TTVector {
+        cores,
+        original_dim: vector.len(),
+        shape: config.shape.clone(),
+        ranks,
+    })
+}
+
+/// Reconstruct a dense vector from TT format.
+#[must_use]
+pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
+    if tt.cores.is_empty() {
+        return vec![];
+    }
+
+    // Contract cores from left to right
+    let n = tt.cores.len();
+    let total_size: usize = tt.shape.iter().product();
+    let mut result = vec![0.0; total_size];
+
+    // Iterate through all multi-indices
+    for flat_idx in 0..total_size {
+        // Convert flat index to multi-index
+        let mut remaining = flat_idx;
+        let mut multi_idx = vec![0usize; n];
+        for k in (0..n).rev() {
+            multi_idx[k] = remaining % tt.shape[k];
+            remaining /= tt.shape[k];
+        }
+
+        // Contract: product of core slices
+        let mut left_vec: Vec<f32> = vec![1.0];
+
+        for (k, core) in tt.cores.iter().enumerate() {
+            let j = multi_idx[k];
+            let slice = core.slice(j);
+
+            // Matrix-vector product: left_vec * slice
+            let mut new_vec = vec![0.0; core.right_rank()];
+            for r in 0..core.right_rank() {
+                for l in 0..core.left_rank().min(left_vec.len()) {
+                    new_vec[r] += left_vec[l] * slice.get(l, r);
+                }
+            }
+            left_vec = new_vec;
+        }
+
+        result[flat_idx] = left_vec.first().copied().unwrap_or(0.0);
+    }
+
+    result
+}
+
+/// Compute the Frobenius norm of a TT-vector without reconstruction.
+#[must_use]
+pub fn tt_norm(tt: &TTVector) -> f32 {
+    // Contract <tt, tt> efficiently using core-by-core contraction
+    if tt.cores.is_empty() {
+        return 0.0;
+    }
+
+    // Start with identity
+    let mut gram = vec![1.0f32];
+
+    for core in &tt.cores {
+        let (r1, n, r2) = core.shape;
+        let mut new_gram = vec![0.0; r2 * r2];
+
+        // Contract: new_gram[a,b] = sum_{i,j,k} gram[i,j] * G[i,k,a] * G[j,k,b]
+        for a in 0..r2 {
+            for b in 0..r2 {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    for i in 0..r1 {
+                        for j in 0..r1 {
+                            let gram_ij = if r1 == 1 {
+                                gram[0]
+                            } else {
+                                gram.get(i * r1 + j).copied().unwrap_or(0.0)
+                            };
+                            sum += gram_ij * core.get(i, k, a) * core.get(j, k, b);
+                        }
+                    }
+                }
+                new_gram[a * r2 + b] = sum;
+            }
+        }
+
+        gram = new_gram;
+    }
+
+    gram.first().copied().unwrap_or(0.0).sqrt()
+}
+
+/// Compute dot product of two TT-vectors without reconstruction.
+pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
+    if a.shape != b.shape {
+        return Err(TTError::IncompatibleShapes);
+    }
+
+    if a.cores.is_empty() || b.cores.is_empty() {
+        return Ok(0.0);
+    }
+
+    // Contract core-by-core
+    let mut gram = vec![1.0f32];
+
+    for (core_a, core_b) in a.cores.iter().zip(b.cores.iter()) {
+        let (r1a, n, r2a) = core_a.shape;
+        let (r1b, _, r2b) = core_b.shape;
+        let mut new_gram = vec![0.0; r2a * r2b];
+
+        for a_idx in 0..r2a {
+            for b_idx in 0..r2b {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    for ia in 0..r1a {
+                        for ib in 0..r1b {
+                            let gram_idx = if gram.len() == 1 {
+                                0
+                            } else {
+                                ia * r1b + ib
+                            };
+                            let g = gram.get(gram_idx).copied().unwrap_or(0.0);
+                            sum += g * core_a.get(ia, k, a_idx) * core_b.get(ib, k, b_idx);
+                        }
+                    }
+                }
+                new_gram[a_idx * r2b + b_idx] = sum;
+            }
+        }
+
+        gram = new_gram;
+    }
+
+    Ok(gram.first().copied().unwrap_or(0.0))
+}
+
+/// Compute cosine similarity between two TT-vectors without reconstruction.
+pub fn tt_cosine_similarity(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
+    let dot = tt_dot_product(a, b)?;
+    let norm_a = tt_norm(a);
+    let norm_b = tt_norm(b);
+
+    if norm_a < 1e-10 || norm_b < 1e-10 {
+        return Ok(0.0);
+    }
+
+    Ok(dot / (norm_a * norm_b))
+}
+
+/// Compute approximate Euclidean distance between two TT-vectors.
+pub fn tt_euclidean_distance(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
+    let dot_aa = tt_dot_product(a, a)?;
+    let dot_bb = tt_dot_product(b, b)?;
+    let dot_ab = tt_dot_product(a, b)?;
+
+    let dist_sq = dot_aa + dot_bb - 2.0 * dot_ab;
+    Ok(dist_sq.max(0.0).sqrt())
+}
+
+/// Scale a TT-vector by a scalar.
+#[must_use]
+pub fn tt_scale(tt: &TTVector, scalar: f32) -> TTVector {
+    if tt.cores.is_empty() {
+        return tt.clone();
+    }
+
+    // Scale the first core only
+    let mut new_cores = tt.cores.clone();
+    for val in &mut new_cores[0].data {
+        *val *= scalar;
+    }
+
+    TTVector {
+        cores: new_cores,
+        original_dim: tt.original_dim,
+        shape: tt.shape.clone(),
+        ranks: tt.ranks.clone(),
+    }
+}
+
+/// Batch decompose multiple vectors with the same config.
+pub fn tt_decompose_batch(
+    vectors: &[&[f32]],
+    config: &TTConfig,
+) -> Result<Vec<TTVector>, TTError> {
+    vectors.iter().map(|v| tt_decompose(v, config)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tt_config_for_dim() {
+        let config = TTConfig::for_dim(4096);
+        assert_eq!(config.shape, vec![8, 8, 8, 8]);
+        assert_eq!(config.max_rank, 8);
+    }
+
+    #[test]
+    fn test_optimal_shape() {
+        assert_eq!(optimal_shape(64), vec![4, 4, 4]);
+        assert_eq!(optimal_shape(768), vec![8, 8, 12]);
+        assert_eq!(optimal_shape(4096), vec![8, 8, 8, 8]);
+    }
+
+    #[test]
+    fn test_factorize_balanced() {
+        let factors = factorize_balanced(24);
+        let product: usize = factors.iter().product();
+        assert_eq!(product, 24);
+    }
+
+    #[test]
+    fn test_tt_core_new() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let core = TTCore::new(data, 1, 2, 3);
+        assert_eq!(core.left_rank(), 1);
+        assert_eq!(core.mode_size(), 2);
+        assert_eq!(core.right_rank(), 3);
+        assert_eq!(core.size(), 6);
+    }
+
+    #[test]
+    fn test_tt_core_get() {
+        // Shape (2, 2, 2) = 8 elements
+        let data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        let core = TTCore::new(data, 2, 2, 2);
+        assert_eq!(core.get(0, 0, 0), 0.0);
+        assert_eq!(core.get(0, 0, 1), 1.0);
+        assert_eq!(core.get(0, 1, 0), 2.0);
+        assert_eq!(core.get(1, 0, 0), 4.0);
+    }
+
+    #[test]
+    fn test_tt_decompose_simple() {
+        // Simple test: decompose a 64-dim vector
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let config = TTConfig::for_dim(64);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        assert_eq!(tt.original_dim, 64);
+        assert_eq!(tt.num_cores(), 3); // shape [4, 4, 4]
+        assert!(tt.compression_ratio() > 1.0);
+    }
+
+    #[test]
+    fn test_tt_decompose_empty() {
+        let config = TTConfig::for_dim(64);
+        let result = tt_decompose(&[], &config);
+        assert!(matches!(result, Err(TTError::EmptyVector)));
+    }
+
+    #[test]
+    fn test_tt_decompose_shape_mismatch() {
+        let vector: Vec<f32> = vec![1.0; 100];
+        let config = TTConfig::for_dim(64); // expects 64
+        let result = tt_decompose(&vector, &config);
+        assert!(matches!(result, Err(TTError::ShapeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_tt_reconstruct_roundtrip() {
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let config = TTConfig {
+            shape: vec![4, 4, 4],
+            max_rank: 16, // High rank for accuracy
+            tolerance: 1e-8,
+        };
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        assert_eq!(reconstructed.len(), vector.len());
+
+        // Check reconstruction error
+        let error: f32 = vector
+            .iter()
+            .zip(reconstructed.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        let orig_norm: f32 = vector.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
+        let rel_error = error / orig_norm;
+
+        assert!(
+            rel_error < 0.1,
+            "Relative reconstruction error too high: {}",
+            rel_error
+        );
+    }
+
+    #[test]
+    fn test_tt_norm() {
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let config = TTConfig::for_dim(64);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let tt_norm_val = tt_norm(&tt);
+        let dense_norm: f32 = vector.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
+
+        // TT norm should approximate dense norm
+        let rel_error = (tt_norm_val - dense_norm).abs() / dense_norm;
+        assert!(rel_error < 0.5, "Norm error too high: {}", rel_error);
+    }
+
+    #[test]
+    fn test_tt_dot_product() {
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let v2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
+        let config = TTConfig::for_dim(64);
+
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let tt_dot = tt_dot_product(&tt1, &tt2).unwrap();
+        let dense_dot: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
+
+        // Should be reasonably close
+        let rel_error = (tt_dot - dense_dot).abs() / dense_dot.abs().max(1.0);
+        assert!(rel_error < 0.5, "Dot product error: {}", rel_error);
+    }
+
+    #[test]
+    fn test_tt_cosine_similarity() {
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let v2: Vec<f32> = v1.clone(); // Same vector
+        let config = TTConfig::for_dim(64);
+
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let sim = tt_cosine_similarity(&tt1, &tt2).unwrap();
+        // Same vector should have similarity close to 1.0
+        assert!(sim > 0.9, "Self-similarity should be ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn test_tt_scale() {
+        let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let config = TTConfig::for_dim(64);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let scaled = tt_scale(&tt, 2.0);
+        let norm_orig = tt_norm(&tt);
+        let norm_scaled = tt_norm(&scaled);
+
+        // Scaling by 2 should double the norm
+        let expected = norm_orig * 2.0;
+        let rel_error = (norm_scaled - expected).abs() / expected;
+        assert!(rel_error < 0.1, "Scale error: {}", rel_error);
+    }
+
+    #[test]
+    fn test_tt_compression_ratio_4096() {
+        // Test with realistic 4096-dim vector
+        let vector: Vec<f32> = (0..4096).map(|i| (i as f32 * 0.01).sin()).collect();
+        let config = TTConfig::for_dim(4096);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let ratio = tt.compression_ratio();
+        // With max_rank=8 and shape [8,8,8,8], expect significant compression
+        assert!(
+            ratio > 2.0,
+            "Expected compression ratio > 2.0, got {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_tt_vector_storage_size() {
+        let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let config = TTConfig::for_dim(64);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let storage = tt.storage_size();
+        assert!(storage > 0);
+        assert!(storage <= 64); // Should compress
+    }
+
+    #[test]
+    fn test_tt_batch_decompose() {
+        let v1: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let v2: Vec<f32> = (0..64).map(|i| (i as f32).sqrt()).collect();
+        let config = TTConfig::for_dim(64);
+
+        let batch = tt_decompose_batch(&[&v1, &v2], &config).unwrap();
+        assert_eq!(batch.len(), 2);
+    }
+
+    #[test]
+    fn test_tt_euclidean_distance() {
+        let v1: Vec<f32> = vec![1.0; 64];
+        let v2: Vec<f32> = vec![2.0; 64];
+        let config = TTConfig::for_dim(64);
+
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let dist = tt_euclidean_distance(&tt1, &tt2).unwrap();
+        let expected = 8.0; // sqrt(64 * 1^2) = 8
+        assert!(
+            (dist - expected).abs() < 2.0,
+            "Distance error: expected ~{}, got {}",
+            expected,
+            dist
+        );
+    }
+
+    #[test]
+    fn test_tt_incompatible_shapes() {
+        let v1: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let v2: Vec<f32> = (0..128).map(|i| i as f32).collect();
+
+        let tt1 = tt_decompose(&v1, &TTConfig::for_dim(64)).unwrap();
+        let tt2 = tt_decompose(&v2, &TTConfig::for_dim(128)).unwrap();
+
+        let result = tt_dot_product(&tt1, &tt2);
+        assert!(matches!(result, Err(TTError::IncompatibleShapes)));
+    }
+}

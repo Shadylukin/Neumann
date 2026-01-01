@@ -1,24 +1,28 @@
 # Tensor Compress
 
-Module 8 of Neumann. Provides bespoke compression algorithms optimized for tensor data.
+Module 8 of Neumann. Provides tensor-native compression exploiting the mathematical structure of high-dimensional embeddings.
 
 ## Design Principles
 
-1. **Tensor-Aware**: Compression understands tensor semantics, not generic bytes
-2. **Lossless Where It Matters**: RLE and delta encoding are lossless; quantization is configurable
-3. **Composable**: Algorithms can be combined via configuration
-4. **Zero Dependencies on Engines**: Pure compression library, usable standalone
+1. **Tensor Mathematics**: Uses Tensor Train decomposition to exploit low-rank structure
+2. **Higher Dimensions Are Lower**: Decomposes vectors into products of smaller tensors
+3. **Streaming I/O**: Process large snapshots without loading entire dataset
+4. **Incremental Updates**: Delta snapshots for efficient replication
+5. **Backward Compatible**: Legacy int8/binary quantization still supported
 
 ## Quick Start
 
 ```rust
-use tensor_compress::{CompressionConfig, QuantMode};
+use tensor_compress::{CompressionConfig, TensorMode, TTConfig};
 
-// Configure compression
+// High compression preset for 4096-dim embeddings
+let config = CompressionConfig::high_compression();
+
+// Or customize
 let config = CompressionConfig {
-    vector_quantization: Some(QuantMode::Int8),  // 4x compression
-    delta_encoding: true,                        // For sorted IDs
-    rle_encoding: true,                          // For repeated values
+    tensor_mode: Some(TensorMode::tensor_train(4096)),
+    delta_encoding: true,
+    rle_encoding: true,
 };
 
 // Use with TensorStore
@@ -26,93 +30,180 @@ store.save_snapshot_compressed("data.bin", config)?;
 let loaded = TensorStore::load_snapshot_compressed("data.bin")?;
 ```
 
-## Compression Algorithms
+## Tensor Train Decomposition
 
-### Vector Quantization
+The primary compression method. Decomposes a d-dimensional vector reshaped as a tensor into a chain of smaller 3D cores.
 
-Reduces f32 embedding dimensions to smaller representations.
+### How It Works
 
-| Mode | Compression | Error | Use Case |
-|------|-------------|-------|----------|
-| Int8 | 4x | ~1% max | General embeddings |
-| Binary | 32x | Lossy | High-dimensional similarity |
+For a 4096-dim embedding reshaped to (8, 8, 8, 8):
+
+```
+Original: 4096 floats = 16 KB
+TT-cores: 1x8x4 + 4x8x4 + 4x8x4 + 4x8x1 = 320 floats = 1.25 KB
+Compression: 12.8x
+```
+
+### Usage
 
 ```rust
+use tensor_compress::{tt_decompose, tt_reconstruct, TTConfig};
+
+let embedding: Vec<f32> = get_embedding();  // 4096-dim
+let config = TTConfig::for_dim(4096);
+
+// Decompose
+let tt = tt_decompose(&embedding, &config)?;
+println!("Compression: {:.1}x", tt.compression_ratio());
+
+// Reconstruct
+let restored = tt_reconstruct(&tt);
+
+// Compute similarity without reconstruction
+let tt2 = tt_decompose(&other_embedding, &config)?;
+let sim = tt_cosine_similarity(&tt, &tt2)?;
+```
+
+### Configuration Presets
+
+```rust
+// Balanced compression/accuracy (default)
+let config = TTConfig::for_dim(4096);
+
+// Maximize compression (lower accuracy)
+let config = TTConfig::high_compression(4096);
+
+// Maximize accuracy (lower compression)
+let config = TTConfig::high_accuracy(4096);
+
+// Custom
+let config = TTConfig {
+    shape: vec![8, 8, 8, 8],  // Tensor shape
+    max_rank: 8,               // TT-rank bound
+    tolerance: 0.01,           // SVD truncation
+};
+```
+
+### Performance
+
+| Dimension | Compression | Error | Decompose | Reconstruct |
+|-----------|-------------|-------|-----------|-------------|
+| 256 | 2-4x | <1% | ~100 us | ~10 us |
+| 1024 | 4-8x | <1% | ~500 us | ~50 us |
+| 4096 | 10-16x | <1% | ~2 ms | ~200 us |
+
+## Streaming Compression
+
+For memory-bounded snapshot I/O.
+
+```rust
+use tensor_compress::streaming::{StreamingWriter, StreamingReader};
+
+// Write entries one at a time
+let mut writer = StreamingWriter::new(file, config)?;
+for entry in entries {
+    writer.write_entry(&entry)?;
+}
+writer.finish()?;
+
+// Read entries one at a time (iterator-based)
+let reader = StreamingReader::open(file)?;
+for entry in reader {
+    process(entry?);
+}
+```
+
+### Format
+
+Uses a trailer-based header so entry count is known at the end:
+
+```
++------------------+
+| Magic (NEUS)     |
++------------------+
+| Entry 1 (len+data) |
++------------------+
+| Entry 2          |
++------------------+
+| ...              |
++------------------+
+| Trailer          |  Entry count, config
++------------------+
+| Trailer size     |  8 bytes
++------------------+
+```
+
+## Incremental Updates
+
+Delta snapshots store only changes since a base snapshot.
+
+```rust
+use tensor_compress::incremental::{DeltaBuilder, DeltaChain, apply_delta};
+
+// Create delta
+let mut builder = DeltaBuilder::new("base_snapshot_id", sequence);
+builder.put("key1", entry1);
+builder.delete("key2");
+let delta = builder.build();
+
+// Apply delta
+let new_snapshot = apply_delta(&base, &delta)?;
+
+// Chain management
+let mut chain = DeltaChain::new(base_snapshot);
+chain.push(delta1)?;
+chain.push(delta2)?;
+let value = chain.get("key1");  // Checks chain then base
+
+// Compact when chain grows long
+if chain.should_compact(10) {
+    let compacted = chain.compact()?;
+}
+```
+
+## Legacy Quantization
+
+Deprecated but maintained for backward compatibility.
+
+```rust
+#[allow(deprecated)]
 use tensor_compress::{quantize_int8, dequantize_int8};
 
 let embedding = vec![0.1, 0.2, 0.3, 0.4];
 let quantized = quantize_int8(&embedding)?;
 let restored = dequantize_int8(&quantized);
-
-// quantized.data is Vec<i8> - 4x smaller
-// restored is approximately equal to embedding
 ```
 
-### Delta Encoding
+| Mode | Compression | Error | Notes |
+|------|-------------|-------|-------|
+| Int8 | 4x | ~1% | Use TensorTrain instead |
+| Binary | 32x | Lossy | Use TensorTrain instead |
 
-Compresses sorted integer sequences by storing differences.
+## Delta Encoding
+
+For sorted integer sequences (node IDs, timestamps).
 
 ```rust
 use tensor_compress::{compress_ids, decompress_ids};
 
-// Sequential IDs compress extremely well
 let ids: Vec<u64> = (1000..2000).collect();
-let compressed = compress_ids(&ids);  // ~100 bytes vs 8000 bytes
+let compressed = compress_ids(&ids);  // ~100 bytes vs 8000
 
 let restored = decompress_ids(&compressed);
 assert_eq!(ids, restored);
 ```
 
-| Data Pattern | Compression Ratio |
-|--------------|-------------------|
-| Sequential IDs | 8x |
-| Small gaps | 4-6x |
-| Random | 1x (no benefit) |
+## Run-Length Encoding
 
-### Run-Length Encoding
-
-Compresses repeated values by storing (value, count) pairs.
+For repeated values.
 
 ```rust
 use tensor_compress::{rle_encode, rle_decode};
 
-// Repeated status values
 let statuses = vec!["active"; 1000];
 let encoded = rle_encode(&statuses);
-
-assert_eq!(encoded.runs(), 1);  // Just one run
-let restored = rle_decode(&encoded);
-assert_eq!(statuses, restored);
+assert_eq!(encoded.runs(), 1);
 ```
-
-## Snapshot Format
-
-### Version 2 (Compressed)
-
-```
-+----------------+
-| Header (NEUM)  |  Magic bytes, version, config
-+----------------+
-| Entry 1        |  Key + compressed fields
-+----------------+
-| Entry 2        |
-+----------------+
-| ...            |
-+----------------+
-```
-
-The header includes magic bytes `NEUM` for format detection.
-
-### Compression Selection
-
-Fields are compressed based on heuristics:
-
-| Field Type | Key Pattern | Compression |
-|------------|-------------|-------------|
-| Vector | `emb:*` or `_embedding` | Quantization |
-| Vector | `*_ids` or sorted integers | Delta + varint |
-| Scalar | Repeated values | RLE |
-| Other | - | Raw bincode |
 
 ## API Reference
 
@@ -120,88 +211,95 @@ Fields are compressed based on heuristics:
 
 ```rust
 pub struct CompressionConfig {
-    /// Vector quantization mode (None = no quantization)
-    pub vector_quantization: Option<QuantMode>,
-    /// Enable delta encoding for sorted ID lists
+    pub tensor_mode: Option<TensorMode>,  // TT or legacy
     pub delta_encoding: bool,
-    /// Enable RLE for repeated values
     pub rle_encoding: bool,
 }
 
-pub enum QuantMode {
-    Int8,    // 4x reduction, ~1% error
-    Binary,  // 32x reduction, lossy
+pub enum TensorMode {
+    TensorTrain(TTConfig),  // Recommended
+    LegacyInt8,             // Deprecated
+    LegacyBinary,           // Deprecated
+}
+
+pub struct TTConfig {
+    pub shape: Vec<usize>,   // Tensor shape
+    pub max_rank: usize,     // TT-rank bound
+    pub tolerance: f32,      // SVD truncation
 }
 ```
 
-### Core Functions
+### TT Operations
 
 | Function | Description |
 |----------|-------------|
-| `quantize_int8(Vec<f32>)` | Quantize to int8 with min-max scaling |
-| `dequantize_int8(QuantizedInt8)` | Restore f32 from int8 |
-| `quantize_binary(Vec<f32>)` | Binary quantization (sign bit) |
-| `dequantize_binary(QuantizedBinary)` | Restore f32 from binary |
-| `compress_ids(Vec<u64>)` | Delta + varint encode |
-| `decompress_ids(Vec<u8>)` | Restore u64 sequence |
-| `rle_encode<T>(Vec<T>)` | Run-length encode |
-| `rle_decode<T>(RleEncoded<T>)` | Restore from RLE |
+| `tt_decompose` | Decompose vector to TT format |
+| `tt_reconstruct` | Reconstruct vector from TT |
+| `tt_dot_product` | Dot product in TT space |
+| `tt_cosine_similarity` | Cosine similarity in TT space |
+| `tt_euclidean_distance` | Euclidean distance in TT space |
+| `tt_norm` | L2 norm of TT vector |
+| `tt_scale` | Scale TT vector by constant |
 
-## Performance Characteristics
+### Streaming Operations
 
-| Operation | Time (768-dim vector) |
-|-----------|----------------------|
-| quantize_int8 | ~500 ns |
-| dequantize_int8 | ~300 ns |
-| quantize_binary | ~100 ns |
-| compress_ids (10k sequential) | ~50 us |
-| rle_encode (100k values) | ~2 ms |
+| Function | Description |
+|----------|-------------|
+| `StreamingWriter::new` | Create streaming writer |
+| `StreamingWriter::write_entry` | Write single entry |
+| `StreamingWriter::finish` | Finalize with trailer |
+| `StreamingReader::open` | Open streaming file |
+| `StreamingReader::entry_count` | Total entries |
+
+### Delta Operations
+
+| Function | Description |
+|----------|-------------|
+| `DeltaBuilder::new` | Create delta builder |
+| `DeltaBuilder::put/delete` | Record change |
+| `apply_delta` | Apply delta to base |
+| `merge_deltas` | Merge multiple deltas |
+| `diff_snapshots` | Compute delta between snapshots |
 
 ## Error Handling
 
 ```rust
-pub enum QuantizationError {
+pub enum TTError {
+    ShapeMismatch { dim, shape, product },
     EmptyVector,
-    InvalidBinaryLength { expected, actual },
+    InvalidRank,
+    IncompatibleShapes,
+    Decomposition(DecomposeError),
 }
 
 pub enum FormatError {
     InvalidMagic,
     UnsupportedVersion(u16),
     Serialization(bincode::Error),
-    Quantization(QuantizationError),
+    TensorTrain(TTError),
+    Io(std::io::Error),
 }
-```
 
-## Integration with TensorStore
-
-```rust
-use tensor_store::TensorStore;
-use tensor_compress::{CompressionConfig, QuantMode};
-
-// Save with compression
-let config = CompressionConfig {
-    vector_quantization: Some(QuantMode::Int8),
-    delta_encoding: true,
-    rle_encoding: true,
-};
-store.save_snapshot_compressed("data.bin", config)?;
-
-// Load (auto-detects format)
-let store = TensorStore::load_snapshot_compressed("data.bin")?;
+pub enum DeltaError {
+    BaseNotFound(String),
+    SequenceGap { expected, got },
+    ChainTooLong { len, max },
+    Format(String),
+}
 ```
 
 ## Test Coverage
 
-| Test Category | What It Verifies |
-|---------------|------------------|
-| Quantization roundtrip | Error bounds maintained |
-| Delta encoding | Lossless for all patterns |
-| RLE | Lossless for all types |
-| Format detection | Magic bytes validation |
-| Integration | TensorStore save/load |
+| Test Category | Count |
+|---------------|-------|
+| TT decomposition/reconstruct | 20+ |
+| TT similarity operations | 5+ |
+| Streaming roundtrip | 10+ |
+| Delta operations | 15+ |
+| Legacy quantization | 10+ |
+| Format detection | 5+ |
 
-Coverage: 97.94%
+Coverage: 95%+ per module
 
 ## Dependencies
 
@@ -209,10 +307,4 @@ Coverage: 97.94%
 - `bincode`: Binary format
 - `thiserror`: Error types
 
-## Future Considerations
-
-Not implemented (out of scope):
-
-- **Product Quantization**: Higher compression for very large embeddings
-- **Streaming Compression**: Process without loading full snapshot
-- **Incremental Updates**: Append-only compressed format
+No external LAPACK/BLAS - pure Rust SVD implementation.

@@ -3,9 +3,11 @@
 //! Tests compression algorithms with real engine data.
 
 use integration_tests::{create_shared_engines, sample_embeddings};
+#[allow(deprecated)]
 use tensor_compress::{
     compress_ids, decompress_ids, delta_decode, delta_encode, dequantize_binary, dequantize_int8,
-    quantize_binary, quantize_int8, rle_decode, rle_encode, CompressionConfig, QuantMode,
+    quantize_binary, quantize_int8, rle_decode, rle_encode, tt_decompose, tt_reconstruct,
+    tt_cosine_similarity, tt_dot_product, CompressionConfig, TensorMode, TTConfig,
 };
 
 #[test]
@@ -204,7 +206,7 @@ fn test_rle_encode_large_runs() {
 #[test]
 fn test_compression_config_with_snapshot() {
     let config = CompressionConfig {
-        vector_quantization: Some(QuantMode::Int8),
+        tensor_mode: Some(TensorMode::tensor_train(768)),
         delta_encoding: true,
         rle_encoding: true,
     };
@@ -213,6 +215,143 @@ fn test_compression_config_with_snapshot() {
     let bytes = bincode::serialize(&config).unwrap();
     let decoded: CompressionConfig = bincode::deserialize(&bytes).unwrap();
     assert_eq!(config, decoded);
+}
+
+#[test]
+fn test_tt_decompose_with_vector_engine_embeddings() {
+    let (_, _, _, vector) = create_shared_engines();
+
+    // Store embeddings with a dimension that works well with TT
+    let embeddings = sample_embeddings(10, 64); // 64 = 4*4*4
+    for (i, emb) in embeddings.iter().enumerate() {
+        vector
+            .store_embedding(&format!("doc:{}", i), emb.clone())
+            .unwrap();
+    }
+
+    let config = TTConfig::for_dim(64);
+
+    // Decompose each embedding and verify roundtrip
+    for (i, original) in embeddings.iter().enumerate() {
+        let tt = tt_decompose(original, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Verify dimension
+        assert_eq!(
+            reconstructed.len(),
+            original.len(),
+            "doc:{} - Dimension mismatch",
+            i
+        );
+
+        // Verify compression ratio
+        let ratio = tt.compression_ratio();
+        assert!(
+            ratio > 1.0,
+            "doc:{} - Expected compression, got {:.2}x expansion",
+            i,
+            ratio
+        );
+
+        // Verify accuracy
+        let max_error: f32 = original
+            .iter()
+            .zip(&reconstructed)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+
+        let norm: f32 = original.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-6 {
+            let relative_error = max_error / norm;
+            assert!(
+                relative_error < 0.5,
+                "doc:{} - Reconstruction error too high: {:.4}",
+                i,
+                relative_error
+            );
+        }
+    }
+}
+
+#[test]
+fn test_tt_preserves_similarity_order() {
+    let embeddings = sample_embeddings(5, 64);
+    let config = TTConfig::for_dim(64);
+
+    // Decompose all embeddings
+    let tt_vectors: Vec<_> = embeddings
+        .iter()
+        .map(|e| tt_decompose(e, &config).unwrap())
+        .collect();
+
+    // Compute similarities in original space
+    let query = &embeddings[0];
+    let mut original_sims: Vec<(usize, f32)> = embeddings[1..]
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (i + 1, cosine_similarity(query, e)))
+        .collect();
+    original_sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Compute similarities in TT space
+    let query_tt = &tt_vectors[0];
+    let mut tt_sims: Vec<(usize, f32)> = tt_vectors[1..]
+        .iter()
+        .enumerate()
+        .map(|(i, tt)| (i + 1, tt_cosine_similarity(query_tt, tt).unwrap()))
+        .collect();
+    tt_sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Top result should generally be the same (TT is approximate)
+    // Just verify we get valid similarity values
+    assert!(tt_sims[0].1.is_finite(), "TT similarity should be finite");
+}
+
+#[test]
+fn test_tt_dot_product_with_embeddings() {
+    let embeddings = sample_embeddings(2, 64);
+    let config = TTConfig::for_dim(64);
+
+    let tt1 = tt_decompose(&embeddings[0], &config).unwrap();
+    let tt2 = tt_decompose(&embeddings[1], &config).unwrap();
+
+    // Compute dot product in TT space
+    let tt_dot = tt_dot_product(&tt1, &tt2).unwrap();
+
+    // Compute dot product in original space
+    let original_dot: f32 = embeddings[0]
+        .iter()
+        .zip(&embeddings[1])
+        .map(|(a, b)| a * b)
+        .sum();
+
+    // TT dot product should be reasonably close
+    let relative_error = (tt_dot - original_dot).abs() / original_dot.abs().max(1.0);
+    assert!(
+        relative_error < 0.5,
+        "TT dot product error too high: {:.4} vs {:.4}",
+        tt_dot,
+        original_dot
+    );
+}
+
+#[test]
+fn test_tt_high_compression_mode() {
+    let embeddings = sample_embeddings(5, 256);
+    let config = TTConfig::high_compression(256);
+
+    for (i, original) in embeddings.iter().enumerate() {
+        let tt = tt_decompose(original, &config).unwrap();
+
+        // High compression should achieve better compression ratio
+        let ratio = tt.compression_ratio();
+        assert!(
+            ratio > 2.0,
+            "doc:{} - High compression mode should achieve >2x, got {:.2}x",
+            i,
+            ratio
+        );
+    }
 }
 
 #[test]

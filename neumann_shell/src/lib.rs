@@ -322,7 +322,7 @@ impl Shell {
 
         let store = self.router.read().vector().store().clone();
         let config = tensor_compress::CompressionConfig {
-            vector_quantization: Some(tensor_compress::QuantMode::Int8),
+            tensor_mode: Some(tensor_compress::TensorMode::tensor_train(768)),
             delta_encoding: true,
             rle_encoding: true,
         };

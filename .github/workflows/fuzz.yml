@@ -77,6 +77,11 @@ jobs:
           - cache_eviction_scorer
           - cache_semantic_search
           - cache_metric_roundtrip
+          - cache_lifecycle
+          # Tensor Train compression targets
+          - tt_roundtrip
+          - streaming_format
+          - delta_apply
 
     steps:
       - uses: actions/checkout@v4

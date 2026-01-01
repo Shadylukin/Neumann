@@ -1,7 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use peak_alloc::PeakAlloc;
+#[allow(deprecated)]
 use tensor_compress::{
     compress_ids, decompress_ids, quantize_binary, quantize_int8, rle_decode, rle_encode,
+    tt_cosine_similarity, tt_decompose, tt_dot_product, tt_reconstruct, TTConfig,
 };
 
 #[global_allocator]
@@ -89,6 +91,112 @@ fn bench_rle_decode(c: &mut Criterion) {
     );
 }
 
+// Tensor Train (TT) decomposition benchmarks
+
+fn bench_tt_decompose_256d(c: &mut Criterion) {
+    let vector: Vec<f32> = (0..256).map(|i| (i as f32).sin()).collect();
+    let config = TTConfig::for_dim(256);
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_decompose_256d", |b| {
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+    });
+    println!(
+        "\n  tt_decompose_256d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_decompose_1024d(c: &mut Criterion) {
+    let vector: Vec<f32> = (0..1024).map(|i| (i as f32).sin()).collect();
+    let config = TTConfig::for_dim(1024);
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_decompose_1024d", |b| {
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+    });
+    println!(
+        "  tt_decompose_1024d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_decompose_4096d(c: &mut Criterion) {
+    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let config = TTConfig::for_dim(4096);
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_decompose_4096d", |b| {
+        b.iter(|| tt_decompose(black_box(&vector), black_box(&config)))
+    });
+    println!(
+        "  tt_decompose_4096d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_reconstruct_4096d(c: &mut Criterion) {
+    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let config = TTConfig::for_dim(4096);
+    let tt = tt_decompose(&vector, &config).unwrap();
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_reconstruct_4096d", |b| {
+        b.iter(|| tt_reconstruct(black_box(&tt)))
+    });
+    println!(
+        "  tt_reconstruct_4096d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_dot_product_4096d(c: &mut Criterion) {
+    let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
+    let config = TTConfig::for_dim(4096);
+    let tt1 = tt_decompose(&v1, &config).unwrap();
+    let tt2 = tt_decompose(&v2, &config).unwrap();
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_dot_product_4096d", |b| {
+        b.iter(|| tt_dot_product(black_box(&tt1), black_box(&tt2)))
+    });
+    println!(
+        "  tt_dot_product_4096d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_cosine_similarity_4096d(c: &mut Criterion) {
+    let v1: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let v2: Vec<f32> = (0..4096).map(|i| (i as f32).cos()).collect();
+    let config = TTConfig::for_dim(4096);
+    let tt1 = tt_decompose(&v1, &config).unwrap();
+    let tt2 = tt_decompose(&v2, &config).unwrap();
+
+    PEAK_ALLOC.reset_peak_usage();
+    c.bench_function("tt_cosine_similarity_4096d", |b| {
+        b.iter(|| tt_cosine_similarity(black_box(&tt1), black_box(&tt2)))
+    });
+    println!(
+        "  tt_cosine_similarity_4096d peak RAM: {:.1} KB",
+        PEAK_ALLOC.peak_usage_as_kb()
+    );
+}
+
+fn bench_tt_compression_ratio(c: &mut Criterion) {
+    let vector: Vec<f32> = (0..4096).map(|i| (i as f32).sin()).collect();
+    let config = TTConfig::for_dim(4096);
+
+    c.bench_function("tt_compression_ratio_4096d", |b| {
+        b.iter(|| {
+            let tt = tt_decompose(black_box(&vector), black_box(&config)).unwrap();
+            let ratio = tt.compression_ratio();
+            black_box(ratio)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_quantize_int8,
@@ -97,5 +205,12 @@ criterion_group!(
     bench_delta_decompress,
     bench_rle_encode,
     bench_rle_decode,
+    bench_tt_decompose_256d,
+    bench_tt_decompose_1024d,
+    bench_tt_decompose_4096d,
+    bench_tt_reconstruct_4096d,
+    bench_tt_dot_product_4096d,
+    bench_tt_cosine_similarity_4096d,
+    bench_tt_compression_ratio,
 );
 criterion_main!(benches);

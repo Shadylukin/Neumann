@@ -248,3 +248,26 @@ path = "fuzz_targets/cache_lifecycle.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 9: Tensor Train compression targets
+
+[[bin]]
+name = "tt_roundtrip"
+path = "fuzz_targets/tt_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "streaming_format"
+path = "fuzz_targets/streaming_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta_apply"
+path = "fuzz_targets/delta_apply.rs"
+test = false
+doc = false
+bench = false
