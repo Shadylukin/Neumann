@@ -769,4 +769,173 @@ mod tests {
         let result = tt_dot_product(&tt1, &tt2);
         assert!(matches!(result, Err(TTError::IncompatibleShapes)));
     }
+
+    // === Edge case tests for robustness ===
+
+    #[test]
+    fn test_tt_constant_vector() {
+        // All-same values should compress extremely well (rank 1)
+        let vector = vec![1.0f32; 256];
+        let config = TTConfig::for_dim(256);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        // Constant vector has rank-1 structure, should compress well
+        let ratio = tt.compression_ratio();
+        assert!(ratio > 5.0, "Constant vector should compress >5x, got {:.2}x", ratio);
+
+        // Reconstruction should be accurate
+        let reconstructed = tt_reconstruct(&tt);
+        let max_error: f32 = reconstructed.iter().map(|x| (x - 1.0).abs()).fold(0.0, f32::max);
+        assert!(max_error < 0.1, "Constant vector reconstruction error: {}", max_error);
+    }
+
+    #[test]
+    fn test_tt_zero_vector() {
+        // All zeros - degenerate case
+        let vector = vec![0.0f32; 64];
+        let config = TTConfig::for_dim(64);
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let reconstructed = tt_reconstruct(&tt);
+        let max_val: f32 = reconstructed.iter().map(|x| x.abs()).fold(0.0, f32::max);
+        // Should reconstruct to near-zero
+        assert!(max_val < 1e-6, "Zero vector should reconstruct to zeros, got max {}", max_val);
+    }
+
+    #[test]
+    fn test_tt_single_nonzero() {
+        // Single spike - worst case for TT (no low-rank structure)
+        let mut vector = vec![0.0f32; 256];
+        vector[128] = 1.0;
+        let config = TTConfig::for_dim(256);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // The spike should be approximately preserved
+        let spike_val = reconstructed[128];
+        assert!(spike_val > 0.5, "Spike should be preserved, got {}", spike_val);
+    }
+
+    #[test]
+    fn test_tt_alternating_high_frequency() {
+        // Alternating +1/-1 - high frequency signal needs high rank
+        let vector: Vec<f32> = (0..256).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let config = TTConfig::high_accuracy(256); // Use high accuracy for this
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Check that the alternating pattern is roughly preserved
+        let mut correct_signs = 0;
+        for (i, &v) in reconstructed.iter().enumerate() {
+            let expected_sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            if v * expected_sign > 0.0 {
+                correct_signs += 1;
+            }
+        }
+        // At least 80% of signs should be correct
+        assert!(correct_signs > 200, "Only {}/256 signs correct for alternating", correct_signs);
+    }
+
+    #[test]
+    fn test_tt_linear_ramp() {
+        // Linear ramp - should have very low rank
+        let vector: Vec<f32> = (0..256).map(|i| i as f32 / 256.0).collect();
+        let config = TTConfig::for_dim(256);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let ratio = tt.compression_ratio();
+        // Linear functions should compress well
+        assert!(ratio > 2.0, "Linear ramp should compress >2x, got {:.2}x", ratio);
+
+        let reconstructed = tt_reconstruct(&tt);
+        let mse: f32 = vector.iter().zip(&reconstructed)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>() / vector.len() as f32;
+        assert!(mse < 0.01, "Linear ramp MSE too high: {}", mse);
+    }
+
+    #[test]
+    fn test_tt_random_dense() {
+        // Pseudo-random dense vector - typical neural embedding
+        let vector: Vec<f32> = (0..256)
+            .map(|i| ((i as f32 * 1.618).sin() + (i as f32 * 2.718).cos()) / 2.0)
+            .collect();
+        let config = TTConfig::for_dim(256);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Should maintain reasonable similarity
+        let dot: f32 = vector.iter().zip(&reconstructed).map(|(a, b)| a * b).sum();
+        let norm_orig: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_recon: f32 = reconstructed.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let cosine = dot / (norm_orig * norm_recon);
+        assert!(cosine > 0.9, "Random vector cosine similarity too low: {}", cosine);
+    }
+
+    #[test]
+    fn test_tt_prime_dimension_fallback() {
+        // Prime dimension (127) - uses general factorization
+        let vector: Vec<f32> = (0..127).map(|i| (i as f32 * 0.1).sin()).collect();
+        let config = TTConfig::for_dim(127);
+
+        // Should not panic, may have poor compression
+        let result = tt_decompose(&vector, &config);
+        assert!(result.is_ok(), "Prime dimension should not crash");
+    }
+
+    #[test]
+    fn test_tt_very_small_values() {
+        // Denormalized floats / very small values
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32) * 1e-38).collect();
+        let config = TTConfig::for_dim(64);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Should not produce NaN or Inf
+        assert!(reconstructed.iter().all(|x| x.is_finite()), "Tiny values produced non-finite");
+    }
+
+    #[test]
+    fn test_tt_large_values() {
+        // Large but finite values (1e6 range, typical for unnormalized embeddings)
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32) * 1e6).collect();
+        let config = TTConfig::for_dim(64);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Should not overflow
+        assert!(reconstructed.iter().all(|x| x.is_finite()), "Large values overflowed");
+
+        // Verify reasonable reconstruction
+        let max_rel_error: f32 = vector.iter().zip(&reconstructed)
+            .filter(|(a, _)| a.abs() > 1.0)
+            .map(|(a, b)| (a - b).abs() / a.abs())
+            .fold(0.0, f32::max);
+        assert!(max_rel_error < 0.5, "Large values reconstruction error: {}", max_rel_error);
+    }
+
+    #[test]
+    fn test_tt_sparse_like_vector() {
+        // 90% zeros - simulating what happens when sparse vector is densified
+        let mut vector = vec![0.0f32; 256];
+        for i in (0..256).step_by(10) {
+            vector[i] = (i as f32 * 0.1).sin();
+        }
+        let config = TTConfig::for_dim(256);
+
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+
+        // Non-zero positions should be approximately preserved
+        for i in (0..256).step_by(10) {
+            let error = (vector[i] - reconstructed[i]).abs();
+            let rel_error = if vector[i].abs() > 1e-6 { error / vector[i].abs() } else { error };
+            assert!(rel_error < 0.5, "Sparse non-zero at {} has error {}", i, rel_error);
+        }
+    }
 }
