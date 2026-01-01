@@ -105,7 +105,7 @@ pub struct Shell {
     wal: Option<Wal>,
 }
 
-/// Wrapper to implement QueryExecutor for Arc<RwLock<QueryRouter>>.
+/// Wrapper to implement `QueryExecutor` for `Arc<RwLock<QueryRouter>>`.
 struct RouterExecutor(Arc<RwLock<QueryRouter>>);
 
 impl QueryExecutor for RouterExecutor {
@@ -143,13 +143,11 @@ impl Shell {
     }
 
     /// Returns a read guard to the query router for direct access.
-    #[must_use]
     pub fn router(&self) -> parking_lot::RwLockReadGuard<'_, QueryRouter> {
         self.router.read()
     }
 
     /// Returns a write guard to the query router for mutable access.
-    #[must_use]
     pub fn router_mut(&self) -> parking_lot::RwLockWriteGuard<'_, QueryRouter> {
         self.router.write()
     }
@@ -201,7 +199,8 @@ impl Shell {
                 continue;
             }
 
-            if let Err(e) = self.router.read().execute_parsed(cmd) {
+            let result = self.router.read().execute_parsed(cmd);
+            if let Err(e) = result {
                 return Err(format!("WAL replay failed at line {}: {e}", line_num + 1));
             }
             count += 1;
@@ -271,7 +270,8 @@ impl Shell {
         }
 
         // Execute as query
-        match self.router.read().execute_parsed(trimmed) {
+        let query_result = self.router.read().execute_parsed(trimmed);
+        match query_result {
             Ok(result) => {
                 // Log write commands to WAL after successful execution
                 if Self::is_write_command(trimmed) {
@@ -321,11 +321,10 @@ impl Shell {
         };
 
         let store = self.router.read().vector().store().clone();
-        let config = tensor_compress::CompressionConfig {
-            tensor_mode: Some(tensor_compress::TensorMode::tensor_train(768)),
-            delta_encoding: true,
-            rle_encoding: true,
-        };
+
+        // Auto-detect embedding dimension from stored vectors
+        let dim = Self::detect_embedding_dimension(&store);
+        let config = tensor_compress::CompressionConfig::balanced(dim);
 
         if let Err(e) = store.save_snapshot_compressed(&p, config) {
             return CommandResult::Error(format!("Failed to save compressed: {e}"));
@@ -415,6 +414,33 @@ impl Shell {
         Some(rest.to_string())
     }
 
+    /// Detect the most common embedding dimension from stored vectors.
+    /// Falls back to STANDARD (768) if no vectors are found.
+    fn detect_embedding_dimension(store: &tensor_store::TensorStore) -> usize {
+        use tensor_store::TensorValue;
+
+        // Sample vectors to find dimension
+        let keys = store.scan("");
+        for key in keys.iter().take(100) {
+            if let Ok(tensor) = store.get(key) {
+                for field in tensor.keys() {
+                    match tensor.get(field) {
+                        Some(TensorValue::Vector(v)) => {
+                            return v.len();
+                        },
+                        Some(TensorValue::Sparse(s)) => {
+                            return s.dimension();
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
+
+        // Default to standard BERT dimension if no vectors found
+        tensor_compress::CompressionDefaults::STANDARD
+    }
+
     /// Handles the WAL STATUS command.
     fn handle_wal_status(&self) -> CommandResult {
         self.wal.as_ref().map_or_else(
@@ -450,7 +476,7 @@ impl Shell {
     }
 
     /// Initialize vault from environment variable.
-    fn handle_vault_init(&mut self) -> CommandResult {
+    fn handle_vault_init(&self) -> CommandResult {
         match std::env::var("NEUMANN_VAULT_KEY") {
             Ok(key) => {
                 let decoded = match base64::Engine::decode(
@@ -465,7 +491,8 @@ impl Shell {
                     },
                 };
 
-                match self.router.write().init_vault(&decoded) {
+                let result = self.router.write().init_vault(&decoded);
+                match result {
                     Ok(()) => CommandResult::Output("Vault initialized".to_string()),
                     Err(e) => CommandResult::Error(format!("Failed to initialize vault: {e}")),
                 }
@@ -478,7 +505,7 @@ impl Shell {
     }
 
     /// Set current identity for vault access control.
-    fn handle_vault_identity(&mut self, input: &str) -> CommandResult {
+    fn handle_vault_identity(&self, input: &str) -> CommandResult {
         let rest = input
             .to_lowercase()
             .strip_prefix("vault identity")
@@ -503,8 +530,9 @@ impl Shell {
     }
 
     /// Initialize the cache with default configuration.
-    fn handle_cache_init(&mut self) -> CommandResult {
-        match self.router.write().init_cache_default() {
+    fn handle_cache_init(&self) -> CommandResult {
+        let result = self.router.write().init_cache_default();
+        match result {
             Ok(()) => CommandResult::Output("Cache initialized".to_string()),
             Err(e) => CommandResult::Error(format!("Failed to initialize cache: {e}")),
         }
@@ -512,9 +540,9 @@ impl Shell {
 
     /// Handles the CLUSTER CONNECT command.
     ///
-    /// Syntax: CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]
-    /// Example: CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'
-    fn handle_cluster_connect(&mut self, input: &str) -> CommandResult {
+    /// Syntax: `CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]`
+    /// Example: `CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'`
+    fn handle_cluster_connect(&self, input: &str) -> CommandResult {
         // Parse the command arguments
         let args = input.trim();
         let args = args
@@ -575,7 +603,9 @@ impl Shell {
         for addr in &addresses[1..] {
             match Self::parse_node_address(addr) {
                 Ok((peer_id, peer_addr)) => peers.push((peer_id, peer_addr)),
-                Err(e) => return CommandResult::Error(format!("Invalid peer address '{}': {e}", addr)),
+                Err(e) => {
+                    return CommandResult::Error(format!("Invalid peer address '{addr}': {e}"))
+                },
             }
         }
 
@@ -592,15 +622,14 @@ impl Shell {
             Ok(()) => {
                 let peer_count = peers.len();
                 CommandResult::Output(format!(
-                    "Cluster initialized: {} @ {} with {} peer(s)",
-                    node_id, bind_addr, peer_count
+                    "Cluster initialized: {node_id} @ {bind_addr} with {peer_count} peer(s)"
                 ))
             },
             Err(e) => CommandResult::Error(format!("Failed to connect to cluster: {e}")),
         }
     }
 
-    /// Parse a node address in the format "node_id@host:port".
+    /// Parse a node address in the format `node_id@host:port`.
     fn parse_node_address(s: &str) -> std::result::Result<(String, std::net::SocketAddr), String> {
         let parts: Vec<&str> = s.splitn(2, '@').collect();
         if parts.len() != 2 {
@@ -616,13 +645,14 @@ impl Shell {
     }
 
     /// Handles the CLUSTER DISCONNECT command.
-    fn handle_cluster_disconnect(&mut self) -> CommandResult {
+    fn handle_cluster_disconnect(&self) -> CommandResult {
         let is_active = self.router.read().is_cluster_active();
         if !is_active {
             return CommandResult::Error("Not connected to cluster".to_string());
         }
 
-        match self.router.write().shutdown_cluster() {
+        let result = self.router.write().shutdown_cluster();
+        match result {
             Ok(()) => CommandResult::Output("Disconnected from cluster".to_string()),
             Err(e) => CommandResult::Error(format!("Failed to disconnect: {e}")),
         }
@@ -630,10 +660,13 @@ impl Shell {
 
     /// Lists all tables in the database.
     fn list_tables(&self) -> CommandResult {
-        self.router.read().execute_parsed("SHOW TABLES").map_or_else(
-            |_| CommandResult::Output("No tables found.".to_string()),
-            |result| CommandResult::Output(format_result(&result)),
-        )
+        self.router
+            .read()
+            .execute_parsed("SHOW TABLES")
+            .map_or_else(
+                |_| CommandResult::Output("No tables found.".to_string()),
+                |result| CommandResult::Output(format_result(&result)),
+            )
     }
 
     /// Returns the help text.
@@ -1939,7 +1972,6 @@ mod tests {
     #[test]
     fn test_format_rows_header_formatting() {
         use relational_engine::{Row, Value};
-        use std::collections::HashMap;
 
         let rows = vec![Row {
             id: 1,

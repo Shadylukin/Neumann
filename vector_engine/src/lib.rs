@@ -4,7 +4,9 @@
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use tensor_store::{fields, hnsw::simd, TensorData, TensorStore, TensorStoreError, TensorValue};
+use tensor_store::{
+    fields, hnsw::simd, SparseVector, TensorData, TensorStore, TensorStoreError, TensorValue,
+};
 
 // Re-export HNSW types from tensor_store for backward compatibility
 pub use tensor_store::{HNSWConfig, HNSWIndex};
@@ -112,6 +114,7 @@ impl VectorEngine {
 
     /// Store an embedding vector with the given key.
     ///
+    /// Automatically uses sparse format for vectors with >50% zeros.
     /// Overwrites any existing embedding with the same key.
     pub fn store_embedding(&self, key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
@@ -120,13 +123,32 @@ impl VectorEngine {
 
         let storage_key = Self::embedding_key(key);
         let mut tensor = TensorData::new();
-        tensor.set("vector", TensorValue::Vector(vector));
+
+        // Detect sparse vectors and store in optimal format
+        let storage = if Self::should_use_sparse(&vector) {
+            TensorValue::Sparse(SparseVector::from_dense(&vector))
+        } else {
+            TensorValue::Vector(vector)
+        };
+        tensor.set("vector", storage);
 
         self.store.put(storage_key, tensor)?;
         Ok(())
     }
 
+    /// Check if a vector should use sparse storage.
+    fn should_use_sparse(vector: &[f32]) -> bool {
+        if vector.is_empty() {
+            return false;
+        }
+        let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+        // For 0.5 threshold: sparse if nnz <= len/2, i.e., nnz*2 <= len
+        nnz * 2 <= vector.len()
+    }
+
     /// Get an embedding by key.
+    ///
+    /// Returns the embedding as a dense vector regardless of storage format.
     pub fn get_embedding(&self, key: &str) -> Result<Vec<f32>> {
         let storage_key = Self::embedding_key(key);
         let tensor = self
@@ -136,6 +158,7 @@ impl VectorEngine {
 
         match tensor.get("vector") {
             Some(TensorValue::Vector(v)) => Ok(v.clone()),
+            Some(TensorValue::Sparse(s)) => Ok(s.to_dense()),
             _ => Err(VectorError::NotFound(key.to_string())),
         }
     }
@@ -249,6 +272,15 @@ impl VectorEngine {
         Ok(results)
     }
 
+    /// Extract vector from TensorValue, handling both dense and sparse formats.
+    fn extract_vector(value: &TensorValue) -> Option<Vec<f32>> {
+        match value {
+            TensorValue::Vector(v) => Some(v.clone()),
+            TensorValue::Sparse(s) => Some(s.to_dense()),
+            _ => None,
+        }
+    }
+
     /// Sequential similarity search (faster for small datasets)
     fn search_sequential(
         store: &TensorStore,
@@ -259,16 +291,13 @@ impl VectorEngine {
         keys.iter()
             .filter_map(|storage_key| {
                 let tensor = store.get(storage_key).ok()?;
-                let stored_vec = match tensor.get("vector") {
-                    Some(TensorValue::Vector(v)) => v,
-                    _ => return None,
-                };
+                let stored_vec = Self::extract_vector(tensor.get("vector")?)?;
 
                 if stored_vec.len() != query.len() {
                     return None;
                 }
 
-                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                let score = Self::cosine_similarity(query, &stored_vec, query_magnitude);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -289,16 +318,13 @@ impl VectorEngine {
         keys.par_iter()
             .filter_map(|storage_key| {
                 let tensor = store.get(storage_key).ok()?;
-                let stored_vec = match tensor.get("vector") {
-                    Some(TensorValue::Vector(v)) => v,
-                    _ => return None,
-                };
+                let stored_vec = Self::extract_vector(tensor.get("vector")?)?;
 
                 if stored_vec.len() != query.len() {
                     return None;
                 }
 
-                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                let score = Self::cosine_similarity(query, &stored_vec, query_magnitude);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -320,16 +346,13 @@ impl VectorEngine {
         keys.iter()
             .filter_map(|storage_key| {
                 let tensor = store.get(storage_key).ok()?;
-                let stored_vec = match tensor.get("vector") {
-                    Some(TensorValue::Vector(v)) => v,
-                    _ => return None,
-                };
+                let stored_vec = Self::extract_vector(tensor.get("vector")?)?;
 
                 if stored_vec.len() != query.len() {
                     return None;
                 }
 
-                let score = Self::compute_score(query, stored_vec, query_magnitude, metric);
+                let score = Self::compute_score(query, &stored_vec, query_magnitude, metric);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -351,16 +374,13 @@ impl VectorEngine {
         keys.par_iter()
             .filter_map(|storage_key| {
                 let tensor = store.get(storage_key).ok()?;
-                let stored_vec = match tensor.get("vector") {
-                    Some(TensorValue::Vector(v)) => v,
-                    _ => return None,
-                };
+                let stored_vec = Self::extract_vector(tensor.get("vector")?)?;
 
                 if stored_vec.len() != query.len() {
                     return None;
                 }
 
-                let score = Self::compute_score(query, stored_vec, query_magnitude, metric);
+                let score = Self::compute_score(query, &stored_vec, query_magnitude, metric);
                 let key = storage_key
                     .strip_prefix(Self::embedding_prefix())
                     .unwrap_or(storage_key)
@@ -439,8 +459,8 @@ impl VectorEngine {
         let keys = self.store.scan(Self::embedding_prefix());
         for key in keys {
             if let Ok(tensor) = self.store.get(&key) {
-                if let Some(TensorValue::Vector(v)) = tensor.get("vector") {
-                    return Some(v.len());
+                if let Some(vec) = tensor.get("vector").and_then(Self::extract_vector) {
+                    return Some(vec.len());
                 }
             }
         }
@@ -531,6 +551,8 @@ impl VectorEngine {
     // _embedding field, enabling cross-engine queries on shared entities.
 
     /// Store embedding in an entity's _embedding field. Creates entity if needed.
+    ///
+    /// Automatically uses sparse format for vectors with >50% zeros.
     pub fn set_entity_embedding(&self, entity_key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
             return Err(VectorError::EmptyVector);
@@ -540,12 +562,21 @@ impl VectorEngine {
             .store
             .get(entity_key)
             .unwrap_or_else(|_| TensorData::new());
-        tensor.set(fields::EMBEDDING, TensorValue::Vector(vector));
+
+        // Detect sparse vectors and store in optimal format
+        let storage = if Self::should_use_sparse(&vector) {
+            TensorValue::Sparse(SparseVector::from_dense(&vector))
+        } else {
+            TensorValue::Vector(vector)
+        };
+        tensor.set(fields::EMBEDDING, storage);
         self.store.put(entity_key, tensor)?;
         Ok(())
     }
 
     /// Get embedding from an entity's _embedding field.
+    ///
+    /// Returns the embedding as a dense vector regardless of storage format.
     pub fn get_entity_embedding(&self, entity_key: &str) -> Result<Vec<f32>> {
         let tensor = self
             .store
@@ -554,6 +585,7 @@ impl VectorEngine {
 
         match tensor.get(fields::EMBEDDING) {
             Some(TensorValue::Vector(v)) => Ok(v.clone()),
+            Some(TensorValue::Sparse(s)) => Ok(s.to_dense()),
             _ => Err(VectorError::NotFound(entity_key.to_string())),
         }
     }
@@ -601,16 +633,13 @@ impl VectorEngine {
             .iter()
             .filter_map(|key| {
                 let tensor = self.store.get(key).ok()?;
-                let stored_vec = match tensor.get(fields::EMBEDDING) {
-                    Some(TensorValue::Vector(v)) => v,
-                    _ => return None,
-                };
+                let stored_vec = Self::extract_vector(tensor.get(fields::EMBEDDING)?)?;
 
                 if stored_vec.len() != query.len() {
                     return None;
                 }
 
-                let score = Self::cosine_similarity(query, stored_vec, query_magnitude);
+                let score = Self::cosine_similarity(query, &stored_vec, query_magnitude);
                 Some(SearchResult::new(key.clone(), score))
             })
             .collect();
@@ -1604,5 +1633,144 @@ mod tests {
         let b = vec![3.0, 4.0];
         let dist = VectorEngine::euclidean_distance(&a, &b);
         assert!((dist - 5.0).abs() < 1e-6);
+    }
+
+    // Sparse vector tests
+
+    #[test]
+    fn sparse_vector_storage_and_retrieval() {
+        let engine = VectorEngine::new();
+
+        // Create a sparse vector (>50% zeros)
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+        sparse[50] = 2.0;
+        sparse[99] = 3.0;
+
+        engine.store_embedding("sparse", sparse.clone()).unwrap();
+        let retrieved = engine.get_embedding("sparse").unwrap();
+
+        assert_eq!(retrieved.len(), sparse.len());
+        assert_eq!(retrieved[0], 1.0);
+        assert_eq!(retrieved[50], 2.0);
+        assert_eq!(retrieved[99], 3.0);
+    }
+
+    #[test]
+    fn sparse_vector_search() {
+        let engine = VectorEngine::new();
+
+        // Create sparse vectors with 97% zeros (3 non-zeros in 100 elements)
+        let mut v1 = vec![0.0f32; 100];
+        v1[0] = 1.0;
+        v1[1] = 0.0;
+        v1[2] = 0.0;
+
+        let mut v2 = vec![0.0f32; 100];
+        v2[0] = 0.707;
+        v2[1] = 0.707;
+
+        let mut v3 = vec![0.0f32; 100];
+        v3[0] = 0.0;
+        v3[1] = 1.0;
+
+        engine.store_embedding("v1", v1).unwrap();
+        engine.store_embedding("v2", v2).unwrap();
+        engine.store_embedding("v3", v3).unwrap();
+
+        // Query with [1, 0, 0, ...]
+        let mut query = vec![0.0f32; 100];
+        query[0] = 1.0;
+
+        let results = engine.search_similar(&query, 3).unwrap();
+
+        assert_eq!(results.len(), 3);
+        // v1 should be the best match
+        assert_eq!(results[0].key, "v1");
+        assert!((results[0].score - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn sparse_entity_embedding() {
+        let engine = VectorEngine::new();
+
+        let mut sparse = vec![0.0f32; 100];
+        sparse[10] = 5.0;
+        sparse[20] = -3.0;
+
+        engine
+            .set_entity_embedding("entity:1", sparse.clone())
+            .unwrap();
+        let retrieved = engine.get_entity_embedding("entity:1").unwrap();
+
+        assert_eq!(retrieved.len(), 100);
+        assert_eq!(retrieved[10], 5.0);
+        assert_eq!(retrieved[20], -3.0);
+        assert_eq!(retrieved[0], 0.0);
+    }
+
+    #[test]
+    fn sparse_detection_threshold() {
+        // Exactly 50% zeros should use sparse
+        let half_sparse: Vec<f32> = (0..100).map(|i| if i < 50 { 0.0 } else { 1.0 }).collect();
+        assert!(VectorEngine::should_use_sparse(&half_sparse));
+
+        // Less than 50% zeros should use dense
+        let mostly_dense: Vec<f32> = (0..100).map(|i| if i < 40 { 0.0 } else { 1.0 }).collect();
+        assert!(!VectorEngine::should_use_sparse(&mostly_dense));
+
+        // 97% zeros should use sparse
+        let very_sparse: Vec<f32> = (0..100).map(|i| if i < 3 { 1.0 } else { 0.0 }).collect();
+        assert!(VectorEngine::should_use_sparse(&very_sparse));
+    }
+
+    #[test]
+    fn sparse_search_with_metric() {
+        let engine = VectorEngine::new();
+
+        // Sparse vectors
+        let mut v1 = vec![0.0f32; 100];
+        v1[0] = 1.0;
+
+        let mut v2 = vec![0.0f32; 100];
+        v2[0] = 2.0;
+
+        engine.store_embedding("v1", v1).unwrap();
+        engine.store_embedding("v2", v2).unwrap();
+
+        let mut query = vec![0.0f32; 100];
+        query[0] = 1.0;
+
+        let results = engine
+            .search_similar_with_metric(&query, 2, DistanceMetric::Euclidean)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        // v1 is closest (distance 0)
+        assert_eq!(results[0].key, "v1");
+    }
+
+    #[test]
+    fn search_entities_with_sparse() {
+        let engine = VectorEngine::new();
+
+        // Create sparse entity embeddings
+        let mut e1 = vec![0.0f32; 100];
+        e1[0] = 1.0;
+
+        let mut e2 = vec![0.0f32; 100];
+        e2[1] = 1.0;
+
+        engine.set_entity_embedding("user:1", e1).unwrap();
+        engine.set_entity_embedding("user:2", e2).unwrap();
+
+        let mut query = vec![0.0f32; 100];
+        query[0] = 1.0;
+
+        let results = engine.search_entities(&query, 2).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].key, "user:1");
+        assert!((results[0].score - 1.0).abs() < 0.01);
     }
 }

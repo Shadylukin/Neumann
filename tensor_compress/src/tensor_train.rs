@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Errors from TT operations.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum TTError {
     #[error("dimension {dim} cannot be reshaped to {shape:?} (product: {product})")]
     ShapeMismatch {
@@ -35,6 +35,10 @@ pub enum TTError {
     InvalidRank,
     #[error("incompatible TT shapes for operation")]
     IncompatibleShapes,
+    #[error("invalid shape: {0}")]
+    InvalidShape(String),
+    #[error("invalid tolerance: {0} (must be 0 < tol <= 1)")]
+    InvalidTolerance(f32),
     #[error("decomposition error: {0}")]
     Decompose(#[from] DecomposeError),
 }
@@ -52,38 +56,79 @@ pub struct TTConfig {
 }
 
 impl TTConfig {
+    /// Validate this configuration.
+    ///
+    /// # Errors
+    /// Returns error if shape is empty, rank < 1, or tolerance out of range.
+    pub fn validate(&self) -> Result<(), TTError> {
+        if self.shape.is_empty() {
+            return Err(TTError::InvalidShape("empty shape".into()));
+        }
+        if self.shape.contains(&0) {
+            return Err(TTError::InvalidShape("shape contains zero".into()));
+        }
+        if self.max_rank < 1 {
+            return Err(TTError::InvalidRank);
+        }
+        if self.tolerance <= 0.0 || self.tolerance > 1.0 || !self.tolerance.is_finite() {
+            return Err(TTError::InvalidTolerance(self.tolerance));
+        }
+        Ok(())
+    }
+
     /// Create a configuration optimized for the given dimension.
     /// Automatically determines a good tensor shape.
-    #[must_use]
-    pub fn for_dim(dim: usize) -> Self {
+    ///
+    /// # Errors
+    /// Returns `EmptyVector` if dimension is 0.
+    pub fn for_dim(dim: usize) -> Result<Self, TTError> {
+        if dim == 0 {
+            return Err(TTError::EmptyVector);
+        }
         let shape = optimal_shape(dim);
-        Self {
+        let config = Self {
             shape,
             max_rank: 8,
             tolerance: 1e-4,
-        }
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// High compression preset (lower accuracy).
-    #[must_use]
-    pub fn high_compression(dim: usize) -> Self {
+    ///
+    /// # Errors
+    /// Returns `EmptyVector` if dimension is 0.
+    pub fn high_compression(dim: usize) -> Result<Self, TTError> {
+        if dim == 0 {
+            return Err(TTError::EmptyVector);
+        }
         let shape = optimal_shape(dim);
-        Self {
+        let config = Self {
             shape,
             max_rank: 4,
             tolerance: 1e-2,
-        }
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// High accuracy preset (lower compression).
-    #[must_use]
-    pub fn high_accuracy(dim: usize) -> Self {
+    ///
+    /// # Errors
+    /// Returns `EmptyVector` if dimension is 0.
+    pub fn high_accuracy(dim: usize) -> Result<Self, TTError> {
+        if dim == 0 {
+            return Err(TTError::EmptyVector);
+        }
         let shape = optimal_shape(dim);
-        Self {
+        let config = Self {
             shape,
             max_rank: 16,
             tolerance: 1e-6,
-        }
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -466,11 +511,7 @@ pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
                 for k in 0..n {
                     for ia in 0..r1a {
                         for ib in 0..r1b {
-                            let gram_idx = if gram.len() == 1 {
-                                0
-                            } else {
-                                ia * r1b + ib
-                            };
+                            let gram_idx = if gram.len() == 1 { 0 } else { ia * r1b + ib };
                             let g = gram.get(gram_idx).copied().unwrap_or(0.0);
                             sum += g * core_a.get(ia, k, a_idx) * core_b.get(ib, k, b_idx);
                         }
@@ -531,10 +572,7 @@ pub fn tt_scale(tt: &TTVector, scalar: f32) -> TTVector {
 }
 
 /// Batch decompose multiple vectors with the same config.
-pub fn tt_decompose_batch(
-    vectors: &[&[f32]],
-    config: &TTConfig,
-) -> Result<Vec<TTVector>, TTError> {
+pub fn tt_decompose_batch(vectors: &[&[f32]], config: &TTConfig) -> Result<Vec<TTVector>, TTError> {
     vectors.iter().map(|v| tt_decompose(v, config)).collect()
 }
 
@@ -544,9 +582,30 @@ mod tests {
 
     #[test]
     fn test_tt_config_for_dim() {
-        let config = TTConfig::for_dim(4096);
+        let config = TTConfig::for_dim(4096).unwrap();
         assert_eq!(config.shape, vec![8, 8, 8, 8]);
         assert_eq!(config.max_rank, 8);
+    }
+
+    #[test]
+    fn test_tt_config_validation() {
+        // Valid configs
+        assert!(TTConfig::for_dim(64).is_ok());
+        assert!(TTConfig::for_dim(4096).is_ok());
+        assert!(TTConfig::high_compression(768).is_ok());
+        assert!(TTConfig::high_accuracy(768).is_ok());
+
+        // Invalid: zero dimension
+        assert!(TTConfig::for_dim(0).is_err());
+        assert!(TTConfig::high_compression(0).is_err());
+
+        // Manual validation
+        let bad = TTConfig {
+            shape: vec![],
+            max_rank: 8,
+            tolerance: 0.01,
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]
@@ -588,7 +647,7 @@ mod tests {
     fn test_tt_decompose_simple() {
         // Simple test: decompose a 64-dim vector
         let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         assert_eq!(tt.original_dim, 64);
@@ -598,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_tt_decompose_empty() {
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let result = tt_decompose(&[], &config);
         assert!(matches!(result, Err(TTError::EmptyVector)));
     }
@@ -606,7 +665,7 @@ mod tests {
     #[test]
     fn test_tt_decompose_shape_mismatch() {
         let vector: Vec<f32> = vec![1.0; 100];
-        let config = TTConfig::for_dim(64); // expects 64
+        let config = TTConfig::for_dim(64).unwrap(); // expects 64
         let result = tt_decompose(&vector, &config);
         assert!(matches!(result, Err(TTError::ShapeMismatch { .. })));
     }
@@ -644,7 +703,7 @@ mod tests {
     #[test]
     fn test_tt_norm() {
         let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         let tt_norm_val = tt_norm(&tt);
@@ -659,7 +718,7 @@ mod tests {
     fn test_tt_dot_product() {
         let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
         let v2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let tt1 = tt_decompose(&v1, &config).unwrap();
         let tt2 = tt_decompose(&v2, &config).unwrap();
@@ -676,7 +735,7 @@ mod tests {
     fn test_tt_cosine_similarity() {
         let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
         let v2: Vec<f32> = v1.clone(); // Same vector
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let tt1 = tt_decompose(&v1, &config).unwrap();
         let tt2 = tt_decompose(&v2, &config).unwrap();
@@ -689,7 +748,7 @@ mod tests {
     #[test]
     fn test_tt_scale() {
         let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         let scaled = tt_scale(&tt, 2.0);
@@ -706,7 +765,7 @@ mod tests {
     fn test_tt_compression_ratio_4096() {
         // Test with realistic 4096-dim vector
         let vector: Vec<f32> = (0..4096).map(|i| (i as f32 * 0.01).sin()).collect();
-        let config = TTConfig::for_dim(4096);
+        let config = TTConfig::for_dim(4096).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         let ratio = tt.compression_ratio();
@@ -721,7 +780,7 @@ mod tests {
     #[test]
     fn test_tt_vector_storage_size() {
         let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         let storage = tt.storage_size();
@@ -733,7 +792,7 @@ mod tests {
     fn test_tt_batch_decompose() {
         let v1: Vec<f32> = (0..64).map(|i| i as f32).collect();
         let v2: Vec<f32> = (0..64).map(|i| (i as f32).sqrt()).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let batch = tt_decompose_batch(&[&v1, &v2], &config).unwrap();
         assert_eq!(batch.len(), 2);
@@ -743,7 +802,7 @@ mod tests {
     fn test_tt_euclidean_distance() {
         let v1: Vec<f32> = vec![1.0; 64];
         let v2: Vec<f32> = vec![2.0; 64];
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let tt1 = tt_decompose(&v1, &config).unwrap();
         let tt2 = tt_decompose(&v2, &config).unwrap();
@@ -763,8 +822,8 @@ mod tests {
         let v1: Vec<f32> = (0..64).map(|i| i as f32).collect();
         let v2: Vec<f32> = (0..128).map(|i| i as f32).collect();
 
-        let tt1 = tt_decompose(&v1, &TTConfig::for_dim(64)).unwrap();
-        let tt2 = tt_decompose(&v2, &TTConfig::for_dim(128)).unwrap();
+        let tt1 = tt_decompose(&v1, &TTConfig::for_dim(64).unwrap()).unwrap();
+        let tt2 = tt_decompose(&v2, &TTConfig::for_dim(128).unwrap()).unwrap();
 
         let result = tt_dot_product(&tt1, &tt2);
         assert!(matches!(result, Err(TTError::IncompatibleShapes)));
@@ -776,30 +835,45 @@ mod tests {
     fn test_tt_constant_vector() {
         // All-same values should compress extremely well (rank 1)
         let vector = vec![1.0f32; 256];
-        let config = TTConfig::for_dim(256);
+        let config = TTConfig::for_dim(256).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         // Constant vector has rank-1 structure, should compress well
         let ratio = tt.compression_ratio();
-        assert!(ratio > 5.0, "Constant vector should compress >5x, got {:.2}x", ratio);
+        assert!(
+            ratio > 5.0,
+            "Constant vector should compress >5x, got {:.2}x",
+            ratio
+        );
 
         // Reconstruction should be accurate
         let reconstructed = tt_reconstruct(&tt);
-        let max_error: f32 = reconstructed.iter().map(|x| (x - 1.0).abs()).fold(0.0, f32::max);
-        assert!(max_error < 0.1, "Constant vector reconstruction error: {}", max_error);
+        let max_error: f32 = reconstructed
+            .iter()
+            .map(|x| (x - 1.0).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            max_error < 0.1,
+            "Constant vector reconstruction error: {}",
+            max_error
+        );
     }
 
     #[test]
     fn test_tt_zero_vector() {
         // All zeros - degenerate case
         let vector = vec![0.0f32; 64];
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
         let tt = tt_decompose(&vector, &config).unwrap();
 
         let reconstructed = tt_reconstruct(&tt);
         let max_val: f32 = reconstructed.iter().map(|x| x.abs()).fold(0.0, f32::max);
         // Should reconstruct to near-zero
-        assert!(max_val < 1e-6, "Zero vector should reconstruct to zeros, got max {}", max_val);
+        assert!(
+            max_val < 1e-6,
+            "Zero vector should reconstruct to zeros, got max {}",
+            max_val
+        );
     }
 
     #[test]
@@ -807,21 +881,27 @@ mod tests {
         // Single spike - worst case for TT (no low-rank structure)
         let mut vector = vec![0.0f32; 256];
         vector[128] = 1.0;
-        let config = TTConfig::for_dim(256);
+        let config = TTConfig::for_dim(256).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
 
         // The spike should be approximately preserved
         let spike_val = reconstructed[128];
-        assert!(spike_val > 0.5, "Spike should be preserved, got {}", spike_val);
+        assert!(
+            spike_val > 0.5,
+            "Spike should be preserved, got {}",
+            spike_val
+        );
     }
 
     #[test]
     fn test_tt_alternating_high_frequency() {
         // Alternating +1/-1 - high frequency signal needs high rank
-        let vector: Vec<f32> = (0..256).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
-        let config = TTConfig::high_accuracy(256); // Use high accuracy for this
+        let vector: Vec<f32> = (0..256)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let config = TTConfig::high_accuracy(256).unwrap(); // Use high accuracy for this
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
@@ -835,24 +915,35 @@ mod tests {
             }
         }
         // At least 80% of signs should be correct
-        assert!(correct_signs > 200, "Only {}/256 signs correct for alternating", correct_signs);
+        assert!(
+            correct_signs > 200,
+            "Only {}/256 signs correct for alternating",
+            correct_signs
+        );
     }
 
     #[test]
     fn test_tt_linear_ramp() {
         // Linear ramp - should have very low rank
         let vector: Vec<f32> = (0..256).map(|i| i as f32 / 256.0).collect();
-        let config = TTConfig::for_dim(256);
+        let config = TTConfig::for_dim(256).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let ratio = tt.compression_ratio();
         // Linear functions should compress well
-        assert!(ratio > 2.0, "Linear ramp should compress >2x, got {:.2}x", ratio);
+        assert!(
+            ratio > 2.0,
+            "Linear ramp should compress >2x, got {:.2}x",
+            ratio
+        );
 
         let reconstructed = tt_reconstruct(&tt);
-        let mse: f32 = vector.iter().zip(&reconstructed)
+        let mse: f32 = vector
+            .iter()
+            .zip(&reconstructed)
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>() / vector.len() as f32;
+            .sum::<f32>()
+            / vector.len() as f32;
         assert!(mse < 0.01, "Linear ramp MSE too high: {}", mse);
     }
 
@@ -862,7 +953,7 @@ mod tests {
         let vector: Vec<f32> = (0..256)
             .map(|i| ((i as f32 * 1.618).sin() + (i as f32 * 2.718).cos()) / 2.0)
             .collect();
-        let config = TTConfig::for_dim(256);
+        let config = TTConfig::for_dim(256).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
@@ -872,14 +963,18 @@ mod tests {
         let norm_orig: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm_recon: f32 = reconstructed.iter().map(|x| x * x).sum::<f32>().sqrt();
         let cosine = dot / (norm_orig * norm_recon);
-        assert!(cosine > 0.9, "Random vector cosine similarity too low: {}", cosine);
+        assert!(
+            cosine > 0.9,
+            "Random vector cosine similarity too low: {}",
+            cosine
+        );
     }
 
     #[test]
     fn test_tt_prime_dimension_fallback() {
         // Prime dimension (127) - uses general factorization
         let vector: Vec<f32> = (0..127).map(|i| (i as f32 * 0.1).sin()).collect();
-        let config = TTConfig::for_dim(127);
+        let config = TTConfig::for_dim(127).unwrap();
 
         // Should not panic, may have poor compression
         let result = tt_decompose(&vector, &config);
@@ -890,33 +985,45 @@ mod tests {
     fn test_tt_very_small_values() {
         // Denormalized floats / very small values
         let vector: Vec<f32> = (0..64).map(|i| (i as f32) * 1e-38).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
 
         // Should not produce NaN or Inf
-        assert!(reconstructed.iter().all(|x| x.is_finite()), "Tiny values produced non-finite");
+        assert!(
+            reconstructed.iter().all(|x| x.is_finite()),
+            "Tiny values produced non-finite"
+        );
     }
 
     #[test]
     fn test_tt_large_values() {
         // Large but finite values (1e6 range, typical for unnormalized embeddings)
         let vector: Vec<f32> = (0..64).map(|i| (i as f32) * 1e6).collect();
-        let config = TTConfig::for_dim(64);
+        let config = TTConfig::for_dim(64).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
 
         // Should not overflow
-        assert!(reconstructed.iter().all(|x| x.is_finite()), "Large values overflowed");
+        assert!(
+            reconstructed.iter().all(|x| x.is_finite()),
+            "Large values overflowed"
+        );
 
         // Verify reasonable reconstruction
-        let max_rel_error: f32 = vector.iter().zip(&reconstructed)
+        let max_rel_error: f32 = vector
+            .iter()
+            .zip(&reconstructed)
             .filter(|(a, _)| a.abs() > 1.0)
             .map(|(a, b)| (a - b).abs() / a.abs())
             .fold(0.0, f32::max);
-        assert!(max_rel_error < 0.5, "Large values reconstruction error: {}", max_rel_error);
+        assert!(
+            max_rel_error < 0.5,
+            "Large values reconstruction error: {}",
+            max_rel_error
+        );
     }
 
     #[test]
@@ -926,7 +1033,7 @@ mod tests {
         for i in (0..256).step_by(10) {
             vector[i] = (i as f32 * 0.1).sin();
         }
-        let config = TTConfig::for_dim(256);
+        let config = TTConfig::for_dim(256).unwrap();
 
         let tt = tt_decompose(&vector, &config).unwrap();
         let reconstructed = tt_reconstruct(&tt);
@@ -934,8 +1041,17 @@ mod tests {
         // Non-zero positions should be approximately preserved
         for i in (0..256).step_by(10) {
             let error = (vector[i] - reconstructed[i]).abs();
-            let rel_error = if vector[i].abs() > 1e-6 { error / vector[i].abs() } else { error };
-            assert!(rel_error < 0.5, "Sparse non-zero at {} has error {}", i, rel_error);
+            let rel_error = if vector[i].abs() > 1e-6 {
+                error / vector[i].abs()
+            } else {
+                error
+            };
+            assert!(
+                rel_error < 0.5,
+                "Sparse non-zero at {} has error {}",
+                i,
+                rel_error
+            );
         }
     }
 }

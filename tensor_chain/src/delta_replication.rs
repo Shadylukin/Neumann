@@ -4,7 +4,7 @@
 //! Entities are encoded as (archetype_id + sparse_delta) and batched for transfer.
 //!
 //! When int8 quantization is enabled, delta values are further compressed from f32 to i8,
-//! providing an additional 4x size reduction with ~1% max error.
+//! providing an additional 4x size reduction with ~2% max error.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -125,6 +125,9 @@ impl DeltaUpdate {
     }
 
     /// Convert to quantized form (4x size reduction for delta values).
+    ///
+    /// Returns `None` if the delta is too sparse (>95% zeros) since the quantization
+    /// overhead outweighs the benefit for very sparse deltas.
     pub fn quantize(&self) -> Option<QuantizedDeltaUpdate> {
         if self.delta_values.is_empty() {
             return Some(QuantizedDeltaUpdate {
@@ -139,6 +142,15 @@ impl DeltaUpdate {
                 version: self.version,
                 dimension: self.dimension,
             });
+        }
+
+        // Skip quantization for very sparse deltas (>95% zeros).
+        // The overhead of min/scale fields outweighs the benefit.
+        if self.dimension > 0 {
+            let sparsity = 1.0 - (self.delta_indices.len() as f32 / self.dimension as f32);
+            if sparsity > 0.95 {
+                return None;
+            }
         }
 
         let quantized = quantize_int8(&self.delta_values).ok()?;
@@ -1423,5 +1435,44 @@ mod tests {
         for (orig, dec) in embedding.iter().zip(decoded.iter()) {
             assert!(approx_eq(*orig, *dec, 0.05));
         }
+    }
+
+    #[test]
+    fn test_quantize_skips_very_sparse() {
+        // Create a very sparse update (>95% zeros)
+        // 3 non-zeros in 100 dimensions = 97% sparse
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 0,
+            delta_indices: vec![0, 50, 99],
+            delta_values: vec![0.1, 0.2, 0.3],
+            version: 1,
+            dimension: 100,
+        };
+
+        // Should return None for very sparse deltas
+        let result = update.quantize();
+        assert!(
+            result.is_none(),
+            "Expected None for 97% sparse delta, quantization overhead not worth it"
+        );
+    }
+
+    #[test]
+    fn test_quantize_works_for_dense_enough() {
+        // Create a moderately sparse update (~75% zeros)
+        // 25 non-zeros in 100 dimensions = 75% sparse (below 95% threshold)
+        let update = DeltaUpdate {
+            key: "key1".to_string(),
+            archetype_id: 0,
+            delta_indices: (0..25).map(|i| i as u32).collect(),
+            delta_values: (0..25).map(|i| i as f32 * 0.1).collect(),
+            version: 1,
+            dimension: 100,
+        };
+
+        // Should succeed for dense-enough deltas
+        let result = update.quantize();
+        assert!(result.is_some(), "Expected Some for 75% sparse delta");
     }
 }

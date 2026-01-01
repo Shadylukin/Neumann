@@ -44,7 +44,7 @@ fn stress_tt_decompose_concurrent() {
         embedding_dim,
         42,
     ));
-    let tt_config = Arc::new(TTConfig::for_dim(embedding_dim));
+    let tt_config = Arc::new(TTConfig::for_dim(embedding_dim).unwrap());
 
     let mut handles = vec![];
     let start = Instant::now();
@@ -64,11 +64,7 @@ fn stress_tt_decompose_concurrent() {
 
                 if let Ok(tt) = tt_decompose(&embeddings[idx], &tt_config) {
                     let reconstructed = tt_reconstruct(&tt);
-                    assert_eq!(
-                        reconstructed.len(),
-                        embedding_dim,
-                        "Dimension mismatch"
-                    );
+                    assert_eq!(reconstructed.len(), embedding_dim, "Dimension mismatch");
                     success.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -95,7 +91,10 @@ fn stress_tt_decompose_concurrent() {
 
     // Verify success count
     let successes = success_count.load(Ordering::Relaxed);
-    println!("Successful decompositions: {} / {}", successes, total_vectors);
+    println!(
+        "Successful decompositions: {} / {}",
+        successes, total_vectors
+    );
     assert!(
         successes >= total_vectors * 95 / 100,
         "Too many decomposition failures"
@@ -143,7 +142,11 @@ fn stress_streaming_large_snapshot() {
         "  Throughput: {:.0} entries/sec",
         entry_count as f64 / write_elapsed.as_secs_f64()
     );
-    println!("  Bytes: {} ({:.1} KB)", bytes_written, bytes_written as f64 / 1024.0);
+    println!(
+        "  Bytes: {} ({:.1} KB)",
+        bytes_written,
+        bytes_written as f64 / 1024.0
+    );
     println!("  Batch latencies: {}", write_latencies.snapshot());
 
     // Read phase
@@ -275,7 +278,7 @@ fn stress_tt_compression_ratio_4096d() {
     println!("Dimension: {}", embedding_dim);
 
     let embeddings = generate_embeddings(vector_count, embedding_dim, 42);
-    let config = TTConfig::for_dim(embedding_dim);
+    let config = TTConfig::for_dim(embedding_dim).unwrap();
 
     let start = Instant::now();
     let mut total_original = 0usize;
@@ -313,7 +316,10 @@ fn stress_tt_compression_ratio_4096d() {
         total_compressed,
         total_compressed as f64 / 1024.0 / 1024.0
     );
-    println!("Overall ratio: {:.2}x", total_original as f64 / total_compressed as f64);
+    println!(
+        "Overall ratio: {:.2}x",
+        total_original as f64 / total_compressed as f64
+    );
     println!(
         "Per-vector ratio: min={:.2}x, avg={:.2}x, max={:.2}x",
         min_ratio, avg_ratio, max_ratio
@@ -326,5 +332,8 @@ fn stress_tt_compression_ratio_4096d() {
         avg_ratio
     );
 
-    println!("PASSED: Average {:.2}x compression on {}d vectors", avg_ratio, embedding_dim);
+    println!(
+        "PASSED: Average {:.2}x compression on {}d vectors",
+        avg_ratio, embedding_dim
+    );
 }

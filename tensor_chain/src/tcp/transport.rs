@@ -452,7 +452,7 @@ impl TcpTransport {
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 Err(ChainError::NetworkError("transport closed".to_string()))
-            }
+            },
         }
     }
 }

@@ -357,12 +357,22 @@ fn test_cache_invalidate_embeddings_by_source() {
     // Store embeddings from multiple sources
     for i in 0..5 {
         cache
-            .put_embedding("source_a", &format!("content_{}", i), vec![0.1 * i as f32; 3], "model")
+            .put_embedding(
+                "source_a",
+                &format!("content_{}", i),
+                vec![0.1 * i as f32; 3],
+                "model",
+            )
             .unwrap();
     }
     for i in 0..3 {
         cache
-            .put_embedding("source_b", &format!("content_{}", i), vec![0.2 * i as f32; 3], "model")
+            .put_embedding(
+                "source_b",
+                &format!("content_{}", i),
+                vec![0.2 * i as f32; 3],
+                "model",
+            )
             .unwrap();
     }
 
@@ -401,7 +411,13 @@ fn test_cache_cleanup_expired_all_layers() {
     // Semantic layer (via put with embedding)
     let embedding = vec![0.1, 0.2, 0.3, 0.4];
     cache
-        .put("semantic_prompt", &embedding, "semantic_response", "model", None)
+        .put(
+            "semantic_prompt",
+            &embedding,
+            "semantic_response",
+            "model",
+            None,
+        )
         .unwrap();
 
     // Embedding layer
@@ -416,7 +432,11 @@ fn test_cache_cleanup_expired_all_layers() {
     let cleaned = cache.cleanup_expired();
 
     // Should have cleaned entries from all layers
-    assert!(cleaned > 0, "Expected to clean at least 1 expired entry, got {}", cleaned);
+    assert!(
+        cleaned > 0,
+        "Expected to clean at least 1 expired entry, got {}",
+        cleaned
+    );
 
     // Verify entries are expired/cleaned
     // After cleanup, expired entries should not be accessible
@@ -437,7 +457,9 @@ fn test_cache_stats_after_invalidation() {
 
     // Add entries
     for i in 0..10 {
-        cache.put_simple(&format!("stats_key_{}", i), &format!("value_{}", i)).unwrap();
+        cache
+            .put_simple(&format!("stats_key_{}", i), &format!("value_{}", i))
+            .unwrap();
     }
 
     // Get initial stats

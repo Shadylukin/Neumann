@@ -134,9 +134,7 @@ impl Cache {
     ///
     /// Returns `CacheError::InvalidConfig` if the configuration fails validation.
     pub fn with_config(config: CacheConfig) -> Result<Self> {
-        config
-            .validate()
-            .map_err(CacheError::InvalidConfig)?;
+        config.validate().map_err(CacheError::InvalidConfig)?;
 
         let stats = Arc::new(CacheStats::new());
         let store = TensorStore::new();
@@ -156,9 +154,7 @@ impl Cache {
     ///
     /// Returns `CacheError::InvalidConfig` if the configuration fails validation.
     pub fn with_store(store: TensorStore, config: CacheConfig) -> Result<Self> {
-        config
-            .validate()
-            .map_err(CacheError::InvalidConfig)?;
+        config.validate().map_err(CacheError::InvalidConfig)?;
 
         let stats = Arc::new(CacheStats::new());
         let index = CacheIndex::new(config.embedding_dim, config.distance_metric.clone());
@@ -409,7 +405,13 @@ impl Cache {
             fields::EMBEDDING_DIM,
             TensorValue::Scalar(ScalarValue::Int(Self::i64_from_usize(embedding.len()))),
         );
-        data.set(fields::EMBEDDING, TensorValue::Vector(embedding));
+        // Use sparse format for vectors with >50% zeros
+        let storage = if Self::should_use_sparse(&embedding) {
+            TensorValue::Sparse(SparseVector::from_dense(&embedding))
+        } else {
+            TensorValue::Vector(embedding)
+        };
+        data.set(fields::EMBEDDING, storage);
         data.set(fields::MODEL, scalar_string(model));
         data.set(
             fields::CREATED_AT,
@@ -737,7 +739,13 @@ impl Cache {
                 fields::EMBEDDING_DIM,
                 TensorValue::Scalar(ScalarValue::Int(Self::i64_from_usize(emb.len()))),
             );
-            data.set(fields::EMBEDDING, TensorValue::Vector(emb.to_vec()));
+            // Use sparse format for vectors with >50% zeros
+            let storage = if Self::should_use_sparse(emb) {
+                TensorValue::Sparse(SparseVector::from_dense(emb))
+            } else {
+                TensorValue::Vector(emb.to_vec())
+            };
+            data.set(fields::EMBEDDING, storage);
         }
 
         if let Some(v) = params.version {
@@ -784,6 +792,16 @@ impl Cache {
 
     fn i64_from_u128(val: u128) -> i64 {
         i64::try_from(val).unwrap_or(i64::MAX)
+    }
+
+    /// Check if a vector should use sparse storage (50% threshold).
+    fn should_use_sparse(vector: &[f32]) -> bool {
+        if vector.is_empty() {
+            return false;
+        }
+        let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+        // For 0.5 threshold: sparse if nnz <= len/2, i.e., nnz*2 <= len
+        nnz * 2 <= vector.len()
     }
 }
 
@@ -1129,11 +1147,15 @@ mod tests {
 
         // Dense embedding (no zeros)
         let dense = normalize(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
-        cache.put("dense", &dense, "dense_response", "gpt-4", None).unwrap();
+        cache
+            .put("dense", &dense, "dense_response", "gpt-4", None)
+            .unwrap();
 
         // Sparse embedding (80% zeros)
         let sparse = normalize(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        cache.put("sparse", &sparse, "sparse_response", "gpt-4", None).unwrap();
+        cache
+            .put("sparse", &sparse, "sparse_response", "gpt-4", None)
+            .unwrap();
 
         // Query with sparse should use Jaccard
         let hit = cache.get("different", Some(&sparse));
@@ -1153,7 +1175,9 @@ mod tests {
         let cache = Cache::with_config(config).unwrap();
 
         let sparse = normalize(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        cache.put("sparse", &sparse, "response", "gpt-4", None).unwrap();
+        cache
+            .put("sparse", &sparse, "response", "gpt-4", None)
+            .unwrap();
 
         // Even with sparse embedding, should use Cosine since auto_select is disabled
         let hit = cache.get("different", Some(&sparse));
@@ -1219,7 +1243,9 @@ mod tests {
         let cache = Cache::with_config(config).unwrap();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
-        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", None)
+            .unwrap();
         cache.put_simple("key", "value").unwrap();
         cache
             .put_embedding("src", "content", vec![0.1, 0.2, 0.3], "model")
@@ -1285,7 +1311,9 @@ mod tests {
         let cache = Cache::with_config(config).unwrap();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
-        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", None)
+            .unwrap();
 
         std::thread::sleep(Duration::from_millis(100));
 
@@ -1327,7 +1355,9 @@ mod tests {
         let cache = Cache::with_config(config).unwrap();
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
-        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", None)
+            .unwrap();
 
         std::thread::sleep(Duration::from_millis(100));
 
@@ -1349,7 +1379,9 @@ mod tests {
         let embedding = normalize(&[1.0, 0.0, 0.0]);
 
         // Add entries to all layers
-        cache.put("prompt", &embedding, "response", "gpt-4", None).unwrap();
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", None)
+            .unwrap();
         cache.put_simple("key", "value").unwrap();
         cache
             .put_embedding("src", "content", vec![0.1, 0.2, 0.3], "model")
@@ -1361,5 +1393,67 @@ mod tests {
         // cleanup_expired should find and clean expired entries
         let cleaned = cache.cleanup_expired();
         assert!(cleaned > 0, "Expected to clean at least 1 expired entry");
+    }
+
+    // Sparse embedding tests
+
+    #[test]
+    fn test_sparse_embedding_storage_and_retrieval() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 100;
+        let cache = Cache::with_config(config).unwrap();
+
+        // Create a sparse embedding (>50% zeros)
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+        sparse[50] = 2.0;
+        sparse[99] = 3.0;
+
+        cache
+            .put_embedding("source", "content", sparse.clone(), "model")
+            .unwrap();
+
+        let retrieved = cache.get_embedding("source", "content").unwrap();
+        assert_eq!(retrieved.len(), 100);
+        assert_eq!(retrieved[0], 1.0);
+        assert_eq!(retrieved[50], 2.0);
+        assert_eq!(retrieved[99], 3.0);
+        assert_eq!(retrieved[1], 0.0);
+    }
+
+    #[test]
+    fn test_sparse_semantic_cache() {
+        let mut config = CacheConfig::default();
+        config.embedding_dim = 100;
+        config.semantic_threshold = 0.9;
+        let cache = Cache::with_config(config).unwrap();
+
+        // Create a sparse embedding
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+
+        cache
+            .put("prompt", &sparse, "response", "gpt-4", None)
+            .unwrap();
+
+        // Should retrieve via exact match
+        let hit = cache.get("prompt", None).unwrap();
+        assert_eq!(hit.response, "response");
+        assert_eq!(hit.layer, CacheLayer::Exact);
+    }
+
+    #[test]
+    fn test_sparse_detection_threshold() {
+        // Exactly 50% zeros should use sparse
+        let half_sparse: Vec<f32> = (0..100).map(|i| if i < 50 { 0.0 } else { 1.0 }).collect();
+        assert!(Cache::should_use_sparse(&half_sparse));
+
+        // Less than 50% zeros should use dense
+        let mostly_dense: Vec<f32> = (0..100).map(|i| if i < 40 { 0.0 } else { 1.0 }).collect();
+        assert!(!Cache::should_use_sparse(&mostly_dense));
+
+        // 97% zeros should use sparse
+        let very_sparse: Vec<f32> = (0..100).map(|i| if i < 3 { 1.0 } else { 0.0 }).collect();
+        assert!(Cache::should_use_sparse(&very_sparse));
     }
 }

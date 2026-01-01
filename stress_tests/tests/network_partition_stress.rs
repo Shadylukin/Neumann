@@ -67,15 +67,10 @@ async fn tick_all(nodes: &[Arc<RaftNode>]) {
     for node in nodes {
         // Try to receive and process up to 10 messages per tick
         for _ in 0..10 {
-            match tokio::time::timeout(
-                Duration::from_micros(100),
-                node.transport().recv(),
-            )
-            .await
-            {
+            match tokio::time::timeout(Duration::from_micros(100), node.transport().recv()).await {
                 Ok(Ok((from, msg))) => {
                     let _ = node.handle_message_async(&from, msg).await;
-                }
+                },
                 _ => break, // No more messages or timeout
             }
         }
@@ -333,8 +328,8 @@ async fn stress_message_throughput_under_partition() {
             match tokio::time::timeout(Duration::from_millis(10), t2_clone.recv()).await {
                 Ok(Ok(_)) => {
                     received_clone.fetch_add(1, Ordering::Relaxed);
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
     });

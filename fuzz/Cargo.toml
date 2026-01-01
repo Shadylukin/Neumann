@@ -271,3 +271,19 @@ path = "fuzz_targets/delta_apply.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 10: Sparse compression targets
+
+[[bin]]
+name = "tt_config_validation"
+path = "fuzz_targets/tt_config_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sparse_embedding_slab"
+path = "fuzz_targets/sparse_embedding_slab.rs"
+test = false
+doc = false
+bench = false

@@ -103,6 +103,16 @@ pub enum CompressedValue {
         shape: Vec<usize>,
         ranks: Vec<usize>,
     },
+    /// Sparse vector (stores only non-zero positions and values).
+    /// Efficient when >50% of values are zero.
+    VectorSparse {
+        /// Total dimension of the vector.
+        dimension: usize,
+        /// Positions of non-zero values (delta + varint encoded).
+        positions: Vec<u8>,
+        /// Non-zero values.
+        values: Vec<f32>,
+    },
     /// Int8 quantized vector (legacy).
     VectorInt8 {
         data: Vec<i8>,
@@ -177,7 +187,7 @@ pub fn compress_vector(
                         shape: tt.shape,
                         ranks: tt.ranks,
                     })
-                }
+                },
                 #[allow(deprecated)]
                 TensorMode::LegacyInt8 => {
                     if let Ok(q) = quantize_int8(vector) {
@@ -189,7 +199,7 @@ pub fn compress_vector(
                     } else {
                         Ok(CompressedValue::VectorRaw(vector.to_vec()))
                     }
-                }
+                },
                 #[allow(deprecated)]
                 TensorMode::LegacyBinary => {
                     let q = quantize_binary(vector);
@@ -197,7 +207,7 @@ pub fn compress_vector(
                         data: q.data,
                         len: q.len,
                     })
-                }
+                },
             };
         }
     }
@@ -233,7 +243,7 @@ pub fn decompress_vector(value: &CompressedValue) -> Result<Vec<f32>, FormatErro
                 ranks: ranks.clone(),
             };
             Ok(tt_reconstruct(&tt))
-        }
+        },
         CompressedValue::VectorInt8 { data, min, scale } => {
             let quantized = crate::quantize::QuantizedInt8 {
                 data: data.clone(),
@@ -241,18 +251,36 @@ pub fn decompress_vector(value: &CompressedValue) -> Result<Vec<f32>, FormatErro
                 scale: *scale,
             };
             Ok(dequantize_int8(&quantized))
-        }
+        },
         CompressedValue::VectorBinary { data, len } => {
             let quantized = crate::quantize::QuantizedBinary {
                 data: data.clone(),
                 len: *len,
             };
             Ok(dequantize_binary(&quantized)?)
-        }
+        },
         CompressedValue::IdList(bytes) => {
             let ids = decompress_ids(bytes);
             Ok(ids.iter().map(|&id| id as f32).collect())
-        }
+        },
+        CompressedValue::VectorSparse {
+            dimension,
+            positions,
+            values,
+        } => {
+            // Decompress positions from delta+varint encoding
+            let pos_ids = decompress_ids(positions);
+            // Reconstruct dense vector
+            let mut dense = vec![0.0f32; *dimension];
+            for (pos, &val) in pos_ids.iter().zip(values.iter()) {
+                if let Ok(idx) = usize::try_from(*pos) {
+                    if idx < *dimension {
+                        dense[idx] = val;
+                    }
+                }
+            }
+            Ok(dense)
+        },
         _ => Ok(Vec::new()),
     }
 }
@@ -280,6 +308,102 @@ pub fn decompress_ints(value: &CompressedValue) -> Vec<i64> {
         CompressedValue::VectorRaw(v) => v.iter().map(|&f| f as i64).collect(),
         _ => Vec::new(),
     }
+}
+
+/// Compress a sparse vector from position/value arrays.
+///
+/// Positions must be sorted and unique. Values are the non-zero elements
+/// at those positions. The dimension is the total size of the vector.
+///
+/// Uses delta + varint encoding for positions, achieving excellent compression
+/// for vectors with clustered non-zeros.
+#[must_use]
+pub fn compress_sparse(dimension: usize, positions: &[u32], values: &[f32]) -> CompressedValue {
+    debug_assert_eq!(positions.len(), values.len());
+
+    // Convert positions to u64 for delta encoding
+    let pos_u64: Vec<u64> = positions.iter().map(|&p| u64::from(p)).collect();
+    let compressed_positions = compress_ids(&pos_u64);
+
+    CompressedValue::VectorSparse {
+        dimension,
+        positions: compressed_positions,
+        values: values.to_vec(),
+    }
+}
+
+/// Compress a dense vector as sparse if it has enough zeros.
+///
+/// Returns `Some(VectorSparse)` if the vector is >50% zeros (worth compressing),
+/// otherwise returns `None` and the caller should use another format.
+#[must_use]
+pub fn compress_dense_as_sparse(vector: &[f32]) -> Option<CompressedValue> {
+    // Count non-zeros, skipping indices that don't fit in u32
+    let non_zeros: Vec<(u32, f32)> = vector
+        .iter()
+        .enumerate()
+        .filter(|(_, &v)| v != 0.0)
+        .filter_map(|(i, &v)| u32::try_from(i).ok().map(|idx| (idx, v)))
+        .collect();
+
+    // Only use sparse format if >50% are zeros
+    if non_zeros.len() * 2 > vector.len() {
+        return None;
+    }
+
+    let positions: Vec<u32> = non_zeros.iter().map(|(p, _)| *p).collect();
+    let values: Vec<f32> = non_zeros.iter().map(|(_, v)| *v).collect();
+
+    Some(compress_sparse(vector.len(), &positions, &values))
+}
+
+/// Estimate the storage size of a sparse compressed vector.
+#[must_use]
+pub fn sparse_storage_size(_dimension: usize, nnz: usize) -> usize {
+    // dimension (8) + positions_len (8) + positions_data (variable) + values (4*nnz)
+    // positions use delta+varint, roughly 1-2 bytes per position for clustered data
+    8 + 8 + nnz * 2 + nnz * 4
+}
+
+/// Check if sparse format would be more efficient than dense.
+#[must_use]
+pub fn should_use_sparse(dimension: usize, nnz: usize) -> bool {
+    let dense_size = dimension * 4;
+    let sparse_size = sparse_storage_size(dimension, nnz);
+    sparse_size < dense_size
+}
+
+/// Check if a vector should use sparse format based on zero threshold.
+///
+/// A vector is considered sparse if more than `threshold` fraction of values
+/// are effectively zero (absolute value less than 1e-6).
+///
+/// For threshold=0.5, this means at least 50% of values must be zero.
+#[must_use]
+pub fn should_use_sparse_threshold(vector: &[f32], threshold: f32) -> bool {
+    const SCALE: usize = 1000;
+
+    if vector.is_empty() {
+        return false;
+    }
+    let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+    // Sparse if: (len - nnz) / len >= threshold
+    // Rearranged: nnz <= len * (1 - threshold)
+    // Multiply both sides by 1000 to use integer math with 3 decimal precision:
+    // nnz * 1000 <= len * (1000 - threshold * 1000)
+    // threshold is clamped to [0, 1], so threshold_int is in [0, 1000]
+    let threshold_clamped = threshold.clamp(0.0, 1.0);
+    let threshold_scaled = (f64::from(threshold_clamped) * 1000.0)
+        .round()
+        .clamp(0.0, 1000.0);
+    // Safe conversion: value is guaranteed to be in [0, 1000]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let threshold_int = threshold_scaled as usize;
+    let max_nnz = vector
+        .len()
+        .saturating_mul(SCALE.saturating_sub(threshold_int));
+    let nnz_scaled = nnz.saturating_mul(SCALE);
+    nnz_scaled <= max_nnz && should_use_sparse(vector.len(), nnz)
 }
 
 /// Heuristic: does this vector look like an ID list?
@@ -348,7 +472,7 @@ mod tests {
     #[test]
     fn test_compress_vector_tt() {
         let config = CompressionConfig {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64))),
+            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64).unwrap())),
             ..Default::default()
         };
         let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
@@ -474,7 +598,7 @@ mod tests {
     #[test]
     fn test_tt_compressed_snapshot_roundtrip() {
         let config = CompressionConfig {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64))),
+            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64).unwrap())),
             delta_encoding: true,
             rle_encoding: true,
         };
@@ -512,5 +636,146 @@ mod tests {
 
         let err = FormatError::UnsupportedVersion(5);
         assert_eq!(err.to_string(), "unsupported version: 5");
+    }
+
+    #[test]
+    fn test_compress_sparse_basic() {
+        let positions = vec![0, 5, 10];
+        let values = vec![1.0, 2.0, 3.0];
+        let compressed = compress_sparse(100, &positions, &values);
+
+        match compressed {
+            CompressedValue::VectorSparse {
+                dimension,
+                positions: _,
+                values: v,
+            } => {
+                assert_eq!(dimension, 100);
+                assert_eq!(v.len(), 3);
+                assert_eq!(v, vec![1.0, 2.0, 3.0]);
+            },
+            _ => panic!("expected VectorSparse"),
+        }
+    }
+
+    #[test]
+    fn test_compress_sparse_roundtrip() {
+        let positions = vec![0, 10, 50, 99];
+        let values = vec![0.5, 1.5, 2.5, 3.5];
+        let compressed = compress_sparse(100, &positions, &values);
+
+        let decompressed = decompress_vector(&compressed).unwrap();
+        assert_eq!(decompressed.len(), 100);
+        assert_eq!(decompressed[0], 0.5);
+        assert_eq!(decompressed[10], 1.5);
+        assert_eq!(decompressed[50], 2.5);
+        assert_eq!(decompressed[99], 3.5);
+        // All other values should be zero
+        assert_eq!(decompressed[1], 0.0);
+        assert_eq!(decompressed[49], 0.0);
+    }
+
+    #[test]
+    fn test_compress_dense_as_sparse() {
+        // Dense vector with many zeros
+        let mut dense = vec![0.0f32; 100];
+        dense[5] = 1.0;
+        dense[25] = 2.0;
+        dense[75] = 3.0;
+
+        let compressed = compress_dense_as_sparse(&dense);
+        assert!(compressed.is_some());
+
+        let compressed = compressed.unwrap();
+        match &compressed {
+            CompressedValue::VectorSparse {
+                dimension, values, ..
+            } => {
+                assert_eq!(*dimension, 100);
+                assert_eq!(values.len(), 3);
+            },
+            _ => panic!("expected VectorSparse"),
+        }
+
+        // Verify roundtrip
+        let decompressed = decompress_vector(&compressed).unwrap();
+        assert_eq!(decompressed[5], 1.0);
+        assert_eq!(decompressed[25], 2.0);
+        assert_eq!(decompressed[75], 3.0);
+    }
+
+    #[test]
+    fn test_compress_dense_as_sparse_too_dense() {
+        // Dense vector with too many non-zeros (>50%)
+        let dense: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let compressed = compress_dense_as_sparse(&dense);
+        assert!(compressed.is_none());
+    }
+
+    #[test]
+    fn test_should_use_sparse() {
+        // 10 non-zeros in 1000-dim vector = 1% density, definitely sparse
+        // dense: 4000, sparse: 16 + 10*2 + 10*4 = 76
+        assert!(should_use_sparse(1000, 10));
+
+        // 660+ non-zeros in 1000-dim vector is too dense
+        // dense: 4000, sparse: 16 + 660*6 = 3976 (just under)
+        // At 667+: sparse: 16 + 667*6 = 4018 > 4000
+        assert!(!should_use_sparse(1000, 667));
+
+        // 500 non-zeros is still sparse efficient
+        // dense: 4000, sparse: 16 + 500*6 = 3016
+        assert!(should_use_sparse(1000, 500));
+    }
+
+    #[test]
+    fn test_sparse_storage_size() {
+        // sparse_storage_size = 8 + 8 + nnz*2 + nnz*4 = 16 + nnz*6
+        let size = sparse_storage_size(1000, 10);
+        assert_eq!(size, 16 + 10 * 6); // 76 bytes
+
+        // Empty sparse vector: 16 bytes overhead
+        let size = sparse_storage_size(1000, 0);
+        assert_eq!(size, 16);
+    }
+
+    #[test]
+    fn test_sparse_empty_vector() {
+        let compressed = compress_sparse(100, &[], &[]);
+        let decompressed = decompress_vector(&compressed).unwrap();
+        assert_eq!(decompressed.len(), 100);
+        assert!(decompressed.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_sparse_snapshot_roundtrip() {
+        let header = Header::new(CompressionConfig::default(), 1);
+
+        // Create a sparse-compressed vector entry
+        let positions = vec![0, 50, 99];
+        let values = vec![1.0, 2.0, 3.0];
+        let compressed_vec = compress_sparse(100, &positions, &values);
+
+        let entry = CompressedEntry {
+            key: "sparse_embedding".to_string(),
+            fields: HashMap::from([("vector".to_string(), compressed_vec)]),
+        };
+        let snapshot = CompressedSnapshot {
+            header,
+            entries: vec![entry],
+        };
+
+        let bytes = snapshot.serialize().unwrap();
+        let restored = CompressedSnapshot::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.entries.len(), 1);
+        let restored_vec = &restored.entries[0].fields["vector"];
+        assert!(matches!(restored_vec, CompressedValue::VectorSparse { .. }));
+
+        let decompressed = decompress_vector(restored_vec).unwrap();
+        assert_eq!(decompressed.len(), 100);
+        assert_eq!(decompressed[0], 1.0);
+        assert_eq!(decompressed[50], 2.0);
+        assert_eq!(decompressed[99], 3.0);
     }
 }

@@ -260,7 +260,7 @@ fn test_cache_dimension_mismatch_error() {
         Err(tensor_cache::CacheError::DimensionMismatch { expected, got }) => {
             assert_eq!(expected, 32);
             assert_eq!(got, 64);
-        }
+        },
         Ok(()) => panic!("Expected DimensionMismatch error, got Ok"),
         Err(e) => panic!("Expected DimensionMismatch error, got {:?}", e),
     }
@@ -277,7 +277,9 @@ fn test_cache_capacity_exceeded_behavior() {
 
     // Fill to capacity
     for i in 0..5 {
-        cache.put_simple(&format!("key_{}", i), &format!("value_{}", i)).unwrap();
+        cache
+            .put_simple(&format!("key_{}", i), &format!("value_{}", i))
+            .unwrap();
     }
 
     // Try to add one more - should get CacheFull error
@@ -287,11 +289,11 @@ fn test_cache_capacity_exceeded_behavior() {
         Err(tensor_cache::CacheError::CacheFull { current, capacity }) => {
             assert_eq!(capacity, 5);
             assert!(current >= 5);
-        }
+        },
         Ok(()) => {
             // Some implementations may silently succeed by evicting
             // Document this behavior
-        }
+        },
         Err(e) => panic!("Unexpected error: {:?}", e),
     }
 }
@@ -341,11 +343,12 @@ fn test_cache_get_or_compute_embedding() {
     let compute_count = std::sync::atomic::AtomicUsize::new(0);
 
     // First call should compute
-    let result1 = cache.get_or_compute_embedding("test_source", "test_content", "test-model", || {
-        compute_called.store(true, std::sync::atomic::Ordering::SeqCst);
-        compute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(vec![0.1, 0.2, 0.3])
-    });
+    let result1 =
+        cache.get_or_compute_embedding("test_source", "test_content", "test-model", || {
+            compute_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            compute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![0.1, 0.2, 0.3])
+        });
 
     assert!(result1.is_ok());
     let emb1 = result1.unwrap();
@@ -354,10 +357,11 @@ fn test_cache_get_or_compute_embedding() {
     assert_eq!(compute_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     // Second call should use cached value (not call compute again)
-    let result2 = cache.get_or_compute_embedding("test_source", "test_content", "test-model", || {
-        compute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(vec![0.4, 0.5, 0.6])
-    });
+    let result2 =
+        cache.get_or_compute_embedding("test_source", "test_content", "test-model", || {
+            compute_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![0.4, 0.5, 0.6])
+        });
 
     assert!(result2.is_ok());
     let emb2 = result2.unwrap();
@@ -385,7 +389,9 @@ fn test_cache_semantic_search_with_metrics() {
     for (i, emb) in embeddings.iter().enumerate() {
         let prompt = format!("metric_prompt:{}", i);
         let response = format!("response for metric query {}", i);
-        cache.put(&prompt, emb, &response, "test-model", None).unwrap();
+        cache
+            .put(&prompt, emb, &response, "test-model", None)
+            .unwrap();
     }
 
     // Query with explicit Cosine metric

@@ -22,7 +22,6 @@ pub const STREAMING_MAGIC: [u8; 4] = *b"NEUS";
 /// Streaming format version.
 pub const STREAMING_VERSION: u16 = 1;
 
-
 /// Streaming snapshot header (written as trailer at end of file).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamingHeader {
@@ -119,9 +118,9 @@ impl<W: Write + Seek> StreamingWriter<W> {
         self.writer.write_all(&trailer_len.to_le_bytes())?;
 
         self.writer.flush()?;
-        self.writer.into_inner().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()).into()
-        })
+        self.writer
+            .into_inner()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()).into())
     }
 }
 
@@ -228,7 +227,7 @@ impl<R: Read> Iterator for StreamingReader<R> {
             Ok(entry) => {
                 self.entries_read += 1;
                 Some(Ok(entry))
-            }
+            },
             Err(e) => Some(Err(FormatError::from(e))),
         }
     }
@@ -251,7 +250,9 @@ pub fn convert_to_streaming<W: Write + Seek>(
 }
 
 /// Read streaming format into a full snapshot (for compatibility).
-pub fn read_streaming_to_snapshot<R: Read + Seek>(reader: R) -> Result<CompressedSnapshot, FormatError> {
+pub fn read_streaming_to_snapshot<R: Read + Seek>(
+    reader: R,
+) -> Result<CompressedSnapshot, FormatError> {
     let stream_reader = StreamingReader::open(reader)?;
     let config = stream_reader.header.config.clone();
     let entry_count = stream_reader.entry_count();
@@ -354,7 +355,9 @@ mod tests {
         let mut writer = StreamingWriter::new(cursor, config).unwrap();
 
         for i in 0..5 {
-            writer.write_entry(&make_test_entry(&format!("k{}", i), i)).unwrap();
+            writer
+                .write_entry(&make_test_entry(&format!("k{}", i), i))
+                .unwrap();
         }
 
         let written = writer.finish().unwrap();
@@ -415,10 +418,7 @@ mod tests {
         let header = Header::new(CompressionConfig::default(), 2);
         let snapshot = CompressedSnapshot {
             header,
-            entries: vec![
-                make_test_entry("a", 1),
-                make_test_entry("b", 2),
-            ],
+            entries: vec![make_test_entry("a", 1), make_test_entry("b", 2)],
         };
 
         let cursor = Cursor::new(Vec::new());
@@ -459,7 +459,8 @@ mod tests {
         let stream2 = create_streaming(vec![("c", 3), ("d", 4)]);
 
         let output = Cursor::new(Vec::new());
-        let count = merge_streaming(vec![stream1, stream2], output, CompressionConfig::default()).unwrap();
+        let count =
+            merge_streaming(vec![stream1, stream2], output, CompressionConfig::default()).unwrap();
         assert_eq!(count, 4);
     }
 
@@ -471,7 +472,9 @@ mod tests {
 
         // Write 1000 entries
         for i in 0..1000 {
-            writer.write_entry(&make_test_entry(&format!("key_{}", i), i)).unwrap();
+            writer
+                .write_entry(&make_test_entry(&format!("key_{}", i), i))
+                .unwrap();
         }
 
         let written = writer.finish().unwrap();

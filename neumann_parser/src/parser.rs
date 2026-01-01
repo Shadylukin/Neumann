@@ -131,11 +131,7 @@ impl<'a> Parser<'a> {
             let name = token.kind.as_str().to_lowercase();
             Ok(Ident::new(name, token.span))
         } else {
-            Err(ParseError::unexpected(
-                token.kind,
-                token.span,
-                "identifier",
-            ))
+            Err(ParseError::unexpected(token.kind, token.span, "identifier"))
         }
     }
 

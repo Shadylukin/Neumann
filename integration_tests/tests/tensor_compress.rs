@@ -6,8 +6,8 @@ use integration_tests::{create_shared_engines, sample_embeddings};
 #[allow(deprecated)]
 use tensor_compress::{
     compress_ids, decompress_ids, delta_decode, delta_encode, dequantize_binary, dequantize_int8,
-    quantize_binary, quantize_int8, rle_decode, rle_encode, tt_decompose, tt_reconstruct,
-    tt_cosine_similarity, tt_dot_product, CompressionConfig, TensorMode, TTConfig,
+    quantize_binary, quantize_int8, rle_decode, rle_encode, tt_cosine_similarity, tt_decompose,
+    tt_dot_product, tt_reconstruct, CompressionConfig, TTConfig, TensorMode,
 };
 
 #[test]
@@ -229,7 +229,7 @@ fn test_tt_decompose_with_vector_engine_embeddings() {
             .unwrap();
     }
 
-    let config = TTConfig::for_dim(64);
+    let config = TTConfig::for_dim(64).unwrap();
 
     // Decompose each embedding and verify roundtrip
     for (i, original) in embeddings.iter().enumerate() {
@@ -276,7 +276,7 @@ fn test_tt_decompose_with_vector_engine_embeddings() {
 #[test]
 fn test_tt_preserves_similarity_order() {
     let embeddings = sample_embeddings(5, 64);
-    let config = TTConfig::for_dim(64);
+    let config = TTConfig::for_dim(64).unwrap();
 
     // Decompose all embeddings
     let tt_vectors: Vec<_> = embeddings
@@ -310,7 +310,7 @@ fn test_tt_preserves_similarity_order() {
 #[test]
 fn test_tt_dot_product_with_embeddings() {
     let embeddings = sample_embeddings(2, 64);
-    let config = TTConfig::for_dim(64);
+    let config = TTConfig::for_dim(64).unwrap();
 
     let tt1 = tt_decompose(&embeddings[0], &config).unwrap();
     let tt2 = tt_decompose(&embeddings[1], &config).unwrap();
@@ -338,7 +338,7 @@ fn test_tt_dot_product_with_embeddings() {
 #[test]
 fn test_tt_high_compression_mode() {
     let embeddings = sample_embeddings(5, 256);
-    let config = TTConfig::high_compression(256);
+    let config = TTConfig::high_compression(256).unwrap();
 
     for (i, original) in embeddings.iter().enumerate() {
         let tt = tt_decompose(original, &config).unwrap();

@@ -99,7 +99,10 @@ fn stress_cache_10k_exact_entries() {
         "Read throughput: {:.0} entries/sec",
         entry_count as f64 / read_elapsed.as_secs_f64()
     );
-    println!("Hit rate: {:.2}%", total_hits as f64 / entry_count as f64 * 100.0);
+    println!(
+        "Hit rate: {:.2}%",
+        total_hits as f64 / entry_count as f64 * 100.0
+    );
 
     for (i, (_, snapshot)) in read_results.iter().enumerate() {
         println!("  read {}: {}", i, snapshot);
@@ -215,7 +218,10 @@ fn stress_cache_semantic_throughput() {
         "Search throughput: {:.0} queries/sec",
         total_queries as f64 / search_elapsed.as_secs_f64()
     );
-    println!("Hit rate: {:.2}%", total_hits as f64 / total_queries as f64 * 100.0);
+    println!(
+        "Hit rate: {:.2}%",
+        total_hits as f64 / total_queries as f64 * 100.0
+    );
 
     for (i, (_, snapshot)) in search_results.iter().enumerate() {
         println!("  Thread {}: {}", i, snapshot);
@@ -243,7 +249,11 @@ fn stress_cache_eviction_performance() {
         };
         let cache = Cache::with_config(config).unwrap();
 
-        println!("\n--- Scale: {} entries (capacity: {}) ---", scale, scale / 2);
+        println!(
+            "\n--- Scale: {} entries (capacity: {}) ---",
+            scale,
+            scale / 2
+        );
 
         // Fill cache beyond capacity
         let start = Instant::now();
@@ -396,7 +406,10 @@ fn stress_cache_concurrent_access() {
     let stats = cache.stats_snapshot();
     assert!(stats.total_entries() > 0, "Cache should have entries");
 
-    println!("PASSED: Concurrent access with {} threads", reader_count + writer_count);
+    println!(
+        "PASSED: Concurrent access with {} threads",
+        reader_count + writer_count
+    );
 }
 
 /// Stress test: Memory stability under sustained load.

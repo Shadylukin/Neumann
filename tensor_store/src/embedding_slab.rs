@@ -316,18 +316,21 @@ impl EmbeddingSlab {
     }
 
     /// Get serializable state for snapshots.
+    ///
+    /// Automatically compresses sparse vectors for efficient storage.
     pub fn snapshot(&self) -> EmbeddingSlabSnapshot {
         let index = self.index.read();
         let chunks = self.chunks.read();
 
-        // Collect all embeddings
-        let embeddings: Vec<(EntityId, Vec<f32>)> = index
+        // Collect all embeddings with automatic sparse compression
+        let embeddings: Vec<(EntityId, CompressedEmbedding)> = index
             .iter()
             .map(|(&entity, &slot)| {
                 let chunk = &chunks[slot.chunk as usize];
                 let start = slot.offset as usize * self.dimension;
                 let end = start + self.dimension;
-                (entity, chunk[start..end].to_vec())
+                let dense = &chunk[start..end];
+                (entity, CompressedEmbedding::from_dense(dense))
             })
             .collect();
 
@@ -338,11 +341,14 @@ impl EmbeddingSlab {
     }
 
     /// Restore from a snapshot.
+    ///
+    /// Decompresses sparse vectors back to dense format for HNSW compatibility.
     pub fn restore(snapshot: EmbeddingSlabSnapshot) -> Self {
         let slab = Self::new(snapshot.dimension, snapshot.embeddings.len().max(1));
 
-        for (entity, embedding) in snapshot.embeddings {
-            let _ = slab.set(entity, &embedding);
+        for (entity, compressed) in snapshot.embeddings {
+            let dense = compressed.to_dense();
+            let _ = slab.set(entity, &dense);
         }
 
         slab
@@ -381,11 +387,75 @@ impl Default for EmbeddingSlab {
     }
 }
 
+/// Compressed embedding for snapshot storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompressedEmbedding {
+    /// Dense vector storage.
+    Dense(Vec<f32>),
+    /// Sparse vector storage (dimension, positions, values).
+    Sparse {
+        dimension: usize,
+        positions: Vec<u32>,
+        values: Vec<f32>,
+    },
+}
+
+impl CompressedEmbedding {
+    /// Create from a dense vector, using sparse format if beneficial (50% threshold).
+    pub fn from_dense(vector: &[f32]) -> Self {
+        if vector.is_empty() {
+            return Self::Dense(Vec::new());
+        }
+
+        let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+        // For 0.5 threshold: sparse if nnz <= len/2, i.e., nnz*2 <= len
+        let use_sparse = nnz * 2 <= vector.len();
+
+        if use_sparse {
+            let mut positions = Vec::with_capacity(nnz);
+            let mut values = Vec::with_capacity(nnz);
+            for (i, &v) in vector.iter().enumerate() {
+                if v.abs() > 1e-6 {
+                    if let Ok(pos) = u32::try_from(i) {
+                        positions.push(pos);
+                        values.push(v);
+                    }
+                }
+            }
+            Self::Sparse {
+                dimension: vector.len(),
+                positions,
+                values,
+            }
+        } else {
+            Self::Dense(vector.to_vec())
+        }
+    }
+
+    /// Convert to a dense vector.
+    pub fn to_dense(&self) -> Vec<f32> {
+        match self {
+            Self::Dense(v) => v.clone(),
+            Self::Sparse {
+                dimension,
+                positions,
+                values,
+            } => {
+                let mut dense = vec![0.0f32; *dimension];
+                for (&pos, &val) in positions.iter().zip(values.iter()) {
+                    dense[pos as usize] = val;
+                }
+                dense
+            },
+        }
+    }
+}
+
 /// Serializable snapshot of EmbeddingSlab state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingSlabSnapshot {
     dimension: usize,
-    embeddings: Vec<(EntityId, Vec<f32>)>,
+    embeddings: Vec<(EntityId, CompressedEmbedding)>,
 }
 
 #[cfg(test)]
@@ -750,5 +820,105 @@ mod tests {
             assert_eq!(embedding.len(), 1024);
             assert_eq!(embedding[0], (i * 1000) as f32);
         }
+    }
+
+    // Sparse snapshot tests
+
+    #[test]
+    fn test_compressed_embedding_dense() {
+        let dense = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let compressed = CompressedEmbedding::from_dense(&dense);
+
+        // Less than 50% zeros, should be stored dense
+        assert!(matches!(compressed, CompressedEmbedding::Dense(_)));
+
+        let restored = compressed.to_dense();
+        assert_eq!(restored, dense);
+    }
+
+    #[test]
+    fn test_compressed_embedding_sparse() {
+        // Create a sparse vector (>50% zeros)
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+        sparse[50] = 2.0;
+        sparse[99] = 3.0;
+
+        let compressed = CompressedEmbedding::from_dense(&sparse);
+
+        // Should be stored as sparse
+        assert!(matches!(compressed, CompressedEmbedding::Sparse { .. }));
+
+        let restored = compressed.to_dense();
+        assert_eq!(restored.len(), 100);
+        assert_eq!(restored[0], 1.0);
+        assert_eq!(restored[50], 2.0);
+        assert_eq!(restored[99], 3.0);
+        assert_eq!(restored[1], 0.0);
+    }
+
+    #[test]
+    fn test_sparse_snapshot_roundtrip() {
+        let slab = EmbeddingSlab::new(100, 10);
+
+        // Add a sparse embedding
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+        sparse[50] = 2.0;
+        sparse[99] = 3.0;
+        slab.set(EntityId::new(1), &sparse).unwrap();
+
+        // Add a dense embedding
+        let dense: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        slab.set(EntityId::new(2), &dense).unwrap();
+
+        // Snapshot and restore
+        let snapshot = slab.snapshot();
+        let restored = EmbeddingSlab::restore(snapshot);
+
+        // Verify both embeddings
+        assert_eq!(restored.len(), 2);
+
+        let restored_sparse = restored.get(EntityId::new(1)).unwrap();
+        assert_eq!(restored_sparse[0], 1.0);
+        assert_eq!(restored_sparse[50], 2.0);
+        assert_eq!(restored_sparse[99], 3.0);
+
+        let restored_dense = restored.get(EntityId::new(2)).unwrap();
+        assert_eq!(restored_dense, dense);
+    }
+
+    #[test]
+    fn test_snapshot_serialization_size() {
+        let slab = EmbeddingSlab::new(1000, 10);
+
+        // Add very sparse vectors (3 non-zeros in 1000 elements = 99.7% sparse)
+        for i in 0..5 {
+            let mut sparse = vec![0.0f32; 1000];
+            sparse[0] = i as f32;
+            sparse[500] = i as f32 * 2.0;
+            sparse[999] = i as f32 * 3.0;
+            slab.set(EntityId::new(i), &sparse).unwrap();
+        }
+
+        let snapshot = slab.snapshot();
+
+        // Verify all embeddings use sparse format
+        for (_, emb) in &snapshot.embeddings {
+            assert!(
+                matches!(emb, CompressedEmbedding::Sparse { .. }),
+                "Expected sparse format for 99.7% sparse vector"
+            );
+        }
+
+        // Serialize and check size is much smaller than dense would be
+        let serialized = bincode::serialize(&snapshot).unwrap();
+        let dense_size = 5 * 1000 * 4 + 100; // 5 vectors * 1000 floats * 4 bytes + overhead
+        assert!(
+            serialized.len() < dense_size / 10,
+            "Sparse snapshot {} bytes should be much smaller than dense {} bytes",
+            serialized.len(),
+            dense_size
+        );
     }
 }

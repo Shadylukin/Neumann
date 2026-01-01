@@ -63,7 +63,9 @@ pub use streaming::{BlobReader, BlobWriter};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tensor_store::{ScalarValue, SparseVector, TensorStore, TensorValue};
+#[cfg(feature = "vector")]
+use tensor_store::SparseVector;
+use tensor_store::{ScalarValue, TensorStore, TensorValue};
 use tokio::task::JoinHandle;
 
 #[cfg(feature = "vector")]
@@ -384,7 +386,13 @@ impl BlobStore {
             .get(&meta_key)
             .map_err(|_| BlobError::NotFound(artifact_id.to_string()))?;
 
-        tensor.set("_embedding", TensorValue::Vector(embedding));
+        // Use sparse format for vectors with >50% zeros
+        let storage = if streaming::should_use_sparse(&embedding) {
+            TensorValue::Sparse(SparseVector::from_dense(&embedding))
+        } else {
+            TensorValue::Vector(embedding)
+        };
+        tensor.set("_embedding", storage);
         tensor.set(
             "_embedded_model",
             TensorValue::Scalar(ScalarValue::String(model.to_string())),

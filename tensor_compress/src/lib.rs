@@ -6,12 +6,13 @@
 //! # Compression Methods
 //!
 //! - **Tensor Train (TT)**: Decomposes vectors into products of smaller tensors (recommended)
+//! - **Sparse**: Native format for vectors with >50% zeros (stores only non-zeros)
 //! - **Delta + varint**: Lossless compression for sorted ID sequences
 //! - **Run-length encoding**: Lossless compression for repeated values
 //! - **Legacy quantization**: int8/binary for backward compatibility
 
-mod delta;
 pub mod decompose;
+mod delta;
 pub mod incremental;
 mod rle;
 pub mod streaming;
@@ -22,15 +23,21 @@ pub mod format;
 // Legacy module (deprecated, kept for backward compatibility)
 mod quantize;
 
+pub use decompose::{DecomposeError, Matrix, SvdResult, TensorView};
 pub use delta::{
     compress_ids, decompress_ids, delta_decode, delta_encode, varint_decode, varint_encode,
 };
-pub use decompose::{DecomposeError, Matrix, SvdResult, TensorView};
 pub use rle::{rle_decode, rle_encode, RleEncoded};
+
+// Sparse compression exports
+pub use format::{
+    compress_dense_as_sparse, compress_sparse, should_use_sparse, should_use_sparse_threshold,
+    sparse_storage_size,
+};
+
 pub use tensor_train::{
-    tt_cosine_similarity, tt_decompose, tt_decompose_batch, tt_dot_product,
-    tt_euclidean_distance, tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError,
-    TTVector,
+    tt_cosine_similarity, tt_decompose, tt_decompose_batch, tt_dot_product, tt_euclidean_distance,
+    tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError, TTVector,
 };
 
 // Legacy exports (deprecated)
@@ -48,7 +55,7 @@ pub enum TensorMode {
     /// Tensor Train decomposition (recommended for 1024+ dimensions).
     /// Achieves 10-20x compression with <1% error.
     TensorTrain(TTConfig),
-    /// Legacy int8 quantization (4x compression, ~1% error).
+    /// Legacy int8 quantization (4x compression, ~2% max error).
     #[deprecated(since = "0.2.0", note = "Use TensorTrain for better compression")]
     LegacyInt8,
     /// Legacy binary quantization (32x compression, lossy).
@@ -58,21 +65,60 @@ pub enum TensorMode {
 
 impl TensorMode {
     /// Create TT mode optimized for the given dimension.
+    ///
+    /// # Panics
+    /// Panics if dimension is 0.
     #[must_use]
     pub fn tensor_train(dim: usize) -> Self {
-        Self::TensorTrain(TTConfig::for_dim(dim))
+        Self::TensorTrain(TTConfig::for_dim(dim).expect("invalid dimension"))
+    }
+
+    /// Create TT mode, returning error for invalid dimension.
+    ///
+    /// # Errors
+    /// Returns error if dimension is 0 or has no valid factorization.
+    pub fn try_tensor_train(dim: usize) -> Result<Self, TTError> {
+        Ok(Self::TensorTrain(TTConfig::for_dim(dim)?))
     }
 
     /// High compression TT preset.
+    ///
+    /// # Panics
+    /// Panics if dimension is 0.
     #[must_use]
     pub fn high_compression(dim: usize) -> Self {
-        Self::TensorTrain(TTConfig::high_compression(dim))
+        Self::TensorTrain(TTConfig::high_compression(dim).expect("invalid dimension"))
     }
 
     /// High accuracy TT preset.
+    ///
+    /// # Panics
+    /// Panics if dimension is 0.
     #[must_use]
     pub fn high_accuracy(dim: usize) -> Self {
-        Self::TensorTrain(TTConfig::high_accuracy(dim))
+        Self::TensorTrain(TTConfig::high_accuracy(dim).expect("invalid dimension"))
+    }
+}
+
+/// Common embedding dimension constants.
+pub struct CompressionDefaults;
+
+impl CompressionDefaults {
+    /// `MiniLM` and small models.
+    pub const SMALL: usize = 64;
+    /// `all-MiniLM-L6-v2`.
+    pub const MEDIUM: usize = 384;
+    /// BERT, sentence-transformers.
+    pub const STANDARD: usize = 768;
+    /// `OpenAI` `text-embedding-ada-002`.
+    pub const LARGE: usize = 1536;
+    /// `LLaMA` and large models.
+    pub const XLARGE: usize = 4096;
+
+    /// Auto-detect optimal compression config from vector length.
+    #[must_use]
+    pub fn config_for(vector: &[f32]) -> CompressionConfig {
+        CompressionConfig::balanced(vector.len())
     }
 }
 
@@ -89,30 +135,45 @@ pub struct CompressionConfig {
 
 impl CompressionConfig {
     /// High compression preset for 4096+ dimension embeddings.
+    ///
+    /// # Panics
+    /// Should not panic as 4096 is a valid dimension.
     #[must_use]
     pub fn high_compression() -> Self {
         Self {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::high_compression(4096))),
+            tensor_mode: Some(TensorMode::TensorTrain(
+                TTConfig::high_compression(CompressionDefaults::XLARGE).expect("valid dimension"),
+            )),
             delta_encoding: true,
             rle_encoding: true,
         }
     }
 
     /// Balanced compression preset.
+    ///
+    /// # Panics
+    /// Panics if dimension is 0.
     #[must_use]
     pub fn balanced(dim: usize) -> Self {
         Self {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(dim))),
+            tensor_mode: Some(TensorMode::TensorTrain(
+                TTConfig::for_dim(dim).expect("invalid dimension"),
+            )),
             delta_encoding: true,
             rle_encoding: true,
         }
     }
 
     /// High accuracy preset (lower compression).
+    ///
+    /// # Panics
+    /// Panics if dimension is 0.
     #[must_use]
     pub fn high_accuracy(dim: usize) -> Self {
         Self {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::high_accuracy(dim))),
+            tensor_mode: Some(TensorMode::TensorTrain(
+                TTConfig::high_accuracy(dim).expect("invalid dimension"),
+            )),
             delta_encoding: true,
             rle_encoding: true,
         }
@@ -123,7 +184,7 @@ impl CompressionConfig {
 #[deprecated(since = "0.2.0", note = "Use TensorMode instead")]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QuantMode {
-    /// Scalar quantization to int8. 4x size reduction, ~1% max error.
+    /// Scalar quantization to int8. 4x size reduction, ~2% max error.
     Int8,
     /// Binary quantization (sign bit only). 32x reduction, lossy.
     Binary,
@@ -144,13 +205,50 @@ mod tests {
     #[test]
     fn test_compression_config_serialize() {
         let config = CompressionConfig {
-            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64))),
+            tensor_mode: Some(TensorMode::TensorTrain(TTConfig::for_dim(64).unwrap())),
             delta_encoding: true,
             rle_encoding: true,
         };
         let bytes = bincode::serialize(&config).unwrap();
         let decoded: CompressionConfig = bincode::deserialize(&bytes).unwrap();
         assert_eq!(config, decoded);
+    }
+
+    #[test]
+    fn test_ttconfig_validation() {
+        // Valid config
+        assert!(TTConfig::for_dim(64).is_ok());
+        assert!(TTConfig::for_dim(768).is_ok());
+        assert!(TTConfig::for_dim(4096).is_ok());
+
+        // Invalid: zero dimension
+        assert!(TTConfig::for_dim(0).is_err());
+
+        // Invalid: manual construction with bad tolerance
+        let bad_config = TTConfig {
+            shape: vec![4, 4, 4],
+            max_rank: 8,
+            tolerance: 0.0,
+        };
+        assert!(bad_config.validate().is_err());
+
+        let bad_config2 = TTConfig {
+            shape: vec![4, 4, 4],
+            max_rank: 8,
+            tolerance: 1.5,
+        };
+        assert!(bad_config2.validate().is_err());
+    }
+
+    #[test]
+    fn test_compression_defaults() {
+        assert_eq!(CompressionDefaults::SMALL, 64);
+        assert_eq!(CompressionDefaults::STANDARD, 768);
+        assert_eq!(CompressionDefaults::XLARGE, 4096);
+
+        let vector = vec![0.0f32; 768];
+        let config = CompressionDefaults::config_for(&vector);
+        assert!(config.tensor_mode.is_some());
     }
 
     #[test]

@@ -107,7 +107,8 @@ impl DeltaSnapshot {
 
     /// Deserialize from bytes.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, DeltaError> {
-        let delta: Self = bincode::deserialize(bytes).map_err(|e| DeltaError::Format(e.to_string()))?;
+        let delta: Self =
+            bincode::deserialize(bytes).map_err(|e| DeltaError::Format(e.to_string()))?;
         delta.header.validate()?;
         Ok(delta)
     }
@@ -205,10 +206,10 @@ pub fn apply_delta(
                 if let Some(value) = &delta_entry.value {
                     entries.insert(delta_entry.key.clone(), value.clone());
                 }
-            }
+            },
             ChangeType::Delete => {
                 entries.remove(&delta_entry.key);
-            }
+            },
         }
     }
 
@@ -282,17 +283,17 @@ pub fn diff_snapshots(
             (None, Some(new_entry)) => {
                 // Added
                 builder.put(key, (*new_entry).clone());
-            }
+            },
             (Some(_), None) => {
                 // Deleted
                 builder.delete(key);
-            }
+            },
             (Some(old_entry), Some(new_entry)) => {
                 // Check if changed (simple equality check)
                 if *old_entry != *new_entry {
                     builder.put(key, (*new_entry).clone());
                 }
-            }
+            },
             (None, None) => unreachable!(),
         }
     }
@@ -400,10 +401,7 @@ mod tests {
     }
 
     fn make_base_snapshot(entries: Vec<(&str, i64)>) -> CompressedSnapshot {
-        let entries: Vec<_> = entries
-            .into_iter()
-            .map(|(k, v)| make_entry(k, v))
-            .collect();
+        let entries: Vec<_> = entries.into_iter().map(|(k, v)| make_entry(k, v)).collect();
         let header = Header::new(CompressionConfig::default(), entries.len() as u64);
         CompressedSnapshot { header, entries }
     }

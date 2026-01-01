@@ -113,7 +113,10 @@ impl<'a> TensorView<'a> {
 }
 
 /// Reshape a 1D vector into a tensor view with the given shape.
-pub fn reshape_to_tensor<'a>(vector: &'a [f32], shape: &[usize]) -> Result<TensorView<'a>, DecomposeError> {
+pub fn reshape_to_tensor<'a>(
+    vector: &'a [f32],
+    shape: &[usize],
+) -> Result<TensorView<'a>, DecomposeError> {
     TensorView::new(vector, shape.to_vec())
 }
 
@@ -140,7 +143,10 @@ pub fn unfold(tensor: &TensorView<'_>, mode: usize) -> Result<Matrix, DecomposeE
     }
 
     let rows = tensor.shape[mode];
-    let cols: usize = tensor.shape.iter().enumerate()
+    let cols: usize = tensor
+        .shape
+        .iter()
+        .enumerate()
         .filter(|(i, _)| *i != mode)
         .map(|(_, &s)| s)
         .product();
@@ -233,7 +239,9 @@ fn power_iteration(
     }
 
     // Initialize v randomly (deterministic seed for reproducibility)
-    let mut v: Vec<f32> = (0..a.cols).map(|i| ((i * 7 + 3) % 13) as f32 / 13.0 - 0.5).collect();
+    let mut v: Vec<f32> = (0..a.cols)
+        .map(|i| ((i * 7 + 3) % 13) as f32 / 13.0 - 0.5)
+        .collect();
     normalize(&mut v);
 
     let mut u = vec![0.0f32; a.rows];
@@ -468,7 +476,12 @@ mod tests {
             for j in 0..2 {
                 let expected = m.get(i, j);
                 let actual = reconstructed.get(i, j);
-                assert!((expected - actual).abs() < 0.1, "Reconstruction error at ({}, {})", i, j);
+                assert!(
+                    (expected - actual).abs() < 0.1,
+                    "Reconstruction error at ({}, {})",
+                    i,
+                    j
+                );
             }
         }
     }

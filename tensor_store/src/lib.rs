@@ -36,7 +36,9 @@ pub use delta_vector::{
     ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
 };
 pub use distance::{DistanceMetric, GeometricConfig};
-pub use embedding_slab::{EmbeddingError, EmbeddingSlab, EmbeddingSlabSnapshot, EmbeddingSlot};
+pub use embedding_slab::{
+    CompressedEmbedding, EmbeddingError, EmbeddingSlab, EmbeddingSlabSnapshot, EmbeddingSlot,
+};
 pub use entity_index::{EntityId, EntityIndex, EntityIndexSnapshot};
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};
 pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
@@ -1060,6 +1062,20 @@ impl TensorStore {
                         })
                     },
                     CompressedValue::VectorRaw(v) => TensorValue::Vector(v),
+                    CompressedValue::VectorSparse {
+                        dimension,
+                        positions,
+                        values,
+                    } => {
+                        // Load directly as sparse vector
+                        let pos_ids = tensor_compress::decompress_ids(&positions);
+                        let positions_u32: Vec<u32> = pos_ids.iter().map(|&p| p as u32).collect();
+                        TensorValue::Sparse(SparseVector::from_parts(
+                            dimension,
+                            positions_u32,
+                            values,
+                        ))
+                    },
                     CompressedValue::VectorTT { .. }
                     | CompressedValue::VectorInt8 { .. }
                     | CompressedValue::VectorBinary { .. }

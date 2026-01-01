@@ -380,3 +380,162 @@ fn test_dimension_method() {
     let scalar = TensorValue::Scalar(tensor_store::ScalarValue::Int(42));
     assert_eq!(scalar.dimension(), None);
 }
+
+// ==================== Sparse Compression Integration Tests ====================
+
+#[test]
+fn test_vector_engine_sparse_storage() {
+    use integration_tests::create_shared_engines;
+
+    let (_, _, _, vector) = create_shared_engines();
+
+    // Create a very sparse vector (97% zeros)
+    let mut sparse = vec![0.0f32; 100];
+    sparse[0] = 1.0;
+    sparse[50] = 2.0;
+    sparse[99] = 3.0;
+
+    // Store and retrieve
+    vector
+        .store_embedding("sparse_test", sparse.clone())
+        .unwrap();
+    let retrieved = vector.get_embedding("sparse_test").unwrap();
+
+    // Verify values are preserved
+    assert_eq!(retrieved.len(), 100);
+    assert!((retrieved[0] - 1.0).abs() < 0.001);
+    assert!((retrieved[50] - 2.0).abs() < 0.001);
+    assert!((retrieved[99] - 3.0).abs() < 0.001);
+    assert!((retrieved[1] - 0.0).abs() < 0.001);
+}
+
+#[test]
+fn test_vector_engine_sparse_search() {
+    use integration_tests::create_shared_engines;
+
+    let (_, _, _, vector) = create_shared_engines();
+
+    // Store sparse vectors
+    let mut v1 = vec![0.0f32; 100];
+    v1[0] = 1.0;
+
+    let mut v2 = vec![0.0f32; 100];
+    v2[0] = 0.707;
+    v2[1] = 0.707;
+
+    let mut v3 = vec![0.0f32; 100];
+    v3[1] = 1.0;
+
+    vector.store_embedding("v1", v1).unwrap();
+    vector.store_embedding("v2", v2).unwrap();
+    vector.store_embedding("v3", v3).unwrap();
+
+    // Search with sparse query
+    let mut query = vec![0.0f32; 100];
+    query[0] = 1.0;
+
+    let results = vector.search_similar(&query, 3).unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].key, "v1");
+}
+
+#[test]
+fn test_embedding_slab_sparse_snapshot() {
+    use tensor_store::{EmbeddingSlab, EntityId};
+
+    let slab = EmbeddingSlab::new(100, 10);
+
+    // Add sparse embeddings (97% zeros)
+    for i in 0..5u64 {
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = i as f32;
+        sparse[50] = i as f32 * 2.0;
+        sparse[99] = i as f32 * 3.0;
+        slab.set(EntityId::new(i), &sparse).unwrap();
+    }
+
+    // Snapshot and restore
+    let snapshot = slab.snapshot();
+
+    // Serialize to check size (sparse should be much smaller)
+    let serialized = bincode::serialize(&snapshot).unwrap();
+    let dense_size = 5 * 100 * 4 + 100; // 5 vectors * 100 floats * 4 bytes + overhead
+    assert!(
+        serialized.len() < dense_size / 5,
+        "Sparse snapshot {} bytes should be much smaller than dense {} bytes",
+        serialized.len(),
+        dense_size
+    );
+
+    // Restore and verify values are preserved
+    let restored = EmbeddingSlab::restore(snapshot);
+    assert_eq!(restored.len(), 5);
+
+    for i in 0..5u64 {
+        let emb = restored.get(EntityId::new(i)).unwrap();
+        assert_eq!(emb.len(), 100);
+        assert!((emb[0] - i as f32).abs() < 0.001);
+        assert!((emb[50] - i as f32 * 2.0).abs() < 0.001);
+        assert!((emb[99] - i as f32 * 3.0).abs() < 0.001);
+    }
+}
+
+#[test]
+fn test_tensor_cache_sparse_embedding() {
+    use tensor_cache::{Cache, CacheConfig};
+
+    let mut config = CacheConfig::default();
+    config.embedding_dim = 100;
+    let cache = Cache::with_config(config).unwrap();
+
+    // Create sparse embedding
+    let mut sparse = vec![0.0f32; 100];
+    sparse[0] = 1.0;
+    sparse[50] = 2.0;
+
+    cache
+        .put_embedding("source", "content", sparse.clone(), "model")
+        .unwrap();
+
+    let retrieved = cache.get_embedding("source", "content").unwrap();
+    assert_eq!(retrieved.len(), 100);
+    assert!((retrieved[0] - 1.0).abs() < 0.001);
+    assert!((retrieved[50] - 2.0).abs() < 0.001);
+}
+
+#[test]
+fn test_dimension_validation() {
+    use tensor_compress::TTConfig;
+
+    // Valid dimensions
+    assert!(TTConfig::for_dim(64).is_ok());
+    assert!(TTConfig::for_dim(768).is_ok());
+    assert!(TTConfig::for_dim(4096).is_ok());
+
+    // Invalid: zero dimension
+    assert!(TTConfig::for_dim(0).is_err());
+
+    // Validation on config
+    let bad_config = TTConfig {
+        shape: vec![4, 4, 4],
+        max_rank: 8,
+        tolerance: 0.0, // Invalid: must be > 0
+    };
+    assert!(bad_config.validate().is_err());
+}
+
+#[test]
+fn test_compression_defaults() {
+    use tensor_compress::CompressionDefaults;
+
+    assert_eq!(CompressionDefaults::SMALL, 64);
+    assert_eq!(CompressionDefaults::MEDIUM, 384);
+    assert_eq!(CompressionDefaults::STANDARD, 768);
+    assert_eq!(CompressionDefaults::LARGE, 1536);
+    assert_eq!(CompressionDefaults::XLARGE, 4096);
+
+    // Auto-detect should work
+    let vector = vec![0.0f32; 768];
+    let config = CompressionDefaults::config_for(&vector);
+    assert!(config.tensor_mode.is_some());
+}

@@ -201,9 +201,15 @@ impl BlobWriter {
             );
         }
 
-        // Embedding
+        // Embedding with sparse detection
         if let Some((embedding, model)) = self.state.embedding {
-            tensor.set("_embedding", TensorValue::Vector(embedding));
+            use tensor_store::SparseVector;
+            let storage = if crate::streaming::should_use_sparse(&embedding) {
+                TensorValue::Sparse(SparseVector::from_dense(&embedding))
+            } else {
+                TensorValue::Vector(embedding)
+            };
+            tensor.set("_embedding", storage);
             tensor.set(
                 "_embedded_model",
                 TensorValue::Scalar(ScalarValue::String(model)),
@@ -398,8 +404,19 @@ pub(crate) fn get_pointers(tensor: &TensorData, field: &str) -> Option<Vec<Strin
 pub(crate) fn get_vector(tensor: &TensorData, field: &str) -> Option<Vec<f32>> {
     match tensor.get(field) {
         Some(TensorValue::Vector(v)) => Some(v.clone()),
+        Some(TensorValue::Sparse(s)) => Some(s.to_dense()),
         _ => None,
     }
+}
+
+/// Check if a vector should use sparse storage (50% threshold).
+pub(crate) fn should_use_sparse(vector: &[f32]) -> bool {
+    if vector.is_empty() {
+        return false;
+    }
+    let nnz = vector.iter().filter(|&&v| v.abs() > 1e-6).count();
+    // For 0.5 threshold: sparse if nnz <= len/2, i.e., nnz*2 <= len
+    nnz * 2 <= vector.len()
 }
 
 #[cfg(test)]
