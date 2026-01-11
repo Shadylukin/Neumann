@@ -17,8 +17,12 @@
 #![allow(clippy::manual_is_multiple_of)]
 
 use crate::decompose::{left_unfold_for_tt, svd_truncated, DecomposeError, Matrix};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Threshold for switching to parallel batch processing.
+const PARALLEL_THRESHOLD: usize = 4;
 
 /// Errors from TT operations.
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -570,8 +574,74 @@ pub fn tt_scale(tt: &TTVector, scalar: f32) -> TTVector {
 }
 
 /// Batch decompose multiple vectors with the same config.
+///
+/// Automatically uses parallel processing when there are 4+ vectors.
 pub fn tt_decompose_batch(vectors: &[&[f32]], config: &TTConfig) -> Result<Vec<TTVector>, TTError> {
-    vectors.iter().map(|v| tt_decompose(v, config)).collect()
+    if vectors.len() >= PARALLEL_THRESHOLD {
+        vectors
+            .par_iter()
+            .map(|v| tt_decompose(v, config))
+            .collect()
+    } else {
+        vectors.iter().map(|v| tt_decompose(v, config)).collect()
+    }
+}
+
+/// Batch cosine similarity - compute similarity of query against multiple TT vectors.
+///
+/// Automatically uses parallel processing when there are 4+ targets.
+pub fn tt_cosine_similarity_batch(
+    query: &TTVector,
+    targets: &[TTVector],
+) -> Result<Vec<f32>, TTError> {
+    if targets.len() >= PARALLEL_THRESHOLD {
+        targets
+            .par_iter()
+            .map(|t| tt_cosine_similarity(query, t))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|t| tt_cosine_similarity(query, t))
+            .collect()
+    }
+}
+
+/// Batch dot product - compute dot product of query against multiple TT vectors.
+///
+/// Automatically uses parallel processing when there are 4+ targets.
+pub fn tt_dot_product_batch(query: &TTVector, targets: &[TTVector]) -> Result<Vec<f32>, TTError> {
+    if targets.len() >= PARALLEL_THRESHOLD {
+        targets
+            .par_iter()
+            .map(|t| tt_dot_product(query, t))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|t| tt_dot_product(query, t))
+            .collect()
+    }
+}
+
+/// Batch Euclidean distance - compute distance of query against multiple TT vectors.
+///
+/// Automatically uses parallel processing when there are 4+ targets.
+pub fn tt_euclidean_distance_batch(
+    query: &TTVector,
+    targets: &[TTVector],
+) -> Result<Vec<f32>, TTError> {
+    if targets.len() >= PARALLEL_THRESHOLD {
+        targets
+            .par_iter()
+            .map(|t| tt_euclidean_distance(query, t))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|t| tt_euclidean_distance(query, t))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1051,5 +1121,148 @@ mod tests {
                 rel_error
             );
         }
+    }
+
+    // === Batch operation tests ===
+
+    #[test]
+    fn test_tt_cosine_similarity_batch() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let query: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let query_tt = tt_decompose(&query, &config).unwrap();
+
+        // Create batch of targets
+        let targets: Vec<TTVector> = (0..8)
+            .map(|offset| {
+                let vec: Vec<f32> = (0..64).map(|i| ((i + offset) as f32 * 0.1).cos()).collect();
+                tt_decompose(&vec, &config).unwrap()
+            })
+            .collect();
+
+        let similarities = tt_cosine_similarity_batch(&query_tt, &targets).unwrap();
+        assert_eq!(similarities.len(), 8);
+
+        // Verify results match individual calls
+        for (i, &sim) in similarities.iter().enumerate() {
+            let individual = tt_cosine_similarity(&query_tt, &targets[i]).unwrap();
+            assert!(
+                (sim - individual).abs() < 1e-6,
+                "batch[{}]={} != individual={}",
+                i,
+                sim,
+                individual
+            );
+        }
+    }
+
+    #[test]
+    fn test_tt_dot_product_batch() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let query: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let query_tt = tt_decompose(&query, &config).unwrap();
+
+        // Create batch of targets
+        let targets: Vec<TTVector> = (0..6)
+            .map(|scale| {
+                let vec: Vec<f32> = (0..64).map(|i| (i as f32) * (scale as f32 + 1.0)).collect();
+                tt_decompose(&vec, &config).unwrap()
+            })
+            .collect();
+
+        let dots = tt_dot_product_batch(&query_tt, &targets).unwrap();
+        assert_eq!(dots.len(), 6);
+
+        // Verify results match individual calls
+        for (i, &dot) in dots.iter().enumerate() {
+            let individual = tt_dot_product(&query_tt, &targets[i]).unwrap();
+            assert!(
+                (dot - individual).abs() < 1e-3,
+                "batch[{}]={} != individual={}",
+                i,
+                dot,
+                individual
+            );
+        }
+    }
+
+    #[test]
+    fn test_tt_euclidean_distance_batch() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let query: Vec<f32> = vec![1.0; 64];
+        let query_tt = tt_decompose(&query, &config).unwrap();
+
+        // Create batch of targets at different "distances"
+        let targets: Vec<TTVector> = (0..5)
+            .map(|offset| {
+                let vec: Vec<f32> = vec![1.0 + offset as f32; 64];
+                tt_decompose(&vec, &config).unwrap()
+            })
+            .collect();
+
+        let distances = tt_euclidean_distance_batch(&query_tt, &targets).unwrap();
+        assert_eq!(distances.len(), 5);
+
+        // Verify results match individual calls
+        for (i, &dist) in distances.iter().enumerate() {
+            let individual = tt_euclidean_distance(&query_tt, &targets[i]).unwrap();
+            assert!(
+                (dist - individual).abs() < 1e-3,
+                "batch[{}]={} != individual={}",
+                i,
+                dist,
+                individual
+            );
+        }
+    }
+
+    #[test]
+    fn test_tt_batch_decompose_parallel() {
+        // Test with enough vectors to trigger parallel path
+        let config = TTConfig::for_dim(64).unwrap();
+        let vectors: Vec<Vec<f32>> = (0..8)
+            .map(|i| (0..64).map(|j| ((i * 10 + j) as f32 * 0.1).sin()).collect())
+            .collect();
+        let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+
+        let batch_results = tt_decompose_batch(&refs, &config).unwrap();
+        assert_eq!(batch_results.len(), 8);
+
+        // Verify each result matches individual decomposition
+        for (i, tt) in batch_results.iter().enumerate() {
+            let individual = tt_decompose(&vectors[i], &config).unwrap();
+            assert_eq!(tt.shape, individual.shape);
+            assert_eq!(tt.original_dim, individual.original_dim);
+        }
+    }
+
+    #[test]
+    fn test_tt_batch_small() {
+        // Test with fewer vectors (sequential path)
+        let config = TTConfig::for_dim(64).unwrap();
+        let vectors: Vec<Vec<f32>> = (0..2)
+            .map(|i| (0..64).map(|j| ((i * 10 + j) as f32 * 0.1).cos()).collect())
+            .collect();
+        let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+
+        let batch_results = tt_decompose_batch(&refs, &config).unwrap();
+        assert_eq!(batch_results.len(), 2);
+    }
+
+    #[test]
+    fn test_tt_batch_similarity_empty() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let query: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let query_tt = tt_decompose(&query, &config).unwrap();
+
+        // Empty batch should return empty results
+        let empty_targets: Vec<TTVector> = vec![];
+        let sims = tt_cosine_similarity_batch(&query_tt, &empty_targets).unwrap();
+        assert!(sims.is_empty());
+
+        let dots = tt_dot_product_batch(&query_tt, &empty_targets).unwrap();
+        assert!(dots.is_empty());
+
+        let dists = tt_euclidean_distance_batch(&query_tt, &empty_targets).unwrap();
+        assert!(dists.is_empty());
     }
 }

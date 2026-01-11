@@ -287,3 +287,26 @@ path = "fuzz_targets/sparse_embedding_slab.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 11: TT advanced targets
+
+[[bin]]
+name = "tt_metrics"
+path = "fuzz_targets/tt_metrics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tt_batch"
+path = "fuzz_targets/tt_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tt_serialization"
+path = "fuzz_targets/tt_serialization.rs"
+test = false
+doc = false
+bench = false

@@ -2293,6 +2293,7 @@ dependencies = [
  "bincode",
  "criterion",
  "peak_alloc",
+ "rayon",
  "serde",
  "thiserror 2.0.17",
 ]

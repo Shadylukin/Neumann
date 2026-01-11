@@ -15,6 +15,7 @@ mod delta;
 pub mod incremental;
 mod rle;
 pub mod streaming;
+pub mod streaming_tt;
 pub mod tensor_train;
 
 pub mod format;
@@ -32,8 +33,15 @@ pub use format::{
 };
 
 pub use tensor_train::{
-    tt_cosine_similarity, tt_decompose, tt_decompose_batch, tt_dot_product, tt_euclidean_distance,
+    tt_cosine_similarity, tt_cosine_similarity_batch, tt_decompose, tt_decompose_batch,
+    tt_dot_product, tt_dot_product_batch, tt_euclidean_distance, tt_euclidean_distance_batch,
     tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError, TTVector,
+};
+
+pub use streaming_tt::{
+    convert_vectors_to_streaming_tt, read_streaming_tt_all, streaming_tt_similarity_search,
+    StreamingTTHeader, StreamingTTReader, StreamingTTWriter, STREAMING_TT_MAGIC,
+    STREAMING_TT_VERSION,
 };
 
 use serde::{Deserialize, Serialize};
