@@ -2,9 +2,6 @@
 //!
 //! Uses archetype-based delta encoding to reduce replication bandwidth by 4-6x.
 //! Entities are encoded as (archetype_id + sparse_delta) and batched for transfer.
-//!
-//! When int8 quantization is enabled, delta values are further compressed from f32 to i8,
-//! providing an additional 4x size reduction with ~2% max error.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +9,6 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tensor_compress::{dequantize_int8, quantize_int8, QuantizedInt8};
 use tensor_store::ArchetypeRegistry;
 
 use crate::block::NodeId;
@@ -122,116 +118,6 @@ impl DeltaUpdate {
         }
 
         Some(result)
-    }
-
-    /// Convert to quantized form (4x size reduction for delta values).
-    ///
-    /// Returns `None` if the delta is too sparse (>95% zeros) since the quantization
-    /// overhead outweighs the benefit for very sparse deltas.
-    pub fn quantize(&self) -> Option<QuantizedDeltaUpdate> {
-        if self.delta_values.is_empty() {
-            return Some(QuantizedDeltaUpdate {
-                key: self.key.clone(),
-                archetype_id: self.archetype_id,
-                delta_indices: self.delta_indices.clone(),
-                quantized_values: QuantizedInt8 {
-                    data: Vec::new(),
-                    min: 0.0,
-                    scale: 1.0,
-                },
-                version: self.version,
-                dimension: self.dimension,
-            });
-        }
-
-        // Skip quantization for very sparse deltas (>95% zeros).
-        // The overhead of min/scale fields outweighs the benefit.
-        if self.dimension > 0 {
-            let sparsity = 1.0 - (self.delta_indices.len() as f32 / self.dimension as f32);
-            if sparsity > 0.95 {
-                return None;
-            }
-        }
-
-        let quantized = quantize_int8(&self.delta_values).ok()?;
-        Some(QuantizedDeltaUpdate {
-            key: self.key.clone(),
-            archetype_id: self.archetype_id,
-            delta_indices: self.delta_indices.clone(),
-            quantized_values: quantized,
-            version: self.version,
-            dimension: self.dimension,
-        })
-    }
-}
-
-/// A quantized delta update using int8 values for 4x compression.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuantizedDeltaUpdate {
-    /// Key being updated.
-    pub key: String,
-    /// ID of the reference archetype.
-    pub archetype_id: u32,
-    /// Sparse delta indices.
-    pub delta_indices: Vec<u32>,
-    /// Quantized delta values (int8 with min/scale).
-    pub quantized_values: QuantizedInt8,
-    /// Update version.
-    pub version: u64,
-    /// Original embedding dimension.
-    pub dimension: usize,
-}
-
-impl QuantizedDeltaUpdate {
-    /// Check if this is a full update (not delta-compressed).
-    pub fn is_full_update(&self) -> bool {
-        self.archetype_id == u32::MAX
-    }
-
-    /// Get the number of non-zero delta values.
-    pub fn nnz(&self) -> usize {
-        self.quantized_values.data.len()
-    }
-
-    /// Memory bytes used by this update (significantly less than DeltaUpdate).
-    pub fn memory_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.key.len()
-            + self.delta_indices.len() * std::mem::size_of::<u32>()
-            + self.quantized_values.data.len() * std::mem::size_of::<i8>()
-            + 2 * std::mem::size_of::<f32>() // min and scale
-    }
-
-    /// Compression ratio compared to full f32 embedding.
-    pub fn compression_ratio(&self) -> f32 {
-        let full_bytes = self.dimension * std::mem::size_of::<f32>();
-        if full_bytes == 0 {
-            return 1.0;
-        }
-        full_bytes as f32 / self.memory_bytes() as f32
-    }
-
-    /// Convert back to non-quantized DeltaUpdate.
-    pub fn dequantize(&self) -> DeltaUpdate {
-        let delta_values = if self.quantized_values.data.is_empty() {
-            Vec::new()
-        } else {
-            dequantize_int8(&self.quantized_values)
-        };
-
-        DeltaUpdate {
-            key: self.key.clone(),
-            archetype_id: self.archetype_id,
-            delta_indices: self.delta_indices.clone(),
-            delta_values,
-            version: self.version,
-            dimension: self.dimension,
-        }
-    }
-
-    /// Decode back to dense embedding using archetype registry.
-    pub fn decode(&self, registry: &ArchetypeRegistry) -> Option<Vec<f32>> {
-        self.dequantize().decode(registry)
     }
 }
 
@@ -363,8 +249,6 @@ pub struct DeltaReplicationConfig {
     pub max_pending: usize,
     /// Minimum similarity for delta encoding (else full update).
     pub min_archetype_similarity: f32,
-    /// Enable int8 quantization for delta values (4x additional compression).
-    pub enable_quantization: bool,
 }
 
 impl Default for DeltaReplicationConfig {
@@ -374,16 +258,7 @@ impl Default for DeltaReplicationConfig {
             max_batch_size: 100,
             max_pending: 1000,
             min_archetype_similarity: 0.5,
-            enable_quantization: false, // Off by default for backward compatibility
         }
-    }
-}
-
-impl DeltaReplicationConfig {
-    /// Create config with int8 quantization enabled.
-    pub fn with_quantization(mut self) -> Self {
-        self.enable_quantization = true;
-        self
     }
 }
 
@@ -1254,225 +1129,5 @@ mod tests {
         assert_eq!(batch.sequence, decoded.sequence);
         assert_eq!(batch.is_final, decoded.is_final);
         assert_eq!(batch.len(), decoded.len());
-    }
-
-    // ==================== Quantization Tests ====================
-
-    #[test]
-    fn test_delta_update_quantize() {
-        let embedding = vec![1.0, 2.0, 3.0, 4.0];
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-
-        let quantized = update.quantize();
-        assert!(quantized.is_some());
-
-        let quantized = quantized.unwrap();
-        assert_eq!(quantized.key, "key1");
-        assert_eq!(quantized.version, 1);
-        assert!(quantized.is_full_update());
-        assert_eq!(quantized.nnz(), 4);
-    }
-
-    #[test]
-    fn test_quantized_dequantize_roundtrip() {
-        let embedding = vec![0.1, 0.5, 0.9, 1.0];
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-
-        let quantized = update.quantize().unwrap();
-        let dequantized = quantized.dequantize();
-
-        // Values should be close (within 1% error)
-        for (orig, deq) in update
-            .delta_values
-            .iter()
-            .zip(dequantized.delta_values.iter())
-        {
-            assert!(
-                (orig - deq).abs() < 0.02,
-                "Quantization error too large: {} vs {}",
-                orig,
-                deq
-            );
-        }
-    }
-
-    #[test]
-    fn test_quantized_decode() {
-        let registry = ArchetypeRegistry::new(10);
-        let embedding = vec![1.0, 2.0, 3.0, 4.0];
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-
-        let quantized = update.quantize().unwrap();
-        let decoded = quantized.decode(&registry).unwrap();
-
-        // Should decode correctly (with small quantization error)
-        for (orig, dec) in embedding.iter().zip(decoded.iter()) {
-            assert!(approx_eq(*orig, *dec, 0.02));
-        }
-    }
-
-    #[test]
-    fn test_quantized_compression_ratio() {
-        // Create a larger embedding to see compression benefits
-        let embedding: Vec<f32> = (0..256).map(|i| i as f32 / 256.0).collect();
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-        let quantized = update.quantize().unwrap();
-
-        // Quantized should use less memory for the delta values themselves
-        let orig_bytes = update.memory_bytes();
-        let quant_bytes = quantized.memory_bytes();
-
-        // Note: struct overhead may cause quantized to be larger for small updates
-        // but for larger embeddings, quantized should be smaller
-        assert!(
-            quant_bytes < orig_bytes,
-            "Quantized ({}) should be smaller than original ({}) for 256-dim embedding",
-            quant_bytes,
-            orig_bytes
-        );
-
-        // The compression_ratio() method calculates vs full embedding size
-        // which may be affected by key length and struct overhead
-        let ratio = quantized.compression_ratio();
-        // Just verify it's a valid positive number
-        assert!(ratio > 0.0, "Compression ratio should be positive");
-    }
-
-    #[test]
-    fn test_quantized_empty_values() {
-        let update = DeltaUpdate {
-            key: "key1".to_string(),
-            archetype_id: 0,
-            delta_indices: vec![],
-            delta_values: vec![],
-            version: 1,
-            dimension: 4,
-        };
-
-        let quantized = update.quantize();
-        assert!(quantized.is_some());
-
-        let quantized = quantized.unwrap();
-        assert_eq!(quantized.nnz(), 0);
-    }
-
-    #[test]
-    fn test_quantized_serialization_roundtrip() {
-        let embedding = vec![1.0, 2.0, 3.0, 4.0];
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 42);
-        let quantized = update.quantize().unwrap();
-
-        let bytes = bincode::serialize(&quantized).unwrap();
-        let decoded: QuantizedDeltaUpdate = bincode::deserialize(&bytes).unwrap();
-
-        assert_eq!(quantized.key, decoded.key);
-        assert_eq!(quantized.version, decoded.version);
-        assert_eq!(quantized.dimension, decoded.dimension);
-        assert_eq!(
-            quantized.quantized_values.data,
-            decoded.quantized_values.data
-        );
-    }
-
-    #[test]
-    fn test_config_with_quantization() {
-        let config = DeltaReplicationConfig::default().with_quantization();
-        assert!(config.enable_quantization);
-    }
-
-    #[test]
-    fn test_quantized_debug_clone() {
-        let embedding = vec![1.0, 2.0];
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-        let quantized = update.quantize().unwrap();
-
-        let cloned = quantized.clone();
-        assert_eq!(quantized.key, cloned.key);
-
-        let debug = format!("{:?}", quantized);
-        assert!(debug.contains("QuantizedDeltaUpdate"));
-    }
-
-    #[test]
-    fn test_quantized_vs_original_size() {
-        // Compare sizes: f32 delta values vs i8 quantized
-        let embedding: Vec<f32> = (0..128).map(|i| i as f32 / 128.0).collect();
-        let update = DeltaUpdate::full("key1".to_string(), &embedding, 1);
-        let quantized = update.quantize().unwrap();
-
-        // Original: 128 * 4 bytes = 512 bytes for values
-        // Quantized: 128 * 1 byte + 8 bytes (min/scale) = 136 bytes for values
-        // So quantized values should be ~3.7x smaller
-
-        let orig_value_bytes = update.delta_values.len() * std::mem::size_of::<f32>();
-        let quant_value_bytes =
-            quantized.quantized_values.data.len() + 2 * std::mem::size_of::<f32>();
-
-        let value_ratio = orig_value_bytes as f32 / quant_value_bytes as f32;
-        assert!(
-            value_ratio > 3.0,
-            "Expected ~4x compression for values, got {}x",
-            value_ratio
-        );
-    }
-
-    #[test]
-    fn test_quantized_with_archetype() {
-        let mut registry = ArchetypeRegistry::new(10);
-        registry.register(vec![1.0, 0.0, 0.0, 0.0]).unwrap();
-
-        let embedding = vec![0.9, 0.1, 0.0, 0.0];
-        let update =
-            DeltaUpdate::from_embedding("key1".to_string(), &embedding, &registry, 0.001, 1)
-                .unwrap();
-
-        // Quantize the delta-encoded update
-        let quantized = update.quantize().unwrap();
-        assert!(!quantized.is_full_update());
-
-        // Decode and verify
-        let decoded = quantized.decode(&registry).unwrap();
-        for (orig, dec) in embedding.iter().zip(decoded.iter()) {
-            assert!(approx_eq(*orig, *dec, 0.05));
-        }
-    }
-
-    #[test]
-    fn test_quantize_skips_very_sparse() {
-        // Create a very sparse update (>95% zeros)
-        // 3 non-zeros in 100 dimensions = 97% sparse
-        let update = DeltaUpdate {
-            key: "key1".to_string(),
-            archetype_id: 0,
-            delta_indices: vec![0, 50, 99],
-            delta_values: vec![0.1, 0.2, 0.3],
-            version: 1,
-            dimension: 100,
-        };
-
-        // Should return None for very sparse deltas
-        let result = update.quantize();
-        assert!(
-            result.is_none(),
-            "Expected None for 97% sparse delta, quantization overhead not worth it"
-        );
-    }
-
-    #[test]
-    fn test_quantize_works_for_dense_enough() {
-        // Create a moderately sparse update (~75% zeros)
-        // 25 non-zeros in 100 dimensions = 75% sparse (below 95% threshold)
-        let update = DeltaUpdate {
-            key: "key1".to_string(),
-            archetype_id: 0,
-            delta_indices: (0..25).map(|i| i as u32).collect(),
-            delta_values: (0..25).map(|i| i as f32 * 0.1).collect(),
-            version: 1,
-            dimension: 100,
-        };
-
-        // Should succeed for dense-enough deltas
-        let result = update.quantize();
-        assert!(result.is_some(), "Expected Some for 75% sparse delta");
     }
 }

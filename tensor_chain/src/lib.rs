@@ -73,8 +73,7 @@ pub use consensus::{
     MergeAction, MergeResult,
 };
 pub use delta_replication::{
-    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, QuantizedDeltaUpdate,
-    ReplicationStats,
+    DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, ReplicationStats,
 };
 pub use distributed_tx::{
     AbortRequest, CommitRequest, DistributedTransaction, DistributedTxConfig,

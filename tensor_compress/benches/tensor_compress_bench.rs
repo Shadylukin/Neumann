@@ -1,41 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use peak_alloc::PeakAlloc;
-#[allow(deprecated)]
 use tensor_compress::{
-    compress_ids, decompress_ids, quantize_binary, quantize_int8, rle_decode, rle_encode,
-    tt_cosine_similarity, tt_decompose, tt_dot_product, tt_reconstruct, TTConfig,
+    compress_ids, decompress_ids, rle_decode, rle_encode, tt_cosine_similarity, tt_decompose,
+    tt_dot_product, tt_reconstruct, TTConfig,
 };
 
 #[global_allocator]
 static PEAK_ALLOC: PeakAlloc = PeakAlloc;
-
-fn bench_quantize_int8(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..768).map(|i| (i as f32 / 768.0) - 0.5).collect();
-
-    PEAK_ALLOC.reset_peak_usage();
-    c.bench_function("quantize_int8_768d", |b| {
-        b.iter(|| quantize_int8(black_box(&vector)))
-    });
-    println!(
-        "\n  quantize_int8_768d peak RAM: {:.1} KB",
-        PEAK_ALLOC.peak_usage_as_kb()
-    );
-}
-
-fn bench_quantize_binary(c: &mut Criterion) {
-    let vector: Vec<f32> = (0..768)
-        .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
-        .collect();
-
-    PEAK_ALLOC.reset_peak_usage();
-    c.bench_function("quantize_binary_768d", |b| {
-        b.iter(|| quantize_binary(black_box(&vector)))
-    });
-    println!(
-        "  quantize_binary_768d peak RAM: {:.1} KB",
-        PEAK_ALLOC.peak_usage_as_kb()
-    );
-}
 
 fn bench_delta_compress(c: &mut Criterion) {
     let ids: Vec<u64> = (0..10_000).collect();
@@ -199,8 +170,6 @@ fn bench_tt_compression_ratio(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_quantize_int8,
-    bench_quantize_binary,
     bench_delta_compress,
     bench_delta_decompress,
     bench_rle_encode,

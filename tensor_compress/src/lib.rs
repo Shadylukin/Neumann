@@ -9,7 +9,6 @@
 //! - **Sparse**: Native format for vectors with >50% zeros (stores only non-zeros)
 //! - **Delta + varint**: Lossless compression for sorted ID sequences
 //! - **Run-length encoding**: Lossless compression for repeated values
-//! - **Legacy quantization**: int8/binary for backward compatibility
 
 pub mod decompose;
 mod delta;
@@ -19,9 +18,6 @@ pub mod streaming;
 pub mod tensor_train;
 
 pub mod format;
-
-// Legacy module (deprecated, kept for backward compatibility)
-mod quantize;
 
 pub use decompose::{DecomposeError, Matrix, SvdResult, TensorView};
 pub use delta::{
@@ -40,13 +36,6 @@ pub use tensor_train::{
     tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError, TTVector,
 };
 
-// Legacy exports (deprecated)
-#[deprecated(since = "0.2.0", note = "Use TensorMode::TensorTrain instead")]
-pub use quantize::{
-    dequantize_binary, dequantize_int8, quantize_binary, quantize_int8, QuantizationError,
-    QuantizedBinary, QuantizedInt8,
-};
-
 use serde::{Deserialize, Serialize};
 
 /// Tensor compression mode for vectors and embeddings.
@@ -55,12 +44,6 @@ pub enum TensorMode {
     /// Tensor Train decomposition (recommended for 1024+ dimensions).
     /// Achieves 10-20x compression with <1% error.
     TensorTrain(TTConfig),
-    /// Legacy int8 quantization (4x compression, ~2% max error).
-    #[deprecated(since = "0.2.0", note = "Use TensorTrain for better compression")]
-    LegacyInt8,
-    /// Legacy binary quantization (32x compression, lossy).
-    #[deprecated(since = "0.2.0", note = "Use TensorTrain for better compression")]
-    LegacyBinary,
 }
 
 impl TensorMode {
@@ -180,16 +163,6 @@ impl CompressionConfig {
     }
 }
 
-/// Vector quantization mode (legacy, use `TensorMode` instead).
-#[deprecated(since = "0.2.0", note = "Use TensorMode instead")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum QuantMode {
-    /// Scalar quantization to int8. 4x size reduction, ~2% max error.
-    Int8,
-    /// Binary quantization (sign bit only). 32x reduction, lossy.
-    Binary,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,10 +251,14 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_legacy_quant_mode() {
-        // Verify legacy QuantMode still works for backward compatibility
-        assert_eq!(QuantMode::Int8, QuantMode::Int8);
-        assert_ne!(QuantMode::Int8, QuantMode::Binary);
+    fn test_try_tensor_train() {
+        // Valid dimensions should succeed
+        let mode = TensorMode::try_tensor_train(64);
+        assert!(mode.is_ok());
+        assert!(matches!(mode.unwrap(), TensorMode::TensorTrain(_)));
+
+        // Zero dimension should fail
+        let mode = TensorMode::try_tensor_train(0);
+        assert!(mode.is_err());
     }
 }

@@ -3,82 +3,11 @@
 //! Tests compression algorithms with real engine data.
 
 use integration_tests::{create_shared_engines, sample_embeddings};
-#[allow(deprecated)]
 use tensor_compress::{
-    compress_ids, decompress_ids, delta_decode, delta_encode, dequantize_binary, dequantize_int8,
-    quantize_binary, quantize_int8, rle_decode, rle_encode, tt_cosine_similarity, tt_decompose,
-    tt_dot_product, tt_reconstruct, CompressionConfig, TTConfig, TensorMode,
+    compress_ids, decompress_ids, delta_decode, delta_encode, rle_decode, rle_encode,
+    tt_cosine_similarity, tt_decompose, tt_dot_product, tt_reconstruct, CompressionConfig,
+    TTConfig, TensorMode,
 };
-
-#[test]
-fn test_quantize_int8_with_embeddings() {
-    let (_, _, _, vector) = create_shared_engines();
-
-    // Store embeddings
-    let embeddings = sample_embeddings(10, 128);
-    for (i, emb) in embeddings.iter().enumerate() {
-        vector
-            .store_embedding(&format!("doc:{}", i), emb.clone())
-            .unwrap();
-    }
-
-    // Quantize each embedding and verify roundtrip
-    for (i, original) in embeddings.iter().enumerate() {
-        let quantized = quantize_int8(original).unwrap();
-        let restored = dequantize_int8(&quantized);
-
-        // Verify compression ratio (~4x for int8)
-        let original_bytes = original.len() * 4;
-        let quantized_bytes = quantized.data.len() + 8; // data + min + scale
-        let ratio = original_bytes as f64 / quantized_bytes as f64;
-        assert!(
-            ratio > 3.5,
-            "doc:{} - Expected >3.5x compression, got {:.2}x",
-            i,
-            ratio
-        );
-
-        // Verify accuracy (max ~1% error for int8)
-        for (orig, rest) in original.iter().zip(&restored) {
-            let range = original.iter().fold(0.0f32, |acc, &v| acc.max(v.abs()));
-            let error = (orig - rest).abs() / range.max(1.0);
-            assert!(
-                error < 0.02,
-                "doc:{} - Error too large: {:.4} vs {:.4}",
-                i,
-                orig,
-                rest
-            );
-        }
-    }
-}
-
-#[test]
-fn test_quantize_binary_with_embeddings() {
-    let embeddings = sample_embeddings(10, 128);
-
-    for (i, original) in embeddings.iter().enumerate() {
-        let quantized = quantize_binary(original);
-        let restored = dequantize_binary(&quantized).unwrap();
-
-        // Verify compression ratio (~32x for binary)
-        let original_bytes = original.len() * 4;
-        let quantized_bytes = quantized.data.len() + 8;
-        let ratio = original_bytes as f64 / quantized_bytes as f64;
-        assert!(
-            ratio > 20.0,
-            "doc:{} - Expected >20x compression, got {:.2}x",
-            i,
-            ratio
-        );
-
-        // Binary only preserves sign
-        for (orig, rest) in original.iter().zip(&restored) {
-            let expected = if *orig > 0.0 { 1.0 } else { -1.0 };
-            assert_eq!(*rest, expected, "doc:{} - Sign mismatch", i);
-        }
-    }
-}
 
 #[test]
 fn test_delta_encode_node_ids() {
@@ -355,74 +284,6 @@ fn test_tt_high_compression_mode() {
 }
 
 #[test]
-fn test_int8_quantization_preserves_similarity_order() {
-    let embeddings = sample_embeddings(5, 64);
-
-    // Quantize all embeddings
-    let quantized: Vec<_> = embeddings
-        .iter()
-        .map(|e| quantize_int8(e).unwrap())
-        .collect();
-    let restored: Vec<Vec<f32>> = quantized.iter().map(dequantize_int8).collect();
-
-    // Compute cosine similarities in original space
-    let query = &embeddings[0];
-    let mut original_sims: Vec<(usize, f32)> = embeddings[1..]
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i + 1, cosine_similarity(query, e)))
-        .collect();
-    original_sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    // Compute cosine similarities in quantized space
-    let restored_query = &restored[0];
-    let mut restored_sims: Vec<(usize, f32)> = restored[1..]
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i + 1, cosine_similarity(restored_query, e)))
-        .collect();
-    restored_sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    // Order should be preserved (most similar should still be most similar)
-    assert_eq!(
-        original_sims[0].0, restored_sims[0].0,
-        "Most similar embedding changed after quantization"
-    );
-}
-
-#[test]
-fn test_binary_quantization_for_fast_filtering() {
-    let embeddings = sample_embeddings(100, 128);
-
-    // Quantize to binary
-    let binary: Vec<_> = embeddings.iter().map(|e| quantize_binary(e)).collect();
-
-    // Binary vectors can be used for fast hamming distance filtering
-    let query_binary = &binary[0];
-
-    // Count matching bits (simple hamming similarity)
-    let mut similarities: Vec<(usize, usize)> = binary[1..]
-        .iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let matching = query_binary
-                .data
-                .iter()
-                .zip(&b.data)
-                .map(|(a, b)| (a ^ b).count_zeros() as usize)
-                .sum();
-            (i + 1, matching)
-        })
-        .collect();
-
-    similarities.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Just verify we get valid results
-    assert!(!similarities.is_empty());
-    assert!(similarities[0].1 > 0);
-}
-
-#[test]
 fn test_compression_end_to_end() {
     let (_store, relational, graph, vector) = create_shared_engines();
 
@@ -488,11 +349,12 @@ fn test_compression_end_to_end() {
     let decompressed_ids = decompress_ids(&compressed_ids);
     assert_eq!(node_ids, decompressed_ids);
 
-    // 3. Int8 quantization on embeddings
+    // 3. TT decomposition on embeddings
+    let config = TTConfig::for_dim(64).unwrap();
     for emb in &embeddings {
-        let quantized = quantize_int8(emb).unwrap();
-        let restored = dequantize_int8(&quantized);
-        assert_eq!(restored.len(), emb.len());
+        let tt = tt_decompose(emb, &config).unwrap();
+        let reconstructed = tt_reconstruct(&tt);
+        assert_eq!(reconstructed.len(), emb.len());
     }
 }
 

@@ -1076,10 +1076,7 @@ impl TensorStore {
                             values,
                         ))
                     },
-                    CompressedValue::VectorTT { .. }
-                    | CompressedValue::VectorInt8 { .. }
-                    | CompressedValue::VectorBinary { .. }
-                    | CompressedValue::IdList(_) => {
+                    CompressedValue::VectorTT { .. } | CompressedValue::IdList(_) => {
                         let v = decompress_vector(&value)
                             .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
                         TensorValue::Vector(v)

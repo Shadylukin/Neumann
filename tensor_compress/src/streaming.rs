@@ -85,13 +85,11 @@ impl<W: Write> StreamingWriter<W> {
         Ok(())
     }
 
-    /// Get current entry count.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
-    /// Get bytes written so far.
     #[must_use]
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
@@ -169,25 +167,21 @@ impl<R: Read + Seek> StreamingReader<R> {
         })
     }
 
-    /// Get the header.
     #[must_use]
     pub fn header(&self) -> &StreamingHeader {
         &self.header
     }
 
-    /// Get total entry count.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.header.entry_count
     }
 
-    /// Get entries read so far.
     #[must_use]
     pub fn entries_read(&self) -> u64 {
         self.entries_read
     }
 
-    /// Check if there are more entries.
     #[must_use]
     pub fn has_next(&self) -> bool {
         self.entries_read < self.header.entry_count

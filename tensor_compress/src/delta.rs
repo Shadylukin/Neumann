@@ -232,4 +232,30 @@ mod tests {
         let decompressed = decompress_ids(&compressed);
         assert_eq!(ids, decompressed);
     }
+
+    #[test]
+    fn test_varint_decode_malformed_overflow() {
+        // Create malformed input with too many continuation bytes (>10 for u64)
+        // Each byte has high bit set (continuation) except the terminator
+        let mut malformed = vec![0x80u8; 12]; // 12 continuation bytes
+        malformed.push(0x00); // Terminator
+        malformed.push(0x01); // A valid varint (value 1)
+
+        let decoded = varint_decode(&malformed);
+        // Should handle gracefully without panicking
+        // The malformed value should be skipped/truncated, but valid ones parsed
+        assert!(!decoded.is_empty());
+    }
+
+    #[test]
+    fn test_decompress_ids_malformed() {
+        // Malformed delta-encoded data with overflow varints
+        let mut malformed = vec![0x80u8; 15]; // Way too many continuation bytes
+        malformed.push(0x00); // Terminator
+
+        // Should not panic
+        let result = decompress_ids(&malformed);
+        // Result may be incomplete but should not crash
+        assert!(result.len() <= 2);
+    }
 }

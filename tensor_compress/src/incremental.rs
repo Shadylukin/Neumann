@@ -155,7 +155,6 @@ impl DeltaBuilder {
         self.current_sequence += 1;
     }
 
-    /// Get current change count.
     #[must_use]
     pub fn change_count(&self) -> usize {
         self.entries.len()
@@ -365,13 +364,11 @@ impl DeltaChain {
         Ok(current)
     }
 
-    /// Get chain length (number of deltas).
     #[must_use]
     pub fn len(&self) -> usize {
         self.deltas.len()
     }
 
-    /// Check if chain is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.deltas.is_empty()

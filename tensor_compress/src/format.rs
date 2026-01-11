@@ -4,11 +4,9 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_const_for_fn)]
 
-#[allow(deprecated)]
 use crate::{
-    compress_ids, decompress_ids, dequantize_binary, dequantize_int8, quantize_binary,
-    quantize_int8, rle_decode, rle_encode, tt_decompose, tt_reconstruct, CompressionConfig,
-    RleEncoded, TTCore, TensorMode,
+    compress_ids, decompress_ids, rle_decode, rle_encode, tt_decompose, tt_reconstruct,
+    CompressionConfig, RleEncoded, TTCore, TensorMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,9 +26,6 @@ pub enum FormatError {
     UnsupportedVersion(u16),
     #[error("serialization error: {0}")]
     Serialization(#[from] bincode::Error),
-    #[error("quantization error: {0}")]
-    #[allow(deprecated)]
-    Quantization(#[from] crate::QuantizationError),
     #[error("tensor train error: {0}")]
     TensorTrain(#[from] crate::TTError),
     #[error("io error: {0}")]
@@ -74,8 +69,6 @@ impl Header {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldEncoding {
     Raw,
-    QuantizedInt8,
-    QuantizedBinary,
     DeltaVarint,
     Rle,
 }
@@ -112,17 +105,6 @@ pub enum CompressedValue {
         positions: Vec<u8>,
         /// Non-zero values.
         values: Vec<f32>,
-    },
-    /// Int8 quantized vector (legacy).
-    VectorInt8 {
-        data: Vec<i8>,
-        min: f32,
-        scale: f32,
-    },
-    /// Binary quantized vector (legacy).
-    VectorBinary {
-        data: Vec<u8>,
-        len: usize,
     },
     /// Delta + varint encoded ID list (for sorted u64 sequences).
     IdList(Vec<u8>),
@@ -165,7 +147,7 @@ impl CompressedSnapshot {
 }
 
 /// Compress a vector field based on configuration and key hints.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, deprecated)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn compress_vector(
     vector: &[f32],
     key: &str,
@@ -176,39 +158,14 @@ pub fn compress_vector(
         key.starts_with("emb:") || field_name == "_embedding" || field_name == "vector";
 
     if is_embedding {
-        if let Some(mode) = &config.tensor_mode {
-            return match mode {
-                TensorMode::TensorTrain(tt_config) => {
-                    // Use TT decomposition for high-dimensional embeddings
-                    let tt = tt_decompose(vector, tt_config)?;
-                    Ok(CompressedValue::VectorTT {
-                        cores: tt.cores,
-                        original_dim: tt.original_dim,
-                        shape: tt.shape,
-                        ranks: tt.ranks,
-                    })
-                },
-                #[allow(deprecated)]
-                TensorMode::LegacyInt8 => {
-                    if let Ok(q) = quantize_int8(vector) {
-                        Ok(CompressedValue::VectorInt8 {
-                            data: q.data,
-                            min: q.min,
-                            scale: q.scale,
-                        })
-                    } else {
-                        Ok(CompressedValue::VectorRaw(vector.to_vec()))
-                    }
-                },
-                #[allow(deprecated)]
-                TensorMode::LegacyBinary => {
-                    let q = quantize_binary(vector);
-                    Ok(CompressedValue::VectorBinary {
-                        data: q.data,
-                        len: q.len,
-                    })
-                },
-            };
+        if let Some(TensorMode::TensorTrain(tt_config)) = &config.tensor_mode {
+            let tt = tt_decompose(vector, tt_config)?;
+            return Ok(CompressedValue::VectorTT {
+                cores: tt.cores,
+                original_dim: tt.original_dim,
+                shape: tt.shape,
+                ranks: tt.ranks,
+            });
         }
     }
 
@@ -224,8 +181,8 @@ pub fn compress_vector(
 /// Decompress a vector value.
 ///
 /// # Errors
-/// Returns error if decompression fails (e.g., invalid quantized data).
-#[allow(clippy::cast_precision_loss, deprecated)]
+/// Returns error if decompression fails.
+#[allow(clippy::cast_precision_loss)]
 pub fn decompress_vector(value: &CompressedValue) -> Result<Vec<f32>, FormatError> {
     match value {
         CompressedValue::VectorRaw(v) => Ok(v.clone()),
@@ -235,7 +192,6 @@ pub fn decompress_vector(value: &CompressedValue) -> Result<Vec<f32>, FormatErro
             shape,
             ranks,
         } => {
-            // Reconstruct from TT format
             let tt = crate::TTVector {
                 cores: cores.clone(),
                 original_dim: *original_dim,
@@ -243,21 +199,6 @@ pub fn decompress_vector(value: &CompressedValue) -> Result<Vec<f32>, FormatErro
                 ranks: ranks.clone(),
             };
             Ok(tt_reconstruct(&tt))
-        },
-        CompressedValue::VectorInt8 { data, min, scale } => {
-            let quantized = crate::quantize::QuantizedInt8 {
-                data: data.clone(),
-                min: *min,
-                scale: *scale,
-            };
-            Ok(dequantize_int8(&quantized))
-        },
-        CompressedValue::VectorBinary { data, len } => {
-            let quantized = crate::quantize::QuantizedBinary {
-                data: data.clone(),
-                len: *len,
-            };
-            Ok(dequantize_binary(&quantized)?)
         },
         CompressedValue::IdList(bytes) => {
             let ids = decompress_ids(bytes);
@@ -481,36 +422,6 @@ mod tests {
 
         let decompressed = decompress_vector(&compressed).unwrap();
         assert_eq!(decompressed.len(), 64);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_compress_vector_embedding_int8_legacy() {
-        let config = CompressionConfig {
-            tensor_mode: Some(TensorMode::LegacyInt8),
-            ..Default::default()
-        };
-        let vector = vec![0.1, 0.2, 0.3, 0.4];
-        let compressed = compress_vector(&vector, "emb:doc1", "vector", &config).unwrap();
-        assert!(matches!(compressed, CompressedValue::VectorInt8 { .. }));
-
-        let decompressed = decompress_vector(&compressed).unwrap();
-        assert_eq!(decompressed.len(), 4);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_compress_vector_embedding_binary_legacy() {
-        let config = CompressionConfig {
-            tensor_mode: Some(TensorMode::LegacyBinary),
-            ..Default::default()
-        };
-        let vector = vec![0.1, -0.2, 0.3, -0.4];
-        let compressed = compress_vector(&vector, "emb:doc1", "vector", &config).unwrap();
-        assert!(matches!(compressed, CompressedValue::VectorBinary { .. }));
-
-        let decompressed = decompress_vector(&compressed).unwrap();
-        assert_eq!(decompressed.len(), 4);
     }
 
     #[test]

@@ -238,7 +238,6 @@ impl TTCore {
         self.shape.2
     }
 
-    /// Get element at position (i, j, k).
     #[inline]
     pub fn get(&self, i: usize, j: usize, k: usize) -> f32 {
         let idx = i * self.shape.1 * self.shape.2 + j * self.shape.2 + k;
@@ -257,7 +256,6 @@ impl TTCore {
         Matrix::new(data, r1, r2).expect("valid shape")
     }
 
-    /// Total number of elements in this core.
     pub fn size(&self) -> usize {
         self.data.len()
     }

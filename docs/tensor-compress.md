@@ -8,7 +8,6 @@ Module 8 of Neumann. Provides tensor-native compression exploiting the mathemati
 2. **Higher Dimensions Are Lower**: Decomposes vectors into products of smaller tensors
 3. **Streaming I/O**: Process large snapshots without loading entire dataset
 4. **Incremental Updates**: Delta snapshots for efficient replication
-5. **Backward Compatible**: Legacy int8/binary quantization still supported
 
 ## Quick Start
 
@@ -173,24 +172,6 @@ if chain.should_compact(10) {
 }
 ```
 
-## Legacy Quantization
-
-Deprecated but maintained for backward compatibility.
-
-```rust
-#[allow(deprecated)]
-use tensor_compress::{quantize_int8, dequantize_int8};
-
-let embedding = vec![0.1, 0.2, 0.3, 0.4];
-let quantized = quantize_int8(&embedding)?;
-let restored = dequantize_int8(&quantized);
-```
-
-| Mode | Compression | Error | Notes |
-|------|-------------|-------|-------|
-| Int8 | 4x | ~1% | Use TensorTrain instead |
-| Binary | 32x | Lossy | Use TensorTrain instead |
-
 ## Delta Encoding
 
 For sorted integer sequences (node IDs, timestamps).
@@ -223,15 +204,13 @@ assert_eq!(encoded.runs(), 1);
 
 ```rust
 pub struct CompressionConfig {
-    pub tensor_mode: Option<TensorMode>,  // TT or legacy
+    pub tensor_mode: Option<TensorMode>,
     pub delta_encoding: bool,
     pub rle_encoding: bool,
 }
 
 pub enum TensorMode {
-    TensorTrain(TTConfig),  // Recommended
-    LegacyInt8,             // Deprecated
-    LegacyBinary,           // Deprecated
+    TensorTrain(TTConfig),
 }
 
 pub struct TTConfig {
@@ -311,7 +290,6 @@ pub enum DeltaError {
 | incremental | 20+ (delta build, apply, merge, chain) |
 | decompose | 15+ (SVD, matrix ops) |
 | format | 10+ (serialize, version) |
-| legacy (quantize) | 10+ (int8, binary) |
 | delta/rle | 20+ (varint, runs) |
 
 **Integration Tests**: 14 tests with real engine data
