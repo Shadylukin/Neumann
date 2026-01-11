@@ -46,7 +46,7 @@ Compression: 12.8x
 ### Usage
 
 ```rust
-use tensor_compress::{tt_decompose, tt_reconstruct, TTConfig};
+use tensor_compress::{tt_decompose, tt_reconstruct, tt_cosine_similarity, TTConfig};
 
 let embedding: Vec<f32> = get_embedding();  // 4096-dim
 let config = TTConfig::for_dim(4096);
@@ -61,6 +61,25 @@ let restored = tt_reconstruct(&tt);
 // Compute similarity without reconstruction
 let tt2 = tt_decompose(&other_embedding, &config)?;
 let sim = tt_cosine_similarity(&tt, &tt2)?;
+```
+
+### Batch Operations
+
+Batch operations use rayon for automatic parallelization when processing 4+ vectors:
+
+```rust
+use tensor_compress::{tt_decompose_batch, tt_cosine_similarity_batch, TTConfig};
+
+let vectors: Vec<Vec<f32>> = load_embeddings();
+let config = TTConfig::for_dim(4096);
+
+// Batch decompose (parallel for 4+ vectors)
+let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+let tts = tt_decompose_batch(&refs, &config)?;
+
+// Batch similarity search
+let query_tt = &tts[0];
+let similarities = tt_cosine_similarity_batch(query_tt, &tts[1..])?;
 ```
 
 ### Configuration Presets
@@ -122,6 +141,33 @@ let reader = StreamingReader::open(file)?;
 for entry in reader {
     process(entry?);
 }
+```
+
+## Streaming TT Decomposition
+
+For processing large vector collections without loading all into memory:
+
+```rust
+use tensor_compress::{
+    StreamingTTWriter, StreamingTTReader, streaming_tt_similarity_search, TTConfig
+};
+use std::fs::File;
+
+let config = TTConfig::for_dim(4096);
+
+// Write vectors as TT format incrementally
+let file = File::create("embeddings.tt")?;
+let mut writer = StreamingTTWriter::new(file, config.clone())?;
+for vector in vectors {
+    writer.write_vector(&vector)?;
+}
+writer.finish()?;
+
+// Read back and search
+let file = File::open("embeddings.tt")?;
+let query_tt = tt_decompose(&query, &config)?;
+let results = streaming_tt_similarity_search(file, &query_tt, 10)?;
+// Returns top-10 (index, similarity) pairs
 ```
 
 ### Format
@@ -225,10 +271,14 @@ pub struct TTConfig {
 | Function | Description |
 |----------|-------------|
 | `tt_decompose` | Decompose vector to TT format |
+| `tt_decompose_batch` | Parallel batch decomposition |
 | `tt_reconstruct` | Reconstruct vector from TT |
 | `tt_dot_product` | Dot product in TT space |
+| `tt_dot_product_batch` | Batch dot products |
 | `tt_cosine_similarity` | Cosine similarity in TT space |
+| `tt_cosine_similarity_batch` | Batch cosine similarities |
 | `tt_euclidean_distance` | Euclidean distance in TT space |
+| `tt_euclidean_distance_batch` | Batch Euclidean distances |
 | `tt_norm` | L2 norm of TT vector |
 | `tt_scale` | Scale TT vector by constant |
 
@@ -241,6 +291,19 @@ pub struct TTConfig {
 | `StreamingWriter::finish` | Finalize with trailer |
 | `StreamingReader::open` | Open streaming file |
 | `StreamingReader::entry_count` | Total entries |
+
+### Streaming TT Operations
+
+| Function | Description |
+|----------|-------------|
+| `StreamingTTWriter::new` | Create TT streaming writer |
+| `StreamingTTWriter::write_vector` | Decompose and write vector |
+| `StreamingTTWriter::write_tt` | Write pre-decomposed TT |
+| `StreamingTTWriter::finish` | Finalize with trailer |
+| `StreamingTTReader::open` | Open TT streaming file |
+| `streaming_tt_similarity_search` | Search streaming TT file |
+| `convert_vectors_to_streaming_tt` | Batch convert vectors |
+| `read_streaming_tt_all` | Load all TT vectors |
 
 ### Delta Operations
 
@@ -281,23 +344,27 @@ pub enum DeltaError {
 
 ## Test Coverage
 
-**Unit Tests**: 121 tests in tensor_compress
+**Unit Tests**: 147 tests in tensor_compress (94.84% line coverage)
 
 | Module | Tests |
 |--------|-------|
-| tensor_train | 25+ (decompose, reconstruct, similarity, arithmetic) |
+| tensor_train | 40+ (decompose, reconstruct, similarity, batch ops, edge cases) |
+| streaming_tt | 15+ (write, read, roundtrip, similarity search) |
 | streaming | 15+ (write, read, roundtrip, large files) |
 | incremental | 20+ (delta build, apply, merge, chain) |
 | decompose | 15+ (SVD, matrix ops) |
-| format | 10+ (serialize, version) |
+| format | 10+ (serialize, version, sparse) |
 | delta/rle | 20+ (varint, runs) |
 
 **Integration Tests**: 14 tests with real engine data
 
-**Fuzz Targets**: 3 targets
+**Fuzz Targets**: 6 targets
 - `tt_roundtrip`: TT decomposition/reconstruction
-- `streaming_format`: Streaming I/O robustness
-- `delta_apply`: Delta application
+- `tt_config_validation`: Config validation paths
+- `tt_metrics`: Property-based metric testing (similarity in [-1,1], distance >= 0)
+- `tt_batch`: Batch decomposition consistency
+- `tt_serialization`: TTVector serde roundtrip
+- `compress_ids`: Delta+varint encoding
 
 **Stress Tests**: 4 tests
 - Concurrent TT decomposition (16 threads)
@@ -310,5 +377,6 @@ pub enum DeltaError {
 - `serde`: Serialization traits
 - `bincode`: Binary format
 - `thiserror`: Error types
+- `rayon`: Parallel batch operations
 
 No external LAPACK/BLAS - pure Rust SVD implementation.
