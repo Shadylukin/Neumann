@@ -26,7 +26,6 @@ pub use delta::{
 };
 pub use rle::{rle_decode, rle_encode, RleEncoded};
 
-// Sparse compression exports
 pub use format::{
     compress_dense_as_sparse, compress_sparse, should_use_sparse, should_use_sparse_threshold,
     sparse_storage_size,

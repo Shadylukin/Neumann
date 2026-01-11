@@ -63,7 +63,6 @@ impl<W: Write> StreamingTTWriter<W> {
     pub fn new(writer: W, config: TTConfig) -> io::Result<Self> {
         let mut buf_writer = BufWriter::new(writer);
 
-        // Write placeholder magic at start
         buf_writer.write_all(&STREAMING_TT_MAGIC)?;
         let data_start = STREAMING_TT_MAGIC.len() as u64;
 
@@ -90,7 +89,6 @@ impl<W: Write> StreamingTTWriter<W> {
         let bytes = bincode::serialize(tt)?;
         let len = bytes.len() as u32;
 
-        // Write length prefix then entry data
         self.writer.write_all(&len.to_le_bytes())?;
         self.writer.write_all(&bytes)?;
 
@@ -150,18 +148,15 @@ pub struct StreamingTTReader<R: Read> {
 impl<R: Read + Seek> StreamingTTReader<R> {
     /// Open a streaming TT file, reading header from trailer.
     pub fn open(mut reader: R) -> Result<Self, FormatError> {
-        // Read trailer size from end
         reader.seek(SeekFrom::End(-8))?;
         let mut trailer_len_bytes = [0u8; 8];
         reader.read_exact(&mut trailer_len_bytes)?;
         let trailer_len = u64::from_le_bytes(trailer_len_bytes);
 
-        // Sanity check trailer size
         if trailer_len > MAX_TRAILER_SIZE {
             return Err(FormatError::InvalidMagic);
         }
 
-        // Read trailer
         reader.seek(SeekFrom::End(-(8 + trailer_len as i64)))?;
         let mut trailer_bytes = vec![0u8; trailer_len as usize];
         reader.read_exact(&mut trailer_bytes)?;
@@ -169,7 +164,6 @@ impl<R: Read + Seek> StreamingTTReader<R> {
         let header: StreamingTTHeader = bincode::deserialize(&trailer_bytes)?;
         header.validate()?;
 
-        // Seek to data start
         reader.seek(SeekFrom::Start(header.data_start))?;
 
         Ok(Self {
@@ -213,14 +207,12 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
             return None;
         }
 
-        // Read length prefix
         let mut len_bytes = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut len_bytes) {
             return Some(Err(FormatError::from(bincode::Error::from(e))));
         }
         let len = u32::from_le_bytes(len_bytes) as usize;
 
-        // Sanity check entry size
         if len > MAX_ENTRY_SIZE {
             return Some(Err(FormatError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -228,7 +220,6 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
             ))));
         }
 
-        // Read entry data
         let mut entry_bytes = vec![0u8; len];
         if let Err(e) = self.reader.read_exact(&mut entry_bytes) {
             return Some(Err(FormatError::from(bincode::Error::from(e))));
@@ -278,7 +269,6 @@ pub fn streaming_tt_similarity_search<R: Read + Seek>(
 ) -> Result<Vec<(u64, f32)>, FormatError> {
     let stream_reader = StreamingTTReader::open(reader)?;
 
-    // Collect all similarities with indices
     let mut results: Vec<(u64, f32)> = Vec::new();
 
     for (idx, tt_result) in stream_reader.enumerate() {
@@ -288,10 +278,7 @@ pub fn streaming_tt_similarity_search<R: Read + Seek>(
         }
     }
 
-    // Sort by similarity descending
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Take top-k
     results.truncate(top_k);
     Ok(results)
 }

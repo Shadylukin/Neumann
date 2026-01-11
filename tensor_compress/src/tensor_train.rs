@@ -139,7 +139,6 @@ impl TTConfig {
 /// Find an optimal tensor shape for the given dimension.
 /// Prefers balanced shapes with small prime factors.
 fn optimal_shape(dim: usize) -> Vec<usize> {
-    // Common embedding dimensions and their optimal factorizations
     match dim {
         64 => vec![4, 4, 4],
         128 => vec![4, 4, 8],
@@ -173,11 +172,9 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
     let mut factors = vec![];
     let mut remaining = n;
 
-    // Try to find balanced factors
     let target_size = (remaining as f64).powf(1.0 / target_factors as f64) as usize;
 
     for _ in 0..target_factors - 1 {
-        // Find the largest factor <= target_size
         let mut best_factor = 1;
         for f in (2..=target_size.max(2)).rev() {
             if remaining % f == 0 {
@@ -186,7 +183,6 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
             }
         }
         if best_factor == 1 {
-            // Can't find good factor, try larger
             for f in 2..=remaining {
                 if remaining % f == 0 {
                     best_factor = f;
@@ -204,7 +200,6 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
         factors.push(remaining);
     }
 
-    // Sort for consistency
     factors.sort_unstable();
     factors
 }
@@ -329,8 +324,6 @@ pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTErr
     let n = config.shape.len();
     let mut cores = Vec::with_capacity(n);
     let mut ranks = vec![1];
-
-    // Start with the full vector
     let mut current_data = vector.to_vec();
     let mut left_rank = 1;
 
@@ -339,17 +332,11 @@ pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTErr
         let mode_size = config.shape[k];
         let remaining_product: usize = config.shape[k + 1..].iter().product();
 
-        // Reshape to (left_rank * mode_size) x (remaining_product)
         let m = left_unfold_for_tt(&current_data, left_rank, mode_size);
-
-        // Truncated SVD
         let svd_result = svd_truncated(&m, config.max_rank, config.tolerance)?;
-
-        // Determine new rank
         let new_rank = svd_result.rank.min(config.max_rank);
         ranks.push(new_rank);
 
-        // Build core from U (reshaped to left_rank x mode_size x new_rank)
         let mut core_data = vec![0.0; left_rank * mode_size * new_rank];
         for i in 0..left_rank {
             for j in 0..mode_size {
@@ -364,7 +351,6 @@ pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTErr
         }
         cores.push(TTCore::new(core_data, left_rank, mode_size, new_rank));
 
-        // Prepare data for next iteration: S * Vt
         let mut next_data = vec![0.0; new_rank * remaining_product];
         for r in 0..new_rank {
             for j in 0..remaining_product {
@@ -379,11 +365,9 @@ pub fn tt_decompose(vector: &[f32], config: &TTConfig) -> Result<TTVector, TTErr
         left_rank = new_rank;
     }
 
-    // Last core: whatever remains
     let last_mode_size = config.shape[n - 1];
     ranks.push(1);
 
-    // Reshape remaining data to (left_rank, last_mode_size, 1)
     let mut last_core_data = vec![0.0; left_rank * last_mode_size];
     for i in 0..left_rank.min(current_data.len() / last_mode_size) {
         for j in 0..last_mode_size {
@@ -410,14 +394,11 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
         return vec![];
     }
 
-    // Contract cores from left to right
     let n = tt.cores.len();
     let total_size: usize = tt.shape.iter().product();
     let mut result = vec![0.0; total_size];
 
-    // Iterate through all multi-indices
     for flat_idx in 0..total_size {
-        // Convert flat index to multi-index
         let mut remaining = flat_idx;
         let mut multi_idx = vec![0usize; n];
         for k in (0..n).rev() {
@@ -425,14 +406,11 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
             remaining /= tt.shape[k];
         }
 
-        // Contract: product of core slices
         let mut left_vec: Vec<f32> = vec![1.0];
 
         for (k, core) in tt.cores.iter().enumerate() {
             let j = multi_idx[k];
             let slice = core.slice(j);
-
-            // Matrix-vector product: left_vec * slice
             let mut new_vec = vec![0.0; core.right_rank()];
             for r in 0..core.right_rank() {
                 for l in 0..core.left_rank().min(left_vec.len()) {
@@ -451,19 +429,16 @@ pub fn tt_reconstruct(tt: &TTVector) -> Vec<f32> {
 /// Compute the Frobenius norm of a TT-vector without reconstruction.
 #[must_use]
 pub fn tt_norm(tt: &TTVector) -> f32 {
-    // Contract <tt, tt> efficiently using core-by-core contraction
     if tt.cores.is_empty() {
         return 0.0;
     }
 
-    // Start with identity
     let mut gram = vec![1.0f32];
 
     for core in &tt.cores {
         let (r1, n, r2) = core.shape;
         let mut new_gram = vec![0.0; r2 * r2];
 
-        // Contract: new_gram[a,b] = sum_{i,j,k} gram[i,j] * G[i,k,a] * G[j,k,b]
         for a in 0..r2 {
             for b in 0..r2 {
                 let mut sum = 0.0;
@@ -499,7 +474,6 @@ pub fn tt_dot_product(a: &TTVector, b: &TTVector) -> Result<f32, TTError> {
         return Ok(0.0);
     }
 
-    // Contract core-by-core
     let mut gram = vec![1.0f32];
 
     for (core_a, core_b) in a.cores.iter().zip(b.cores.iter()) {
@@ -559,7 +533,6 @@ pub fn tt_scale(tt: &TTVector, scalar: f32) -> TTVector {
         return tt.clone();
     }
 
-    // Scale the first core only
     let mut new_cores = tt.cores.clone();
     for val in &mut new_cores[0].data {
         *val *= scalar;
