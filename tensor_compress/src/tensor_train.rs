@@ -590,10 +590,7 @@ pub fn tt_dot_product_batch(query: &TTVector, targets: &[TTVector]) -> Result<Ve
             .map(|t| tt_dot_product(query, t))
             .collect()
     } else {
-        targets
-            .iter()
-            .map(|t| tt_dot_product(query, t))
-            .collect()
+        targets.iter().map(|t| tt_dot_product(query, t)).collect()
     }
 }
 
@@ -1237,5 +1234,48 @@ mod tests {
 
         let dists = tt_euclidean_distance_batch(&query_tt, &empty_targets).unwrap();
         assert!(dists.is_empty());
+    }
+
+    #[test]
+    fn test_ttconfig_shape_contains_zero() {
+        let config = TTConfig {
+            shape: vec![4, 0, 4],
+            max_rank: 8,
+            tolerance: 0.01,
+        };
+        assert!(matches!(config.validate(), Err(TTError::InvalidShape(_))));
+    }
+
+    #[test]
+    fn test_ttconfig_zero_rank() {
+        let config = TTConfig {
+            shape: vec![4, 4, 4],
+            max_rank: 0,
+            tolerance: 0.01,
+        };
+        assert!(matches!(config.validate(), Err(TTError::InvalidRank)));
+    }
+
+    #[test]
+    fn test_optimal_shape_various_dimensions() {
+        for dim in [384, 768, 1024, 1536, 2048, 3072, 8192] {
+            let config = TTConfig::for_dim(dim).unwrap();
+            let product: usize = config.shape.iter().product();
+            assert_eq!(product, dim, "Shape product mismatch for dim {}", dim);
+        }
+    }
+
+    #[test]
+    fn test_tt_incompatible_shapes_cosine() {
+        let config64 = TTConfig::for_dim(64).unwrap();
+        let config128 = TTConfig::for_dim(128).unwrap();
+
+        let v64: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let v128: Vec<f32> = (0..128).map(|i| i as f32).collect();
+
+        let tt64 = tt_decompose(&v64, &config64).unwrap();
+        let tt128 = tt_decompose(&v128, &config128).unwrap();
+
+        assert!(tt_cosine_similarity(&tt64, &tt128).is_err());
     }
 }

@@ -229,7 +229,7 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
             Ok(tt) => {
                 self.vectors_read += 1;
                 Some(Ok(tt))
-            }
+            },
             Err(e) => Some(Err(FormatError::from(e))),
         }
     }
@@ -295,9 +295,7 @@ mod tests {
     use std::io::Cursor;
 
     fn make_test_vector(seed: usize, dim: usize) -> Vec<f32> {
-        (0..dim)
-            .map(|i| ((i + seed) as f32 * 0.1).sin())
-            .collect()
+        (0..dim).map(|i| ((i + seed) as f32 * 0.1).sin()).collect()
     }
 
     #[test]
@@ -414,8 +412,7 @@ mod tests {
         let vectors: Vec<Vec<f32>> = (0..5).map(|i| make_test_vector(i, 64)).collect();
 
         let cursor = Cursor::new(Vec::new());
-        let count =
-            convert_vectors_to_streaming_tt(vectors.into_iter(), cursor, &config).unwrap();
+        let count = convert_vectors_to_streaming_tt(vectors.into_iter(), cursor, &config).unwrap();
         assert_eq!(count, 5);
     }
 
@@ -500,5 +497,42 @@ mod tests {
         let read_tt = reader.next().unwrap().unwrap();
         assert_eq!(tt.shape, read_tt.shape);
         assert_eq!(tt.original_dim, read_tt.original_dim);
+    }
+
+    #[test]
+    fn test_streaming_tt_invalid_magic() {
+        use crate::format::FormatError;
+
+        // Create data with wrong magic bytes (too short to even read trailer)
+        let bad_data = vec![0u8; 100];
+        let result = StreamingTTReader::open(Cursor::new(bad_data));
+        assert!(result.is_err());
+
+        // Also test via header validation directly
+        let header = StreamingTTHeader {
+            magic: [0, 0, 0, 0], // Wrong magic
+            version: STREAMING_TT_VERSION,
+            config: TTConfig::for_dim(64).unwrap(),
+            vector_count: 0,
+            data_start: 4,
+        };
+        assert!(matches!(header.validate(), Err(FormatError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_streaming_tt_unsupported_version() {
+        use crate::format::FormatError;
+
+        let header = StreamingTTHeader {
+            magic: STREAMING_TT_MAGIC,
+            version: STREAMING_TT_VERSION + 100, // Future version
+            config: TTConfig::for_dim(64).unwrap(),
+            vector_count: 0,
+            data_start: 4,
+        };
+        assert!(matches!(
+            header.validate(),
+            Err(FormatError::UnsupportedVersion(_))
+        ));
     }
 }

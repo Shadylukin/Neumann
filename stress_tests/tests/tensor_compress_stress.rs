@@ -10,7 +10,8 @@ use tensor_compress::{
     format::{CompressedEntry, CompressedScalar, CompressedSnapshot, CompressedValue, Header},
     incremental::{apply_delta, DeltaBuilder, DeltaChain},
     streaming::{StreamingReader, StreamingWriter},
-    tt_decompose, tt_reconstruct, CompressionConfig, TTConfig,
+    tt_decompose, tt_decompose_batch, tt_reconstruct, CompressionConfig, StreamingTTReader,
+    StreamingTTWriter, TTConfig,
 };
 
 use std::collections::HashMap;
@@ -336,4 +337,104 @@ fn stress_tt_compression_ratio_4096d() {
         "PASSED: Average {:.2}x compression on {}d vectors",
         avg_ratio, embedding_dim
     );
+}
+
+/// Stress test: Batch TT decomposition with concurrent access.
+#[test]
+#[ignore]
+fn stress_tt_batch_concurrent() {
+    let config = full_config();
+    let thread_count = config.effective_thread_count();
+    let batch_size = 500;
+    let embedding_dim = 256;
+
+    println!("\n=== TT Batch Concurrent ===");
+    println!("Threads: {}", thread_count);
+    println!("Batch size: {}", batch_size);
+
+    let embeddings = Arc::new(generate_embeddings(batch_size, embedding_dim, 42));
+    let tt_config = Arc::new(TTConfig::for_dim(embedding_dim).unwrap());
+
+    let start = Instant::now();
+    let handles: Vec<_> = (0..thread_count)
+        .map(|_| {
+            let embs = Arc::clone(&embeddings);
+            let cfg = Arc::clone(&tt_config);
+            thread::spawn(move || {
+                let refs: Vec<&[f32]> = embs.iter().map(|v| v.as_slice()).collect();
+                tt_decompose_batch(&refs, &cfg).unwrap()
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let elapsed = start.elapsed();
+
+    println!("Duration: {:?}", elapsed);
+    println!(
+        "Throughput: {:.0} batches/sec",
+        thread_count as f64 / elapsed.as_secs_f64()
+    );
+
+    // Verify all results are identical in length
+    for result in &results[1..] {
+        assert_eq!(results[0].len(), result.len());
+    }
+
+    println!("PASSED: {} concurrent batch decompositions", thread_count);
+}
+
+/// Stress test: Streaming TT with large vector count.
+#[test]
+#[ignore]
+fn stress_streaming_tt_10k_vectors() {
+    let vector_count = 10_000;
+    let embedding_dim = 256;
+
+    println!("\n=== Streaming TT 10k Vectors ===");
+    println!("Vectors: {}", vector_count);
+    println!("Dimension: {}", embedding_dim);
+
+    let config = TTConfig::for_dim(embedding_dim).unwrap();
+    let embeddings = generate_embeddings(vector_count, embedding_dim, 42);
+
+    // Write phase
+    let write_start = Instant::now();
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = StreamingTTWriter::new(cursor, config.clone()).unwrap();
+
+    for emb in &embeddings {
+        writer.write_vector(emb).unwrap();
+    }
+
+    let written = writer.finish().unwrap();
+    let write_elapsed = write_start.elapsed();
+    let bytes = written.get_ref().len();
+
+    println!(
+        "Write: {:?} ({:.1} MB)",
+        write_elapsed,
+        bytes as f64 / 1024.0 / 1024.0
+    );
+    println!(
+        "Throughput: {:.0} vectors/sec",
+        vector_count as f64 / write_elapsed.as_secs_f64()
+    );
+
+    // Read phase
+    let read_start = Instant::now();
+    let reader = StreamingTTReader::open(Cursor::new(written.into_inner())).unwrap();
+    assert_eq!(reader.vector_count(), vector_count as u64);
+
+    let tts: Vec<_> = reader.map(|r| r.unwrap()).collect();
+    let read_elapsed = read_start.elapsed();
+
+    println!("Read: {:?}", read_elapsed);
+    println!(
+        "Throughput: {:.0} vectors/sec",
+        vector_count as f64 / read_elapsed.as_secs_f64()
+    );
+
+    assert_eq!(tts.len(), vector_count);
+    println!("PASSED: {} vectors written and read", vector_count);
 }

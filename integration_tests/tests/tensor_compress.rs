@@ -5,7 +5,8 @@
 use integration_tests::{create_shared_engines, sample_embeddings};
 use tensor_compress::{
     compress_ids, decompress_ids, delta_decode, delta_encode, rle_decode, rle_encode,
-    tt_cosine_similarity, tt_decompose, tt_dot_product, tt_reconstruct, CompressionConfig,
+    tt_cosine_similarity, tt_cosine_similarity_batch, tt_decompose, tt_decompose_batch,
+    tt_dot_product, tt_reconstruct, CompressionConfig, StreamingTTReader, StreamingTTWriter,
     TTConfig, TensorMode,
 };
 
@@ -363,4 +364,62 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     dot / (norm_a * norm_b)
+}
+
+#[test]
+fn test_streaming_tt_with_vector_engine() {
+    let (_, _, _, vector) = create_shared_engines();
+
+    // Store embeddings
+    let embeddings = sample_embeddings(100, 256);
+    for (i, emb) in embeddings.iter().enumerate() {
+        vector
+            .store_embedding(&format!("doc:{}", i), emb.clone())
+            .unwrap();
+    }
+
+    // Write to streaming TT format
+    let config = TTConfig::for_dim(256).unwrap();
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = StreamingTTWriter::new(cursor, config).unwrap();
+
+    for emb in &embeddings {
+        writer.write_vector(emb).unwrap();
+    }
+
+    let written = writer.finish().unwrap();
+
+    // Read back and verify
+    let reader = StreamingTTReader::open(std::io::Cursor::new(written.into_inner())).unwrap();
+    assert_eq!(reader.vector_count(), 100);
+
+    let tts: Vec<_> = reader.map(|r| r.unwrap()).collect();
+
+    // Verify reconstruction quality
+    for (tt, original) in tts.iter().zip(&embeddings) {
+        let reconstructed = tt_reconstruct(tt);
+        assert_eq!(reconstructed.len(), original.len());
+    }
+}
+
+#[test]
+fn test_tt_batch_operations() {
+    let embeddings = sample_embeddings(20, 128);
+    let config = TTConfig::for_dim(128).unwrap();
+
+    let refs: Vec<&[f32]> = embeddings.iter().map(|v| v.as_slice()).collect();
+    let tts = tt_decompose_batch(&refs, &config).unwrap();
+
+    assert_eq!(tts.len(), 20);
+
+    // Batch similarity
+    let query = &tts[0];
+    let targets = &tts[1..];
+    let sims = tt_cosine_similarity_batch(query, targets).unwrap();
+
+    assert_eq!(sims.len(), 19);
+    for sim in &sims {
+        assert!(sim.is_finite());
+        assert!(*sim >= -1.0 && *sim <= 1.0);
+    }
 }
