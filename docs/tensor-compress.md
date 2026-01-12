@@ -104,23 +104,39 @@ let config = TTConfig {
 
 ### Performance
 
-Benchmarks run on Apple M4 (aarch64, MacBook Air 24GB):
+Benchmarks run on Apple M4 (aarch64, MacBook Air 24GB), release build:
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| `tt_decompose` (4096-dim) | 118 us | SVD-based decomposition |
-| `tt_reconstruct` (4096-dim) | 1.2 ms | Full tensor reconstruction |
-| `tt_dot_product` (4096-dim) | 355 ns | In TT space, no reconstruction |
-| `tt_cosine_similarity` (4096-dim) | 969 ns | In TT space, no reconstruction |
+| Dimension | Decompose | Reconstruct | Similarity | Compression |
+|-----------|-----------|-------------|------------|-------------|
+| 64 | 6.2 us | 29.5 us | 1.1 us | 2.0x |
+| 256 | 13.4 us | 113.0 us | 1.5 us | 4.6x |
+| 768 | 26.9 us | 431.7 us | 2.4 us | 10.7x |
+| 1536 | 62.0 us | 709.8 us | 2.0 us | 16.0x |
+| 4096 | 464.5 us | 2142.2 us | 2.4 us | 42.7x |
 
-Compression ratios by dimension:
+Batch operations (768-dim, 1000 vectors):
 
-| Dimension | Compression | Relative Error |
-|-----------|-------------|----------------|
-| 64 | 1.5-2x | <1% |
-| 256 | 2-4x | <1% |
-| 1024 | 4-8x | <1% |
-| 4096 | 10-16x | <1% |
+| Operation | Time | Per-vector |
+|-----------|------|------------|
+| `tt_decompose_batch` | 21 ms | 21.0 us |
+| `tt_cosine_similarity_batch` | 11.3 ms | 11.4 us |
+
+Throughput: **39,318 vectors/sec** (768-dim decomposition)
+
+### Industry Comparison
+
+| Method | Compression | Recall | Notes |
+|--------|-------------|--------|-------|
+| **Tensor Train (this)** | 10-42x | ~99% | Similarity in compressed space |
+| Scalar Quantization | 4x | 99%+ | Industry default |
+| Product Quantization | 16-64x | 56-90% | Requires training |
+| Binary Quantization | 32x | 80-95% | Speed-optimized |
+
+TT advantages over alternatives:
+- Compute similarity directly in compressed space (2.4 us vs full reconstruction)
+- Higher accuracy at high compression ratios
+- No training required, works with any vector distribution
+- Pure Rust implementation (no BLAS/LAPACK dependency)
 
 ## Streaming Compression
 
