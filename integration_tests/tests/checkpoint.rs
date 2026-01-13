@@ -1,6 +1,7 @@
 //! Integration tests for the checkpoint/rollback system.
 
 use std::sync::Arc;
+
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_checkpoint::{CheckpointConfig, CheckpointManager, DestructiveOp, OperationPreview};
 use tensor_store::TensorStore;

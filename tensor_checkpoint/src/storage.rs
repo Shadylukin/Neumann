@@ -1,6 +1,9 @@
-use crate::error::{CheckpointError, Result};
-use crate::state::{CheckpointInfo, CheckpointState};
 use tensor_blob::{BlobStore, PutOptions};
+
+use crate::{
+    error::{CheckpointError, Result},
+    state::{CheckpointInfo, CheckpointState},
+};
 
 const CHECKPOINT_TAG: &str = "_system:checkpoint";
 const CHECKPOINT_CONTENT_TYPE: &str = "application/x-neumann-checkpoint";
@@ -112,10 +115,11 @@ impl CheckpointStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::state::{CheckpointMetadata, CheckpointTrigger, DestructiveOp, OperationPreview};
     use tensor_blob::BlobConfig;
     use tensor_store::TensorStore;
+
+    use super::*;
+    use crate::state::{CheckpointMetadata, CheckpointTrigger, DestructiveOp, OperationPreview};
 
     async fn setup() -> BlobStore {
         let store = TensorStore::new();

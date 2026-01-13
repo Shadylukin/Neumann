@@ -3,11 +3,11 @@
 //! Provides unified operations across relational, graph, and vector engines.
 //! All operations are async-first and support concurrent execution.
 
+use std::{collections::HashMap, sync::Arc};
+
 use graph_engine::{GraphEngine, Node};
 use relational_engine::{Condition, RelationalEngine, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;
 

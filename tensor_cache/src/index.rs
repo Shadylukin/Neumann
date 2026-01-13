@@ -5,13 +5,17 @@
 // Public API surface - methods may not be used internally but are available to consumers
 #![allow(dead_code)]
 
-use crate::error::{CacheError, Result};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    RwLock, RwLockReadGuard,
+};
+
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{RwLock, RwLockReadGuard};
 use tensor_store::{
     DistanceMetric, EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats, SparseVector,
 };
+
+use crate::error::{CacheError, Result};
 
 fn read_lock<T>(lock: &RwLock<T>) -> Result<RwLockReadGuard<'_, T>> {
     lock.read()
@@ -231,6 +235,13 @@ impl CacheIndex {
                         let raw = metric.compute(&query_sparse, &stored_sparse);
                         metric.to_similarity(raw)
                     },
+                    EmbeddingStorage::TensorTrain(_) => {
+                        // Reconstruct to dense, then sparse for metric computation
+                        let dense = embedding.to_dense();
+                        let stored_sparse = SparseVector::from_dense(&dense);
+                        let raw = metric.compute(&query_sparse, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
                 };
 
                 if similarity >= threshold {
@@ -321,6 +332,13 @@ impl CacheIndex {
                     EmbeddingStorage::Delta(delta) => {
                         // Use the delta's sparse representation directly
                         let stored_sparse = delta.to_sparse_delta();
+                        let raw = metric.compute(query, &stored_sparse);
+                        metric.to_similarity(raw)
+                    },
+                    EmbeddingStorage::TensorTrain(_) => {
+                        // Reconstruct to dense, then sparse for metric computation
+                        let dense = embedding.to_dense();
+                        let stored_sparse = SparseVector::from_dense(&dense);
                         let raw = metric.compute(query, &stored_sparse);
                         metric.to_similarity(raw)
                     },

@@ -6,21 +6,19 @@
 //! - Padding for length hiding
 //! - Pointer indirection for storage pattern hiding
 
-use blake2::digest::consts::U32;
-use blake2::{Blake2b, Digest};
+use blake2::{digest::consts::U32, Blake2b, Digest};
 
-use crate::key::MasterKey;
-use crate::{Result, VaultError};
+use crate::{key::MasterKey, Result, VaultError};
 
 /// Padding block sizes for length hiding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaddingSize {
     /// 256 bytes - for short secrets (API keys, tokens)
-    Small = 256,
+    Small      = 256,
     /// 1 KB - for medium secrets (certificates, small configs)
-    Medium = 1024,
+    Medium     = 1024,
     /// 4 KB - for large secrets (private keys, large configs)
-    Large = 4096,
+    Large      = 4096,
     /// 16 KB - for very large secrets
     ExtraLarge = 16384,
 }
@@ -57,7 +55,7 @@ impl Obfuscator {
         // Simple key derivation with domain separation
         // In production, use HKDF
         for (i, byte) in obfuscation_key.iter_mut().enumerate() {
-            *byte = master_bytes[i] ^ 0x5C; // HMAC-style outer padding
+            *byte = master_bytes[i] ^ 0x5c; // HMAC-style outer padding
         }
 
         // Mix in domain separator
@@ -131,7 +129,7 @@ impl Obfuscator {
         // Outer hash: H((key XOR opad) || inner_hash)
         let mut outer_key = self.obfuscation_key;
         for byte in &mut outer_key {
-            *byte ^= 0x5C; // opad
+            *byte ^= 0x5c; // opad
         }
 
         let mut outer_hasher = Blake2b::<U32>::new();
@@ -153,7 +151,7 @@ pub fn pad_plaintext(plaintext: &[u8]) -> Vec<u8> {
     // Store original length as 2 bytes (max 65535)
     let len = plaintext.len() as u16;
     padded.push((len >> 8) as u8);
-    padded.push((len & 0xFF) as u8);
+    padded.push((len & 0xff) as u8);
 
     // Original data
     padded.extend_from_slice(plaintext);
@@ -313,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_hex_encode() {
-        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let data = [0xde, 0xad, 0xbe, 0xef];
         let encoded = hex::encode(&data);
         assert_eq!(encoded, "deadbeef");
 
@@ -321,6 +319,6 @@ mod tests {
         assert_eq!(hex::encode(&[]), "");
 
         // Single byte
-        assert_eq!(hex::encode(&[0x0F]), "0f");
+        assert_eq!(hex::encode(&[0x0f]), "0f");
     }
 }

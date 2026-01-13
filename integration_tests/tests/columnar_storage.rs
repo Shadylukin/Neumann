@@ -2,9 +2,10 @@
 //!
 //! Tests columnar data materialization, batch operations, and projection.
 
+use std::collections::HashMap;
+
 use integration_tests::create_shared_engines;
 use relational_engine::{Column, ColumnType, ColumnarScanOptions, Condition, Schema, Value};
-use std::collections::HashMap;
 
 #[test]
 fn test_materialize_single_column() {

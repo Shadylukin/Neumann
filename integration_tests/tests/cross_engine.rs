@@ -2,11 +2,11 @@
 //!
 //! Tests data flow and operations across multiple engines sharing a TensorStore.
 
+use std::{collections::HashMap, sync::Arc};
+
 use graph_engine::{Direction, GraphEngine, PropertyValue};
 use integration_tests::{create_shared_engines, create_shared_router, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
 use tensor_cache::Cache;
 use tensor_store::TensorStore;

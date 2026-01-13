@@ -5,22 +5,28 @@
 //! - State embedding for tie-breaking
 //! - Two-phase finality (committed -> finalized)
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use parking_lot::RwLock;
 use tensor_store::SparseVector;
 
-use crate::block::{Block, NodeId};
-use crate::error::{ChainError, Result};
-use crate::membership::MembershipManager;
-use crate::network::{
-    AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
-    Transport,
+use crate::{
+    block::{Block, NodeId},
+    error::{ChainError, Result},
+    membership::MembershipManager,
+    network::{
+        AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
+        Transport,
+    },
+    validation::FastPathValidator,
 };
-use crate::validation::FastPathValidator;
 
 /// Raft node state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1197,8 +1203,7 @@ impl RaftNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::BlockHeader;
-    use crate::network::MemoryTransport;
+    use crate::{block::BlockHeader, network::MemoryTransport};
 
     fn create_test_node(id: &str, peers: Vec<String>) -> RaftNode {
         let transport = Arc::new(MemoryTransport::new(id.to_string()));
@@ -1755,7 +1760,8 @@ mod tests {
             config,
         );
 
-        // First, establish node2 as leader and add sufficient embedding history (min_leader_history = 3)
+        // First, establish node2 as leader and add sufficient embedding history (min_leader_history
+        // = 3)
         {
             *node.current_leader.write() = Some("node2".to_string());
             // Need at least 3 embeddings for fast-path to be considered

@@ -2,10 +2,11 @@
 //!
 //! Provides utilities for setting up multi-engine test scenarios.
 
+use std::sync::Arc;
+
 use graph_engine::GraphEngine;
 use query_router::{QueryResult, QueryRouter};
 use relational_engine::RelationalEngine;
-use std::sync::Arc;
 use tensor_cache::CacheConfig;
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;

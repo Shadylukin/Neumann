@@ -10,10 +10,14 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::io_other_error)]
 
-use crate::format::FormatError;
-use crate::tensor_train::{tt_cosine_similarity, tt_decompose, TTConfig, TTError, TTVector};
-use serde::{Deserialize, Serialize};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    format::FormatError,
+    tensor_train::{tt_cosine_similarity, tt_decompose, TTConfig, TTError, TTVector},
+};
 
 /// Magic bytes for streaming TT format.
 pub const STREAMING_TT_MAGIC: [u8; 4] = *b"NEUT";
@@ -291,8 +295,9 @@ pub fn read_streaming_tt_all<R: Read + Seek>(reader: R) -> Result<Vec<TTVector>,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Cursor;
+
+    use super::*;
 
     fn make_test_vector(seed: usize, dim: usize) -> Vec<f32> {
         (0..dim).map(|i| ((i + seed) as f32 * 0.1).sin()).collect()

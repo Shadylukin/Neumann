@@ -2,11 +2,9 @@
 //!
 //! Tests grants, revokes, TTL, permissions, audit logging, and namespacing.
 
+use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+
 use graph_engine::{GraphEngine, PropertyValue};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use tensor_store::TensorStore;
 use tensor_vault::{Permission, Vault, VaultConfig};
 

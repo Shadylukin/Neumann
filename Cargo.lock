@@ -1326,6 +1326,7 @@ dependencies = [
  "relational_engine",
  "rustyline",
  "tensor_chain",
+ "tensor_checkpoint",
  "tensor_compress",
  "tensor_store",
 ]

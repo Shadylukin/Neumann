@@ -10,9 +10,10 @@
 //! the EntityId. New keys append to the vocabulary, maintaining stable IDs.
 //! A sorted hash index provides O(log n) forward lookups.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A unique identifier for an entity in the store.
 ///
@@ -28,7 +29,6 @@ impl EntityId {
         Self(id)
     }
 
-    /// Get the raw u64 value.
     #[inline]
     pub fn as_u64(self) -> u64 {
         self.0
@@ -342,11 +342,9 @@ pub struct EntityIndexSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, sync::Arc, thread, time::Instant};
+
     use super::*;
-    use std::collections::HashSet;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Instant;
 
     #[test]
     fn test_new_empty() {

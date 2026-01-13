@@ -27,7 +27,9 @@
 //!
 //! // Store a response
 //! let embedding = vec![0.1, 0.2, 0.3];
-//! cache.put("What is 2+2?", &embedding, "4", "gpt-4", None).unwrap();
+//! cache
+//!     .put("What is 2+2?", &embedding, "4", "gpt-4", None)
+//!     .unwrap();
 //!
 //! // Look up (tries exact first, then semantic)
 //! if let Some(hit) = cache.get("What is 2+2?", Some(&embedding)) {
@@ -44,21 +46,22 @@ mod index;
 mod stats;
 mod tokenizer;
 
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    sync::Arc,
+    time::Duration,
+};
+
 pub use config::{CacheConfig, EvictionStrategy};
 pub use error::{CacheError, Result};
 pub use eviction::{EvictionManager, EvictionScorer};
+use index::CacheIndex;
 pub use stats::{CacheLayer, CacheStats, StatsSnapshot};
-pub use tokenizer::{ModelPricing, TokenCounter};
-
 // Re-export geometric types from tensor_store for convenience
 pub use tensor_store::{DistanceMetric, SparseVector};
-
-use index::CacheIndex;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-use std::time::Duration;
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
+pub use tokenizer::{ModelPricing, TokenCounter};
 
 /// Parameters for building a cache entry.
 struct EntryParams<'a> {

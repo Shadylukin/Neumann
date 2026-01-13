@@ -2,10 +2,9 @@
 //!
 //! Tests secret versioning, rollback, and version management.
 
+use std::{sync::Arc, thread, time::Duration};
+
 use graph_engine::GraphEngine;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig};
 

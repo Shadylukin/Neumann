@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 use tensor_store::DistanceMetric;
 
 /// Eviction strategy for cache entries.

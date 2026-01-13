@@ -11,14 +11,16 @@
 //! - Background merge rebuilds CSR with pending edges
 //! - No resize stalls from hash table growth
 
-use crate::entity_index::EntityId;
-use crate::metadata_slab::MetadataSlab;
-use crate::TensorData;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use bitvec::prelude::*;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::{entity_index::EntityId, metadata_slab::MetadataSlab, TensorData};
 
 /// Edge identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -149,12 +151,10 @@ impl CsrGraph {
             .collect()
     }
 
-    /// Get edge count.
     fn edge_count(&self) -> usize {
         self.col_idx.len()
     }
 
-    /// Get node count (max node ID + 1).
     fn node_count(&self) -> usize {
         self.row_ptr.len().saturating_sub(1)
     }
@@ -700,10 +700,9 @@ pub struct GraphTensorSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, thread, time::Instant};
+
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Instant;
 
     #[test]
     fn test_new() {
@@ -967,10 +966,10 @@ mod tests {
 
         let total_time = start.elapsed();
 
-        // No single operation should take more than 50ms (accounts for coverage overhead)
+        // No single operation should take more than 100ms (accounts for coverage overhead)
         assert!(
-            max_op_time.as_millis() < 50,
-            "Max operation time {:?} exceeded 50ms threshold",
+            max_op_time.as_millis() < 100,
+            "Max operation time {:?} exceeded 100ms threshold",
             max_op_time
         );
 

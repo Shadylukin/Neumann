@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn test_from_bincode_error() {
         // Create a bincode error by trying to deserialize invalid data
-        let bad_data: &[u8] = &[0xFF, 0xFF, 0xFF];
+        let bad_data: &[u8] = &[0xff, 0xff, 0xff];
         let bincode_err: std::result::Result<String, _> = bincode::deserialize(bad_data);
 
         if let Err(e) = bincode_err {

@@ -4,10 +4,12 @@
 
 #![allow(clippy::missing_panics_doc)]
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::{
+    cmp::Ordering,
+    collections::BinaryHeap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 /// An entry in the grant TTL tracker.
 #[derive(Debug, Clone)]

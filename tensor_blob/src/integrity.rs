@@ -2,11 +2,13 @@ use std::collections::HashSet;
 
 use tensor_store::{ScalarValue, TensorStore, TensorValue};
 
-use crate::chunker::StreamingHasher;
-use crate::error::{BlobError, Result};
-use crate::gc::decrement_chunk_refs;
-use crate::metadata::RepairStats;
-use crate::streaming::{get_bytes, get_int, get_pointers, get_string};
+use crate::{
+    chunker::StreamingHasher,
+    error::{BlobError, Result},
+    gc::decrement_chunk_refs,
+    metadata::RepairStats,
+    streaming::{get_bytes, get_int, get_pointers, get_string},
+};
 
 /// Verify the integrity of an artifact by checking its checksum.
 pub async fn verify_artifact(store: &TensorStore, artifact_id: &str) -> Result<bool> {
@@ -266,9 +268,10 @@ pub fn remove_artifact_tag(store: &TensorStore, artifact_id: &str, tag: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use tensor_store::TensorData;
+
     use super::*;
     use crate::chunker::Chunk;
-    use tensor_store::TensorData;
 
     fn create_test_store() -> TensorStore {
         TensorStore::new()

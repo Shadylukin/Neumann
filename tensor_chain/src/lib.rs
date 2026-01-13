@@ -58,6 +58,8 @@ pub mod transaction;
 pub mod validation;
 
 // Re-exports
+use std::sync::Arc;
+
 pub use block::{Block, BlockHash, BlockHeader, NodeId, Transaction, ValidatorSignature};
 pub use chain::{BlockBuilder, Chain, ChainIterator};
 pub use cluster::{
@@ -83,6 +85,7 @@ pub use distributed_tx::{
 pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
 pub use geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager, RankedPeer};
+use graph_engine::GraphEngine;
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
     MembershipManager, NodeHealth, NodeStatus, PeerNodeConfig,
@@ -99,6 +102,8 @@ pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
     TcpTransportConfig, TlsConfig, TransportStats,
 };
+use tensor_store::TensorStore;
+use tokio::sync::broadcast;
 pub use transaction::{
     TransactionDelta, TransactionManager, TransactionState, TransactionWorkspace,
 };
@@ -106,12 +111,6 @@ pub use validation::{
     FastPathResult, FastPathValidator, StateValidation, TransitionValidation, TransitionValidator,
     ValidationConfig, ValidationMode,
 };
-
-use std::sync::Arc;
-
-use graph_engine::GraphEngine;
-use tensor_store::TensorStore;
-use tokio::sync::broadcast;
 
 /// Handle for a running Raft consensus node.
 ///
@@ -861,8 +860,9 @@ impl TensorChain {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tensor_store::SparseVector;
+
+    use super::*;
 
     #[test]
     fn test_tensor_chain_basic() {

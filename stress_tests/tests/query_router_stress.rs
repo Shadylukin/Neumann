@@ -1,8 +1,13 @@
 //! QueryRouter async stress tests.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
+
 use stress_tests::{generate_embeddings, LatencyHistogram};
 use tensor_store::TensorStore;
 use tokio::sync::Barrier;
@@ -221,9 +226,7 @@ async fn stress_router_parallel_inserts() {
 #[test]
 #[ignore]
 fn stress_router_sustained_writes() {
-    use std::sync::Mutex;
-    use std::thread;
-    use std::time::Duration;
+    use std::{sync::Mutex, thread, time::Duration};
 
     let test_duration_secs = 10;
     let thread_count = 8;

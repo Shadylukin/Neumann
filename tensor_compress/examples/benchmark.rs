@@ -1,5 +1,6 @@
 //! Quick TT benchmark
 use std::time::Instant;
+
 use tensor_compress::{
     tt_cosine_similarity, tt_cosine_similarity_batch, tt_decompose, tt_decompose_batch,
     tt_reconstruct, TTConfig,

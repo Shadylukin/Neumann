@@ -1,10 +1,14 @@
 //! TieredStore stress tests for hot/cold migration.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::thread;
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::Instant,
+};
+
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tempfile::tempdir;
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore};

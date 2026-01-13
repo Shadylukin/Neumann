@@ -1,10 +1,17 @@
-use crate::config::{CacheConfig, EvictionStrategy};
-use crate::stats::CacheStats;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::interval;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
+use tokio::{sync::mpsc, time::interval};
+
+use crate::{
+    config::{CacheConfig, EvictionStrategy},
+    stats::CacheStats,
+};
 
 /// Handle for controlling the background eviction task.
 pub struct EvictionHandle {

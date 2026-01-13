@@ -46,7 +46,7 @@ pub fn varint_encode(values: &[u64]) -> Vec<u8> {
     for &value in values {
         let mut v = value;
         loop {
-            let byte = (v & 0x7F) as u8;
+            let byte = (v & 0x7f) as u8;
             v >>= 7;
             if v == 0 {
                 result.push(byte);
@@ -79,7 +79,7 @@ pub fn varint_decode(bytes: &[u8]) -> Vec<u64> {
             continue;
         }
 
-        current |= u64::from(byte & 0x7F) << shift;
+        current |= u64::from(byte & 0x7f) << shift;
         shift += 7;
 
         if byte & 0x80 == 0 {

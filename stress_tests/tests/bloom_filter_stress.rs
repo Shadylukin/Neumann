@@ -1,9 +1,14 @@
 //! BloomFilter stress tests.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::Instant,
+};
+
 use stress_tests::{full_config, LatencyHistogram};
 use tensor_store::BloomFilter;
 

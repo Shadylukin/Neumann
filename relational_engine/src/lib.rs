@@ -1,9 +1,12 @@
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    hash::{Hash, Hasher},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 mod simd {
@@ -348,7 +351,7 @@ mod simd {
             let mut bitmap = vec![0u64; 1];
             filter_lt_i64(&values, 5, &mut bitmap);
             // Positions 0,2,4,6 have values < 5: 1,3,2,4
-            assert_eq!(bitmap[0] & 0xFF, 0b01010101);
+            assert_eq!(bitmap[0] & 0xff, 0b01010101);
         }
 
         #[test]
@@ -357,7 +360,7 @@ mod simd {
             let mut bitmap = vec![0u64; 1];
             filter_eq_i64(&values, 5, &mut bitmap);
             // Positions 1,2,4 have value == 5
-            assert_eq!(bitmap[0] & 0xFF, 0b00010110);
+            assert_eq!(bitmap[0] & 0xff, 0b00010110);
         }
 
         #[test]
@@ -366,7 +369,7 @@ mod simd {
             let mut bitmap = vec![0u64; 1];
             filter_gt_i64(&values, 5, &mut bitmap);
             // Positions 3,5,7 have values > 5: 8,9,7
-            assert_eq!(bitmap[0] & 0xFF, 0b10101000);
+            assert_eq!(bitmap[0] & 0xff, 0b10101000);
         }
 
         #[test]
@@ -375,7 +378,7 @@ mod simd {
             let mut bitmap = vec![0u64; 1];
             filter_lt_i64(&values, 4, &mut bitmap);
             // Positions 0,1,2 have values < 4
-            assert_eq!(bitmap[0] & 0xFF, 0b00000111);
+            assert_eq!(bitmap[0] & 0xff, 0b00000111);
         }
 
         #[test]
@@ -5255,7 +5258,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         simd::filter_le_i64(&values, 5, &mut bitmap);
         // Values <= 5: 1,5,3,2,4 at positions 0,1,2,4,6
-        assert_eq!(bitmap[0] & 0xFF, 0b01010111);
+        assert_eq!(bitmap[0] & 0xff, 0b01010111);
     }
 
     #[test]
@@ -5264,7 +5267,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         simd::filter_ge_i64(&values, 5, &mut bitmap);
         // Values >= 5: 5,8,9,7 at positions 1,3,5,7
-        assert_eq!(bitmap[0] & 0xFF, 0b10101010);
+        assert_eq!(bitmap[0] & 0xff, 0b10101010);
     }
 
     #[test]
@@ -5273,7 +5276,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         simd::filter_ne_i64(&values, 5, &mut bitmap);
         // Values != 5: 3,2,4 at positions 2,4,6
-        assert_eq!(bitmap[0] & 0xFF, 0b01010100);
+        assert_eq!(bitmap[0] & 0xff, 0b01010100);
     }
 
     #[test]
@@ -5801,7 +5804,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         simd::filter_eq_i64(&values, 2, &mut bitmap);
         // Values == 2 at positions 1, 3, 4
-        assert_eq!(bitmap[0] & 0x1F, 0b11010);
+        assert_eq!(bitmap[0] & 0x1f, 0b11010);
     }
 
     #[test]
@@ -5811,7 +5814,7 @@ mod tests {
         let mut bitmap = vec![0u64; 1];
         simd::filter_ne_i64(&values, 2, &mut bitmap);
         // Values != 2 at positions 0, 4, 5
-        assert_eq!(bitmap[0] & 0x3F, 0b110001);
+        assert_eq!(bitmap[0] & 0x3f, 0b110001);
     }
 
     #[test]

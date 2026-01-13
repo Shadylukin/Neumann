@@ -5,8 +5,7 @@
 //! - `Span`: A range of bytes representing a source region
 //! - `Spanned<T>`: A value paired with its source location
 
-use std::fmt;
-use std::ops::Range;
+use std::{fmt, ops::Range};
 
 /// A byte position in source code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

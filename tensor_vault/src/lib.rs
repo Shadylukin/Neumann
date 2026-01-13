@@ -30,19 +30,21 @@ mod obfuscation;
 mod rate_limit;
 mod ttl;
 
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 pub use access::AccessController;
 pub use audit::{AuditEntry, AuditLog, AuditOperation};
 pub use encryption::{Cipher, NONCE_SIZE};
+use graph_engine::GraphEngine;
 pub use key::{MasterKey, KEY_SIZE};
 pub use obfuscation::{Obfuscator, PaddingSize};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
-pub use ttl::GrantTTLTracker;
-
-use graph_engine::GraphEngine;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
+pub use ttl::GrantTTLTracker;
 
 /// Permission levels for vault access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1319,8 +1321,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_access() {
-        use std::sync::Arc;
-        use std::thread;
+        use std::{sync::Arc, thread};
 
         let vault = Arc::new(create_test_vault());
 

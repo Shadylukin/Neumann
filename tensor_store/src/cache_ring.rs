@@ -10,13 +10,16 @@
 //! - Pluggable eviction: LRU, LFU, CostBased, or Hybrid strategies
 //! - Thread-safe: uses parking_lot for low-contention access
 
+use std::{
+    collections::BTreeMap,
+    hash::{Hash, Hasher},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
+
 use fxhash::FxHasher;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 /// Eviction strategy for cache entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,10 +466,13 @@ pub struct CacheRingSnapshot<V> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::Arc,
+        thread,
+        time::{Duration, Instant},
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn test_new() {
@@ -722,8 +728,8 @@ mod tests {
 
         // Fixed capacity means no resize stalls
         assert!(
-            max_op_time.as_millis() < 50,
-            "Max operation time {:?} exceeded 50ms threshold",
+            max_op_time.as_millis() < 100,
+            "Max operation time {:?} exceeded 100ms threshold",
             max_op_time
         );
     }

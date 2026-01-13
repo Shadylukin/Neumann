@@ -1,4 +1,5 @@
 use std::time::Instant;
+
 use tensor_store::{ScalarValue, SlabRouter, TensorData, TensorStore, TensorValue};
 
 fn main() {

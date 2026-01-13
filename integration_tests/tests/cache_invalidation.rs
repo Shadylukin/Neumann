@@ -229,8 +229,7 @@ fn test_cache_cleared_on_vector_mutation() {
 
 #[test]
 fn test_concurrent_write_cache_invalidation() {
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let router = Arc::new(create_router_with_cache());
 
@@ -301,6 +300,7 @@ fn test_concurrent_write_cache_invalidation() {
 // ========== Direct Cache API Tests ==========
 
 use std::time::Duration;
+
 use tensor_cache::{Cache, CacheConfig};
 
 #[test]

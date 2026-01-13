@@ -27,11 +27,12 @@
 //! - `FIND <entity> WHERE <condition> SIMILAR TO <key> CONNECTED TO <entity>`
 
 pub mod distributed;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 pub use distributed::{
     DistributedQueryConfig, MergeStrategy, QueryPlan, QueryPlanner, ResultMerger, ShardId,
     ShardResult,
 };
-
 use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
 use neumann_parser::{
     self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
@@ -47,16 +48,15 @@ use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobError, BlobStore};
 use tensor_cache::{Cache, CacheConfig, CacheError, CacheLayer};
 use tensor_chain::{
     ChainError, ClusterNodeConfig, ClusterOrchestrator, ClusterPeerConfig, OrchestratorConfig,
     QueryExecutor, TensorChain,
 };
-use tensor_checkpoint::{CheckpointConfig, CheckpointError, CheckpointManager};
+use tensor_checkpoint::{
+    CheckpointConfig, CheckpointError, CheckpointManager, ConfirmationHandler, DestructiveOp,
+};
 use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner, TensorStore};
 use tensor_unified::{
     UnifiedEngine, UnifiedError, UnifiedItem, UnifiedResult as TensorUnifiedResult,
@@ -73,6 +73,15 @@ enum AggregateFunc {
     Avg(String),
     Min(String),
     Max(String),
+}
+
+/// Result of checking whether a destructive operation should proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedOpResult {
+    /// Operation should proceed (confirmed or auto-checkpoint disabled).
+    Proceed,
+    /// Operation was cancelled by user.
+    Cancelled,
 }
 
 /// Error types for query routing.
@@ -864,6 +873,32 @@ impl QueryRouter {
         Ok(self.checkpoint.as_ref().unwrap())
     }
 
+    /// Check if checkpoint manager is initialized.
+    pub fn has_checkpoint(&self) -> bool {
+        self.checkpoint.is_some()
+    }
+
+    /// Set a confirmation handler for destructive operations.
+    ///
+    /// The handler will be called to confirm operations before they execute.
+    /// Requires checkpoint manager to be initialized.
+    pub fn set_confirmation_handler(&self, handler: Arc<dyn ConfirmationHandler>) -> Result<()> {
+        let checkpoint = self.checkpoint.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Checkpoint manager not initialized".to_string())
+        })?;
+
+        let runtime = self.blob_runtime.as_ref().ok_or_else(|| {
+            RouterError::CheckpointError("Blob runtime not initialized".to_string())
+        })?;
+
+        runtime.block_on(async {
+            let mut cp = checkpoint.lock().await;
+            cp.set_confirmation_handler(handler);
+        });
+
+        Ok(())
+    }
+
     /// Initialize the tensor chain with a node ID.
     pub fn init_chain(&mut self, node_id: &str) -> Result<()> {
         let store = self.vector.store().clone();
@@ -940,7 +975,8 @@ impl QueryRouter {
             .into_iter()
             .collect();
 
-        // Delegate to UnifiedEngine if available and no HNSW index (HNSW optimization not yet in unified)
+        // Delegate to UnifiedEngine if available and no HNSW index (HNSW optimization not yet in
+        // unified)
         if self.unified.is_some() && self.hnsw_index.is_none() {
             let unified = self.unified.as_ref().unwrap();
             let rt = tokio::runtime::Runtime::new()
@@ -1488,6 +1524,25 @@ impl QueryRouter {
                 Ok(QueryResult::Value(output))
             },
             CacheOp::Clear => {
+                // Get entry count for preview
+                let entry_count = cache.stats().total_entries();
+
+                // Check for auto-checkpoint protection
+                let op = DestructiveOp::CacheClear { entry_count };
+
+                match self.protect_destructive_op(
+                    "CACHE CLEAR",
+                    op,
+                    vec![format!("{} cached entries", entry_count)],
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 cache.clear();
                 Ok(QueryResult::Value("Cache cleared".to_string()))
             },
@@ -1635,6 +1690,25 @@ impl QueryRouter {
             },
             VaultOp::Delete { key } => {
                 let key_str = self.eval_string_expr(key)?;
+
+                // Check for auto-checkpoint protection (don't show secret value!)
+                let op = DestructiveOp::VaultDelete {
+                    key: key_str.clone(),
+                };
+
+                match self.protect_destructive_op(
+                    &format!("VAULT DELETE '{}'", key_str),
+                    op,
+                    vec![format!("secret key: {}", key_str)],
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 vault.delete(identity, &key_str)?;
                 Ok(QueryResult::Empty)
             },
@@ -1758,6 +1832,35 @@ impl QueryRouter {
             },
             BlobOp::Delete { artifact_id } => {
                 let id = self.eval_string_expr(artifact_id)?;
+
+                // Get metadata for preview (size)
+                let size = runtime
+                    .block_on(async {
+                        let blob_guard = blob.lock().await;
+                        blob_guard.metadata(&id).await
+                    })
+                    .map(|m| m.size)
+                    .unwrap_or(0);
+
+                // Check for auto-checkpoint protection
+                let op = DestructiveOp::BlobDelete {
+                    artifact_id: id.clone(),
+                    size,
+                };
+
+                match self.protect_destructive_op(
+                    &format!("BLOB DELETE '{}'", id),
+                    op,
+                    vec![format!("artifact: {}, size: {} bytes", id, size)],
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 runtime.block_on(async {
                     let blob_guard = blob.lock().await;
                     blob_guard.delete(&id).await
@@ -3228,6 +3331,118 @@ impl QueryRouter {
         }
     }
 
+    // ========== Auto-Checkpoint Protection ==========
+
+    /// Check and optionally create checkpoint before destructive operation.
+    fn protect_destructive_op(
+        &self,
+        command: &str,
+        op: DestructiveOp,
+        sample_data: Vec<String>,
+    ) -> Result<ProtectedOpResult> {
+        // If no checkpoint manager, proceed without protection
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Ok(ProtectedOpResult::Proceed);
+        };
+
+        let Some(runtime) = self.blob_runtime.as_ref() else {
+            return Ok(ProtectedOpResult::Proceed);
+        };
+
+        // Skip protection if we're already inside a tokio runtime (avoids nested runtime panic)
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Ok(ProtectedOpResult::Proceed);
+        }
+
+        runtime.block_on(async {
+            let cp = checkpoint.lock().await;
+
+            // Check if auto-checkpoint is enabled
+            if !cp.auto_checkpoint_enabled() {
+                return Ok(ProtectedOpResult::Proceed);
+            }
+
+            // Generate preview
+            let preview = cp.generate_preview(&op, sample_data);
+
+            // Request confirmation (may prompt user via handler)
+            if !cp.request_confirmation(&op, &preview) {
+                return Ok(ProtectedOpResult::Cancelled);
+            }
+
+            // Create auto-checkpoint before operation
+            let store = self.vector.store();
+            if let Err(e) = cp.create_auto(command, op, preview, store).await {
+                // Log but don't fail - checkpoint is best-effort
+                eprintln!("Warning: Failed to create auto-checkpoint: {e}");
+            }
+
+            Ok(ProtectedOpResult::Proceed)
+        })
+    }
+
+    /// Collect sample data for a relational delete preview.
+    fn collect_delete_sample(
+        &self,
+        table: &str,
+        condition: &Condition,
+        limit: usize,
+    ) -> (usize, Vec<String>) {
+        let rows = match self.relational.select(table, condition.clone()) {
+            Ok(rows) => rows,
+            Err(_) => return (0, vec![]),
+        };
+
+        let count = rows.len();
+        let sample: Vec<String> = rows
+            .into_iter()
+            .take(limit)
+            .map(|row| {
+                let pairs: Vec<String> = row
+                    .values
+                    .iter()
+                    .map(|(k, v)| format!("{}={:?}", k, v))
+                    .collect();
+                format!("_id={}, {}", row.id, pairs.join(", "))
+            })
+            .collect();
+
+        (count, sample)
+    }
+
+    /// Collect sample data for a DROP TABLE preview.
+    fn collect_table_sample(&self, table: &str, limit: usize) -> (usize, Vec<String>) {
+        self.collect_delete_sample(table, &Condition::True, limit)
+    }
+
+    /// Collect info about a node for deletion preview.
+    fn collect_node_info(&self, node_id: u64) -> (usize, Vec<String>) {
+        // Count connected edges (neighbors returns Vec<Node>)
+        let edge_count = self
+            .graph
+            .neighbors(node_id, None, Direction::Both)
+            .map(|nodes| nodes.len())
+            .unwrap_or(0);
+
+        // Get node label and properties for sample
+        let sample = match self.graph.get_node(node_id) {
+            Ok(node) => {
+                let props: Vec<String> = node
+                    .properties
+                    .iter()
+                    .take(3)
+                    .map(|(k, v)| format!("{}={:?}", k, v))
+                    .collect();
+                vec![format!("label='{}', {}", node.label, props.join(", "))]
+            },
+            Err(_) => vec![],
+        };
+
+        (edge_count, sample)
+    }
+
+    // ========== Query Execution Methods ==========
+
     fn exec_update(&self, update: &UpdateStmt) -> Result<QueryResult> {
         let condition = if let Some(ref where_expr) = update.where_clause {
             self.expr_to_condition(where_expr)?
@@ -3250,13 +3465,44 @@ impl QueryRouter {
     }
 
     fn exec_delete(&self, delete: &DeleteStmt) -> Result<QueryResult> {
+        let table = &delete.table.name;
         let condition = if let Some(ref where_expr) = delete.where_clause {
             self.expr_to_condition(where_expr)?
         } else {
             Condition::True
         };
 
-        let count = self.relational.delete_rows(&delete.table.name, condition)?;
+        // Collect sample data for preview
+        let (row_count, sample_data) = self.collect_delete_sample(table, &condition, 5);
+
+        // Check for auto-checkpoint protection
+        if row_count > 0 {
+            let op = DestructiveOp::Delete {
+                table: table.clone(),
+                row_count,
+            };
+
+            let command = format!(
+                "DELETE FROM {}{}",
+                table,
+                if delete.where_clause.is_some() {
+                    " WHERE ..."
+                } else {
+                    ""
+                }
+            );
+
+            match self.protect_destructive_op(&command, op, sample_data)? {
+                ProtectedOpResult::Proceed => {},
+                ProtectedOpResult::Cancelled => {
+                    return Err(RouterError::CheckpointError(
+                        "Operation cancelled by user".to_string(),
+                    ));
+                },
+            }
+        }
+
+        let count = self.relational.delete_rows(table, condition)?;
         Ok(QueryResult::Count(count))
     }
 
@@ -3305,6 +3551,29 @@ impl QueryRouter {
             },
             NodeOp::Delete { id } => {
                 let node_id = self.expr_to_u64(id)?;
+
+                // Collect node info for preview
+                let (edge_count, sample_data) = self.collect_node_info(node_id);
+
+                // Check for auto-checkpoint protection
+                let op = DestructiveOp::NodeDelete {
+                    node_id,
+                    edge_count,
+                };
+
+                match self.protect_destructive_op(
+                    &format!("NODE DELETE {}", node_id),
+                    op,
+                    sample_data,
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 self.graph.delete_node(node_id)?;
                 Ok(QueryResult::Count(1))
             },
@@ -3481,6 +3750,25 @@ impl QueryRouter {
             },
             EmbedOp::Delete { key } => {
                 let key_str = self.expr_to_string(key)?;
+
+                // Check for auto-checkpoint protection
+                let op = DestructiveOp::EmbedDelete {
+                    key: key_str.clone(),
+                };
+
+                match self.protect_destructive_op(
+                    &format!("EMBED DELETE '{}'", key_str),
+                    op,
+                    vec![format!("embedding key: {}", key_str)],
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 self.vector.delete_embedding(&key_str)?;
                 Ok(QueryResult::Count(1))
             },
@@ -4350,6 +4638,26 @@ impl QueryRouter {
             (rest, Condition::True)
         };
 
+        // Collect sample data for preview
+        let (row_count, sample_data) = self.collect_delete_sample(table, &condition, 5);
+
+        // Check for auto-checkpoint protection
+        if row_count > 0 {
+            let op = DestructiveOp::Delete {
+                table: table.to_string(),
+                row_count,
+            };
+
+            match self.protect_destructive_op(command, op, sample_data)? {
+                ProtectedOpResult::Proceed => {},
+                ProtectedOpResult::Cancelled => {
+                    return Err(RouterError::CheckpointError(
+                        "Operation cancelled by user".to_string(),
+                    ));
+                },
+            }
+        }
+
         let count = self.relational.delete_rows(table, condition)?;
         Ok(QueryResult::Count(count))
     }
@@ -4445,6 +4753,25 @@ impl QueryRouter {
 
         if upper.starts_with("DROP TABLE ") {
             let table = command[11..].trim();
+
+            // Collect sample data for preview
+            let (row_count, sample_data) = self.collect_table_sample(table, 5);
+
+            // Check for auto-checkpoint protection
+            let op = DestructiveOp::DropTable {
+                table: table.to_string(),
+                row_count,
+            };
+
+            match self.protect_destructive_op(command, op, sample_data)? {
+                ProtectedOpResult::Proceed => {},
+                ProtectedOpResult::Cancelled => {
+                    return Err(RouterError::CheckpointError(
+                        "Operation cancelled by user".to_string(),
+                    ));
+                },
+            }
+
             self.relational.drop_table(table)?;
             Ok(QueryResult::Empty)
         } else if upper.starts_with("DROP INDEX ") {
@@ -4454,7 +4781,30 @@ impl QueryRouter {
                     "table and column names".to_string(),
                 ));
             }
-            self.relational.drop_index(parts[2], parts[3])?;
+
+            let table = parts[2];
+            let column = parts[3];
+
+            // Check for auto-checkpoint protection
+            let op = DestructiveOp::DropIndex {
+                table: table.to_string(),
+                column: column.to_string(),
+            };
+
+            match self.protect_destructive_op(
+                command,
+                op,
+                vec![format!("index on {}.{}", table, column)],
+            )? {
+                ProtectedOpResult::Proceed => {},
+                ProtectedOpResult::Cancelled => {
+                    return Err(RouterError::CheckpointError(
+                        "Operation cancelled by user".to_string(),
+                    ));
+                },
+            }
+
+            self.relational.drop_index(table, column)?;
             Ok(QueryResult::Empty)
         } else {
             Err(RouterError::ParseError(
@@ -4512,6 +4862,25 @@ impl QueryRouter {
                 let id: u64 = parts[2]
                     .parse()
                     .map_err(|_| RouterError::InvalidArgument("Invalid node ID".to_string()))?;
+
+                // Collect info for protection
+                let (edge_count, info) = self.collect_node_info(id);
+
+                // Check for auto-checkpoint protection
+                let op = DestructiveOp::NodeDelete {
+                    node_id: id,
+                    edge_count,
+                };
+
+                match self.protect_destructive_op(command, op, info)? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
                 self.graph.delete_node(id)?;
                 Ok(QueryResult::Count(1))
             },
@@ -13418,5 +13787,246 @@ mod tests {
         } else {
             panic!("expected Rows result");
         }
+    }
+
+    // ========== Auto-Checkpoint Protection Tests ==========
+
+    #[test]
+    fn test_delete_without_checkpoint_manager() {
+        // Without checkpoint manager, destructive ops should proceed without protection
+        let router = QueryRouter::new();
+
+        router
+            .execute("CREATE TABLE temp (id:int, name:string)")
+            .unwrap();
+        router.execute("INSERT temp id=1, name=\"test\"").unwrap();
+
+        // Delete should succeed without checkpoint
+        let result = router.execute("DELETE temp WHERE id = 1");
+        assert!(result.is_ok(), "Delete failed: {result:?}");
+        if let Ok(QueryResult::Count(n)) = result {
+            assert_eq!(n, 1);
+        }
+    }
+
+    #[test]
+    fn test_delete_creates_auto_checkpoint() {
+        use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Initialize checkpoint manager with auto-checkpoint enabled
+        let config = CheckpointConfig::default()
+            .with_auto_checkpoint(true)
+            .with_interactive_confirm(true);
+        router.init_checkpoint_with_config(config).unwrap();
+
+        // Set auto-confirm handler
+        router
+            .set_confirmation_handler(Arc::new(AutoConfirm))
+            .unwrap();
+
+        router
+            .execute("CREATE TABLE users (id:int, name:string)")
+            .unwrap();
+        router.execute("INSERT users id=1, name=\"Alice\"").unwrap();
+        router.execute("INSERT users id=2, name=\"Bob\"").unwrap();
+
+        // Delete should create checkpoint and succeed
+        let result = router.execute("DELETE users WHERE id = 1");
+        assert!(result.is_ok());
+
+        // Check that a checkpoint was created
+        let checkpoints = router.execute_parsed("CHECKPOINTS").unwrap();
+        if let QueryResult::CheckpointList(list) = checkpoints {
+            assert!(!list.is_empty());
+            assert!(list[0].name.contains("auto-before-delete"));
+        } else {
+            panic!("Expected CheckpointList result");
+        }
+    }
+
+    #[test]
+    fn test_delete_cancelled_preserves_data() {
+        use tensor_checkpoint::{AutoReject, CheckpointConfig};
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Initialize checkpoint manager with auto-checkpoint enabled
+        let config = CheckpointConfig::default()
+            .with_auto_checkpoint(true)
+            .with_interactive_confirm(true);
+        router.init_checkpoint_with_config(config).unwrap();
+
+        // Set auto-reject handler
+        router
+            .set_confirmation_handler(Arc::new(AutoReject))
+            .unwrap();
+
+        router
+            .execute("CREATE TABLE users (id:int, name:string)")
+            .unwrap();
+        router.execute("INSERT users id=1, name=\"Alice\"").unwrap();
+
+        // Delete should be cancelled
+        let result = router.execute("DELETE users WHERE id = 1");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("cancelled"));
+
+        // Data should still exist
+        let select = router.execute("SELECT users WHERE id = 1").unwrap();
+        if let QueryResult::Rows(rows) = select {
+            assert_eq!(rows.len(), 1);
+        } else {
+            panic!("Expected Rows result");
+        }
+    }
+
+    #[test]
+    fn test_delete_with_auto_checkpoint_disabled() {
+        use tensor_checkpoint::{AutoReject, CheckpointConfig};
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Initialize checkpoint manager with auto-checkpoint DISABLED
+        let config = CheckpointConfig::default()
+            .with_auto_checkpoint(false)
+            .with_interactive_confirm(false);
+        router.init_checkpoint_with_config(config).unwrap();
+
+        // Even with auto-reject handler, delete should succeed because auto-checkpoint is off
+        router
+            .set_confirmation_handler(Arc::new(AutoReject))
+            .unwrap();
+
+        router.execute("CREATE TABLE temp (id:int)").unwrap();
+        router.execute("INSERT temp id=1").unwrap();
+
+        let result = router.execute("DELETE temp WHERE id = 1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_drop_table_creates_checkpoint() {
+        use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        let config = CheckpointConfig::default()
+            .with_auto_checkpoint(true)
+            .with_interactive_confirm(true);
+        router.init_checkpoint_with_config(config).unwrap();
+        router
+            .set_confirmation_handler(Arc::new(AutoConfirm))
+            .unwrap();
+
+        router.execute("CREATE TABLE to_drop (id:int)").unwrap();
+        router.execute("INSERT to_drop id=1").unwrap();
+
+        let result = router.execute("DROP TABLE to_drop");
+        assert!(result.is_ok());
+
+        let checkpoints = router.execute_parsed("CHECKPOINTS").unwrap();
+        if let QueryResult::CheckpointList(list) = checkpoints {
+            assert!(!list.is_empty());
+            assert!(list[0].name.contains("auto-before-drop-table"));
+        } else {
+            panic!("Expected CheckpointList result");
+        }
+    }
+
+    #[test]
+    fn test_node_delete_creates_checkpoint() {
+        use tensor_checkpoint::{AutoConfirm, CheckpointConfig};
+
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        let config = CheckpointConfig::default()
+            .with_auto_checkpoint(true)
+            .with_interactive_confirm(true);
+        router.init_checkpoint_with_config(config).unwrap();
+        router
+            .set_confirmation_handler(Arc::new(AutoConfirm))
+            .unwrap();
+
+        let node_id = match router.execute("NODE CREATE Person name=\"Alice\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids result"),
+        };
+
+        let result = router.execute(&format!("NODE DELETE {node_id}"));
+        assert!(result.is_ok());
+
+        let checkpoints = router.execute_parsed("CHECKPOINTS").unwrap();
+        if let QueryResult::CheckpointList(list) = checkpoints {
+            assert!(!list.is_empty());
+            assert!(list[0].name.contains("auto-before-node-delete"));
+        } else {
+            panic!("Expected CheckpointList result");
+        }
+    }
+
+    #[test]
+    fn test_collect_delete_sample() {
+        let router = QueryRouter::new();
+
+        router
+            .execute("CREATE TABLE users (id:int, name:string)")
+            .unwrap();
+        router.execute("INSERT users id=1, name=\"Alice\"").unwrap();
+        router.execute("INSERT users id=2, name=\"Bob\"").unwrap();
+        router
+            .execute("INSERT users id=3, name=\"Charlie\"")
+            .unwrap();
+
+        let condition = relational_engine::Condition::True;
+        let (count, samples) = router.collect_delete_sample("users", &condition, 5);
+
+        assert_eq!(count, 3);
+        assert!(!samples.is_empty());
+        assert!(samples.len() <= 5);
+    }
+
+    #[test]
+    fn test_collect_table_sample() {
+        let router = QueryRouter::new();
+
+        router.execute("CREATE TABLE items (id:int)").unwrap();
+        router.execute("INSERT items id=1").unwrap();
+        router.execute("INSERT items id=2").unwrap();
+
+        let (count, samples) = router.collect_table_sample("items", 3);
+
+        assert_eq!(count, 2);
+        assert!(!samples.is_empty());
+    }
+
+    #[test]
+    fn test_collect_node_info() {
+        let router = QueryRouter::new();
+
+        let alice_id = match router.execute("NODE CREATE Person name=\"Alice\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let bob_id = match router.execute("NODE CREATE Person name=\"Bob\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {alice_id} -[KNOWS]-> {bob_id}"))
+            .unwrap();
+
+        let (edge_count, info) = router.collect_node_info(alice_id);
+
+        assert_eq!(edge_count, 1);
+        assert!(!info.is_empty());
     }
 }

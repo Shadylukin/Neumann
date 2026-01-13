@@ -2,8 +2,8 @@
 //!
 //! Tests access pattern tracking and shard instrumentation.
 
-use std::sync::Arc;
-use std::thread;
+use std::{sync::Arc, thread};
+
 use tensor_store::{TensorData, TensorStore, TensorValue};
 
 fn make_data(value: i64) -> TensorData {
@@ -361,9 +361,10 @@ fn test_hot_shards_limit() {
 
 #[test]
 fn test_instrumentation_with_shared_store() {
+    use std::collections::HashMap;
+
     use graph_engine::GraphEngine;
     use relational_engine::RelationalEngine;
-    use std::collections::HashMap;
 
     let store = TensorStore::with_instrumentation(1);
     let graph = GraphEngine::with_store(store.clone());

@@ -4,10 +4,12 @@
 
 use std::sync::Arc;
 
-use query_router::distributed::{
-    AggregateFunction, MergeStrategy, QueryPlan, QueryPlanner, ResultMerger, ShardResult,
+use query_router::{
+    distributed::{
+        AggregateFunction, MergeStrategy, QueryPlan, QueryPlanner, ResultMerger, ShardResult,
+    },
+    QueryResult, SimilarResult,
 };
-use query_router::{QueryResult, SimilarResult};
 use relational_engine::{Row, Value};
 use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner, Partitioner};
 

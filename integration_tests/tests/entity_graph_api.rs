@@ -3,8 +3,9 @@
 //! Tests string-keyed entity operations for graph connectivity.
 //! Note: Entities are auto-created when adding edges via add_entity_edge().
 
-use graph_engine::GraphEngine;
 use std::sync::Arc;
+
+use graph_engine::GraphEngine;
 use tensor_store::TensorStore;
 
 fn create_graph() -> Arc<GraphEngine> {
@@ -218,8 +219,10 @@ fn test_entity_self_loop() {
 
 #[test]
 fn test_concurrent_entity_edge_operations() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::thread;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+    };
 
     let graph = create_graph();
     let success_count = Arc::new(AtomicUsize::new(0));

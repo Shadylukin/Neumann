@@ -2,27 +2,36 @@
 //!
 //! Implements the `Transport` trait for TCP-based node communication.
 
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
-use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+    time::timeout,
+};
 
-use crate::block::NodeId;
-use crate::error::{ChainError, Result};
-use crate::network::{Message, PeerConfig, Transport};
-
-use super::config::TcpTransportConfig;
-use super::connection::{ConnectionManager, ConnectionPool};
-use super::error::{TcpError, TcpResult};
-use super::framing::{Handshake, LengthDelimitedCodec};
-use super::stream::{box_stream, DynRead, DynStream, DynWrite};
+use super::{
+    config::TcpTransportConfig,
+    connection::{ConnectionManager, ConnectionPool},
+    error::{TcpError, TcpResult},
+    framing::{Handshake, LengthDelimitedCodec},
+    stream::{box_stream, DynRead, DynStream, DynWrite},
+};
+use crate::{
+    block::NodeId,
+    error::{ChainError, Result},
+    network::{Message, PeerConfig, Transport},
+};
 
 /// TCP-based transport implementation.
 pub struct TcpTransport {
@@ -549,9 +558,11 @@ impl Drop for TcpTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
     use tokio::time::sleep;
+
+    use super::*;
 
     #[test]
     fn test_transport_stats_default() {
@@ -1405,7 +1416,7 @@ mod tests {
         use tokio::io::AsyncWriteExt;
         let bad_length: [u8; 4] = 100u32.to_be_bytes();
         client_stream.write_all(&bad_length).await.unwrap();
-        client_stream.write_all(&[0xFF; 50]).await.unwrap(); // Invalid bincode data
+        client_stream.write_all(&[0xff; 50]).await.unwrap(); // Invalid bincode data
         client_stream.shutdown().await.unwrap();
 
         // Reader loop should exit due to error

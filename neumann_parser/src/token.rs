@@ -7,8 +7,9 @@
 //! - Operators and punctuation
 //! - Literals (strings, numbers, identifiers)
 
-use crate::span::Span;
 use std::fmt;
+
+use crate::span::Span;
 
 /// A token with its span.
 #[derive(Clone, Debug, PartialEq)]

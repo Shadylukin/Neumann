@@ -1,12 +1,17 @@
 //! Long-running duration stress tests.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use graph_engine::{GraphEngine, PropertyValue};
 use relational_engine::{Column, ColumnType, RelationalEngine, Schema, Value};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
 use stress_tests::{
     endurance_config, format_bytes, full_config, generate_embeddings, LatencyHistogram,
 };

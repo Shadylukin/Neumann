@@ -1,12 +1,19 @@
-use crate::instrumentation::ShardAccessTracker;
-use crate::metadata_slab::MetadataSlab;
-use crate::mmap::{MmapError, MmapStoreMut};
-use crate::{TensorData, TensorStore, TensorStoreError};
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashSet,
+    hash::{Hash, Hasher},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock,
+    },
+};
+
+use crate::{
+    instrumentation::ShardAccessTracker,
+    metadata_slab::MetadataSlab,
+    mmap::{MmapError, MmapStoreMut},
+    TensorData, TensorStore, TensorStoreError,
+};
 
 #[derive(Debug)]
 pub enum TieredError {
@@ -371,9 +378,10 @@ impl TieredStore {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{ScalarValue, TensorValue};
-    use std::fs;
 
     fn create_test_tensor(id: i64) -> TensorData {
         let mut tensor = TensorData::new();
@@ -788,6 +796,168 @@ mod tests {
         assert!(store.exists("cold_key"));
         assert!(store.delete("cold_key"));
         assert!(!store.exists("cold_key"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tiered_error_from_tensor_store_error() {
+        let store_err = TensorStoreError::NotFound("key".to_string());
+        let tiered_err: TieredError = store_err.into();
+        assert!(matches!(tiered_err, TieredError::Store(_)));
+        assert!(tiered_err.to_string().contains("Store error"));
+    }
+
+    #[test]
+    fn test_tiered_error_from_mmap_error() {
+        let mmap_err = MmapError::NotFound("key".to_string());
+        let tiered_err: TieredError = mmap_err.into();
+        assert!(matches!(tiered_err, TieredError::Mmap(_)));
+        assert!(tiered_err.to_string().contains("Mmap error"));
+    }
+
+    #[test]
+    fn test_tiered_error_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
+        let tiered_err: TieredError = io_err.into();
+        assert!(matches!(tiered_err, TieredError::Io(_)));
+        assert!(tiered_err.to_string().contains("I/O error"));
+    }
+
+    #[test]
+    fn test_tiered_config_clone() {
+        let config = TieredConfig {
+            cold_dir: PathBuf::from("/tmp/test"),
+            cold_capacity: 1024,
+            sample_rate: 50,
+        };
+        let cloned = config.clone();
+        assert_eq!(config.cold_dir, cloned.cold_dir);
+        assert_eq!(config.cold_capacity, cloned.cold_capacity);
+        assert_eq!(config.sample_rate, cloned.sample_rate);
+    }
+
+    #[test]
+    fn test_tiered_stats_clone() {
+        let stats = TieredStats {
+            hot_count: 10,
+            cold_count: 5,
+            hot_lookups: 100,
+            cold_lookups: 20,
+            cold_hits: 15,
+            migrations_to_cold: 3,
+            migrations_to_hot: 2,
+        };
+        let cloned = stats.clone();
+        assert_eq!(stats.hot_count, cloned.hot_count);
+        assert_eq!(stats.cold_count, cloned.cold_count);
+        assert_eq!(stats.cold_hits, cloned.cold_hits);
+    }
+
+    #[test]
+    fn test_tiered_stats_debug() {
+        let stats = TieredStats {
+            hot_count: 10,
+            cold_count: 5,
+            hot_lookups: 100,
+            cold_lookups: 20,
+            cold_hits: 15,
+            migrations_to_cold: 3,
+            migrations_to_hot: 2,
+        };
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("TieredStats"));
+        assert!(debug.contains("hot_count: 10"));
+        assert!(debug.contains("cold_count: 5"));
+    }
+
+    #[test]
+    fn test_tiered_error_debug() {
+        let err = TieredError::NotConfigured;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("NotConfigured"));
+
+        let err = TieredError::Store(TensorStoreError::NotFound("key".to_string()));
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("Store"));
+    }
+
+    #[test]
+    fn test_tiered_shard_for_key() {
+        // Same key should always hash to same shard
+        let shard1 = TieredStore::shard_for_key("test_key");
+        let shard2 = TieredStore::shard_for_key("test_key");
+        assert_eq!(shard1, shard2);
+        assert!(shard1 < SHARD_COUNT);
+
+        // Different keys may hash to different shards
+        let shard3 = TieredStore::shard_for_key("another_key");
+        assert!(shard3 < SHARD_COUNT);
+    }
+
+    #[test]
+    fn test_tiered_reopen_existing_cold() {
+        let dir = setup_test_dir("reopen_cold");
+        let config = TieredConfig {
+            cold_dir: dir.clone(),
+            cold_capacity: 4096,
+            sample_rate: 1,
+        };
+
+        // Create and populate
+        {
+            let mut store = TieredStore::new(config.clone()).unwrap();
+            let cold = store.cold.as_mut().unwrap();
+            cold.insert("persisted_key", &create_test_tensor(42))
+                .unwrap();
+            store
+                .cold_keys
+                .write()
+                .unwrap()
+                .insert("persisted_key".to_string());
+            store.flush().unwrap();
+        }
+
+        // Reopen and verify cold data is indexed
+        {
+            let store = TieredStore::new(config).unwrap();
+            assert!(store.cold_keys.read().unwrap().contains("persisted_key"));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tiered_into_tensor_store_empty() {
+        let store = TieredStore::hot_only(1);
+        let tensor_store = store.into_tensor_store().unwrap();
+        assert!(tensor_store.is_empty());
+    }
+
+    #[test]
+    fn test_tiered_preload_already_hot() {
+        let dir = setup_test_dir("preload_already_hot");
+        let config = TieredConfig {
+            cold_dir: dir.clone(),
+            cold_capacity: 4096,
+            sample_rate: 1,
+        };
+
+        let mut store = TieredStore::new(config).unwrap();
+
+        // Add to hot
+        store.put("hot_key", create_test_tensor(1));
+
+        // Add same key to cold index (simulate inconsistent state)
+        store
+            .cold_keys
+            .write()
+            .unwrap()
+            .insert("hot_key".to_string());
+
+        // Preload should not load since already in hot
+        let loaded = store.preload(&["hot_key"]).unwrap();
+        assert_eq!(loaded, 0);
 
         let _ = fs::remove_dir_all(&dir);
     }

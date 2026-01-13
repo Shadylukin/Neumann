@@ -16,11 +16,13 @@
 //! 10. Unary (NOT, -, ~)
 //! 11. Postfix (function calls, IS NULL, IN, BETWEEN, LIKE)
 
-use crate::ast::*;
-use crate::error::{ParseError, ParseResult};
-use crate::lexer::Lexer;
-use crate::span::Span;
-use crate::token::{Token, TokenKind};
+use crate::{
+    ast::*,
+    error::{ParseError, ParseResult},
+    lexer::Lexer,
+    span::Span,
+    token::{Token, TokenKind},
+};
 
 /// Maximum expression nesting depth.
 const MAX_DEPTH: usize = 64;
@@ -264,7 +266,8 @@ impl<'a> ExprParser<'a> {
 
             TokenKind::Eof => Err(ParseError::unexpected_eof(token.span, "expression")),
 
-            // Allow contextual keywords to be used as identifiers (e.g., column names like "status")
+            // Allow contextual keywords to be used as identifiers (e.g., column names like
+            // "status")
             _ if token.kind.is_contextual_keyword() => self.parse_keyword_as_ident(),
 
             _ => Err(ParseError::unexpected(

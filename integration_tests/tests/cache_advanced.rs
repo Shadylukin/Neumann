@@ -2,10 +2,9 @@
 //!
 //! Tests TTL expiration, semantic cache, embedding cache, and eviction.
 
+use std::{sync::Arc, thread, time::Duration};
+
 use integration_tests::sample_embeddings;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use tensor_cache::{Cache, CacheConfig, CacheLayer};
 
 #[test]

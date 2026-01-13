@@ -6,13 +6,19 @@
 //!
 //! The loader automatically detects format version and loads appropriately.
 
-use crate::slab_router::{SlabRouter, SlabRouterSnapshot};
-use crate::TensorData;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufReader, BufWriter, Read},
+    path::Path,
+};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read};
-use std::path::Path;
+
+use crate::{
+    slab_router::{SlabRouter, SlabRouterSnapshot},
+    TensorData,
+};
 
 /// Magic bytes for v3 format identification.
 const V3_MAGIC: [u8; 4] = *b"NEUM";
@@ -183,9 +189,10 @@ pub fn migrate_v2_to_v3<P: AsRef<Path>, Q: AsRef<Path>>(
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
     use crate::{ScalarValue, TensorValue};
-    use tempfile::tempdir;
 
     fn create_test_data() -> TensorData {
         let mut data = TensorData::new();
@@ -436,5 +443,113 @@ mod tests {
         let loaded = load(&path).unwrap();
 
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_detect_version_nonexistent_file() {
+        let result = detect_version("/nonexistent/path/to/file.bin");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = load("/nonexistent/path/to/file.bin");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_header_debug() {
+        let header = SnapshotHeader::new(100);
+        let debug = format!("{:?}", header);
+        assert!(debug.contains("SnapshotHeader"));
+        assert!(debug.contains("100"));
+    }
+
+    #[test]
+    fn test_v3_snapshot_debug() {
+        let router = SlabRouter::new();
+        let snapshot = V3Snapshot {
+            header: SnapshotHeader::new(0),
+            router: router.snapshot(),
+        };
+        let debug = format!("{:?}", snapshot);
+        assert!(debug.contains("V3Snapshot"));
+        assert!(debug.contains("header"));
+    }
+
+    #[test]
+    fn test_error_clone() {
+        let err = SnapshotFormatError::InvalidMagic;
+        let cloned = err.clone();
+        assert!(matches!(cloned, SnapshotFormatError::InvalidMagic));
+
+        let err = SnapshotFormatError::UnsupportedVersion(42);
+        let cloned = err.clone();
+        assert!(matches!(
+            cloned,
+            SnapshotFormatError::UnsupportedVersion(42)
+        ));
+
+        let err = SnapshotFormatError::IoError("test".to_string());
+        let cloned = err.clone();
+        assert!(matches!(cloned, SnapshotFormatError::IoError(_)));
+
+        let err = SnapshotFormatError::SerializationError("test".to_string());
+        let cloned = err.clone();
+        assert!(matches!(cloned, SnapshotFormatError::SerializationError(_)));
+    }
+
+    #[test]
+    fn test_load_v2_empty_hashmap() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.v2.empty.bin");
+
+        // Create empty v2 format
+        let data: HashMap<String, TensorData> = HashMap::new();
+        let file = File::create(&path).unwrap();
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, &data).unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: SnapshotFormatError = io_err.into();
+        assert!(matches!(err, SnapshotFormatError::IoError(_)));
+        assert!(err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_snapshot_version_equality() {
+        assert_eq!(SnapshotVersion::V2, SnapshotVersion::V2);
+        assert_eq!(SnapshotVersion::V3, SnapshotVersion::V3);
+        assert_ne!(SnapshotVersion::V2, SnapshotVersion::V3);
+    }
+
+    #[test]
+    fn test_snapshot_version_debug() {
+        let v2 = SnapshotVersion::V2;
+        let v3 = SnapshotVersion::V3;
+        assert!(format!("{:?}", v2).contains("V2"));
+        assert!(format!("{:?}", v3).contains("V3"));
+    }
+
+    #[test]
+    fn test_snapshot_version_clone() {
+        let v2 = SnapshotVersion::V2;
+        let cloned = v2.clone();
+        assert_eq!(v2, cloned);
+    }
+
+    #[test]
+    fn test_header_clone() {
+        let header = SnapshotHeader::new(100);
+        let cloned = header.clone();
+        assert_eq!(header.magic, cloned.magic);
+        assert_eq!(header.version, cloned.version);
+        assert_eq!(header.entry_count, cloned.entry_count);
     }
 }

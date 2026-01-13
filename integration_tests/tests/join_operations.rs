@@ -2,9 +2,10 @@
 //!
 //! Tests hash-based JOIN functionality across tables.
 
+use std::collections::HashMap;
+
 use integration_tests::create_shared_engines;
 use relational_engine::{Column, ColumnType, Schema, Value};
-use std::collections::HashMap;
 
 #[test]
 fn test_basic_inner_join() {

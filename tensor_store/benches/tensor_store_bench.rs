@@ -1,10 +1,10 @@
+use std::{path::PathBuf, sync::Arc, thread};
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
+use tensor_compress::TTConfig;
 use tensor_store::{
-    ArchetypeRegistry, BloomFilter, DeltaVector, KMeans, KMeansConfig, KMeansInit, ScalarValue,
-    SparseVector, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore,
+    ArchetypeRegistry, BloomFilter, DeltaVector, HNSWIndex, KMeans, KMeansConfig, KMeansInit,
+    ScalarValue, SparseVector, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore,
 };
 
 fn create_test_tensor(id: i64) -> TensorData {
@@ -1474,10 +1474,218 @@ criterion_group!(
     bench_tiered_preload,
 );
 
+// HNSW Benchmarks
+
+fn generate_random_vector(dim: usize, seed: u64) -> Vec<f32> {
+    let mut vec = Vec::with_capacity(dim);
+    let mut state = seed;
+    for _ in 0..dim {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let val = ((state >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0;
+        vec.push(val);
+    }
+    vec
+}
+
+fn bench_hnsw_insert_dense(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/insert/dense");
+
+    for &count in &[100, 500, 1000] {
+        let vectors: Vec<Vec<f32>> = (0..count)
+            .map(|i| generate_random_vector(768, i as u64))
+            .collect();
+
+        group.throughput(Throughput::Elements(count));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {
+            b.iter(|| {
+                let index = HNSWIndex::new();
+                for v in vecs {
+                    let sparse = SparseVector::from_dense(v);
+                    black_box(index.insert_sparse(sparse));
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_hnsw_insert_tt(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/insert/tt");
+    let config = TTConfig::for_dim(768).unwrap();
+
+    for &count in &[100, 500, 1000] {
+        let vectors: Vec<Vec<f32>> = (0..count)
+            .map(|i| generate_random_vector(768, i as u64))
+            .collect();
+
+        group.throughput(Throughput::Elements(count));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {
+            b.iter(|| {
+                let index = HNSWIndex::new();
+                for v in vecs {
+                    let _ = black_box(index.insert_tt(v.clone(), &config));
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_hnsw_insert_batch_tt(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/insert/batch_tt");
+    let config = TTConfig::for_dim(768).unwrap();
+
+    for &count in &[100, 500, 1000] {
+        let vectors: Vec<Vec<f32>> = (0..count)
+            .map(|i| generate_random_vector(768, i as u64))
+            .collect();
+
+        group.throughput(Throughput::Elements(count));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &vectors, |b, vecs| {
+            b.iter(|| {
+                let index = HNSWIndex::new();
+                let _ = black_box(index.insert_batch_tt(vecs.clone(), &config));
+            });
+        });
+    }
+    group.finish();
+}
+
+fn bench_hnsw_search_dense(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/search/dense");
+
+    for &size in &[500, 1000, 2000] {
+        let index = HNSWIndex::new();
+        for i in 0..size {
+            let v = generate_random_vector(768, i as u64);
+            let sparse = SparseVector::from_dense(&v);
+            index.insert_sparse(sparse);
+        }
+
+        let query = generate_random_vector(768, 99999);
+        let sparse_query = SparseVector::from_dense(&query);
+
+        group.bench_with_input(BenchmarkId::new("k10", size), &sparse_query, |b, q| {
+            b.iter(|| black_box(index.search_sparse(q, 10)));
+        });
+    }
+    group.finish();
+}
+
+fn bench_hnsw_search_tt(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/search/tt");
+    let config = TTConfig::for_dim(768).unwrap();
+
+    for &size in &[500, 1000, 2000] {
+        let index = HNSWIndex::new();
+        for i in 0..size {
+            let v = generate_random_vector(768, i as u64);
+            let _ = index.insert_tt(v, &config);
+        }
+
+        let query = generate_random_vector(768, 99999);
+
+        group.bench_with_input(BenchmarkId::new("k10", size), &query, |b, q| {
+            b.iter(|| black_box(index.search_tt(q, 10, &config)));
+        });
+    }
+    group.finish();
+}
+
+fn bench_hnsw_memory_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/memory");
+    let config = TTConfig::for_dim(768).unwrap();
+
+    let vectors: Vec<Vec<f32>> = (0..1000)
+        .map(|i| generate_random_vector(768, i as u64))
+        .collect();
+
+    group.bench_function("dense_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                let sparse = SparseVector::from_dense(v);
+                index.insert_sparse(sparse);
+            }
+            let stats = index.memory_stats();
+            black_box(stats.embedding_bytes)
+        });
+    });
+
+    group.bench_function("tt_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                let _ = index.insert_tt(v.clone(), &config);
+            }
+            let stats = index.memory_stats();
+            black_box(stats.embedding_bytes)
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_hnsw_insert_auto(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/insert_auto");
+
+    // Dense vectors (low sparsity)
+    let dense_vecs: Vec<Vec<f32>> = (0..500)
+        .map(|i| generate_random_vector(768, i as u64))
+        .collect();
+
+    // Sparse vectors (high sparsity - 90% zeros)
+    let sparse_vecs: Vec<Vec<f32>> = (0..500)
+        .map(|i| {
+            let mut v = generate_random_vector(768, i as u64);
+            for (j, val) in v.iter_mut().enumerate() {
+                if j % 10 != 0 {
+                    *val = 0.0;
+                }
+            }
+            v
+        })
+        .collect();
+
+    group.throughput(Throughput::Elements(500));
+
+    group.bench_function("dense_vectors", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &dense_vecs {
+                black_box(index.insert_auto(v.clone()));
+            }
+        });
+    });
+
+    group.bench_function("sparse_vectors", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &sparse_vecs {
+                black_box(index.insert_auto(v.clone()));
+            }
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    hnsw_benches,
+    bench_hnsw_insert_dense,
+    bench_hnsw_insert_tt,
+    bench_hnsw_insert_batch_tt,
+    bench_hnsw_search_dense,
+    bench_hnsw_search_tt,
+    bench_hnsw_memory_comparison,
+    bench_hnsw_insert_auto,
+);
+
 criterion_main!(
     benches,
     sparse_vector_benches,
     delta_vector_benches,
     kmeans_benches,
-    tiered_benches
+    tiered_benches,
+    hnsw_benches
 );

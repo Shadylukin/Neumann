@@ -6,14 +6,18 @@
 //! - Health state transitions and callbacks
 //! - Membership with Raft voting integration
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use parking_lot::Mutex;
-use tensor_chain::membership::{ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig};
-use tensor_chain::network::RequestVote;
 use tensor_chain::{
+    membership::{ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig},
+    network::RequestVote,
     MembershipCallback, MembershipManager, MemoryTransport, Message, NodeHealth, RaftConfig,
     RaftNode,
 };

@@ -2,14 +2,19 @@
 //!
 //! Tests multi-threaded and async access patterns across all engines.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+};
+
 use futures::future::join_all;
 use graph_engine::{GraphEngine, PropertyValue};
 use integration_tests::{create_shared_engines_arc, sample_embeddings};
 use relational_engine::{Column, ColumnType, Schema, Value};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
 use tensor_cache::Cache;
 use tensor_store::TensorStore;

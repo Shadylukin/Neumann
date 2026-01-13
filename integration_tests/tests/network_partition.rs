@@ -6,8 +6,7 @@
 //! - Partition healing and convergence
 //! - Message drop counting
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tensor_chain::{MemoryTransport, Message, RaftConfig, RaftNode, RaftState, Transport};
 use tokio::time::{sleep, timeout};

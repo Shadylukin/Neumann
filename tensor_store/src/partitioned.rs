@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
-use crate::consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner};
-use crate::partitioner::{PartitionResult, Partitioner, PhysicalNodeId};
-use crate::slab_router::SlabRouterError;
-use crate::{TensorData, TensorStore};
+use crate::{
+    consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner},
+    partitioner::{PartitionResult, Partitioner, PhysicalNodeId},
+    slab_router::SlabRouterError,
+    TensorData, TensorStore,
+};
 
 /// Error type for partitioned store operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +115,6 @@ impl PartitionedStore {
         }
     }
 
-    /// Get the partition result for a key.
     pub fn partition_for(&self, key: &str) -> Option<PartitionResult> {
         self.partitioner.as_ref().map(|p| p.partition(key))
     }
@@ -235,7 +236,6 @@ impl PartitionedStore {
         }
     }
 
-    /// Get the number of local keys.
     pub fn local_count(&self) -> usize {
         match &self.partitioner {
             Some(p) => self
@@ -263,12 +263,10 @@ impl PartitionedStore {
         self.partitioner.as_ref()
     }
 
-    /// Get the local node ID.
     pub fn local_node(&self) -> Option<&PhysicalNodeId> {
         self.partitioner.as_ref().map(|p| p.local_node())
     }
 
-    /// Get all physical nodes in the cluster.
     pub fn nodes(&self) -> Vec<PhysicalNodeId> {
         self.partitioner
             .as_ref()
@@ -280,8 +278,7 @@ impl PartitionedStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consistent_hash::ConsistentHashConfig;
-    use crate::{ScalarValue, TensorValue};
+    use crate::{consistent_hash::ConsistentHashConfig, ScalarValue, TensorValue};
 
     fn make_tensor(value: i64) -> TensorData {
         let mut data = TensorData::new();

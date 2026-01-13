@@ -1,7 +1,6 @@
 //! Reproducible data generation for stress tests.
 
-use rand::Rng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tensor_store::{ScalarValue, SparseVector, TensorData, TensorValue};
 

@@ -9,9 +9,9 @@
 //! - Delta vector operations
 //! - Chain queries (by height, history)
 
+use std::{collections::HashSet, sync::Arc};
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use std::collections::HashSet;
-use std::sync::Arc;
 use tensor_chain::{
     Chain, CodebookManager, ConsensusConfig, ConsensusManager, DeltaVector, GlobalCodebook,
     LocalCodebook, TensorChain, Transaction,

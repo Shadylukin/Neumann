@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn test_from_bincode_error() {
         // Create a bincode error by deserializing invalid data
-        let bad_data = vec![0xFF, 0xFF, 0xFF];
+        let bad_data = vec![0xff, 0xff, 0xff];
         let result: std::result::Result<String, bincode::Error> = bincode::deserialize(&bad_data);
         if let Err(bincode_err) = result {
             let tcp_err: TcpError = bincode_err.into();

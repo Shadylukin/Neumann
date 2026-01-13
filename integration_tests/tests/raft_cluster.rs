@@ -6,8 +6,7 @@
 //! - Log replication
 //! - Term safety
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tensor_chain::{
     Block, BlockHeader, MemoryTransport, Message, RaftConfig, RaftHandle, RaftNode, RaftState,

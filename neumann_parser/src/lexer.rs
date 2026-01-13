@@ -9,9 +9,12 @@
 //! - Comments (-- and /* */)
 //! - Whitespace (skipped)
 
-use crate::span::{BytePos, Span};
-use crate::token::{Token, TokenKind};
 use std::str::Chars;
+
+use crate::{
+    span::{BytePos, Span},
+    token::{Token, TokenKind},
+};
 
 /// A lexer for tokenizing Neumann query language source.
 pub struct Lexer<'a> {

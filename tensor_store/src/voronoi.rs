@@ -3,15 +3,16 @@
 //! Extends SemanticPartitioner with explicit Voronoi regions per node,
 //! enabling geometric-aware data distribution and query routing.
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+use std::{collections::HashMap, sync::RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::delta_vector::{KMeans, KMeansConfig};
-use crate::hnsw::simd;
-use crate::partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
-use crate::semantic_partitioner::{SemanticPartitioner, SemanticPartitionerConfig};
+use crate::{
+    delta_vector::{KMeans, KMeansConfig},
+    hnsw::simd,
+    partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId},
+    semantic_partitioner::{SemanticPartitioner, SemanticPartitionerConfig},
+};
 
 /// A Voronoi region owned by a node.
 ///

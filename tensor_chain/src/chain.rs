@@ -7,15 +7,19 @@
 //! - Height-indexed block lookup
 //! - Similarity search over block embeddings
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 use graph_engine::GraphEngine;
 use parking_lot::RwLock;
 use tensor_store::SparseVector;
 
-use crate::block::{Block, BlockHash, BlockHeader, NodeId, Transaction};
-use crate::error::{ChainError, Result};
+use crate::{
+    block::{Block, BlockHash, BlockHeader, NodeId, Transaction},
+    error::{ChainError, Result},
+};
 
 /// Edge type for chain links.
 const CHAIN_EDGE_TYPE: &str = "chain_next";

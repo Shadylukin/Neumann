@@ -1,9 +1,14 @@
 //! TensorStore stress tests at 1M entity scale.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Instant;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::Instant,
+};
+
 use stress_tests::{
     format_bytes, full_config, generate_embeddings, LatencyHistogram, StressConfig,
 };

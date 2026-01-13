@@ -2,10 +2,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
 
-use crate::chunker::{Chunk, Chunker, StreamingHasher};
-use crate::error::{BlobError, Result};
-use crate::gc::increment_chunk_refs;
-use crate::metadata::PutOptions;
+use crate::{
+    chunker::{Chunk, Chunker, StreamingHasher},
+    error::{BlobError, Result},
+    gc::increment_chunk_refs,
+    metadata::PutOptions,
+};
 
 /// Internal state shared between BlobWriter and the store.
 pub(crate) struct WriteState {

@@ -3,21 +3,29 @@
 //! Provides a readline-based interface for executing queries against the
 //! Neumann unified query engine.
 
-use parking_lot::RwLock;
+use std::{
+    fmt::Write as _,
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use parking_lot::{Mutex, RwLock};
 use query_router::{
     ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult,
     ChainSimilarResult, ChainTransitionAnalysis, CheckpointInfo, QueryResult, QueryRouter,
 };
 use relational_engine::Row;
-use rustyline::error::ReadlineError;
-use rustyline::history::{DefaultHistory, History};
-use rustyline::{DefaultEditor, Editor};
-use std::fmt::Write as _;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use rustyline::{
+    error::ReadlineError,
+    history::{DefaultHistory, History},
+    DefaultEditor, Editor,
+};
 use tensor_chain::QueryExecutor;
+use tensor_checkpoint::{
+    format_confirmation_prompt, ConfirmationHandler, DestructiveOp, OperationPreview,
+};
 use tensor_store::TensorStore;
 
 /// Write-Ahead Log for crash recovery.
@@ -112,6 +120,35 @@ impl QueryExecutor for RouterExecutor {
     fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
         let router = self.0.read();
         router.execute_for_cluster(query)
+    }
+}
+
+/// Interactive confirmation handler for destructive operations.
+///
+/// Prompts the user via readline to confirm before executing operations
+/// that could cause data loss.
+struct ShellConfirmationHandler {
+    editor: Arc<Mutex<Editor<(), DefaultHistory>>>,
+}
+
+impl ShellConfirmationHandler {
+    const fn new(editor: Arc<Mutex<Editor<(), DefaultHistory>>>) -> Self {
+        Self { editor }
+    }
+}
+
+impl ConfirmationHandler for ShellConfirmationHandler {
+    fn confirm(&self, op: &DestructiveOp, preview: &OperationPreview) -> bool {
+        let prompt = format_confirmation_prompt(op, preview);
+
+        // Print the warning with sample data
+        println!("\n{prompt}");
+
+        // Ask for confirmation using readline
+        let mut editor = self.editor.lock();
+        editor
+            .readline("Type 'yes' to proceed: ")
+            .is_ok_and(|input| input.trim().eq_ignore_ascii_case("yes"))
     }
 }
 
@@ -802,24 +839,47 @@ Examples:
     ///
     /// Returns an error if readline initialization fails.
     pub fn run(&mut self) -> Result<(), ShellError> {
-        let mut editor: Editor<(), DefaultHistory> =
+        let editor: Editor<(), DefaultHistory> =
             DefaultEditor::new().map_err(|e| ShellError::Init(e.to_string()))?;
-        if let Some(ref path) = self.config.history_file {
-            let _ = editor.load_history(path);
+        let editor = Arc::new(Mutex::new(editor));
+
+        {
+            let mut ed = editor.lock();
+            if let Some(ref path) = self.config.history_file {
+                let _ = ed.load_history(path);
+            }
+            ed.history_mut()
+                .set_max_len(self.config.history_size)
+                .map_err(|e| ShellError::Init(e.to_string()))?;
         }
-        editor
-            .history_mut()
-            .set_max_len(self.config.history_size)
-            .map_err(|e| ShellError::Init(e.to_string()))?;
+
+        // Set up confirmation handler for destructive operations if checkpoint is available
+        {
+            let router = self.router.read();
+            if router.has_checkpoint() {
+                let handler = Arc::new(ShellConfirmationHandler::new(Arc::clone(&editor)));
+                drop(router);
+                let router = self.router.write();
+                if let Err(e) = router.set_confirmation_handler(handler) {
+                    eprintln!("Warning: Failed to set confirmation handler: {e}");
+                }
+            }
+        }
 
         println!("Neumann Database Shell v{}", Self::version());
         println!("Type 'help' for available commands.\n");
 
         loop {
-            match editor.readline(&self.config.prompt) {
+            let readline_result = {
+                let mut ed = editor.lock();
+                ed.readline(&self.config.prompt)
+            };
+
+            match readline_result {
                 Ok(line) => {
                     if !line.trim().is_empty() {
-                        let _ = editor.add_history_entry(line.trim());
+                        let mut ed = editor.lock();
+                        let _ = ed.add_history_entry(line.trim());
                     }
                     if Self::process_result(&self.execute(&line)) == LoopAction::Exit {
                         break;
@@ -837,7 +897,8 @@ Examples:
             }
         }
         if let Some(ref path) = self.config.history_file {
-            let _ = editor.save_history(path);
+            let mut ed = editor.lock();
+            let _ = ed.save_history(path);
         }
         Ok(())
     }
@@ -1589,8 +1650,9 @@ mod tests {
 
     #[test]
     fn test_format_nodes_with_data() {
-        use query_router::NodeResult;
         use std::collections::HashMap;
+
+        use query_router::NodeResult;
 
         let nodes = vec![
             NodeResult {
@@ -1806,8 +1868,9 @@ mod tests {
 
     #[test]
     fn test_format_nodes_with_properties() {
-        use query_router::NodeResult;
         use std::collections::HashMap;
+
+        use query_router::NodeResult;
 
         let nodes = vec![NodeResult {
             id: 1,

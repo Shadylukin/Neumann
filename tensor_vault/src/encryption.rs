@@ -1,10 +1,12 @@
 //! AES-256-GCM encryption for vault secrets.
 
-use crate::key::MasterKey;
-use crate::{Result, VaultError};
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use rand::RngCore;
+
+use crate::{key::MasterKey, Result, VaultError};
 
 /// 12-byte nonce for AES-GCM (96 bits is the standard).
 pub const NONCE_SIZE: usize = 12;
@@ -116,7 +118,7 @@ mod tests {
     fn test_large_plaintext() {
         let cipher = Cipher::new(test_key());
 
-        let plaintext = vec![0xABu8; 1024 * 1024]; // 1MB
+        let plaintext = vec![0xabu8; 1024 * 1024]; // 1MB
         let (ciphertext, nonce) = cipher.encrypt(&plaintext).unwrap();
 
         let decrypted = cipher.decrypt(&ciphertext, &nonce).unwrap();
@@ -142,7 +144,7 @@ mod tests {
 
         // Tamper with ciphertext
         if let Some(byte) = ciphertext.first_mut() {
-            *byte ^= 0xFF;
+            *byte ^= 0xff;
         }
 
         let result = cipher.decrypt(&ciphertext, &nonce);

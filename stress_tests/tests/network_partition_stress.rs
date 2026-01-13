@@ -6,9 +6,13 @@
 //! - Recovery time measurement
 //! - Message drop statistics
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use tensor_chain::{MemoryTransport, Message, RaftConfig, RaftNode, RaftState, Transport};
 use tokio::time::sleep;

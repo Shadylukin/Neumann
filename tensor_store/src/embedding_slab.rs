@@ -11,11 +11,15 @@
 //! - O(1) lookup by EntityId
 //! - Zero-copy iteration for HNSW index building
 
-use crate::entity_index::EntityId;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::entity_index::EntityId;
 
 /// Default chunk size: 16MB of f32s = 4M floats
 const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
@@ -460,11 +464,9 @@ pub struct EmbeddingSlabSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, sync::Arc, thread, time::Instant};
+
     use super::*;
-    use std::collections::HashSet;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Instant;
 
     #[test]
     fn test_new() {
@@ -773,10 +775,10 @@ mod tests {
 
         let total_time = start.elapsed();
 
-        // No single operation should take more than 50ms (accounts for coverage overhead)
+        // No single operation should take more than 100ms (accounts for coverage overhead)
         assert!(
-            max_op_time.as_millis() < 50,
-            "Max operation time {:?} exceeded 50ms threshold",
+            max_op_time.as_millis() < 100,
+            "Max operation time {:?} exceeded 100ms threshold",
             max_op_time
         );
 

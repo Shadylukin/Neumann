@@ -6,11 +6,13 @@
 //! - Vector commands (EMBED, SIMILAR)
 //! - Unified queries (FIND)
 
-use crate::ast::*;
-use crate::error::{ParseError, ParseErrorKind, ParseResult};
-use crate::lexer::Lexer;
-use crate::span::Span;
-use crate::token::{Token, TokenKind};
+use crate::{
+    ast::*,
+    error::{ParseError, ParseErrorKind, ParseResult},
+    lexer::Lexer,
+    span::Span,
+    token::{Token, TokenKind},
+};
 
 /// Binding power for prefix operators.
 const PREFIX_BP: u8 = 19;
@@ -119,7 +121,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Expects and returns an identifier or contextual keyword (for use in contexts like field names).
+    /// Expects and returns an identifier or contextual keyword (for use in contexts like field
+    /// names).
     fn expect_ident_or_keyword(&mut self) -> ParseResult<Ident> {
         let token = self.current.clone();
         if let TokenKind::Ident(name) = &token.kind {
@@ -274,7 +277,8 @@ impl<'a> Parser<'a> {
 
             TokenKind::Eof => Err(ParseError::unexpected_eof(token.span, "expression")),
 
-            // Allow contextual keywords to be used as identifiers (e.g., column names like "status")
+            // Allow contextual keywords to be used as identifiers (e.g., column names like
+            // "status")
             _ if token.kind.is_contextual_keyword() => self.parse_keyword_as_ident_expr(),
 
             _ => Err(ParseError::unexpected(

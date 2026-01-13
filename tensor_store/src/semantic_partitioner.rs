@@ -6,10 +6,12 @@
 
 use std::sync::RwLock;
 
-use crate::consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner};
-use crate::delta_vector::{ArchetypeRegistry, KMeans, KMeansConfig};
-use crate::hnsw::simd;
-use crate::partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
+use crate::{
+    consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner},
+    delta_vector::{ArchetypeRegistry, KMeans, KMeansConfig},
+    hnsw::simd,
+    partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId},
+};
 
 /// Configuration for the semantic partitioner.
 #[derive(Debug, Clone)]
@@ -46,19 +48,16 @@ impl SemanticPartitionerConfig {
         }
     }
 
-    /// Set the similarity threshold.
     pub fn with_similarity_threshold(mut self, threshold: f32) -> Self {
         self.similarity_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 
-    /// Set the number of virtual nodes for fallback.
     pub fn with_virtual_nodes(mut self, count: usize) -> Self {
         self.virtual_nodes = count;
         self
     }
 
-    /// Set the k-means configuration.
     pub fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
         self.kmeans_config = config;
         self
@@ -264,22 +263,18 @@ impl SemanticPartitioner {
         *magnitudes = new_magnitudes;
     }
 
-    /// Get current centroids.
     pub fn centroids(&self) -> Vec<Vec<f32>> {
         self.centroids.read().unwrap().clone()
     }
 
-    /// Get number of centroids.
     pub fn num_centroids(&self) -> usize {
         self.centroids.read().unwrap().len()
     }
 
-    /// Get the embedding dimension.
     pub fn embedding_dim(&self) -> usize {
         self.config.embedding_dim
     }
 
-    /// Get the similarity threshold.
     pub fn similarity_threshold(&self) -> f32 {
         self.config.similarity_threshold
     }
@@ -327,13 +322,11 @@ impl SemanticPartitioner {
         relevant
     }
 
-    /// Get all shard indices.
     pub fn all_shards(&self) -> Vec<usize> {
         let shard_nodes = self.shard_nodes.read().unwrap();
         (0..shard_nodes.len()).collect()
     }
 
-    /// Get statistics about the partitioner.
     pub fn stats(&self) -> SemanticPartitionerStats {
         let centroids = self.centroids.read().unwrap();
         let shard_nodes = self.shard_nodes.read().unwrap();

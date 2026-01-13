@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use tensor_chain::consensus::{ConsensusConfig, ConsensusManager};
 use tensor_chain::{
-    block::Transaction, DistributedTxConfig, DistributedTxCoordinator, Message, MessageHandler,
-    PrepareRequest, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxParticipant, TxPhase,
-    TxPrepareMsg, TxVote,
+    block::Transaction,
+    consensus::{ConsensusConfig, ConsensusManager},
+    DistributedTxConfig, DistributedTxCoordinator, Message, MessageHandler, PrepareRequest,
+    TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxParticipant, TxPhase, TxPrepareMsg, TxVote,
 };
 use tensor_store::SparseVector;
 

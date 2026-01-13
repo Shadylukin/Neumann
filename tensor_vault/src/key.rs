@@ -1,8 +1,9 @@
 //! Master key derivation using Argon2id.
 
-use crate::{Result, VaultConfig, VaultError};
 use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use crate::{Result, VaultConfig, VaultError};
 
 /// AES-256 key size in bytes.
 pub const KEY_SIZE: usize = 32;

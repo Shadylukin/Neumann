@@ -11,6 +11,7 @@ relational_engine = { path = "../relational_engine" }
 tensor_store = { path = "../tensor_store" }
 tensor_compress = { path = "../tensor_compress" }
 tensor_chain = { path = "../tensor_chain" }
+tensor_checkpoint = { path = "../tensor_checkpoint" }
 rustyline = "15"
 base64 = "0.22"
 parking_lot = "0.12"

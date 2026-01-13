@@ -7,16 +7,20 @@
 //! Tensor-native optimization: Orthogonal deltas can commit in parallel
 //! without coordination using vector similarity.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::RwLock;
 use tensor_store::SparseVector;
 
-use crate::block::{NodeId, Transaction};
-use crate::consensus::{ConsensusManager, DeltaVector};
-use crate::error::{ChainError, Result};
+use crate::{
+    block::{NodeId, Transaction},
+    consensus::{ConsensusManager, DeltaVector},
+    error::{ChainError, Result},
+};
 
 /// Shard identifier.
 pub type ShardId = usize;

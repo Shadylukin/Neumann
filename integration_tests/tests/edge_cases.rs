@@ -2,10 +2,11 @@
 //!
 //! Tests boundary conditions, empty inputs, and special values.
 
+use std::collections::HashMap;
+
 use graph_engine::{Direction, GraphEngine, PropertyValue};
 use integration_tests::{create_shared_engines, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
-use std::collections::HashMap;
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;
 

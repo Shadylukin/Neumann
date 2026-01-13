@@ -1,4 +1,5 @@
 use std::time::Instant;
+
 use tensor_store::SparseVector;
 
 fn main() {

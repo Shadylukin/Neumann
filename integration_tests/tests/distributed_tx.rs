@@ -2,13 +2,12 @@
 //!
 //! Tests the two-phase commit protocol with delta-based conflict detection.
 
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::{sync::atomic::Ordering, time::Duration};
 
-use tensor_chain::{ConsensusConfig, ConsensusManager, DeltaVector, Transaction};
 use tensor_chain::{
-    DistributedTransaction, DistributedTxConfig, DistributedTxCoordinator, DistributedTxStats,
-    LockManager, PrepareRequest, PrepareVote, TxParticipant, TxPhase,
+    ConsensusConfig, ConsensusManager, DeltaVector, DistributedTransaction, DistributedTxConfig,
+    DistributedTxCoordinator, DistributedTxStats, LockManager, PrepareRequest, PrepareVote,
+    Transaction, TxParticipant, TxPhase,
 };
 use tensor_store::SparseVector;
 

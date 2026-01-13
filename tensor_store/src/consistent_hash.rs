@@ -3,8 +3,10 @@
 //! Uses consistent hashing to distribute keys across physical nodes with
 //! configurable virtual nodes per physical node for better distribution.
 
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
 
 use crate::partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
 

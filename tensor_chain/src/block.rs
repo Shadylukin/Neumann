@@ -5,9 +5,10 @@
 //! - Transactions (tensor operations)
 //! - Validator signatures for consensus
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tensor_store::SparseVector;
 
 use crate::error::{ChainError, Result};
@@ -448,7 +449,7 @@ mod tests {
     #[test]
     fn test_block_header_with_signature() {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
-        let sig = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let sig = vec![0xde, 0xad, 0xbe, 0xef];
         let header = header.with_signature(sig.clone());
 
         assert_eq!(header.signature, sig);
@@ -473,11 +474,11 @@ mod tests {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
             .with_dense_embedding(&[1.0])
             .with_codes(vec![1])
-            .with_signature(vec![0xFF]);
+            .with_signature(vec![0xff]);
 
         assert_eq!(header.delta_embedding.to_dense(), vec![1.0]);
         assert_eq!(header.quantized_codes, vec![1]);
-        assert_eq!(header.signature, vec![0xFF]);
+        assert_eq!(header.signature, vec![0xff]);
     }
 
     #[test]
@@ -813,7 +814,7 @@ mod tests {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
             .with_dense_embedding(&[1.0])
             .with_codes(vec![1])
-            .with_signature(vec![0xFF]);
+            .with_signature(vec![0xff]);
 
         let cloned = header.clone();
         assert_eq!(header, cloned);

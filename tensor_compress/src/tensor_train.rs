@@ -16,10 +16,11 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::manual_is_multiple_of)]
 
-use crate::decompose::{left_unfold_for_tt, svd_truncated, DecomposeError, Matrix};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::decompose::{left_unfold_for_tt, svd_truncated, DecomposeError, Matrix};
 
 /// Threshold for switching to parallel batch processing.
 const PARALLEL_THRESHOLD: usize = 4;

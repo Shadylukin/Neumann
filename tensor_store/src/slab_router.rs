@@ -13,18 +13,24 @@
 //! - `_cache:*` -> CacheRing (cached data)
 //! - Everything else (including `_blob:*`) -> MetadataSlab (general metadata)
 
-use crate::blob_log::{BlobLog, BlobLogSnapshot};
-use crate::cache_ring::{CacheRing, CacheRingSnapshot, EvictionStrategy};
-use crate::embedding_slab::{EmbeddingSlab, EmbeddingSlabSnapshot};
-use crate::entity_index::{EntityIndex, EntityIndexSnapshot};
-use crate::graph_tensor::{GraphTensor, GraphTensorSnapshot};
-use crate::metadata_slab::{MetadataSlab, MetadataSlabSnapshot};
-use crate::relational_slab::{RelationalSlab, RelationalSlabSnapshot};
-use crate::snapshot::{self, SnapshotFormatError};
-use crate::{TensorData, TensorValue};
+use std::{
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::{
+    blob_log::{BlobLog, BlobLogSnapshot},
+    cache_ring::{CacheRing, CacheRingSnapshot, EvictionStrategy},
+    embedding_slab::{EmbeddingSlab, EmbeddingSlabSnapshot},
+    entity_index::{EntityIndex, EntityIndexSnapshot},
+    graph_tensor::{GraphTensor, GraphTensorSnapshot},
+    metadata_slab::{MetadataSlab, MetadataSlabSnapshot},
+    relational_slab::{RelationalSlab, RelationalSlabSnapshot},
+    snapshot::{self, SnapshotFormatError},
+    TensorData, TensorValue,
+};
 
 /// Configuration for SlabRouter.
 #[derive(Debug, Clone)]

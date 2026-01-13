@@ -10,10 +10,12 @@
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::return_self_not_must_use)]
 
-use crate::format::{CompressedEntry, CompressedSnapshot, FormatError, Header};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::format::{CompressedEntry, CompressedSnapshot, FormatError, Header};
 
 /// Magic bytes for delta snapshot format.
 pub const DELTA_MAGIC: [u8; 4] = *b"NEUD";
@@ -384,8 +386,10 @@ impl DeltaChain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::{CompressedScalar, CompressedValue};
-    use crate::CompressionConfig;
+    use crate::{
+        format::{CompressedScalar, CompressedValue},
+        CompressionConfig,
+    };
 
     fn make_entry(key: &str, value: i64) -> CompressedEntry {
         CompressedEntry {

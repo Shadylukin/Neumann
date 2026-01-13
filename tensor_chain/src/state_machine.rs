@@ -14,11 +14,13 @@ use std::sync::Arc;
 
 use tensor_store::{SparseVector, TensorData, TensorStore, TensorValue};
 
-use crate::block::{Block, Transaction};
-use crate::chain::Chain;
-use crate::error::{ChainError, Result};
-use crate::network::LogEntry;
-use crate::raft::RaftNode;
+use crate::{
+    block::{Block, Transaction},
+    chain::Chain,
+    error::{ChainError, Result},
+    network::LogEntry,
+    raft::RaftNode,
+};
 
 /// Tensor-native state machine that applies Raft log entries to TensorChain.
 ///
@@ -346,12 +348,15 @@ impl TensorStateMachine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::block::{BlockHeader, Transaction};
-    use crate::network::MemoryTransport;
-    use crate::raft::RaftConfig;
     use graph_engine::GraphEngine;
     use tensor_store::TensorStore;
+
+    use super::*;
+    use crate::{
+        block::{BlockHeader, Transaction},
+        network::MemoryTransport,
+        raft::RaftConfig,
+    };
 
     fn create_test_components() -> (Arc<Chain>, Arc<RaftNode>, TensorStore) {
         let store = TensorStore::new();

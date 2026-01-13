@@ -1,9 +1,14 @@
 //! Cache stress tests at 10K-100K entry scale.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tensor_cache::{Cache, CacheConfig, EvictionStrategy};
 

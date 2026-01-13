@@ -1,7 +1,8 @@
 //! Benchmarks for tensor_cache.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
+
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use tensor_cache::{Cache, CacheConfig, DistanceMetric, SparseVector};
 
 fn create_test_vector(dim: usize, seed: usize) -> Vec<f32> {

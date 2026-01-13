@@ -4,13 +4,15 @@
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_const_for_fn)]
 
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
 use crate::{
     compress_ids, decompress_ids, rle_decode, rle_encode, tt_decompose, tt_reconstruct,
     CompressionConfig, RleEncoded, TTCore, TensorMode,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use thiserror::Error;
 
 /// Magic bytes identifying a Neumann snapshot file.
 pub const MAGIC: [u8; 4] = *b"NEUM";

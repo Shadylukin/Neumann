@@ -132,17 +132,14 @@ impl DeltaVector {
         )
     }
 
-    /// Get the archetype ID this delta references.
     pub fn archetype_id(&self) -> usize {
         self.archetype_id
     }
 
-    /// Get the full vector dimension.
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
-    /// Get the number of non-zero delta positions.
     pub fn nnz(&self) -> usize {
         self.positions.len()
     }
@@ -165,7 +162,6 @@ impl DeltaVector {
         dense.iter().map(|x| x * x).sum::<f32>().sqrt()
     }
 
-    /// Set the cached magnitude (useful after reconstruction).
     pub fn set_cached_magnitude(&mut self, magnitude: f32) {
         self.cached_magnitude = Some(magnitude);
     }

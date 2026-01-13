@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tensor_store::{
     fields, hnsw::simd, SparseVector, TensorData, TensorStore, TensorStoreError, TensorValue,
 };
-
 // Re-export HNSW types from tensor_store for backward compatibility
 pub use tensor_store::{HNSWConfig, HNSWIndex};
 

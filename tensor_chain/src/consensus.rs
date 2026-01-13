@@ -16,8 +16,7 @@
 //! | = 1.0       | All         | Identical      | Deduplicate |
 //! | <= -0.95    | All         | Opposite       | Cancel (no-op) |
 
-use std::collections::HashSet;
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref};
 
 use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
@@ -934,15 +933,18 @@ mod tests {
         //
         // Index 0: [1, 0, 0] - position 0
         // Index 2: [0.9, 0.1, 0] - positions 0 and 1
-        // Previous index 1: [0, 1, 0] - position 1 -> Jaccard with index 2 = 1/2 = 0.5 (at threshold!)
+        // Previous index 1: [0, 1, 0] - position 1 -> Jaccard with index 2 = 1/2 = 0.5 (at
+        // threshold!)
         //
         // Fix: Use position 2 for index 1: [0, 0, 1]
         // - vs Index 0: Jaccard = 0, Cosine = 0 -> Orthogonal
         // - vs Index 2: Jaccard = 0, Cosine = 0 -> Orthogonal
         let deltas = vec![
             DeltaVector::new(vec![1.0, 0.0, 0.0], keys1.clone(), 1),
-            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 2), // Orthogonal to all (position 2)
-            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3), // Conflicts with 0 (high cosine)
+            DeltaVector::new(vec![0.0, 0.0, 1.0], HashSet::new(), 2), /* Orthogonal to all
+                                                                       * (position 2) */
+            DeltaVector::new(vec![0.9, 0.1, 0.0], keys2.clone(), 3), /* Conflicts with 0 (high
+                                                                      * cosine) */
         ];
 
         let orthogonal = manager.find_orthogonal_set(&deltas);
@@ -1198,7 +1200,8 @@ mod tests {
         let deltas = vec![
             DeltaVector::new(vec![1.0, 0.0, 0.0], keys1, 1),
             DeltaVector::new(vec![0.0, 1.0, 0.0], HashSet::new(), 2), // Orthogonal
-            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2, 3), // Conflicting with accumulated
+            DeltaVector::new(vec![0.95, 0.1, 0.0], keys2, 3),         /* Conflicting with
+                                                                       * accumulated */
         ];
 
         let result = manager.merge_all(&deltas);

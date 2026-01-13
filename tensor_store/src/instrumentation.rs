@@ -3,8 +3,10 @@
 //! Provides low-overhead tracking to identify hot vs cold data regions,
 //! enabling intelligent memory tiering decisions.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 
 /// Default shard count matching DashMap's internal sharding.
 pub const DEFAULT_SHARD_COUNT: usize = 16;
@@ -345,8 +347,9 @@ impl HNSWStatsSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::thread;
+
+    use super::*;
 
     #[test]
     fn test_shard_tracker_new() {

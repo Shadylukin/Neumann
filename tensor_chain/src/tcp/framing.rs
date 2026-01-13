@@ -212,10 +212,12 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use tensor_store::SparseVector;
+
     use super::*;
     use crate::network::{Message, RequestVote};
-    use std::io::Cursor;
-    use tensor_store::SparseVector;
 
     #[test]
     fn test_encode_decode() {
@@ -255,7 +257,8 @@ mod tests {
             candidate_id: "node1".to_string(),
             last_log_index: 10,
             last_log_term: 1,
-            state_embedding: SparseVector::from_dense(&vec![1.0; 100]), // Large embedding with non-zero values
+            state_embedding: SparseVector::from_dense(&vec![1.0; 100]), /* Large embedding with
+                                                                         * non-zero values */
         });
 
         let result = codec.encode(&msg);

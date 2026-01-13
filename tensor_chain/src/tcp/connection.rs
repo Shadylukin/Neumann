@@ -2,23 +2,29 @@
 //!
 //! Provides connection pooling and state management for peer connections.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use parking_lot::RwLock;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::mpsc,
+};
 
-use crate::block::NodeId;
-use crate::network::Message;
-
-use super::config::TcpTransportConfig;
-use super::error::{TcpError, TcpResult};
-use super::framing::LengthDelimitedCodec;
-use super::stream::{split_stream, DynRead, DynWrite};
+use super::{
+    config::TcpTransportConfig,
+    error::{TcpError, TcpResult},
+    framing::LengthDelimitedCodec,
+    stream::{split_stream, DynRead, DynWrite},
+};
+use crate::{block::NodeId, network::Message};
 
 /// State of a connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,8 +417,9 @@ impl ConnectionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn test_connection_stats() {

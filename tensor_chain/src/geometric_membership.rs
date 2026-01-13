@@ -5,14 +5,15 @@
 //! - Score peers by geometric proximity + health
 //! - Find geometrically nearest healthy peers
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
 use tensor_store::SparseVector;
 
-use crate::block::NodeId;
-use crate::membership::{ClusterView, MembershipManager, NodeHealth};
+use crate::{
+    block::NodeId,
+    membership::{ClusterView, MembershipManager, NodeHealth},
+};
 
 /// Configuration for geometric membership scoring.
 #[derive(Debug, Clone)]
@@ -201,10 +202,13 @@ impl std::fmt::Debug for GeometricMembershipManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::membership::{ClusterConfig, LocalNodeConfig};
-    use crate::network::MemoryTransport;
     use std::sync::Arc;
+
+    use super::*;
+    use crate::{
+        membership::{ClusterConfig, LocalNodeConfig},
+        network::MemoryTransport,
+    };
 
     fn create_test_manager() -> GeometricMembershipManager {
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));

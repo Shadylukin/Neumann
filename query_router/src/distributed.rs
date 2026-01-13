@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
+use relational_engine::{Row, Value};
 use serde::{Deserialize, Serialize};
 use tensor_store::{PartitionResult, Partitioner, SemanticPartitioner};
 
 use crate::{QueryResult, Result, SimilarResult};
-use relational_engine::{Row, Value};
 
 /// Shard identifier.
 pub type ShardId = usize;
@@ -517,8 +517,9 @@ impl DistributedQueryStats {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner};
+
+    use super::*;
 
     fn create_test_partitioner() -> Arc<dyn Partitioner + Send + Sync> {
         let config = ConsistentHashConfig::new("node1").with_virtual_nodes(10);

@@ -2,11 +2,11 @@
 //!
 //! Tests that all engines return proper errors for invalid operations.
 
+use std::{collections::HashMap, sync::Arc};
+
 use graph_engine::GraphEngine;
 use integration_tests::{create_shared_engines, create_shared_router, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig};

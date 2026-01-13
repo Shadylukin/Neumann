@@ -3,10 +3,15 @@
 //! The goal is CV (coefficient of variation) < 20% with sustained 2M+ ops/sec.
 //! This tests the slab-based architecture's resistance to resize stalls.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use tensor_store::{ScalarValue, SlabRouter, SlabRouterConfig, TensorData, TensorValue};
 
 /// Test configuration.

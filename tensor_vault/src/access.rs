@@ -1,8 +1,10 @@
 //! Graph-based access control using topological path verification.
 
-use crate::Permission;
-use graph_engine::GraphEngine;
 use std::collections::{HashSet, VecDeque};
+
+use graph_engine::GraphEngine;
+
+use crate::Permission;
 
 /// Access controller using graph topology for authorization.
 pub struct AccessController;
@@ -154,8 +156,9 @@ impl AccessController {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use super::*;
 
     #[test]
     fn test_same_node() {

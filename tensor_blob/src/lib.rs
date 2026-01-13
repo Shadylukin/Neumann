@@ -50,6 +50,8 @@ mod integrity;
 mod metadata;
 mod streaming;
 
+use std::{collections::HashMap, sync::Arc};
+
 pub use chunker::{compute_hash, compute_hash_streaming, Chunk, Chunker, StreamingHasher};
 pub use config::{BlobConfig, GcConfig};
 pub use error::{BlobError, Result};
@@ -58,19 +60,14 @@ pub use integrity::{check_chunks_exist, find_orphaned_chunks, verify_chunk};
 pub use metadata::{
     ArtifactMetadata, BlobStats, GcStats, MetadataUpdates, PutOptions, RepairStats, SimilarArtifact,
 };
+#[cfg(feature = "vector")]
+use streaming::get_vector;
+use streaming::{get_int, get_pointers, get_string};
 pub use streaming::{BlobReader, BlobWriter};
-
-use std::collections::HashMap;
-use std::sync::Arc;
-
 #[cfg(feature = "vector")]
 use tensor_store::SparseVector;
 use tensor_store::{ScalarValue, TensorStore, TensorValue};
 use tokio::task::JoinHandle;
-
-#[cfg(feature = "vector")]
-use streaming::get_vector;
-use streaming::{get_int, get_pointers, get_string};
 
 /// S3-style blob store with content-addressable chunked storage.
 pub struct BlobStore {

@@ -11,10 +11,14 @@
 #![allow(clippy::io_other_error)]
 #![allow(clippy::iter_with_drain)]
 
-use crate::format::{CompressedEntry, CompressedSnapshot, FormatError, Header};
-use crate::CompressionConfig;
-use serde::{Deserialize, Serialize};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    format::{CompressedEntry, CompressedSnapshot, FormatError, Header},
+    CompressionConfig,
+};
 
 /// Magic bytes for streaming format.
 pub const STREAMING_MAGIC: [u8; 4] = *b"NEUS";
@@ -281,10 +285,10 @@ pub fn merge_streaming<W: Write + Seek, R: Read + Seek>(
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, io::Cursor};
+
     use super::*;
     use crate::format::{CompressedScalar, CompressedValue};
-    use std::collections::HashMap;
-    use std::io::Cursor;
 
     fn make_test_entry(key: &str, value: i64) -> CompressedEntry {
         CompressedEntry {

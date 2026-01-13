@@ -24,26 +24,22 @@ pub use decompose::{DecomposeError, Matrix, SvdResult, TensorView};
 pub use delta::{
     compress_ids, decompress_ids, delta_decode, delta_encode, varint_decode, varint_encode,
 };
-pub use rle::{rle_decode, rle_encode, RleEncoded};
-
 pub use format::{
     compress_dense_as_sparse, compress_sparse, should_use_sparse, should_use_sparse_threshold,
     sparse_storage_size,
 };
-
-pub use tensor_train::{
-    tt_cosine_similarity, tt_cosine_similarity_batch, tt_decompose, tt_decompose_batch,
-    tt_dot_product, tt_dot_product_batch, tt_euclidean_distance, tt_euclidean_distance_batch,
-    tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError, TTVector,
-};
-
+pub use rle::{rle_decode, rle_encode, RleEncoded};
+use serde::{Deserialize, Serialize};
 pub use streaming_tt::{
     convert_vectors_to_streaming_tt, read_streaming_tt_all, streaming_tt_similarity_search,
     StreamingTTHeader, StreamingTTReader, StreamingTTWriter, STREAMING_TT_MAGIC,
     STREAMING_TT_VERSION,
 };
-
-use serde::{Deserialize, Serialize};
+pub use tensor_train::{
+    tt_cosine_similarity, tt_cosine_similarity_batch, tt_decompose, tt_decompose_batch,
+    tt_dot_product, tt_dot_product_batch, tt_euclidean_distance, tt_euclidean_distance_batch,
+    tt_norm, tt_reconstruct, tt_scale, TTConfig, TTCore, TTError, TTVector,
+};
 
 /// Tensor compression mode for vectors and embeddings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

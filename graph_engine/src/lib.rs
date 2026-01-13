@@ -1,7 +1,10 @@
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -354,7 +357,8 @@ impl GraphEngine {
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
-                        // For outgoing, the neighbor is the 'to' node (unless it's us in undirected)
+                        // For outgoing, the neighbor is the 'to' node (unless it's us in
+                        // undirected)
                         if edge.from == node_id && edge.to != node_id {
                             neighbor_ids.insert(edge.to);
                         } else if edge.to == node_id && edge.from != node_id {

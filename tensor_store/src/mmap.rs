@@ -1,9 +1,13 @@
-use crate::TensorData;
+use std::{
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    io::{self, Seek, SeekFrom, Write},
+    path::Path,
+};
+
 use memmap2::{Mmap, MmapMut};
-use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
-use std::path::Path;
+
+use crate::TensorData;
 
 const MAGIC: &[u8; 4] = b"MMAP";
 const VERSION: u32 = 1;
@@ -479,9 +483,10 @@ impl MmapStoreMut {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{ScalarValue, TensorValue};
-    use std::fs;
 
     fn create_test_tensor(id: i64) -> TensorData {
         let mut tensor = TensorData::new();
@@ -896,5 +901,159 @@ mod tests {
         ));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_unicode_keys() {
+        let path = "/tmp/test_mmap_unicode.bin";
+        let _ = fs::remove_file(path);
+
+        {
+            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            builder.add("键_中文", &create_test_tensor(1)).unwrap();
+            builder.add("キー_日本語", &create_test_tensor(2)).unwrap();
+            builder.add("ключ_русский", &create_test_tensor(3)).unwrap();
+            builder.finish().unwrap();
+        }
+
+        {
+            let store = MmapStore::open(path).unwrap();
+            assert_eq!(store.len(), 3);
+            assert!(store.contains("键_中文"));
+            assert!(store.contains("キー_日本語"));
+            assert!(store.contains("ключ_русский"));
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_builder_empty() {
+        let path = "/tmp/test_mmap_builder_empty.bin";
+        let _ = fs::remove_file(path);
+
+        {
+            let builder = MmapStoreBuilder::create(path).unwrap();
+            builder.finish().unwrap();
+        }
+
+        {
+            let store = MmapStore::open(path).unwrap();
+            assert_eq!(store.len(), 0);
+            assert!(store.is_empty());
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_error_debug() {
+        let err = MmapError::NotFound("test_key".to_string());
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("NotFound"));
+        assert!(debug.contains("test_key"));
+
+        let err = MmapError::InvalidMagic;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("InvalidMagic"));
+
+        let err = MmapError::UnsupportedVersion(42);
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("UnsupportedVersion"));
+        assert!(debug.contains("42"));
+    }
+
+    #[test]
+    fn test_mmap_store_single_entry() {
+        let path = "/tmp/test_mmap_single.bin";
+        let _ = fs::remove_file(path);
+
+        {
+            let mut builder = MmapStoreBuilder::create(path).unwrap();
+            builder.add("only_key", &create_test_tensor(42)).unwrap();
+            builder.finish().unwrap();
+        }
+
+        {
+            let store = MmapStore::open(path).unwrap();
+            assert_eq!(store.len(), 1);
+            assert!(!store.is_empty());
+            let keys: Vec<_> = store.keys().collect();
+            assert_eq!(keys.len(), 1);
+            assert_eq!(keys[0], "only_key");
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_mut_get_nonexistent() {
+        let path = "/tmp/test_mmap_mut_get_nonexistent.bin";
+        let _ = fs::remove_file(path);
+
+        {
+            let mut store = MmapStoreMut::create(path, 1024).unwrap();
+            store.insert("key1", &create_test_tensor(1)).unwrap();
+
+            let result = store.get("nonexistent");
+            assert!(result.is_err());
+            assert!(matches!(result, Err(MmapError::NotFound(_))));
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_capacity_growth() {
+        let path = "/tmp/test_mmap_growth.bin";
+        let _ = fs::remove_file(path);
+
+        {
+            // Start with small capacity
+            let mut store = MmapStoreMut::create(path, 64).unwrap();
+            let initial_capacity = store.capacity();
+
+            // Add data that exceeds initial capacity
+            for i in 0..50 {
+                store
+                    .insert(&format!("key_{}", i), &create_test_tensor(i))
+                    .unwrap();
+            }
+
+            // Capacity should have grown
+            assert!(store.capacity() > initial_capacity);
+            assert_eq!(store.len(), 50);
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_entry_location_copy() {
+        let loc1 = EntryLocation {
+            data_offset: 100,
+            data_len: 50,
+        };
+        let loc2 = loc1; // Copy
+        assert_eq!(loc1.data_offset, loc2.data_offset);
+        assert_eq!(loc1.data_len, loc2.data_len);
+    }
+
+    #[test]
+    fn test_mmap_error_source() {
+        use std::error::Error;
+
+        // MmapError does not implement source(), so all variants return None
+        let io_err = MmapError::Io(io::Error::new(io::ErrorKind::NotFound, "not found"));
+        assert!(io_err.source().is_none());
+
+        let magic_err = MmapError::InvalidMagic;
+        assert!(magic_err.source().is_none());
+
+        let ser_err = MmapError::Serialization("test".to_string());
+        assert!(ser_err.source().is_none());
+
+        let not_found = MmapError::NotFound("key".to_string());
+        assert!(not_found.source().is_none());
     }
 }

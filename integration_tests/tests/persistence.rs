@@ -2,12 +2,11 @@
 //!
 //! Tests snapshot/restore functionality across all engines sharing a TensorStore.
 
+use std::{collections::HashMap, sync::Arc, thread};
+
 use graph_engine::GraphEngine;
 use integration_tests::{create_shared_engines, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, RelationalEngine, Schema, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::thread;
 use tempfile::tempdir;
 use tensor_compress::CompressionConfig;
 use tensor_store::TensorStore;

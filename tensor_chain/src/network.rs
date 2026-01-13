@@ -5,9 +5,13 @@
 //! - `MemoryTransport` for testing
 //! - Message types for Raft and sync protocols
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -15,8 +19,10 @@ use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
 use tokio::sync::mpsc;
 
-use crate::block::{Block, BlockHash, NodeId};
-use crate::error::{ChainError, Result};
+use crate::{
+    block::{Block, BlockHash, NodeId},
+    error::{ChainError, Result},
+};
 
 /// Configuration for a network peer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1623,9 +1629,9 @@ mod tests {
 
     #[test]
     fn test_tx_handler_prepare() {
-        use crate::block::Transaction;
-        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
+
+        use crate::{block::Transaction, distributed_tx::TxParticipant};
 
         let participant = Arc::new(TxParticipant::new());
         let handler = TxHandler::new(participant);
@@ -1655,9 +1661,9 @@ mod tests {
 
     #[test]
     fn test_tx_handler_commit() {
-        use crate::block::Transaction;
-        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
+
+        use crate::{block::Transaction, distributed_tx::TxParticipant};
 
         let participant = Arc::new(TxParticipant::new());
         let handler = TxHandler::new(participant.clone());
@@ -1695,9 +1701,9 @@ mod tests {
 
     #[test]
     fn test_tx_handler_abort() {
-        use crate::block::Transaction;
-        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
+
+        use crate::{block::Transaction, distributed_tx::TxParticipant};
 
         let participant = Arc::new(TxParticipant::new());
         let handler = TxHandler::new(participant.clone());
@@ -1739,8 +1745,9 @@ mod tests {
 
     #[test]
     fn test_tx_handler_ignores_non_2pc_messages() {
-        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
+
+        use crate::distributed_tx::TxParticipant;
 
         let participant = Arc::new(TxParticipant::new());
         let handler = TxHandler::new(participant);
@@ -1752,9 +1759,9 @@ mod tests {
 
     #[test]
     fn test_tx_handler_prepare_conflict() {
-        use crate::block::Transaction;
-        use crate::distributed_tx::TxParticipant;
         use std::sync::Arc;
+
+        use crate::{block::Transaction, distributed_tx::TxParticipant};
 
         let participant = Arc::new(TxParticipant::new());
         let handler = TxHandler::new(participant);

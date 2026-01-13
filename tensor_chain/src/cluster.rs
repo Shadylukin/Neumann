@@ -6,25 +6,24 @@
 //! - Raft consensus with persistence
 //! - State machine for block application
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
+use graph_engine::GraphEngine;
+use parking_lot::RwLock;
 use tensor_store::TensorStore;
 use tokio::sync::broadcast;
 
-use crate::block::NodeId;
-use crate::chain::Chain;
-use crate::error::{ChainError, Result};
-use crate::geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager};
-use crate::membership::{ClusterConfig, MembershipManager};
-use crate::network::{Message, QueryExecutor, QueryRequest, QueryResponse, Transport};
-use crate::raft::{RaftConfig, RaftNode};
-use crate::state_machine::TensorStateMachine;
-use crate::tcp::{TcpTransport, TcpTransportConfig};
-
-use parking_lot::RwLock;
-
-use graph_engine::GraphEngine;
+use crate::{
+    block::NodeId,
+    chain::Chain,
+    error::{ChainError, Result},
+    geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager},
+    membership::{ClusterConfig, MembershipManager},
+    network::{Message, QueryExecutor, QueryRequest, QueryResponse, Transport},
+    raft::{RaftConfig, RaftNode},
+    state_machine::TensorStateMachine,
+    tcp::{TcpTransport, TcpTransportConfig},
+};
 
 /// Configuration for a local cluster node.
 #[derive(Debug, Clone)]
@@ -442,8 +441,9 @@ impl ClusterOrchestrator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
 
     fn test_addr(port: u16) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)

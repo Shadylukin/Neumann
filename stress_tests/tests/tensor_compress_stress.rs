@@ -1,10 +1,16 @@
 //! Tensor compression stress tests.
 
-use std::io::Cursor;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::Instant,
+};
+
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tensor_compress::{
     format::{CompressedEntry, CompressedScalar, CompressedSnapshot, CompressedValue, Header},
@@ -13,8 +19,6 @@ use tensor_compress::{
     tt_decompose, tt_decompose_batch, tt_reconstruct, CompressionConfig, StreamingTTReader,
     StreamingTTWriter, TTConfig,
 };
-
-use std::collections::HashMap;
 
 fn make_test_entry(key: &str, value: i64) -> CompressedEntry {
     CompressedEntry {

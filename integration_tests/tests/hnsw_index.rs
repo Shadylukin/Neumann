@@ -368,8 +368,7 @@ fn test_hnsw_index_rebuild() {
 
 #[test]
 fn test_hnsw_concurrent_search() {
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let vector = Arc::new(VectorEngine::new());
 

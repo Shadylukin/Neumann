@@ -4,9 +4,9 @@
 //! 1. evaluate() and evaluate_tensor() produce identical results
 //! 2. The TensorData-direct evaluation path is faster than Row conversion
 
+use std::{collections::HashMap, time::Instant};
+
 use relational_engine::{Column, ColumnType, Condition, RelationalEngine, Row, Schema, Value};
-use std::collections::HashMap;
-use std::time::Instant;
 use tensor_store::{ScalarValue, TensorData, TensorValue};
 
 fn create_test_row(id: u64, name: &str, age: i64, score: f64, active: bool) -> Row {

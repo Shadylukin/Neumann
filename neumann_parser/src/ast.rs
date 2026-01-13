@@ -6,8 +6,9 @@
 //! - Vector commands (EMBED, SIMILAR)
 //! - Expressions (binary, unary, literals, function calls)
 
-use crate::span::Span;
 use std::fmt;
+
+use crate::span::Span;
 
 /// A complete statement.
 #[derive(Clone, Debug, PartialEq)]

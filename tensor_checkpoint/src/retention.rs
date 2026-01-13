@@ -1,6 +1,6 @@
-use crate::error::Result;
-use crate::storage::CheckpointStorage;
 use tensor_blob::BlobStore;
+
+use crate::{error::Result, storage::CheckpointStorage};
 
 pub struct RetentionManager {
     max_checkpoints: usize,
@@ -43,10 +43,11 @@ impl RetentionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::state::{CheckpointMetadata, CheckpointState};
     use tensor_blob::BlobConfig;
     use tensor_store::TensorStore;
+
+    use super::*;
+    use crate::state::{CheckpointMetadata, CheckpointState};
 
     async fn setup() -> BlobStore {
         let store = TensorStore::new();

@@ -21,9 +21,11 @@
 //!                       full quantization
 //! ```
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};

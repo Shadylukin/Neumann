@@ -4,9 +4,12 @@
 
 #![allow(clippy::missing_panics_doc)]
 
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue};
 
 static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(0);

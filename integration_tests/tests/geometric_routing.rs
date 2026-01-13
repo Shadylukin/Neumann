@@ -3,6 +3,7 @@
 //! Tests the geometric membership manager and geometric routing features.
 
 use std::sync::Arc;
+
 use tensor_chain::{
     geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager},
     membership::{ClusterConfig, LocalNodeConfig, MembershipManager},

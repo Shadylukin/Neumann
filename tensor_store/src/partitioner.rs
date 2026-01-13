@@ -142,4 +142,67 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
+
+    #[test]
+    fn test_partition_result_new_with_string() {
+        let result = PartitionResult::new(String::from("node1"), 100, false);
+        assert_eq!(result.primary, "node1");
+        assert_eq!(result.partition, 100);
+        assert!(!result.is_local);
+    }
+
+    #[test]
+    fn test_partition_result_local_with_string() {
+        let result = PartitionResult::local(String::from("local_node"), 0);
+        assert_eq!(result.primary, "local_node");
+        assert_eq!(result.partition, 0);
+        assert!(result.is_local);
+    }
+
+    #[test]
+    fn test_partition_result_remote_with_string() {
+        let result = PartitionResult::remote(String::from("remote_node"), u64::MAX);
+        assert_eq!(result.primary, "remote_node");
+        assert_eq!(result.partition, u64::MAX);
+        assert!(!result.is_local);
+    }
+
+    #[test]
+    fn test_partition_result_partition_id_zero() {
+        let result = PartitionResult::local("node", 0);
+        assert_eq!(result.partition, 0);
+    }
+
+    #[test]
+    fn test_partition_result_partition_id_max() {
+        let result = PartitionResult::local("node", u64::MAX);
+        assert_eq!(result.partition, u64::MAX);
+    }
+
+    #[test]
+    fn test_partition_result_empty_node_id() {
+        let result = PartitionResult::local("", 42);
+        assert_eq!(result.primary, "");
+        assert!(result.is_local);
+    }
+
+    #[test]
+    fn test_partition_result_unicode_node_id() {
+        let result = PartitionResult::local("节点1", 42);
+        assert_eq!(result.primary, "节点1");
+    }
+
+    #[test]
+    fn test_partition_result_inequality_partition() {
+        let a = PartitionResult::local("node1", 42);
+        let b = PartitionResult::local("node1", 43);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_partition_result_inequality_is_local() {
+        let a = PartitionResult::new("node1", 42, true);
+        let b = PartitionResult::new("node1", 42, false);
+        assert_ne!(a, b);
+    }
 }

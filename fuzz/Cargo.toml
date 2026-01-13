@@ -310,3 +310,33 @@ path = "fuzz_targets/tt_serialization.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 12: Tensor Store advanced targets
+
+[[bin]]
+name = "slab_router_ops"
+path = "fuzz_targets/slab_router_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_roundtrip"
+path = "fuzz_targets/snapshot_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hnsw_search"
+path = "fuzz_targets/hnsw_search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "distance_metrics"
+path = "fuzz_targets/distance_metrics.rs"
+test = false
+doc = false
+bench = false

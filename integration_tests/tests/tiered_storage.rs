@@ -2,10 +2,12 @@
 //!
 //! Tests hot/cold data migration and access pattern optimization.
 
-use std::thread;
-use std::time::Duration;
-use tensor_store::tiered::{TieredConfig, TieredStore};
-use tensor_store::{ScalarValue, TensorData, TensorValue};
+use std::{thread, time::Duration};
+
+use tensor_store::{
+    tiered::{TieredConfig, TieredStore},
+    ScalarValue, TensorData, TensorValue,
+};
 
 fn create_test_tensor(id: i64) -> TensorData {
     let mut tensor = TensorData::new();
@@ -445,8 +447,7 @@ fn test_into_tensor_store() {
 
 #[test]
 fn test_concurrent_tiered_access() {
-    use std::sync::Arc;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     let store = Arc::new(Mutex::new(TieredStore::hot_only(1)));
 

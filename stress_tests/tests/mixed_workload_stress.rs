@@ -1,12 +1,17 @@
 //! Mixed workload stress tests across all engines.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use graph_engine::{GraphEngine, PropertyValue};
 use relational_engine::{Column, ColumnType, RelationalEngine, Schema, Value};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;

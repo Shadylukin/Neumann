@@ -6,20 +6,26 @@
 //! - Failure detection with configurable thresholds
 //! - Membership view with generation tracking
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
 use tokio::sync::broadcast;
 
-use crate::block::NodeId;
-use crate::error::Result;
-use crate::network::{Message, Transport};
+use crate::{
+    block::NodeId,
+    error::Result,
+    network::{Message, Transport},
+};
 
 /// Health state of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -552,9 +558,10 @@ impl MembershipManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
     use crate::error::ChainError;
-    use std::sync::atomic::AtomicUsize;
 
     // Mock transport for testing
     struct MockTransport {

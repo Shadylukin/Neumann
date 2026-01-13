@@ -8,19 +8,25 @@
 //! Each transaction creates an isolated workspace where operations
 //! are tracked as a delta from the starting state.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tensor_store::TensorStore;
 
-use crate::block::Transaction as ChainTransaction;
-use crate::consensus::DeltaVector;
-use crate::embedding::EmbeddingState;
-use crate::error::{ChainError, Result};
+use crate::{
+    block::Transaction as ChainTransaction,
+    consensus::DeltaVector,
+    embedding::EmbeddingState,
+    error::{ChainError, Result},
+};
 
 /// Default embedding dimension for state snapshots.
 pub const DEFAULT_EMBEDDING_DIM: usize = 128;

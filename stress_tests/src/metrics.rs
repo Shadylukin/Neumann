@@ -1,8 +1,11 @@
 //! Latency and throughput metrics for stress tests.
 
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
+
 use hdrhistogram::Histogram;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 
 /// Latency histogram with p50/p99/p999 percentiles.
 pub struct LatencyHistogram {

@@ -13,11 +13,15 @@
 //! - Stable performance without resize stalls
 //! - O(log n) operations for all access patterns
 
-use crate::TensorData;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::TensorData;
 
 /// BTreeMap-based metadata storage with prefix scanning support.
 ///
@@ -330,7 +334,7 @@ fn next_prefix(prefix: &str) -> Option<String> {
 
     // Find the last byte that can be incremented
     while let Some(last) = bytes.pop() {
-        if last < 0xFF {
+        if last < 0xff {
             bytes.push(last + 1);
             return String::from_utf8(bytes).ok();
         }
@@ -368,11 +372,10 @@ fn estimate_tensor_data_bytes(data: &TensorData) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, thread, time::Instant};
+
     use super::*;
     use crate::{ScalarValue, TensorValue};
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Instant;
 
     fn make_tensor_data(id: i64) -> TensorData {
         let mut data = TensorData::new();

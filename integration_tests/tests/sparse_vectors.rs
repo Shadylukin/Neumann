@@ -276,8 +276,7 @@ fn test_sparse_vs_dense_dot_product_equivalence() {
 
 #[test]
 fn test_sparse_vector_concurrent_operations() {
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let store = Arc::new(create_store());
     let mut handles = vec![];

@@ -2,9 +2,10 @@
 //!
 //! Tests hash index and B-tree index functionality.
 
+use std::collections::HashMap;
+
 use integration_tests::create_shared_engines;
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
-use std::collections::HashMap;
 
 #[test]
 fn test_create_hash_index() {

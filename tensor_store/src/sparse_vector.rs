@@ -21,10 +21,10 @@ use serde::{Deserialize, Serialize};
 /// let dense = vec![0.0, 1.5, 0.0, 0.0, 2.3, 0.0];
 /// let sparse = SparseVector::from_dense(&dense);
 ///
-/// assert_eq!(sparse.dimension(), 6);  // Shell size
-/// assert_eq!(sparse.nnz(), 2);        // Only 2 values stored
-/// assert_eq!(sparse.get(1), 1.5);     // Stored value
-/// assert_eq!(sparse.get(0), 0.0);     // Contextual zero (in shell, not stored)
+/// assert_eq!(sparse.dimension(), 6); // Shell size
+/// assert_eq!(sparse.nnz(), 2); // Only 2 values stored
+/// assert_eq!(sparse.get(1), 1.5); // Stored value
+/// assert_eq!(sparse.get(0), 0.0); // Contextual zero (in shell, not stored)
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SparseVector {
@@ -146,7 +146,6 @@ impl SparseVector {
         }
     }
 
-    /// Check if a position is within the shell boundary.
     #[inline]
     pub fn in_bounds(&self, index: usize) -> bool {
         index < self.dimension
@@ -167,7 +166,6 @@ impl SparseVector {
         }
     }
 
-    /// Check if a position has a stored (non-zero) value.
     #[inline]
     pub fn has_value(&self, index: usize) -> bool {
         self.positions.binary_search(&(index as u32)).is_ok()

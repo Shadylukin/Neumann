@@ -6,9 +6,11 @@
 //! - Raft leader election
 //! - Query executor registration
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use parking_lot::RwLock;
 use query_router::QueryRouter;

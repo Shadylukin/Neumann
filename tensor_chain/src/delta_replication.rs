@@ -3,17 +3,23 @@
 //! Uses archetype-based delta encoding to reduce replication bandwidth by 4-6x.
 //! Entities are encoded as (archetype_id + sparse_delta) and batched for transfer.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tensor_store::ArchetypeRegistry;
 
-use crate::block::NodeId;
-use crate::error::{ChainError, Result};
-use crate::network::{Message, Transport};
+use crate::{
+    block::NodeId,
+    error::{ChainError, Result},
+    network::{Message, Transport},
+};
 
 /// A delta-encoded update for replication.
 #[derive(Debug, Clone, Serialize, Deserialize)]

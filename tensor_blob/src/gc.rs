@@ -1,16 +1,18 @@
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use tensor_store::TensorStore;
-use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
-use tokio::time::interval;
+use tokio::{sync::broadcast, task::JoinHandle, time::interval};
 
-use crate::config::GcConfig;
-use crate::error::Result;
-use crate::metadata::GcStats;
-use crate::streaming::{get_int, get_pointers};
+use crate::{
+    config::GcConfig,
+    error::Result,
+    metadata::GcStats,
+    streaming::{get_int, get_pointers},
+};
 
 /// Background garbage collector for orphaned chunks.
 pub struct GarbageCollector {
@@ -186,10 +188,12 @@ fn current_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tensor_store::{ScalarValue, TensorData, TensorValue};
+
     use super::*;
     use crate::chunker::Chunk;
-    use std::time::Duration;
-    use tensor_store::{ScalarValue, TensorData, TensorValue};
 
     fn create_test_store() -> TensorStore {
         TensorStore::new()

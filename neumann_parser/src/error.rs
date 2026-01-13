@@ -5,9 +5,12 @@
 //! - Error context with source snippets
 //! - Helpful suggestions and expected tokens
 
-use crate::span::{get_line, line_col, Span};
-use crate::token::TokenKind;
 use std::fmt;
+
+use crate::{
+    span::{get_line, line_col, Span},
+    token::TokenKind,
+};
 
 /// Result type for parser operations.
 pub type ParseResult<T> = Result<T, ParseError>;

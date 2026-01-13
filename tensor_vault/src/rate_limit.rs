@@ -6,9 +6,12 @@
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::unchecked_time_subtraction)]
 
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+
 use dashmap::DashMap;
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
 
 /// Configuration for rate limiting.
 #[derive(Debug, Clone)]

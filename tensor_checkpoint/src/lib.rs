@@ -17,6 +17,8 @@ mod retention;
 mod state;
 mod storage;
 
+use std::sync::Arc;
+
 pub use error::{CheckpointError, Result};
 pub use preview::{format_confirmation_prompt, format_warning, PreviewGenerator};
 pub use retention::RetentionManager;
@@ -25,8 +27,6 @@ pub use state::{
     GraphMeta, OperationPreview, RelationalMeta, VectorMeta,
 };
 pub use storage::CheckpointStorage;
-
-use std::sync::Arc;
 use tensor_blob::BlobStore;
 use tensor_store::TensorStore;
 use tokio::sync::Mutex;
@@ -244,12 +244,10 @@ impl CheckpointManager {
         Err(CheckpointError::NotFound(id_or_name.to_string()))
     }
 
-    /// Check if auto-checkpoint is enabled.
     pub fn auto_checkpoint_enabled(&self) -> bool {
         self.config.auto_checkpoint
     }
 
-    /// Check if interactive confirmation is enabled.
     pub fn interactive_confirm_enabled(&self) -> bool {
         self.config.interactive_confirm
     }
@@ -285,9 +283,10 @@ impl CheckpointManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tensor_blob::BlobConfig;
     use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+    use super::*;
 
     fn make_tensor(key: &str, value: &str) -> TensorData {
         let mut t = TensorData::new();

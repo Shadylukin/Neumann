@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+
 use tiktoken_rs::CoreBPE;
 
 static CL100K_ENCODER: OnceLock<Option<CoreBPE>> = OnceLock::new();

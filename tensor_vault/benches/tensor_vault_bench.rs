@@ -1,9 +1,10 @@
 //! Benchmarks for tensor_vault operations.
 
+use std::sync::Arc;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use graph_engine::GraphEngine;
 use peak_alloc::PeakAlloc;
-use std::sync::Arc;
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig};
 

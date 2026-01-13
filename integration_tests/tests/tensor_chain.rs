@@ -332,6 +332,7 @@ fn test_codebook_manager_accessor() {
 #[test]
 fn test_transition_validator_with_codebook() {
     use std::sync::Arc;
+
     use tensor_chain::{GlobalCodebook, TransitionValidator, ValidationConfig};
 
     // Create codebook with single centroid
@@ -357,11 +358,12 @@ fn test_transition_validator_with_codebook() {
 
 #[test]
 fn test_state_machine_transaction_persistence() {
-    use graph_engine::GraphEngine;
     use std::sync::Arc;
-    use tensor_chain::network::MemoryTransport;
+
+    use graph_engine::GraphEngine;
     use tensor_chain::{
-        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
+        TensorStateMachine, Transaction,
     };
     use tensor_store::{SparseVector, TensorStore, TensorValue};
 
@@ -420,11 +422,12 @@ fn test_state_machine_transaction_persistence() {
 
 #[test]
 fn test_state_machine_embed_transaction_persistence() {
-    use graph_engine::GraphEngine;
     use std::sync::Arc;
-    use tensor_chain::network::MemoryTransport;
+
+    use graph_engine::GraphEngine;
     use tensor_chain::{
-        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
+        TensorStateMachine, Transaction,
     };
     use tensor_store::{SparseVector, TensorStore, TensorValue};
 
@@ -484,11 +487,12 @@ fn test_state_machine_embed_transaction_persistence() {
 
 #[test]
 fn test_state_machine_node_create_persistence() {
-    use graph_engine::GraphEngine;
     use std::sync::Arc;
-    use tensor_chain::network::MemoryTransport;
+
+    use graph_engine::GraphEngine;
     use tensor_chain::{
-        Block, BlockHeader, Chain, RaftConfig, RaftNode, TensorStateMachine, Transaction,
+        network::MemoryTransport, Block, BlockHeader, Chain, RaftConfig, RaftNode,
+        TensorStateMachine, Transaction,
     };
     use tensor_store::{ScalarValue, SparseVector, TensorStore, TensorValue};
 

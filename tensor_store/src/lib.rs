@@ -1,11 +1,16 @@
+use std::{
+    collections::HashMap,
+    fs::File,
+    hash::{Hash, Hasher},
+    io::{BufReader, BufWriter},
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs::File;
-use std::hash::{Hash, Hasher};
-use std::io::{BufReader, BufWriter};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 pub mod blob_log;
 pub mod cache_ring;
@@ -187,12 +192,10 @@ impl BloomFilter {
         (hasher.finish() as usize) % self.num_bits
     }
 
-    /// Get the number of bits in the filter.
     pub fn num_bits(&self) -> usize {
         self.num_bits
     }
 
-    /// Get the number of hash functions used.
     pub fn num_hashes(&self) -> usize {
         self.num_hashes
     }
@@ -297,7 +300,6 @@ impl TensorValue {
         }
     }
 
-    /// Get the dimension of the vector (if this is a vector type).
     pub fn dimension(&self) -> Option<usize> {
         match self {
             TensorValue::Vector(v) => Some(v.len()),
@@ -356,17 +358,14 @@ impl TensorValue {
         }
     }
 
-    /// Check if this is a vector type (Vector or Sparse).
     pub fn is_vector(&self) -> bool {
         matches!(self, TensorValue::Vector(_) | TensorValue::Sparse(_))
     }
 
-    /// Check if this is a sparse vector.
     pub fn is_sparse(&self) -> bool {
         matches!(self, TensorValue::Sparse(_))
     }
 
-    /// Get memory usage in bytes (approximate).
     pub fn memory_bytes(&self) -> usize {
         match self {
             TensorValue::Scalar(s) => match s {
@@ -726,12 +725,10 @@ impl TensorStore {
         hasher.finish() as usize % Self::DEFAULT_SHARD_COUNT
     }
 
-    /// Check if the store has a Bloom filter enabled.
     pub fn has_bloom_filter(&self) -> bool {
         self.bloom_filter.is_some()
     }
 
-    /// Check if the store has instrumentation enabled.
     pub fn has_instrumentation(&self) -> bool {
         self.instrumentation.is_some()
     }
@@ -1321,9 +1318,9 @@ impl Default for EntityStore {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, thread};
+
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
 
     // TensorData tests
 
@@ -1747,7 +1744,7 @@ mod tests {
     #[test]
     fn tensor_data_stores_bytes() {
         let mut tensor = TensorData::new();
-        let data = vec![0x00, 0xFF, 0x42];
+        let data = vec![0x00, 0xff, 0x42];
         tensor.set(
             "binary",
             TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
@@ -2425,7 +2422,7 @@ mod tests {
         );
         tensor.set(
             "bytes",
-            TensorValue::Scalar(ScalarValue::Bytes(vec![0xFF, 0x00, 0xAB])),
+            TensorValue::Scalar(ScalarValue::Bytes(vec![0xff, 0x00, 0xab])),
         );
         store.put("test", tensor).unwrap();
 
@@ -2453,7 +2450,7 @@ mod tests {
         assert_eq!(
             t.get("bytes"),
             Some(&TensorValue::Scalar(ScalarValue::Bytes(vec![
-                0xFF, 0x00, 0xAB
+                0xff, 0x00, 0xab
             ])))
         );
 
@@ -3028,8 +3025,7 @@ mod tests {
 
     #[test]
     fn instrumentation_cold_shards_after_time() {
-        use std::thread;
-        use std::time::Duration;
+        use std::{thread, time::Duration};
 
         let store = TensorStore::with_instrumentation(1);
 

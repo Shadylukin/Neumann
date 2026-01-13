@@ -7,14 +7,15 @@
 //! - Transitions must have bounded magnitude
 //! - Domain-specific validation via local codebooks
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
 use tensor_store::SparseVector;
 
-use crate::codebook::{CodebookConfig, GlobalCodebook, LocalCodebook};
-use crate::error::{ChainError, Result};
+use crate::{
+    codebook::{CodebookConfig, GlobalCodebook, LocalCodebook},
+    error::{ChainError, Result},
+};
 
 /// Validation configuration.
 #[derive(Debug, Clone)]

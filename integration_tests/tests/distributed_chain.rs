@@ -2,9 +2,13 @@
 //!
 //! Tests TCP transport, membership management, and multi-node operations.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use parking_lot::RwLock;
 use tensor_chain::{
