@@ -15,6 +15,7 @@ use std::{
 };
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
 
 use crate::{
@@ -23,7 +24,7 @@ use crate::{
     membership::MembershipManager,
     network::{
         AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
-        Transport,
+        SnapshotRequest, SnapshotResponse, Transport,
     },
     validation::FastPathValidator,
 };
@@ -58,6 +59,12 @@ pub struct RaftConfig {
     /// Minimum similarity for geometric tie-breaking to apply (0.0-1.0).
     /// Below this threshold, vote randomly among equal candidates.
     pub geometric_tiebreak_threshold: f32,
+    /// Number of log entries before triggering automatic snapshot.
+    pub snapshot_threshold: usize,
+    /// Number of log entries to keep after snapshot (for followers catching up).
+    pub snapshot_trailing_logs: usize,
+    /// Chunk size in bytes for snapshot transfer.
+    pub snapshot_chunk_size: u64,
 }
 
 impl Default for RaftConfig {
@@ -70,6 +77,9 @@ impl Default for RaftConfig {
             quorum_size: None,
             enable_geometric_tiebreak: true,
             geometric_tiebreak_threshold: 0.3,
+            snapshot_threshold: 10_000,
+            snapshot_trailing_logs: 100,
+            snapshot_chunk_size: 1024 * 1024, // 1MB
         }
     }
 }
@@ -150,6 +160,102 @@ impl FastPathStats {
         self.fast_path_accepted.load(Ordering::Relaxed)
             + self.fast_path_rejected.load(Ordering::Relaxed)
             + self.full_validation_required.load(Ordering::Relaxed)
+    }
+}
+
+/// Metadata describing a Raft snapshot.
+///
+/// Snapshots capture the state machine state at a particular log index,
+/// allowing log truncation and faster catch-up for lagging followers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotMetadata {
+    /// Log index included in this snapshot (all entries up to and including).
+    pub last_included_index: u64,
+    /// Term of the entry at last_included_index.
+    pub last_included_term: u64,
+    /// Block hash at the snapshot height.
+    pub snapshot_hash: [u8; 32],
+    /// Cluster configuration at snapshot time.
+    pub config: Vec<NodeId>,
+    /// Unix timestamp when snapshot was created.
+    pub created_at: u64,
+    /// Snapshot data size in bytes.
+    pub size: u64,
+}
+
+impl SnapshotMetadata {
+    /// Create new snapshot metadata.
+    pub fn new(
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_hash: [u8; 32],
+        config: Vec<NodeId>,
+        size: u64,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        Self {
+            last_included_index,
+            last_included_term,
+            snapshot_hash,
+            config,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            size,
+        }
+    }
+}
+
+/// Internal snapshot state tracking.
+struct SnapshotState {
+    /// Current snapshot metadata (if any).
+    last_snapshot: Option<SnapshotMetadata>,
+    /// Whether a snapshot operation is in progress.
+    in_progress: bool,
+    /// Pending snapshot data during chunked transfer.
+    pending_data: Vec<u8>,
+    /// Expected total size for pending snapshot.
+    pending_total_size: u64,
+}
+
+impl Default for SnapshotState {
+    fn default() -> Self {
+        Self {
+            last_snapshot: None,
+            in_progress: false,
+            pending_data: Vec::new(),
+            pending_total_size: 0,
+        }
+    }
+}
+
+impl SnapshotState {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn start_receive(&mut self, total_size: u64) {
+        self.in_progress = true;
+        self.pending_data.clear();
+        self.pending_data.reserve(total_size as usize);
+        self.pending_total_size = total_size;
+    }
+
+    fn append_chunk(&mut self, data: &[u8]) {
+        self.pending_data.extend_from_slice(data);
+    }
+
+    fn finish_receive(&mut self) -> Vec<u8> {
+        self.in_progress = false;
+        self.pending_total_size = 0;
+        std::mem::take(&mut self.pending_data)
+    }
+
+    fn cancel_receive(&mut self) {
+        self.in_progress = false;
+        self.pending_data.clear();
+        self.pending_total_size = 0;
     }
 }
 
@@ -265,6 +371,8 @@ pub struct RaftNode {
     fast_path_validator: FastPathValidator,
     /// Optional membership manager for health-aware voting.
     membership: Option<Arc<MembershipManager>>,
+    /// Snapshot state for log compaction.
+    snapshot_state: RwLock<SnapshotState>,
 }
 
 impl RaftNode {
@@ -299,6 +407,7 @@ impl RaftNode {
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
             config,
             membership: None,
+            snapshot_state: RwLock::new(SnapshotState::new()),
         }
     }
 
@@ -452,6 +561,7 @@ impl RaftNode {
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
             config,
             membership: None,
+            snapshot_state: RwLock::new(SnapshotState::new()),
         }
     }
 
@@ -589,6 +699,11 @@ impl RaftNode {
             Message::AppendEntries(ae) => self.handle_append_entries(from, ae),
             Message::AppendEntriesResponse(aer) => {
                 self.handle_append_entries_response(from, aer);
+                None
+            },
+            Message::SnapshotRequest(sr) => self.handle_snapshot_request(from, sr),
+            Message::SnapshotResponse(sr) => {
+                self.handle_snapshot_response(from, sr);
                 None
             },
             Message::Ping { term } => Some(Message::Pong { term: *term }),
@@ -835,6 +950,86 @@ impl RaftNode {
         }
     }
 
+    /// Handle SnapshotRequest RPC from a follower requesting snapshot chunks.
+    fn handle_snapshot_request(&self, _from: &NodeId, sr: &SnapshotRequest) -> Option<Message> {
+        // Only leaders should respond to snapshot requests
+        if *self.state.read() != RaftState::Leader {
+            return None;
+        }
+
+        // Get current snapshot metadata and data
+        let snapshot_meta = match self.get_snapshot_metadata() {
+            Some(meta) => meta,
+            None => return None, // No snapshot available
+        };
+
+        // Create snapshot data
+        let (_, data) = match self.create_snapshot() {
+            Ok(result) => result,
+            Err(_) => return None,
+        };
+
+        // Calculate the chunk to send
+        let offset = sr.offset;
+        let chunk_size = sr.chunk_size.min(self.config.snapshot_chunk_size);
+        let total_size = data.len() as u64;
+
+        if offset >= total_size {
+            return None; // Invalid offset
+        }
+
+        let end = ((offset + chunk_size) as usize).min(data.len());
+        let chunk_data = data[offset as usize..end].to_vec();
+        let is_last = end >= data.len();
+
+        Some(Message::SnapshotResponse(SnapshotResponse {
+            snapshot_height: snapshot_meta.last_included_index,
+            snapshot_hash: snapshot_meta.snapshot_hash,
+            data: chunk_data,
+            offset,
+            total_size,
+            is_last,
+        }))
+    }
+
+    /// Handle SnapshotResponse RPC when receiving snapshot chunks.
+    fn handle_snapshot_response(&self, _from: &NodeId, sr: &SnapshotResponse) {
+        // Only followers should process snapshot responses
+        if *self.state.read() != RaftState::Follower {
+            return;
+        }
+
+        // Receive the chunk
+        let complete =
+            match self.receive_snapshot_chunk(sr.offset, &sr.data, sr.total_size, sr.is_last) {
+                Ok(complete) => complete,
+                Err(_) => return, // Error handling chunk
+            };
+
+        if complete {
+            // Get the accumulated data
+            let data = self.take_pending_snapshot_data();
+
+            // Find the term for this snapshot - it should be in our log or snapshot state
+            let term = self
+                .get_snapshot_metadata()
+                .map(|m| m.last_included_term)
+                .unwrap_or(1);
+
+            // Create metadata for installation
+            let metadata = SnapshotMetadata::new(
+                sr.snapshot_height,
+                term,
+                sr.snapshot_hash,
+                self.peers.read().clone(),
+                sr.total_size,
+            );
+
+            // Install the snapshot
+            let _ = self.install_snapshot(metadata, &data);
+        }
+    }
+
     /// Start an election.
     pub fn start_election(&self) {
         let mut persistent = self.persistent.write();
@@ -980,6 +1175,270 @@ impl RaftNode {
         if up_to <= volatile.commit_index {
             volatile.last_applied = up_to;
         }
+    }
+
+    // ========== Snapshot / Log Compaction Methods ==========
+
+    /// Check if log should be compacted based on configured threshold.
+    pub fn should_compact(&self) -> bool {
+        let persistent = self.persistent.read();
+        let snapshot_state = self.snapshot_state.read();
+
+        // Only compact if log exceeds threshold and we have finalized entries
+        let log_len = persistent.log.len();
+        let finalized = self.finalized_height.load(Ordering::SeqCst);
+
+        if log_len < self.config.snapshot_threshold {
+            return false;
+        }
+
+        // Check if we have entries to compact (finalized entries)
+        match &snapshot_state.last_snapshot {
+            Some(meta) => finalized > meta.last_included_index,
+            None => finalized > 0,
+        }
+    }
+
+    /// Create a snapshot at the current finalized height.
+    ///
+    /// Returns snapshot metadata and serialized state data.
+    /// The caller is responsible for persisting the snapshot data.
+    pub fn create_snapshot(&self) -> Result<(SnapshotMetadata, Vec<u8>)> {
+        let finalized = self.finalized_height.load(Ordering::SeqCst);
+        if finalized == 0 {
+            return Err(ChainError::SnapshotError(
+                "no finalized entries to snapshot".into(),
+            ));
+        }
+
+        let persistent = self.persistent.read();
+
+        // Find the log entry at finalized height
+        let snapshot_idx = finalized.saturating_sub(1) as usize;
+        if snapshot_idx >= persistent.log.len() {
+            return Err(ChainError::SnapshotError(format!(
+                "finalized height {} exceeds log length {}",
+                finalized,
+                persistent.log.len()
+            )));
+        }
+
+        let entry = &persistent.log[snapshot_idx];
+
+        // Serialize the state up to finalized height
+        // In a full implementation, this would serialize the state machine state
+        // For now, we serialize the log entries themselves as the "state"
+        let state_entries: Vec<LogEntry> = persistent.log[..=snapshot_idx].to_vec();
+        let data = bincode::serialize(&state_entries)?;
+
+        // Compute snapshot hash from the block hash at finalized height
+        let snapshot_hash = entry.block.hash();
+
+        // Get current cluster config
+        let config = self.peers.read().clone();
+
+        let metadata = SnapshotMetadata::new(
+            entry.index,
+            entry.term,
+            snapshot_hash,
+            config,
+            data.len() as u64,
+        );
+
+        Ok((metadata, data))
+    }
+
+    /// Truncate log entries that are covered by a snapshot.
+    ///
+    /// Keeps `snapshot_trailing_logs` entries after the snapshot point
+    /// to help followers catch up without needing a full snapshot transfer.
+    pub fn truncate_log(&self, snapshot_meta: &SnapshotMetadata) -> Result<()> {
+        let mut persistent = self.persistent.write();
+        let mut snapshot_state = self.snapshot_state.write();
+
+        let snapshot_idx = snapshot_meta.last_included_index;
+        let trailing = self.config.snapshot_trailing_logs;
+
+        // Find the index in our log array
+        // Log entries are 1-indexed, array is 0-indexed
+        let cut_point = if snapshot_idx as usize > trailing {
+            snapshot_idx as usize - trailing
+        } else {
+            0
+        };
+
+        if cut_point > 0 && cut_point < persistent.log.len() {
+            // Remove entries before the cut point
+            persistent.log.drain(..cut_point);
+        }
+
+        // Update snapshot state
+        snapshot_state.last_snapshot = Some(snapshot_meta.clone());
+
+        Ok(())
+    }
+
+    /// Get current snapshot metadata if available.
+    pub fn get_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
+        self.snapshot_state.read().last_snapshot.clone()
+    }
+
+    /// Install a snapshot received from the leader.
+    ///
+    /// This replaces the current log with entries from the snapshot.
+    pub fn install_snapshot(&self, metadata: SnapshotMetadata, data: &[u8]) -> Result<()> {
+        // Deserialize the log entries from snapshot data
+        let entries: Vec<LogEntry> = bincode::deserialize(data).map_err(|e| {
+            ChainError::SnapshotError(format!("failed to deserialize snapshot: {}", e))
+        })?;
+
+        // Validate the snapshot
+        if entries.is_empty() {
+            return Err(ChainError::SnapshotError(
+                "snapshot contains no entries".into(),
+            ));
+        }
+
+        let last_entry = entries.last().unwrap();
+        if last_entry.index != metadata.last_included_index {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot index mismatch: expected {}, got {}",
+                metadata.last_included_index, last_entry.index
+            )));
+        }
+        if last_entry.term != metadata.last_included_term {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot term mismatch: expected {}, got {}",
+                metadata.last_included_term, last_entry.term
+            )));
+        }
+
+        // Install the snapshot
+        {
+            let mut persistent = self.persistent.write();
+            let mut volatile = self.volatile.write();
+            let mut snapshot_state = self.snapshot_state.write();
+
+            // Replace log with entries from snapshot
+            persistent.log = entries;
+
+            // Update term if snapshot has higher term
+            if metadata.last_included_term > persistent.current_term {
+                persistent.current_term = metadata.last_included_term;
+                persistent.voted_for = None;
+            }
+
+            // Update commit/apply indices
+            volatile.commit_index = metadata.last_included_index;
+            volatile.last_applied = metadata.last_included_index;
+
+            // Update snapshot metadata
+            snapshot_state.last_snapshot = Some(metadata.clone());
+            snapshot_state.cancel_receive(); // Clear any pending transfer
+        }
+
+        // Update finalized height
+        self.finalized_height
+            .store(metadata.last_included_index, Ordering::SeqCst);
+
+        // Update peers from snapshot config
+        {
+            let mut peers = self.peers.write();
+            *peers = metadata.config;
+        }
+
+        Ok(())
+    }
+
+    /// Receive a snapshot chunk during transfer.
+    ///
+    /// Call this for each chunk received. Returns true when snapshot is complete.
+    pub fn receive_snapshot_chunk(
+        &self,
+        offset: u64,
+        data: &[u8],
+        total_size: u64,
+        is_last: bool,
+    ) -> Result<bool> {
+        let mut snapshot_state = self.snapshot_state.write();
+
+        // Start new transfer if offset is 0
+        if offset == 0 {
+            snapshot_state.start_receive(total_size);
+        }
+
+        // Validate offset matches current position
+        if offset != snapshot_state.pending_data.len() as u64 {
+            snapshot_state.cancel_receive();
+            return Err(ChainError::SnapshotError(format!(
+                "chunk offset mismatch: expected {}, got {}",
+                snapshot_state.pending_data.len(),
+                offset
+            )));
+        }
+
+        snapshot_state.append_chunk(data);
+
+        if is_last {
+            // Validate total size
+            if snapshot_state.pending_data.len() as u64 != total_size {
+                let actual = snapshot_state.pending_data.len();
+                snapshot_state.cancel_receive();
+                return Err(ChainError::SnapshotError(format!(
+                    "snapshot size mismatch: expected {}, got {}",
+                    total_size, actual
+                )));
+            }
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Get the accumulated snapshot data after receiving all chunks.
+    pub fn take_pending_snapshot_data(&self) -> Vec<u8> {
+        self.snapshot_state.write().finish_receive()
+    }
+
+    /// Check if we need to send a snapshot to a follower.
+    ///
+    /// Returns true if the follower's next_index is before our first log entry.
+    pub fn needs_snapshot_for_follower(&self, follower: &NodeId) -> bool {
+        let leader_state = self.leader_state.read();
+        let persistent = self.persistent.read();
+        let snapshot_state = self.snapshot_state.read();
+
+        let next_idx = leader_state
+            .as_ref()
+            .and_then(|ls| ls.next_index.get(follower))
+            .copied()
+            .unwrap_or(1);
+
+        // If we have no log entries, we might need snapshot
+        if persistent.log.is_empty() {
+            return snapshot_state.last_snapshot.is_some();
+        }
+
+        // Check if follower needs entries before our first log entry
+        let first_log_index = persistent.log.first().map(|e| e.index).unwrap_or(1);
+        next_idx < first_log_index && snapshot_state.last_snapshot.is_some()
+    }
+
+    /// Get snapshot chunks for transfer to a follower.
+    ///
+    /// Returns a vector of (offset, data, is_last) chunks.
+    pub fn get_snapshot_chunks(&self, data: &[u8]) -> Vec<(u64, Vec<u8>, bool)> {
+        let chunk_size = self.config.snapshot_chunk_size as usize;
+        let total_chunks = (data.len() + chunk_size - 1) / chunk_size;
+
+        data.chunks(chunk_size)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let offset = (i * chunk_size) as u64;
+                let is_last = i == total_chunks - 1;
+                (offset, chunk.to_vec(), is_last)
+            })
+            .collect()
     }
 
     /// Get entries for replication to a specific follower.
@@ -1219,6 +1678,14 @@ mod tests {
             "proposer".to_string(),
         );
         Block::new(header, vec![])
+    }
+
+    fn create_test_log_entry(index: u64) -> LogEntry {
+        LogEntry {
+            index,
+            term: 1,
+            block: create_test_block(index),
+        }
     }
 
     #[test]
@@ -3131,5 +3598,430 @@ mod tests {
     fn test_persistence_key() {
         let key = RaftNode::persistence_key("my_node");
         assert_eq!(key, "_raft:state:my_node");
+    }
+
+    // ========== Snapshot / Log Compaction Tests ==========
+
+    #[test]
+    fn test_snapshot_metadata_new() {
+        let meta = SnapshotMetadata::new(
+            100,
+            5,
+            [1u8; 32],
+            vec!["node1".to_string(), "node2".to_string()],
+            1024,
+        );
+
+        assert_eq!(meta.last_included_index, 100);
+        assert_eq!(meta.last_included_term, 5);
+        assert_eq!(meta.snapshot_hash, [1u8; 32]);
+        assert_eq!(meta.config.len(), 2);
+        assert_eq!(meta.size, 1024);
+        assert!(meta.created_at > 0);
+    }
+
+    #[test]
+    fn test_snapshot_metadata_serialization() {
+        let meta = SnapshotMetadata::new(50, 3, [2u8; 32], vec!["n1".to_string()], 512);
+
+        let bytes = bincode::serialize(&meta).unwrap();
+        let decoded: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(decoded.last_included_index, 50);
+        assert_eq!(decoded.last_included_term, 3);
+        assert_eq!(decoded.snapshot_hash, [2u8; 32]);
+        assert_eq!(decoded.size, 512);
+    }
+
+    #[test]
+    fn test_should_compact_threshold_not_met() {
+        let config = RaftConfig {
+            snapshot_threshold: 100,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("test".to_string())),
+            config,
+        );
+
+        // Add fewer entries than threshold
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..50 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        assert!(!node.should_compact());
+    }
+
+    #[test]
+    fn test_should_compact_no_finalized() {
+        let config = RaftConfig {
+            snapshot_threshold: 10,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("test".to_string())),
+            config,
+        );
+
+        // Add entries but don't finalize any
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=20 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        // No finalized entries, shouldn't compact
+        assert!(!node.should_compact());
+    }
+
+    #[test]
+    fn test_should_compact_ready() {
+        let config = RaftConfig {
+            snapshot_threshold: 10,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("test".to_string())),
+            config,
+        );
+
+        // Add entries and finalize some
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=20 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+        node.finalized_height.store(15, Ordering::SeqCst);
+
+        assert!(node.should_compact());
+    }
+
+    #[test]
+    fn test_create_snapshot_empty_chain() {
+        let node = create_test_node("node1", vec![]);
+
+        let result = node.create_snapshot();
+        assert!(result.is_err());
+        if let Err(ChainError::SnapshotError(msg)) = result {
+            assert!(msg.contains("no finalized entries"));
+        }
+    }
+
+    #[test]
+    fn test_create_snapshot_basic() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add entries
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=5 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        // Finalize and commit
+        {
+            let mut volatile = node.volatile.write();
+            volatile.commit_index = 5;
+        }
+        node.finalized_height.store(3, Ordering::SeqCst);
+
+        let result = node.create_snapshot();
+        assert!(result.is_ok());
+
+        let (meta, data) = result.unwrap();
+        assert_eq!(meta.last_included_index, 3);
+        assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_log() {
+        let config = RaftConfig {
+            snapshot_trailing_logs: 2,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("test".to_string())),
+            config,
+        );
+
+        // Add 10 entries
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=10 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        let meta = SnapshotMetadata::new(7, 1, [0u8; 32], vec![], 0);
+
+        node.truncate_log(&meta).unwrap();
+
+        // Should keep entries from index 5 onwards (7 - 2 = 5)
+        let persistent = node.persistent.read();
+        assert!(persistent.log.len() < 10);
+
+        // Verify snapshot state was updated
+        let snapshot_state = node.snapshot_state.read();
+        assert!(snapshot_state.last_snapshot.is_some());
+        assert_eq!(
+            snapshot_state
+                .last_snapshot
+                .as_ref()
+                .unwrap()
+                .last_included_index,
+            7
+        );
+    }
+
+    #[test]
+    fn test_get_snapshot_metadata() {
+        let node = create_test_node("node1", vec![]);
+
+        // Initially no snapshot
+        assert!(node.get_snapshot_metadata().is_none());
+
+        // Set snapshot metadata
+        {
+            let mut snapshot_state = node.snapshot_state.write();
+            snapshot_state.last_snapshot = Some(SnapshotMetadata::new(
+                10,
+                2,
+                [5u8; 32],
+                vec!["peer1".to_string()],
+                100,
+            ));
+        }
+
+        let meta = node.get_snapshot_metadata();
+        assert!(meta.is_some());
+        assert_eq!(meta.unwrap().last_included_index, 10);
+    }
+
+    #[test]
+    fn test_install_snapshot_basic() {
+        let node = create_test_node("follower", vec!["leader".to_string()]);
+
+        // Create snapshot data with log entries
+        let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_log_entry(i)).collect();
+        let data = bincode::serialize(&entries).unwrap();
+
+        let meta = SnapshotMetadata::new(
+            5,
+            1,
+            entries.last().unwrap().block.hash(),
+            vec!["peer".to_string()],
+            data.len() as u64,
+        );
+
+        node.install_snapshot(meta.clone(), &data).unwrap();
+
+        // Verify state was updated
+        assert_eq!(node.finalized_height(), 5);
+        assert_eq!(node.volatile.read().commit_index, 5);
+        assert!(node.get_snapshot_metadata().is_some());
+
+        let persistent = node.persistent.read();
+        assert_eq!(persistent.log.len(), 5);
+    }
+
+    #[test]
+    fn test_install_snapshot_empty_data() {
+        let node = create_test_node("follower", vec![]);
+
+        let entries: Vec<LogEntry> = vec![];
+        let data = bincode::serialize(&entries).unwrap();
+
+        let meta = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], data.len() as u64);
+
+        let result = node.install_snapshot(meta, &data);
+        assert!(result.is_err());
+        if let Err(ChainError::SnapshotError(msg)) = result {
+            assert!(msg.contains("no entries"));
+        }
+    }
+
+    #[test]
+    fn test_install_snapshot_index_mismatch() {
+        let node = create_test_node("follower", vec![]);
+
+        let entries: Vec<LogEntry> = (1..=3).map(|i| create_test_log_entry(i)).collect();
+        let data = bincode::serialize(&entries).unwrap();
+
+        // Metadata says index 5, but entries only go to 3
+        let meta = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], data.len() as u64);
+
+        let result = node.install_snapshot(meta, &data);
+        assert!(result.is_err());
+        if let Err(ChainError::SnapshotError(msg)) = result {
+            assert!(msg.contains("index mismatch"));
+        }
+    }
+
+    #[test]
+    fn test_receive_snapshot_chunks() {
+        let node = create_test_node("follower", vec![]);
+
+        // Simulate receiving chunks
+        let data = vec![1u8; 100];
+        let chunk_size = 30;
+
+        // First chunk
+        let result = node.receive_snapshot_chunk(0, &data[0..30], 100, false);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+
+        // Second chunk
+        let result = node.receive_snapshot_chunk(30, &data[30..60], 100, false);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+
+        // Third chunk
+        let result = node.receive_snapshot_chunk(60, &data[60..90], 100, false);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+
+        // Final chunk
+        let result = node.receive_snapshot_chunk(90, &data[90..100], 100, true);
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Complete!
+
+        let received = node.take_pending_snapshot_data();
+        assert_eq!(received.len(), 100);
+    }
+
+    #[test]
+    fn test_receive_snapshot_chunk_offset_mismatch() {
+        let node = create_test_node("follower", vec![]);
+
+        // Start receiving
+        let _ = node.receive_snapshot_chunk(0, &[1, 2, 3], 10, false);
+
+        // Send wrong offset (should be 3)
+        let result = node.receive_snapshot_chunk(5, &[4, 5, 6], 10, false);
+        assert!(result.is_err());
+        if let Err(ChainError::SnapshotError(msg)) = result {
+            assert!(msg.contains("offset mismatch"));
+        }
+    }
+
+    #[test]
+    fn test_get_snapshot_chunks() {
+        let config = RaftConfig {
+            snapshot_chunk_size: 10,
+            ..Default::default()
+        };
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec![],
+            Arc::new(MemoryTransport::new("test".to_string())),
+            config,
+        );
+
+        let data = vec![0u8; 25];
+        let chunks = node.get_snapshot_chunks(&data);
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, 0); // offset
+        assert_eq!(chunks[0].1.len(), 10); // chunk size
+        assert!(!chunks[0].2); // not last
+
+        assert_eq!(chunks[1].0, 10);
+        assert_eq!(chunks[1].1.len(), 10);
+        assert!(!chunks[1].2);
+
+        assert_eq!(chunks[2].0, 20);
+        assert_eq!(chunks[2].1.len(), 5);
+        assert!(chunks[2].2); // last chunk
+    }
+
+    #[test]
+    fn test_needs_snapshot_for_follower() {
+        let node = create_test_node("leader", vec!["follower".to_string()]);
+
+        // Make this node a leader
+        *node.state.write() = RaftState::Leader;
+        node.become_leader();
+
+        // Without snapshot, should not need snapshot transfer
+        assert!(!node.needs_snapshot_for_follower(&"follower".to_string()));
+
+        // Add a snapshot and truncate log
+        {
+            let mut snapshot_state = node.snapshot_state.write();
+            snapshot_state.last_snapshot =
+                Some(SnapshotMetadata::new(100, 5, [0u8; 32], vec![], 0));
+        }
+
+        // Clear the log (simulating truncation)
+        node.persistent.write().log.clear();
+
+        // Add some new entries starting from index 101
+        {
+            let mut persistent = node.persistent.write();
+            let mut entry = create_test_log_entry(101);
+            entry.index = 101;
+            persistent.log.push(entry);
+        }
+
+        // Follower needs index 1, but our log starts at 101
+        assert!(node.needs_snapshot_for_follower(&"follower".to_string()));
+    }
+
+    #[test]
+    fn test_snapshot_config_defaults() {
+        let config = RaftConfig::default();
+
+        assert_eq!(config.snapshot_threshold, 10_000);
+        assert_eq!(config.snapshot_trailing_logs, 100);
+        assert_eq!(config.snapshot_chunk_size, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_handle_snapshot_request_not_leader() {
+        let node = create_test_node("follower", vec![]);
+
+        let request = SnapshotRequest {
+            requester_id: "other".to_string(),
+            offset: 0,
+            chunk_size: 1024,
+        };
+
+        // Followers shouldn't respond to snapshot requests
+        let response = node.handle_snapshot_request(&"other".to_string(), &request);
+        assert!(response.is_none());
+    }
+
+    #[test]
+    fn test_handle_snapshot_response_not_follower() {
+        let node = create_test_node("leader", vec![]);
+        *node.state.write() = RaftState::Leader;
+
+        let response = SnapshotResponse {
+            snapshot_height: 10,
+            snapshot_hash: [0u8; 32],
+            data: vec![1, 2, 3],
+            offset: 0,
+            total_size: 3,
+            is_last: true,
+        };
+
+        // Leaders shouldn't process snapshot responses
+        node.handle_snapshot_response(&"other".to_string(), &response);
+        // Should not have installed any snapshot
+        assert!(node.get_snapshot_metadata().is_none());
     }
 }

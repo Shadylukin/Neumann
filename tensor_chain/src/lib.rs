@@ -96,7 +96,7 @@ pub use network::{
     QueryResponse, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg,
     TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
-pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState};
+pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState, SnapshotMetadata};
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,

@@ -79,6 +79,14 @@ pub enum ChainError {
     /// Invalid chain state.
     #[error("invalid chain state: {0}")]
     InvalidState(String),
+
+    /// Replication queue is full (backpressure).
+    #[error("replication queue full: {pending_count} pending updates")]
+    QueueFull { pending_count: usize },
+
+    /// Snapshot error.
+    #[error("snapshot error: {0}")]
+    SnapshotError(String),
 }
 
 impl From<bincode::Error> for ChainError {
@@ -237,5 +245,23 @@ mod tests {
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("BlockNotFound"));
         assert!(debug_str.contains("100"));
+    }
+
+    #[test]
+    fn test_queue_full() {
+        let err = ChainError::QueueFull {
+            pending_count: 1000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("replication queue full"));
+        assert!(msg.contains("1000"));
+    }
+
+    #[test]
+    fn test_snapshot_error() {
+        let err = ChainError::SnapshotError("compaction failed".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("snapshot error"));
+        assert!(msg.contains("compaction failed"));
     }
 }

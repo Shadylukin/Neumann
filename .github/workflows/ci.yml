@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -96,6 +96,7 @@ jobs:
             neumann_parser) MIN_COV=91 ;;  # Complex parser with many edge cases
             tensor_blob) MIN_COV=91 ;;  # Async blob storage with complex I/O paths
             query_router) MIN_COV=94 ;;  # Large module with cross-engine integration
+            tensor_chain) MIN_COV=95 ;;  # Distributed consensus with async/networking code
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 
@@ -141,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

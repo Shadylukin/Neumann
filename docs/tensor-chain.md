@@ -836,6 +836,97 @@ let store = TensorStore::load_snapshot(&path)?;
 let node = RaftNode::with_store(node_id, peers, transport, config, &store);
 ```
 
+### Snapshot and Log Compaction
+
+The Raft log grows unbounded as entries are appended. Log compaction via snapshots prevents memory exhaustion by periodically capturing state and truncating old entries.
+
+#### Configuration
+
+```rust
+let config = RaftConfig {
+    snapshot_threshold: 10_000,      // Compact after 10k entries
+    snapshot_trailing_logs: 100,     // Keep 100 entries after snapshot
+    snapshot_chunk_size: 1024 * 1024, // 1MB chunks for transfer
+    ..Default::default()
+};
+```
+
+#### Creating Snapshots
+
+```rust
+use tensor_chain::{RaftNode, SnapshotMetadata};
+
+// Check if compaction is needed
+if raft_node.should_compact() {
+    // Create snapshot of finalized entries
+    let snapshot = raft_node.create_snapshot()?;
+    println!("Snapshot created: index={}, term={}, size={}",
+             snapshot.last_included_index,
+             snapshot.last_included_term,
+             snapshot.size);
+}
+
+// Get snapshot metadata if one exists
+if let Some(metadata) = raft_node.get_snapshot_metadata() {
+    println!("Current snapshot at index {}", metadata.last_included_index);
+}
+```
+
+#### Chunked Snapshot Transfer
+
+For large snapshots, data is transferred in chunks to avoid memory pressure:
+
+```rust
+// Leader: split snapshot into chunks
+let snapshot_data = /* serialized log entries */;
+let chunks = raft_node.get_snapshot_chunks(&snapshot_data);
+for (offset, chunk_data, is_last) in chunks {
+    // Send InstallSnapshot RPC with chunk
+}
+
+// Follower: receive chunks
+let complete = raft_node.receive_snapshot_chunk(
+    offset,
+    &chunk_data,
+    total_size,
+    is_last,
+)?;
+
+if complete {
+    // All chunks received, install snapshot
+    let data = raft_node.take_pending_snapshot_data();
+    raft_node.install_snapshot(metadata, &data)?;
+}
+```
+
+#### Installing Snapshots
+
+Lagging followers receive snapshots from the leader:
+
+```rust
+// Check if follower needs snapshot
+if raft_node.needs_snapshot_for_follower(&follower_id) {
+    // Send snapshot instead of AppendEntries
+}
+
+// Install received snapshot (replaces log)
+raft_node.install_snapshot(metadata, &snapshot_data)?;
+// Log is replaced, state is updated to snapshot point
+```
+
+#### SnapshotMetadata
+
+Snapshot metadata tracks the compaction point:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `last_included_index` | `u64` | Last log index in snapshot |
+| `last_included_term` | `u64` | Term of last included entry |
+| `snapshot_hash` | `[u8; 32]` | SHA-256 hash of snapshot data |
+| `config` | `Vec<NodeId>` | Cluster configuration at snapshot |
+| `created_at` | `u64` | Unix timestamp of creation |
+| `size` | `u64` | Snapshot size in bytes |
+
 ## Geometric Membership
 
 Embedding-based peer scoring for intelligent routing and leader preference.
@@ -1061,6 +1152,77 @@ Quantization error bounds:
 | Highly clustered (k=3) | 6-10x | Strong archetypes |
 | Incremental updates | 10-20x | Sparse deltas |
 | Int8 quantization | 4x | On top of delta encoding |
+
+### Backpressure and Queue Management
+
+The delta replication system uses bounded channels to prevent memory exhaustion under load. When the queue fills, `queue_update()` returns an error instead of silently dropping updates.
+
+#### Configuration
+
+```rust
+let config = DeltaReplicationConfig {
+    max_pending: 10_000,        // Maximum queued updates
+    max_batch_size: 1000,       // Updates per batch
+    ..Default::default()
+};
+
+let manager = DeltaReplicationManager::new("node1".to_string(), config);
+```
+
+#### Queue Updates with Backpressure
+
+```rust
+// Queue an update (returns error if queue is full)
+match manager.queue_update(key, &embedding, version) {
+    Ok(()) => { /* Update queued successfully */ }
+    Err(ChainError::QueueFull { pending_count }) => {
+        // Apply backpressure: slow down producer or drain queue
+        eprintln!("Queue full with {} pending updates", pending_count);
+        manager.flush();  // Drain all pending updates
+    }
+    Err(e) => { /* Other error */ }
+}
+```
+
+#### Monitoring Queue Health
+
+```rust
+// Check current queue depth
+let pending = manager.pending_count();
+
+// Get detailed statistics
+let stats = manager.stats();
+println!("Queue depth: {}", stats.queue_depth);
+println!("Backpressure events: {}", stats.backpressure_events);
+println!("Peak queue depth: {}", stats.peak_queue_depth);
+```
+
+#### Batch Creation and Flush
+
+```rust
+// Create batch from pending updates
+if let Some(batch) = manager.create_batch(false /* force_full */) {
+    println!("Batch: {} updates, source={}", batch.updates.len(), batch.source);
+    // Send batch to peer...
+}
+
+// Flush all pending updates as batches
+let batches = manager.flush();
+for batch in batches {
+    // Send each batch...
+}
+assert_eq!(manager.pending_count(), 0);  // Queue is empty after flush
+```
+
+#### Statistics Fields
+
+| Field | Description |
+|-------|-------------|
+| `queue_depth` | Current number of pending updates |
+| `backpressure_events` | Times queue_update() returned QueueFull |
+| `peak_queue_depth` | Maximum queue depth observed |
+| `batches_created` | Total batches sent |
+| `updates_sent` | Total updates sent |
 
 ## Chain Operations
 

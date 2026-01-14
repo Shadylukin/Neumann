@@ -340,3 +340,26 @@ path = "fuzz_targets/distance_metrics.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "svd_randomized"
+path = "fuzz_targets/svd_randomized.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 13: Snapshot and delta replication targets
+
+[[bin]]
+name = "raft_snapshot"
+path = "fuzz_targets/raft_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta_batch_apply"
+path = "fuzz_targets/delta_batch_apply.rs"
+test = false
+doc = false
+bench = false
