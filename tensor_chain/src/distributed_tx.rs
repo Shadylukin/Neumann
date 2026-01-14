@@ -10,17 +10,29 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::RwLock;
-use tensor_store::SparseVector;
+use serde::{Deserialize, Serialize};
+use tensor_store::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
 use crate::{
     block::{NodeId, Transaction},
     consensus::{ConsensusManager, DeltaVector},
     error::{ChainError, Result},
 };
+
+/// Milliseconds since UNIX epoch, serializable replacement for Instant.
+pub type EpochMillis = u64;
+
+/// Get current time as epoch milliseconds.
+fn now_epoch_millis() -> EpochMillis {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Shard identifier.
 pub type ShardId = usize;
@@ -34,7 +46,7 @@ fn next_dtx_id() -> u64 {
 }
 
 /// Phase of a distributed transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TxPhase {
     /// Transaction is being prepared (Phase 1).
     #[default]
@@ -52,7 +64,7 @@ pub enum TxPhase {
 }
 
 /// A distributed transaction spanning multiple shards.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistributedTransaction {
     /// Unique transaction ID.
     pub tx_id: u64,
@@ -179,7 +191,7 @@ pub struct PrepareRequest {
 }
 
 /// Vote from a participant in response to prepare request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PrepareVote {
     /// Participant is ready to commit.
     Yes {
@@ -234,7 +246,7 @@ pub struct TxResponse {
 }
 
 /// Key-level lock for distributed transactions.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyLock {
     /// Key being locked.
     pub key: String,
@@ -242,16 +254,16 @@ pub struct KeyLock {
     pub tx_id: u64,
     /// Lock handle for release.
     pub lock_handle: u64,
-    /// When the lock was acquired.
-    pub acquired_at: Instant,
-    /// Lock timeout.
-    pub timeout: Duration,
+    /// When the lock was acquired (epoch milliseconds).
+    pub acquired_at_ms: EpochMillis,
+    /// Lock timeout in milliseconds.
+    pub timeout_ms: u64,
 }
 
 impl KeyLock {
     /// Check if the lock has expired.
     pub fn is_expired(&self) -> bool {
-        self.acquired_at.elapsed() > self.timeout
+        now_epoch_millis().saturating_sub(self.acquired_at_ms) > self.timeout_ms
     }
 }
 
@@ -296,7 +308,8 @@ impl LockManager {
 
         // Acquire all locks
         let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let now = Instant::now();
+        let now_ms = now_epoch_millis();
+        let timeout_ms = self.default_timeout.as_millis() as u64;
 
         for key in keys {
             locks.insert(
@@ -305,8 +318,8 @@ impl LockManager {
                     key: key.clone(),
                     tx_id,
                     lock_handle,
-                    acquired_at: now,
-                    timeout: self.default_timeout,
+                    acquired_at_ms: now_ms,
+                    timeout_ms,
                 },
             );
         }
@@ -396,6 +409,53 @@ impl LockManager {
     pub fn active_lock_count(&self) -> usize {
         self.locks.read().len()
     }
+
+    /// Convert lock manager state to serializable form.
+    pub fn to_serializable(&self) -> SerializableLockState {
+        SerializableLockState {
+            locks: self.locks.read().clone(),
+            tx_locks: self.tx_locks.read().clone(),
+            default_timeout_ms: self.default_timeout.as_millis() as u64,
+        }
+    }
+
+    /// Create lock manager from serialized state.
+    pub fn from_serializable(state: SerializableLockState) -> Self {
+        Self {
+            locks: RwLock::new(state.locks),
+            tx_locks: RwLock::new(state.tx_locks),
+            default_timeout: Duration::from_millis(state.default_timeout_ms),
+        }
+    }
+}
+
+/// Serializable representation of LockManager state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableLockState {
+    /// Locks by key.
+    pub locks: HashMap<String, KeyLock>,
+    /// Locks by transaction ID.
+    pub tx_locks: HashMap<u64, Vec<String>>,
+    /// Default lock timeout in milliseconds.
+    pub default_timeout_ms: u64,
+}
+
+/// Serializable state for crash recovery of the distributed transaction coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinatorState {
+    /// Pending transactions.
+    pub pending: HashMap<u64, DistributedTransaction>,
+    /// Lock manager state.
+    pub lock_state: SerializableLockState,
+}
+
+/// Serializable state for crash recovery of a transaction participant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParticipantState {
+    /// Prepared transactions awaiting commit/abort decision.
+    pub prepared: HashMap<u64, PreparedTx>,
+    /// Lock manager state.
+    pub lock_state: SerializableLockState,
 }
 
 /// Configuration for distributed transaction coordinator.
@@ -440,6 +500,20 @@ pub struct DistributedTxStats {
     pub conflicts: AtomicU64,
     /// Orthogonal merges (avoided conflicts).
     pub orthogonal_merges: AtomicU64,
+
+    // Timing metrics
+    /// Time spent in prepare phase (microseconds).
+    pub prepare_timing: crate::metrics::TimingStats,
+    /// Time spent in commit phase (microseconds).
+    pub commit_timing: crate::metrics::TimingStats,
+
+    // Lock contention
+    /// Time waiting for locks (microseconds).
+    pub lock_wait_timing: crate::metrics::TimingStats,
+
+    // Participation tracking
+    /// Transactions aborted due to participant timeout (partition).
+    pub participation_timeouts: AtomicU64,
 }
 
 impl DistributedTxStats {
@@ -465,6 +539,56 @@ impl DistributedTxStats {
         }
         self.conflicts.load(Ordering::Relaxed) as f32 / started as f32
     }
+
+    /// Take a point-in-time snapshot of all statistics.
+    pub fn snapshot(&self) -> DistributedTxStatsSnapshot {
+        DistributedTxStatsSnapshot {
+            started: self.started.load(Ordering::Relaxed),
+            committed: self.committed.load(Ordering::Relaxed),
+            aborted: self.aborted.load(Ordering::Relaxed),
+            timed_out: self.timed_out.load(Ordering::Relaxed),
+            conflicts: self.conflicts.load(Ordering::Relaxed),
+            orthogonal_merges: self.orthogonal_merges.load(Ordering::Relaxed),
+            prepare_timing: self.prepare_timing.snapshot(),
+            commit_timing: self.commit_timing.snapshot(),
+            lock_wait_timing: self.lock_wait_timing.snapshot(),
+            participation_timeouts: self.participation_timeouts.load(Ordering::Relaxed),
+            commit_rate: self.commit_rate(),
+            conflict_rate: self.conflict_rate(),
+        }
+    }
+}
+
+/// Point-in-time snapshot of distributed transaction statistics.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DistributedTxStatsSnapshot {
+    pub started: u64,
+    pub committed: u64,
+    pub aborted: u64,
+    pub timed_out: u64,
+    pub conflicts: u64,
+    pub orthogonal_merges: u64,
+    pub prepare_timing: crate::metrics::TimingSnapshot,
+    pub commit_timing: crate::metrics::TimingSnapshot,
+    pub lock_wait_timing: crate::metrics::TimingSnapshot,
+    pub participation_timeouts: u64,
+    pub commit_rate: f32,
+    pub conflict_rate: f32,
+}
+
+/// Statistics from crash recovery of coordinator or participant state.
+#[derive(Debug, Default)]
+pub struct RecoveryStats {
+    /// Transactions in prepare phase (awaiting votes).
+    pub pending_prepare: usize,
+    /// Transactions ready to commit.
+    pub pending_commit: usize,
+    /// Transactions to abort.
+    pub pending_abort: usize,
+    /// Transactions that timed out (presumed abort).
+    pub timed_out: usize,
+    /// Transactions that were already completed (cleaned up).
+    pub completed: usize,
 }
 
 /// Coordinator for distributed transactions.
@@ -676,6 +800,66 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
+    /// Complete a commit for a transaction already in the Committing phase.
+    /// Used during recovery to finalize transactions that were interrupted mid-commit.
+    pub fn complete_commit(&self, tx_id: u64) -> Result<()> {
+        let mut pending = self.pending.write();
+        let tx = pending.get_mut(&tx_id).ok_or_else(|| {
+            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+        })?;
+
+        if tx.phase != TxPhase::Committing {
+            return Err(ChainError::TransactionFailed(format!(
+                "transaction {} not in committing phase",
+                tx_id
+            )));
+        }
+
+        // Release any remaining locks
+        for vote in tx.votes.values() {
+            if let PrepareVote::Yes { lock_handle, .. } = vote {
+                self.lock_manager.release_by_handle(*lock_handle);
+            }
+        }
+
+        tx.phase = TxPhase::Committed;
+        self.stats.committed.fetch_add(1, Ordering::Relaxed);
+
+        pending.remove(&tx_id);
+
+        Ok(())
+    }
+
+    /// Complete an abort for a transaction already in the Aborting phase.
+    /// Used during recovery to finalize transactions that were interrupted mid-abort.
+    pub fn complete_abort(&self, tx_id: u64) -> Result<()> {
+        let mut pending = self.pending.write();
+        let tx = pending.get_mut(&tx_id).ok_or_else(|| {
+            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+        })?;
+
+        if tx.phase != TxPhase::Aborting {
+            return Err(ChainError::TransactionFailed(format!(
+                "transaction {} not in aborting phase",
+                tx_id
+            )));
+        }
+
+        // Release any remaining locks
+        for vote in tx.votes.values() {
+            if let PrepareVote::Yes { lock_handle, .. } = vote {
+                self.lock_manager.release_by_handle(*lock_handle);
+            }
+        }
+
+        tx.phase = TxPhase::Aborted;
+        self.stats.aborted.fetch_add(1, Ordering::Relaxed);
+
+        pending.remove(&tx_id);
+
+        Ok(())
+    }
+
     /// Abort a transaction.
     pub fn abort(&self, tx_id: u64, _reason: &str) -> Result<()> {
         let mut pending = self.pending.write();
@@ -742,6 +926,161 @@ impl DistributedTxCoordinator {
     pub fn stats(&self) -> &DistributedTxStats {
         &self.stats
     }
+
+    /// Get the persistence key for coordinator state.
+    fn persistence_key(node_id: &str) -> String {
+        format!("_dtx:coordinator:{}:state", node_id)
+    }
+
+    /// Convert coordinator state to serializable form.
+    pub fn to_state(&self) -> CoordinatorState {
+        CoordinatorState {
+            pending: self.pending.read().clone(),
+            lock_state: self.lock_manager.to_serializable(),
+        }
+    }
+
+    /// Save coordinator state to TensorStore for crash recovery.
+    pub fn save_to_store(&self, node_id: &str, store: &TensorStore) -> Result<()> {
+        let state = self.to_state();
+        let bytes = bincode::serialize(&state)?;
+
+        let mut data = TensorData::new();
+        data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
+        store
+            .put(&Self::persistence_key(node_id), data)
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Load coordinator from TensorStore or create fresh if not found.
+    pub fn load_from_store(
+        node_id: &str,
+        store: &TensorStore,
+        consensus: ConsensusManager,
+        config: DistributedTxConfig,
+    ) -> Result<Self> {
+        let key = Self::persistence_key(node_id);
+
+        if let Ok(data) = store.get(&key) {
+            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
+                let state: CoordinatorState = bincode::deserialize(&bytes)?;
+                return Ok(Self::with_state(consensus, config, state));
+            }
+        }
+
+        // No persisted state - create fresh coordinator
+        Ok(Self::new(consensus, config))
+    }
+
+    /// Create coordinator with restored state.
+    fn with_state(
+        consensus: ConsensusManager,
+        config: DistributedTxConfig,
+        state: CoordinatorState,
+    ) -> Self {
+        Self {
+            pending: RwLock::new(state.pending),
+            consensus,
+            lock_manager: LockManager::from_serializable(state.lock_state),
+            config,
+            stats: DistributedTxStats::new(),
+        }
+    }
+
+    /// Clear persisted state from store (for cleanup after commit/abort).
+    pub fn clear_persisted_state(node_id: &str, store: &TensorStore) {
+        let _ = store.delete(&Self::persistence_key(node_id));
+    }
+
+    /// Recover from crash by processing pending transactions.
+    ///
+    /// Returns statistics about recovered transactions:
+    /// - Timed out transactions are moved to abort
+    /// - Prepared transactions with all YES votes proceed to commit
+    /// - Transactions in Committing/Aborting phase retry the operation
+    /// - Completed transactions (Committed/Aborted) are cleaned up
+    pub fn recover(&self) -> RecoveryStats {
+        let mut stats = RecoveryStats::default();
+        let mut pending = self.pending.write();
+
+        // Collect transactions by action needed
+        let mut to_remove = Vec::new();
+
+        for (tx_id, tx) in pending.iter_mut() {
+            match tx.phase {
+                TxPhase::Preparing => {
+                    if tx.is_timed_out() {
+                        // Timed out during prepare - abort
+                        tx.phase = TxPhase::Aborting;
+                        stats.timed_out += 1;
+                    } else {
+                        // Still waiting for votes
+                        stats.pending_prepare += 1;
+                    }
+                }
+                TxPhase::Prepared => {
+                    if tx.is_timed_out() {
+                        tx.phase = TxPhase::Aborting;
+                        stats.timed_out += 1;
+                    } else if tx.all_yes() {
+                        // All voted yes - proceed to commit
+                        tx.phase = TxPhase::Committing;
+                        stats.pending_commit += 1;
+                    } else if tx.any_no() {
+                        // Some voted no - abort
+                        tx.phase = TxPhase::Aborting;
+                        stats.pending_abort += 1;
+                    } else {
+                        // Still waiting for more votes
+                        stats.pending_prepare += 1;
+                    }
+                }
+                TxPhase::Committing => {
+                    // Retry commit
+                    stats.pending_commit += 1;
+                }
+                TxPhase::Aborting => {
+                    // Retry abort
+                    stats.pending_abort += 1;
+                }
+                TxPhase::Committed | TxPhase::Aborted => {
+                    // Already completed - clean up
+                    to_remove.push(*tx_id);
+                    stats.completed += 1;
+                }
+            }
+        }
+
+        // Release locks and remove completed transactions
+        for tx_id in to_remove {
+            if let Some(tx) = pending.remove(&tx_id) {
+                for vote in tx.votes.values() {
+                    if let PrepareVote::Yes { lock_handle, .. } = vote {
+                        self.lock_manager.release_by_handle(*lock_handle);
+                    }
+                }
+            }
+        }
+
+        // Also cleanup any expired locks
+        self.lock_manager.cleanup_expired();
+
+        stats
+    }
+
+    /// Get pending transactions that need commit/abort decisions.
+    pub fn get_pending_decisions(&self) -> Vec<(u64, TxPhase)> {
+        self.pending
+            .read()
+            .iter()
+            .filter(|(_, tx)| {
+                matches!(tx.phase, TxPhase::Committing | TxPhase::Aborting)
+            })
+            .map(|(id, tx)| (*id, tx.phase))
+            .collect()
+    }
 }
 
 /// Transaction participant on a shard.
@@ -754,7 +1093,7 @@ pub struct TxParticipant {
 }
 
 /// A prepared transaction on a participant.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreparedTx {
     /// Transaction ID.
     pub tx_id: u64,
@@ -764,8 +1103,8 @@ pub struct PreparedTx {
     pub operations: Vec<Transaction>,
     /// Delta embedding.
     pub delta: DeltaVector,
-    /// When the transaction was prepared.
-    pub prepared_at: Instant,
+    /// When the transaction was prepared (epoch milliseconds).
+    pub prepared_at_ms: EpochMillis,
 }
 
 impl Default for TxParticipant {
@@ -816,7 +1155,7 @@ impl TxParticipant {
                 lock_handle,
                 operations: request.operations,
                 delta: delta.clone(),
-                prepared_at: Instant::now(),
+                prepared_at_ms: now_epoch_millis(),
             },
         );
 
@@ -866,9 +1205,11 @@ impl TxParticipant {
     /// Clean up stale prepared transactions.
     pub fn cleanup_stale(&self, timeout: Duration) -> Vec<u64> {
         let mut prepared = self.prepared.write();
+        let now = now_epoch_millis();
+        let timeout_ms = timeout.as_millis() as u64;
         let stale: Vec<_> = prepared
             .iter()
-            .filter(|(_, tx)| tx.prepared_at.elapsed() > timeout)
+            .filter(|(_, tx)| now.saturating_sub(tx.prepared_at_ms) > timeout_ms)
             .map(|(id, _)| *id)
             .collect();
 
@@ -879,6 +1220,107 @@ impl TxParticipant {
         }
 
         stale
+    }
+
+    /// Get the persistence key for participant state.
+    fn persistence_key(node_id: &str, shard_id: ShardId) -> String {
+        format!("_dtx:participant:{}:shard:{}:state", node_id, shard_id)
+    }
+
+    /// Convert participant state to serializable form.
+    pub fn to_state(&self) -> ParticipantState {
+        ParticipantState {
+            prepared: self.prepared.read().clone(),
+            lock_state: self.locks.to_serializable(),
+        }
+    }
+
+    /// Save participant state to TensorStore for crash recovery.
+    pub fn save_to_store(
+        &self,
+        node_id: &str,
+        shard_id: ShardId,
+        store: &TensorStore,
+    ) -> Result<()> {
+        let state = self.to_state();
+        let bytes = bincode::serialize(&state)?;
+
+        let mut data = TensorData::new();
+        data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
+        store
+            .put(&Self::persistence_key(node_id, shard_id), data)
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Load participant from TensorStore or create fresh if not found.
+    pub fn load_from_store(
+        node_id: &str,
+        shard_id: ShardId,
+        store: &TensorStore,
+    ) -> Self {
+        let key = Self::persistence_key(node_id, shard_id);
+
+        if let Ok(data) = store.get(&key) {
+            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
+                if let Ok(state) = bincode::deserialize::<ParticipantState>(bytes) {
+                    return Self::with_state(state);
+                }
+            }
+        }
+
+        // No persisted state - create fresh participant
+        Self::new()
+    }
+
+    /// Create participant with restored state.
+    fn with_state(state: ParticipantState) -> Self {
+        Self {
+            prepared: RwLock::new(state.prepared),
+            locks: LockManager::from_serializable(state.lock_state),
+        }
+    }
+
+    /// Clear persisted state from store.
+    pub fn clear_persisted_state(node_id: &str, shard_id: ShardId, store: &TensorStore) {
+        let _ = store.delete(&Self::persistence_key(node_id, shard_id));
+    }
+
+    /// Recover from crash by checking prepared transactions.
+    ///
+    /// Returns the transaction IDs that are still awaiting coordinator decisions.
+    /// For transactions that have exceeded the timeout, their locks are released
+    /// (presumed abort - the coordinator must have crashed or aborted).
+    pub fn recover(&self, timeout: Duration) -> Vec<u64> {
+        let mut prepared = self.prepared.write();
+        let now = now_epoch_millis();
+        let timeout_ms = timeout.as_millis() as u64;
+
+        // Find expired transactions (presumed abort)
+        let expired: Vec<u64> = prepared
+            .iter()
+            .filter(|(_, tx)| now.saturating_sub(tx.prepared_at_ms) > timeout_ms)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Release locks for expired transactions
+        for tx_id in &expired {
+            if let Some(tx) = prepared.remove(tx_id) {
+                self.locks.release_by_handle(tx.lock_handle);
+            }
+        }
+
+        // Cleanup any other expired locks
+        self.locks.cleanup_expired();
+
+        // Return IDs of transactions still awaiting decision
+        prepared.keys().copied().collect()
+    }
+
+    /// Get transaction IDs awaiting coordinator decision.
+    pub fn get_awaiting_decision(&self) -> Vec<u64> {
+        self.prepared.read().keys().copied().collect()
     }
 }
 
@@ -1491,22 +1933,25 @@ mod tests {
     fn test_participant_cleanup_stale() {
         let participant = TxParticipant::new();
 
-        let request = PrepareRequest {
-            tx_id: 1,
-            coordinator: "node1".to_string(),
-            operations: vec![Transaction::Put {
-                key: "key1".to_string(),
-                data: vec![1],
-            }],
-            delta_embedding: SparseVector::from_dense(&[1.0]),
-            timeout_ms: 5000,
-        };
-
-        participant.prepare(request);
+        // Insert a prepared transaction with an old timestamp (10 seconds ago)
+        let old_prepared_at = now_epoch_millis().saturating_sub(10_000);
+        participant.prepared.write().insert(
+            1,
+            PreparedTx {
+                tx_id: 1,
+                lock_handle: 1,
+                operations: vec![Transaction::Put {
+                    key: "key1".to_string(),
+                    data: vec![1],
+                }],
+                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                prepared_at_ms: old_prepared_at,
+            },
+        );
         assert_eq!(participant.prepared_count(), 1);
 
-        // Cleanup with zero timeout
-        let stale = participant.cleanup_stale(Duration::from_secs(0));
+        // Cleanup with 5 second timeout should find the 10-second-old transaction
+        let stale = participant.cleanup_stale(Duration::from_secs(5));
         assert_eq!(stale.len(), 1);
         assert_eq!(participant.prepared_count(), 0);
     }
@@ -1530,21 +1975,23 @@ mod tests {
 
     #[test]
     fn test_key_lock_expiry() {
+        // Lock acquired 100 seconds ago with 1 second timeout - should be expired
         let lock = KeyLock {
             key: "test".to_string(),
             tx_id: 1,
             lock_handle: 1,
-            acquired_at: Instant::now() - Duration::from_secs(100),
-            timeout: Duration::from_secs(1),
+            acquired_at_ms: now_epoch_millis().saturating_sub(100_000),
+            timeout_ms: 1000,
         };
         assert!(lock.is_expired());
 
+        // Lock acquired now with 100 second timeout - should not be expired
         let lock2 = KeyLock {
             key: "test".to_string(),
             tx_id: 1,
             lock_handle: 1,
-            acquired_at: Instant::now(),
-            timeout: Duration::from_secs(100),
+            acquired_at_ms: now_epoch_millis(),
+            timeout_ms: 100_000,
         };
         assert!(!lock2.is_expired());
     }
@@ -1828,8 +2275,598 @@ mod tests {
             lock_handle: 1,
             operations: vec![],
             delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
-            prepared_at: Instant::now(),
+            prepared_at_ms: now_epoch_millis(),
         };
         let _ = format!("{:?}", tx);
+    }
+
+    // ========== Serialization Roundtrip Tests ==========
+
+    #[test]
+    fn test_key_lock_serialize_deserialize_roundtrip() {
+        let lock = KeyLock {
+            key: "test_key".to_string(),
+            tx_id: 42,
+            lock_handle: 123,
+            acquired_at_ms: now_epoch_millis(),
+            timeout_ms: 5000,
+        };
+
+        let bytes = bincode::serialize(&lock).unwrap();
+        let restored: KeyLock = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.key, lock.key);
+        assert_eq!(restored.tx_id, lock.tx_id);
+        assert_eq!(restored.lock_handle, lock.lock_handle);
+        assert_eq!(restored.acquired_at_ms, lock.acquired_at_ms);
+        assert_eq!(restored.timeout_ms, lock.timeout_ms);
+    }
+
+    #[test]
+    fn test_prepared_tx_serialize_deserialize_roundtrip() {
+        let tx = PreparedTx {
+            tx_id: 100,
+            lock_handle: 200,
+            operations: vec![
+                Transaction::Put {
+                    key: "key1".to_string(),
+                    data: vec![1, 2, 3],
+                },
+            ],
+            delta: DeltaVector::new(vec![1.0, 2.0], ["key1".to_string()].into(), 100),
+            prepared_at_ms: now_epoch_millis(),
+        };
+
+        let bytes = bincode::serialize(&tx).unwrap();
+        let restored: PreparedTx = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.tx_id, tx.tx_id);
+        assert_eq!(restored.lock_handle, tx.lock_handle);
+        assert_eq!(restored.operations.len(), tx.operations.len());
+        assert_eq!(restored.prepared_at_ms, tx.prepared_at_ms);
+    }
+
+    #[test]
+    fn test_serializable_lock_state_roundtrip() {
+        let mut locks = HashMap::new();
+        locks.insert(
+            "key1".to_string(),
+            KeyLock {
+                key: "key1".to_string(),
+                tx_id: 1,
+                lock_handle: 1,
+                acquired_at_ms: 1000,
+                timeout_ms: 5000,
+            },
+        );
+
+        let mut tx_locks = HashMap::new();
+        tx_locks.insert(1u64, vec!["key1".to_string()]);
+
+        let state = SerializableLockState {
+            locks,
+            tx_locks,
+            default_timeout_ms: 30000,
+        };
+
+        let bytes = bincode::serialize(&state).unwrap();
+        let restored: SerializableLockState = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.locks.len(), 1);
+        assert_eq!(restored.tx_locks.len(), 1);
+        assert_eq!(restored.default_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_coordinator_state_serialize_deserialize_roundtrip() {
+        let mut pending = HashMap::new();
+        let mut tx = DistributedTransaction::new("node1".to_string(), vec![0, 1]);
+        tx.phase = TxPhase::Prepared;
+        pending.insert(tx.tx_id, tx);
+
+        let state = CoordinatorState {
+            pending,
+            lock_state: SerializableLockState {
+                locks: HashMap::new(),
+                tx_locks: HashMap::new(),
+                default_timeout_ms: 30000,
+            },
+        };
+
+        let bytes = bincode::serialize(&state).unwrap();
+        let restored: CoordinatorState = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.pending.len(), 1);
+        assert_eq!(restored.lock_state.default_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_participant_state_serialize_deserialize_roundtrip() {
+        let mut prepared = HashMap::new();
+        prepared.insert(
+            1u64,
+            PreparedTx {
+                tx_id: 1,
+                lock_handle: 100,
+                operations: vec![],
+                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                prepared_at_ms: 1000,
+            },
+        );
+
+        let state = ParticipantState {
+            prepared,
+            lock_state: SerializableLockState {
+                locks: HashMap::new(),
+                tx_locks: HashMap::new(),
+                default_timeout_ms: 30000,
+            },
+        };
+
+        let bytes = bincode::serialize(&state).unwrap();
+        let restored: ParticipantState = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.prepared.len(), 1);
+        assert!(restored.prepared.contains_key(&1));
+    }
+
+    #[test]
+    fn test_lock_manager_to_from_serializable_roundtrip() {
+        let lock_manager = LockManager::new();
+
+        // Add some locks
+        lock_manager.try_lock(1, &["key1".to_string(), "key2".to_string()]).unwrap();
+        lock_manager.try_lock(2, &["key3".to_string()]).unwrap();
+
+        // Serialize
+        let state = lock_manager.to_serializable();
+        assert_eq!(state.locks.len(), 3);
+        assert_eq!(state.tx_locks.len(), 2);
+
+        // Restore
+        let restored = LockManager::from_serializable(state);
+        assert!(restored.is_locked("key1"));
+        assert!(restored.is_locked("key2"));
+        assert!(restored.is_locked("key3"));
+        assert_eq!(restored.lock_holder("key1"), Some(1));
+        assert_eq!(restored.lock_holder("key3"), Some(2));
+    }
+
+    // ========== Epoch Time Tests ==========
+
+    #[test]
+    fn test_key_lock_is_expired_with_epoch_millis() {
+        let old_lock = KeyLock {
+            key: "test".to_string(),
+            tx_id: 1,
+            lock_handle: 1,
+            acquired_at_ms: now_epoch_millis().saturating_sub(10_000), // 10 seconds ago
+            timeout_ms: 5000, // 5 second timeout
+        };
+        assert!(old_lock.is_expired());
+
+        let fresh_lock = KeyLock {
+            key: "test".to_string(),
+            tx_id: 2,
+            lock_handle: 2,
+            acquired_at_ms: now_epoch_millis(),
+            timeout_ms: 5000,
+        };
+        assert!(!fresh_lock.is_expired());
+    }
+
+    #[test]
+    fn test_now_epoch_millis_increases() {
+        let t1 = now_epoch_millis();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let t2 = now_epoch_millis();
+        assert!(t2 >= t1);
+    }
+
+    // ========== Coordinator Persistence Tests ==========
+
+    #[test]
+    fn test_coordinator_to_state() {
+        let coordinator = create_test_coordinator();
+
+        // Begin a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+
+        let state = coordinator.to_state();
+        assert_eq!(state.pending.len(), 1);
+        assert!(state.pending.contains_key(&tx.tx_id));
+    }
+
+    #[test]
+    fn test_coordinator_save_load_empty_state() {
+        let store = TensorStore::new();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // Save empty coordinator
+        coordinator.save_to_store("node1", &store).unwrap();
+
+        // Load back
+        let consensus2 = ConsensusManager::new(ConsensusConfig::default());
+        let restored = DistributedTxCoordinator::load_from_store(
+            "node1",
+            &store,
+            consensus2,
+            DistributedTxConfig::default(),
+        ).unwrap();
+
+        assert_eq!(restored.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_coordinator_save_load_with_pending_transactions() {
+        let store = TensorStore::new();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
+
+        // Begin transactions
+        let tx1 = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx2 = coordinator.begin("node1".to_string(), vec![2, 3]).unwrap();
+
+        // Save
+        coordinator.save_to_store("node1", &store).unwrap();
+
+        // Load back
+        let consensus2 = ConsensusManager::new(ConsensusConfig::default());
+        let restored = DistributedTxCoordinator::load_from_store(
+            "node1",
+            &store,
+            consensus2,
+            DistributedTxConfig::default(),
+        ).unwrap();
+
+        assert_eq!(restored.pending_count(), 2);
+        assert!(restored.get(tx1.tx_id).is_some());
+        assert!(restored.get(tx2.tx_id).is_some());
+    }
+
+    #[test]
+    fn test_coordinator_save_load_all_phases() {
+        let store = TensorStore::new();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
+
+        // Create transactions in different phases
+        let tx_preparing = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Manually update internal state
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(_tx) = pending.get_mut(&tx_preparing.tx_id) {
+                // tx stays in Preparing
+            }
+            // Add a committed transaction manually
+            let mut committed_tx = DistributedTransaction::new("node1".to_string(), vec![1]);
+            committed_tx.phase = TxPhase::Committed;
+            let committed_id = committed_tx.tx_id;
+            pending.insert(committed_id, committed_tx);
+        }
+
+        // Save
+        coordinator.save_to_store("node1", &store).unwrap();
+
+        // Load back
+        let consensus2 = ConsensusManager::new(ConsensusConfig::default());
+        let restored = DistributedTxCoordinator::load_from_store(
+            "node1",
+            &store,
+            consensus2,
+            DistributedTxConfig::default(),
+        ).unwrap();
+
+        assert_eq!(restored.pending_count(), 2);
+    }
+
+    #[test]
+    fn test_coordinator_clear_persisted_state() {
+        let store = TensorStore::new();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+        coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        coordinator.save_to_store("node1", &store).unwrap();
+
+        // Clear
+        DistributedTxCoordinator::clear_persisted_state("node1", &store);
+
+        // Load should create fresh coordinator
+        let consensus2 = ConsensusManager::new(ConsensusConfig::default());
+        let restored = DistributedTxCoordinator::load_from_store(
+            "node1",
+            &store,
+            consensus2,
+            DistributedTxConfig::default(),
+        ).unwrap();
+
+        assert_eq!(restored.pending_count(), 0);
+    }
+
+    // ========== Participant Persistence Tests ==========
+
+    #[test]
+    fn test_participant_to_state() {
+        let participant = TxParticipant::new();
+
+        // Prepare a transaction
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        participant.prepare(request);
+
+        let state = participant.to_state();
+        assert_eq!(state.prepared.len(), 1);
+        assert!(state.prepared.contains_key(&1));
+    }
+
+    #[test]
+    fn test_participant_save_load_empty_state() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new();
+
+        participant.save_to_store("node1", 0, &store).unwrap();
+
+        let restored = TxParticipant::load_from_store("node1", 0, &store);
+        assert_eq!(restored.prepared_count(), 0);
+    }
+
+    #[test]
+    fn test_participant_save_load_with_prepared_transactions() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new();
+
+        // Prepare transactions
+        let request1 = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let request2 = PrepareRequest {
+            tx_id: 2,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key2".to_string(),
+                data: vec![2],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        participant.prepare(request1);
+        participant.prepare(request2);
+
+        // Save
+        participant.save_to_store("node1", 0, &store).unwrap();
+
+        // Load
+        let restored = TxParticipant::load_from_store("node1", 0, &store);
+        assert_eq!(restored.prepared_count(), 2);
+        assert!(restored.locks.is_locked("key1"));
+        assert!(restored.locks.is_locked("key2"));
+    }
+
+    #[test]
+    fn test_participant_clear_persisted_state() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        participant.prepare(request);
+        participant.save_to_store("node1", 0, &store).unwrap();
+
+        TxParticipant::clear_persisted_state("node1", 0, &store);
+
+        let restored = TxParticipant::load_from_store("node1", 0, &store);
+        assert_eq!(restored.prepared_count(), 0);
+    }
+
+    // ========== Recovery Tests ==========
+
+    #[test]
+    fn test_coordinator_recover_removes_completed() {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // Add completed transactions manually
+        {
+            let mut pending = coordinator.pending.write();
+            let mut committed_tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            committed_tx.phase = TxPhase::Committed;
+            pending.insert(committed_tx.tx_id, committed_tx);
+
+            let mut aborted_tx = DistributedTransaction::new("node1".to_string(), vec![1]);
+            aborted_tx.phase = TxPhase::Aborted;
+            pending.insert(aborted_tx.tx_id, aborted_tx);
+        }
+
+        assert_eq!(coordinator.pending_count(), 2);
+
+        let stats = coordinator.recover();
+
+        assert_eq!(stats.completed, 2);
+        assert_eq!(coordinator.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_coordinator_recover_prepared_to_commit() {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            tx.phase = TxPhase::Prepared;
+            // Add YES vote
+            tx.votes.insert(
+                0,
+                PrepareVote::Yes {
+                    lock_handle: 1,
+                    delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                },
+            );
+            pending.insert(tx.tx_id, tx);
+        }
+
+        let stats = coordinator.recover();
+
+        assert_eq!(stats.pending_commit, 1);
+        let decisions = coordinator.get_pending_decisions();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1, TxPhase::Committing);
+    }
+
+    #[test]
+    fn test_coordinator_recover_committing_retry() {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            tx.phase = TxPhase::Committing;
+            pending.insert(tx.tx_id, tx);
+        }
+
+        let stats = coordinator.recover();
+
+        assert_eq!(stats.pending_commit, 1);
+    }
+
+    #[test]
+    fn test_coordinator_recover_aborting_retry() {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        {
+            let mut pending = coordinator.pending.write();
+            let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            tx.phase = TxPhase::Aborting;
+            pending.insert(tx.tx_id, tx);
+        }
+
+        let stats = coordinator.recover();
+
+        assert_eq!(stats.pending_abort, 1);
+    }
+
+    #[test]
+    fn test_participant_recover_awaiting_decision() {
+        let participant = TxParticipant::new();
+
+        // Prepare a transaction
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        participant.prepare(request);
+
+        // Recover with long timeout - should keep the transaction
+        let awaiting = participant.recover(Duration::from_secs(3600));
+        assert_eq!(awaiting, vec![1]);
+        assert!(participant.locks.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_participant_recover_expired_releases_locks() {
+        let participant = TxParticipant::new();
+        let old_time = now_epoch_millis().saturating_sub(10_000); // 10 seconds ago
+
+        // Manually insert an old prepared transaction and matching lock
+        {
+            let mut prepared = participant.prepared.write();
+            prepared.insert(
+                1,
+                PreparedTx {
+                    tx_id: 1,
+                    lock_handle: 12345, // Fixed lock handle
+                    operations: vec![],
+                    delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                    prepared_at_ms: old_time,
+                },
+            );
+        }
+        {
+            // Manually add lock with matching handle
+            let mut locks = participant.locks.locks.write();
+            let mut tx_locks = participant.locks.tx_locks.write();
+            locks.insert(
+                "key1".to_string(),
+                KeyLock {
+                    key: "key1".to_string(),
+                    tx_id: 1,
+                    lock_handle: 12345, // Same lock handle
+                    acquired_at_ms: old_time,
+                    timeout_ms: 30000,
+                },
+            );
+            tx_locks.insert(1, vec!["key1".to_string()]);
+        }
+
+        assert!(participant.locks.is_locked("key1"));
+
+        // Recover with short timeout
+        let awaiting = participant.recover(Duration::from_secs(5));
+        assert!(awaiting.is_empty());
+        assert!(!participant.locks.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_participant_get_awaiting_decision() {
+        let participant = TxParticipant::new();
+
+        let request = PrepareRequest {
+            tx_id: 42,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        participant.prepare(request);
+
+        let awaiting = participant.get_awaiting_decision();
+        assert_eq!(awaiting, vec![42]);
+    }
+
+    #[test]
+    fn test_recovery_stats_default() {
+        let stats = RecoveryStats::default();
+        assert_eq!(stats.pending_prepare, 0);
+        assert_eq!(stats.pending_commit, 0);
+        assert_eq!(stats.pending_abort, 0);
+        assert_eq!(stats.timed_out, 0);
+        assert_eq!(stats.completed, 0);
     }
 }

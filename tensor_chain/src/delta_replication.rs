@@ -232,7 +232,7 @@ pub struct ReplicationStats {
 }
 
 /// Snapshot of replication statistics for external consumption.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ReplicationStatsSnapshot {
     /// Total bytes sent.
     pub bytes_sent: u64,

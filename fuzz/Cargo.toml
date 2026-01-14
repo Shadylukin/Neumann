@@ -363,3 +363,35 @@ path = "fuzz_targets/delta_batch_apply.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 14: DTX persistence targets
+
+[[bin]]
+name = "dtx_persistence"
+path = "fuzz_targets/dtx_persistence.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 15: Partition detection and metrics targets
+
+[[bin]]
+name = "quorum_tracker"
+path = "fuzz_targets/quorum_tracker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "partition_status"
+path = "fuzz_targets/partition_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chain_metrics"
+path = "fuzz_targets/chain_metrics.rs"
+test = false
+doc = false
+bench = false

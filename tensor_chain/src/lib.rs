@@ -50,6 +50,7 @@ pub mod embedding;
 pub mod error;
 pub mod geometric_membership;
 pub mod membership;
+pub mod metrics;
 pub mod network;
 pub mod raft;
 pub mod state_machine;
@@ -76,11 +77,13 @@ pub use consensus::{
 };
 pub use delta_replication::{
     DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, ReplicationStats,
+    ReplicationStatsSnapshot,
 };
 pub use distributed_tx::{
-    AbortRequest, CommitRequest, DistributedTransaction, DistributedTxConfig,
-    DistributedTxCoordinator, DistributedTxStats, KeyLock, LockManager, PrepareRequest,
-    PrepareVote, PreparedTx, ShardId, TxParticipant, TxPhase, TxResponse,
+    AbortRequest, CommitRequest, CoordinatorState, DistributedTransaction, DistributedTxConfig,
+    DistributedTxCoordinator, DistributedTxStats, DistributedTxStatsSnapshot, EpochMillis, KeyLock,
+    LockManager, ParticipantState, PrepareRequest, PrepareVote, PreparedTx, RecoveryStats,
+    SerializableLockState, ShardId, TxParticipant, TxPhase, TxResponse,
 };
 pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
@@ -88,15 +91,20 @@ pub use geometric_membership::{GeometricMembershipConfig, GeometricMembershipMan
 use graph_engine::GraphEngine;
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
-    MembershipManager, NodeHealth, NodeStatus, PeerNodeConfig,
+    MembershipManager, MembershipStats, MembershipStatsSnapshot, NodeHealth, NodeStatus,
+    PartitionStatus, PeerNodeConfig,
 };
+pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
     AppendEntries, AppendEntriesResponse, GeometricTransport, LogEntry, MemoryTransport, Message,
     MessageHandler, NetworkManager, PeerConfig, QueryExecutor, QueryHandler, QueryRequest,
     QueryResponse, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg,
     TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
-pub use raft::{FastPathState, FastPathStats, RaftConfig, RaftNode, RaftState, SnapshotMetadata};
+pub use raft::{
+    FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,
+    RaftStatsSnapshot, SnapshotMetadata,
+};
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
@@ -111,6 +119,152 @@ pub use validation::{
     FastPathResult, FastPathValidator, StateValidation, TransitionValidation, TransitionValidator,
     ValidationConfig, ValidationMode,
 };
+
+/// Aggregated metrics from all tensor_chain components.
+///
+/// Provides a unified interface to collect and snapshot metrics from:
+/// - Raft consensus (elections, heartbeats, quorum)
+/// - Distributed transactions (2PC timing, lock contention)
+/// - Membership (health checks, partition status)
+/// - Replication (bandwidth, compression ratio)
+#[derive(Debug)]
+pub struct ChainMetrics {
+    /// Raft consensus metrics.
+    pub raft: Arc<RaftStats>,
+    /// Distributed transaction metrics.
+    pub dtx: Arc<DistributedTxStats>,
+    /// Membership and health check metrics.
+    pub membership: Arc<MembershipStats>,
+    /// Delta replication metrics.
+    pub replication: Arc<ReplicationStats>,
+}
+
+impl ChainMetrics {
+    /// Create a new ChainMetrics instance with fresh stats.
+    pub fn new() -> Self {
+        Self {
+            raft: Arc::new(RaftStats::new()),
+            dtx: Arc::new(DistributedTxStats::new()),
+            membership: Arc::new(MembershipStats::new()),
+            replication: Arc::new(ReplicationStats::new()),
+        }
+    }
+
+    /// Create from existing stats instances.
+    pub fn from_components(
+        raft: Arc<RaftStats>,
+        dtx: Arc<DistributedTxStats>,
+        membership: Arc<MembershipStats>,
+        replication: Arc<ReplicationStats>,
+    ) -> Self {
+        Self {
+            raft,
+            dtx,
+            membership,
+            replication,
+        }
+    }
+
+    /// Take a point-in-time snapshot of all metrics.
+    pub fn snapshot(&self) -> ChainMetricsSnapshot {
+        ChainMetricsSnapshot {
+            raft: self.raft.snapshot(),
+            dtx: self.dtx.snapshot(),
+            membership: self.membership.snapshot(),
+            replication: self.replication.snapshot(),
+        }
+    }
+}
+
+impl Default for ChainMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for ChainMetrics {
+    fn clone(&self) -> Self {
+        Self {
+            raft: Arc::clone(&self.raft),
+            dtx: Arc::clone(&self.dtx),
+            membership: Arc::clone(&self.membership),
+            replication: Arc::clone(&self.replication),
+        }
+    }
+}
+
+/// Point-in-time snapshot of all chain metrics.
+///
+/// This struct is serializable and can be exported to monitoring systems.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ChainMetricsSnapshot {
+    /// Raft consensus metrics snapshot.
+    pub raft: RaftStatsSnapshot,
+    /// Distributed transaction metrics snapshot.
+    pub dtx: DistributedTxStatsSnapshot,
+    /// Membership metrics snapshot.
+    pub membership: MembershipStatsSnapshot,
+    /// Replication metrics snapshot.
+    pub replication: ReplicationStatsSnapshot,
+}
+
+impl ChainMetricsSnapshot {
+    /// Check if any operations have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.raft.fast_path_accepted == 0
+            && self.raft.heartbeat_successes == 0
+            && self.dtx.started == 0
+            && self.membership.health_checks == 0
+            && self.replication.updates_sent == 0
+    }
+
+    /// Get total heartbeat count (successes + failures).
+    pub fn total_heartbeats(&self) -> u64 {
+        self.raft.heartbeat_successes + self.raft.heartbeat_failures
+    }
+
+    /// Calculate heartbeat success rate (0.0 - 1.0).
+    pub fn heartbeat_success_rate(&self) -> f64 {
+        let total = self.total_heartbeats();
+        if total == 0 {
+            1.0 // No heartbeats means no failures
+        } else {
+            self.raft.heartbeat_successes as f64 / total as f64
+        }
+    }
+
+    /// Calculate transaction commit rate (0.0 - 1.0).
+    pub fn tx_commit_rate(&self) -> f64 {
+        if self.dtx.started == 0 {
+            1.0
+        } else {
+            self.dtx.committed as f64 / self.dtx.started as f64
+        }
+    }
+
+    /// Calculate health check success rate (0.0 - 1.0).
+    pub fn health_check_success_rate(&self) -> f64 {
+        if self.membership.health_checks == 0 {
+            1.0
+        } else {
+            let failures = self.membership.health_check_failures;
+            let successes = self.membership.health_checks.saturating_sub(failures);
+            successes as f64 / self.membership.health_checks as f64
+        }
+    }
+
+    /// Check if the cluster is healthy based on metrics.
+    ///
+    /// Returns true if:
+    /// - Heartbeat success rate > 0.9
+    /// - No quorum lost events
+    /// - Health check success rate > 0.9
+    pub fn is_cluster_healthy(&self) -> bool {
+        self.heartbeat_success_rate() > 0.9
+            && self.raft.quorum_lost_events == 0
+            && self.health_check_success_rate() > 0.9
+    }
+}
 
 /// Handle for a running Raft consensus node.
 ///
@@ -1531,5 +1685,202 @@ mod tests {
 
         // Without peers, routes to local node
         assert_eq!(routed, "node1");
+    }
+
+    // ChainMetrics tests
+
+    #[test]
+    fn test_chain_metrics_new() {
+        let metrics = ChainMetrics::new();
+
+        // All stats should be at initial values
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_chain_metrics_default() {
+        let metrics = ChainMetrics::default();
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_chain_metrics_clone() {
+        let metrics = ChainMetrics::new();
+
+        // Record some data
+        metrics.raft.fast_path_accepted.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+
+        let cloned = metrics.clone();
+
+        // Clone should share the same Arc
+        assert_eq!(
+            metrics.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
+            cloned.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        // Modifying one should affect both
+        metrics.raft.fast_path_accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            cloned.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
+            6
+        );
+    }
+
+    #[test]
+    fn test_chain_metrics_from_components() {
+        let raft = Arc::new(RaftStats::new());
+        let dtx = Arc::new(DistributedTxStats::new());
+        let membership = Arc::new(MembershipStats::new());
+        let replication = Arc::new(ReplicationStats::new());
+
+        let metrics = ChainMetrics::from_components(
+            Arc::clone(&raft),
+            Arc::clone(&dtx),
+            Arc::clone(&membership),
+            Arc::clone(&replication),
+        );
+
+        // Should use the same Arc instances
+        raft.fast_path_accepted.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            metrics.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_is_empty() {
+        let snapshot = ChainMetricsSnapshot::default();
+        assert!(snapshot.is_empty());
+
+        // Create non-empty snapshot
+        let metrics = ChainMetrics::new();
+        metrics.dtx.started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!(!snapshot.is_empty());
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_total_heartbeats() {
+        let metrics = ChainMetrics::new();
+        metrics.raft.heartbeat_successes.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics.raft.heartbeat_failures.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.total_heartbeats(), 12);
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_heartbeat_success_rate() {
+        let metrics = ChainMetrics::new();
+
+        // No heartbeats - 100% success rate
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.heartbeat_success_rate() - 1.0).abs() < 0.001);
+
+        // 8 successes, 2 failures = 80%
+        metrics.raft.heartbeat_successes.fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+        metrics.raft.heartbeat_failures.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.heartbeat_success_rate() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_tx_commit_rate() {
+        let metrics = ChainMetrics::new();
+
+        // No transactions - 100% commit rate
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.tx_commit_rate() - 1.0).abs() < 0.001);
+
+        // 7 committed out of 10 started = 70%
+        metrics.dtx.started.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics.dtx.committed.fetch_add(7, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.tx_commit_rate() - 0.7).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_health_check_success_rate() {
+        let metrics = ChainMetrics::new();
+
+        // No health checks - 100% success rate
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.health_check_success_rate() - 1.0).abs() < 0.001);
+
+        // 9 successes out of 10 (1 failure) = 90%
+        metrics.membership.health_checks.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics.membership.health_check_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.health_check_success_rate() - 0.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_is_cluster_healthy() {
+        let metrics = ChainMetrics::new();
+
+        // Empty metrics - healthy by default
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.is_cluster_healthy());
+
+        // Add good stats - still healthy
+        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics.raft.heartbeat_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
+        metrics.membership.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics.membership.health_check_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
+        let snapshot = metrics.snapshot();
+        assert!(snapshot.is_cluster_healthy());
+
+        // Add quorum lost event - unhealthy
+        metrics.raft.quorum_lost_events.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!(!snapshot.is_cluster_healthy());
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_unhealthy_heartbeats() {
+        let metrics = ChainMetrics::new();
+
+        // 50% heartbeat failure rate - unhealthy
+        metrics.raft.heartbeat_successes.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        metrics.raft.heartbeat_failures.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!(!snapshot.is_cluster_healthy());
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_unhealthy_health_checks() {
+        let metrics = ChainMetrics::new();
+
+        // 50% health check failure rate - unhealthy
+        metrics.membership.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics.membership.health_check_failures.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        let snapshot = metrics.snapshot();
+        assert!(!snapshot.is_cluster_healthy());
+    }
+
+    #[test]
+    fn test_chain_metrics_snapshot_serialization() {
+        let metrics = ChainMetrics::new();
+        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics.dtx.started.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+
+        let snapshot = metrics.snapshot();
+
+        // Serialize with bincode
+        let bytes = bincode::serialize(&snapshot).unwrap();
+        let restored: ChainMetricsSnapshot = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(snapshot.raft.heartbeat_successes, restored.raft.heartbeat_successes);
+        assert_eq!(snapshot.dtx.started, restored.dtx.started);
+    }
+
+    #[test]
+    fn test_chain_metrics_debug() {
+        let metrics = ChainMetrics::new();
+        let debug = format!("{:?}", metrics);
+        assert!(debug.contains("ChainMetrics"));
     }
 }

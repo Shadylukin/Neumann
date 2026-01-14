@@ -110,18 +110,37 @@ struct PersistentState {
     log: Vec<LogEntry>,
 }
 
-/// Statistics for fast-path validation.
+/// Comprehensive Raft statistics including fast-path validation and quorum tracking.
 #[derive(Debug, Default)]
-pub struct FastPathStats {
+pub struct RaftStats {
+    // Fast-path validation counters (backward compatible with FastPathStats)
     /// Number of blocks that used fast-path validation.
     pub fast_path_accepted: AtomicU64,
     /// Number of blocks that failed fast-path and required full validation.
     pub fast_path_rejected: AtomicU64,
     /// Number of blocks that required full validation (no embedding or first blocks).
     pub full_validation_required: AtomicU64,
+
+    // Timing metrics
+    /// Election duration timing (microseconds).
+    pub election_timing: crate::metrics::TimingStats,
+    /// Heartbeat round-trip timing (microseconds).
+    pub heartbeat_timing: crate::metrics::TimingStats,
+
+    // Quorum tracking
+    /// Number of quorum checks performed.
+    pub quorum_checks: AtomicU64,
+    /// Number of times quorum was lost.
+    pub quorum_lost_events: AtomicU64,
+    /// Number of times leader stepped down due to quorum loss.
+    pub leader_step_downs: AtomicU64,
+    /// Number of successful heartbeat responses.
+    pub heartbeat_successes: AtomicU64,
+    /// Number of failed heartbeat attempts.
+    pub heartbeat_failures: AtomicU64,
 }
 
-impl FastPathStats {
+impl RaftStats {
     /// Create new stats.
     pub fn new() -> Self {
         Self::default()
@@ -160,6 +179,174 @@ impl FastPathStats {
         self.fast_path_accepted.load(Ordering::Relaxed)
             + self.fast_path_rejected.load(Ordering::Relaxed)
             + self.full_validation_required.load(Ordering::Relaxed)
+    }
+
+    /// Get the heartbeat success rate.
+    pub fn heartbeat_success_rate(&self) -> f32 {
+        let successes = self.heartbeat_successes.load(Ordering::Relaxed);
+        let failures = self.heartbeat_failures.load(Ordering::Relaxed);
+        let total = successes + failures;
+        if total == 0 {
+            1.0 // No heartbeats sent yet, assume success
+        } else {
+            successes as f32 / total as f32
+        }
+    }
+
+    /// Take a point-in-time snapshot of all statistics.
+    pub fn snapshot(&self) -> RaftStatsSnapshot {
+        RaftStatsSnapshot {
+            fast_path_accepted: self.fast_path_accepted.load(Ordering::Relaxed),
+            fast_path_rejected: self.fast_path_rejected.load(Ordering::Relaxed),
+            full_validation_required: self.full_validation_required.load(Ordering::Relaxed),
+            election_timing: self.election_timing.snapshot(),
+            heartbeat_timing: self.heartbeat_timing.snapshot(),
+            quorum_checks: self.quorum_checks.load(Ordering::Relaxed),
+            quorum_lost_events: self.quorum_lost_events.load(Ordering::Relaxed),
+            leader_step_downs: self.leader_step_downs.load(Ordering::Relaxed),
+            heartbeat_successes: self.heartbeat_successes.load(Ordering::Relaxed),
+            heartbeat_failures: self.heartbeat_failures.load(Ordering::Relaxed),
+            fast_path_rate: self.acceptance_rate(),
+            heartbeat_success_rate: self.heartbeat_success_rate(),
+        }
+    }
+}
+
+/// Point-in-time snapshot of Raft statistics.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RaftStatsSnapshot {
+    pub fast_path_accepted: u64,
+    pub fast_path_rejected: u64,
+    pub full_validation_required: u64,
+    pub election_timing: crate::metrics::TimingSnapshot,
+    pub heartbeat_timing: crate::metrics::TimingSnapshot,
+    pub quorum_checks: u64,
+    pub quorum_lost_events: u64,
+    pub leader_step_downs: u64,
+    pub heartbeat_successes: u64,
+    pub heartbeat_failures: u64,
+    pub fast_path_rate: f32,
+    pub heartbeat_success_rate: f32,
+}
+
+/// Backward compatibility alias for RaftStats.
+pub type FastPathStats = RaftStats;
+
+/// Tracks heartbeat responses to detect quorum loss.
+///
+/// Used by the Raft leader to verify it can still reach a majority
+/// of followers. If quorum is lost, the leader steps down to prevent
+/// split-brain scenarios.
+pub struct QuorumTracker {
+    /// Last successful response time per peer.
+    last_response: RwLock<HashMap<NodeId, Instant>>,
+    /// Consecutive failures per peer.
+    consecutive_failures: RwLock<HashMap<NodeId, u32>>,
+    /// Response timeout threshold.
+    response_timeout: std::time::Duration,
+    /// Max failures before considering peer unreachable.
+    max_failures: u32,
+}
+
+impl QuorumTracker {
+    /// Create a new quorum tracker.
+    pub fn new(response_timeout: std::time::Duration, max_failures: u32) -> Self {
+        Self {
+            last_response: RwLock::new(HashMap::new()),
+            consecutive_failures: RwLock::new(HashMap::new()),
+            response_timeout,
+            max_failures,
+        }
+    }
+
+    /// Create with default settings (5s timeout, 3 max failures).
+    pub fn default_config() -> Self {
+        Self::new(std::time::Duration::from_secs(5), 3)
+    }
+
+    /// Record a successful response from a peer.
+    pub fn record_success(&self, node_id: &NodeId) {
+        self.last_response
+            .write()
+            .insert(node_id.clone(), Instant::now());
+        self.consecutive_failures.write().remove(node_id);
+    }
+
+    /// Record a failed attempt to reach a peer.
+    pub fn record_failure(&self, node_id: &NodeId) {
+        let mut failures = self.consecutive_failures.write();
+        *failures.entry(node_id.clone()).or_insert(0) += 1;
+    }
+
+    /// Check if a specific peer is currently reachable.
+    pub fn is_reachable(&self, node_id: &NodeId) -> bool {
+        // Check consecutive failures
+        let failures = self.consecutive_failures.read();
+        if failures.get(node_id).copied().unwrap_or(0) >= self.max_failures {
+            return false;
+        }
+
+        // Check last response time
+        let last = self.last_response.read();
+        last.get(node_id)
+            .map(|t| t.elapsed() < self.response_timeout)
+            .unwrap_or(false)
+    }
+
+    /// Count the number of currently reachable peers.
+    pub fn reachable_count(&self) -> usize {
+        let last = self.last_response.read();
+        last.keys().filter(|id| self.is_reachable(id)).count()
+    }
+
+    /// Check if we have quorum (including self).
+    ///
+    /// For a cluster of N nodes, quorum requires (N/2)+1 nodes.
+    /// Self is always considered reachable.
+    pub fn has_quorum(&self, total_peers: usize) -> bool {
+        // Total nodes = peers + self
+        let total_nodes = total_peers + 1;
+        let quorum_size = (total_nodes / 2) + 1;
+        // Reachable = peers responding + self (always reachable)
+        self.reachable_count() + 1 >= quorum_size
+    }
+
+    /// Reset all tracking state.
+    pub fn reset(&self) {
+        self.last_response.write().clear();
+        self.consecutive_failures.write().clear();
+    }
+
+    /// Mark a peer as initially reachable (for new peers).
+    pub fn mark_reachable(&self, node_id: &NodeId) {
+        self.last_response
+            .write()
+            .insert(node_id.clone(), Instant::now());
+    }
+
+    /// Get the list of unreachable peers.
+    pub fn unreachable_peers(&self) -> Vec<NodeId> {
+        let last = self.last_response.read();
+        last.keys()
+            .filter(|id| !self.is_reachable(id))
+            .cloned()
+            .collect()
+    }
+}
+
+impl std::fmt::Debug for QuorumTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuorumTracker")
+            .field("reachable_count", &self.reachable_count())
+            .field("response_timeout", &self.response_timeout)
+            .field("max_failures", &self.max_failures)
+            .finish()
+    }
+}
+
+impl Default for QuorumTracker {
+    fn default() -> Self {
+        Self::default_config()
     }
 }
 
@@ -373,6 +560,10 @@ pub struct RaftNode {
     membership: Option<Arc<MembershipManager>>,
     /// Snapshot state for log compaction.
     snapshot_state: RwLock<SnapshotState>,
+    /// Quorum tracker for split-brain prevention.
+    quorum_tracker: QuorumTracker,
+    /// Statistics.
+    pub stats: RaftStats,
 }
 
 impl RaftNode {
@@ -408,6 +599,8 @@ impl RaftNode {
             config,
             membership: None,
             snapshot_state: RwLock::new(SnapshotState::new()),
+            quorum_tracker: QuorumTracker::default(),
+            stats: RaftStats::new(),
         }
     }
 
@@ -562,6 +755,8 @@ impl RaftNode {
             config,
             membership: None,
             snapshot_state: RwLock::new(SnapshotState::new()),
+            quorum_tracker: QuorumTracker::default(),
+            stats: RaftStats::new(),
         }
     }
 
@@ -643,6 +838,16 @@ impl RaftNode {
     /// Get fast-path state.
     pub fn fast_path_state(&self) -> &FastPathState {
         &self.fast_path_state
+    }
+
+    /// Get the Raft stats.
+    pub fn stats(&self) -> &RaftStats {
+        &self.stats
+    }
+
+    /// Get the quorum tracker.
+    pub fn quorum_tracker(&self) -> &QuorumTracker {
+        &self.quorum_tracker
     }
 
     /// Get a reference to the transport layer.
@@ -4023,5 +4228,231 @@ mod tests {
         node.handle_snapshot_response(&"other".to_string(), &response);
         // Should not have installed any snapshot
         assert!(node.get_snapshot_metadata().is_none());
+    }
+
+    // ========== QuorumTracker Tests ==========
+
+    #[test]
+    fn test_quorum_tracker_new() {
+        let tracker = QuorumTracker::new(std::time::Duration::from_secs(5), 3);
+        assert_eq!(tracker.reachable_count(), 0);
+    }
+
+    #[test]
+    fn test_quorum_tracker_default() {
+        let tracker = QuorumTracker::default();
+        assert_eq!(tracker.reachable_count(), 0);
+    }
+
+    #[test]
+    fn test_quorum_tracker_record_success() {
+        let tracker = QuorumTracker::default();
+        tracker.record_success(&"node2".to_string());
+
+        assert!(tracker.is_reachable(&"node2".to_string()));
+        assert_eq!(tracker.reachable_count(), 1);
+    }
+
+    #[test]
+    fn test_quorum_tracker_record_failure() {
+        let tracker = QuorumTracker::new(std::time::Duration::from_secs(5), 3);
+
+        // First mark as reachable
+        tracker.record_success(&"node2".to_string());
+        assert!(tracker.is_reachable(&"node2".to_string()));
+
+        // Record failures up to threshold
+        tracker.record_failure(&"node2".to_string());
+        tracker.record_failure(&"node2".to_string());
+        assert!(tracker.is_reachable(&"node2".to_string())); // Still reachable
+
+        tracker.record_failure(&"node2".to_string()); // 3rd failure
+        assert!(!tracker.is_reachable(&"node2".to_string())); // Now unreachable
+    }
+
+    #[test]
+    fn test_quorum_tracker_success_clears_failures() {
+        let tracker = QuorumTracker::new(std::time::Duration::from_secs(5), 3);
+
+        tracker.record_success(&"node2".to_string());
+        tracker.record_failure(&"node2".to_string());
+        tracker.record_failure(&"node2".to_string());
+
+        // Success should clear failure count
+        tracker.record_success(&"node2".to_string());
+
+        // Now we can record failures again without being unreachable
+        tracker.record_failure(&"node2".to_string());
+        tracker.record_failure(&"node2".to_string());
+        assert!(tracker.is_reachable(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_quorum_tracker_has_quorum_3_nodes() {
+        let tracker = QuorumTracker::default();
+
+        // 3 nodes total, need 2 for quorum (including self)
+        // Just self = 1, need 1 more peer
+        assert!(!tracker.has_quorum(2)); // 2 peers + self = 3 nodes, 0 peers reachable
+
+        tracker.record_success(&"node2".to_string());
+        assert!(tracker.has_quorum(2)); // 1 peer + self = 2, quorum achieved
+    }
+
+    #[test]
+    fn test_quorum_tracker_has_quorum_5_nodes() {
+        let tracker = QuorumTracker::default();
+
+        // 5 nodes total, need 3 for quorum
+        // Self + 2 peers = 3 needed
+        assert!(!tracker.has_quorum(4)); // 0 peers reachable
+
+        tracker.record_success(&"node2".to_string());
+        assert!(!tracker.has_quorum(4)); // 1 peer + self = 2, need 3
+
+        tracker.record_success(&"node3".to_string());
+        assert!(tracker.has_quorum(4)); // 2 peers + self = 3, quorum achieved
+    }
+
+    #[test]
+    fn test_quorum_tracker_reset() {
+        let tracker = QuorumTracker::default();
+        tracker.record_success(&"node2".to_string());
+        tracker.record_success(&"node3".to_string());
+        assert_eq!(tracker.reachable_count(), 2);
+
+        tracker.reset();
+        assert_eq!(tracker.reachable_count(), 0);
+    }
+
+    #[test]
+    fn test_quorum_tracker_unreachable_peers() {
+        let tracker = QuorumTracker::new(std::time::Duration::from_secs(5), 2);
+
+        tracker.record_success(&"node2".to_string());
+        tracker.record_success(&"node3".to_string());
+
+        // Make node3 unreachable
+        tracker.record_failure(&"node3".to_string());
+        tracker.record_failure(&"node3".to_string());
+
+        let unreachable = tracker.unreachable_peers();
+        assert_eq!(unreachable.len(), 1);
+        assert!(unreachable.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_quorum_tracker_mark_reachable() {
+        let tracker = QuorumTracker::default();
+
+        tracker.mark_reachable(&"node2".to_string());
+        assert!(tracker.is_reachable(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_quorum_tracker_debug() {
+        let tracker = QuorumTracker::default();
+        let debug_str = format!("{:?}", tracker);
+        assert!(debug_str.contains("QuorumTracker"));
+    }
+
+    // ========== RaftStats Tests ==========
+
+    #[test]
+    fn test_raft_stats_new() {
+        let stats = RaftStats::new();
+        assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.heartbeat_successes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_raft_stats_record_fast_path() {
+        let stats = RaftStats::new();
+        stats.record_fast_path();
+        stats.record_fast_path();
+        assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_raft_stats_record_rejected() {
+        let stats = RaftStats::new();
+        stats.record_rejected();
+        assert_eq!(stats.fast_path_rejected.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_raft_stats_acceptance_rate() {
+        let stats = RaftStats::new();
+
+        // No entries yet
+        assert_eq!(stats.acceptance_rate(), 0.0);
+
+        // 3 accepted, 1 rejected = 75%
+        stats.record_fast_path();
+        stats.record_fast_path();
+        stats.record_fast_path();
+        stats.record_rejected();
+
+        assert!((stats.acceptance_rate() - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_raft_stats_heartbeat_success_rate() {
+        let stats = RaftStats::new();
+
+        // No heartbeats yet = 100% (assume success)
+        assert_eq!(stats.heartbeat_success_rate(), 1.0);
+
+        // 9 successes, 1 failure = 90%
+        for _ in 0..9 {
+            stats.heartbeat_successes.fetch_add(1, Ordering::Relaxed);
+        }
+        stats.heartbeat_failures.fetch_add(1, Ordering::Relaxed);
+
+        assert!((stats.heartbeat_success_rate() - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_raft_stats_snapshot() {
+        let stats = RaftStats::new();
+        stats.record_fast_path();
+        stats.record_fast_path();
+        stats.record_rejected();
+        stats.quorum_checks.fetch_add(5, Ordering::Relaxed);
+        stats.heartbeat_successes.fetch_add(10, Ordering::Relaxed);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.fast_path_accepted, 2);
+        assert_eq!(snapshot.fast_path_rejected, 1);
+        assert_eq!(snapshot.quorum_checks, 5);
+        assert_eq!(snapshot.heartbeat_successes, 10);
+        assert!((snapshot.fast_path_rate - 0.667).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_raft_stats_timing() {
+        let stats = RaftStats::new();
+        stats.election_timing.record(100);
+        stats.election_timing.record(200);
+        stats.heartbeat_timing.record(50);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.election_timing.count, 2);
+        assert_eq!(snapshot.election_timing.avg_us, 150.0);
+        assert_eq!(snapshot.heartbeat_timing.count, 1);
+    }
+
+    #[test]
+    fn test_raft_node_has_stats() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        assert_eq!(node.stats.fast_path_accepted.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_fast_path_stats_alias() {
+        // Verify FastPathStats is an alias for RaftStats
+        let stats: FastPathStats = RaftStats::new();
+        stats.record_fast_path();
+        assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 1);
     }
 }

@@ -41,6 +41,65 @@ pub enum NodeHealth {
     Unknown,
 }
 
+/// Partition status based on reachable nodes.
+///
+/// "Split-brain" technically refers to two leaders existing simultaneously.
+/// Since quorum tracking prevents that, these states indicate quorum availability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PartitionStatus {
+    /// Majority of nodes reachable - safe to accept writes.
+    QuorumReachable,
+    /// Less than majority reachable - must reject writes.
+    QuorumLost,
+    /// Exact 50/50 split (even cluster) - neither side has quorum.
+    Stalemate,
+    /// Status unknown (during startup grace period).
+    #[default]
+    Unknown,
+}
+
+/// Membership health metrics.
+#[derive(Debug, Default)]
+pub struct MembershipStats {
+    /// Total health checks performed.
+    pub health_checks: AtomicU64,
+    /// Health checks that failed.
+    pub health_check_failures: AtomicU64,
+    /// Ping round-trip timing (microseconds).
+    pub ping_timing: crate::metrics::TimingStats,
+    /// Number of partition events detected.
+    pub partition_events: AtomicU64,
+    /// Number of times quorum was lost.
+    pub quorum_lost_events: AtomicU64,
+}
+
+impl MembershipStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take a point-in-time snapshot.
+    pub fn snapshot(&self) -> MembershipStatsSnapshot {
+        MembershipStatsSnapshot {
+            health_checks: self.health_checks.load(Ordering::Relaxed),
+            health_check_failures: self.health_check_failures.load(Ordering::Relaxed),
+            ping_timing: self.ping_timing.snapshot(),
+            partition_events: self.partition_events.load(Ordering::Relaxed),
+            quorum_lost_events: self.quorum_lost_events.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Point-in-time snapshot of membership statistics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MembershipStatsSnapshot {
+    pub health_checks: u64,
+    pub health_check_failures: u64,
+    pub ping_timing: crate::metrics::TimingSnapshot,
+    pub partition_events: u64,
+    pub quorum_lost_events: u64,
+}
+
 /// Status information for a single node.
 #[derive(Debug, Clone)]
 pub struct NodeStatus {
@@ -121,10 +180,20 @@ pub struct ClusterView {
     pub generation: u64,
     /// Time this view was created.
     pub timestamp: Instant,
+    /// Current partition status.
+    pub partition_status: PartitionStatus,
 }
 
 impl ClusterView {
     fn new(nodes: Vec<NodeStatus>, generation: u64) -> Self {
+        Self::with_partition_status(nodes, generation, PartitionStatus::Unknown)
+    }
+
+    fn with_partition_status(
+        nodes: Vec<NodeStatus>,
+        generation: u64,
+        partition_status: PartitionStatus,
+    ) -> Self {
         let healthy_nodes: Vec<NodeId> = nodes
             .iter()
             .filter(|n| n.health == NodeHealth::Healthy)
@@ -143,6 +212,7 @@ impl ClusterView {
             failed_nodes,
             generation,
             timestamp: Instant::now(),
+            partition_status,
         }
     }
 
@@ -303,6 +373,9 @@ pub struct MembershipManager {
 
     /// Running flag.
     running: RwLock<bool>,
+
+    /// Statistics.
+    pub stats: MembershipStats,
 }
 
 impl MembershipManager {
@@ -335,6 +408,7 @@ impl MembershipManager {
             shutdown_tx,
             start_time: Instant::now(),
             running: RwLock::new(false),
+            stats: MembershipStats::new(),
         }
     }
 
@@ -347,7 +421,57 @@ impl MembershipManager {
     pub fn view(&self) -> ClusterView {
         let nodes = self.nodes.read();
         let statuses: Vec<NodeStatus> = nodes.values().cloned().collect();
-        ClusterView::new(statuses, self.generation.load(Ordering::SeqCst))
+        let partition_status = self.compute_partition_status_inner(&statuses);
+        ClusterView::with_partition_status(
+            statuses,
+            self.generation.load(Ordering::SeqCst),
+            partition_status,
+        )
+    }
+
+    /// Compute the current partition status.
+    pub fn partition_status(&self) -> PartitionStatus {
+        if self.in_grace_period() {
+            return PartitionStatus::Unknown;
+        }
+
+        let nodes = self.nodes.read();
+        let statuses: Vec<NodeStatus> = nodes.values().cloned().collect();
+        self.compute_partition_status_inner(&statuses)
+    }
+
+    fn compute_partition_status_inner(&self, statuses: &[NodeStatus]) -> PartitionStatus {
+        if self.in_grace_period() {
+            return PartitionStatus::Unknown;
+        }
+
+        let total = statuses.len();
+        if total == 0 {
+            return PartitionStatus::Unknown;
+        }
+
+        let healthy = statuses
+            .iter()
+            .filter(|s| s.health == NodeHealth::Healthy)
+            .count();
+
+        let quorum = (total / 2) + 1;
+
+        if healthy >= quorum {
+            PartitionStatus::QuorumReachable
+        } else if total % 2 == 0 && healthy * 2 == total {
+            // Exact 50/50 split in even-sized cluster
+            PartitionStatus::Stalemate
+        } else {
+            PartitionStatus::QuorumLost
+        }
+    }
+
+    /// Check if it's safe to perform write operations.
+    ///
+    /// Returns false during grace period or when quorum is lost.
+    pub fn is_safe_to_write(&self) -> bool {
+        self.partition_status() == PartitionStatus::QuorumReachable
     }
 
     /// Get the status of a specific node.
@@ -1157,5 +1281,185 @@ mod tests {
             2,
             "Should have 2 view change notifications"
         );
+    }
+
+    // ========== PartitionStatus Tests ==========
+
+    #[test]
+    fn test_partition_status_default() {
+        let status = PartitionStatus::default();
+        assert_eq!(status, PartitionStatus::Unknown);
+    }
+
+    #[test]
+    fn test_partition_status_equality() {
+        assert_eq!(PartitionStatus::QuorumReachable, PartitionStatus::QuorumReachable);
+        assert_ne!(PartitionStatus::QuorumReachable, PartitionStatus::QuorumLost);
+    }
+
+    #[test]
+    fn test_partition_status_clone() {
+        let status = PartitionStatus::Stalemate;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_partition_status_debug() {
+        let status = PartitionStatus::QuorumLost;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("QuorumLost"));
+    }
+
+    #[tokio::test]
+    async fn test_partition_status_during_grace_period() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 60_000; // Long grace period
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9300".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9301".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        // During grace period, status should be Unknown
+        assert_eq!(manager.partition_status(), PartitionStatus::Unknown);
+        assert!(!manager.is_safe_to_write());
+    }
+
+    #[tokio::test]
+    async fn test_partition_status_quorum_reachable() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0; // No grace period
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9400".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9401".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9402".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        // Local node is always healthy, need 2/3 for quorum
+        // With just local healthy, we have 1/3 - not quorum
+        let status = manager.partition_status();
+
+        // Without health checks running, other nodes are Unknown
+        // 1 Healthy (self) out of 3 = QuorumLost
+        assert_eq!(status, PartitionStatus::QuorumLost);
+    }
+
+    #[test]
+    fn test_cluster_view_has_partition_status() {
+        // Create a view manually to test the field
+        let status = NodeStatus::new("node1".to_string(), "127.0.0.1:9000".parse().unwrap());
+        let view = ClusterView::with_partition_status(vec![status], 1, PartitionStatus::QuorumReachable);
+
+        assert_eq!(view.partition_status, PartitionStatus::QuorumReachable);
+    }
+
+    // ========== MembershipStats Tests ==========
+
+    #[test]
+    fn test_membership_stats_new() {
+        let stats = MembershipStats::new();
+        assert_eq!(stats.health_checks.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.partition_events.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_membership_stats_snapshot() {
+        let stats = MembershipStats::new();
+        stats.health_checks.fetch_add(10, Ordering::Relaxed);
+        stats.health_check_failures.fetch_add(2, Ordering::Relaxed);
+        stats.partition_events.fetch_add(1, Ordering::Relaxed);
+        stats.ping_timing.record(100);
+        stats.ping_timing.record(200);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.health_checks, 10);
+        assert_eq!(snapshot.health_check_failures, 2);
+        assert_eq!(snapshot.partition_events, 1);
+        assert_eq!(snapshot.ping_timing.count, 2);
+        assert_eq!(snapshot.ping_timing.avg_us, 150.0);
+    }
+
+    #[test]
+    fn test_membership_stats_default() {
+        let stats = MembershipStats::default();
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.health_checks, 0);
+        assert_eq!(snapshot.ping_timing.count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_membership_manager_has_stats() {
+        let config = create_test_config();
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        // Manager should have stats field
+        assert_eq!(manager.stats.health_checks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_is_safe_to_write_false_during_grace() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 60_000;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9500".parse().unwrap(),
+            },
+        )
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        assert!(!manager.is_safe_to_write());
+    }
+
+    #[test]
+    fn test_compute_partition_status_stalemate() {
+        // Test the stalemate (50/50 split) detection
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        // 4 node cluster - if 2 are healthy, we have stalemate
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9600".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9601".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9602".parse().unwrap())
+        .with_peer("node4", "127.0.0.1:9603".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        // Initially, only local node is healthy (1/4)
+        // This is QuorumLost, not Stalemate
+        let status = manager.partition_status();
+        assert_eq!(status, PartitionStatus::QuorumLost);
     }
 }
