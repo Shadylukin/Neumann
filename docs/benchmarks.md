@@ -847,6 +847,72 @@ Measurement of actual delta sparsity for different transaction patterns (128d em
 - **High dimension scaling**: Benefits increase with dimension (768d: 4-5x faster than dense)
 - **Common operations optimized**: Single-key updates (most common) are 96.9% sparse
 
+#### Distributed Systems Benchmarks
+
+**Raft Consensus Operations:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| raft_node_create | 545 ns | 1.8M/sec |
+| raft_become_leader | 195 ns | 5.1M/sec |
+| raft_heartbeat_stats_snapshot | 4.2 ns | 238M/sec |
+| raft_log_length | 3.7 ns | 270M/sec |
+| raft_stats_snapshot | 416 ps | 2.4B/sec |
+
+**2PC Distributed Transaction Operations:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| lock_manager_acquire | 256 ns | 3.9M/sec |
+| lock_manager_release | 139 ns | 7.2M/sec |
+| lock_manager_is_locked | 31 ns | 32M/sec |
+| coordinator_create | 46 ns | 21.7M/sec |
+| coordinator_stats | 418 ps | 2.4B/sec |
+| participant_create | 11 ns | 91M/sec |
+
+**Gossip Protocol Operations:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| lww_state_create | 4.2 ns | 238M/sec |
+| lww_state_merge | 169 ns | 5.9M/sec |
+| gossip_node_state_create | 16 ns | 62M/sec |
+| gossip_message_serialize | 36 ns | 28M/sec |
+| gossip_message_deserialize | 81 ns | 12M/sec |
+
+**Snapshot Operations:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| snapshot_metadata_create | 131 ns | 7.6M/sec |
+| snapshot_metadata_serialize | 76 ns | 13M/sec |
+| snapshot_metadata_deserialize | 246 ns | 4.1M/sec |
+| raft_membership_config_create | 102 ns | 9.8M/sec |
+| raft_with_store_create | 948 ns | 1.1M/sec |
+
+**Membership Operations:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| membership_manager_create | 526 ns | 1.9M/sec |
+| membership_view | 152 ns | 6.6M/sec |
+| membership_partition_status | 19 ns | 52M/sec |
+| membership_node_status | 46 ns | 21.7M/sec |
+| membership_stats_snapshot | 2.9 ns | 344M/sec |
+| membership_peer_ids | 71 ns | 14M/sec |
+
+**Deadlock Detection:**
+| Operation | Time | Throughput |
+|-----------|------|------------|
+| wait_graph_add_edge | 372 ns | 2.7M/sec |
+| wait_graph_detect_no_cycle | 374 ns | 2.7M/sec |
+| wait_graph_detect_with_cycle | 302 ns | 3.3M/sec |
+| deadlock_detector_detect | 392 ns | 2.6M/sec |
+
+#### Distributed Systems Analysis
+
+- **Lock operations are fast**: Lock acquisition at 256ns and lock checks at 31ns support high-throughput 2PC
+- **Gossip is lightweight**: State creation <5ns, merges ~169ns - suitable for high-frequency protocol rounds
+- **Stats access is near-free**: Sub-nanosecond stats snapshots (416ps) mean monitoring adds no overhead
+- **Deadlock detection is efficient**: Cycle detection in ~300-400ns allows frequent checks without blocking
+- **Node/manager creation is slower** (500-950ns) - expected for initialization with data structures
+- **Snapshot deserialization at 246ns** is acceptable for fast recovery
+
 ### neumann_parser
 
 The parser is a hand-written recursive descent parser with Pratt expression parsing for operator precedence.
