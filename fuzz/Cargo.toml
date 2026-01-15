@@ -23,6 +23,8 @@ tensor_cache = { path = "../tensor_cache" }
 relational_engine = { path = "../relational_engine", features = ["test-internals"] }
 bincode = "1.3"
 serde_json = "1"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
 
 # Tier 1: Parser targets
 
@@ -401,6 +403,22 @@ bench = false
 [[bin]]
 name = "raft_prevote"
 path = "fuzz_targets/raft_prevote.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 17: Snapshot persistence and 2PC abort targets
+
+[[bin]]
+name = "snapshot_hash"
+path = "fuzz_targets/snapshot_hash.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tx_abort_msg"
+path = "fuzz_targets/tx_abort_msg.rs"
 test = false
 doc = false
 bench = false

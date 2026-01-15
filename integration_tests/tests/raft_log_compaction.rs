@@ -9,12 +9,19 @@
 
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tensor_chain::{
     Block, BlockHeader, LogEntry, MemoryTransport, RaftConfig, RaftNode, RaftState,
     SnapshotMetadata,
 };
 use tensor_store::TensorStore;
 use tokio::time::{sleep, Duration};
+
+fn compute_hash(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
 
 fn create_test_block(height: u64, proposer: &str) -> Block {
     let header = BlockHeader::new(
@@ -118,15 +125,16 @@ async fn test_compaction_survives_restart() {
         &store,
     );
 
+    let data = vec![1, 2, 3, 4, 5];
+    let snapshot_hash = compute_hash(&data);
     let metadata = SnapshotMetadata {
         last_included_index: 100,
         last_included_term: 5,
-        snapshot_hash: [0u8; 32],
+        snapshot_hash,
         config: vec!["node1".to_string(), "node2".to_string()],
         created_at: 12345,
-        size: 1024,
+        size: data.len() as u64,
     };
-    let data = vec![1, 2, 3, 4, 5];
 
     // Save snapshot
     node1.save_snapshot(&metadata, &data, &store).unwrap();
@@ -251,15 +259,16 @@ async fn test_new_leader_uses_existing_snapshot() {
         &store,
     );
 
+    let data = bincode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
+    let snapshot_hash = compute_hash(&data);
     let metadata = SnapshotMetadata {
         last_included_index: 50,
         last_included_term: 3,
-        snapshot_hash: [42u8; 32],
+        snapshot_hash,
         config: vec!["node1".to_string(), "node2".to_string()],
         created_at: 9999,
-        size: 512,
+        size: data.len() as u64,
     };
-    let data = bincode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
     node1.save_snapshot(&metadata, &data, &store).unwrap();
 
     // Simulate first leader stepping down
@@ -284,7 +293,7 @@ async fn test_new_leader_uses_existing_snapshot() {
         .expect("New node should have snapshot metadata");
     assert_eq!(restored.last_included_index, 50);
     assert_eq!(restored.last_included_term, 3);
-    assert_eq!(restored.snapshot_hash, [42u8; 32]);
+    assert_eq!(restored.snapshot_hash, snapshot_hash);
 
     // When this node becomes leader, it starts from the persisted snapshot state
     node2.become_leader();

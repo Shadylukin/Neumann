@@ -591,6 +591,17 @@ pub struct RecoveryStats {
     pub completed: usize,
 }
 
+/// Tracks abort acknowledgments from participants.
+#[derive(Debug, Clone)]
+pub struct AbortState {
+    /// Shards that need to acknowledge abort.
+    pub pending_acks: HashSet<usize>,
+    /// When abort was initiated (epoch millis).
+    pub initiated_at: EpochMillis,
+    /// Number of retry attempts.
+    pub retry_count: u32,
+}
+
 /// Coordinator for distributed transactions.
 pub struct DistributedTxCoordinator {
     /// Pending transactions by ID.
@@ -604,6 +615,10 @@ pub struct DistributedTxCoordinator {
     config: DistributedTxConfig,
     /// Statistics.
     pub stats: DistributedTxStats,
+    /// Tracks in-flight abort broadcasts awaiting acknowledgment.
+    abort_states: RwLock<HashMap<u64, AbortState>>,
+    /// Transactions marked for abort broadcast (processed by async tick).
+    pending_aborts: RwLock<Vec<(u64, String, Vec<usize>)>>,
 }
 
 impl DistributedTxCoordinator {
@@ -615,6 +630,8 @@ impl DistributedTxCoordinator {
             lock_manager: LockManager::new(),
             config,
             stats: DistributedTxStats::new(),
+            abort_states: RwLock::new(HashMap::new()),
+            pending_aborts: RwLock::new(Vec::new()),
         }
     }
 
@@ -739,6 +756,13 @@ impl DistributedTxCoordinator {
                                 if !overlap.is_empty() {
                                     tx.phase = TxPhase::Aborting;
                                     self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
+                                    // Queue abort for broadcast
+                                    let shards = tx.participants.clone();
+                                    self.pending_aborts.write().push((
+                                        tx_id,
+                                        "cross-shard conflict".to_string(),
+                                        shards,
+                                    ));
                                     return Some(TxPhase::Aborting);
                                 }
                             }
@@ -754,13 +778,21 @@ impl DistributedTxCoordinator {
                 Some(TxPhase::Prepared)
             } else {
                 tx.phase = TxPhase::Aborting;
-                if tx
+                let reason = if tx
                     .votes
                     .values()
                     .any(|v| matches!(v, PrepareVote::Conflict { .. }))
                 {
                     self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
-                }
+                    "conflict detected"
+                } else {
+                    "participant voted no"
+                };
+
+                // Queue abort for broadcast
+                let shards = tx.participants.clone();
+                self.pending_aborts.write().push((tx_id, reason.to_string(), shards));
+
                 Some(TxPhase::Aborting)
             }
         } else {
@@ -896,6 +928,13 @@ impl DistributedTxCoordinator {
 
         for tx_id in &timed_out {
             if let Some(tx) = pending.remove(tx_id) {
+                // Queue abort broadcast to participants
+                self.pending_aborts.write().push((
+                    *tx_id,
+                    "timeout".to_string(),
+                    tx.participants.clone(),
+                ));
+
                 // Release locks
                 for vote in tx.votes.values() {
                     if let PrepareVote::Yes { lock_handle, .. } = vote {
@@ -925,6 +964,82 @@ impl DistributedTxCoordinator {
     /// Get statistics.
     pub fn stats(&self) -> &DistributedTxStats {
         &self.stats
+    }
+
+    /// Take pending aborts that need to be broadcast.
+    pub fn take_pending_aborts(&self) -> Vec<(u64, String, Vec<usize>)> {
+        std::mem::take(&mut *self.pending_aborts.write())
+    }
+
+    /// Track an abort for acknowledgment.
+    pub fn track_abort(&self, tx_id: u64, shards: Vec<usize>) {
+        let mut abort_states = self.abort_states.write();
+        abort_states.insert(
+            tx_id,
+            AbortState {
+                pending_acks: shards.into_iter().collect(),
+                initiated_at: now_epoch_millis(),
+                retry_count: 0,
+            },
+        );
+    }
+
+    /// Handle abort acknowledgment from a shard.
+    pub fn handle_abort_ack(&self, tx_id: u64, shard_id: usize) -> bool {
+        let mut abort_states = self.abort_states.write();
+        if let Some(state) = abort_states.get_mut(&tx_id) {
+            state.pending_acks.remove(&shard_id);
+            if state.pending_acks.is_empty() {
+                abort_states.remove(&tx_id);
+                return true; // All acknowledged
+            }
+        }
+        false
+    }
+
+    /// Get aborts that need to be retried.
+    ///
+    /// Returns list of (tx_id, shards) pairs for transactions that haven't
+    /// been acknowledged within the retry interval.
+    pub fn get_retry_aborts(&self) -> Vec<(u64, Vec<usize>)> {
+        let now = now_epoch_millis();
+        let retry_interval_ms = 3000u64; // 3 seconds between retries
+
+        let mut to_retry = Vec::new();
+        let mut abort_states = self.abort_states.write();
+
+        for (tx_id, state) in abort_states.iter_mut() {
+            let elapsed = now.saturating_sub(state.initiated_at);
+            let expected_elapsed = retry_interval_ms * (state.retry_count as u64 + 1);
+
+            if elapsed >= expected_elapsed && state.retry_count < 10 {
+                state.retry_count += 1;
+                to_retry.push((*tx_id, state.pending_acks.iter().copied().collect()));
+            }
+        }
+
+        to_retry
+    }
+
+    /// Clean up stale abort states that have exceeded max retries or timeout.
+    pub fn cleanup_stale_aborts(&self) -> Vec<u64> {
+        let now = now_epoch_millis();
+        let max_abort_wait_ms = 30_000u64; // 30 seconds
+
+        let mut abort_states = self.abort_states.write();
+        let stale: Vec<_> = abort_states
+            .iter()
+            .filter(|(_, state)| {
+                state.retry_count >= 10 || now.saturating_sub(state.initiated_at) >= max_abort_wait_ms
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for tx_id in &stale {
+            abort_states.remove(tx_id);
+        }
+
+        stale
     }
 
     /// Get the persistence key for coordinator state.
@@ -986,6 +1101,8 @@ impl DistributedTxCoordinator {
             lock_manager: LockManager::from_serializable(state.lock_state),
             config,
             stats: DistributedTxStats::new(),
+            abort_states: RwLock::new(HashMap::new()),
+            pending_aborts: RwLock::new(Vec::new()),
         }
     }
 
@@ -1207,7 +1324,7 @@ impl TxParticipant {
         let timeout_ms = timeout.as_millis() as u64;
         let stale: Vec<_> = prepared
             .iter()
-            .filter(|(_, tx)| now.saturating_sub(tx.prepared_at_ms) > timeout_ms)
+            .filter(|(_, tx)| now.saturating_sub(tx.prepared_at_ms) >= timeout_ms)
             .map(|(id, _)| *id)
             .collect();
 
@@ -2866,5 +2983,123 @@ mod tests {
         assert_eq!(stats.pending_abort, 0);
         assert_eq!(stats.timed_out, 0);
         assert_eq!(stats.completed, 0);
+    }
+
+    #[test]
+    fn test_abort_state_tracking() {
+        let coordinator = create_test_coordinator();
+
+        // Track an abort with 3 shards
+        coordinator.track_abort(123, vec![0, 1, 2]);
+
+        // Check that the abort state was created
+        let abort_states = coordinator.abort_states.read();
+        assert!(abort_states.contains_key(&123));
+        let state = abort_states.get(&123).unwrap();
+        assert_eq!(state.pending_acks.len(), 3);
+        assert!(state.pending_acks.contains(&0));
+        assert!(state.pending_acks.contains(&1));
+        assert!(state.pending_acks.contains(&2));
+        assert_eq!(state.retry_count, 0);
+    }
+
+    #[test]
+    fn test_abort_ack_removes_shard() {
+        let coordinator = create_test_coordinator();
+
+        // Track an abort with 2 shards
+        coordinator.track_abort(456, vec![0, 1]);
+
+        // Acknowledge from shard 0
+        let complete = coordinator.handle_abort_ack(456, 0);
+        assert!(!complete); // Still waiting for shard 1
+
+        // Check state was updated
+        let abort_states = coordinator.abort_states.read();
+        let state = abort_states.get(&456).unwrap();
+        assert_eq!(state.pending_acks.len(), 1);
+        assert!(!state.pending_acks.contains(&0));
+        assert!(state.pending_acks.contains(&1));
+    }
+
+    #[test]
+    fn test_abort_ack_cleanup_on_complete() {
+        let coordinator = create_test_coordinator();
+
+        // Track an abort with 2 shards
+        coordinator.track_abort(789, vec![0, 1]);
+
+        // Acknowledge from both shards
+        let complete1 = coordinator.handle_abort_ack(789, 0);
+        assert!(!complete1);
+        let complete2 = coordinator.handle_abort_ack(789, 1);
+        assert!(complete2); // All acknowledged
+
+        // State should be cleaned up
+        let abort_states = coordinator.abort_states.read();
+        assert!(!abort_states.contains_key(&789));
+    }
+
+    #[test]
+    fn test_pending_aborts_queued_on_vote_no() {
+        let coordinator = create_test_coordinator();
+
+        // Begin a transaction with 2 shards
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+
+        // Record votes from both shards - shard 0 says No, shard 1 says Yes
+        let phase1 = coordinator.record_vote(
+            tx.tx_id,
+            0,
+            PrepareVote::No {
+                reason: "test rejection".to_string(),
+            },
+        );
+        assert_eq!(phase1, None); // Not all voted yet
+
+        // Record YES from shard 1
+        let phase2 = coordinator.record_vote(
+            tx.tx_id,
+            1,
+            PrepareVote::Yes {
+                lock_handle: 42,
+                delta: DeltaVector::new(
+                    vec![1.0, 0.0, 0.0],
+                    ["key1"].iter().map(|s| s.to_string()).collect(),
+                    tx.tx_id,
+                ),
+            },
+        );
+        // Now all have voted and one said NO, so it should abort
+        assert_eq!(phase2, Some(TxPhase::Aborting));
+
+        // Check that abort was queued
+        let pending = coordinator.take_pending_aborts();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, tx.tx_id);
+        assert_eq!(pending[0].2, vec![0, 1]); // Both shards
+    }
+
+    #[test]
+    fn test_take_pending_aborts_clears_queue() {
+        let coordinator = create_test_coordinator();
+
+        // Manually add some pending aborts
+        coordinator
+            .pending_aborts
+            .write()
+            .push((111, "test".to_string(), vec![0]));
+        coordinator
+            .pending_aborts
+            .write()
+            .push((222, "test2".to_string(), vec![1, 2]));
+
+        // Take them
+        let aborts = coordinator.take_pending_aborts();
+        assert_eq!(aborts.len(), 2);
+
+        // Queue should be empty now
+        let aborts2 = coordinator.take_pending_aborts();
+        assert!(aborts2.is_empty());
     }
 }

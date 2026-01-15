@@ -849,8 +849,27 @@ impl RaftNode {
         let (term, voted_for, log) =
             Self::load_from_store(&node_id, store).unwrap_or((0, None, Vec::new()));
 
-        // Load snapshot state
-        let snapshot_meta = Self::load_snapshot(&node_id, store).map(|(meta, _)| meta);
+        // Load and validate snapshot state
+        let snapshot_meta = if let Some((meta, data)) = Self::load_snapshot(&node_id, store) {
+            // Validate snapshot hash
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&data);
+            let computed_hash: [u8; 32] = hasher.finalize().into();
+
+            if computed_hash == meta.snapshot_hash {
+                tracing::info!(
+                    "Restored snapshot at index {} with valid hash",
+                    meta.last_included_index
+                );
+                Some(meta)
+            } else {
+                tracing::warn!("Snapshot hash mismatch on startup, ignoring corrupted snapshot");
+                None
+            }
+        } else {
+            None
+        };
 
         // Create node with loaded state
         let mut node = Self::with_state(node_id, peers, transport, config, term, voted_for, log);
@@ -1587,7 +1606,20 @@ impl RaftNode {
             );
 
             // Install the snapshot
-            let _ = self.install_snapshot(metadata, &data);
+            if self.install_snapshot(metadata.clone(), &data).is_ok() {
+                // Persist snapshot to store for crash recovery
+                if let Some(ref store) = self.store {
+                    if let Err(e) = self.save_snapshot(&metadata, &data, store) {
+                        tracing::warn!("Failed to persist snapshot: {}", e);
+                    } else {
+                        tracing::info!(
+                            "Follower persisted snapshot: index={}, term={}",
+                            metadata.last_included_index,
+                            metadata.last_included_term
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1799,8 +1831,11 @@ impl RaftNode {
         let state_entries: Vec<LogEntry> = persistent.log[..=snapshot_idx].to_vec();
         let data = bincode::serialize(&state_entries)?;
 
-        // Compute snapshot hash from the block hash at finalized height
-        let snapshot_hash = entry.block.hash();
+        // Compute SHA-256 hash of snapshot data for integrity validation
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let snapshot_hash: [u8; 32] = hasher.finalize().into();
 
         // Get current cluster config
         let config = self.peers.read().clone();
@@ -1926,6 +1961,19 @@ impl RaftNode {
     ///
     /// This replaces the current log with entries from the snapshot.
     pub fn install_snapshot(&self, metadata: SnapshotMetadata, data: &[u8]) -> Result<()> {
+        // Validate snapshot hash before installing
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let computed_hash: [u8; 32] = hasher.finalize().into();
+
+        if computed_hash != metadata.snapshot_hash {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot hash mismatch: expected {:?}, got {:?}",
+                metadata.snapshot_hash, computed_hash
+            )));
+        }
+
         // Deserialize the log entries from snapshot data
         let entries: Vec<LogEntry> = bincode::deserialize(data).map_err(|e| {
             ChainError::SnapshotError(format!("failed to deserialize snapshot: {}", e))
@@ -4552,10 +4600,16 @@ mod tests {
         let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_log_entry(i)).collect();
         let data = bincode::serialize(&entries).unwrap();
 
+        // Compute proper hash of the data
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let snapshot_hash: [u8; 32] = hasher.finalize().into();
+
         let meta = SnapshotMetadata::new(
             5,
             1,
-            entries.last().unwrap().block.hash(),
+            snapshot_hash,
             vec!["peer".to_string()],
             data.len() as u64,
         );
@@ -4578,7 +4632,13 @@ mod tests {
         let entries: Vec<LogEntry> = vec![];
         let data = bincode::serialize(&entries).unwrap();
 
-        let meta = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], data.len() as u64);
+        // Compute proper hash of empty data
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let snapshot_hash: [u8; 32] = hasher.finalize().into();
+
+        let meta = SnapshotMetadata::new(5, 1, snapshot_hash, vec![], data.len() as u64);
 
         let result = node.install_snapshot(meta, &data);
         assert!(result.is_err());
@@ -4594,8 +4654,14 @@ mod tests {
         let entries: Vec<LogEntry> = (1..=3).map(|i| create_test_log_entry(i)).collect();
         let data = bincode::serialize(&entries).unwrap();
 
+        // Compute proper hash of the data
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let snapshot_hash: [u8; 32] = hasher.finalize().into();
+
         // Metadata says index 5, but entries only go to 3
-        let meta = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], data.len() as u64);
+        let meta = SnapshotMetadata::new(5, 1, snapshot_hash, vec![], data.len() as u64);
 
         let result = node.install_snapshot(meta, &data);
         assert!(result.is_err());
@@ -5467,15 +5533,22 @@ mod tests {
             RaftConfig::default(),
         );
 
+        let data = vec![10, 20, 30];
+
+        // Compute proper hash of the data
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let snapshot_hash: [u8; 32] = hasher.finalize().into();
+
         let metadata = SnapshotMetadata {
             last_included_index: 50,
             last_included_term: 3,
-            snapshot_hash: [0u8; 32],
+            snapshot_hash,
             config: vec!["node1".to_string()],
             created_at: 9999,
-            size: 512,
+            size: data.len() as u64,
         };
-        let data = vec![10, 20, 30];
         node1.save_snapshot(&metadata, &data, &store).unwrap();
 
         // Now create a new node using with_store - it should load the snapshot
@@ -5568,5 +5641,130 @@ mod tests {
 
         // Store should be set
         assert!(node.store.is_some());
+    }
+
+    #[test]
+    fn test_create_snapshot_computes_hash() {
+        let node = create_test_node("node1", vec![]);
+        node.become_leader();
+
+        // Add some log entries
+        let block = create_test_block(1);
+        node.propose(block).unwrap();
+        node.set_finalized_height(1);
+
+        // Create snapshot
+        let (metadata, data) = node.create_snapshot().unwrap();
+
+        // Verify hash is computed correctly (not zeroed)
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(metadata.snapshot_hash, expected_hash);
+        assert_ne!(metadata.snapshot_hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_install_snapshot_validates_hash() {
+        let node = create_test_node("node1", vec![]);
+
+        // Create valid snapshot data
+        let entry = LogEntry {
+            index: 1,
+            term: 1,
+            block: create_test_block(1),
+        };
+        let data = bincode::serialize(&vec![entry]).unwrap();
+
+        // Compute correct hash
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let correct_hash: [u8; 32] = hasher.finalize().into();
+
+        // Create metadata with WRONG hash
+        let wrong_metadata = SnapshotMetadata::new(1, 1, [0u8; 32], vec![], data.len() as u64);
+
+        // Should fail with hash mismatch
+        let result = node.install_snapshot(wrong_metadata, &data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("hash mismatch"));
+
+        // Create metadata with CORRECT hash - should succeed
+        let correct_metadata =
+            SnapshotMetadata::new(1, 1, correct_hash, vec![], data.len() as u64);
+        let result = node.install_snapshot(correct_metadata, &data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_startup_validates_snapshot_hash() {
+        let store = tensor_store::TensorStore::new();
+
+        // Create valid snapshot data
+        let entry = LogEntry {
+            index: 1,
+            term: 1,
+            block: create_test_block(1),
+        };
+        let data = bincode::serialize(&vec![entry]).unwrap();
+
+        // Compute correct hash
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let correct_hash: [u8; 32] = hasher.finalize().into();
+
+        // Save snapshot with correct hash
+        let metadata = SnapshotMetadata::new(1, 1, correct_hash, vec![], data.len() as u64);
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node1 = RaftNode::with_store(
+            "node1".to_string(),
+            vec![],
+            transport.clone(),
+            RaftConfig::default(),
+            &store,
+        );
+        node1.save_snapshot(&metadata, &data, &store).unwrap();
+        drop(node1);
+
+        // Load - should restore valid snapshot
+        let node2 = RaftNode::with_store(
+            "node1".to_string(),
+            vec![],
+            transport.clone(),
+            RaftConfig::default(),
+            &store,
+        );
+        let restored = node2.get_snapshot_metadata();
+        assert!(restored.is_some());
+        assert_eq!(restored.unwrap().last_included_index, 1);
+
+        // Now corrupt the data and save again
+        let corrupted_data = vec![0u8; data.len()];
+        // Save with original hash but corrupted data
+        let mut snap_data = tensor_store::TensorData::new();
+        snap_data.set(
+            "data",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(corrupted_data)),
+        );
+        store
+            .put(&format!("_raft:snapshot:data:{}", "node1"), snap_data)
+            .unwrap();
+        drop(node2);
+
+        // Load again - should reject corrupted snapshot
+        let node3 = RaftNode::with_store(
+            "node1".to_string(),
+            vec![],
+            transport,
+            RaftConfig::default(),
+            &store,
+        );
+        // Corrupted snapshot should be ignored
+        let restored = node3.get_snapshot_metadata();
+        assert!(restored.is_none());
     }
 }

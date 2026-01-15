@@ -1138,6 +1138,7 @@ dependencies = [
  "query_router",
  "relational_engine",
  "serde_json",
+ "sha2",
  "tempfile",
  "tensor_blob",
  "tensor_cache",

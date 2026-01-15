@@ -8,9 +8,16 @@
 
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tensor_chain::{
     Block, BlockHeader, LogEntry, MemoryTransport, RaftConfig, RaftNode, SnapshotMetadata,
 };
+
+fn compute_hash(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
 
 fn create_test_block(height: u64, proposer: &str) -> Block {
     let header = BlockHeader::new(
@@ -155,10 +162,11 @@ fn test_install_snapshot_updates_state() {
     let data = bincode::serialize(&entries).unwrap();
 
     // Note: last_included_term must match the term in the log entries (which is 1)
+    let snapshot_hash = compute_hash(&data);
     let metadata = SnapshotMetadata::new(
         10, // last_included_index
         1,  // last_included_term (matches log entry term)
-        entries.last().unwrap().block.hash(),
+        snapshot_hash,
         vec!["leader".to_string(), "follower".to_string()],
         data.len() as u64,
     );
