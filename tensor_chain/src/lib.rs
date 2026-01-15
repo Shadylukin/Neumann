@@ -54,6 +54,7 @@ pub mod gossip;
 pub mod membership;
 pub mod metrics;
 pub mod network;
+pub mod partition_merge;
 pub mod raft;
 pub mod raft_wal;
 pub mod snapshot_buffer;
@@ -108,12 +109,20 @@ pub use membership::{
     PartitionStatus, PeerNodeConfig,
 };
 pub use metrics::{TimingSnapshot, TimingStats};
+pub use partition_merge::{
+    ConflictResolution, ConflictType, DataReconcileResult, DataReconciler, MembershipReconciler,
+    MembershipViewSummary, MergeConflict, MergePhase, MergeSession, PartitionMergeConfig,
+    PartitionMergeManager, PartitionMergeStats, PartitionMergeStatsSnapshot, PartitionStateSummary,
+    PendingTxState, TransactionReconciler, TxReconcileResult,
+};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, ConfigChange, GeometricTransport, JointConfig, LogEntry,
-    LogEntryData, MemoryTransport, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,
-    PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
-    RaftMembershipConfig, RequestVote, RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg,
-    TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    AppendEntries, AppendEntriesResponse, ConfigChange, DataMergeRequest, DataMergeResponse,
+    GeometricTransport, JointConfig, LogEntry, LogEntryData, MemoryTransport, MergeAck,
+    MergeDeltaEntry, MergeFinalize, MergeInit, MergeOpType, MergeViewExchange, Message,
+    MessageHandler, NetworkManager, PeerConfig, PreVote, PreVoteResponse, QueryExecutor,
+    QueryHandler, QueryRequest, QueryResponse, RaftMembershipConfig, RequestVote,
+    RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler,
+    TxPrepareMsg, TxPrepareResponseMsg, TxReconcileRequest, TxReconcileResponse, TxVote,
 };
 pub use raft::{
     FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,

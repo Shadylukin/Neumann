@@ -1289,6 +1289,125 @@ impl DistributedTxCoordinator {
             .map(|(id, tx)| (*id, tx.phase))
             .collect()
     }
+
+    /// Get all pending transactions for partition merge reconciliation.
+    ///
+    /// Returns transaction state in a format suitable for merging with
+    /// another partition's pending transactions.
+    pub fn get_pending_transactions(&self) -> Vec<crate::partition_merge::PendingTxState> {
+        self.pending
+            .read()
+            .values()
+            .map(|tx| {
+                let mut state = crate::partition_merge::PendingTxState::new(
+                    tx.tx_id,
+                    tx.coordinator.clone(),
+                    tx.phase,
+                );
+                state.participants = tx.participants.clone();
+                state.votes = tx
+                    .votes
+                    .iter()
+                    .map(|(shard, vote)| (*shard, matches!(vote, PrepareVote::Yes { .. })))
+                    .collect();
+                state.delta = tx.merged_delta().map(|d| d.delta);
+                state.started_at = tx.started_at;
+                state
+            })
+            .collect()
+    }
+
+    /// Force resolve a transaction during partition merge.
+    ///
+    /// This is used to reconcile transactions that were pending during a partition.
+    /// If `commit` is true and the transaction is in a commitable state, it commits.
+    /// Otherwise, the transaction is aborted.
+    pub fn force_resolve(&self, tx_id: u64, commit: bool) -> Result<()> {
+        let mut pending = self.pending.write();
+        let tx = pending.get_mut(&tx_id).ok_or_else(|| {
+            ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
+        })?;
+
+        if commit {
+            // Can only commit if all votes are YES
+            if tx.all_yes() || matches!(tx.phase, TxPhase::Prepared | TxPhase::Committing) {
+                tx.phase = TxPhase::Committing;
+                // Release locks
+                for vote in tx.votes.values() {
+                    if let PrepareVote::Yes { lock_handle, .. } = vote {
+                        self.lock_manager.release_by_handle(*lock_handle);
+                    }
+                }
+                tx.phase = TxPhase::Committed;
+                self.stats.committed.fetch_add(1, Ordering::Relaxed);
+                pending.remove(&tx_id);
+            } else {
+                return Err(ChainError::TransactionFailed(format!(
+                    "transaction {} cannot be committed (not all votes are YES)",
+                    tx_id
+                )));
+            }
+        } else {
+            // Abort the transaction
+            tx.phase = TxPhase::Aborting;
+            for vote in tx.votes.values() {
+                if let PrepareVote::Yes { lock_handle, .. } = vote {
+                    self.lock_manager.release_by_handle(*lock_handle);
+                }
+            }
+            tx.phase = TxPhase::Aborted;
+            self.stats.aborted.fetch_add(1, Ordering::Relaxed);
+            pending.remove(&tx_id);
+        }
+
+        Ok(())
+    }
+
+    /// Release orphaned locks from transactions that started before a partition.
+    ///
+    /// During a partition, transactions may have acquired locks but never completed.
+    /// This method releases locks for transactions that started before `partition_start`
+    /// and are no longer active.
+    ///
+    /// Returns the number of locks released.
+    pub fn release_orphaned_locks(&self, partition_start_ms: u64) -> usize {
+        let pending = self.pending.read();
+        let active_tx_ids: std::collections::HashSet<u64> =
+            pending.keys().copied().collect();
+        drop(pending);
+
+        // Get all locks and find orphaned ones
+        let locks = self.lock_manager.locks.read();
+        let orphaned: Vec<_> = locks
+            .iter()
+            .filter(|(_, lock)| {
+                // Lock is orphaned if:
+                // 1. The transaction is not in pending
+                // 2. The lock was acquired before partition started
+                !active_tx_ids.contains(&lock.tx_id) && lock.acquired_at_ms < partition_start_ms
+            })
+            .map(|(key, lock)| (key.clone(), lock.tx_id))
+            .collect();
+        drop(locks);
+
+        // Release orphaned locks
+        let count = orphaned.len();
+        for (key, tx_id) in orphaned {
+            let mut locks = self.lock_manager.locks.write();
+            let mut tx_locks = self.lock_manager.tx_locks.write();
+
+            if let Some(lock) = locks.get(&key) {
+                if lock.tx_id == tx_id {
+                    locks.remove(&key);
+                    if let Some(tx_keys) = tx_locks.get_mut(&tx_id) {
+                        tx_keys.retain(|k| k != &key);
+                    }
+                }
+            }
+        }
+
+        count
+    }
 }
 
 /// Transaction participant on a shard.

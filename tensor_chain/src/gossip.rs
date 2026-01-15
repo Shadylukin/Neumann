@@ -316,6 +316,18 @@ struct PendingSuspicion {
     incarnation: u64,
 }
 
+/// Heal progress tracking for a node recovering from partition.
+#[derive(Debug, Clone)]
+struct HealProgress {
+    /// When the node first started recovering (kept for future debugging/metrics).
+    #[allow(dead_code)]
+    started_at: Instant,
+    /// When the partition originally started.
+    partition_start: Instant,
+    /// Number of consecutive successful communications.
+    consecutive_successes: u32,
+}
+
 /// Gossip-based membership manager.
 pub struct GossipMembershipManager {
     /// Local node identifier.
@@ -334,6 +346,8 @@ pub struct GossipMembershipManager {
     callbacks: RwLock<Vec<Arc<dyn MembershipCallback>>>,
     /// Pending suspicions (node_id -> suspicion record).
     suspicions: RwLock<HashMap<NodeId, PendingSuspicion>>,
+    /// Heal progress tracking (node_id -> heal progress).
+    heal_progress: RwLock<HashMap<NodeId, HealProgress>>,
     /// Known peers for random selection fallback.
     known_peers: RwLock<Vec<NodeId>>,
     /// Shutdown signal.
@@ -362,6 +376,7 @@ impl GossipMembershipManager {
             geometric: None,
             callbacks: RwLock::new(Vec::new()),
             suspicions: RwLock::new(HashMap::new()),
+            heal_progress: RwLock::new(HashMap::new()),
             known_peers: RwLock::new(Vec::new()),
             shutdown_tx,
             ping_sequence: AtomicU64::new(0),
@@ -785,6 +800,103 @@ impl GossipMembershipManager {
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
     }
+
+    /// Record successful communication with a previously failed node.
+    ///
+    /// Call this when you successfully communicate with a node that was in Failed state.
+    /// This starts or continues tracking the heal progress for partition reconciliation.
+    ///
+    /// # Arguments
+    /// * `node` - The node ID that successfully communicated
+    /// * `partition_start` - When the partition originally started (if known)
+    pub fn record_heal_progress(&self, node: &NodeId, partition_start: Option<Instant>) {
+        let state = self.state.read();
+        let node_state = state.get(node);
+
+        // Only track heal progress for nodes that were Failed or are being monitored
+        let was_failed = node_state.is_some_and(|s| s.health == NodeHealth::Failed);
+        drop(state);
+
+        let mut progress = self.heal_progress.write();
+
+        if let Some(hp) = progress.get_mut(node) {
+            // Already tracking - increment counter
+            hp.consecutive_successes += 1;
+        } else if was_failed || partition_start.is_some() {
+            // Start tracking heal progress
+            let start = partition_start.unwrap_or_else(Instant::now);
+            progress.insert(
+                node.clone(),
+                HealProgress {
+                    started_at: Instant::now(),
+                    partition_start: start,
+                    consecutive_successes: 1,
+                },
+            );
+        }
+    }
+
+    /// Check if a node has met the heal confirmation threshold.
+    ///
+    /// # Arguments
+    /// * `node` - The node ID to check
+    /// * `threshold` - Number of consecutive successes required
+    ///
+    /// # Returns
+    /// * `Some((partition_duration_ms))` if heal is confirmed
+    /// * `None` if heal is not confirmed or node is not being tracked
+    pub fn is_heal_confirmed(&self, node: &NodeId, threshold: u32) -> Option<u64> {
+        let progress = self.heal_progress.read();
+
+        if let Some(hp) = progress.get(node) {
+            if hp.consecutive_successes >= threshold {
+                let partition_duration_ms = hp.partition_start.elapsed().as_millis() as u64;
+                return Some(partition_duration_ms);
+            }
+        }
+
+        None
+    }
+
+    /// Clear heal progress for a node after heal is processed.
+    pub fn clear_heal_progress(&self, node: &NodeId) {
+        self.heal_progress.write().remove(node);
+    }
+
+    /// Clear heal progress for multiple nodes.
+    pub fn clear_heal_progress_batch(&self, nodes: &[NodeId]) {
+        let mut progress = self.heal_progress.write();
+        for node in nodes {
+            progress.remove(node);
+        }
+    }
+
+    /// Reset heal progress counter for a node (e.g., on communication failure).
+    pub fn reset_heal_progress(&self, node: &NodeId) {
+        let mut progress = self.heal_progress.write();
+        if let Some(hp) = progress.get_mut(node) {
+            hp.consecutive_successes = 0;
+        }
+    }
+
+    /// Get all nodes currently being tracked for heal progress.
+    pub fn healing_nodes(&self) -> Vec<(NodeId, u32)> {
+        self.heal_progress
+            .read()
+            .iter()
+            .map(|(id, hp)| (id.clone(), hp.consecutive_successes))
+            .collect()
+    }
+
+    /// Get the current Lamport time from the CRDT state.
+    pub fn lamport_time(&self) -> u64 {
+        self.state.read().lamport_time()
+    }
+
+    /// Get all node states for membership view exchange.
+    pub fn membership_view(&self) -> Vec<GossipNodeState> {
+        self.state.read().all_states().cloned().collect()
+    }
 }
 
 #[cfg(test)]
@@ -954,5 +1066,167 @@ mod tests {
         assert_eq!(state.health, restored.health);
         assert_eq!(state.timestamp, restored.timestamp);
         assert_eq!(state.incarnation, restored.incarnation);
+    }
+
+    // ========== Heal Progress Tracking Tests ==========
+
+    #[test]
+    fn test_heal_progress_tracking() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Mark a node as failed first
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+
+        let partition_start = Some(Instant::now());
+
+        // Record heal progress
+        manager.record_heal_progress(&"node2".to_string(), partition_start);
+        assert_eq!(manager.healing_nodes().len(), 1);
+
+        // Not yet confirmed (threshold 3)
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 3).is_none());
+
+        // Record more progress
+        manager.record_heal_progress(&"node2".to_string(), None);
+        manager.record_heal_progress(&"node2".to_string(), None);
+
+        // Now should be confirmed
+        let result = manager.is_heal_confirmed(&"node2".to_string(), 3);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_heal_progress_clear() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Mark as failed and track heal
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        assert_eq!(manager.healing_nodes().len(), 1);
+
+        // Clear progress
+        manager.clear_heal_progress(&"node2".to_string());
+        assert_eq!(manager.healing_nodes().len(), 0);
+    }
+
+    #[test]
+    fn test_heal_progress_reset() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Mark as failed
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+
+        // Build up some progress
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        manager.record_heal_progress(&"node2".to_string(), None);
+
+        let nodes = manager.healing_nodes();
+        assert_eq!(nodes[0].1, 2); // 2 consecutive successes
+
+        // Reset on failure
+        manager.reset_heal_progress(&"node2".to_string());
+
+        let nodes = manager.healing_nodes();
+        assert_eq!(nodes[0].1, 0); // Reset to 0
+    }
+
+    #[test]
+    fn test_heal_progress_batch_clear() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Mark multiple nodes as failed
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+            state.update_local("node3".to_string(), NodeHealth::Failed, 0);
+        }
+
+        // Track heal progress for both
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        manager.record_heal_progress(&"node3".to_string(), Some(Instant::now()));
+        assert_eq!(manager.healing_nodes().len(), 2);
+
+        // Batch clear
+        manager.clear_heal_progress_batch(&["node2".to_string(), "node3".to_string()]);
+        assert_eq!(manager.healing_nodes().len(), 0);
+    }
+
+    #[test]
+    fn test_lamport_time_getter() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Initial state has lamport time from local node update
+        let initial_time = manager.lamport_time();
+
+        // Manually advance time
+        {
+            let mut state = manager.state.write();
+            state.tick();
+        }
+
+        assert!(manager.lamport_time() > initial_time);
+    }
+
+    #[test]
+    fn test_membership_view() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+        );
+
+        // Add some nodes
+        manager.add_peer("node2".to_string());
+        manager.add_peer("node3".to_string());
+
+        let view = manager.membership_view();
+        assert_eq!(view.len(), 3); // local + 2 peers
     }
 }

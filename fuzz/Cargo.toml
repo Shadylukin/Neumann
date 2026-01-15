@@ -504,3 +504,12 @@ path = "fuzz_targets/wait_for_graph.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 24: Partition merge targets
+
+[[bin]]
+name = "partition_merge"
+path = "fuzz_targets/partition_merge.rs"
+test = false
+doc = false
+bench = false

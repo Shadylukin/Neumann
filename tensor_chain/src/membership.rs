@@ -115,6 +115,10 @@ pub struct NodeStatus {
     pub rtt_ms: Option<u64>,
     /// Consecutive failure count.
     pub consecutive_failures: usize,
+    /// Consecutive success count (for heal detection).
+    pub consecutive_successes: u32,
+    /// When the node entered Failed state (for partition duration tracking).
+    pub partition_start: Option<Instant>,
     /// Total successful pings.
     pub total_pings: u64,
     /// Total failed pings.
@@ -134,6 +138,8 @@ impl NodeStatus {
             last_ping: None,
             rtt_ms: None,
             consecutive_failures: 0,
+            consecutive_successes: 0,
+            partition_start: None,
             total_pings: 0,
             total_failures: 0,
             state_embedding: None,
@@ -148,19 +154,33 @@ impl NodeStatus {
     }
 
     fn record_success(&mut self, rtt_ms: u64) {
+        let was_failed = self.health == NodeHealth::Failed;
         self.last_ping = Some(Instant::now());
         self.rtt_ms = Some(rtt_ms);
         self.consecutive_failures = 0;
+        self.consecutive_successes += 1;
         self.total_pings += 1;
         self.health = NodeHealth::Healthy;
+
+        // Clear partition_start when node becomes healthy again
+        if was_failed {
+            // Keep partition_start until heal is confirmed at threshold
+            // (caller will clear it after processing heal callback)
+        }
     }
 
     fn record_failure(&mut self, failure_threshold: usize) {
+        let was_not_failed = self.health != NodeHealth::Failed;
         self.consecutive_failures += 1;
+        self.consecutive_successes = 0; // Reset heal detection counter
         self.total_failures += 1;
 
         if self.consecutive_failures >= failure_threshold {
             self.health = NodeHealth::Failed;
+            // Track when node first entered Failed state
+            if was_not_failed && self.partition_start.is_none() {
+                self.partition_start = Some(Instant::now());
+            }
         } else if self.consecutive_failures > 0 {
             self.health = NodeHealth::Degraded;
         }
@@ -347,6 +367,19 @@ pub trait MembershipCallback: Send + Sync {
 
     /// Called when the cluster view changes.
     fn on_view_change(&self, view: &ClusterView);
+
+    /// Called when previously partitioned nodes have healed and are reachable again.
+    ///
+    /// This callback is invoked when a node that was in Failed state has achieved
+    /// the required number of consecutive successful pings (heal confirmation threshold).
+    ///
+    /// # Arguments
+    /// * `healed_nodes` - List of node IDs that have healed
+    /// * `partition_duration_ms` - Duration (in milliseconds) the node was partitioned
+    fn on_partition_heal(&self, healed_nodes: &[NodeId], partition_duration_ms: u64) {
+        // Default no-op implementation for backwards compatibility
+        let _ = (healed_nodes, partition_duration_ms);
+    }
 }
 
 /// Membership manager for cluster health tracking.
@@ -504,6 +537,59 @@ impl MembershipManager {
             .filter(|k| *k != local_id)
             .cloned()
             .collect()
+    }
+
+    /// Detect nodes that have healed from partition.
+    ///
+    /// Returns a list of (node_id, partition_duration_ms) for nodes that:
+    /// 1. Were previously in Failed state (have partition_start set)
+    /// 2. Are now Healthy
+    /// 3. Have achieved the required consecutive successes threshold
+    ///
+    /// # Arguments
+    /// * `threshold` - Number of consecutive successes required to confirm heal
+    pub fn detect_healed_nodes(&self, threshold: u32) -> Vec<(NodeId, u64)> {
+        let nodes = self.nodes.read();
+        let mut healed = Vec::new();
+
+        for (node_id, status) in nodes.iter() {
+            // Check if this node has healed from a partition
+            if status.health == NodeHealth::Healthy
+                && status.partition_start.is_some()
+                && status.consecutive_successes >= threshold
+            {
+                let partition_duration_ms = status
+                    .partition_start
+                    .map(|start| start.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+
+                healed.push((node_id.clone(), partition_duration_ms));
+            }
+        }
+
+        healed
+    }
+
+    /// Clear the partition state for a healed node.
+    ///
+    /// Should be called after processing the heal callback to reset tracking state.
+    pub fn clear_partition_state(&self, node_id: &NodeId) {
+        let mut nodes = self.nodes.write();
+        if let Some(status) = nodes.get_mut(node_id) {
+            status.partition_start = None;
+            status.consecutive_successes = 0;
+        }
+    }
+
+    /// Clear partition state for multiple nodes.
+    pub fn clear_partition_states(&self, node_ids: &[NodeId]) {
+        let mut nodes = self.nodes.write();
+        for node_id in node_ids {
+            if let Some(status) = nodes.get_mut(node_id) {
+                status.partition_start = None;
+                status.consecutive_successes = 0;
+            }
+        }
     }
 
     /// Start the health checking loop.

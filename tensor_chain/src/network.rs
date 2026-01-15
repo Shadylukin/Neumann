@@ -89,6 +89,24 @@ pub enum Message {
     // Gossip protocol messages
     /// Gossip message for membership protocol.
     Gossip(crate::gossip::GossipMessage),
+
+    // Partition merge protocol messages
+    /// Initialize merge session after partition heal.
+    MergeInit(MergeInit),
+    /// Acknowledge merge initialization.
+    MergeAck(MergeAck),
+    /// Exchange membership view summaries.
+    ViewExchange(MergeViewExchange),
+    /// Request data merge information.
+    DataMergeRequest(DataMergeRequest),
+    /// Response with data merge information.
+    DataMergeResponse(DataMergeResponse),
+    /// Request transaction reconciliation.
+    TxReconcileRequest(TxReconcileRequest),
+    /// Response with transaction reconciliation result.
+    TxReconcileResponse(TxReconcileResponse),
+    /// Finalize merge session.
+    MergeFinalize(MergeFinalize),
 }
 
 impl Message {
@@ -669,6 +687,143 @@ pub struct QueryResponse {
     pub success: bool,
     /// Error message if failed.
     pub error: Option<String>,
+}
+
+// ========== Partition Merge Protocol Messages ==========
+
+/// Initialize a merge session after partition heal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeInit {
+    /// Unique session identifier.
+    pub session_id: u64,
+    /// Node initiating the merge.
+    pub initiator: NodeId,
+    /// Nodes that have healed and are participating.
+    pub healed_nodes: Vec<NodeId>,
+    /// Initiator's partition state summary.
+    pub local_summary: crate::partition_merge::PartitionStateSummary,
+}
+
+/// Acknowledgment of merge initialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeAck {
+    /// Session ID being acknowledged.
+    pub session_id: u64,
+    /// Node sending the acknowledgment.
+    pub responder: NodeId,
+    /// Whether the node accepts the merge session.
+    pub accepted: bool,
+    /// Responder's partition state summary.
+    pub local_summary: Option<crate::partition_merge::PartitionStateSummary>,
+    /// Reason for rejection (if not accepted).
+    pub reject_reason: Option<String>,
+}
+
+/// Exchange membership view summaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeViewExchange {
+    /// Session ID.
+    pub session_id: u64,
+    /// Node sending the view.
+    pub sender: NodeId,
+    /// Membership view summary.
+    pub view: crate::partition_merge::MembershipViewSummary,
+}
+
+/// Request data merge information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataMergeRequest {
+    /// Session ID.
+    pub session_id: u64,
+    /// Requesting node.
+    pub requester: NodeId,
+    /// Last committed Raft index on requester.
+    pub last_committed_index: u64,
+    /// Last committed Raft term on requester.
+    pub last_committed_term: u64,
+    /// Keys or key patterns to reconcile (empty = all).
+    pub key_patterns: Vec<String>,
+}
+
+/// Response with data merge information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataMergeResponse {
+    /// Session ID.
+    pub session_id: u64,
+    /// Responding node.
+    pub responder: NodeId,
+    /// Delta entries since common ancestor.
+    pub delta_entries: Vec<MergeDeltaEntry>,
+    /// State embedding for semantic comparison.
+    pub state_embedding: Option<SparseVector>,
+    /// Whether more data is available (pagination).
+    pub has_more: bool,
+}
+
+/// A single delta entry for merge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeDeltaEntry {
+    /// Key that was modified.
+    pub key: String,
+    /// Raft log index of the modification.
+    pub log_index: u64,
+    /// Raft log term of the modification.
+    pub log_term: u64,
+    /// Type of operation (put, delete).
+    pub op_type: MergeOpType,
+    /// Data hash for conflict detection.
+    pub data_hash: [u8; 32],
+}
+
+/// Type of merge operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeOpType {
+    Put,
+    Delete,
+    Update,
+}
+
+/// Request transaction reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxReconcileRequest {
+    /// Session ID.
+    pub session_id: u64,
+    /// Requesting node.
+    pub requester: NodeId,
+    /// Pending transactions on requester.
+    pub pending_txs: Vec<crate::partition_merge::PendingTxState>,
+}
+
+/// Response with transaction reconciliation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxReconcileResponse {
+    /// Session ID.
+    pub session_id: u64,
+    /// Responding node.
+    pub responder: NodeId,
+    /// Pending transactions on responder.
+    pub pending_txs: Vec<crate::partition_merge::PendingTxState>,
+    /// Transactions to commit (agreed by both).
+    pub to_commit: Vec<u64>,
+    /// Transactions to abort (timed out or conflicted).
+    pub to_abort: Vec<u64>,
+}
+
+/// Finalize merge session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeFinalize {
+    /// Session ID.
+    pub session_id: u64,
+    /// Node sending finalization.
+    pub sender: NodeId,
+    /// Whether the merge completed successfully.
+    pub success: bool,
+    /// Final merged state hash.
+    pub final_state_hash: [u8; 32],
+    /// Number of conflicts resolved.
+    pub conflicts_resolved: u32,
+    /// Merge duration in milliseconds.
+    pub duration_ms: u64,
 }
 
 /// Transport trait for network communication.
