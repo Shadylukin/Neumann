@@ -37,6 +37,7 @@ parking_lot = "0.12"
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
+memmap2 = "0.9"
 thiserror = "1"
 hex = "0.4"
 tracing = "0.1"

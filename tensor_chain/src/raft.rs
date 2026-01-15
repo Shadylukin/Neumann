@@ -26,6 +26,7 @@ use crate::{
         AppendEntries, AppendEntriesResponse, LogEntry, Message, PreVote, PreVoteResponse,
         RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse, TimeoutNow, Transport,
     },
+    snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig},
     validation::FastPathValidator,
 };
 
@@ -73,6 +74,12 @@ pub struct RaftConfig {
     pub compaction_check_interval: u64,
     /// Minimum time between compactions in milliseconds.
     pub compaction_cooldown_ms: u64,
+    /// Maximum memory for snapshot buffering before spilling to disk.
+    /// Default: 256MB.
+    pub snapshot_max_memory: usize,
+    /// Directory for temporary snapshot files.
+    /// Default: system temp directory.
+    pub snapshot_temp_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for RaftConfig {
@@ -92,6 +99,8 @@ impl Default for RaftConfig {
             transfer_timeout_ms: 1000,
             compaction_check_interval: 10,
             compaction_cooldown_ms: 60_000,
+            snapshot_max_memory: 256 * 1024 * 1024, // 256MB
+            snapshot_temp_dir: None,
         }
     }
 }
@@ -451,49 +460,78 @@ struct SnapshotState {
     last_snapshot: Option<SnapshotMetadata>,
     /// Whether a snapshot operation is in progress.
     in_progress: bool,
-    /// Pending snapshot data during chunked transfer.
-    pending_data: Vec<u8>,
+    /// Memory-efficient buffer for pending snapshot data during chunked transfer.
+    pending_buffer: Option<SnapshotBuffer>,
     /// Expected total size for pending snapshot.
     pending_total_size: u64,
-}
-
-impl Default for SnapshotState {
-    fn default() -> Self {
-        Self {
-            last_snapshot: None,
-            in_progress: false,
-            pending_data: Vec::new(),
-            pending_total_size: 0,
-        }
-    }
+    /// Configuration for snapshot buffer creation.
+    buffer_config: SnapshotBufferConfig,
 }
 
 impl SnapshotState {
-    fn new() -> Self {
-        Self::default()
+    fn new(config: SnapshotBufferConfig) -> Self {
+        Self {
+            last_snapshot: None,
+            in_progress: false,
+            pending_buffer: None,
+            pending_total_size: 0,
+            buffer_config: config,
+        }
     }
 
-    fn start_receive(&mut self, total_size: u64) {
+    fn from_raft_config(config: &RaftConfig) -> Self {
+        let buffer_config = SnapshotBufferConfig {
+            max_memory_bytes: config.snapshot_max_memory,
+            temp_dir: config
+                .snapshot_temp_dir
+                .clone()
+                .unwrap_or_else(std::env::temp_dir),
+            initial_file_capacity: config.snapshot_chunk_size as usize * 16, // 16 chunks worth
+        };
+        Self::new(buffer_config)
+    }
+
+    fn start_receive(
+        &mut self,
+        total_size: u64,
+    ) -> std::result::Result<(), crate::snapshot_buffer::SnapshotBufferError> {
         self.in_progress = true;
-        self.pending_data.clear();
-        self.pending_data.reserve(total_size as usize);
+        // Clean up any existing buffer
+        if let Some(mut buf) = self.pending_buffer.take() {
+            let _ = buf.cleanup();
+        }
+        self.pending_buffer = Some(SnapshotBuffer::new(self.buffer_config.clone())?);
         self.pending_total_size = total_size;
+        Ok(())
     }
 
-    fn append_chunk(&mut self, data: &[u8]) {
-        self.pending_data.extend_from_slice(data);
+    fn append_chunk(
+        &mut self,
+        data: &[u8],
+    ) -> std::result::Result<(), crate::snapshot_buffer::SnapshotBufferError> {
+        if let Some(ref mut buf) = self.pending_buffer {
+            buf.write(data)?;
+        }
+        Ok(())
     }
 
-    fn finish_receive(&mut self) -> Vec<u8> {
+    fn finish_receive(&mut self) -> Option<SnapshotBuffer> {
         self.in_progress = false;
         self.pending_total_size = 0;
-        std::mem::take(&mut self.pending_data)
+        if let Some(mut buf) = self.pending_buffer.take() {
+            if buf.finalize().is_ok() {
+                return Some(buf);
+            }
+        }
+        None
     }
 
     fn cancel_receive(&mut self) {
         self.in_progress = false;
-        self.pending_data.clear();
         self.pending_total_size = 0;
+        if let Some(mut buf) = self.pending_buffer.take() {
+            let _ = buf.cleanup();
+        }
     }
 }
 
@@ -669,9 +707,9 @@ impl RaftNode {
             finalized_height: AtomicU64::new(0),
             fast_path_state: FastPathState::default(),
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
+            snapshot_state: RwLock::new(SnapshotState::from_raft_config(&config)),
             config,
             membership: None,
-            snapshot_state: RwLock::new(SnapshotState::new()),
             quorum_tracker: QuorumTracker::default(),
             stats: RaftStats::new(),
             pre_votes_received: RwLock::new(Vec::new()),
@@ -963,9 +1001,9 @@ impl RaftNode {
             finalized_height: AtomicU64::new(0),
             fast_path_state: FastPathState::default(),
             fast_path_validator: FastPathValidator::new(config.similarity_threshold, 3),
+            snapshot_state: RwLock::new(SnapshotState::from_raft_config(&config)),
             config,
             membership: None,
-            snapshot_state: RwLock::new(SnapshotState::new()),
             quorum_tracker: QuorumTracker::default(),
             pre_votes_received: RwLock::new(Vec::new()),
             in_pre_vote: RwLock::new(false),
@@ -2076,10 +2114,73 @@ impl RaftNode {
         }
     }
 
-    /// Create a snapshot at the current finalized height.
+    /// Create a snapshot using streaming serialization for memory efficiency.
     ///
-    /// Returns snapshot metadata and serialized state data.
-    /// The caller is responsible for persisting the snapshot data.
+    /// Uses SnapshotWriter to serialize log entries incrementally, avoiding
+    /// the need to hold the entire serialized snapshot in memory.
+    pub fn create_snapshot_streaming(&self) -> Result<(SnapshotMetadata, SnapshotBuffer)> {
+        use crate::snapshot_streaming::SnapshotWriter;
+
+        let finalized = self.finalized_height.load(Ordering::SeqCst);
+        if finalized == 0 {
+            return Err(ChainError::SnapshotError(
+                "no finalized entries to snapshot".into(),
+            ));
+        }
+
+        let persistent = self.persistent.read();
+
+        // Find the log entry at finalized height
+        let snapshot_idx = finalized.saturating_sub(1) as usize;
+        if snapshot_idx >= persistent.log.len() {
+            return Err(ChainError::SnapshotError(format!(
+                "finalized height {} exceeds log length {}",
+                finalized,
+                persistent.log.len()
+            )));
+        }
+
+        // Get buffer config from our snapshot state
+        let buffer_config = self.snapshot_state.read().buffer_config.clone();
+
+        // Create streaming writer and write entries incrementally
+        let mut writer = SnapshotWriter::new(buffer_config).map_err(|e| {
+            ChainError::SnapshotError(format!("failed to create snapshot writer: {}", e))
+        })?;
+
+        for entry in &persistent.log[..=snapshot_idx] {
+            writer.write_entry(entry).map_err(|e| {
+                ChainError::SnapshotError(format!("failed to write snapshot entry: {}", e))
+            })?;
+        }
+
+        // Finalize the buffer
+        let buffer = writer.finish().map_err(|e| {
+            ChainError::SnapshotError(format!("failed to finalize snapshot: {}", e))
+        })?;
+
+        // Get hash from buffer
+        let snapshot_hash = buffer.hash();
+
+        // Get current cluster config
+        let config = self.peers.read().clone();
+
+        let entry = &persistent.log[snapshot_idx];
+        let metadata = SnapshotMetadata::new(
+            entry.index,
+            entry.term,
+            snapshot_hash,
+            config,
+            buffer.total_len(),
+        );
+
+        Ok((metadata, buffer))
+    }
+
+    /// Create a snapshot and return data as Vec<u8>.
+    ///
+    /// For large snapshots, prefer `create_snapshot_streaming()` which is more
+    /// memory-efficient.
     pub fn create_snapshot(&self) -> Result<(SnapshotMetadata, Vec<u8>)> {
         let finalized = self.finalized_height.load(Ordering::SeqCst);
         if finalized == 0 {
@@ -2234,10 +2335,72 @@ impl RaftNode {
         self.snapshot_state.read().last_snapshot.clone()
     }
 
-    /// Install a snapshot received from the leader.
+    /// Install a snapshot from a memory-efficient buffer.
     ///
-    /// This replaces the current log with entries from the snapshot.
+    /// Uses SnapshotReader for streaming deserialization, reading entries
+    /// one at a time to minimize peak memory usage.
+    pub fn install_snapshot_streaming(
+        &self,
+        metadata: SnapshotMetadata,
+        buffer: &SnapshotBuffer,
+    ) -> Result<()> {
+        use crate::snapshot_streaming::SnapshotReader;
+
+        // Validate snapshot hash
+        let computed_hash = buffer.hash();
+        if computed_hash != metadata.snapshot_hash {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot hash mismatch: expected {:?}, got {:?}",
+                metadata.snapshot_hash, computed_hash
+            )));
+        }
+
+        // Create reader for streaming deserialization
+        let reader = SnapshotReader::new(buffer).map_err(|e| {
+            ChainError::SnapshotError(format!("failed to create snapshot reader: {}", e))
+        })?;
+
+        // Read entries incrementally
+        let mut entries = Vec::with_capacity(reader.entry_count() as usize);
+        for entry_result in reader {
+            let entry = entry_result.map_err(|e| {
+                ChainError::SnapshotError(format!("failed to read snapshot entry: {}", e))
+            })?;
+            entries.push(entry);
+        }
+
+        // Validate the snapshot
+        if entries.is_empty() {
+            return Err(ChainError::SnapshotError(
+                "snapshot contains no entries".into(),
+            ));
+        }
+
+        let last_entry = entries.last().unwrap();
+        if last_entry.index != metadata.last_included_index {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot index mismatch: expected {}, got {}",
+                metadata.last_included_index, last_entry.index
+            )));
+        }
+        if last_entry.term != metadata.last_included_term {
+            return Err(ChainError::SnapshotError(format!(
+                "snapshot term mismatch: expected {}, got {}",
+                metadata.last_included_term, last_entry.term
+            )));
+        }
+
+        // Install the snapshot
+        self.install_snapshot_entries(metadata, entries)
+    }
+
+    /// Install a snapshot from raw bytes.
+    ///
+    /// For large snapshots, prefer `install_snapshot_streaming()` with a
+    /// SnapshotBuffer for better memory efficiency.
     pub fn install_snapshot(&self, metadata: SnapshotMetadata, data: &[u8]) -> Result<()> {
+        use crate::snapshot_streaming::deserialize_entries;
+
         // Validate snapshot hash before installing
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -2251,8 +2414,8 @@ impl RaftNode {
             )));
         }
 
-        // Deserialize the log entries from snapshot data
-        let entries: Vec<LogEntry> = bincode::deserialize(data).map_err(|e| {
+        // Deserialize the log entries from snapshot data (supports both legacy and streaming formats)
+        let entries: Vec<LogEntry> = deserialize_entries(data).map_err(|e| {
             ChainError::SnapshotError(format!("failed to deserialize snapshot: {}", e))
         })?;
 
@@ -2277,6 +2440,16 @@ impl RaftNode {
             )));
         }
 
+        // Install the snapshot
+        self.install_snapshot_entries(metadata, entries)
+    }
+
+    /// Install snapshot entries into the Raft state.
+    fn install_snapshot_entries(
+        &self,
+        metadata: SnapshotMetadata,
+        entries: Vec<LogEntry>,
+    ) -> Result<()> {
         // Install the snapshot
         {
             let mut persistent = self.persistent.write();
@@ -2328,29 +2501,44 @@ impl RaftNode {
 
         // Start new transfer if offset is 0
         if offset == 0 {
-            snapshot_state.start_receive(total_size);
+            snapshot_state.start_receive(total_size).map_err(|e| {
+                ChainError::SnapshotError(format!("failed to start snapshot receive: {}", e))
+            })?;
         }
 
+        // Get current buffer size for offset validation
+        let current_size = snapshot_state
+            .pending_buffer
+            .as_ref()
+            .map(|b| b.total_len())
+            .unwrap_or(0);
+
         // Validate offset matches current position
-        if offset != snapshot_state.pending_data.len() as u64 {
+        if offset != current_size {
             snapshot_state.cancel_receive();
             return Err(ChainError::SnapshotError(format!(
                 "chunk offset mismatch: expected {}, got {}",
-                snapshot_state.pending_data.len(),
-                offset
+                current_size, offset
             )));
         }
 
-        snapshot_state.append_chunk(data);
+        snapshot_state.append_chunk(data).map_err(|e| {
+            snapshot_state.cancel_receive();
+            ChainError::SnapshotError(format!("failed to append chunk: {}", e))
+        })?;
 
         if is_last {
             // Validate total size
-            if snapshot_state.pending_data.len() as u64 != total_size {
-                let actual = snapshot_state.pending_data.len();
+            let actual_size = snapshot_state
+                .pending_buffer
+                .as_ref()
+                .map(|b| b.total_len())
+                .unwrap_or(0);
+            if actual_size != total_size {
                 snapshot_state.cancel_receive();
                 return Err(ChainError::SnapshotError(format!(
                     "snapshot size mismatch: expected {}, got {}",
-                    total_size, actual
+                    total_size, actual_size
                 )));
             }
             return Ok(true);
@@ -2359,9 +2547,20 @@ impl RaftNode {
         Ok(false)
     }
 
-    /// Get the accumulated snapshot data after receiving all chunks.
-    pub fn take_pending_snapshot_data(&self) -> Vec<u8> {
+    /// Get the accumulated snapshot buffer after receiving all chunks.
+    pub fn take_pending_snapshot_buffer(&self) -> Option<SnapshotBuffer> {
         self.snapshot_state.write().finish_receive()
+    }
+
+    /// Get the accumulated snapshot data after receiving all chunks.
+    ///
+    /// Returns a copy of the data as a Vec<u8> for backwards compatibility.
+    pub fn take_pending_snapshot_data(&self) -> Vec<u8> {
+        self.snapshot_state
+            .write()
+            .finish_receive()
+            .and_then(|buf| buf.as_bytes().ok().map(|b| b.to_vec()))
+            .unwrap_or_default()
     }
 
     /// Check if we need to send a snapshot to a follower.
@@ -2403,6 +2602,54 @@ impl RaftNode {
                 (offset, chunk.to_vec(), is_last)
             })
             .collect()
+    }
+
+    /// Get a single chunk from a SnapshotBuffer with zero-copy access.
+    ///
+    /// Returns (data_slice, is_last) for the chunk at the given offset.
+    /// Uses memory-mapped I/O when the buffer is file-backed, avoiding copies.
+    pub fn get_snapshot_chunk_streaming<'a>(
+        &self,
+        buffer: &'a SnapshotBuffer,
+        offset: u64,
+    ) -> Result<(&'a [u8], bool)> {
+        let total_len = buffer.total_len();
+        if offset >= total_len {
+            return Err(ChainError::SnapshotError(format!(
+                "chunk offset {} beyond buffer length {}",
+                offset, total_len
+            )));
+        }
+
+        let chunk_size = self.config.snapshot_chunk_size as usize;
+        let remaining = (total_len - offset) as usize;
+        let actual_size = chunk_size.min(remaining);
+        let is_last = offset + actual_size as u64 >= total_len;
+
+        let data = buffer.as_slice(offset, actual_size).map_err(|e| {
+            ChainError::SnapshotError(format!("failed to read chunk at offset {}: {}", offset, e))
+        })?;
+
+        Ok((data, is_last))
+    }
+
+    /// Iterator over snapshot chunks from a SnapshotBuffer.
+    ///
+    /// Yields (offset, data_slice, is_last) for each chunk.
+    /// Uses zero-copy access when possible.
+    pub fn snapshot_chunk_iter<'a>(
+        &'a self,
+        buffer: &'a SnapshotBuffer,
+    ) -> impl Iterator<Item = Result<(u64, &'a [u8], bool)>> + 'a {
+        let chunk_size = self.config.snapshot_chunk_size;
+        let total_len = buffer.total_len();
+        let num_chunks = (total_len + chunk_size - 1) / chunk_size;
+
+        (0..num_chunks).map(move |i| {
+            let offset = i * chunk_size;
+            let (data, is_last) = self.get_snapshot_chunk_streaming(buffer, offset)?;
+            Ok((offset, data, is_last))
+        })
     }
 
     /// Get entries for replication to a specific follower.
@@ -3141,7 +3388,9 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3191,7 +3440,9 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3217,7 +3468,9 @@ mod tests {
         // Add an entry with term 1
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader sends entry at same index but different term
@@ -3532,8 +3785,12 @@ mod tests {
 
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(2, 1, create_test_block(1)));
-            persistent.log.push(LogEntry::new(3, 2, create_test_block(2)));
+            persistent
+                .log
+                .push(LogEntry::new(2, 1, create_test_block(1)));
+            persistent
+                .log
+                .push(LogEntry::new(3, 2, create_test_block(2)));
         }
 
         let (index, term) = node.last_log_info();
@@ -3582,7 +3839,9 @@ mod tests {
         // Add an entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader claims prev_log at index 1 with term 5 (but we have term 1)
@@ -3637,7 +3896,9 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             for i in 1..=3 {
-                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
 
@@ -3766,7 +4027,9 @@ mod tests {
         // Add entries to our log
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(3, 1, create_test_block(1)));
+            persistent
+                .log
+                .push(LogEntry::new(3, 1, create_test_block(1)));
         }
 
         // Candidate with older log
@@ -3874,7 +4137,9 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             for i in 1..=5 {
-                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
 
@@ -3908,7 +4173,9 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
+                persistent
+                    .log
+                    .push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3951,7 +4218,9 @@ mod tests {
         // Add initial entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader sends more entries
@@ -3988,7 +4257,9 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 2;
-            persistent.log.push(LogEntry::new(1, 1, create_test_block(1))); // Old term
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1))); // Old term
         }
         node.become_leader();
 
@@ -4358,7 +4629,9 @@ mod tests {
         // Append an entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
         }
 
         assert_eq!(node.last_log_index(), 1);
@@ -4372,8 +4645,12 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
-            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
-            persistent.log.push(LogEntry::new(1, 2, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(1, 2, Block::genesis("node1".to_string())));
         }
         node.become_leader();
 
@@ -4413,7 +4690,9 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 5;
             persistent.voted_for = Some("node2".to_string());
-            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
         }
 
         // Save to store
@@ -4448,8 +4727,12 @@ mod tests {
             let mut persistent = node1.persistent.write();
             persistent.current_term = 10;
             persistent.voted_for = Some("node3".to_string());
-            persistent.log.push(LogEntry::new(5, 1, Block::genesis("node1".to_string())));
-            persistent.log.push(LogEntry::new(8, 2, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(5, 1, Block::genesis("node1".to_string())));
+            persistent
+                .log
+                .push(LogEntry::new(8, 2, Block::genesis("node1".to_string())));
         }
         node1.save_to_store(&store).unwrap();
 

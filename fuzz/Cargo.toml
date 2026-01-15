@@ -472,3 +472,12 @@ path = "fuzz_targets/raft_membership.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 22: Snapshot buffer streaming targets
+
+[[bin]]
+name = "snapshot_buffer"
+path = "fuzz_targets/snapshot_buffer.rs"
+test = false
+doc = false
+bench = false

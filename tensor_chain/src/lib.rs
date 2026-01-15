@@ -55,6 +55,8 @@ pub mod metrics;
 pub mod network;
 pub mod raft;
 pub mod raft_wal;
+pub mod snapshot_buffer;
+pub mod snapshot_streaming;
 pub mod state_machine;
 pub mod tcp;
 pub mod transaction;
@@ -102,9 +104,9 @@ pub use membership::{
 };
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, ConfigChange, GeometricTransport, JointConfig,
-    LogEntry, LogEntryData, MemoryTransport, Message, MessageHandler, NetworkManager, PeerConfig,
-    PreVote, PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
+    AppendEntries, AppendEntriesResponse, ConfigChange, GeometricTransport, JointConfig, LogEntry,
+    LogEntryData, MemoryTransport, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,
+    PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
     RaftMembershipConfig, RequestVote, RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg,
     TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
@@ -113,6 +115,10 @@ pub use raft::{
     RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
 pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
+pub use snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferError};
+pub use snapshot_streaming::{
+    deserialize_entries, serialize_entries, SnapshotReader, SnapshotWriter, StreamingError,
+};
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
