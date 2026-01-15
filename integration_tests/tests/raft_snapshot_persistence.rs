@@ -28,7 +28,7 @@ fn create_test_block(height: u64, proposer: &str) -> Block {
 
 fn create_log_entry(index: u64, term: u64) -> LogEntry {
     let block = create_test_block(index, "proposer");
-    LogEntry { index, term, block }
+    LogEntry::new(term, index, block)
 }
 
 fn compute_hash(data: &[u8]) -> [u8; 32] {
@@ -117,7 +117,13 @@ fn test_startup_loads_valid_snapshot() {
     let data = bincode::serialize(&entries).unwrap();
     let snapshot_hash = compute_hash(&data);
 
-    let metadata = SnapshotMetadata::new(5, 1, snapshot_hash, vec!["node1".to_string()], data.len() as u64);
+    let metadata = SnapshotMetadata::new(
+        5,
+        1,
+        snapshot_hash,
+        vec!["node1".to_string()],
+        data.len() as u64,
+    );
 
     // Save snapshot directly to store
     let transport1 = Arc::new(MemoryTransport::new("node1".to_string()));
@@ -155,7 +161,13 @@ fn test_startup_rejects_corrupted_snapshot() {
     let data = bincode::serialize(&entries).unwrap();
     let snapshot_hash = compute_hash(&data);
 
-    let metadata = SnapshotMetadata::new(5, 1, snapshot_hash, vec!["node1".to_string()], data.len() as u64);
+    let metadata = SnapshotMetadata::new(
+        5,
+        1,
+        snapshot_hash,
+        vec!["node1".to_string()],
+        data.len() as u64,
+    );
 
     // Save snapshot
     let transport1 = Arc::new(MemoryTransport::new("node1".to_string()));
@@ -176,9 +188,7 @@ fn test_startup_rejects_corrupted_snapshot() {
         "data",
         tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(corrupted_data)),
     );
-    store
-        .put("_raft:snapshot:data:node1", snap_data)
-        .unwrap();
+    store.put("_raft:snapshot:data:node1", snap_data).unwrap();
 
     // Create new node - should reject corrupted snapshot
     let transport2 = Arc::new(MemoryTransport::new("node1".to_string()));
@@ -237,7 +247,9 @@ fn test_snapshot_roundtrip_integrity() {
 
     // Install and persist
     follower.install_snapshot(metadata.clone(), &data).unwrap();
-    follower.save_snapshot(&metadata, &data, &follower_store).unwrap();
+    follower
+        .save_snapshot(&metadata, &data, &follower_store)
+        .unwrap();
     drop(follower);
 
     // Restart follower - should recover

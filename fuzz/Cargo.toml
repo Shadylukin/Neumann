@@ -463,3 +463,12 @@ path = "fuzz_targets/gossip_message.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 21: Raft membership targets
+
+[[bin]]
+name = "raft_membership"
+path = "fuzz_targets/raft_membership.rs"
+test = false
+doc = false
+bench = false

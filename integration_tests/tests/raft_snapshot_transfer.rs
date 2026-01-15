@@ -31,11 +31,7 @@ fn create_test_block(height: u64, proposer: &str) -> Block {
 }
 
 fn create_test_log_entry(index: u64) -> LogEntry {
-    LogEntry {
-        index,
-        term: 1,
-        block: create_test_block(index, "test_proposer"),
-    }
+    LogEntry::new(1, index, create_test_block(index, "test_proposer"))
 }
 
 fn create_node_with_config(id: &str, peers: Vec<String>, config: RaftConfig) -> Arc<RaftNode> {
@@ -75,7 +71,11 @@ fn test_snapshot_metadata_roundtrip() {
         100,
         5,
         [42u8; 32],
-        vec!["node1".to_string(), "node2".to_string(), "node3".to_string()],
+        vec![
+            "node1".to_string(),
+            "node2".to_string(),
+            "node3".to_string(),
+        ],
         1024 * 1024,
     );
 

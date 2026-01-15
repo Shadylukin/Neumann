@@ -36,15 +36,11 @@ fn create_test_block(height: u64, proposer: &str) -> Block {
 
 fn create_log_entry(index: u64, term: u64) -> LogEntry {
     let block = create_test_block(index, "proposer");
-    LogEntry { index, term, block }
+    LogEntry::new(term, index, block)
 }
 
 /// Create a single node with a TensorStore for persistence testing.
-fn create_node_with_store(
-    node_id: &str,
-    config: RaftConfig,
-    store: &TensorStore,
-) -> Arc<RaftNode> {
+fn create_node_with_store(node_id: &str, config: RaftConfig, store: &TensorStore) -> Arc<RaftNode> {
     let transport = Arc::new(MemoryTransport::new(node_id.to_string()));
     Arc::new(RaftNode::with_store(
         node_id.to_string(),
@@ -105,8 +101,8 @@ async fn test_leader_auto_compacts_log() {
     );
 
     // Verify snapshot was persisted to store
-    let (loaded_meta, _data) = RaftNode::load_snapshot("node1", &store)
-        .expect("Snapshot should be persisted to store");
+    let (loaded_meta, _data) =
+        RaftNode::load_snapshot("node1", &store).expect("Snapshot should be persisted to store");
     assert!(loaded_meta.last_included_index > 0);
 }
 
@@ -127,14 +123,7 @@ async fn test_compaction_survives_restart() {
 
     let data = vec![1, 2, 3, 4, 5];
     let snapshot_hash = compute_hash(&data);
-    let metadata = SnapshotMetadata {
-        last_included_index: 100,
-        last_included_term: 5,
-        snapshot_hash,
-        config: vec!["node1".to_string(), "node2".to_string()],
-        created_at: 12345,
-        size: data.len() as u64,
-    };
+    let metadata = SnapshotMetadata::new(100, 5, snapshot_hash, vec!["node1".to_string(), "node2".to_string()], data.len() as u64);
 
     // Save snapshot
     node1.save_snapshot(&metadata, &data, &store).unwrap();
@@ -144,13 +133,7 @@ async fn test_compaction_survives_restart() {
 
     // Create a new node from the same store (simulating restart)
     let transport2 = Arc::new(MemoryTransport::new("node1".to_string()));
-    let node2 = RaftNode::with_store(
-        "node1".to_string(),
-        vec![],
-        transport2,
-        config,
-        &store,
-    );
+    let node2 = RaftNode::with_store("node1".to_string(), vec![], transport2, config, &store);
 
     // Verify snapshot metadata was restored
     let restored_meta = node2
@@ -261,14 +244,7 @@ async fn test_new_leader_uses_existing_snapshot() {
 
     let data = bincode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
     let snapshot_hash = compute_hash(&data);
-    let metadata = SnapshotMetadata {
-        last_included_index: 50,
-        last_included_term: 3,
-        snapshot_hash,
-        config: vec!["node1".to_string(), "node2".to_string()],
-        created_at: 9999,
-        size: data.len() as u64,
-    };
+    let metadata = SnapshotMetadata::new(50, 3, snapshot_hash, vec!["node1".to_string(), "node2".to_string()], data.len() as u64);
     node1.save_snapshot(&metadata, &data, &store).unwrap();
 
     // Simulate first leader stepping down

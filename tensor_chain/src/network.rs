@@ -224,6 +224,36 @@ pub struct LogEntry {
     pub index: u64,
     /// The block being proposed.
     pub block: Block,
+    /// Optional config change (for joint consensus membership changes).
+    #[serde(default)]
+    pub config_change: Option<ConfigChange>,
+}
+
+impl LogEntry {
+    /// Create a new log entry with a block.
+    pub fn new(term: u64, index: u64, block: Block) -> Self {
+        Self {
+            term,
+            index,
+            block,
+            config_change: None,
+        }
+    }
+
+    /// Create a config change log entry.
+    pub fn config(term: u64, index: u64, change: ConfigChange) -> Self {
+        Self {
+            term,
+            index,
+            block: Block::default(),
+            config_change: Some(change),
+        }
+    }
+
+    /// Check if this entry contains a config change.
+    pub fn is_config_change(&self) -> bool {
+        self.config_change.is_some()
+    }
 }
 
 /// Request for blocks from a peer.
@@ -330,6 +360,52 @@ pub enum TxVote {
     },
 }
 
+impl From<crate::distributed_tx::PrepareVote> for TxVote {
+    fn from(vote: crate::distributed_tx::PrepareVote) -> Self {
+        use crate::distributed_tx::PrepareVote;
+        match vote {
+            PrepareVote::Yes { lock_handle, delta } => TxVote::Yes {
+                lock_handle,
+                delta: delta.delta.clone(),
+                affected_keys: delta.affected_keys.iter().cloned().collect(),
+            },
+            PrepareVote::No { reason } => TxVote::No { reason },
+            PrepareVote::Conflict {
+                similarity,
+                conflicting_tx,
+            } => TxVote::Conflict {
+                similarity,
+                conflicting_tx,
+            },
+        }
+    }
+}
+
+impl From<TxVote> for crate::distributed_tx::PrepareVote {
+    fn from(vote: TxVote) -> Self {
+        use crate::consensus::DeltaVector;
+        use crate::distributed_tx::PrepareVote;
+        match vote {
+            TxVote::Yes {
+                lock_handle,
+                delta,
+                affected_keys,
+            } => PrepareVote::Yes {
+                lock_handle,
+                delta: DeltaVector::from_sparse(delta, affected_keys.into_iter().collect(), 0),
+            },
+            TxVote::No { reason } => PrepareVote::No { reason },
+            TxVote::Conflict {
+                similarity,
+                conflicting_tx,
+            } => PrepareVote::Conflict {
+                similarity,
+                conflicting_tx,
+            },
+        }
+    }
+}
+
 /// Commit request for distributed transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxCommitMsg {
@@ -361,6 +437,198 @@ pub struct TxAckMsg {
     pub success: bool,
     /// Error message if failed.
     pub error: Option<String>,
+}
+
+// ============================================================================
+// Joint Consensus Types for Dynamic Membership
+// ============================================================================
+
+/// Configuration change for Raft membership.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ConfigChange {
+    /// Add a new node as a non-voting learner.
+    AddLearner { node_id: NodeId },
+    /// Promote a learner to a voting member.
+    PromoteLearner { node_id: NodeId },
+    /// Remove a node from the cluster.
+    RemoveNode { node_id: NodeId },
+    /// Batch change: add and remove multiple nodes atomically.
+    JointChange {
+        additions: Vec<NodeId>,
+        removals: Vec<NodeId>,
+    },
+}
+
+impl ConfigChange {
+    pub fn add_learner(node_id: NodeId) -> Self {
+        Self::AddLearner { node_id }
+    }
+
+    pub fn promote_learner(node_id: NodeId) -> Self {
+        Self::PromoteLearner { node_id }
+    }
+
+    pub fn remove_node(node_id: NodeId) -> Self {
+        Self::RemoveNode { node_id }
+    }
+
+    pub fn joint_change(additions: Vec<NodeId>, removals: Vec<NodeId>) -> Self {
+        Self::JointChange {
+            additions,
+            removals,
+        }
+    }
+}
+
+/// Joint consensus configuration during membership transitions.
+///
+/// Implements Raft's joint consensus algorithm (Section 6) where both
+/// old and new configurations must agree during transitions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct JointConfig {
+    /// Voters in the old configuration.
+    pub old_voters: Vec<NodeId>,
+    /// Voters in the new configuration.
+    pub new_voters: Vec<NodeId>,
+}
+
+impl JointConfig {
+    pub fn new(old_voters: Vec<NodeId>, new_voters: Vec<NodeId>) -> Self {
+        Self {
+            old_voters,
+            new_voters,
+        }
+    }
+
+    /// Check if we have a joint quorum (majority in BOTH old and new configs).
+    pub fn has_joint_quorum(&self, votes: &HashSet<NodeId>) -> bool {
+        let old_quorum = (self.old_voters.len() / 2) + 1;
+        let new_quorum = (self.new_voters.len() / 2) + 1;
+
+        let old_votes = self.old_voters.iter().filter(|n| votes.contains(*n)).count();
+        let new_votes = self.new_voters.iter().filter(|n| votes.contains(*n)).count();
+
+        old_votes >= old_quorum && new_votes >= new_quorum
+    }
+
+    /// Get all unique voters from both configurations.
+    pub fn all_voters(&self) -> Vec<NodeId> {
+        let mut all: Vec<_> = self.old_voters.clone();
+        for node in &self.new_voters {
+            if !all.contains(node) {
+                all.push(node.clone());
+            }
+        }
+        all
+    }
+}
+
+/// Raft membership configuration.
+///
+/// Tracks voters, learners, and joint consensus state for dynamic membership.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RaftMembershipConfig {
+    /// Current voting members.
+    pub voters: Vec<NodeId>,
+    /// Non-voting learners (catching up before becoming voters).
+    pub learners: Vec<NodeId>,
+    /// Joint configuration during membership transitions.
+    pub joint: Option<JointConfig>,
+    /// Log index where this configuration was committed.
+    pub config_index: u64,
+}
+
+impl RaftMembershipConfig {
+    pub fn new(voters: Vec<NodeId>) -> Self {
+        Self {
+            voters,
+            learners: Vec::new(),
+            joint: None,
+            config_index: 0,
+        }
+    }
+
+    /// Check if we have quorum (considering joint consensus if active).
+    pub fn has_quorum(&self, votes: &HashSet<NodeId>) -> bool {
+        if let Some(ref joint) = self.joint {
+            joint.has_joint_quorum(votes)
+        } else {
+            let quorum = (self.voters.len() / 2) + 1;
+            self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
+        }
+    }
+
+    /// Get all nodes that should receive log entries (voters + learners + joint).
+    pub fn replication_targets(&self) -> Vec<NodeId> {
+        let mut targets = self.voters.clone();
+        targets.extend(self.learners.clone());
+
+        // Include new voters during joint consensus
+        if let Some(ref joint) = self.joint {
+            for node in &joint.new_voters {
+                if !targets.contains(node) {
+                    targets.push(node.clone());
+                }
+            }
+        }
+
+        targets
+    }
+
+    /// Check if in joint consensus mode.
+    pub fn in_joint_consensus(&self) -> bool {
+        self.joint.is_some()
+    }
+
+    /// Add a learner node.
+    pub fn add_learner(&mut self, node_id: NodeId) {
+        if !self.learners.contains(&node_id) && !self.voters.contains(&node_id) {
+            self.learners.push(node_id);
+        }
+    }
+
+    /// Promote a learner to voter.
+    pub fn promote_learner(&mut self, node_id: &NodeId) -> bool {
+        if let Some(pos) = self.learners.iter().position(|n| n == node_id) {
+            self.learners.remove(pos);
+            self.voters.push(node_id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a node from voters or learners.
+    pub fn remove_node(&mut self, node_id: &NodeId) -> bool {
+        if let Some(pos) = self.voters.iter().position(|n| n == node_id) {
+            self.voters.remove(pos);
+            return true;
+        }
+        if let Some(pos) = self.learners.iter().position(|n| n == node_id) {
+            self.learners.remove(pos);
+            return true;
+        }
+        false
+    }
+
+    /// Check if a node is a voter.
+    pub fn is_voter(&self, node_id: &NodeId) -> bool {
+        self.voters.contains(node_id)
+    }
+
+    /// Check if a node is a learner.
+    pub fn is_learner(&self, node_id: &NodeId) -> bool {
+        self.learners.contains(node_id)
+    }
+}
+
+/// Log entry data that can be either a block or a configuration change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LogEntryData {
+    /// Regular block entry.
+    Block(Block),
+    /// Configuration change entry.
+    Config(ConfigChange),
 }
 
 /// Request to execute a query on a remote shard.
@@ -850,11 +1118,7 @@ mod tests {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
         let block = crate::block::Block::new(header, vec![]);
 
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         let bytes = bincode::serialize(&entry).unwrap();
         let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
@@ -1417,11 +1681,7 @@ mod tests {
         let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "p".to_string());
         let block = Block::new(header, vec![]);
 
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
         let cloned = entry.clone();
         assert_eq!(entry.term, cloned.term);
 
@@ -2112,5 +2372,208 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(t1.dropped_message_count(), 5);
+    }
+
+    // ========== Joint Consensus Tests ==========
+
+    #[test]
+    fn test_joint_config_has_joint_quorum_both_required() {
+        let joint = JointConfig {
+            old_voters: vec!["n1".to_string(), "n2".to_string(), "n3".to_string()],
+            new_voters: vec!["n2".to_string(), "n3".to_string(), "n4".to_string()],
+        };
+
+        // Need majority from both: old requires 2/3, new requires 2/3
+        let mut votes = HashSet::new();
+        votes.insert("n1".to_string());
+        votes.insert("n2".to_string());
+        // Only old has quorum (n1, n2), new only has 1 (n2)
+        assert!(!joint.has_joint_quorum(&votes));
+
+        votes.insert("n3".to_string());
+        // Now both have quorum: old has 3/3, new has 2/3 (n2, n3)
+        assert!(joint.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_serialization() {
+        let joint = JointConfig {
+            old_voters: vec!["n1".to_string(), "n2".to_string()],
+            new_voters: vec!["n2".to_string(), "n3".to_string()],
+        };
+
+        let bytes = bincode::serialize(&joint).unwrap();
+        let decoded: JointConfig = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.old_voters.len(), 2);
+        assert_eq!(decoded.new_voters.len(), 2);
+    }
+
+    #[test]
+    fn test_raft_membership_config_quorum_simple() {
+        let config = RaftMembershipConfig::new(vec![
+            "n1".to_string(),
+            "n2".to_string(),
+            "n3".to_string(),
+        ]);
+
+        let mut votes = HashSet::new();
+        votes.insert("n1".to_string());
+        // 1/3 - not quorum
+        assert!(!config.has_quorum(&votes));
+
+        votes.insert("n2".to_string());
+        // 2/3 - quorum (majority)
+        assert!(config.has_quorum(&votes));
+    }
+
+    #[test]
+    fn test_raft_membership_config_quorum_joint() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        config.joint = Some(JointConfig {
+            old_voters: vec!["n1".to_string(), "n2".to_string()],
+            new_voters: vec!["n2".to_string(), "n3".to_string()],
+        });
+
+        let mut votes = HashSet::new();
+        votes.insert("n1".to_string());
+        // Old has 1/2 (needs 2), not quorum
+        assert!(!config.has_quorum(&votes));
+
+        votes.insert("n2".to_string());
+        // Old has 2/2, new has 1/2 (needs 2), not joint quorum
+        assert!(!config.has_quorum(&votes));
+
+        votes.insert("n3".to_string());
+        // Old has 2/2, new has 2/2, joint quorum achieved
+        assert!(config.has_quorum(&votes));
+    }
+
+    #[test]
+    fn test_raft_membership_config_replication_targets() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        config.learners.push("learner1".to_string());
+
+        let targets = config.replication_targets();
+        assert!(targets.contains(&"n1".to_string()));
+        assert!(targets.contains(&"n2".to_string()));
+        assert!(targets.contains(&"learner1".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_replication_targets_joint() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        config.joint = Some(JointConfig {
+            old_voters: vec!["n1".to_string(), "n2".to_string()],
+            new_voters: vec!["n2".to_string(), "n3".to_string()],
+        });
+
+        let targets = config.replication_targets();
+        assert!(targets.contains(&"n1".to_string()));
+        assert!(targets.contains(&"n2".to_string()));
+        assert!(targets.contains(&"n3".to_string())); // New voter included
+    }
+
+    #[test]
+    fn test_raft_membership_config_add_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        assert!(config.learners.is_empty());
+
+        config.add_learner("learner1".to_string());
+        assert!(config.learners.contains(&"learner1".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_promote_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        config.add_learner("learner1".to_string());
+
+        config.promote_learner(&"learner1".to_string());
+        assert!(!config.learners.contains(&"learner1".to_string()));
+        assert!(config.voters.contains(&"learner1".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_in_joint_consensus() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        assert!(!config.in_joint_consensus());
+
+        config.joint = Some(JointConfig {
+            old_voters: vec!["n1".to_string()],
+            new_voters: vec!["n1".to_string(), "n2".to_string()],
+        });
+        assert!(config.in_joint_consensus());
+    }
+
+    #[test]
+    fn test_config_change_serialization() {
+        let changes = vec![
+            ConfigChange::AddLearner {
+                node_id: "new_node".to_string(),
+            },
+            ConfigChange::PromoteLearner {
+                node_id: "learner1".to_string(),
+            },
+            ConfigChange::RemoveNode {
+                node_id: "old_node".to_string(),
+            },
+            ConfigChange::JointChange {
+                additions: vec!["n4".to_string()],
+                removals: vec!["n1".to_string()],
+            },
+        ];
+
+        for change in changes {
+            let bytes = bincode::serialize(&change).unwrap();
+            let decoded: ConfigChange = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(decoded, change);
+        }
+    }
+
+    #[test]
+    fn test_log_entry_new() {
+        use crate::block::BlockHeader;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        let entry = LogEntry::new(1, 1, block);
+        assert_eq!(entry.term, 1);
+        assert_eq!(entry.index, 1);
+        assert!(!entry.is_config_change());
+    }
+
+    #[test]
+    fn test_log_entry_config() {
+        let entry = LogEntry::config(
+            2,
+            5,
+            ConfigChange::AddLearner {
+                node_id: "new_node".to_string(),
+            },
+        );
+        assert_eq!(entry.term, 2);
+        assert_eq!(entry.index, 5);
+        assert!(entry.is_config_change());
+        assert!(matches!(
+            entry.config_change,
+            Some(ConfigChange::AddLearner { .. })
+        ));
+    }
+
+    #[test]
+    fn test_log_entry_with_config_change_serialization() {
+        use crate::block::BlockHeader;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        let mut entry = LogEntry::new(1, 1, block);
+        entry.config_change = Some(ConfigChange::AddLearner {
+            node_id: "new_node".to_string(),
+        });
+
+        let bytes = bincode::serialize(&entry).unwrap();
+        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        assert!(decoded.is_config_change());
     }
 }

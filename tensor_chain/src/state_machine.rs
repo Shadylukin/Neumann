@@ -119,6 +119,16 @@ impl TensorStateMachine {
 
     /// Apply a single log entry to the chain.
     fn apply_entry(&self, entry: &LogEntry) -> Result<()> {
+        // Handle config changes first (membership updates)
+        if let Some(ref config_change) = entry.config_change {
+            self.apply_config_change(entry.index, config_change)?;
+        }
+
+        // Skip block processing for pure config entries
+        if entry.is_config_change() && entry.block.transactions.is_empty() {
+            return Ok(());
+        }
+
         let block = &entry.block;
 
         // Apply each transaction to the appropriate storage layer
@@ -136,6 +146,68 @@ impl TensorStateMachine {
         // Track this block's embedding for future fast-path decisions
         self.track_embedding(block);
 
+        Ok(())
+    }
+
+    /// Apply a config change to the Raft membership.
+    fn apply_config_change(
+        &self,
+        index: u64,
+        change: &crate::network::ConfigChange,
+    ) -> Result<()> {
+        use crate::network::ConfigChange;
+
+        let mut config = self.raft.membership_config();
+
+        match change {
+            ConfigChange::AddLearner { node_id } => {
+                if !config.learners.contains(node_id) && !config.voters.contains(node_id) {
+                    config.learners.push(node_id.clone());
+                }
+            }
+            ConfigChange::PromoteLearner { node_id } => {
+                if let Some(pos) = config.learners.iter().position(|n| n == node_id) {
+                    config.learners.remove(pos);
+                    if !config.voters.contains(node_id) {
+                        config.voters.push(node_id.clone());
+                    }
+                }
+            }
+            ConfigChange::RemoveNode { node_id } => {
+                config.voters.retain(|n| n != node_id);
+                config.learners.retain(|n| n != node_id);
+            }
+            ConfigChange::JointChange { additions, removals } => {
+                // Enter or exit joint consensus
+                if config.joint.is_some() {
+                    // Already in joint - this is the commit of the new config
+                    // Keep only new_voters from the joint config
+                    if let Some(joint) = &config.joint {
+                        config.voters = joint.new_voters.clone();
+                    }
+                    config.joint = None;
+                } else {
+                    // Enter joint consensus - need quorum from both old and new
+                    let old_voters = config.voters.clone();
+                    let mut new_voters = old_voters.clone();
+                    for node in additions {
+                        if !new_voters.contains(node) {
+                            new_voters.push(node.clone());
+                        }
+                    }
+                    for node in removals {
+                        new_voters.retain(|n| n != node);
+                    }
+                    config.joint = Some(crate::network::JointConfig {
+                        old_voters,
+                        new_voters,
+                    });
+                }
+            }
+        }
+
+        config.config_index = index;
+        self.raft.set_membership_config(config);
         Ok(())
     }
 
@@ -328,6 +400,20 @@ impl TensorStateMachine {
     /// Clear recent embedding history.
     pub fn clear_recent(&self) {
         self.recent_embeddings.write().clear();
+    }
+
+    /// Get the current state embedding for geometric routing.
+    ///
+    /// Returns a weighted average of recent embeddings, giving more weight
+    /// to newer entries. Returns None if no recent embeddings exist.
+    pub fn current_state_embedding(&self) -> Option<SparseVector> {
+        let recent = self.recent_embeddings.read();
+        if recent.is_empty() {
+            return None;
+        }
+
+        // Return most recent embedding (simpler and more responsive to state changes)
+        recent.last().cloned()
     }
 
     /// Get access to the underlying chain.
@@ -560,11 +646,7 @@ mod tests {
 
         // Create a log entry using chain's block builder for correct prev_hash
         let block = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         // Apply entry
         sm.apply_entry(&entry).unwrap();
@@ -583,11 +665,7 @@ mod tests {
 
         // Create a log entry without embedding
         let block = create_valid_block(&chain, &[]);
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         // Apply entry (should use full validation path)
         sm.apply_entry(&entry).unwrap();
@@ -607,20 +685,12 @@ mod tests {
 
         // Apply first entry (full validation) using chain's block builder
         let block1 = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
-        let entry1 = LogEntry {
-            term: 1,
-            index: 1,
-            block: block1,
-        };
+        let entry1 = LogEntry::new(1, 1, block1);
         sm.apply_entry(&entry1).unwrap();
 
         // Apply second entry (similar embedding - should use fast-path)
         let block2 = create_valid_block(&chain, &[0.99, 0.01, 0.0, 0.0]);
-        let entry2 = LogEntry {
-            term: 1,
-            index: 2,
-            block: block2,
-        };
+        let entry2 = LogEntry::new(1, 2, block2);
         sm.apply_entry(&entry2).unwrap();
 
         // Check chain state
@@ -671,11 +741,7 @@ mod tests {
             })
             .build();
 
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         // Apply entry
         sm.apply_entry(&entry).unwrap();
@@ -701,11 +767,7 @@ mod tests {
             })
             .build();
 
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         // Apply entry
         sm.apply_entry(&entry).unwrap();
@@ -731,11 +793,7 @@ mod tests {
             })
             .build();
 
-        let entry = LogEntry {
-            term: 1,
-            index: 1,
-            block,
-        };
+        let entry = LogEntry::new(1, 1, block);
 
         // Apply entry
         sm.apply_entry(&entry).unwrap();

@@ -385,8 +385,12 @@ pub struct SnapshotMetadata {
     pub last_included_term: u64,
     /// Block hash at the snapshot height.
     pub snapshot_hash: [u8; 32],
-    /// Cluster configuration at snapshot time.
+    /// Cluster configuration at snapshot time (legacy field for backward compatibility).
+    #[serde(default)]
     pub config: Vec<NodeId>,
+    /// Full membership configuration at snapshot time.
+    #[serde(default)]
+    pub membership: crate::network::RaftMembershipConfig,
     /// Unix timestamp when snapshot was created.
     pub created_at: u64,
     /// Snapshot data size in bytes.
@@ -407,7 +411,31 @@ impl SnapshotMetadata {
             last_included_index,
             last_included_term,
             snapshot_hash,
+            membership: crate::network::RaftMembershipConfig::new(config.clone()),
             config,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            size,
+        }
+    }
+
+    /// Create snapshot metadata with full membership configuration.
+    pub fn with_membership(
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_hash: [u8; 32],
+        membership: crate::network::RaftMembershipConfig,
+        size: u64,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        Self {
+            last_included_index,
+            last_included_term,
+            snapshot_hash,
+            config: membership.voters.clone(),
+            membership,
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -601,6 +629,8 @@ pub struct RaftNode {
     store: Option<Arc<tensor_store::TensorStore>>,
     /// Optional Write-Ahead Log for durable state changes.
     wal: Option<Arc<parking_lot::Mutex<crate::raft_wal::RaftWal>>>,
+    /// Membership configuration for dynamic cluster membership.
+    membership_config: RwLock<crate::network::RaftMembershipConfig>,
 }
 
 impl RaftNode {
@@ -611,6 +641,12 @@ impl RaftNode {
         transport: Arc<dyn Transport>,
         config: RaftConfig,
     ) -> Self {
+        // Build initial membership config with self + all peers as voters
+        let initial_voters: Vec<NodeId> = std::iter::once(node_id.clone())
+            .chain(peers.iter().cloned())
+            .collect();
+        let membership_config = crate::network::RaftMembershipConfig::new(initial_voters);
+
         Self {
             node_id,
             state: RwLock::new(RaftState::Follower),
@@ -645,6 +681,7 @@ impl RaftNode {
             last_compaction: RwLock::new(None),
             store: None,
             wal: None,
+            membership_config: RwLock::new(membership_config),
         }
     }
 
@@ -898,6 +935,12 @@ impl RaftNode {
         voted_for: Option<NodeId>,
         log: Vec<LogEntry>,
     ) -> Self {
+        // Build initial membership config with self + all peers as voters
+        let initial_voters: Vec<NodeId> = std::iter::once(node_id.clone())
+            .chain(peers.iter().cloned())
+            .collect();
+        let membership_config = crate::network::RaftMembershipConfig::new(initial_voters);
+
         Self {
             node_id,
             state: RwLock::new(RaftState::Follower),
@@ -932,6 +975,7 @@ impl RaftNode {
             last_compaction: RwLock::new(None),
             store: None,
             wal: None,
+            membership_config: RwLock::new(membership_config),
         }
     }
 
@@ -1092,6 +1136,131 @@ impl RaftNode {
     /// Get a reference to the transport layer.
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.transport
+    }
+
+    // ========== Dynamic Membership APIs ==========
+
+    /// Get the current membership configuration.
+    pub fn membership_config(&self) -> crate::network::RaftMembershipConfig {
+        self.membership_config.read().clone()
+    }
+
+    /// Set the membership configuration (used by state machine when applying config entries).
+    pub fn set_membership_config(&self, config: crate::network::RaftMembershipConfig) {
+        *self.membership_config.write() = config;
+    }
+
+    /// Add a new node as a learner.
+    ///
+    /// The node will receive log entries but not participate in voting
+    /// until it catches up and is promoted to voter.
+    pub fn add_learner(&self, node_id: NodeId) -> crate::error::Result<()> {
+        if !self.is_leader() {
+            return Err(crate::error::ChainError::NotLeader);
+        }
+
+        let mut config = self.membership_config.write();
+        if config.voters.contains(&node_id) || config.learners.contains(&node_id) {
+            return Err(crate::error::ChainError::InvalidState(
+                "Node already in cluster".to_string(),
+            ));
+        }
+
+        config.add_learner(node_id.clone());
+
+        // Also add to peers list for replication
+        let mut peers = self.peers.write();
+        if !peers.contains(&node_id) {
+            peers.push(node_id);
+        }
+
+        Ok(())
+    }
+
+    /// Promote a learner to a voting member.
+    ///
+    /// The learner must have caught up with the leader's log.
+    pub fn promote_learner(&self, node_id: &NodeId) -> crate::error::Result<()> {
+        if !self.is_leader() {
+            return Err(crate::error::ChainError::NotLeader);
+        }
+
+        let mut config = self.membership_config.write();
+        if !config.is_learner(node_id) {
+            return Err(crate::error::ChainError::InvalidState(
+                "Node is not a learner".to_string(),
+            ));
+        }
+
+        if !config.promote_learner(node_id) {
+            return Err(crate::error::ChainError::InvalidState(
+                "Failed to promote learner".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Remove a node from the cluster.
+    ///
+    /// Cannot remove self if we are the leader (transfer leadership first).
+    pub fn remove_node(&self, node_id: &NodeId) -> crate::error::Result<()> {
+        if !self.is_leader() {
+            return Err(crate::error::ChainError::NotLeader);
+        }
+
+        if node_id == &self.node_id {
+            return Err(crate::error::ChainError::InvalidState(
+                "Cannot remove self while leader".to_string(),
+            ));
+        }
+
+        let mut config = self.membership_config.write();
+        if !config.remove_node(node_id) {
+            return Err(crate::error::ChainError::InvalidState(
+                "Node not in cluster".to_string(),
+            ));
+        }
+
+        // Also remove from peers list
+        let mut peers = self.peers.write();
+        peers.retain(|p| p != node_id);
+
+        Ok(())
+    }
+
+    /// Check if a learner has caught up with the leader's log.
+    pub fn is_learner_caught_up(&self, node_id: &NodeId) -> bool {
+        let config = self.membership_config.read();
+        if !config.is_learner(node_id) {
+            return false;
+        }
+
+        // Check if we have leader state and the learner's match index
+        if let Some(ref leader_state) = *self.leader_state.read() {
+            if let Some(&match_index) = leader_state.match_index.get(node_id) {
+                let commit_index = self.commit_index();
+                // Consider caught up if within 10 entries of commit index
+                return match_index + 10 >= commit_index;
+            }
+        }
+
+        false
+    }
+
+    /// Check if the cluster has quorum for the given set of votes.
+    pub fn has_quorum(&self, votes: &std::collections::HashSet<NodeId>) -> bool {
+        self.membership_config.read().has_quorum(votes)
+    }
+
+    /// Get all nodes that should receive log entries.
+    pub fn replication_targets(&self) -> Vec<NodeId> {
+        self.membership_config.read().replication_targets()
+    }
+
+    /// Check if currently in joint consensus mode.
+    pub fn in_joint_consensus(&self) -> bool {
+        self.membership_config.read().in_joint_consensus()
     }
 
     /// Get the last log index.
@@ -1839,7 +2008,7 @@ impl RaftNode {
         let index = persistent.log.len() as u64 + 1;
         let term = persistent.current_term;
 
-        let entry = LogEntry { term, index, block };
+        let entry = LogEntry::new(term, index, block);
         persistent.log.push(entry);
 
         // Track embedding for fast-path validation by followers (already sparse)
@@ -2570,11 +2739,7 @@ mod tests {
     }
 
     fn create_test_log_entry(index: u64) -> LogEntry {
-        LogEntry {
-            index,
-            term: 1,
-            block: create_test_block(index),
-        }
+        LogEntry::new(1, index, create_test_block(index))
     }
 
     #[test]
@@ -2670,11 +2835,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             let block = create_test_block(1);
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block,
-            });
+            persistent.log.push(LogEntry::new(1, 1, block));
         }
         {
             let mut volatile = node.volatile.write();
@@ -2698,11 +2859,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             for i in 1..=3 {
                 let block = create_test_block(i);
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block,
-                });
+                persistent.log.push(LogEntry::new(1, i, block));
             }
         }
         {
@@ -2984,11 +3141,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block: create_test_block(i),
-                });
+                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3038,11 +3191,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block: create_test_block(i),
-                });
+                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3068,11 +3217,7 @@ mod tests {
         // Add an entry with term 1
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: create_test_block(1),
-            });
+            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader sends entry at same index but different term
@@ -3081,11 +3226,7 @@ mod tests {
             leader_id: "node2".to_string(),
             prev_log_index: 0,
             prev_log_term: 0,
-            entries: vec![LogEntry {
-                term: 2,
-                index: 1,
-                block: create_test_block(1),
-            }],
+            entries: vec![LogEntry::new(2, 1, create_test_block(1))],
             leader_commit: 0,
             block_embedding: None,
         };
@@ -3391,16 +3532,8 @@ mod tests {
 
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 2,
-                index: 1,
-                block: create_test_block(1),
-            });
-            persistent.log.push(LogEntry {
-                term: 3,
-                index: 2,
-                block: create_test_block(2),
-            });
+            persistent.log.push(LogEntry::new(2, 1, create_test_block(1)));
+            persistent.log.push(LogEntry::new(3, 2, create_test_block(2)));
         }
 
         let (index, term) = node.last_log_info();
@@ -3449,11 +3582,7 @@ mod tests {
         // Add an entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: create_test_block(1),
-            });
+            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader claims prev_log at index 1 with term 5 (but we have term 1)
@@ -3462,11 +3591,7 @@ mod tests {
             leader_id: "node2".to_string(),
             prev_log_index: 1,
             prev_log_term: 5, // Wrong term
-            entries: vec![LogEntry {
-                term: 2,
-                index: 2,
-                block: create_test_block(2),
-            }],
+            entries: vec![LogEntry::new(2, 2, create_test_block(2))],
             leader_commit: 0,
             block_embedding: None,
         };
@@ -3512,11 +3637,7 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             for i in 1..=3 {
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block: create_test_block(i),
-                });
+                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
 
@@ -3645,11 +3766,7 @@ mod tests {
         // Add entries to our log
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 3,
-                index: 1,
-                block: create_test_block(1),
-            });
+            persistent.log.push(LogEntry::new(3, 1, create_test_block(1)));
         }
 
         // Candidate with older log
@@ -3757,11 +3874,7 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             for i in 1..=5 {
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block: create_test_block(i),
-                });
+                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
 
@@ -3795,11 +3908,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
             for i in 1..=3 {
-                persistent.log.push(LogEntry {
-                    term: 1,
-                    index: i,
-                    block: create_test_block(i),
-                });
+                persistent.log.push(LogEntry::new(1, i, create_test_block(i)));
             }
         }
         node.become_leader();
@@ -3842,11 +3951,7 @@ mod tests {
         // Add initial entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: create_test_block(1),
-            });
+            persistent.log.push(LogEntry::new(1, 1, create_test_block(1)));
         }
 
         // Leader sends more entries
@@ -3856,16 +3961,8 @@ mod tests {
             prev_log_index: 1,
             prev_log_term: 1,
             entries: vec![
-                LogEntry {
-                    term: 1,
-                    index: 2,
-                    block: create_test_block(2),
-                },
-                LogEntry {
-                    term: 1,
-                    index: 3,
-                    block: create_test_block(3),
-                },
+                LogEntry::new(1, 2, create_test_block(2)),
+                LogEntry::new(1, 3, create_test_block(3)),
             ],
             leader_commit: 0,
             block_embedding: None,
@@ -3891,11 +3988,7 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 2;
-            persistent.log.push(LogEntry {
-                term: 1, // Old term
-                index: 1,
-                block: create_test_block(1),
-            });
+            persistent.log.push(LogEntry::new(1, 1, create_test_block(1))); // Old term
         }
         node.become_leader();
 
@@ -4265,11 +4358,7 @@ mod tests {
         // Append an entry
         {
             let mut persistent = node.persistent.write();
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: Block::genesis("node1".to_string()),
-            });
+            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
         }
 
         assert_eq!(node.last_log_index(), 1);
@@ -4283,16 +4372,8 @@ mod tests {
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: Block::genesis("node1".to_string()),
-            });
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 2,
-                block: Block::genesis("node1".to_string()),
-            });
+            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
+            persistent.log.push(LogEntry::new(1, 2, Block::genesis("node1".to_string())));
         }
         node.become_leader();
 
@@ -4332,11 +4413,7 @@ mod tests {
             let mut persistent = node.persistent.write();
             persistent.current_term = 5;
             persistent.voted_for = Some("node2".to_string());
-            persistent.log.push(LogEntry {
-                term: 1,
-                index: 1,
-                block: Block::genesis("node1".to_string()),
-            });
+            persistent.log.push(LogEntry::new(1, 1, Block::genesis("node1".to_string())));
         }
 
         // Save to store
@@ -4371,16 +4448,8 @@ mod tests {
             let mut persistent = node1.persistent.write();
             persistent.current_term = 10;
             persistent.voted_for = Some("node3".to_string());
-            persistent.log.push(LogEntry {
-                term: 5,
-                index: 1,
-                block: Block::genesis("node1".to_string()),
-            });
-            persistent.log.push(LogEntry {
-                term: 8,
-                index: 2,
-                block: Block::genesis("node1".to_string()),
-            });
+            persistent.log.push(LogEntry::new(5, 1, Block::genesis("node1".to_string())));
+            persistent.log.push(LogEntry::new(8, 2, Block::genesis("node1".to_string())));
         }
         node1.save_to_store(&store).unwrap();
 
@@ -4421,11 +4490,7 @@ mod tests {
     #[test]
     fn test_with_state() {
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let log = vec![LogEntry {
-            term: 3,
-            index: 1,
-            block: Block::genesis("node1".to_string()),
-        }];
+        let log = vec![LogEntry::new(3, 1, Block::genesis("node1".to_string()))];
 
         let node = RaftNode::with_state(
             "node1".to_string(),
@@ -5600,14 +5665,13 @@ mod tests {
         let node = create_test_node("node1", vec![]);
         let store = tensor_store::TensorStore::new();
 
-        let metadata = SnapshotMetadata {
-            last_included_index: 100,
-            last_included_term: 5,
-            snapshot_hash: [0u8; 32],
-            config: vec!["node1".to_string(), "node2".to_string()],
-            created_at: 12345,
-            size: 1024,
-        };
+        let metadata = SnapshotMetadata::new(
+            100,
+            5,
+            [0u8; 32],
+            vec!["node1".to_string(), "node2".to_string()],
+            1024,
+        );
         let data = vec![1, 2, 3, 4, 5];
 
         // Save snapshot
@@ -5649,14 +5713,13 @@ mod tests {
         hasher.update(&data);
         let snapshot_hash: [u8; 32] = hasher.finalize().into();
 
-        let metadata = SnapshotMetadata {
-            last_included_index: 50,
-            last_included_term: 3,
+        let metadata = SnapshotMetadata::new(
+            50,
+            3,
             snapshot_hash,
-            config: vec!["node1".to_string()],
-            created_at: 9999,
-            size: data.len() as u64,
-        };
+            vec!["node1".to_string()],
+            data.len() as u64,
+        );
         node1.save_snapshot(&metadata, &data, &store).unwrap();
 
         // Now create a new node using with_store - it should load the snapshot
@@ -5779,11 +5842,7 @@ mod tests {
         let node = create_test_node("node1", vec![]);
 
         // Create valid snapshot data
-        let entry = LogEntry {
-            index: 1,
-            term: 1,
-            block: create_test_block(1),
-        };
+        let entry = LogEntry::new(1, 1, create_test_block(1));
         let data = bincode::serialize(&vec![entry]).unwrap();
 
         // Compute correct hash
@@ -5811,11 +5870,7 @@ mod tests {
         let store = tensor_store::TensorStore::new();
 
         // Create valid snapshot data
-        let entry = LogEntry {
-            index: 1,
-            term: 1,
-            block: create_test_block(1),
-        };
+        let entry = LogEntry::new(1, 1, create_test_block(1));
         let data = bincode::serialize(&vec![entry]).unwrap();
 
         // Compute correct hash

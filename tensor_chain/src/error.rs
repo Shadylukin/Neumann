@@ -87,6 +87,18 @@ pub enum ChainError {
     /// Snapshot error.
     #[error("snapshot error: {0}")]
     SnapshotError(String),
+
+    /// Not the leader node (membership changes require leader).
+    #[error("not the leader")]
+    NotLeader,
+
+    /// Membership change already in progress.
+    #[error("membership change in progress at index {0}")]
+    MembershipChangeInProgress(u64),
+
+    /// Node not found in membership.
+    #[error("node not found: {0}")]
+    NodeNotFound(String),
 }
 
 impl From<bincode::Error> for ChainError {
@@ -263,5 +275,27 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("snapshot error"));
         assert!(msg.contains("compaction failed"));
+    }
+
+    #[test]
+    fn test_not_leader() {
+        let err = ChainError::NotLeader;
+        assert!(err.to_string().contains("not the leader"));
+    }
+
+    #[test]
+    fn test_membership_change_in_progress() {
+        let err = ChainError::MembershipChangeInProgress(42);
+        let msg = err.to_string();
+        assert!(msg.contains("membership change in progress"));
+        assert!(msg.contains("42"));
+    }
+
+    #[test]
+    fn test_node_not_found() {
+        let err = ChainError::NodeNotFound("node-1".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("node not found"));
+        assert!(msg.contains("node-1"));
     }
 }

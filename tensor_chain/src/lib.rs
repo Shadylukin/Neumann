@@ -102,11 +102,11 @@ pub use membership::{
 };
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, GeometricTransport, LogEntry, MemoryTransport, Message,
-    MessageHandler, NetworkManager, PeerConfig, PreVote, PreVoteResponse, QueryExecutor,
-    QueryHandler, QueryRequest, QueryResponse, RequestVote, RequestVoteResponse, TimeoutNow,
-    Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg,
-    TxVote,
+    AppendEntries, AppendEntriesResponse, ConfigChange, GeometricTransport, JointConfig,
+    LogEntry, LogEntryData, MemoryTransport, Message, MessageHandler, NetworkManager, PeerConfig,
+    PreVote, PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
+    RaftMembershipConfig, RequestVote, RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg,
+    TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
 };
 pub use raft::{
     FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,

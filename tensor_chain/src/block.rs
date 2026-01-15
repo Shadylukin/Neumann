@@ -50,6 +50,22 @@ pub struct BlockHeader {
     pub signature: Vec<u8>,
 }
 
+impl Default for BlockHeader {
+    fn default() -> Self {
+        Self {
+            height: 0,
+            prev_hash: [0u8; 32],
+            tx_root: [0u8; 32],
+            state_root: [0u8; 32],
+            delta_embedding: SparseVector::new(0),
+            quantized_codes: Vec::new(),
+            timestamp: 0,
+            proposer: String::new(),
+            signature: Vec::new(),
+        }
+    }
+}
+
 impl BlockHeader {
     /// Create a new block header.
     pub fn new(
@@ -213,6 +229,16 @@ pub struct Block {
 
     /// Validator signatures (for multi-node consensus).
     pub signatures: Vec<ValidatorSignature>,
+}
+
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            header: BlockHeader::default(),
+            transactions: Vec::new(),
+            signatures: Vec::new(),
+        }
+    }
 }
 
 impl Block {
