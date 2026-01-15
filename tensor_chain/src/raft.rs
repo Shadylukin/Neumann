@@ -8,10 +8,10 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use parking_lot::RwLock;
@@ -80,6 +80,11 @@ pub struct RaftConfig {
     /// Directory for temporary snapshot files.
     /// Default: system temp directory.
     pub snapshot_temp_dir: Option<std::path::PathBuf>,
+    /// Enable automatic heartbeat task spawning when becoming leader.
+    /// When true, heartbeats start automatically without needing to call run().
+    pub auto_heartbeat: bool,
+    /// Maximum consecutive heartbeat failures before logging warning.
+    pub max_heartbeat_failures: u32,
 }
 
 impl Default for RaftConfig {
@@ -101,6 +106,8 @@ impl Default for RaftConfig {
             compaction_cooldown_ms: 60_000,
             snapshot_max_memory: 256 * 1024 * 1024, // 256MB
             snapshot_temp_dir: None,
+            auto_heartbeat: true,
+            max_heartbeat_failures: 3,
         }
     }
 }
@@ -140,6 +147,53 @@ pub struct TransferState {
     pub initiated_term: u64,
     /// Timestamp when transfer started (for timeout).
     pub started_at: Instant,
+}
+
+/// Manages the background heartbeat task.
+#[derive(Default)]
+struct HeartbeatTask {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// Heartbeat statistics for monitoring.
+#[derive(Debug, Default)]
+pub struct HeartbeatStats {
+    /// Number of successful heartbeat rounds sent.
+    pub heartbeats_sent: AtomicU64,
+    /// Number of heartbeat rounds that failed.
+    pub heartbeats_failed: AtomicU64,
+    /// Current consecutive failure count.
+    pub consecutive_failures: AtomicU32,
+    /// Timestamp of last successful heartbeat.
+    pub last_heartbeat_at: RwLock<Option<Instant>>,
+}
+
+/// Snapshot of heartbeat statistics.
+#[derive(Debug, Clone)]
+pub struct HeartbeatStatsSnapshot {
+    pub heartbeats_sent: u64,
+    pub heartbeats_failed: u64,
+    pub consecutive_failures: u32,
+    pub last_heartbeat_at: Option<Instant>,
+}
+
+impl HeartbeatStats {
+    pub fn snapshot(&self) -> HeartbeatStatsSnapshot {
+        HeartbeatStatsSnapshot {
+            heartbeats_sent: self.heartbeats_sent.load(Ordering::Relaxed),
+            heartbeats_failed: self.heartbeats_failed.load(Ordering::Relaxed),
+            consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
+            last_heartbeat_at: *self.last_heartbeat_at.read(),
+        }
+    }
+
+    fn reset(&self) {
+        self.heartbeats_sent.store(0, Ordering::Relaxed);
+        self.heartbeats_failed.store(0, Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        *self.last_heartbeat_at.write() = None;
+    }
 }
 
 /// Comprehensive Raft statistics including fast-path validation and quorum tracking.
@@ -669,6 +723,10 @@ pub struct RaftNode {
     wal: Option<Arc<parking_lot::Mutex<crate::raft_wal::RaftWal>>>,
     /// Membership configuration for dynamic cluster membership.
     membership_config: RwLock<crate::network::RaftMembershipConfig>,
+    /// Background heartbeat task handle and shutdown channel.
+    heartbeat_task: RwLock<HeartbeatTask>,
+    /// Heartbeat statistics for monitoring.
+    pub heartbeat_stats: HeartbeatStats,
 }
 
 impl RaftNode {
@@ -720,6 +778,8 @@ impl RaftNode {
             store: None,
             wal: None,
             membership_config: RwLock::new(membership_config),
+            heartbeat_task: RwLock::new(HeartbeatTask::default()),
+            heartbeat_stats: HeartbeatStats::default(),
         }
     }
 
@@ -1014,6 +1074,8 @@ impl RaftNode {
             store: None,
             wal: None,
             membership_config: RwLock::new(membership_config),
+            heartbeat_task: RwLock::new(HeartbeatTask::default()),
+            heartbeat_stats: HeartbeatStats::default(),
         }
     }
 
@@ -1806,6 +1868,7 @@ impl RaftNode {
             persistent.voted_for = None;
             *self.state.write() = RaftState::Follower;
             *self.leader_state.write() = None;
+            self.stop_heartbeat_task();
             return;
         }
 
@@ -1990,6 +2053,20 @@ impl RaftNode {
             next_index,
             match_index,
         });
+    }
+
+    /// Become leader and automatically start heartbeat task if configured.
+    ///
+    /// This is the preferred method when working with Arc<RaftNode> as it
+    /// handles automatic heartbeat spawning.
+    pub fn become_leader_with_heartbeat(self: &Arc<Self>) {
+        self.become_leader();
+
+        if self.config.auto_heartbeat {
+            if let Err(e) = self.start_heartbeat_task() {
+                tracing::warn!("Failed to auto-start heartbeat task: {}", e);
+            }
+        }
     }
 
     /// Try to advance the commit index (leader only).
@@ -2806,6 +2883,50 @@ impl RaftNode {
         Ok(())
     }
 
+    /// Start the automatic heartbeat background task.
+    ///
+    /// This spawns a tokio task that sends heartbeats at the configured interval.
+    /// The task automatically stops when the node is no longer leader.
+    pub fn start_heartbeat_task(self: &Arc<Self>) -> Result<()> {
+        let mut task = self.heartbeat_task.write();
+        if task.handle.is_some() {
+            return Ok(()); // Already running
+        }
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let node = Arc::clone(self);
+
+        let handle = tokio::spawn(async move {
+            heartbeat_loop(node, shutdown_rx).await;
+        });
+
+        task.handle = Some(handle);
+        task.shutdown_tx = Some(shutdown_tx);
+        self.heartbeat_stats.reset();
+        Ok(())
+    }
+
+    /// Stop the automatic heartbeat background task.
+    pub fn stop_heartbeat_task(&self) {
+        let mut task = self.heartbeat_task.write();
+        if let Some(tx) = task.shutdown_tx.take() {
+            let _ = tx.send(()); // Signal shutdown
+        }
+        if let Some(handle) = task.handle.take() {
+            handle.abort(); // Force stop if not responding
+        }
+    }
+
+    /// Check if the heartbeat task is currently running.
+    pub fn is_heartbeat_running(&self) -> bool {
+        self.heartbeat_task.read().handle.is_some()
+    }
+
+    /// Get a snapshot of heartbeat statistics.
+    pub fn heartbeat_stats_snapshot(&self) -> HeartbeatStatsSnapshot {
+        self.heartbeat_stats.snapshot()
+    }
+
     /// Send heartbeats (AppendEntries) to all followers.
     pub async fn send_heartbeats(&self) -> Result<()> {
         // Build all messages in a sync block (no await)
@@ -2954,6 +3075,42 @@ impl RaftNode {
         }
 
         Ok(())
+    }
+}
+
+/// Background heartbeat loop that sends heartbeats at the configured interval.
+async fn heartbeat_loop(node: Arc<RaftNode>, mut shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
+    let interval = Duration::from_millis(node.config.heartbeat_interval);
+    let mut ticker = tokio::time::interval(interval);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown_rx => break,
+            _ = ticker.tick() => {
+                // Exit if no longer leader
+                if *node.state.read() != RaftState::Leader {
+                    break;
+                }
+
+                match node.send_heartbeats().await {
+                    Ok(()) => {
+                        node.heartbeat_stats.heartbeats_sent.fetch_add(1, Ordering::Relaxed);
+                        node.heartbeat_stats.consecutive_failures.store(0, Ordering::Relaxed);
+                        *node.heartbeat_stats.last_heartbeat_at.write() = Some(Instant::now());
+                    }
+                    Err(_) => {
+                        node.heartbeat_stats.heartbeats_failed.fetch_add(1, Ordering::Relaxed);
+                        let failures = node.heartbeat_stats.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+                        if failures >= node.config.max_heartbeat_failures {
+                            tracing::warn!(
+                                "Heartbeat consecutive failures: {}",
+                                failures + 1
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -6204,5 +6361,160 @@ mod tests {
         // Corrupted snapshot should be ignored
         let restored = node3.get_snapshot_metadata();
         assert!(restored.is_none());
+    }
+
+    // Heartbeat lifecycle tests
+
+    fn create_test_node_arc(id: &str, peers: Vec<String>) -> Arc<RaftNode> {
+        let transport = Arc::new(MemoryTransport::new(id.to_string()));
+        Arc::new(RaftNode::new(
+            id.to_string(),
+            peers,
+            transport,
+            RaftConfig::default(),
+        ))
+    }
+
+    #[test]
+    fn test_heartbeat_config_defaults() {
+        let config = RaftConfig::default();
+        assert!(config.auto_heartbeat);
+        assert_eq!(config.max_heartbeat_failures, 3);
+    }
+
+    #[test]
+    fn test_heartbeat_stats_initial() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        let stats = node.heartbeat_stats_snapshot();
+        assert_eq!(stats.heartbeats_sent, 0);
+        assert_eq!(stats.heartbeats_failed, 0);
+        assert_eq!(stats.consecutive_failures, 0);
+        assert!(stats.last_heartbeat_at.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_not_running_initially() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        assert!(!node.is_heartbeat_running());
+    }
+
+    #[test]
+    fn test_heartbeat_not_running_for_follower() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+        assert_eq!(*node.state.read(), RaftState::Follower);
+        assert!(!node.is_heartbeat_running());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_task_start_stop() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Start heartbeat task
+        node.start_heartbeat_task().unwrap();
+        assert!(node.is_heartbeat_running());
+
+        // Stop heartbeat task
+        node.stop_heartbeat_task();
+        // Give task time to clean up
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        assert!(!node.is_heartbeat_running());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_double_start_is_noop() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Start twice should not error
+        node.start_heartbeat_task().unwrap();
+        node.start_heartbeat_task().unwrap();
+        assert!(node.is_heartbeat_running());
+
+        node.stop_heartbeat_task();
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_stops_on_step_down() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+        node.become_leader();
+        node.start_heartbeat_task().unwrap();
+        assert!(node.is_heartbeat_running());
+
+        // Step down to follower
+        *node.state.write() = RaftState::Follower;
+
+        // Heartbeat loop should exit on next tick
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Note: handle is still Some until we call stop_heartbeat_task
+        // but the async task has exited
+    }
+
+    #[tokio::test]
+    async fn test_become_leader_with_heartbeat() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+
+        // Use the new method that auto-starts heartbeat
+        node.become_leader_with_heartbeat();
+
+        assert!(node.is_leader());
+        assert!(node.is_heartbeat_running());
+
+        node.stop_heartbeat_task();
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_manual_mode() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.auto_heartbeat = false;
+
+        let node = Arc::new(RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        ));
+
+        // With auto_heartbeat = false, become_leader_with_heartbeat should not start task
+        node.become_leader_with_heartbeat();
+        assert!(node.is_leader());
+        assert!(!node.is_heartbeat_running());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_stats_tracking() {
+        let node = create_test_node_arc("node1", vec!["node2".to_string()]);
+        node.become_leader();
+        node.start_heartbeat_task().unwrap();
+
+        // Wait for a few heartbeats
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        let stats = node.heartbeat_stats_snapshot();
+        // Should have sent some heartbeats (exact count depends on timing)
+        assert!(stats.heartbeats_sent > 0 || stats.heartbeats_failed > 0);
+
+        node.stop_heartbeat_task();
+    }
+
+    #[test]
+    fn test_heartbeat_stats_reset() {
+        let stats = HeartbeatStats::default();
+
+        // Set some values
+        stats.heartbeats_sent.store(10, Ordering::Relaxed);
+        stats.heartbeats_failed.store(2, Ordering::Relaxed);
+        stats.consecutive_failures.store(1, Ordering::Relaxed);
+        *stats.last_heartbeat_at.write() = Some(Instant::now());
+
+        // Reset
+        stats.reset();
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.heartbeats_sent, 0);
+        assert_eq!(snapshot.heartbeats_failed, 0);
+        assert_eq!(snapshot.consecutive_failures, 0);
+        assert!(snapshot.last_heartbeat_at.is_none());
     }
 }

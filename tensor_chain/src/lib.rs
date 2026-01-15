@@ -109,12 +109,6 @@ pub use membership::{
     PartitionStatus, PeerNodeConfig,
 };
 pub use metrics::{TimingSnapshot, TimingStats};
-pub use partition_merge::{
-    ConflictResolution, ConflictType, DataReconcileResult, DataReconciler, MembershipReconciler,
-    MembershipViewSummary, MergeConflict, MergePhase, MergeSession, PartitionMergeConfig,
-    PartitionMergeManager, PartitionMergeStats, PartitionMergeStatsSnapshot, PartitionStateSummary,
-    PendingTxState, TransactionReconciler, TxReconcileResult,
-};
 pub use network::{
     AppendEntries, AppendEntriesResponse, ConfigChange, DataMergeRequest, DataMergeResponse,
     GeometricTransport, JointConfig, LogEntry, LogEntryData, MemoryTransport, MergeAck,
@@ -124,9 +118,15 @@ pub use network::{
     RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler,
     TxPrepareMsg, TxPrepareResponseMsg, TxReconcileRequest, TxReconcileResponse, TxVote,
 };
+pub use partition_merge::{
+    ConflictResolution, ConflictType, DataReconcileResult, DataReconciler, MembershipReconciler,
+    MembershipViewSummary, MergeConflict, MergePhase, MergeSession, PartitionMergeConfig,
+    PartitionMergeManager, PartitionMergeStats, PartitionMergeStatsSnapshot, PartitionStateSummary,
+    PendingTxState, TransactionReconciler, TxReconcileResult,
+};
 pub use raft::{
-    FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,
-    RaftStatsSnapshot, SnapshotMetadata, TransferState,
+    FastPathState, FastPathStats, HeartbeatStats, HeartbeatStatsSnapshot, QuorumTracker,
+    RaftConfig, RaftNode, RaftState, RaftStats, RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
 pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
 pub use snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferError};

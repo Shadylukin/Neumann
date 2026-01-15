@@ -513,3 +513,12 @@ path = "fuzz_targets/partition_merge.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 25: Raft heartbeat targets
+
+[[bin]]
+name = "raft_heartbeat"
+path = "fuzz_targets/raft_heartbeat.rs"
+test = false
+doc = false
+bench = false
