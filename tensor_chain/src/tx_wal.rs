@@ -117,8 +117,7 @@ impl TxWal {
 
     /// Append an entry to the WAL with fsync.
     pub fn append(&mut self, entry: &TxWalEntry) -> io::Result<()> {
-        let bytes =
-            bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let bytes = bincode::serialize(entry).map_err(io::Error::other)?;
 
         self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;
         self.file.write_all(&bytes)?;
@@ -204,13 +203,15 @@ pub struct RecoveredPreparedTx {
     pub votes: Vec<(usize, PrepareVoteKind)>,
 }
 
+/// In-progress transaction state during recovery: (participants, votes, phase).
+type InProgressTxState = (Vec<usize>, Vec<(usize, PrepareVoteKind)>, TxPhase);
+
 impl TxRecoveryState {
     /// Reconstruct state from WAL entries.
     pub fn from_entries(entries: &[TxWalEntry]) -> Self {
         use std::collections::HashMap;
 
-        let mut in_progress: HashMap<u64, (Vec<usize>, Vec<(usize, PrepareVoteKind)>, TxPhase)> =
-            HashMap::new();
+        let mut in_progress: HashMap<u64, InProgressTxState> = HashMap::new();
 
         for entry in entries {
             match entry {

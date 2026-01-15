@@ -185,6 +185,7 @@ pub struct ClusterView {
 }
 
 impl ClusterView {
+    #[allow(dead_code)]
     fn new(nodes: Vec<NodeStatus>, generation: u64) -> Self {
         Self::with_partition_status(nodes, generation, PartitionStatus::Unknown)
     }

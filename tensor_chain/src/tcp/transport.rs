@@ -197,8 +197,8 @@ impl TcpTransport {
         config: TcpTransportConfig,
         local_id: NodeId,
     ) -> TcpResult<()> {
-        // Read handshake
-        let handshake = timeout(
+        // Read peer's handshake
+        let peer_handshake = timeout(
             Duration::from_millis(config.connect_timeout_ms),
             Handshake::read_from(&mut stream, 4096),
         )
@@ -208,11 +208,31 @@ impl TcpTransport {
             timeout_ms: config.connect_timeout_ms,
         })??;
 
-        let peer_id = handshake.node_id;
+        let peer_id = peer_handshake.node_id.clone();
 
-        // Send our handshake
-        let our_handshake = Handshake::new(&local_id);
-        our_handshake.write_to(&mut stream).await?;
+        // Send our handshake with timeout, including compression capability if enabled
+        let our_handshake = if config.compression.enabled {
+            Handshake::new(&local_id).with_compression()
+        } else {
+            Handshake::new(&local_id)
+        };
+        our_handshake
+            .write_to_with_timeout(&mut stream, config.io_timeout())
+            .await?;
+
+        // Negotiate compression: use v2 format if both sides support it
+        let use_v2 = our_handshake.compression_negotiated(&peer_handshake);
+
+        // Create codec with compression config
+        let mut codec = LengthDelimitedCodec::with_compression(
+            config.max_message_size,
+            config.compression.clone(),
+        );
+        codec.set_compression_enabled(use_v2);
+
+        if use_v2 {
+            tracing::debug!("Compression negotiated with peer {}", peer_id);
+        }
 
         // Get or create pool for this peer
         let pool = connections.get_or_create_pool(&peer_id, addr);
@@ -223,10 +243,18 @@ impl TcpTransport {
         // Spawn reader task
         if let Some(reader) = conn.take_reader() {
             let peer_id_clone = peer_id.clone();
-            let codec = LengthDelimitedCodec::new(config.max_message_size);
+            let io_timeout = config.io_timeout();
 
             tokio::spawn(async move {
-                Self::reader_loop(reader, peer_id_clone, incoming_tx, codec).await;
+                Self::reader_loop(
+                    reader,
+                    peer_id_clone,
+                    incoming_tx,
+                    codec,
+                    io_timeout,
+                    use_v2,
+                )
+                .await;
             });
         }
 
@@ -253,9 +281,19 @@ impl TcpTransport {
         peer_id: NodeId,
         incoming_tx: mpsc::Sender<(NodeId, Message)>,
         codec: LengthDelimitedCodec,
+        io_timeout: Duration,
+        use_v2: bool,
     ) {
         loop {
-            match codec.read_frame(&mut reader).await {
+            let result = if use_v2 {
+                codec
+                    .read_frame_v2_with_timeout(&mut reader, io_timeout)
+                    .await
+            } else {
+                codec.read_frame_with_timeout(&mut reader, io_timeout).await
+            };
+
+            match result {
                 Ok(Some(msg)) => {
                     if incoming_tx.send((peer_id.clone(), msg)).await.is_err() {
                         // Channel closed, stop reading
@@ -264,6 +302,10 @@ impl TcpTransport {
                 },
                 Ok(None) => {
                     // Connection closed gracefully
+                    break;
+                },
+                Err(TcpError::Timeout { operation, .. }) => {
+                    tracing::warn!("Read timeout from {}: {}", peer_id, operation);
                     break;
                 },
                 Err(e) => {
@@ -279,9 +321,21 @@ impl TcpTransport {
         mut writer: DynWrite,
         mut rx: mpsc::Receiver<Message>,
         codec: LengthDelimitedCodec,
+        io_timeout: Duration,
+        use_v2: bool,
     ) {
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = codec.write_frame(&mut writer, &msg).await {
+            let result = if use_v2 {
+                codec
+                    .write_frame_v2_with_timeout(&mut writer, &msg, io_timeout)
+                    .await
+            } else {
+                codec
+                    .write_frame_with_timeout(&mut writer, &msg, io_timeout)
+                    .await
+            };
+
+            if let Err(e) = result {
                 tracing::debug!("Write error: {}", e);
                 break;
             }
@@ -329,9 +383,15 @@ impl TcpTransport {
         peer_id: &NodeId,
         pool: Arc<ConnectionPool>,
     ) -> TcpResult<()> {
-        // Send our handshake
-        let handshake = Handshake::new(&self.local_id);
-        handshake.write_to(&mut stream).await?;
+        // Send our handshake with timeout, including compression capability if enabled
+        let handshake = if self.config.compression.enabled {
+            Handshake::new(&self.local_id).with_compression()
+        } else {
+            Handshake::new(&self.local_id)
+        };
+        handshake
+            .write_to_with_timeout(&mut stream, self.config.io_timeout())
+            .await?;
 
         // Read peer's handshake
         let peer_handshake = timeout(
@@ -352,6 +412,20 @@ impl TcpTransport {
             )));
         }
 
+        // Negotiate compression: use v2 format if both sides support it
+        let use_v2 = handshake.compression_negotiated(&peer_handshake);
+
+        // Create codec with compression config
+        let mut codec = LengthDelimitedCodec::with_compression(
+            self.config.max_message_size,
+            self.config.compression.clone(),
+        );
+        codec.set_compression_enabled(use_v2);
+
+        if use_v2 {
+            tracing::debug!("Compression negotiated with peer {}", peer_id);
+        }
+
         // Add connection to pool
         let conn = pool.add_connection(stream);
 
@@ -359,20 +433,29 @@ impl TcpTransport {
         if let Some(reader) = conn.take_reader() {
             let peer_id = peer_id.clone();
             let incoming_tx = self.incoming_tx.clone();
-            let codec = LengthDelimitedCodec::new(self.config.max_message_size);
+            let reader_codec = codec.clone();
+            let io_timeout = self.config.io_timeout();
 
             tokio::spawn(async move {
-                Self::reader_loop(reader, peer_id, incoming_tx, codec).await;
+                Self::reader_loop(
+                    reader,
+                    peer_id,
+                    incoming_tx,
+                    reader_codec,
+                    io_timeout,
+                    use_v2,
+                )
+                .await;
             });
         }
 
         // Spawn writer task if we have outbound queue
         if let Some(rx) = pool.take_outbound_rx() {
             if let Some(writer) = conn.take_writer() {
-                let codec = LengthDelimitedCodec::new(self.config.max_message_size);
+                let io_timeout = self.config.io_timeout();
 
                 tokio::spawn(async move {
-                    Self::writer_loop(writer, rx, codec).await;
+                    Self::writer_loop(writer, rx, codec, io_timeout, use_v2).await;
                 });
             }
         }
@@ -795,10 +878,12 @@ mod tests {
         // Create a channel to receive messages
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
-        // Spawn reader loop
+        // Spawn reader loop (v1 format)
         tokio::spawn(async move {
-            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec).await;
+            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec, io_timeout, false)
+                .await;
         });
 
         // Close the client side
@@ -830,10 +915,11 @@ mod tests {
         // Create a channel for outgoing messages
         let (tx, rx) = mpsc::channel::<Message>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
-        // Spawn writer loop
+        // Spawn writer loop (v1 format)
         let handle = tokio::spawn(async move {
-            TcpTransport::writer_loop(writer, rx, codec).await;
+            TcpTransport::writer_loop(writer, rx, codec, io_timeout, false).await;
         });
 
         // Drop sender to close channel
@@ -866,9 +952,10 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Message>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
         let codec_for_read = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
         tokio::spawn(async move {
-            TcpTransport::writer_loop(server_writer, rx, codec).await;
+            TcpTransport::writer_loop(server_writer, rx, codec, io_timeout, false).await;
         });
 
         // Send a message
@@ -1211,10 +1298,11 @@ mod tests {
         // Create channel with larger buffer
         let (tx, rx) = mpsc::channel::<Message>(100);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
-        // Spawn writer loop
+        // Spawn writer loop (v1 format)
         let handle = tokio::spawn(async move {
-            TcpTransport::writer_loop(server_writer, rx, codec).await;
+            TcpTransport::writer_loop(server_writer, rx, codec, io_timeout, false).await;
         });
 
         // Drop client immediately to cause broken pipe
@@ -1353,10 +1441,12 @@ mod tests {
         // Create a channel to receive messages
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
-        // Spawn reader loop
+        // Spawn reader loop (v1 format)
         tokio::spawn(async move {
-            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec).await;
+            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec, io_timeout, false)
+                .await;
         });
 
         // Send a message from client
@@ -1406,9 +1496,11 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel::<(NodeId, Message)>(10);
         let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let io_timeout = Duration::from_secs(30);
 
         let handle = tokio::spawn(async move {
-            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec).await;
+            TcpTransport::reader_loop(reader, "peer1".to_string(), tx, codec, io_timeout, false)
+                .await;
         });
 
         // Send invalid data to cause a read error

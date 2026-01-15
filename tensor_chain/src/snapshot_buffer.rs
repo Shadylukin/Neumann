@@ -332,7 +332,7 @@ impl Drop for SnapshotBuffer {
 impl Write for SnapshotBuffer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.write(buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(buf.len())
     }
 
@@ -383,7 +383,7 @@ impl Read for SnapshotBufferReader<'_> {
         let slice = self
             .buffer
             .as_slice(self.position, to_read)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         buf[..to_read].copy_from_slice(slice);
         self.position += to_read as u64;

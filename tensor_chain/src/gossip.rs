@@ -191,7 +191,7 @@ impl LWWMembershipState {
     /// Mark a node as suspected.
     pub fn suspect(&mut self, node_id: &NodeId, incarnation: u64) -> bool {
         // Check if we should suspect (without mutable borrow)
-        let should_suspect = self.states.get(node_id).map_or(false, |state| {
+        let should_suspect = self.states.get(node_id).is_some_and(|state| {
             state.incarnation == incarnation && state.health != NodeHealth::Failed
         });
 
@@ -212,7 +212,7 @@ impl LWWMembershipState {
         let should_fail = self
             .states
             .get(node_id)
-            .map_or(false, |state| state.health != NodeHealth::Failed);
+            .is_some_and(|state| state.health != NodeHealth::Failed);
 
         if should_fail {
             let timestamp = self.tick();
@@ -231,7 +231,7 @@ impl LWWMembershipState {
         let should_refute = self
             .states
             .get(node_id)
-            .map_or(false, |state| new_incarnation > state.incarnation);
+            .is_some_and(|state| new_incarnation > state.incarnation);
 
         if should_refute {
             let timestamp = self.tick();

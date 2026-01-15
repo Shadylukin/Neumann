@@ -1845,10 +1845,7 @@ impl RaftNode {
         }
 
         // Get current snapshot metadata and data
-        let snapshot_meta = match self.get_snapshot_metadata() {
-            Some(meta) => meta,
-            None => return None, // No snapshot available
-        };
+        let snapshot_meta = self.get_snapshot_metadata()?;
 
         // Create snapshot data
         let (_, data) = match self.create_snapshot() {
@@ -2242,11 +2239,7 @@ impl RaftNode {
 
         // Find the index in our log array
         // Log entries are 1-indexed, array is 0-indexed
-        let cut_point = if snapshot_idx as usize > trailing {
-            snapshot_idx as usize - trailing
-        } else {
-            0
-        };
+        let cut_point = (snapshot_idx as usize).saturating_sub(trailing);
 
         if cut_point > 0 && cut_point < persistent.log.len() {
             // Remove entries before the cut point
@@ -2592,7 +2585,7 @@ impl RaftNode {
     /// Returns a vector of (offset, data, is_last) chunks.
     pub fn get_snapshot_chunks(&self, data: &[u8]) -> Vec<(u64, Vec<u8>, bool)> {
         let chunk_size = self.config.snapshot_chunk_size as usize;
-        let total_chunks = (data.len() + chunk_size - 1) / chunk_size;
+        let total_chunks = data.len().div_ceil(chunk_size);
 
         data.chunks(chunk_size)
             .enumerate()
@@ -2643,7 +2636,7 @@ impl RaftNode {
     ) -> impl Iterator<Item = Result<(u64, &'a [u8], bool)>> + 'a {
         let chunk_size = self.config.snapshot_chunk_size;
         let total_len = buffer.total_len();
-        let num_chunks = (total_len + chunk_size - 1) / chunk_size;
+        let num_chunks = total_len.div_ceil(chunk_size);
 
         (0..num_chunks).map(move |i| {
             let offset = i * chunk_size;

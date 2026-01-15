@@ -1156,7 +1156,7 @@ impl DistributedTxCoordinator {
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
-            .put(&Self::persistence_key(node_id), data)
+            .put(Self::persistence_key(node_id), data)
             .map_err(|e| ChainError::StorageError(e.to_string()))?;
 
         Ok(())
@@ -1173,7 +1173,7 @@ impl DistributedTxCoordinator {
 
         if let Ok(data) = store.get(&key) {
             if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
-                let state: CoordinatorState = bincode::deserialize(&bytes)?;
+                let state: CoordinatorState = bincode::deserialize(bytes)?;
                 return Ok(Self::with_state(consensus, config, state));
             }
         }
@@ -1456,7 +1456,7 @@ impl TxParticipant {
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
-            .put(&Self::persistence_key(node_id, shard_id), data)
+            .put(Self::persistence_key(node_id, shard_id), data)
             .map_err(|e| ChainError::StorageError(e.to_string()))?;
 
         Ok(())

@@ -4,6 +4,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
+use super::compression::CompressionConfig;
 use crate::block::NodeId;
 
 /// Configuration for TCP transport.
@@ -54,6 +55,10 @@ pub struct TcpTransportConfig {
     /// Channel buffer size for incoming messages.
     #[serde(default = "default_recv_buffer")]
     pub recv_buffer_size: usize,
+
+    /// Compression configuration.
+    #[serde(default)]
+    pub compression: CompressionConfig,
 }
 
 fn default_pool_size() -> usize {
@@ -96,6 +101,7 @@ impl Default for TcpTransportConfig {
             tls: None,
             max_pending_messages: default_max_pending(),
             recv_buffer_size: default_recv_buffer(),
+            compression: CompressionConfig::default(),
         }
     }
 }
@@ -166,6 +172,18 @@ impl TcpTransportConfig {
     /// Get IO timeout as Duration.
     pub fn io_timeout(&self) -> Duration {
         Duration::from_millis(self.io_timeout_ms)
+    }
+
+    /// Set compression config.
+    pub fn with_compression(mut self, config: CompressionConfig) -> Self {
+        self.compression = config;
+        self
+    }
+
+    /// Disable compression.
+    pub fn compression_disabled(mut self) -> Self {
+        self.compression.enabled = false;
+        self
     }
 }
 
@@ -531,5 +549,38 @@ mod tests {
         let tls = TlsConfig::new("/cert.pem", "/key.pem");
         let debug = format!("{:?}", tls);
         assert!(debug.contains("TlsConfig"));
+    }
+
+    #[test]
+    fn test_config_compression() {
+        use crate::tcp::compression::CompressionMethod;
+
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
+
+        assert!(config.compression.enabled);
+        assert_eq!(config.compression.method, CompressionMethod::Lz4);
+    }
+
+    #[test]
+    fn test_config_compression_disabled() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .compression_disabled();
+
+        assert!(!config.compression.enabled);
+    }
+
+    #[test]
+    fn test_config_with_compression() {
+        use crate::tcp::compression::{CompressionConfig, CompressionMethod};
+
+        let compression = CompressionConfig::default()
+            .with_method(CompressionMethod::None)
+            .with_min_size(1024);
+
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_compression(compression);
+
+        assert_eq!(config.compression.method, CompressionMethod::None);
+        assert_eq!(config.compression.min_size, 1024);
     }
 }

@@ -45,6 +45,7 @@ tracing = "0.1"
 # TCP transport
 bytes = "1.5"
 socket2 = { version = "0.5", features = ["all"] }
+lz4_flex = "0.11"
 
 # Optional TLS support
 tokio-rustls = { version = "0.26", optional = true }

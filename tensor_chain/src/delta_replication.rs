@@ -486,7 +486,7 @@ impl DeltaReplicationManager {
         self.registry
             .read()
             .save_to_store(store)
-            .map_err(|e| ChainError::StorageError(e))
+            .map_err(ChainError::StorageError)
     }
 
     /// Encode an embedding update (internal helper).
@@ -675,20 +675,15 @@ impl DeltaReplicationManager {
     pub fn flush(&self) -> Vec<DeltaBatch> {
         let mut batches = Vec::new();
 
-        loop {
-            match self.create_batch(false) {
-                Some(mut batch) => {
-                    // Check if this is the last batch
-                    if self.pending_rx.lock().is_empty() {
-                        batch.is_final = true;
-                    }
-                    batches.push(batch);
+        while let Some(mut batch) = self.create_batch(false) {
+            // Check if this is the last batch
+            if self.pending_rx.lock().is_empty() {
+                batch.is_final = true;
+            }
+            batches.push(batch);
 
-                    if self.pending_rx.lock().is_empty() {
-                        break;
-                    }
-                },
-                None => break,
+            if self.pending_rx.lock().is_empty() {
+                break;
             }
         }
 

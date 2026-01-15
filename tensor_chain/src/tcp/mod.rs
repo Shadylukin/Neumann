@@ -43,6 +43,7 @@
 //! transport.send(&"node2".to_string(), Message::Ping { term: 1 }).await?;
 //! ```
 
+pub mod compression;
 pub mod config;
 pub mod connection;
 pub mod error;
@@ -53,6 +54,7 @@ pub mod tls;
 pub mod transport;
 
 // Re-exports
+pub use compression::{CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY};
 pub use config::{ReconnectConfig, TcpTransportConfig, TlsConfig};
 pub use connection::{
     Connection, ConnectionManager, ConnectionPool, ConnectionState, ConnectionStats,

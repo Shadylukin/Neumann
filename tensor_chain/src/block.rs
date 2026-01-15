@@ -219,7 +219,7 @@ pub struct ValidatorSignature {
 }
 
 /// A complete block in the tensor chain.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Block {
     /// Block header with metadata.
     pub header: BlockHeader,
@@ -229,16 +229,6 @@ pub struct Block {
 
     /// Validator signatures (for multi-node consensus).
     pub signatures: Vec<ValidatorSignature>,
-}
-
-impl Default for Block {
-    fn default() -> Self {
-        Self {
-            header: BlockHeader::default(),
-            transactions: Vec::new(),
-            signatures: Vec::new(),
-        }
-    }
 }
 
 impl Block {

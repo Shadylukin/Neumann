@@ -103,8 +103,7 @@ impl RaftWal {
 
     /// Append an entry to the WAL with fsync.
     pub fn append(&mut self, entry: &RaftWalEntry) -> io::Result<()> {
-        let bytes =
-            bincode::serialize(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let bytes = bincode::serialize(entry).map_err(io::Error::other)?;
 
         // Write length-prefixed entry
         self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;

@@ -1,29 +1,73 @@
 //! Length-delimited message framing for TCP transport.
 //!
-//! Wire format:
+//! Wire format v1 (legacy):
 //! ```text
 //! +------------------+------------------+
 //! | Length (4B BE)   | Payload (bincode)|
 //! +------------------+------------------+
 //! ```
 //!
-//! - Length is a 4-byte big-endian u32
-//! - Payload is bincode-serialized Message
+//! Wire format v2 (with compression support):
+//! ```text
+//! +------------------+-------+------------------+
+//! | Length (4B BE)   | Flags | Payload          |
+//! +------------------+-------+------------------+
+//!                     1 byte
+//! ```
+//!
+//! - Length is a 4-byte big-endian u32 (includes flags byte + payload)
+//! - Flags byte: bit 0 = compressed (1 = LZ4)
+//! - Payload is bincode-serialized Message (possibly compressed)
+
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
 
+use super::compression::{self, CompressionConfig, CompressionMethod};
 use super::error::{TcpError, TcpResult};
 use crate::network::Message;
 
 /// Length-delimited codec for message framing.
+#[derive(Clone)]
 pub struct LengthDelimitedCodec {
     max_frame_length: usize,
+    compression: CompressionConfig,
+    compress_enabled: bool,
 }
 
 impl LengthDelimitedCodec {
     /// Create a new codec with the given maximum frame length.
     pub fn new(max_frame_length: usize) -> Self {
-        Self { max_frame_length }
+        Self {
+            max_frame_length,
+            compression: CompressionConfig::default(),
+            compress_enabled: false, // Disabled until negotiated
+        }
+    }
+
+    /// Create a new codec with compression config.
+    pub fn with_compression(max_frame_length: usize, compression: CompressionConfig) -> Self {
+        Self {
+            max_frame_length,
+            compression,
+            compress_enabled: false, // Disabled until negotiated
+        }
+    }
+
+    /// Enable compression (called after handshake negotiation).
+    pub fn set_compression_enabled(&mut self, enabled: bool) {
+        self.compress_enabled = enabled && self.compression.enabled;
+    }
+
+    /// Check if compression is enabled.
+    pub fn compression_enabled(&self) -> bool {
+        self.compress_enabled
+    }
+
+    /// Get the compression config.
+    pub fn compression_config(&self) -> &CompressionConfig {
+        &self.compression
     }
 
     /// Encode a message to bytes with length prefix.
@@ -55,6 +99,72 @@ impl LengthDelimitedCodec {
         }
 
         let msg: Message = bincode::deserialize(payload)?;
+        Ok(msg)
+    }
+
+    /// Encode a message to bytes with v2 format (flags byte + optional compression).
+    pub fn encode_v2(&self, msg: &Message) -> TcpResult<Vec<u8>> {
+        let serialized = bincode::serialize(msg)?;
+
+        // Check if we should compress
+        let (payload, flags) =
+            if self.compress_enabled && serialized.len() >= self.compression.min_size {
+                let compressed = compression::compress(&serialized, self.compression.method);
+                // Only use compression if it actually reduces size
+                if compression::is_beneficial(serialized.len(), compressed.len()) {
+                    (
+                        compressed,
+                        compression::frame_flags(self.compression.method),
+                    )
+                } else {
+                    (serialized, compression::flags::NONE)
+                }
+            } else {
+                (serialized, compression::flags::NONE)
+            };
+
+        // Validate total frame size (flags + payload)
+        let frame_content_len = 1 + payload.len();
+        if frame_content_len > self.max_frame_length {
+            return Err(TcpError::MessageTooLarge {
+                size: frame_content_len,
+                max_size: self.max_frame_length,
+            });
+        }
+
+        let length = frame_content_len as u32;
+        let mut frame = Vec::with_capacity(4 + frame_content_len);
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.push(flags);
+        frame.extend_from_slice(&payload);
+
+        Ok(frame)
+    }
+
+    /// Decode a v2 frame payload (flags byte + possibly compressed data).
+    pub fn decode_payload_v2(&self, payload: &[u8]) -> TcpResult<Message> {
+        if payload.is_empty() {
+            return Err(TcpError::InvalidFrame("empty v2 payload".to_string()));
+        }
+
+        let flags = payload[0];
+        let data = &payload[1..];
+
+        let method = compression::method_from_flags(flags)?;
+        let decompressed = if method == CompressionMethod::None {
+            data.to_vec()
+        } else {
+            compression::decompress(data, method)?
+        };
+
+        if decompressed.len() > self.max_frame_length {
+            return Err(TcpError::MessageTooLarge {
+                size: decompressed.len(),
+                max_size: self.max_frame_length,
+            });
+        }
+
+        let msg: Message = bincode::deserialize(&decompressed)?;
         Ok(msg)
     }
 
@@ -109,6 +219,219 @@ impl LengthDelimitedCodec {
         Ok(())
     }
 
+    /// Read a frame from an async reader with timeout.
+    ///
+    /// Returns None if the connection was closed gracefully.
+    pub async fn read_frame_with_timeout<R>(
+        &self,
+        reader: &mut R,
+        io_timeout: Duration,
+    ) -> TcpResult<Option<Message>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        // Read length prefix with timeout
+        let mut length_buf = [0u8; 4];
+        match timeout(io_timeout, reader.read_exact(&mut length_buf)).await {
+            Ok(Ok(_)) => {},
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None); // Connection closed
+            },
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                return Err(TcpError::Timeout {
+                    operation: "read length",
+                    timeout_ms: io_timeout.as_millis() as u64,
+                })
+            },
+        }
+
+        let length = u32::from_be_bytes(length_buf) as usize;
+
+        // Validate length
+        if length > self.max_frame_length {
+            return Err(TcpError::MessageTooLarge {
+                size: length,
+                max_size: self.max_frame_length,
+            });
+        }
+
+        if length == 0 {
+            return Err(TcpError::InvalidFrame("zero-length frame".to_string()));
+        }
+
+        // Read payload with timeout
+        let mut payload = vec![0u8; length];
+        timeout(io_timeout, reader.read_exact(&mut payload))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "read payload",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+
+        // Decode message
+        let msg = self.decode_payload(&payload)?;
+        Ok(Some(msg))
+    }
+
+    /// Write a frame to an async writer with timeout.
+    pub async fn write_frame_with_timeout<W>(
+        &self,
+        writer: &mut W,
+        msg: &Message,
+        io_timeout: Duration,
+    ) -> TcpResult<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let frame = self.encode(msg)?;
+        timeout(io_timeout, writer.write_all(&frame))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "write frame",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        timeout(io_timeout, writer.flush())
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "flush",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        Ok(())
+    }
+
+    /// Read a v2 frame from an async reader.
+    ///
+    /// Returns None if the connection was closed gracefully.
+    pub async fn read_frame_v2<R>(&self, reader: &mut R) -> TcpResult<Option<Message>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        // Read length prefix
+        let mut length_buf = [0u8; 4];
+        match reader.read_exact(&mut length_buf).await {
+            Ok(_) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None); // Connection closed
+            },
+            Err(e) => return Err(e.into()),
+        }
+
+        let length = u32::from_be_bytes(length_buf) as usize;
+
+        // Validate length (must have at least flags byte)
+        if length > self.max_frame_length {
+            return Err(TcpError::MessageTooLarge {
+                size: length,
+                max_size: self.max_frame_length,
+            });
+        }
+
+        if length == 0 {
+            return Err(TcpError::InvalidFrame("zero-length v2 frame".to_string()));
+        }
+
+        // Read payload (flags + data)
+        let mut payload = vec![0u8; length];
+        reader.read_exact(&mut payload).await?;
+
+        // Decode v2 message
+        let msg = self.decode_payload_v2(&payload)?;
+        Ok(Some(msg))
+    }
+
+    /// Write a v2 frame to an async writer.
+    pub async fn write_frame_v2<W>(&self, writer: &mut W, msg: &Message) -> TcpResult<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let frame = self.encode_v2(msg)?;
+        writer.write_all(&frame).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    /// Read a v2 frame from an async reader with timeout.
+    ///
+    /// Returns None if the connection was closed gracefully.
+    pub async fn read_frame_v2_with_timeout<R>(
+        &self,
+        reader: &mut R,
+        io_timeout: Duration,
+    ) -> TcpResult<Option<Message>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        // Read length prefix with timeout
+        let mut length_buf = [0u8; 4];
+        match timeout(io_timeout, reader.read_exact(&mut length_buf)).await {
+            Ok(Ok(_)) => {},
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None); // Connection closed
+            },
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                return Err(TcpError::Timeout {
+                    operation: "read length",
+                    timeout_ms: io_timeout.as_millis() as u64,
+                })
+            },
+        }
+
+        let length = u32::from_be_bytes(length_buf) as usize;
+
+        // Validate length
+        if length > self.max_frame_length {
+            return Err(TcpError::MessageTooLarge {
+                size: length,
+                max_size: self.max_frame_length,
+            });
+        }
+
+        if length == 0 {
+            return Err(TcpError::InvalidFrame("zero-length v2 frame".to_string()));
+        }
+
+        // Read payload with timeout
+        let mut payload = vec![0u8; length];
+        timeout(io_timeout, reader.read_exact(&mut payload))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "read payload",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+
+        // Decode v2 message
+        let msg = self.decode_payload_v2(&payload)?;
+        Ok(Some(msg))
+    }
+
+    /// Write a v2 frame to an async writer with timeout.
+    pub async fn write_frame_v2_with_timeout<W>(
+        &self,
+        writer: &mut W,
+        msg: &Message,
+        io_timeout: Duration,
+    ) -> TcpResult<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let frame = self.encode_v2(msg)?;
+        timeout(io_timeout, writer.write_all(&frame))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "write frame",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        timeout(io_timeout, writer.flush())
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "flush",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        Ok(())
+    }
+
     /// Get the maximum frame length.
     pub fn max_frame_length(&self) -> usize {
         self.max_frame_length
@@ -134,7 +457,13 @@ pub struct Handshake {
 
 impl Handshake {
     /// Current protocol version.
-    pub const PROTOCOL_VERSION: u32 = 1;
+    ///
+    /// - v1: Original length-prefixed bincode
+    /// - v2: Added flags byte for compression support
+    pub const PROTOCOL_VERSION: u32 = 2;
+
+    /// Minimum supported protocol version for backward compatibility.
+    pub const MIN_PROTOCOL_VERSION: u32 = 1;
 
     /// Create a new handshake message.
     pub fn new(node_id: impl Into<String>) -> Self {
@@ -149,6 +478,28 @@ impl Handshake {
     pub fn with_capability(mut self, cap: impl Into<String>) -> Self {
         self.capabilities.push(cap.into());
         self
+    }
+
+    /// Add compression capability to the handshake.
+    pub fn with_compression(self) -> Self {
+        self.with_capability(super::compression::COMPRESSION_CAPABILITY)
+    }
+
+    /// Check if compression capability is advertised.
+    pub fn supports_compression(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|c| c == super::compression::COMPRESSION_CAPABILITY)
+    }
+
+    /// Check if peer uses v2 protocol (supports compression).
+    pub fn is_v2(&self) -> bool {
+        self.protocol_version >= 2
+    }
+
+    /// Check if both peers support compression.
+    pub fn compression_negotiated(&self, peer: &Handshake) -> bool {
+        self.is_v2() && peer.is_v2() && self.supports_compression() && peer.supports_compression()
     }
 
     /// Encode handshake to bytes.
@@ -186,12 +537,15 @@ impl Handshake {
         let handshake: Handshake =
             bincode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
 
-        // Validate protocol version
-        if handshake.protocol_version != Self::PROTOCOL_VERSION {
+        // Validate protocol version (accept v1 and v2)
+        if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
+            || handshake.protocol_version > Self::PROTOCOL_VERSION
+        {
             return Err(TcpError::HandshakeFailed(format!(
-                "protocol version mismatch: expected {}, got {}",
-                Self::PROTOCOL_VERSION,
-                handshake.protocol_version
+                "unsupported protocol version: {} (supported: {}-{})",
+                handshake.protocol_version,
+                Self::MIN_PROTOCOL_VERSION,
+                Self::PROTOCOL_VERSION
             )));
         }
 
@@ -206,6 +560,85 @@ impl Handshake {
         let frame = self.encode()?;
         writer.write_all(&frame).await?;
         writer.flush().await?;
+        Ok(())
+    }
+
+    /// Read handshake from an async reader with timeout.
+    pub async fn read_from_with_timeout<R>(
+        reader: &mut R,
+        max_size: usize,
+        io_timeout: Duration,
+    ) -> TcpResult<Self>
+    where
+        R: AsyncRead + Unpin,
+    {
+        // Read length prefix with timeout
+        let mut length_buf = [0u8; 4];
+        timeout(io_timeout, reader.read_exact(&mut length_buf))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "handshake read length",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        let length = u32::from_be_bytes(length_buf) as usize;
+
+        if length > max_size {
+            return Err(TcpError::HandshakeFailed(format!(
+                "handshake too large: {} bytes",
+                length
+            )));
+        }
+
+        // Read payload with timeout
+        let mut payload = vec![0u8; length];
+        timeout(io_timeout, reader.read_exact(&mut payload))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "handshake read payload",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+
+        // Decode
+        let handshake: Handshake =
+            bincode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
+
+        // Validate protocol version (accept v1 and v2)
+        if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
+            || handshake.protocol_version > Self::PROTOCOL_VERSION
+        {
+            return Err(TcpError::HandshakeFailed(format!(
+                "unsupported protocol version: {} (supported: {}-{})",
+                handshake.protocol_version,
+                Self::MIN_PROTOCOL_VERSION,
+                Self::PROTOCOL_VERSION
+            )));
+        }
+
+        Ok(handshake)
+    }
+
+    /// Write handshake to an async writer with timeout.
+    pub async fn write_to_with_timeout<W>(
+        &self,
+        writer: &mut W,
+        io_timeout: Duration,
+    ) -> TcpResult<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let frame = self.encode()?;
+        timeout(io_timeout, writer.write_all(&frame))
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "handshake write",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
+        timeout(io_timeout, writer.flush())
+            .await
+            .map_err(|_| TcpError::Timeout {
+                operation: "handshake flush",
+                timeout_ms: io_timeout.as_millis() as u64,
+            })??;
         Ok(())
     }
 }
@@ -402,10 +835,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_handshake_wrong_protocol_version() {
-        // Create handshake with wrong version
+        // Create handshake with unsupported version
         let handshake = Handshake {
             node_id: "test".to_string(),
-            protocol_version: 999, // Wrong version
+            protocol_version: 999, // Unsupported version
             capabilities: vec![],
         };
 
@@ -420,7 +853,7 @@ mod tests {
         let result = Handshake::read_from(&mut cursor, 1024).await;
         assert!(matches!(result, Err(TcpError::HandshakeFailed(_))));
         if let Err(TcpError::HandshakeFailed(msg)) = result {
-            assert!(msg.contains("version mismatch"));
+            assert!(msg.contains("unsupported protocol version"));
         }
     }
 
@@ -438,5 +871,451 @@ mod tests {
         let cloned = handshake.clone();
         assert_eq!(cloned.node_id, "node1");
         assert_eq!(cloned.capabilities.len(), 1);
+    }
+
+    // === Timeout method tests ===
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_success() {
+        let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let msg = Message::Ping { term: 42 };
+
+        // Write to buffer
+        let mut buffer = Vec::new();
+        codec.write_frame(&mut buffer, &msg).await.unwrap();
+
+        // Read with timeout (should succeed immediately)
+        let mut cursor = Cursor::new(buffer);
+        let decoded = codec
+            .read_frame_with_timeout(&mut cursor, Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 42);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_connection_closed() {
+        let codec = LengthDelimitedCodec::new(1024);
+
+        // Empty buffer simulates connection closed
+        let mut cursor = Cursor::new(Vec::new());
+
+        let result = codec
+            .read_frame_with_timeout(&mut cursor, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_zero_length() {
+        let codec = LengthDelimitedCodec::new(1024);
+
+        // Create frame with zero length
+        let zero_length: [u8; 4] = 0u32.to_be_bytes();
+        let mut cursor = Cursor::new(zero_length.to_vec());
+
+        let result = codec
+            .read_frame_with_timeout(&mut cursor, Duration::from_secs(1))
+            .await;
+        assert!(matches!(result, Err(TcpError::InvalidFrame(_))));
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_too_large() {
+        let codec = LengthDelimitedCodec::new(100);
+
+        // Create frame with length exceeding max
+        let large_length: [u8; 4] = 1000u32.to_be_bytes();
+        let mut cursor = Cursor::new(large_length.to_vec());
+
+        let result = codec
+            .read_frame_with_timeout(&mut cursor, Duration::from_secs(1))
+            .await;
+        assert!(matches!(
+            result,
+            Err(TcpError::MessageTooLarge {
+                size: 1000,
+                max_size: 100
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_with_timeout_success() {
+        let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let msg = Message::Ping { term: 99 };
+
+        // Write with timeout (should succeed immediately)
+        let mut buffer = Vec::new();
+        codec
+            .write_frame_with_timeout(&mut buffer, &msg, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        // Verify by reading back
+        let mut cursor = Cursor::new(buffer);
+        let decoded = codec.read_frame(&mut cursor).await.unwrap().unwrap();
+
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 99);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handshake_read_with_timeout_success() {
+        let handshake = Handshake::new("test_node").with_capability("test");
+
+        // Write to buffer
+        let mut buffer = Vec::new();
+        handshake.write_to(&mut buffer).await.unwrap();
+
+        // Read with timeout (should succeed immediately)
+        let mut cursor = Cursor::new(buffer);
+        let decoded = Handshake::read_from_with_timeout(&mut cursor, 1024, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        assert_eq!(decoded.node_id, "test_node");
+        assert_eq!(decoded.capabilities.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handshake_read_with_timeout_too_large() {
+        // Create a frame with length exceeding max_size
+        let large_length: [u8; 4] = 5000u32.to_be_bytes();
+        let mut cursor = Cursor::new(large_length.to_vec());
+
+        let result =
+            Handshake::read_from_with_timeout(&mut cursor, 1024, Duration::from_secs(1)).await;
+        assert!(matches!(result, Err(TcpError::HandshakeFailed(_))));
+        if let Err(TcpError::HandshakeFailed(msg)) = result {
+            assert!(msg.contains("too large"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handshake_read_with_timeout_wrong_version() {
+        // Create handshake with unsupported version
+        let handshake = Handshake {
+            node_id: "test".to_string(),
+            protocol_version: 999, // Unsupported version
+            capabilities: vec![],
+        };
+
+        let payload = bincode::serialize(&handshake).unwrap();
+        let length = payload.len() as u32;
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(&payload);
+
+        let mut cursor = Cursor::new(frame);
+        let result =
+            Handshake::read_from_with_timeout(&mut cursor, 1024, Duration::from_secs(1)).await;
+        assert!(matches!(result, Err(TcpError::HandshakeFailed(_))));
+        if let Err(TcpError::HandshakeFailed(msg)) = result {
+            assert!(msg.contains("unsupported protocol version"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handshake_write_with_timeout_success() {
+        let handshake = Handshake::new("timeout_node");
+
+        // Write with timeout (should succeed immediately)
+        let mut buffer = Vec::new();
+        handshake
+            .write_to_with_timeout(&mut buffer, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        // Verify by reading back
+        let mut cursor = Cursor::new(buffer);
+        let decoded = Handshake::read_from(&mut cursor, 1024).await.unwrap();
+
+        assert_eq!(decoded.node_id, "timeout_node");
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_actual_timeout() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::ReadBuf;
+
+        // Create a reader that never returns
+        struct NeverReader;
+
+        impl AsyncRead for NeverReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = NeverReader;
+
+        // Should timeout quickly
+        let result = codec
+            .read_frame_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "read length",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handshake_read_with_timeout_actual_timeout() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::ReadBuf;
+
+        // Create a reader that never returns
+        struct NeverReader;
+
+        impl AsyncRead for NeverReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        let mut reader = NeverReader;
+
+        // Should timeout quickly
+        let result =
+            Handshake::read_from_with_timeout(&mut reader, 1024, Duration::from_millis(10)).await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "handshake read length",
+                ..
+            })
+        ));
+    }
+
+    // === V2 frame format tests ===
+
+    #[tokio::test]
+    async fn test_v2_encode_decode_uncompressed() {
+        let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let msg = Message::Ping { term: 42 };
+
+        // Encode with v2 format
+        let frame = codec.encode_v2(&msg).unwrap();
+
+        // Verify structure: length (4) + flags (1) + payload
+        let length = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        assert_eq!(length, frame.len() - 4); // length includes flags + payload
+        assert_eq!(frame[4], 0x00); // flags = uncompressed
+
+        // Decode
+        let payload = &frame[4..];
+        let decoded = codec.decode_payload_v2(payload).unwrap();
+
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 42);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_encode_decode_compressed() {
+        use super::compression::CompressionConfig;
+        use crate::network::RequestVote;
+        use tensor_store::SparseVector;
+
+        let mut codec =
+            LengthDelimitedCodec::with_compression(1024 * 1024, CompressionConfig::default());
+        codec.set_compression_enabled(true);
+
+        // Create a message with repeating data that compresses well
+        // Use a large sparse vector with repeated values
+        let mut dense = vec![0.0f32; 1000];
+        for i in (0..1000).step_by(2) {
+            dense[i] = 0.5; // Repeated value compresses well
+        }
+        let embedding = SparseVector::from_dense(&dense);
+
+        let msg = Message::RequestVote(RequestVote {
+            term: 1,
+            candidate_id: "a".repeat(500), // Highly compressible
+            last_log_index: 100,
+            last_log_term: 1,
+            state_embedding: embedding,
+        });
+
+        // Encode with v2 format
+        let frame = codec.encode_v2(&msg).unwrap();
+
+        // The flags byte should indicate compression
+        let flags = frame[4];
+        assert_eq!(flags, 0x01, "expected LZ4 compression flag");
+
+        // Decode
+        let payload = &frame[4..];
+        let decoded = codec.decode_payload_v2(payload).unwrap();
+
+        if let Message::RequestVote(rv) = decoded {
+            assert_eq!(rv.term, 1);
+            assert_eq!(rv.candidate_id, "a".repeat(500));
+            assert_eq!(rv.last_log_index, 100);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_write_frame() {
+        let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let msg = Message::Ping { term: 99 };
+
+        // Write v2 frame
+        let mut buffer = Vec::new();
+        codec.write_frame_v2(&mut buffer, &msg).await.unwrap();
+
+        // Read v2 frame
+        let mut cursor = Cursor::new(buffer);
+        let decoded = codec.read_frame_v2(&mut cursor).await.unwrap().unwrap();
+
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 99);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_write_with_timeout() {
+        let codec = LengthDelimitedCodec::new(1024 * 1024);
+        let msg = Message::Ping { term: 77 };
+
+        // Write v2 frame with timeout
+        let mut buffer = Vec::new();
+        codec
+            .write_frame_v2_with_timeout(&mut buffer, &msg, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        // Read v2 frame with timeout
+        let mut cursor = Cursor::new(buffer);
+        let decoded = codec
+            .read_frame_v2_with_timeout(&mut cursor, Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap();
+
+        if let Message::Ping { term } = decoded {
+            assert_eq!(term, 77);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_v2_decode_empty_payload() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let result = codec.decode_payload_v2(&[]);
+        assert!(matches!(result, Err(TcpError::InvalidFrame(_))));
+    }
+
+    // === Handshake compression capability tests ===
+
+    #[test]
+    fn test_handshake_with_compression() {
+        let handshake = Handshake::new("node1").with_compression();
+        assert!(handshake.supports_compression());
+        assert!(handshake.is_v2());
+    }
+
+    #[test]
+    fn test_handshake_compression_negotiated() {
+        let h1 = Handshake::new("node1").with_compression();
+        let h2 = Handshake::new("node2").with_compression();
+
+        assert!(h1.compression_negotiated(&h2));
+        assert!(h2.compression_negotiated(&h1));
+    }
+
+    #[test]
+    fn test_handshake_compression_not_negotiated_without_capability() {
+        let h1 = Handshake::new("node1").with_compression();
+        let h2 = Handshake::new("node2"); // No compression capability
+
+        assert!(!h1.compression_negotiated(&h2));
+        assert!(!h2.compression_negotiated(&h1));
+    }
+
+    #[test]
+    fn test_handshake_compression_not_negotiated_v1_peer() {
+        let h1 = Handshake::new("node1").with_compression();
+        let h2 = Handshake {
+            node_id: "node2".to_string(),
+            protocol_version: 1, // v1 peer
+            capabilities: vec!["compression".to_string()],
+        };
+
+        // Even if v1 peer has compression capability, it can't use v2 framing
+        assert!(!h2.is_v2());
+        assert!(!h1.compression_negotiated(&h2));
+    }
+
+    #[test]
+    fn test_codec_compression_config() {
+        use super::compression::{CompressionConfig, CompressionMethod};
+
+        let config = CompressionConfig::default().with_method(CompressionMethod::Lz4);
+        let codec = LengthDelimitedCodec::with_compression(1024, config);
+
+        assert!(!codec.compression_enabled()); // Disabled by default until negotiated
+        assert_eq!(codec.compression_config().method, CompressionMethod::Lz4);
+    }
+
+    #[test]
+    fn test_codec_set_compression_enabled() {
+        use super::compression::CompressionConfig;
+
+        let mut codec = LengthDelimitedCodec::with_compression(1024, CompressionConfig::default());
+        assert!(!codec.compression_enabled());
+
+        codec.set_compression_enabled(true);
+        assert!(codec.compression_enabled());
+
+        codec.set_compression_enabled(false);
+        assert!(!codec.compression_enabled());
+    }
+
+    #[test]
+    fn test_handshake_protocol_version() {
+        let handshake = Handshake::new("node1");
+        assert_eq!(handshake.protocol_version, Handshake::PROTOCOL_VERSION);
+        assert_eq!(handshake.protocol_version, 2);
+    }
+
+    #[test]
+    fn test_handshake_min_protocol_version() {
+        assert_eq!(Handshake::MIN_PROTOCOL_VERSION, 1);
     }
 }

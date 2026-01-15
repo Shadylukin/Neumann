@@ -45,6 +45,12 @@ pub enum TcpError {
 
     /// Handshake failed.
     HandshakeFailed(String),
+
+    /// Compression/decompression error.
+    Compression {
+        operation: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for TcpError {
@@ -77,6 +83,9 @@ impl fmt::Display for TcpError {
             Self::Shutdown => write!(f, "transport is shutting down"),
             Self::InvalidFrame(msg) => write!(f, "invalid frame: {}", msg),
             Self::HandshakeFailed(msg) => write!(f, "handshake failed: {}", msg),
+            Self::Compression { operation, message } => {
+                write!(f, "compression {} error: {}", operation, message)
+            },
         }
     }
 }
@@ -202,6 +211,17 @@ mod tests {
     fn test_handshake_failed_display() {
         let err = TcpError::HandshakeFailed("version mismatch".to_string());
         assert!(err.to_string().contains("version mismatch"));
+    }
+
+    #[test]
+    fn test_compression_display() {
+        let err = TcpError::Compression {
+            operation: "decompress",
+            message: "invalid data".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("decompress"));
+        assert!(display.contains("invalid data"));
     }
 
     #[test]

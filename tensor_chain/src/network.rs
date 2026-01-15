@@ -633,8 +633,8 @@ impl RaftMembershipConfig {
 /// Log entry data that can be either a block or a configuration change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LogEntryData {
-    /// Regular block entry.
-    Block(Block),
+    /// Regular block entry (boxed to reduce enum size).
+    Block(Box<Block>),
     /// Configuration change entry.
     Config(ConfigChange),
 }

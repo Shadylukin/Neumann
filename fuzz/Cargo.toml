@@ -130,6 +130,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tcp_compression"
+path = "fuzz_targets/tcp_compression.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "membership"
 path = "fuzz_targets/membership.rs"
 test = false
