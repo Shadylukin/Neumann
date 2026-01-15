@@ -107,6 +107,7 @@ The project uses cargo-fuzz (libFuzzer-based) for coverage-guided fuzzing.
 | `cache_eviction_scorer` | tensor_cache | Eviction strategy scoring |
 | `cache_semantic_search` | tensor_cache | Semantic search with distance metrics |
 | `cache_metric_roundtrip` | tensor_cache | Metric consistency and normalization |
+| `archetype_registry` | tensor_store | ArchetypeRegistry bincode roundtrip |
 
 ### Running Locally
 

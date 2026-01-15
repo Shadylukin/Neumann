@@ -21,6 +21,7 @@ use crate::{
     block::{NodeId, Transaction},
     consensus::{ConsensusManager, DeltaVector},
     error::{ChainError, Result},
+    network::{Message, Transport, TxAbortMsg},
 };
 
 /// Milliseconds since UNIX epoch, serializable replacement for Instant.
@@ -427,6 +428,66 @@ impl LockManager {
             default_timeout: Duration::from_millis(state.default_timeout_ms),
         }
     }
+
+    /// Try to acquire locks with wait-for graph tracking.
+    ///
+    /// On success, returns Ok(lock_handle).
+    /// On conflict, updates the wait-for graph and returns Err(WaitInfo).
+    pub fn try_lock_with_wait_tracking(
+        &self,
+        tx_id: u64,
+        keys: &[String],
+        wait_graph: &crate::deadlock::WaitForGraph,
+        priority: Option<u32>,
+    ) -> std::result::Result<u64, crate::deadlock::WaitInfo> {
+        match self.try_lock(tx_id, keys) {
+            Ok(handle) => {
+                // Successfully acquired - remove any wait edges for this transaction
+                wait_graph.remove_transaction(tx_id);
+                Ok(handle)
+            },
+            Err(blocking_tx_id) => {
+                // Failed - add wait edge to graph
+                wait_graph.add_wait(tx_id, blocking_tx_id, priority);
+
+                // Collect conflicting keys
+                let conflicting_keys = {
+                    let locks = self.locks.read();
+                    keys.iter()
+                        .filter(|k| {
+                            locks.get(*k).is_some_and(|lock| {
+                                !lock.is_expired() && lock.tx_id == blocking_tx_id
+                            })
+                        })
+                        .cloned()
+                        .collect()
+                };
+
+                Err(crate::deadlock::WaitInfo {
+                    blocking_tx_id,
+                    conflicting_keys,
+                })
+            },
+        }
+    }
+
+    /// Get all keys locked by a transaction.
+    pub fn keys_for_transaction(&self, tx_id: u64) -> Vec<String> {
+        self.tx_locks
+            .read()
+            .get(&tx_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get the number of locks held by a transaction.
+    pub fn lock_count_for_transaction(&self, tx_id: u64) -> usize {
+        self.tx_locks
+            .read()
+            .get(&tx_id)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
 }
 
 /// Serializable representation of LockManager state.
@@ -791,7 +852,9 @@ impl DistributedTxCoordinator {
 
                 // Queue abort for broadcast
                 let shards = tx.participants.clone();
-                self.pending_aborts.write().push((tx_id, reason.to_string(), shards));
+                self.pending_aborts
+                    .write()
+                    .push((tx_id, reason.to_string(), shards));
 
                 Some(TxPhase::Aborting)
             }
@@ -971,6 +1034,35 @@ impl DistributedTxCoordinator {
         std::mem::take(&mut *self.pending_aborts.write())
     }
 
+    /// Process and broadcast pending abort messages to all participants.
+    ///
+    /// This should be called periodically from the cluster run loop to ensure
+    /// abort messages are delivered to all shards that need to rollback.
+    pub async fn process_pending_aborts(&self, transport: &dyn Transport) {
+        let pending = self.take_pending_aborts();
+
+        for (tx_id, reason, shards) in pending {
+            // Track this abort for acknowledgment tracking
+            self.track_abort(tx_id, shards.clone());
+
+            // Send abort to all participant shards
+            // Note: In a real deployment, shard_id would map to actual node IDs
+            // For now we broadcast to a generic target based on shard
+            for shard_id in &shards {
+                let abort_msg = TxAbortMsg {
+                    tx_id,
+                    reason: reason.clone(),
+                    shards: vec![*shard_id],
+                };
+
+                // Fire-and-forget send to shard coordinator
+                // The target node ID would come from a shard->node mapping
+                let target = format!("shard-{}", shard_id);
+                let _ = transport.send(&target, Message::TxAbort(abort_msg)).await;
+            }
+        }
+    }
+
     /// Track an abort for acknowledgment.
     pub fn track_abort(&self, tx_id: u64, shards: Vec<usize>) {
         let mut abort_states = self.abort_states.write();
@@ -1030,7 +1122,8 @@ impl DistributedTxCoordinator {
         let stale: Vec<_> = abort_states
             .iter()
             .filter(|(_, state)| {
-                state.retry_count >= 10 || now.saturating_sub(state.initiated_at) >= max_abort_wait_ms
+                state.retry_count >= 10
+                    || now.saturating_sub(state.initiated_at) >= max_abort_wait_ms
             })
             .map(|(id, _)| *id)
             .collect();

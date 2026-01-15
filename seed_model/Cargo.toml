@@ -1,0 +1,31 @@
+[package]
+name = "seed_model"
+description = "Pure Geometric Intelligence - Lukin's Tensor Scaling Theory"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Core Neumann infrastructure (SparseVector, etc.)
+tensor_store = { path = "../tensor_store" }
+
+# Serialization (for corpus parsing)
+serde = { version = "1.0", features = ["derive"] }
+
+# Utilities
+rand = "0.8"
+anyhow = "1.0"
+
+# HTTP for corpus download
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+urlencoding = "2.1"
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[[bin]]
+name = "seed_train"
+path = "src/main.rs"

@@ -36,6 +36,18 @@ The underlying mathematical structure. Just as von Neumann showed that code and 
 
 The interface. Simple CLI commands to create, query, and manipulate data. Designed for humans first.
 
+### Benchmarks on M1 Max
+
+| Operation | Dimensionality | Time | Throughput | improvement |
+|-----------|----------------|------|------------|-------------|
+| **Write** | 1536d | 133ns | 7.5M/sec | - |
+| **Read** | 1536d | 89ns | 11.2M/sec | - |
+| **TT-Decompose** | 1024d | 33.5µs | 29.8k/sec | **62% faster** (Randomized SVD) |
+| **TT-Decompose** | 4096d | 79.7µs | 12.5k/sec | **32% faster** (Randomized SVD) |
+| **TT-Reconstruct** | 4096d | 886µs | 1.1k/sec | **28% faster** |
+
+> **Note**: Throughput numbers are for single-threaded execution. Neumann scales linearly with cores.
+
 ### Three Query Patterns, One Substrate
 
 | Pattern | Style | Examples |

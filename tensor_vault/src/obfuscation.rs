@@ -14,11 +14,11 @@ use crate::{key::MasterKey, Result, VaultError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaddingSize {
     /// 256 bytes - for short secrets (API keys, tokens)
-    Small      = 256,
+    Small = 256,
     /// 1 KB - for medium secrets (certificates, small configs)
-    Medium     = 1024,
+    Medium = 1024,
     /// 4 KB - for large secrets (private keys, large configs)
-    Large      = 4096,
+    Large = 4096,
     /// 16 KB - for very large secrets
     ExtraLarge = 16384,
 }

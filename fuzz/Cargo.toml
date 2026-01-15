@@ -481,3 +481,12 @@ path = "fuzz_targets/snapshot_buffer.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 23: Deadlock detection targets
+
+[[bin]]
+name = "wait_for_graph"
+path = "fuzz_targets/wait_for_graph.rs"
+test = false
+doc = false
+bench = false

@@ -101,7 +101,10 @@ async fn test_cannot_add_existing_node_as_learner() {
     // Try to add existing voter as learner
     let result = nodes[0].add_learner("node2".to_string());
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("already in cluster"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("already in cluster"));
 }
 
 #[tokio::test]
@@ -267,8 +270,7 @@ async fn test_snapshot_includes_membership() {
 
     let membership = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
 
-    let metadata =
-        SnapshotMetadata::with_membership(100, 5, [1u8; 32], membership.clone(), 1024);
+    let metadata = SnapshotMetadata::with_membership(100, 5, [1u8; 32], membership.clone(), 1024);
 
     // Verify membership is stored
     assert_eq!(metadata.membership.voters.len(), 2);

@@ -20,7 +20,7 @@ pub mod tensor_train;
 
 pub mod format;
 
-pub use decompose::{DecomposeError, Matrix, SvdResult, TensorView};
+pub use decompose::{svd_truncated, DecomposeError, Matrix, SvdResult, TensorView};
 pub use delta::{
     compress_ids, decompress_ids, delta_decode, delta_encode, varint_decode, varint_encode,
 };

@@ -44,6 +44,7 @@ pub mod chain;
 pub mod cluster;
 pub mod codebook;
 pub mod consensus;
+pub mod deadlock;
 pub mod delta_replication;
 pub mod distributed_tx;
 pub mod embedding;
@@ -79,6 +80,10 @@ pub use codebook::{
 pub use consensus::{
     BatchConflict, ConflictClass, ConflictResult, ConsensusConfig, ConsensusManager, DeltaVector,
     MergeAction, MergeResult,
+};
+pub use deadlock::{
+    DeadlockDetector, DeadlockDetectorConfig, DeadlockInfo, DeadlockStats, DeadlockStatsSnapshot,
+    VictimSelectionPolicy, WaitForGraph, WaitInfo,
 };
 pub use delta_replication::{
     DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager, DeltaUpdate, ReplicationStats,

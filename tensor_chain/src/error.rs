@@ -99,6 +99,15 @@ pub enum ChainError {
     /// Node not found in membership.
     #[error("node not found: {0}")]
     NodeNotFound(String),
+
+    /// Deadlock detected in distributed transaction.
+    #[error("deadlock detected: cycle {cycle:?}, victim tx {victim}")]
+    DeadlockDetected {
+        /// Transaction IDs in the deadlock cycle.
+        cycle: Vec<u64>,
+        /// Selected victim transaction ID.
+        victim: u64,
+    },
 }
 
 impl From<bincode::Error> for ChainError {
@@ -297,5 +306,16 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("node not found"));
         assert!(msg.contains("node-1"));
+    }
+
+    #[test]
+    fn test_deadlock_detected() {
+        let err = ChainError::DeadlockDetected {
+            cycle: vec![1, 2, 3],
+            victim: 2,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("deadlock detected"));
+        assert!(msg.contains("victim tx 2"));
     }
 }

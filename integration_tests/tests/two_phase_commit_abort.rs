@@ -9,9 +9,7 @@
 
 use tensor_chain::{
     consensus::{ConsensusConfig, ConsensusManager, DeltaVector},
-    distributed_tx::{
-        DistributedTxConfig, DistributedTxCoordinator, PrepareVote, TxParticipant,
-    },
+    distributed_tx::{DistributedTxConfig, DistributedTxCoordinator, PrepareVote, TxParticipant},
 };
 
 fn create_test_coordinator() -> DistributedTxCoordinator {
@@ -28,7 +26,9 @@ fn test_abort_broadcast_to_participants() {
     let coordinator = create_test_coordinator();
 
     // Begin a transaction with 3 shards
-    let tx = coordinator.begin("node1".to_string(), vec![0, 1, 2]).unwrap();
+    let tx = coordinator
+        .begin("node1".to_string(), vec![0, 1, 2])
+        .unwrap();
 
     // Record votes from all shards - one says No
     coordinator.record_vote(
@@ -43,7 +43,11 @@ fn test_abort_broadcast_to_participants() {
         1,
         PrepareVote::Yes {
             lock_handle: 1,
-            delta: DeltaVector::new(vec![1.0], ["k1"].iter().map(|s| s.to_string()).collect(), tx.tx_id),
+            delta: DeltaVector::new(
+                vec![1.0],
+                ["k1"].iter().map(|s| s.to_string()).collect(),
+                tx.tx_id,
+            ),
         },
     );
     coordinator.record_vote(
@@ -51,7 +55,11 @@ fn test_abort_broadcast_to_participants() {
         2,
         PrepareVote::Yes {
             lock_handle: 2,
-            delta: DeltaVector::new(vec![0.0, 1.0], ["k2"].iter().map(|s| s.to_string()).collect(), tx.tx_id),
+            delta: DeltaVector::new(
+                vec![0.0, 1.0],
+                ["k2"].iter().map(|s| s.to_string()).collect(),
+                tx.tx_id,
+            ),
         },
     );
 
@@ -218,8 +226,22 @@ fn test_cross_shard_conflict_queues_abort() {
         tx.tx_id,
     );
 
-    coordinator.record_vote(tx.tx_id, 0, PrepareVote::Yes { lock_handle: 1, delta: delta0 });
-    let phase = coordinator.record_vote(tx.tx_id, 1, PrepareVote::Yes { lock_handle: 2, delta: delta1 });
+    coordinator.record_vote(
+        tx.tx_id,
+        0,
+        PrepareVote::Yes {
+            lock_handle: 1,
+            delta: delta0,
+        },
+    );
+    let phase = coordinator.record_vote(
+        tx.tx_id,
+        1,
+        PrepareVote::Yes {
+            lock_handle: 2,
+            delta: delta1,
+        },
+    );
 
     // Should have detected conflict
     if phase == Some(tensor_chain::distributed_tx::TxPhase::Aborting) {

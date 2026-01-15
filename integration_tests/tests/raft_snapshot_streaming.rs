@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use tensor_chain::{
-    Block, BlockHeader, LogEntry, MemoryTransport, RaftConfig, RaftNode, SnapshotMetadata,
-    SnapshotBufferConfig,
-    snapshot_streaming::{SnapshotWriter, SnapshotReader, serialize_entries, deserialize_entries},
+    snapshot_streaming::{deserialize_entries, serialize_entries, SnapshotReader, SnapshotWriter},
+    Block, BlockHeader, LogEntry, MemoryTransport, RaftConfig, RaftNode, SnapshotBufferConfig,
+    SnapshotMetadata,
 };
 
 fn create_test_block(height: u64, proposer: &str) -> Block {
@@ -46,9 +46,7 @@ fn test_buffer_config() -> SnapshotBufferConfig {
 #[test]
 fn test_streaming_snapshot_roundtrip() {
     // Create entries
-    let entries: Vec<LogEntry> = (1..=100)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=100).map(|i| create_test_log_entry(i, 1)).collect();
 
     // Serialize using streaming writer
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
@@ -81,18 +79,14 @@ fn test_streaming_snapshot_large() {
     let reader = SnapshotReader::new(&buffer).unwrap();
     assert_eq!(reader.entry_count(), 1000);
 
-    let restored: Vec<LogEntry> = reader
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let restored: Vec<LogEntry> = reader.collect::<Result<Vec<_>, _>>().unwrap();
 
     assert_eq!(restored.len(), 1000);
 }
 
 #[test]
 fn test_streaming_partial_read() {
-    let entries: Vec<LogEntry> = (1..=100)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=100).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
     let mut reader = SnapshotReader::new(&buffer).unwrap();
@@ -117,9 +111,7 @@ fn test_buffer_spill_to_file() {
     };
 
     // Create entries that exceed memory limit
-    let entries: Vec<LogEntry> = (1..=50)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=50).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = serialize_entries(&entries, config).unwrap();
 
@@ -140,9 +132,7 @@ fn test_zero_copy_chunk_access() {
     let node = create_node_with_config("leader", vec![], config);
 
     // Create a snapshot buffer with test data
-    let entries: Vec<LogEntry> = (1..=20)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=20).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
     let total_len = buffer.total_len();
@@ -174,9 +164,7 @@ fn test_get_snapshot_chunk_streaming() {
     };
     let node = create_node_with_config("test", vec![], config);
 
-    let entries: Vec<LogEntry> = (1..=10)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=10).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
 
@@ -236,20 +224,13 @@ fn test_install_snapshot_streaming() {
     let follower = create_node_with_config("follower", vec!["leader".to_string()], config);
 
     // Create snapshot entries
-    let entries: Vec<LogEntry> = (1..=5)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
     let hash = buffer.hash();
 
-    let metadata = SnapshotMetadata::new(
-        5,
-        1,
-        hash,
-        vec!["leader".to_string()],
-        buffer.total_len(),
-    );
+    let metadata =
+        SnapshotMetadata::new(5, 1, hash, vec!["leader".to_string()], buffer.total_len());
 
     // Install using streaming method
     let result = follower.install_snapshot_streaming(metadata, &buffer);
@@ -262,9 +243,7 @@ fn test_install_snapshot_streaming() {
 #[test]
 fn test_backwards_compatibility_legacy_format() {
     // Create legacy format snapshot (bincode serialized Vec<LogEntry>)
-    let entries: Vec<LogEntry> = (1..=10)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=10).map(|i| create_test_log_entry(i, 1)).collect();
 
     let legacy_data = bincode::serialize(&entries).unwrap();
 
@@ -290,9 +269,7 @@ fn test_snapshot_buffer_cleanup() {
 
     // Create and fill buffer
     {
-        let entries: Vec<LogEntry> = (1..=20)
-            .map(|i| create_test_log_entry(i, 1))
-            .collect();
+        let entries: Vec<LogEntry> = (1..=20).map(|i| create_test_log_entry(i, 1)).collect();
 
         let mut buffer = serialize_entries(&entries, config).unwrap();
 
@@ -311,9 +288,7 @@ fn test_snapshot_buffer_cleanup() {
 fn test_concurrent_snapshot_readers() {
     use std::thread;
 
-    let entries: Vec<LogEntry> = (1..=100)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=100).map(|i| create_test_log_entry(i, 1)).collect();
 
     let buffer = Arc::new(serialize_entries(&entries, test_buffer_config()).unwrap());
 
@@ -322,9 +297,7 @@ fn test_concurrent_snapshot_readers() {
             let buf = Arc::clone(&buffer);
             thread::spawn(move || {
                 let reader = SnapshotReader::new(&buf).unwrap();
-                let restored: Vec<LogEntry> = reader
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap();
+                let restored: Vec<LogEntry> = reader.collect::<Result<Vec<_>, _>>().unwrap();
                 assert_eq!(restored.len(), 100);
             })
         })
@@ -337,9 +310,7 @@ fn test_concurrent_snapshot_readers() {
 
 #[test]
 fn test_streaming_hash_consistency() {
-    let entries: Vec<LogEntry> = (1..=50)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=50).map(|i| create_test_log_entry(i, 1)).collect();
 
     // Create buffer and get hash
     let buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
@@ -378,9 +349,7 @@ fn test_receive_snapshot_with_buffer() {
     let follower = create_node_with_config("follower", vec![], config);
 
     // Simulate receiving chunks
-    let entries: Vec<LogEntry> = (1..=5)
-        .map(|i| create_test_log_entry(i, 1))
-        .collect();
+    let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_log_entry(i, 1)).collect();
 
     let src_buffer = serialize_entries(&entries, test_buffer_config()).unwrap();
     let bytes = src_buffer.as_bytes().unwrap();

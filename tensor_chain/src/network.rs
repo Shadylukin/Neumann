@@ -505,8 +505,16 @@ impl JointConfig {
         let old_quorum = (self.old_voters.len() / 2) + 1;
         let new_quorum = (self.new_voters.len() / 2) + 1;
 
-        let old_votes = self.old_voters.iter().filter(|n| votes.contains(*n)).count();
-        let new_votes = self.new_voters.iter().filter(|n| votes.contains(*n)).count();
+        let old_votes = self
+            .old_voters
+            .iter()
+            .filter(|n| votes.contains(*n))
+            .count();
+        let new_votes = self
+            .new_voters
+            .iter()
+            .filter(|n| votes.contains(*n))
+            .count();
 
         old_votes >= old_quorum && new_votes >= new_quorum
     }
@@ -2410,11 +2418,8 @@ mod tests {
 
     #[test]
     fn test_raft_membership_config_quorum_simple() {
-        let config = RaftMembershipConfig::new(vec![
-            "n1".to_string(),
-            "n2".to_string(),
-            "n3".to_string(),
-        ]);
+        let config =
+            RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string(), "n3".to_string()]);
 
         let mut votes = HashSet::new();
         votes.insert("n1".to_string());

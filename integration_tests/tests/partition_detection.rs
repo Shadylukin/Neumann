@@ -350,12 +350,24 @@ async fn test_chain_metrics_aggregation() {
     let metrics = ChainMetrics::new();
 
     // Add some stats
-    metrics.raft.heartbeat_successes.fetch_add(100, Ordering::Relaxed);
-    metrics.raft.heartbeat_failures.fetch_add(5, Ordering::Relaxed);
+    metrics
+        .raft
+        .heartbeat_successes
+        .fetch_add(100, Ordering::Relaxed);
+    metrics
+        .raft
+        .heartbeat_failures
+        .fetch_add(5, Ordering::Relaxed);
     metrics.dtx.started.fetch_add(50, Ordering::Relaxed);
     metrics.dtx.committed.fetch_add(45, Ordering::Relaxed);
-    metrics.membership.health_checks.fetch_add(200, Ordering::Relaxed);
-    metrics.membership.health_check_failures.fetch_add(10, Ordering::Relaxed);
+    metrics
+        .membership
+        .health_checks
+        .fetch_add(200, Ordering::Relaxed);
+    metrics
+        .membership
+        .health_check_failures
+        .fetch_add(10, Ordering::Relaxed);
 
     let snapshot = metrics.snapshot();
 
@@ -373,16 +385,31 @@ async fn test_chain_metrics_is_cluster_healthy() {
     let metrics = ChainMetrics::new();
 
     // Healthy cluster metrics
-    metrics.raft.heartbeat_successes.fetch_add(100, Ordering::Relaxed);
-    metrics.raft.heartbeat_failures.fetch_add(5, Ordering::Relaxed); // 95% success
-    metrics.membership.health_checks.fetch_add(100, Ordering::Relaxed);
-    metrics.membership.health_check_failures.fetch_add(5, Ordering::Relaxed); // 95% success
+    metrics
+        .raft
+        .heartbeat_successes
+        .fetch_add(100, Ordering::Relaxed);
+    metrics
+        .raft
+        .heartbeat_failures
+        .fetch_add(5, Ordering::Relaxed); // 95% success
+    metrics
+        .membership
+        .health_checks
+        .fetch_add(100, Ordering::Relaxed);
+    metrics
+        .membership
+        .health_check_failures
+        .fetch_add(5, Ordering::Relaxed); // 95% success
 
     let snapshot = metrics.snapshot();
     assert!(snapshot.is_cluster_healthy());
 
     // Add quorum lost event - should be unhealthy
-    metrics.raft.quorum_lost_events.fetch_add(1, Ordering::Relaxed);
+    metrics
+        .raft
+        .quorum_lost_events
+        .fetch_add(1, Ordering::Relaxed);
     let snapshot = metrics.snapshot();
     assert!(!snapshot.is_cluster_healthy());
 }
@@ -391,8 +418,14 @@ async fn test_chain_metrics_is_cluster_healthy() {
 async fn test_chain_metrics_heartbeat_success_rate() {
     let metrics = ChainMetrics::new();
 
-    metrics.raft.heartbeat_successes.fetch_add(80, Ordering::Relaxed);
-    metrics.raft.heartbeat_failures.fetch_add(20, Ordering::Relaxed);
+    metrics
+        .raft
+        .heartbeat_successes
+        .fetch_add(80, Ordering::Relaxed);
+    metrics
+        .raft
+        .heartbeat_failures
+        .fetch_add(20, Ordering::Relaxed);
 
     let snapshot = metrics.snapshot();
     let rate = snapshot.heartbeat_success_rate();
@@ -524,15 +557,27 @@ async fn test_metrics_track_partition_events() {
 
     // Simulate normal operation
     for _ in 0..100 {
-        metrics.raft.heartbeat_successes.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // Simulate partition
     for _ in 0..10 {
-        metrics.raft.heartbeat_failures.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_failures
+            .fetch_add(1, Ordering::Relaxed);
     }
-    metrics.raft.quorum_lost_events.fetch_add(1, Ordering::Relaxed);
-    metrics.membership.partition_events.fetch_add(1, Ordering::Relaxed);
+    metrics
+        .raft
+        .quorum_lost_events
+        .fetch_add(1, Ordering::Relaxed);
+    metrics
+        .membership
+        .partition_events
+        .fetch_add(1, Ordering::Relaxed);
 
     let snapshot = metrics.snapshot();
 

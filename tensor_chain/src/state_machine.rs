@@ -150,11 +150,7 @@ impl TensorStateMachine {
     }
 
     /// Apply a config change to the Raft membership.
-    fn apply_config_change(
-        &self,
-        index: u64,
-        change: &crate::network::ConfigChange,
-    ) -> Result<()> {
+    fn apply_config_change(&self, index: u64, change: &crate::network::ConfigChange) -> Result<()> {
         use crate::network::ConfigChange;
 
         let mut config = self.raft.membership_config();
@@ -164,7 +160,7 @@ impl TensorStateMachine {
                 if !config.learners.contains(node_id) && !config.voters.contains(node_id) {
                     config.learners.push(node_id.clone());
                 }
-            }
+            },
             ConfigChange::PromoteLearner { node_id } => {
                 if let Some(pos) = config.learners.iter().position(|n| n == node_id) {
                     config.learners.remove(pos);
@@ -172,12 +168,15 @@ impl TensorStateMachine {
                         config.voters.push(node_id.clone());
                     }
                 }
-            }
+            },
             ConfigChange::RemoveNode { node_id } => {
                 config.voters.retain(|n| n != node_id);
                 config.learners.retain(|n| n != node_id);
-            }
-            ConfigChange::JointChange { additions, removals } => {
+            },
+            ConfigChange::JointChange {
+                additions,
+                removals,
+            } => {
                 // Enter or exit joint consensus
                 if config.joint.is_some() {
                     // Already in joint - this is the commit of the new config
@@ -203,7 +202,7 @@ impl TensorStateMachine {
                         new_voters,
                     });
                 }
-            }
+            },
         }
 
         config.config_index = index;

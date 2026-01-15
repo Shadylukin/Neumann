@@ -227,6 +227,105 @@ fn normalize(v: &mut [f32]) -> f32 {
     n
 }
 
+/// Simple LCG random number generator for deterministic pseudo-random sequences.
+struct Lcg {
+    state: u64,
+}
+
+impl Lcg {
+    const fn new(seed: u64) -> Self {
+        Self {
+            state: seed.wrapping_add(1),
+        }
+    }
+
+    #[allow(clippy::missing_const_for_fn)]
+    fn next_u64(&mut self) -> u64 {
+        // LCG parameters from Numerical Recipes
+        self.state = self
+            .state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.state
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
+}
+
+/// Generate deterministic pseudo-random Gaussian matrix using Box-Muller transform.
+fn gaussian_matrix(rows: usize, cols: usize, seed: u64) -> Matrix {
+    let mut rng = Lcg::new(seed);
+    let mut data = Vec::with_capacity(rows * cols);
+
+    // Box-Muller transform: pairs of uniform -> pairs of Gaussian
+    let total = rows * cols;
+    let pairs = total.div_ceil(2);
+
+    for _ in 0..pairs {
+        let u1 = rng.next_f32().max(1e-10); // Avoid log(0)
+        let u2 = rng.next_f32();
+
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f32::consts::PI * u2;
+
+        data.push(r * theta.cos());
+        if data.len() < total {
+            data.push(r * theta.sin());
+        }
+    }
+
+    data.truncate(total);
+    Matrix::new(data, rows, cols).expect("valid gaussian matrix shape")
+}
+
+/// QR factorization returning only Q (orthonormal basis for column space).
+/// Uses Modified Gram-Schmidt for numerical stability.
+fn qr_orthonormalize(y: &Matrix) -> Matrix {
+    if y.rows == 0 || y.cols == 0 {
+        return Matrix::zeros(y.rows, 0);
+    }
+
+    let mut q_cols: Vec<Vec<f32>> = Vec::with_capacity(y.cols);
+
+    for j in 0..y.cols {
+        // Extract column j
+        let mut col: Vec<f32> = (0..y.rows).map(|i| y.get(i, j)).collect();
+
+        // Subtract projections onto previous Q columns (Modified Gram-Schmidt)
+        for q_col in &q_cols {
+            let proj = dot(&col, q_col);
+            for (i, val) in col.iter_mut().enumerate() {
+                *val -= proj * q_col[i];
+            }
+        }
+
+        // Normalize
+        let col_norm = normalize(&mut col);
+
+        // Only keep if not linearly dependent (norm > epsilon)
+        if col_norm > 1e-10 {
+            q_cols.push(col);
+        }
+    }
+
+    // Build Q matrix (rows x actual_rank)
+    let actual_rank = q_cols.len();
+    if actual_rank == 0 {
+        return Matrix::zeros(y.rows, 0);
+    }
+
+    let mut q_data = vec![0.0; y.rows * actual_rank];
+    for (j, col) in q_cols.iter().enumerate() {
+        for (i, &val) in col.iter().enumerate() {
+            q_data[i * actual_rank + j] = val;
+        }
+    }
+
+    Matrix::new(q_data, y.rows, actual_rank).expect("valid Q shape")
+}
+
 /// Power iteration to find the largest singular value and vectors.
 /// Returns (sigma, u, v) where A*v ≈ sigma*u and A^T*u ≈ sigma*v.
 fn power_iteration(
@@ -276,15 +375,92 @@ fn power_iteration(
     Ok((sigma, u, v))
 }
 
-/// Truncated SVD using iterative power method with deflation.
+/// Truncated SVD using Randomized algorithm (Halko-Martinsson-Tropp 2011).
 ///
-/// Computes the top-k singular values and vectors of a matrix.
-/// This is a pure Rust implementation without external dependencies.
+/// For matrices where min(m,n) > 2*k, uses random projection to reduce
+/// the problem size before computing SVD. Falls back to direct power
+/// iteration for small matrices.
+#[allow(clippy::many_single_char_names)]
 pub fn svd_truncated(
     matrix: &Matrix,
     max_rank: usize,
     tolerance: f32,
 ) -> Result<SvdResult, DecomposeError> {
+    if matrix.data.is_empty() {
+        return Err(DecomposeError::EmptyMatrix);
+    }
+
+    let (rows, cols) = (matrix.rows, matrix.cols);
+    let rank = max_rank.min(rows).min(cols);
+
+    // For small matrices or when rank is close to matrix size, use direct method
+    // Randomized SVD overhead isn't worth it for small problems
+    if rows <= 32 || cols <= 32 || rank * 2 >= rows.min(cols) {
+        return svd_power_iteration(matrix, max_rank, tolerance);
+    }
+
+    // Oversampling parameter (typically 5-10)
+    let oversample = 5.min(rows.min(cols).saturating_sub(rank));
+    let target_rank = rank + oversample;
+
+    // Step 1: Generate random Gaussian test matrix Omega (cols x target_rank)
+    // Use matrix dimensions as seed for reproducibility
+    let seed = (rows as u64).wrapping_mul(31).wrapping_add(cols as u64);
+    let omega = gaussian_matrix(cols, target_rank, seed);
+
+    // Step 2: Sample the range: Y = A * Omega (rows x target_rank)
+    let sample = matmul(matrix, &omega)?;
+
+    // Step 3: Orthonormalize Y to get Q (rows x r where r <= target_rank)
+    let basis = qr_orthonormalize(&sample);
+
+    if basis.cols == 0 {
+        // Matrix is effectively zero
+        return Ok(SvdResult {
+            u: Matrix::zeros(rows, 0),
+            s: vec![],
+            vt: Matrix::zeros(0, cols),
+            rank: 0,
+        });
+    }
+
+    // Step 4: Project to small space: B = Q^T * A (r x cols)
+    let basis_t = basis.transpose();
+    let projected = matmul(&basis_t, matrix)?;
+
+    // Step 5: SVD of small matrix B
+    let svd_small = svd_power_iteration(&projected, rank, tolerance)?;
+
+    if svd_small.rank == 0 {
+        return Ok(SvdResult {
+            u: Matrix::zeros(rows, 0),
+            s: vec![],
+            vt: Matrix::zeros(0, cols),
+            rank: 0,
+        });
+    }
+
+    // Step 6: Reconstruct U = Q * U_small
+    let u_final = matmul(&basis, &svd_small.u)?;
+
+    Ok(SvdResult {
+        u: u_final,
+        s: svd_small.s,
+        vt: svd_small.vt,
+        rank: svd_small.rank,
+    })
+}
+
+/// SVD using power iteration with deflation.
+/// Used for small matrices where randomized overhead isn't beneficial.
+fn svd_power_iteration(
+    matrix: &Matrix,
+    max_rank: usize,
+    tolerance: f32,
+) -> Result<SvdResult, DecomposeError> {
+    // Reduced iterations (20 instead of 100) - sufficient for embedding vectors
+    const MAX_POWER_ITERATIONS: usize = 20;
+
     if matrix.data.is_empty() {
         return Err(DecomposeError::EmptyMatrix);
     }
@@ -302,7 +478,7 @@ pub fn svd_truncated(
     let abs_tol = tolerance * original_norm;
 
     for _ in 0..rank {
-        let (sigma, u, v) = power_iteration(&a, 100, 1e-6)?;
+        let (sigma, u, v) = power_iteration(&a, MAX_POWER_ITERATIONS, 1e-6)?;
 
         // Stop if singular value is below tolerance
         if sigma < abs_tol {
@@ -325,7 +501,6 @@ pub fn svd_truncated(
 
     let actual_rank = s_vals.len();
     if actual_rank == 0 {
-        // Return empty SVD for zero matrix
         return Ok(SvdResult {
             u: Matrix::zeros(matrix.rows, 0),
             s: vec![],
@@ -524,5 +699,199 @@ mod tests {
         let m = left_unfold_for_tt(&data, 2, 2); // (2*2, 2) = (4, 2)
         assert_eq!(m.rows, 4);
         assert_eq!(m.cols, 2);
+    }
+
+    // === Randomized SVD primitive tests ===
+
+    #[test]
+    fn test_gaussian_matrix_shape() {
+        let g = gaussian_matrix(10, 5, 42);
+        assert_eq!(g.rows, 10);
+        assert_eq!(g.cols, 5);
+        assert_eq!(g.data.len(), 50);
+    }
+
+    #[test]
+    fn test_gaussian_matrix_deterministic() {
+        let g1 = gaussian_matrix(8, 4, 123);
+        let g2 = gaussian_matrix(8, 4, 123);
+        assert_eq!(g1.data, g2.data, "Same seed should produce same output");
+
+        let g3 = gaussian_matrix(8, 4, 456);
+        assert_ne!(g1.data, g3.data, "Different seeds should differ");
+    }
+
+    #[test]
+    fn test_gaussian_matrix_distribution() {
+        // Check that values are roughly Gaussian (mean ~0, stddev ~1)
+        let g = gaussian_matrix(100, 100, 42);
+        let mean: f32 = g.data.iter().sum::<f32>() / g.data.len() as f32;
+        let variance: f32 =
+            g.data.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / g.data.len() as f32;
+        let stddev = variance.sqrt();
+
+        // Mean should be close to 0, stddev close to 1
+        assert!(mean.abs() < 0.2, "Mean {} too far from 0", mean);
+        assert!(
+            (stddev - 1.0).abs() < 0.3,
+            "Stddev {} too far from 1",
+            stddev
+        );
+    }
+
+    #[test]
+    fn test_gaussian_matrix_no_nan_inf() {
+        let g = gaussian_matrix(50, 50, 99);
+        assert!(
+            g.data.iter().all(|x| x.is_finite()),
+            "Should have no NaN/Inf"
+        );
+    }
+
+    #[test]
+    fn test_qr_orthonormal() {
+        // Create a full-rank matrix and verify Q^T * Q ≈ I
+        // Using a matrix with linearly independent columns
+        let data = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let m = Matrix::new(data, 4, 3).unwrap();
+        let q = qr_orthonormalize(&m);
+
+        assert_eq!(q.cols, 3, "Should preserve rank");
+
+        // Q should have orthonormal columns
+        for i in 0..q.cols {
+            for j in 0..q.cols {
+                let col_i: Vec<f32> = (0..q.rows).map(|r| q.get(r, i)).collect();
+                let col_j: Vec<f32> = (0..q.rows).map(|r| q.get(r, j)).collect();
+                let dot_ij = dot(&col_i, &col_j);
+
+                if i == j {
+                    assert!(
+                        (dot_ij - 1.0).abs() < 1e-5,
+                        "Column {} not unit norm: {}",
+                        i,
+                        dot_ij
+                    );
+                } else {
+                    assert!(
+                        dot_ij.abs() < 1e-5,
+                        "Columns {} and {} not orthogonal: {}",
+                        i,
+                        j,
+                        dot_ij
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_qr_empty() {
+        let m = Matrix::zeros(5, 0);
+        let q = qr_orthonormalize(&m);
+        assert_eq!(q.cols, 0);
+    }
+
+    #[test]
+    fn test_qr_rank_deficient() {
+        // Matrix with identical columns (clearly rank 1)
+        let data = vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+        let m = Matrix::new(data, 3, 3).unwrap();
+        let q = qr_orthonormalize(&m);
+
+        // Should have fewer columns than input (rank < 3)
+        assert!(
+            q.cols < 3,
+            "Rank-deficient matrix should have fewer Q columns, got {}",
+            q.cols
+        );
+    }
+
+    #[test]
+    fn test_svd_randomized_large_matrix() {
+        // Create a larger matrix that triggers randomized path (>32 dimensions)
+        let rows = 64;
+        let cols = 48;
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i * 7 + 3) % 101) as f32 / 50.0 - 1.0)
+            .collect();
+        let m = Matrix::new(data.clone(), rows, cols).unwrap();
+
+        let svd = svd_truncated(&m, 8, 1e-4).unwrap();
+
+        // Verify shapes
+        assert_eq!(svd.u.rows, rows);
+        assert!(svd.u.cols <= 8);
+        assert!(svd.vt.rows <= 8);
+        assert_eq!(svd.vt.cols, cols);
+        assert!(svd.rank <= 8);
+
+        // Verify singular values are positive and ordered
+        for i in 1..svd.s.len() {
+            assert!(
+                svd.s[i - 1] >= svd.s[i] - 1e-6,
+                "Singular values not ordered: {} < {}",
+                svd.s[i - 1],
+                svd.s[i]
+            );
+        }
+
+        // Verify reconstruction is reasonable
+        let mut reconstructed = Matrix::zeros(rows, cols);
+        for i in 0..rows {
+            for j in 0..cols {
+                let mut sum = 0.0;
+                for k in 0..svd.rank {
+                    sum += svd.u.get(i, k) * svd.s[k] * svd.vt.get(k, j);
+                }
+                reconstructed.set(i, j, sum);
+            }
+        }
+
+        // Reconstruction error should be small relative to original norm
+        let orig_norm = m.frobenius_norm();
+        let mut error_sq = 0.0;
+        for i in 0..rows {
+            for j in 0..cols {
+                let diff = m.get(i, j) - reconstructed.get(i, j);
+                error_sq += diff * diff;
+            }
+        }
+        let rel_error = error_sq.sqrt() / orig_norm;
+        assert!(
+            rel_error < 0.5,
+            "Reconstruction error too high: {}",
+            rel_error
+        );
+    }
+
+    #[test]
+    fn test_svd_power_iteration_direct() {
+        // Test the internal power iteration function directly
+        let data = vec![3.0, 4.0, 6.0, 8.0];
+        let m = Matrix::new(data, 2, 2).unwrap();
+        let svd = svd_power_iteration(&m, 2, 1e-6).unwrap();
+
+        assert_eq!(svd.rank, 1);
+        assert!(svd.s[0] > 0.0);
+    }
+
+    #[test]
+    fn test_lcg_determinism() {
+        let mut rng1 = Lcg::new(42);
+        let mut rng2 = Lcg::new(42);
+
+        for _ in 0..100 {
+            assert_eq!(rng1.next_u64(), rng2.next_u64());
+        }
+    }
+
+    #[test]
+    fn test_lcg_f32_range() {
+        let mut rng = Lcg::new(12345);
+        for _ in 0..1000 {
+            let f = rng.next_f32();
+            assert!(f >= 0.0 && f < 1.0, "f32 {} out of range [0, 1)", f);
+        }
     }
 }

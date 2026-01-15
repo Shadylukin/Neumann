@@ -161,7 +161,10 @@ async fn test_leadership_transfer_success() {
     node2.set_current_leader(Some("node1".to_string()));
 
     // Start transfer to node2
-    node1.transfer_leadership_async(&"node2".to_string()).await.unwrap();
+    node1
+        .transfer_leadership_async(&"node2".to_string())
+        .await
+        .unwrap();
 
     // Node1 should have transfer in progress
     assert!(node1.is_transfer_in_progress());

@@ -123,7 +123,13 @@ async fn test_compaction_survives_restart() {
 
     let data = vec![1, 2, 3, 4, 5];
     let snapshot_hash = compute_hash(&data);
-    let metadata = SnapshotMetadata::new(100, 5, snapshot_hash, vec!["node1".to_string(), "node2".to_string()], data.len() as u64);
+    let metadata = SnapshotMetadata::new(
+        100,
+        5,
+        snapshot_hash,
+        vec!["node1".to_string(), "node2".to_string()],
+        data.len() as u64,
+    );
 
     // Save snapshot
     node1.save_snapshot(&metadata, &data, &store).unwrap();
@@ -244,7 +250,13 @@ async fn test_new_leader_uses_existing_snapshot() {
 
     let data = bincode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
     let snapshot_hash = compute_hash(&data);
-    let metadata = SnapshotMetadata::new(50, 3, snapshot_hash, vec!["node1".to_string(), "node2".to_string()], data.len() as u64);
+    let metadata = SnapshotMetadata::new(
+        50,
+        3,
+        snapshot_hash,
+        vec!["node1".to_string(), "node2".to_string()],
+        data.len() as u64,
+    );
     node1.save_snapshot(&metadata, &data, &store).unwrap();
 
     // Simulate first leader stepping down

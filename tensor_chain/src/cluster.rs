@@ -16,10 +16,17 @@ use tokio::sync::broadcast;
 use crate::{
     block::NodeId,
     chain::Chain,
+    consensus::ConsensusManager,
+    delta_replication::{DeltaReplicationConfig, DeltaReplicationManager},
+    distributed_tx::{DistributedTxConfig, DistributedTxCoordinator, PrepareRequest},
     error::{ChainError, Result},
     geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager},
+    gossip::{GossipConfig, GossipMembershipManager},
     membership::{ClusterConfig, MembershipManager},
-    network::{Message, QueryExecutor, QueryRequest, QueryResponse, Transport},
+    network::{
+        Message, QueryExecutor, QueryRequest, QueryResponse, Transport, TxAckMsg, TxCommitMsg,
+        TxPrepareMsg, TxPrepareResponseMsg,
+    },
     raft::{RaftConfig, RaftNode},
     state_machine::TensorStateMachine,
     tcp::{TcpTransport, TcpTransportConfig},
@@ -74,6 +81,12 @@ pub struct OrchestratorConfig {
     pub raft: RaftConfig,
     /// Geometric membership configuration.
     pub geometric: GeometricMembershipConfig,
+    /// Gossip protocol configuration.
+    pub gossip: GossipConfig,
+    /// Distributed transaction (2PC) configuration.
+    pub dtx: DistributedTxConfig,
+    /// Delta replication configuration.
+    pub delta_replication: DeltaReplicationConfig,
     /// Fast-path similarity threshold for state machine.
     pub fast_path_threshold: f32,
 }
@@ -86,6 +99,9 @@ impl OrchestratorConfig {
             peers,
             raft: RaftConfig::default(),
             geometric: GeometricMembershipConfig::default(),
+            gossip: GossipConfig::default(),
+            dtx: DistributedTxConfig::default(),
+            delta_replication: DeltaReplicationConfig::default(),
             fast_path_threshold: 0.95,
         }
     }
@@ -107,6 +123,24 @@ impl OrchestratorConfig {
         self.fast_path_threshold = threshold.clamp(0.0, 1.0);
         self
     }
+
+    /// Set the gossip configuration.
+    pub fn with_gossip(mut self, gossip: GossipConfig) -> Self {
+        self.gossip = gossip;
+        self
+    }
+
+    /// Set the distributed transaction configuration.
+    pub fn with_dtx(mut self, dtx: DistributedTxConfig) -> Self {
+        self.dtx = dtx;
+        self
+    }
+
+    /// Set the delta replication configuration.
+    pub fn with_delta_replication(mut self, delta_replication: DeltaReplicationConfig) -> Self {
+        self.delta_replication = delta_replication;
+        self
+    }
 }
 
 /// Orchestrates cluster startup and manages node components.
@@ -122,6 +156,12 @@ pub struct ClusterOrchestrator {
     membership: Arc<MembershipManager>,
     /// Geometric membership wrapper.
     geometric: Arc<GeometricMembershipManager>,
+    /// Gossip-based membership manager.
+    gossip: Arc<GossipMembershipManager>,
+    /// Distributed transaction (2PC) coordinator.
+    dtx: Arc<DistributedTxCoordinator>,
+    /// Delta replication manager.
+    delta_replication: Arc<DeltaReplicationManager>,
     /// Raft consensus node.
     raft: Arc<RaftNode>,
     /// Chain storage.
@@ -194,7 +234,31 @@ impl ClusterOrchestrator {
             config.geometric.clone(),
         ));
 
-        // 7. Create Raft node, loading persisted state
+        // 7. Create gossip-based membership manager with geometric routing
+        let gossip = Arc::new(GossipMembershipManager::with_geometric(
+            config.local.node_id.clone(),
+            config.gossip.clone(),
+            transport.clone(),
+            geometric.clone(),
+        ));
+
+        // Add all peers to gossip
+        for peer in &config.peers {
+            gossip.add_peer(peer.node_id.clone());
+        }
+
+        // 8. Create distributed transaction coordinator (2PC)
+        let consensus = ConsensusManager::default_config();
+        let dtx = Arc::new(DistributedTxCoordinator::new(consensus, config.dtx.clone()));
+
+        // 9. Create delta replication manager with shared archetype registry
+        let delta_replication = Arc::new(DeltaReplicationManager::with_store(
+            config.local.node_id.clone(),
+            config.delta_replication.clone(),
+            &store,
+        ));
+
+        // 10. Create Raft node, loading persisted state
         let peer_ids: Vec<NodeId> = config.peers.iter().map(|p| p.node_id.clone()).collect();
 
         let raft = Arc::new(RaftNode::with_store(
@@ -205,14 +269,14 @@ impl ClusterOrchestrator {
             &store,
         ));
 
-        // 8. Create chain storage
+        // 11. Create chain storage
         let graph = Arc::new(GraphEngine::with_store(store.clone()));
         let chain = Arc::new(Chain::new(graph, config.local.node_id.clone()));
 
         // Initialize chain (creates genesis if needed)
         chain.initialize()?;
 
-        // 9. Create state machine with store for transaction application
+        // 12. Create state machine with store for transaction application
         let state_machine = Arc::new(TensorStateMachine::with_threshold(
             chain.clone(),
             raft.clone(),
@@ -225,6 +289,9 @@ impl ClusterOrchestrator {
             transport,
             membership,
             geometric,
+            gossip,
+            dtx,
+            delta_replication,
             raft,
             chain,
             state_machine,
@@ -273,10 +340,87 @@ impl ClusterOrchestrator {
         }))
     }
 
+    /// Handle an incoming 2PC prepare request.
+    fn handle_tx_prepare(&self, msg: &TxPrepareMsg) -> Option<Message> {
+        // Convert network message to internal prepare request
+        let request = PrepareRequest {
+            tx_id: msg.tx_id,
+            coordinator: msg.coordinator.clone(),
+            operations: msg.operations.clone(),
+            delta_embedding: msg.delta_embedding.clone(),
+            timeout_ms: msg.timeout_ms,
+        };
+
+        // Process prepare and get vote
+        let vote = self.dtx.handle_prepare(request);
+
+        // Convert vote to network response
+        let response = TxPrepareResponseMsg {
+            tx_id: msg.tx_id,
+            shard_id: msg.shard_id,
+            vote: vote.into(),
+        };
+
+        Some(Message::TxPrepareResponse(response))
+    }
+
+    /// Handle a 2PC prepare response (vote from participant).
+    fn handle_tx_prepare_response(&self, msg: &TxPrepareResponseMsg) {
+        // Record the vote - phase change happens automatically
+        let _ = self
+            .dtx
+            .record_vote(msg.tx_id, msg.shard_id, msg.vote.clone().into());
+    }
+
+    /// Handle a 2PC commit message.
+    fn handle_tx_commit(&self, msg: &TxCommitMsg) -> Option<Message> {
+        // Only process if this node's shard is in the commit list
+        if !msg.shards.contains(&self.local_shard_id) {
+            return None;
+        }
+
+        // Commit locally and send ack
+        let success = self.dtx.commit(msg.tx_id).is_ok();
+
+        Some(Message::TxAck(TxAckMsg {
+            tx_id: msg.tx_id,
+            shard_id: self.local_shard_id,
+            success,
+            error: None,
+        }))
+    }
+
+    /// Handle a 2PC abort message.
+    fn handle_tx_abort(&self, msg: &crate::network::TxAbortMsg) -> Option<Message> {
+        // Only process if this node's shard is in the abort list
+        if !msg.shards.contains(&self.local_shard_id) {
+            return None;
+        }
+
+        // Abort locally and send ack
+        let success = self.dtx.abort(msg.tx_id, &msg.reason).is_ok();
+
+        Some(Message::TxAck(TxAckMsg {
+            tx_id: msg.tx_id,
+            shard_id: self.local_shard_id,
+            success,
+            error: None,
+        }))
+    }
+
+    /// Handle a 2PC acknowledgment message.
+    fn handle_tx_ack(&self, msg: &TxAckMsg) {
+        // Record the ack for commit/abort tracking
+        self.dtx.handle_abort_ack(msg.tx_id, msg.shard_id);
+    }
+
     /// Run the node until shutdown signal.
     ///
     /// Spawns background tasks for:
     /// - Raft tick loop
+    /// - Gossip protocol rounds
+    /// - 2PC distributed transaction handling
+    /// - Geometric membership embedding updates
     /// - Membership health checks
     /// - State machine apply loop
     /// - Query message handling
@@ -284,11 +428,21 @@ impl ClusterOrchestrator {
         let raft = self.raft.clone();
         let state_machine = self.state_machine.clone();
         let transport = self.transport.clone();
+        let gossip = self.gossip.clone();
+        let dtx = self.dtx.clone();
+        let geometric = self.geometric.clone();
+
+        // Track gossip timing separately (gossip runs at its own interval)
+        let gossip_interval =
+            std::time::Duration::from_millis(self.config.gossip.gossip_interval_ms);
+        let mut last_gossip = std::time::Instant::now();
 
         // Main loop
         loop {
             tokio::select! {
                 _ = shutdown.recv() => {
+                    // Shutdown gossip manager
+                    gossip.shutdown();
                     break;
                 }
                 // Try to receive a message with timeout
@@ -297,17 +451,48 @@ impl ClusterOrchestrator {
                     transport.recv()
                 ) => {
                     if let Ok(Ok((from, msg))) = recv_result {
+                        // Record peer embeddings from messages for geometric routing
+                        if let Some(embedding) = msg.routing_embedding() {
+                            geometric.record_peer_embedding(&from, embedding.clone());
+                        }
+
                         // Handle the message
-                        match &msg {
+                        match msg {
                             Message::QueryRequest(request) => {
-                                if let Some(response) = self.handle_query_request(&from, request) {
+                                if let Some(response) = self.handle_query_request(&from, &request) {
                                     let _ = transport.send(&from, response).await;
                                 }
                             }
-                            // Raft messages are handled by RaftNode internally
-                            _ => {
+                            Message::Gossip(gossip_msg) => {
+                                // Handle gossip protocol messages
+                                gossip.handle_gossip(gossip_msg);
+                            }
+                            // 2PC distributed transaction messages
+                            Message::TxPrepare(prepare_msg) => {
+                                if let Some(response) = self.handle_tx_prepare(&prepare_msg) {
+                                    let _ = transport.send(&from, response).await;
+                                }
+                            }
+                            Message::TxPrepareResponse(response_msg) => {
+                                self.handle_tx_prepare_response(&response_msg);
+                            }
+                            Message::TxCommit(commit_msg) => {
+                                if let Some(ack) = self.handle_tx_commit(&commit_msg) {
+                                    let _ = transport.send(&from, ack).await;
+                                }
+                            }
+                            Message::TxAbort(abort_msg) => {
+                                if let Some(ack) = self.handle_tx_abort(&abort_msg) {
+                                    let _ = transport.send(&from, ack).await;
+                                }
+                            }
+                            Message::TxAck(ack_msg) => {
+                                self.handle_tx_ack(&ack_msg);
+                            }
+                            // Raft and other messages
+                            other => {
                                 // Let Raft handle other messages
-                                let _ = raft.handle_message_async(&from, msg).await;
+                                let _ = raft.handle_message_async(&from, other).await;
                             }
                         }
                     }
@@ -318,6 +503,20 @@ impl ClusterOrchestrator {
 
                     // Apply any committed entries
                     let _ = state_machine.apply_committed();
+
+                    // Update local embedding from state machine (for geometric routing)
+                    if let Some(embedding) = state_machine.current_state_embedding() {
+                        geometric.update_local_embedding(embedding);
+                    }
+
+                    // Run gossip round if interval elapsed
+                    if last_gossip.elapsed() >= gossip_interval {
+                        let _ = gossip.gossip_round().await;
+                        last_gossip = std::time::Instant::now();
+                    }
+
+                    // Process pending abort broadcasts
+                    dtx.process_pending_aborts(&*transport).await;
                 }
             }
         }
@@ -386,6 +585,21 @@ impl ClusterOrchestrator {
     /// Access the geometric membership manager.
     pub fn geometric_membership(&self) -> &GeometricMembershipManager {
         &self.geometric
+    }
+
+    /// Access the gossip-based membership manager.
+    pub fn gossip_membership(&self) -> &GossipMembershipManager {
+        &self.gossip
+    }
+
+    /// Access the distributed transaction coordinator.
+    pub fn dtx(&self) -> &DistributedTxCoordinator {
+        &self.dtx
+    }
+
+    /// Access the delta replication manager.
+    pub fn delta_replication(&self) -> &DeltaReplicationManager {
+        &self.delta_replication
     }
 
     /// Access the store.
