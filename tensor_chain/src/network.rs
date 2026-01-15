@@ -889,6 +889,10 @@ pub struct MemoryTransport {
     partitioned: RwLock<HashSet<NodeId>>,
     /// Message drop counter for testing assertions.
     dropped_messages: AtomicU64,
+    /// Simulated network latency (min, max) in milliseconds.
+    latency_ms: RwLock<Option<(u64, u64)>>,
+    /// Per-peer latency overrides.
+    peer_latency_ms: RwLock<HashMap<NodeId, (u64, u64)>>,
 }
 
 impl MemoryTransport {
@@ -902,6 +906,55 @@ impl MemoryTransport {
             local_sender: tx,
             partitioned: RwLock::new(HashSet::new()),
             dropped_messages: AtomicU64::new(0),
+            latency_ms: RwLock::new(None),
+            peer_latency_ms: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Set global simulated latency range (min_ms, max_ms).
+    ///
+    /// Each message will be delayed by a random duration in this range.
+    /// Use `None` to disable latency simulation.
+    pub fn set_latency(&self, latency: Option<(u64, u64)>) {
+        *self.latency_ms.write() = latency;
+    }
+
+    /// Set latency for a specific peer (overrides global latency).
+    pub fn set_peer_latency(&self, peer_id: &NodeId, latency: (u64, u64)) {
+        self.peer_latency_ms.write().insert(peer_id.clone(), latency);
+    }
+
+    /// Clear peer-specific latency (will use global latency if set).
+    pub fn clear_peer_latency(&self, peer_id: &NodeId) {
+        self.peer_latency_ms.write().remove(peer_id);
+    }
+
+    /// Get the latency to apply for a specific peer.
+    fn get_latency_for_peer(&self, peer_id: &NodeId) -> Option<(u64, u64)> {
+        // Check peer-specific latency first
+        if let Some(latency) = self.peer_latency_ms.read().get(peer_id) {
+            return Some(*latency);
+        }
+        // Fall back to global latency
+        *self.latency_ms.read()
+    }
+
+    /// Apply simulated latency delay.
+    async fn apply_latency(&self, peer_id: &NodeId) {
+        if let Some((min_ms, max_ms)) = self.get_latency_for_peer(peer_id) {
+            let delay_ms = if min_ms == max_ms {
+                min_ms
+            } else {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+                min_ms + (seed % (max_ms - min_ms + 1))
+            };
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
         }
     }
 
@@ -966,6 +1019,9 @@ impl Transport for MemoryTransport {
                 self.local_id, to
             )));
         }
+
+        // Apply simulated latency before sending
+        self.apply_latency(to).await;
 
         let sender = {
             let peers = self.peers.read();

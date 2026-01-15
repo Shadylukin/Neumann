@@ -8,6 +8,12 @@
 //! - Codebook operations (GlobalCodebook/LocalCodebook)
 //! - Delta vector operations
 //! - Chain queries (by height, history)
+//! - Raft consensus operations
+//! - 2PC distributed transactions
+//! - Gossip protocol operations
+//! - Snapshot operations
+//! - Membership management
+//! - Deadlock detection
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -1032,6 +1038,502 @@ fn bench_codebook_kmeans(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Raft Consensus Benchmarks
+// ============================================================================
+
+fn bench_raft_operations(c: &mut Criterion) {
+    use tensor_chain::{MemoryTransport, RaftConfig, RaftNode};
+
+    let mut group = c.benchmark_group("raft_operations");
+
+    // Benchmark RaftNode creation
+    group.bench_function("raft_node_create", |b| {
+        b.iter(|| {
+            let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+            let node = RaftNode::new(
+                "bench_node".to_string(),
+                vec!["peer1".to_string(), "peer2".to_string()],
+                transport,
+                RaftConfig::default(),
+            );
+            black_box(node)
+        })
+    });
+
+    // Benchmark become_leader (state transition)
+    group.bench_function("raft_become_leader", |b| {
+        let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "bench_node".to_string(),
+            vec!["peer1".to_string(), "peer2".to_string()],
+            transport,
+            RaftConfig::default(),
+        ));
+
+        b.iter(|| {
+            node.become_leader();
+            black_box(node.state())
+        })
+    });
+
+    // Benchmark heartbeat stats snapshot
+    group.bench_function("raft_heartbeat_stats_snapshot", |b| {
+        let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "bench_node".to_string(),
+            vec!["peer1".to_string(), "peer2".to_string()],
+            transport,
+            RaftConfig::default(),
+        ));
+
+        b.iter(|| black_box(node.heartbeat_stats_snapshot()))
+    });
+
+    // Benchmark log length access
+    group.bench_function("raft_log_length", |b| {
+        let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "bench_node".to_string(),
+            vec!["peer1".to_string(), "peer2".to_string()],
+            transport,
+            RaftConfig::default(),
+        ));
+        node.become_leader();
+
+        b.iter(|| black_box(node.log_length()))
+    });
+
+    // Benchmark Raft stats collection
+    group.bench_function("raft_stats_snapshot", |b| {
+        let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "bench_node".to_string(),
+            vec!["peer1".to_string(), "peer2".to_string()],
+            transport,
+            RaftConfig::default(),
+        ));
+
+        b.iter(|| black_box(node.stats()))
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// 2PC Distributed Transaction Benchmarks
+// ============================================================================
+
+fn bench_2pc_operations(c: &mut Criterion) {
+    use tensor_chain::{ConsensusManager, DistributedTxConfig, DistributedTxCoordinator, LockManager, TxParticipant};
+
+    let mut group = c.benchmark_group("2pc_operations");
+
+    // Benchmark LockManager operations
+    group.bench_function("lock_manager_acquire", |b| {
+        b.iter_batched(
+            LockManager::new,
+            |lm| {
+                let handle = lm.try_lock(1, &["key1".to_string(), "key2".to_string()]);
+                black_box(handle)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("lock_manager_release", |b| {
+        b.iter_batched(
+            || {
+                let lm = LockManager::new();
+                let _ = lm.try_lock(1, &["key1".to_string(), "key2".to_string()]);
+                lm
+            },
+            |lm| {
+                lm.release(1);
+                black_box(lm.lock_count_for_transaction(1))
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("lock_manager_is_locked", |b| {
+        let lm = LockManager::new();
+        let _ = lm.try_lock(1, &["key1".to_string()]);
+
+        b.iter(|| black_box(lm.is_locked("key1")))
+    });
+
+    // Benchmark coordinator creation
+    group.bench_function("coordinator_create", |b| {
+        b.iter(|| {
+            let consensus = ConsensusManager::default_config();
+            let coord = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
+            black_box(coord)
+        })
+    });
+
+    // Benchmark coordinator stats
+    group.bench_function("coordinator_stats", |b| {
+        let consensus = ConsensusManager::default_config();
+        let coord = DistributedTxCoordinator::new(consensus, DistributedTxConfig::default());
+
+        b.iter(|| black_box(coord.stats()))
+    });
+
+    // Benchmark participant creation
+    group.bench_function("participant_create", |b| {
+        b.iter(|| {
+            let participant = TxParticipant::new();
+            black_box(participant)
+        })
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Gossip Protocol Benchmarks
+// ============================================================================
+
+fn bench_gossip_operations(c: &mut Criterion) {
+    use tensor_chain::{GossipMessage, GossipNodeState, LWWMembershipState, NodeHealth};
+
+    let mut group = c.benchmark_group("gossip_operations");
+
+    // Benchmark LWW state creation
+    group.bench_function("lww_state_create", |b| {
+        b.iter(|| {
+            let state = LWWMembershipState::new();
+            black_box(state)
+        })
+    });
+
+    // Benchmark LWW state merge
+    group.bench_function("lww_state_merge", |b| {
+        let mut state1 = LWWMembershipState::new();
+        let node_state1 = GossipNodeState {
+            node_id: "peer1".to_string(),
+            health: NodeHealth::Healthy,
+            timestamp: 100,
+            updated_at: 1000,
+            incarnation: 1,
+        };
+        state1.merge(&[node_state1]);
+
+        let node_state2 = GossipNodeState {
+            node_id: "peer2".to_string(),
+            health: NodeHealth::Healthy,
+            timestamp: 101,
+            updated_at: 1001,
+            incarnation: 1,
+        };
+
+        b.iter(|| {
+            let mut merged = state1.clone();
+            merged.merge(&[node_state2.clone()]);
+            black_box(merged)
+        })
+    });
+
+    // Benchmark GossipNodeState creation
+    group.bench_function("gossip_node_state_create", |b| {
+        b.iter(|| {
+            let state = GossipNodeState {
+                node_id: "node1".to_string(),
+                health: NodeHealth::Healthy,
+                timestamp: 100,
+                updated_at: 1000,
+                incarnation: 1,
+            };
+            black_box(state)
+        })
+    });
+
+    // Benchmark gossip message serialization
+    group.bench_function("gossip_message_serialize", |b| {
+        let states = vec![
+            GossipNodeState {
+                node_id: "peer1".to_string(),
+                health: NodeHealth::Healthy,
+                timestamp: 100,
+                updated_at: 1000,
+                incarnation: 1,
+            },
+            GossipNodeState {
+                node_id: "peer2".to_string(),
+                health: NodeHealth::Healthy,
+                timestamp: 101,
+                updated_at: 1001,
+                incarnation: 1,
+            },
+        ];
+        let msg = GossipMessage::Sync {
+            sender: "node1".to_string(),
+            states,
+            sender_time: 100,
+        };
+
+        b.iter(|| {
+            let bytes = bincode::serialize(&msg).unwrap();
+            black_box(bytes)
+        })
+    });
+
+    // Benchmark gossip message deserialization
+    group.bench_function("gossip_message_deserialize", |b| {
+        let states = vec![
+            GossipNodeState {
+                node_id: "peer1".to_string(),
+                health: NodeHealth::Healthy,
+                timestamp: 100,
+                updated_at: 1000,
+                incarnation: 1,
+            },
+        ];
+        let msg = GossipMessage::Sync {
+            sender: "node1".to_string(),
+            states,
+            sender_time: 100,
+        };
+        let bytes = bincode::serialize(&msg).unwrap();
+
+        b.iter(|| {
+            let deserialized: GossipMessage = bincode::deserialize(&bytes).unwrap();
+            black_box(deserialized)
+        })
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Snapshot Operation Benchmarks
+// ============================================================================
+
+fn bench_snapshot_operations(c: &mut Criterion) {
+    use tensor_chain::{RaftConfig, RaftNode, MemoryTransport, SnapshotMetadata, RaftMembershipConfig};
+
+    let mut group = c.benchmark_group("snapshot_operations");
+
+    // Helper to create snapshot metadata
+    fn create_snapshot_metadata() -> SnapshotMetadata {
+        SnapshotMetadata {
+            last_included_index: 100,
+            last_included_term: 5,
+            snapshot_hash: [0u8; 32],
+            config: vec!["node1".to_string(), "node2".to_string()],
+            membership: RaftMembershipConfig {
+                voters: vec!["node1".to_string(), "node2".to_string()],
+                learners: vec![],
+                joint: None,
+                config_index: 0,
+            },
+            created_at: 1700000000,
+            size: 1024,
+        }
+    }
+
+    // Benchmark SnapshotMetadata creation
+    group.bench_function("snapshot_metadata_create", |b| {
+        b.iter(|| {
+            let meta = create_snapshot_metadata();
+            black_box(meta)
+        })
+    });
+
+    // Benchmark SnapshotMetadata serialization
+    group.bench_function("snapshot_metadata_serialize", |b| {
+        let meta = create_snapshot_metadata();
+
+        b.iter(|| {
+            let bytes = bincode::serialize(&meta).unwrap();
+            black_box(bytes)
+        })
+    });
+
+    // Benchmark SnapshotMetadata deserialization
+    group.bench_function("snapshot_metadata_deserialize", |b| {
+        let meta = create_snapshot_metadata();
+        let bytes = bincode::serialize(&meta).unwrap();
+
+        b.iter(|| {
+            let deserialized: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+            black_box(deserialized)
+        })
+    });
+
+    // Benchmark RaftMembershipConfig creation
+    group.bench_function("raft_membership_config_create", |b| {
+        b.iter(|| {
+            let config = RaftMembershipConfig {
+                voters: vec!["node1".to_string(), "node2".to_string(), "node3".to_string()],
+                learners: vec!["learner1".to_string()],
+                joint: None,
+                config_index: 10,
+            };
+            black_box(config)
+        })
+    });
+
+    // Benchmark RaftNode with store
+    group.bench_function("raft_with_store_create", |b| {
+        b.iter_batched(
+            || {
+                let store = TensorStore::new();
+                for i in 0..10 {
+                    let mut data = tensor_store::TensorData::new();
+                    data.set("id".to_string(), tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(i)));
+                    let _ = store.put(&format!("key_{}", i), data);
+                }
+                store
+            },
+            |store| {
+                let transport = Arc::new(MemoryTransport::new("bench_node".to_string()));
+                let node = RaftNode::with_store(
+                    "bench_node".to_string(),
+                    vec!["peer1".to_string()],
+                    transport,
+                    RaftConfig::default(),
+                    &store,
+                );
+                black_box(node)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Membership Health Check Benchmarks
+// ============================================================================
+
+fn bench_membership_operations(c: &mut Criterion) {
+    use tensor_chain::{ClusterConfig, LocalNodeConfig, MembershipManager, MembershipStats, MemoryTransport};
+    use std::net::SocketAddr;
+
+    let mut group = c.benchmark_group("membership_operations");
+
+    // Helper to create a manager
+    fn create_manager() -> MembershipManager {
+        let local = LocalNodeConfig {
+            node_id: "node1".to_string(),
+            bind_address: "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
+        };
+        let config = ClusterConfig::new("test_cluster", local)
+            .with_peer("peer1", "127.0.0.1:8001".parse().unwrap())
+            .with_peer("peer2", "127.0.0.1:8002".parse().unwrap());
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        MembershipManager::new(config, transport)
+    }
+
+    // Benchmark membership manager creation
+    group.bench_function("membership_manager_create", |b| {
+        b.iter(|| {
+            let manager = create_manager();
+            black_box(manager)
+        })
+    });
+
+    // Benchmark cluster view
+    group.bench_function("membership_view", |b| {
+        let manager = create_manager();
+
+        b.iter(|| black_box(manager.view()))
+    });
+
+    // Benchmark partition status check
+    group.bench_function("membership_partition_status", |b| {
+        let manager = create_manager();
+
+        b.iter(|| black_box(manager.partition_status()))
+    });
+
+    // Benchmark node status lookup
+    group.bench_function("membership_node_status", |b| {
+        let manager = create_manager();
+
+        b.iter(|| black_box(manager.node_status(&"peer1".to_string())))
+    });
+
+    // Benchmark stats snapshot
+    group.bench_function("membership_stats_snapshot", |b| {
+        let stats = MembershipStats::new();
+        // Add some data
+        stats.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        stats.health_check_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+
+        b.iter(|| black_box(stats.snapshot()))
+    });
+
+    // Benchmark peer IDs retrieval
+    group.bench_function("membership_peer_ids", |b| {
+        let manager = create_manager();
+
+        b.iter(|| black_box(manager.peer_ids()))
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Deadlock Detection Benchmarks
+// ============================================================================
+
+fn bench_deadlock_detection(c: &mut Criterion) {
+    use tensor_chain::{DeadlockDetector, DeadlockDetectorConfig, WaitForGraph};
+
+    let mut group = c.benchmark_group("deadlock_detection");
+
+    // Benchmark wait-for graph edge addition
+    group.bench_function("wait_graph_add_edge", |b| {
+        b.iter_batched(
+            WaitForGraph::new,
+            |graph| {
+                graph.add_wait(1, 2, None);
+                graph.add_wait(2, 3, None);
+                graph.add_wait(3, 4, None);
+                black_box(graph)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    // Benchmark cycle detection (no cycle)
+    group.bench_function("wait_graph_detect_no_cycle", |b| {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 3, None);
+        graph.add_wait(3, 4, None);
+
+        b.iter(|| black_box(graph.detect_cycles()))
+    });
+
+    // Benchmark cycle detection (with cycle)
+    group.bench_function("wait_graph_detect_with_cycle", |b| {
+        let graph = WaitForGraph::new();
+        graph.add_wait(1, 2, None);
+        graph.add_wait(2, 3, None);
+        graph.add_wait(3, 1, None); // Creates cycle
+
+        b.iter(|| black_box(graph.detect_cycles()))
+    });
+
+    // Benchmark deadlock detector
+    group.bench_function("deadlock_detector_detect", |b| {
+        let config = DeadlockDetectorConfig::default();
+        let detector = DeadlockDetector::new(config);
+        detector.graph().add_wait(1, 2, None);
+        detector.graph().add_wait(2, 3, None);
+        detector.graph().add_wait(3, 1, None);
+
+        b.iter(|| black_box(detector.detect()))
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1052,4 +1554,15 @@ criterion_group!(
     bench_high_dimension_sparse,
     measure_real_delta_sparsity,
 );
-criterion_main!(benches);
+
+criterion_group!(
+    distributed_benches,
+    bench_raft_operations,
+    bench_2pc_operations,
+    bench_gossip_operations,
+    bench_snapshot_operations,
+    bench_membership_operations,
+    bench_deadlock_detection,
+);
+
+criterion_main!(benches, distributed_benches);
