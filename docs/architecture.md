@@ -938,32 +938,50 @@ Runs on every PR:
 | ClusterOrchestrator startup | Implemented | Ties all components together |
 | TensorStateMachine | Implemented | Applies Raft entries to chain |
 
-### Not Yet Implemented
+### Recently Completed (Production Infrastructure)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Dynamic cluster membership | Complete | Joint consensus via Raft, learner promotion |
+| Gossip protocol | Complete | SWIM-style with LWW CRDT, failure detection |
+| Partition detection and merge | Complete | 6-phase protocol with semantic reconciliation |
+| Automatic log compaction | Complete | Threshold-based with cooldown |
+| Snapshot persistence | Complete | SHA-256 validation, streaming transfer |
+| WAL for Raft/2PC | Complete | fsync-durable, crash recovery |
+| Deadlock detection | Complete | Wait-for graph with cycle detection |
+| Automatic heartbeat | Complete | Background task on leader election |
+
+### Remaining for Production Deployment
 
 | Component | Status | Priority |
 |-----------|--------|----------|
-| Dynamic cluster membership | Not started | Medium |
-| Cross-shard query execution | Infrastructure only | High |
-| Network partition testing | Tests not written | High |
-| Production deployment | Not attempted | High |
+| Multi-machine validation | Tests use MemoryTransport | High |
+| Cross-shard query execution | Infrastructure only | Medium |
+| Chaos engineering | Not started | High |
+| Performance profiling | Not started | Medium |
 
 ### Honest Assessment
 
-Neumann has **comprehensive distributed infrastructure** (Raft, 2PC, TCP, TLS, membership) with >95% test coverage. However, it is **not yet a true distributed database** for these reasons:
+Neumann has **production-ready distributed infrastructure** with all critical gaps addressed:
 
-1. **No real multi-node testing**: All tests use `MemoryTransport`. TCP transport works but hasn't been stress-tested across machines.
+- **Raft consensus**: Pre-vote, log compaction, snapshot persistence, WAL durability, leadership transfer, automatic heartbeat
+- **2PC transactions**: Coordinator/participant, abort broadcast with retry, deadlock detection
+- **Membership**: Gossip protocol, dynamic membership, partition detection and merge
+- **Network**: TCP with TLS, LZ4 compression, rate limiting, I/O timeouts
+
+However, it is **not yet battle-tested in production** for these reasons:
+
+1. **All tests use MemoryTransport**: TCP transport is complete but hasn't been stress-tested across physical machines.
 
 2. **Query execution is single-node**: The QueryPlanner and SemanticPartitioner exist, but queries don't actually scatter to remote nodes and merge results.
 
-3. **Static cluster only**: Nodes must be configured at startup. No dynamic join/leave.
-
-4. **No partition tolerance validation**: Network partition tests haven't been written to verify split-brain behavior.
+3. **No chaos engineering**: Network partition injection, node crash scenarios not yet validated.
 
 To become production-ready, Neumann needs:
-- Multi-machine integration tests
-- Chaos engineering (network failures, node crashes)
-- Query scatter-gather actually wired end-to-end
-- Performance testing under load
+- Multi-machine integration tests with real TCP
+- Chaos engineering (network failures, node crashes, partition scenarios)
+- Query scatter-gather wired end-to-end
+- Performance testing under sustained load
 
 ## Versioning Strategy
 

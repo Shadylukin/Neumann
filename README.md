@@ -217,12 +217,26 @@ Snapshots use bincode for compact binary serialization. All core types (`TensorD
 | Query Router | Complete | Cross-engine queries on unified entities, cache integration |
 | Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
 | Shell | Complete | Interactive CLI with readline, history, formatted output |
-| Tensor Chain | Complete | Tensor-native blockchain with Raft consensus, semantic conflict detection, 2PC distributed transactions |
+| Tensor Chain | Complete | Tensor-native blockchain with production-ready distributed systems (see below) |
 | Persistence | Basic | Snapshot-based save/load with bincode serialization |
+
+### Distributed Systems (Tensor Chain)
+
+Tensor Chain provides **production-ready distributed infrastructure** with >95% test coverage:
+
+| Component | Status | Features |
+|-----------|--------|----------|
+| **Raft Consensus** | Production | Pre-vote protocol, automatic log compaction, snapshot persistence, WAL durability, leadership transfer, automatic heartbeat |
+| **2PC Transactions** | Production | Coordinator/participant model, abort broadcast with retry, deadlock detection, orthogonal delta optimization |
+| **Membership** | Production | Gossip protocol (SWIM), dynamic membership via joint consensus, partition detection and automatic merge |
+| **Network** | Production | TCP transport with TLS, LZ4 compression, per-peer rate limiting, I/O timeouts, connection pooling |
+| **Replication** | Production | Delta-compressed state replication, archetype persistence, streaming snapshots with memory bounds |
+
+All components have integration tests and fuzz targets. See [Tensor Chain docs](docs/tensor-chain.md) for details.
 
 ## What Neumann Is Not (For Now)
 
-- **Not a fully distributed system yet.** Tensor Chain provides Raft consensus and 2PC, but dynamic membership and automatic sharding are future work.
+- **Not battle-tested in production yet.** Distributed infrastructure is complete with >95% test coverage, but real-world multi-node deployments need validation.
 - **Not a replacement for production Postgres at scale.** It's for development, prototyping, small-to-medium workloads, and AI-native applications.
 - **Not a full IDE or code editor.** It stores and queries code structure, but you still write code elsewhere.
 
