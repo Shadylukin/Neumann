@@ -41,6 +41,12 @@ pub enum Message {
     RequestVote(RequestVote),
     /// Response to vote request.
     RequestVoteResponse(RequestVoteResponse),
+    /// Pre-vote request (prevents disruptive elections).
+    PreVote(PreVote),
+    /// Response to pre-vote request.
+    PreVoteResponse(PreVoteResponse),
+    /// Immediate election trigger for leadership transfer.
+    TimeoutNow(TimeoutNow),
     /// Append entries (log replication).
     AppendEntries(AppendEntries),
     /// Response to append entries.
@@ -85,12 +91,13 @@ impl Message {
     /// Extract the routing embedding from a message for geometric routing decisions.
     ///
     /// Returns the most semantically relevant embedding for the message type:
-    /// - RequestVote: candidate's state embedding
+    /// - RequestVote/PreVote: candidate's state embedding
     /// - AppendEntries: block embedding (if present)
     /// - TxPrepare: transaction delta embedding
     pub fn routing_embedding(&self) -> Option<&SparseVector> {
         match self {
             Message::RequestVote(rv) => Some(&rv.state_embedding),
+            Message::PreVote(pv) => Some(&pv.state_embedding),
             Message::AppendEntries(ae) => ae.block_embedding.as_ref(),
             Message::TxPrepare(tp) => Some(&tp.delta_embedding),
             _ => None,
@@ -127,6 +134,47 @@ pub struct RequestVoteResponse {
     pub vote_granted: bool,
     /// Voter's node ID.
     pub voter_id: NodeId,
+}
+
+/// Pre-vote request for disruption-free elections.
+///
+/// Sent before incrementing term to check if election would succeed.
+/// Prevents partitioned nodes from disrupting the cluster with high terms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreVote {
+    /// Candidate's CURRENT term (not incremented).
+    pub term: u64,
+    /// Candidate requesting pre-vote.
+    pub candidate_id: NodeId,
+    /// Index of candidate's last log entry.
+    pub last_log_index: u64,
+    /// Term of candidate's last log entry.
+    pub last_log_term: u64,
+    /// State embedding for geometric tie-breaking.
+    pub state_embedding: SparseVector,
+}
+
+/// Response to pre-vote request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreVoteResponse {
+    /// Responder's current term.
+    pub term: u64,
+    /// True if responder would grant vote in a real election.
+    pub vote_granted: bool,
+    /// Voter's node ID.
+    pub voter_id: NodeId,
+}
+
+/// Immediate election trigger for leadership transfer.
+///
+/// Sent by leader to target node to initiate immediate election,
+/// bypassing normal election timeout and pre-vote phase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeoutNow {
+    /// Leader's current term.
+    pub term: u64,
+    /// Leader initiating transfer.
+    pub leader_id: NodeId,
 }
 
 /// Append entries message for log replication.

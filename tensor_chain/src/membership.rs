@@ -1293,8 +1293,14 @@ mod tests {
 
     #[test]
     fn test_partition_status_equality() {
-        assert_eq!(PartitionStatus::QuorumReachable, PartitionStatus::QuorumReachable);
-        assert_ne!(PartitionStatus::QuorumReachable, PartitionStatus::QuorumLost);
+        assert_eq!(
+            PartitionStatus::QuorumReachable,
+            PartitionStatus::QuorumReachable
+        );
+        assert_ne!(
+            PartitionStatus::QuorumReachable,
+            PartitionStatus::QuorumLost
+        );
     }
 
     #[test]
@@ -1366,7 +1372,8 @@ mod tests {
     fn test_cluster_view_has_partition_status() {
         // Create a view manually to test the field
         let status = NodeStatus::new("node1".to_string(), "127.0.0.1:9000".parse().unwrap());
-        let view = ClusterView::with_partition_status(vec![status], 1, PartitionStatus::QuorumReachable);
+        let view =
+            ClusterView::with_partition_status(vec![status], 1, PartitionStatus::QuorumReachable);
 
         assert_eq!(view.partition_status, PartitionStatus::QuorumReachable);
     }

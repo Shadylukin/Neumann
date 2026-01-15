@@ -23,8 +23,8 @@ use crate::{
     error::{ChainError, Result},
     membership::MembershipManager,
     network::{
-        AppendEntries, AppendEntriesResponse, LogEntry, Message, RequestVote, RequestVoteResponse,
-        SnapshotRequest, SnapshotResponse, Transport,
+        AppendEntries, AppendEntriesResponse, LogEntry, Message, PreVote, PreVoteResponse,
+        RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse, TimeoutNow, Transport,
     },
     validation::FastPathValidator,
 };
@@ -65,6 +65,10 @@ pub struct RaftConfig {
     pub snapshot_trailing_logs: usize,
     /// Chunk size in bytes for snapshot transfer.
     pub snapshot_chunk_size: u64,
+    /// Enable pre-vote phase to prevent disruptive elections.
+    pub enable_pre_vote: bool,
+    /// Leadership transfer timeout in milliseconds.
+    pub transfer_timeout_ms: u64,
 }
 
 impl Default for RaftConfig {
@@ -80,6 +84,8 @@ impl Default for RaftConfig {
             snapshot_threshold: 10_000,
             snapshot_trailing_logs: 100,
             snapshot_chunk_size: 1024 * 1024, // 1MB
+            enable_pre_vote: true,
+            transfer_timeout_ms: 1000,
         }
     }
 }
@@ -108,6 +114,17 @@ struct PersistentState {
     voted_for: Option<NodeId>,
     /// Log entries.
     log: Vec<LogEntry>,
+}
+
+/// State for active leadership transfer.
+#[derive(Debug, Clone)]
+pub struct TransferState {
+    /// Target node for leadership transfer.
+    pub target: NodeId,
+    /// Term when transfer was initiated.
+    pub initiated_term: u64,
+    /// Timestamp when transfer started (for timeout).
+    pub started_at: Instant,
 }
 
 /// Comprehensive Raft statistics including fast-path validation and quorum tracking.
@@ -564,6 +581,12 @@ pub struct RaftNode {
     quorum_tracker: QuorumTracker,
     /// Statistics.
     pub stats: RaftStats,
+    /// Pre-votes received in current pre-election.
+    pre_votes_received: RwLock<Vec<NodeId>>,
+    /// Whether currently in pre-vote phase.
+    in_pre_vote: RwLock<bool>,
+    /// Active leadership transfer state.
+    transfer_state: RwLock<Option<TransferState>>,
 }
 
 impl RaftNode {
@@ -601,6 +624,9 @@ impl RaftNode {
             snapshot_state: RwLock::new(SnapshotState::new()),
             quorum_tracker: QuorumTracker::default(),
             stats: RaftStats::new(),
+            pre_votes_received: RwLock::new(Vec::new()),
+            in_pre_vote: RwLock::new(false),
+            transfer_state: RwLock::new(None),
         }
     }
 
@@ -756,6 +782,9 @@ impl RaftNode {
             membership: None,
             snapshot_state: RwLock::new(SnapshotState::new()),
             quorum_tracker: QuorumTracker::default(),
+            pre_votes_received: RwLock::new(Vec::new()),
+            in_pre_vote: RwLock::new(false),
+            transfer_state: RwLock::new(None),
             stats: RaftStats::new(),
         }
     }
@@ -808,6 +837,16 @@ impl RaftNode {
     /// Get the current leader.
     pub fn current_leader(&self) -> Option<NodeId> {
         self.current_leader.read().clone()
+    }
+
+    /// Set the current leader (test helper).
+    pub fn set_current_leader(&self, leader_id: Option<NodeId>) {
+        *self.current_leader.write() = leader_id;
+    }
+
+    /// Reset last heartbeat to simulate election timeout elapsed (test helper).
+    pub fn reset_heartbeat_for_election(&self) {
+        *self.last_heartbeat.write() = Instant::now() - std::time::Duration::from_secs(10);
     }
 
     /// Check if this node is the leader.
@@ -901,6 +940,12 @@ impl RaftNode {
                 self.handle_request_vote_response(from, rvr);
                 None
             },
+            Message::PreVote(pv) => self.handle_pre_vote(from, pv),
+            Message::PreVoteResponse(pvr) => {
+                self.handle_pre_vote_response(from, pvr);
+                None
+            },
+            Message::TimeoutNow(tn) => self.handle_timeout_now(from, tn),
             Message::AppendEntries(ae) => self.handle_append_entries(from, ae),
             Message::AppendEntriesResponse(aer) => {
                 self.handle_append_entries_response(from, aer);
@@ -1006,6 +1051,189 @@ impl RaftNode {
                 }
             }
         }
+    }
+
+    /// Start pre-vote phase (sync version).
+    ///
+    /// Pre-vote prevents disruptive elections from partitioned nodes by requiring
+    /// candidates to confirm they can win before incrementing their term.
+    pub fn start_pre_vote(&self) {
+        *self.in_pre_vote.write() = true;
+        *self.pre_votes_received.write() = vec![self.node_id.clone()]; // Vote for self
+
+        let persistent = self.persistent.read();
+        let (last_log_index, last_log_term) = if persistent.log.is_empty() {
+            (0, 0)
+        } else {
+            let last = &persistent.log[persistent.log.len() - 1];
+            (last.index, last.term)
+        };
+        let term = persistent.current_term;
+        let state_embedding = self.state_embedding.read().clone();
+        drop(persistent);
+
+        let _request = Message::PreVote(PreVote {
+            term, // NOT incremented - this is the key difference from RequestVote
+            candidate_id: self.node_id.clone(),
+            last_log_index,
+            last_log_term,
+            state_embedding,
+        });
+        // Note: Broadcast handled by async version in production
+    }
+
+    /// Handle PreVote RPC.
+    ///
+    /// Grants pre-vote if:
+    /// 1. Candidate's term >= our term
+    /// 2. Election timeout has elapsed (no recent leader heartbeat)
+    /// 3. Candidate's log is at least as up-to-date
+    /// 4. Candidate is healthy (if membership configured)
+    fn handle_pre_vote(&self, _from: &NodeId, pv: &PreVote) -> Option<Message> {
+        let persistent = self.persistent.read();
+        let mut vote_granted = false;
+
+        // Check if candidate's term is at least as recent
+        if pv.term >= persistent.current_term {
+            // Check if election timeout has elapsed (no recent heartbeat from leader)
+            let elapsed = self.last_heartbeat.read().elapsed().as_millis() as u64;
+            let timeout_elapsed = elapsed > self.config.election_timeout.0;
+
+            // Check candidate health
+            let candidate_healthy = self.is_peer_healthy(&pv.candidate_id);
+
+            // Check if candidate's log is at least as up-to-date
+            let (last_log_index, last_log_term) = if persistent.log.is_empty() {
+                (0, 0)
+            } else {
+                let last = &persistent.log[persistent.log.len() - 1];
+                (last.index, last.term)
+            };
+
+            let log_ok = pv.last_log_term > last_log_term
+                || (pv.last_log_term == last_log_term && pv.last_log_index >= last_log_index);
+
+            // Grant pre-vote if all conditions are met
+            // Unlike RequestVote, we don't update voted_for or term
+            if timeout_elapsed && log_ok && candidate_healthy {
+                vote_granted = true;
+            }
+        }
+
+        Some(Message::PreVoteResponse(PreVoteResponse {
+            term: persistent.current_term,
+            vote_granted,
+            voter_id: self.node_id.clone(),
+        }))
+    }
+
+    /// Handle PreVoteResponse RPC.
+    fn handle_pre_vote_response(&self, from: &NodeId, pvr: &PreVoteResponse) {
+        // Only process if we're in pre-vote phase
+        if !*self.in_pre_vote.read() {
+            return;
+        }
+
+        let persistent = self.persistent.read();
+
+        // If we see a higher term, step down
+        if pvr.term > persistent.current_term {
+            drop(persistent);
+            let mut persistent = self.persistent.write();
+            persistent.current_term = pvr.term;
+            persistent.voted_for = None;
+            *self.state.write() = RaftState::Follower;
+            *self.in_pre_vote.write() = false;
+            return;
+        }
+
+        if pvr.vote_granted && pvr.term == persistent.current_term {
+            let mut votes = self.pre_votes_received.write();
+            if !votes.contains(from) {
+                votes.push(from.clone());
+
+                // Check if we have quorum
+                if votes.len() >= self.quorum_size() {
+                    drop(votes);
+                    drop(persistent);
+                    *self.in_pre_vote.write() = false;
+                    // Pre-vote succeeded - now start real election
+                    self.start_election();
+                }
+            }
+        }
+    }
+
+    /// Check if a leadership transfer is currently in progress.
+    pub fn is_transfer_in_progress(&self) -> bool {
+        self.transfer_state.read().is_some()
+    }
+
+    /// Cancel an in-progress leadership transfer.
+    pub fn cancel_transfer(&self) {
+        *self.transfer_state.write() = None;
+    }
+
+    /// Initiate leadership transfer to target node.
+    ///
+    /// Returns error if:
+    /// - This node is not the leader
+    /// - Target is not a known peer
+    /// - A transfer is already in progress
+    pub fn transfer_leadership(&self, target: &NodeId) -> Result<()> {
+        // Verify we're the leader
+        if *self.state.read() != RaftState::Leader {
+            return Err(ChainError::ConsensusError(
+                "cannot transfer leadership: not leader".to_string(),
+            ));
+        }
+
+        // Verify no transfer already in progress
+        if self.is_transfer_in_progress() {
+            return Err(ChainError::ConsensusError(
+                "leadership transfer already in progress".to_string(),
+            ));
+        }
+
+        // Verify target is a known peer
+        if !self.peers.read().contains(target) {
+            return Err(ChainError::ConsensusError(format!(
+                "unknown transfer target: {}",
+                target
+            )));
+        }
+
+        // Set transfer state
+        let term = self.persistent.read().current_term;
+        *self.transfer_state.write() = Some(TransferState {
+            target: target.clone(),
+            initiated_term: term,
+            started_at: Instant::now(),
+        });
+
+        Ok(())
+    }
+
+    /// Handle TimeoutNow RPC from leader initiating transfer.
+    ///
+    /// This causes the node to immediately start an election (skipping pre-vote).
+    fn handle_timeout_now(&self, from: &NodeId, tn: &TimeoutNow) -> Option<Message> {
+        // Verify sender is our believed leader
+        let current_leader = self.current_leader.read().clone();
+        if current_leader.as_ref() != Some(from) && current_leader.as_ref() != Some(&tn.leader_id) {
+            return None;
+        }
+
+        // Verify term matches
+        let term = self.persistent.read().current_term;
+        if tn.term != term {
+            return None;
+        }
+
+        // Start election immediately (skip pre-vote)
+        self.start_election();
+
+        None
     }
 
     /// Handle AppendEntries RPC.
@@ -1327,6 +1555,13 @@ impl RaftNode {
     pub fn propose(&self, block: Block) -> Result<u64> {
         if *self.state.read() != RaftState::Leader {
             return Err(ChainError::ConsensusError("not leader".to_string()));
+        }
+
+        // Block proposals during leadership transfer
+        if self.is_transfer_in_progress() {
+            return Err(ChainError::ConsensusError(
+                "leadership transfer in progress".to_string(),
+            ));
         }
 
         // Capture sparse embedding before moving block
@@ -1734,6 +1969,79 @@ impl RaftNode {
         self.transport.broadcast(request).await
     }
 
+    /// Start pre-vote phase and broadcast PreVote to all peers.
+    ///
+    /// Pre-vote prevents disruptive elections from partitioned nodes by requiring
+    /// candidates to confirm they can win before incrementing their term.
+    pub async fn start_pre_vote_async(&self) -> Result<()> {
+        // Build the PreVote message in a sync block (no await)
+        let request = {
+            *self.in_pre_vote.write() = true;
+            *self.pre_votes_received.write() = vec![self.node_id.clone()]; // Vote for self
+
+            let persistent = self.persistent.read();
+            let (last_log_index, last_log_term) = if persistent.log.is_empty() {
+                (0, 0)
+            } else {
+                let last = &persistent.log[persistent.log.len() - 1];
+                (last.index, last.term)
+            };
+            let term = persistent.current_term;
+            let state_embedding = self.state_embedding.read().clone();
+
+            Message::PreVote(PreVote {
+                term, // NOT incremented - this is the key difference from RequestVote
+                candidate_id: self.node_id.clone(),
+                last_log_index,
+                last_log_term,
+                state_embedding,
+            })
+        }; // All locks dropped here
+
+        // Now broadcast via transport (async)
+        self.transport.broadcast(request).await
+    }
+
+    /// Receive a message from transport (test helper).
+    pub async fn transport_recv(&self) -> Result<(NodeId, Message)> {
+        self.transport.recv().await
+    }
+
+    /// Initiate leadership transfer to target node (async version).
+    ///
+    /// This sends a heartbeat to ensure the target is caught up, then sends
+    /// TimeoutNow to trigger an immediate election on the target.
+    pub async fn transfer_leadership_async(&self, target: &NodeId) -> Result<()> {
+        // Do the sync validation and state setup
+        self.transfer_leadership(target)?;
+
+        // Send heartbeat to ensure target is caught up
+        let term = self.persistent.read().current_term;
+        let commit_index = self.volatile.read().commit_index;
+        let (prev_log_index, prev_log_term, entries, block_embedding) =
+            self.get_entries_for_follower(target);
+
+        let heartbeat = Message::AppendEntries(AppendEntries {
+            term,
+            leader_id: self.node_id.clone(),
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit: commit_index,
+            block_embedding,
+        });
+        self.transport.send(target, heartbeat).await?;
+
+        // Send TimeoutNow to trigger immediate election
+        let timeout_now = Message::TimeoutNow(TimeoutNow {
+            term,
+            leader_id: self.node_id.clone(),
+        });
+        self.transport.send(target, timeout_now).await?;
+
+        Ok(())
+    }
+
     /// Send heartbeats (AppendEntries) to all followers.
     pub async fn send_heartbeats(&self) -> Result<()> {
         // Build all messages in a sync block (no await)
@@ -1809,10 +2117,28 @@ impl RaftNode {
                     + rand::random::<u64>()
                         % (self.config.election_timeout.1 - self.config.election_timeout.0);
                 if elapsed > timeout {
-                    self.start_election_async().await?;
+                    // Use pre-vote if enabled to prevent disruptive elections
+                    if self.config.enable_pre_vote {
+                        self.start_pre_vote_async().await?;
+                    } else {
+                        self.start_election_async().await?;
+                    }
                 }
             },
             RaftState::Leader => {
+                // Check if leadership transfer has timed out
+                let should_cancel = {
+                    if let Some(ref transfer) = *self.transfer_state.read() {
+                        transfer.started_at.elapsed().as_millis() as u64
+                            > self.config.transfer_timeout_ms
+                    } else {
+                        false
+                    }
+                };
+                if should_cancel {
+                    self.cancel_transfer();
+                }
+
                 // Send heartbeats
                 if elapsed > self.config.heartbeat_interval {
                     self.send_heartbeats().await?;
@@ -4454,5 +4780,399 @@ mod tests {
         let stats: FastPathStats = RaftStats::new();
         stats.record_fast_path();
         assert_eq!(stats.fast_path_accepted.load(Ordering::Relaxed), 1);
+    }
+
+    // ==================== Pre-Vote Tests ====================
+
+    #[test]
+    fn test_pre_vote_basic() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Start pre-vote
+        node.start_pre_vote();
+
+        // Should be in pre-vote state
+        assert!(*node.in_pre_vote.read());
+
+        // Should have voted for self
+        let votes = node.pre_votes_received.read();
+        assert_eq!(votes.len(), 1);
+        assert!(votes.contains(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_handle_pre_vote_grants_when_eligible() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Advance time past election timeout by setting last_heartbeat in the past
+        *node.last_heartbeat.write() = Instant::now() - std::time::Duration::from_secs(10);
+
+        let pv = PreVote {
+            term: 0, // Same term
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::PreVote(pv));
+
+        if let Some(Message::PreVoteResponse(pvr)) = response {
+            assert!(
+                pvr.vote_granted,
+                "should grant pre-vote when timeout elapsed"
+            );
+            assert_eq!(pvr.term, 0);
+        } else {
+            panic!("expected PreVoteResponse");
+        }
+    }
+
+    #[test]
+    fn test_handle_pre_vote_denies_when_leader_active() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Recent heartbeat means leader is active
+        *node.last_heartbeat.write() = Instant::now();
+
+        let pv = PreVote {
+            term: 0,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0,
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::PreVote(pv));
+
+        if let Some(Message::PreVoteResponse(pvr)) = response {
+            assert!(
+                !pvr.vote_granted,
+                "should deny pre-vote when leader is active"
+            );
+        } else {
+            panic!("expected PreVoteResponse");
+        }
+    }
+
+    #[test]
+    fn test_handle_pre_vote_denies_stale_log() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add an entry to our log
+        {
+            let mut persistent = node.persistent.write();
+            persistent.log.push(create_test_log_entry(1));
+            persistent.log[0].term = 5; // Higher term
+        }
+
+        // Advance time past election timeout
+        *node.last_heartbeat.write() = Instant::now() - std::time::Duration::from_secs(10);
+
+        let pv = PreVote {
+            term: 0,
+            candidate_id: "node2".to_string(),
+            last_log_index: 0, // Candidate has no log
+            last_log_term: 0,
+            state_embedding: SparseVector::new(0),
+        };
+
+        let response = node.handle_message(&"node2".to_string(), &Message::PreVote(pv));
+
+        if let Some(Message::PreVoteResponse(pvr)) = response {
+            assert!(
+                !pvr.vote_granted,
+                "should deny pre-vote when candidate log is stale"
+            );
+        } else {
+            panic!("expected PreVoteResponse");
+        }
+    }
+
+    #[test]
+    fn test_pre_vote_quorum_triggers_election() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Start pre-vote
+        node.start_pre_vote();
+        assert!(*node.in_pre_vote.read());
+
+        // Receive pre-vote response from node2
+        let pvr1 = PreVoteResponse {
+            term: 0,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr1));
+
+        // Should have reached quorum (2 out of 3) and started real election
+        assert!(!*node.in_pre_vote.read(), "should exit pre-vote phase");
+        // After start_election, we should be candidate with incremented term
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert_eq!(node.current_term(), 1);
+    }
+
+    #[test]
+    fn test_pre_vote_ignores_late_responses() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Not in pre-vote
+        assert!(!*node.in_pre_vote.read());
+
+        // Late response should be ignored
+        let pvr = PreVoteResponse {
+            term: 0,
+            vote_granted: true,
+            voter_id: "node2".to_string(),
+        };
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr));
+
+        // State should not change
+        assert_eq!(node.state(), RaftState::Follower);
+    }
+
+    #[test]
+    fn test_pre_vote_resets_on_higher_term() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Start pre-vote
+        node.start_pre_vote();
+        assert!(*node.in_pre_vote.read());
+
+        // Receive pre-vote response with higher term
+        let pvr = PreVoteResponse {
+            term: 5, // Higher term
+            vote_granted: false,
+            voter_id: "node2".to_string(),
+        };
+        node.handle_message(&"node2".to_string(), &Message::PreVoteResponse(pvr));
+
+        // Should reset pre-vote and update term
+        assert!(
+            !*node.in_pre_vote.read(),
+            "should exit pre-vote on higher term"
+        );
+        assert_eq!(node.current_term(), 5);
+        assert_eq!(node.state(), RaftState::Follower);
+    }
+
+    #[test]
+    fn test_pre_vote_config_disabled() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = RaftConfig::default();
+        config.enable_pre_vote = false;
+
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+        );
+
+        // Pre-vote disabled means config flag is false
+        assert!(!node.config.enable_pre_vote);
+    }
+
+    #[test]
+    fn test_pre_vote_serialization_roundtrip() {
+        let pv = PreVote {
+            term: 42,
+            candidate_id: "candidate1".to_string(),
+            last_log_index: 100,
+            last_log_term: 5,
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
+        };
+
+        let bytes = bincode::serialize(&pv).expect("serialize");
+        let restored: PreVote = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(restored.term, 42);
+        assert_eq!(restored.candidate_id, "candidate1");
+        assert_eq!(restored.last_log_index, 100);
+        assert_eq!(restored.last_log_term, 5);
+    }
+
+    #[test]
+    fn test_pre_vote_response_serialization() {
+        let pvr = PreVoteResponse {
+            term: 10,
+            vote_granted: true,
+            voter_id: "voter1".to_string(),
+        };
+
+        let bytes = bincode::serialize(&pvr).expect("serialize");
+        let restored: PreVoteResponse = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(restored.term, 10);
+        assert!(restored.vote_granted);
+        assert_eq!(restored.voter_id, "voter1");
+    }
+
+    // ==================== Leadership Transfer Tests ====================
+
+    #[test]
+    fn test_transfer_leadership_not_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Not leader, should fail
+        let result = node.transfer_leadership(&"node2".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not leader"));
+    }
+
+    #[test]
+    fn test_transfer_leadership_unknown_target() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Unknown target
+        let result = node.transfer_leadership(&"unknown".to_string());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown transfer target"));
+    }
+
+    #[test]
+    fn test_transfer_leadership_already_in_progress() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // First transfer
+        node.transfer_leadership(&"node2".to_string()).unwrap();
+        assert!(node.is_transfer_in_progress());
+
+        // Second transfer should fail
+        let result = node.transfer_leadership(&"node2".to_string());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("already in progress"));
+    }
+
+    #[test]
+    fn test_transfer_leadership_blocks_proposals() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Start transfer
+        node.transfer_leadership(&"node2".to_string()).unwrap();
+
+        // Proposals should be blocked
+        let block = create_test_block(1);
+        let result = node.propose(block);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("transfer in progress"));
+    }
+
+    #[test]
+    fn test_handle_timeout_now_starts_election() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Set node2 as current leader
+        *node.current_leader.write() = Some("node2".to_string());
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+        }
+
+        let tn = TimeoutNow {
+            term: 1,
+            leader_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::TimeoutNow(tn));
+
+        // Should have started election
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert_eq!(node.current_term(), 2); // Term incremented
+    }
+
+    #[test]
+    fn test_handle_timeout_now_rejects_wrong_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Set node2 as current leader
+        *node.current_leader.write() = Some("node2".to_string());
+
+        let tn = TimeoutNow {
+            term: 0,
+            leader_id: "node3".to_string(), // Wrong leader
+        };
+
+        let initial_term = node.current_term();
+        node.handle_message(&"node3".to_string(), &Message::TimeoutNow(tn));
+
+        // Should not start election
+        assert_eq!(node.state(), RaftState::Follower);
+        assert_eq!(node.current_term(), initial_term);
+    }
+
+    #[test]
+    fn test_handle_timeout_now_rejects_wrong_term() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Set node2 as current leader and set term
+        *node.current_leader.write() = Some("node2".to_string());
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 5;
+        }
+
+        let tn = TimeoutNow {
+            term: 3, // Wrong term
+            leader_id: "node2".to_string(),
+        };
+
+        node.handle_message(&"node2".to_string(), &Message::TimeoutNow(tn));
+
+        // Should not start election
+        assert_eq!(node.state(), RaftState::Follower);
+        assert_eq!(node.current_term(), 5);
+    }
+
+    #[test]
+    fn test_cancel_transfer() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Start transfer
+        node.transfer_leadership(&"node2".to_string()).unwrap();
+        assert!(node.is_transfer_in_progress());
+
+        // Cancel transfer
+        node.cancel_transfer();
+        assert!(!node.is_transfer_in_progress());
+    }
+
+    #[test]
+    fn test_timeout_now_serialization() {
+        let tn = TimeoutNow {
+            term: 42,
+            leader_id: "leader1".to_string(),
+        };
+
+        let bytes = bincode::serialize(&tn).expect("serialize");
+        let restored: TimeoutNow = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(restored.term, 42);
+        assert_eq!(restored.leader_id, "leader1");
+    }
+
+    #[test]
+    fn test_transfer_state_fields() {
+        let state = TransferState {
+            target: "target1".to_string(),
+            initiated_term: 5,
+            started_at: Instant::now(),
+        };
+
+        assert_eq!(state.target, "target1");
+        assert_eq!(state.initiated_term, 5);
     }
 }

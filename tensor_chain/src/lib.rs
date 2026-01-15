@@ -97,13 +97,14 @@ pub use membership::{
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
     AppendEntries, AppendEntriesResponse, GeometricTransport, LogEntry, MemoryTransport, Message,
-    MessageHandler, NetworkManager, PeerConfig, QueryExecutor, QueryHandler, QueryRequest,
-    QueryResponse, RequestVote, RequestVoteResponse, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg,
-    TxHandler, TxPrepareMsg, TxPrepareResponseMsg, TxVote,
+    MessageHandler, NetworkManager, PeerConfig, PreVote, PreVoteResponse, QueryExecutor,
+    QueryHandler, QueryRequest, QueryResponse, RequestVote, RequestVoteResponse, TimeoutNow,
+    Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg, TxPrepareResponseMsg,
+    TxVote,
 };
 pub use raft::{
     FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,
-    RaftStatsSnapshot, SnapshotMetadata,
+    RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
@@ -1710,20 +1711,35 @@ mod tests {
         let metrics = ChainMetrics::new();
 
         // Record some data
-        metrics.raft.fast_path_accepted.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .fast_path_accepted
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed);
 
         let cloned = metrics.clone();
 
         // Clone should share the same Arc
         assert_eq!(
-            metrics.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
-            cloned.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed)
+            metrics
+                .raft
+                .fast_path_accepted
+                .load(std::sync::atomic::Ordering::Relaxed),
+            cloned
+                .raft
+                .fast_path_accepted
+                .load(std::sync::atomic::Ordering::Relaxed)
         );
 
         // Modifying one should affect both
-        metrics.raft.fast_path_accepted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .fast_path_accepted
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            cloned.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
+            cloned
+                .raft
+                .fast_path_accepted
+                .load(std::sync::atomic::Ordering::Relaxed),
             6
         );
     }
@@ -1743,9 +1759,13 @@ mod tests {
         );
 
         // Should use the same Arc instances
-        raft.fast_path_accepted.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        raft.fast_path_accepted
+            .fetch_add(10, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            metrics.raft.fast_path_accepted.load(std::sync::atomic::Ordering::Relaxed),
+            metrics
+                .raft
+                .fast_path_accepted
+                .load(std::sync::atomic::Ordering::Relaxed),
             10
         );
     }
@@ -1757,7 +1777,10 @@ mod tests {
 
         // Create non-empty snapshot
         let metrics = ChainMetrics::new();
-        metrics.dtx.started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!(!snapshot.is_empty());
     }
@@ -1765,8 +1788,14 @@ mod tests {
     #[test]
     fn test_chain_metrics_snapshot_total_heartbeats() {
         let metrics = ChainMetrics::new();
-        metrics.raft.heartbeat_successes.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
-        metrics.raft.heartbeat_failures.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_failures
+            .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.total_heartbeats(), 12);
@@ -1781,8 +1810,14 @@ mod tests {
         assert!((snapshot.heartbeat_success_rate() - 1.0).abs() < 0.001);
 
         // 8 successes, 2 failures = 80%
-        metrics.raft.heartbeat_successes.fetch_add(8, std::sync::atomic::Ordering::Relaxed);
-        metrics.raft.heartbeat_failures.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_failures
+            .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!((snapshot.heartbeat_success_rate() - 0.8).abs() < 0.001);
     }
@@ -1796,8 +1831,14 @@ mod tests {
         assert!((snapshot.tx_commit_rate() - 1.0).abs() < 0.001);
 
         // 7 committed out of 10 started = 70%
-        metrics.dtx.started.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
-        metrics.dtx.committed.fetch_add(7, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .started
+            .fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .committed
+            .fetch_add(7, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!((snapshot.tx_commit_rate() - 0.7).abs() < 0.001);
     }
@@ -1811,8 +1852,14 @@ mod tests {
         assert!((snapshot.health_check_success_rate() - 1.0).abs() < 0.001);
 
         // 9 successes out of 10 (1 failure) = 90%
-        metrics.membership.health_checks.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
-        metrics.membership.health_check_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .membership
+            .health_checks
+            .fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .membership
+            .health_check_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!((snapshot.health_check_success_rate() - 0.9).abs() < 0.001);
     }
@@ -1826,15 +1873,30 @@ mod tests {
         assert!(snapshot.is_cluster_healthy());
 
         // Add good stats - still healthy
-        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
-        metrics.raft.heartbeat_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
-        metrics.membership.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
-        metrics.membership.health_check_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_failures
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
+        metrics
+            .membership
+            .health_checks
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .membership
+            .health_check_failures
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed); // 95% success
         let snapshot = metrics.snapshot();
         assert!(snapshot.is_cluster_healthy());
 
         // Add quorum lost event - unhealthy
-        metrics.raft.quorum_lost_events.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .quorum_lost_events
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!(!snapshot.is_cluster_healthy());
     }
@@ -1844,8 +1906,14 @@ mod tests {
         let metrics = ChainMetrics::new();
 
         // 50% heartbeat failure rate - unhealthy
-        metrics.raft.heartbeat_successes.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
-        metrics.raft.heartbeat_failures.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_failures
+            .fetch_add(50, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!(!snapshot.is_cluster_healthy());
     }
@@ -1855,8 +1923,14 @@ mod tests {
         let metrics = ChainMetrics::new();
 
         // 50% health check failure rate - unhealthy
-        metrics.membership.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
-        metrics.membership.health_check_failures.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .membership
+            .health_checks
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .membership
+            .health_check_failures
+            .fetch_add(50, std::sync::atomic::Ordering::Relaxed);
         let snapshot = metrics.snapshot();
         assert!(!snapshot.is_cluster_healthy());
     }
@@ -1864,8 +1938,14 @@ mod tests {
     #[test]
     fn test_chain_metrics_snapshot_serialization() {
         let metrics = ChainMetrics::new();
-        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
-        metrics.dtx.started.fetch_add(50, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .started
+            .fetch_add(50, std::sync::atomic::Ordering::Relaxed);
 
         let snapshot = metrics.snapshot();
 
@@ -1873,7 +1953,10 @@ mod tests {
         let bytes = bincode::serialize(&snapshot).unwrap();
         let restored: ChainMetricsSnapshot = bincode::deserialize(&bytes).unwrap();
 
-        assert_eq!(snapshot.raft.heartbeat_successes, restored.raft.heartbeat_successes);
+        assert_eq!(
+            snapshot.raft.heartbeat_successes,
+            restored.raft.heartbeat_successes
+        );
         assert_eq!(snapshot.dtx.started, restored.dtx.started);
     }
 

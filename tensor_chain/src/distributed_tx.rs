@@ -1019,7 +1019,7 @@ impl DistributedTxCoordinator {
                         // Still waiting for votes
                         stats.pending_prepare += 1;
                     }
-                }
+                },
                 TxPhase::Prepared => {
                     if tx.is_timed_out() {
                         tx.phase = TxPhase::Aborting;
@@ -1036,20 +1036,20 @@ impl DistributedTxCoordinator {
                         // Still waiting for more votes
                         stats.pending_prepare += 1;
                     }
-                }
+                },
                 TxPhase::Committing => {
                     // Retry commit
                     stats.pending_commit += 1;
-                }
+                },
                 TxPhase::Aborting => {
                     // Retry abort
                     stats.pending_abort += 1;
-                }
+                },
                 TxPhase::Committed | TxPhase::Aborted => {
                     // Already completed - clean up
                     to_remove.push(*tx_id);
                     stats.completed += 1;
-                }
+                },
             }
         }
 
@@ -1075,9 +1075,7 @@ impl DistributedTxCoordinator {
         self.pending
             .read()
             .iter()
-            .filter(|(_, tx)| {
-                matches!(tx.phase, TxPhase::Committing | TxPhase::Aborting)
-            })
+            .filter(|(_, tx)| matches!(tx.phase, TxPhase::Committing | TxPhase::Aborting))
             .map(|(id, tx)| (*id, tx.phase))
             .collect()
     }
@@ -1255,11 +1253,7 @@ impl TxParticipant {
     }
 
     /// Load participant from TensorStore or create fresh if not found.
-    pub fn load_from_store(
-        node_id: &str,
-        shard_id: ShardId,
-        store: &TensorStore,
-    ) -> Self {
+    pub fn load_from_store(node_id: &str, shard_id: ShardId, store: &TensorStore) -> Self {
         let key = Self::persistence_key(node_id, shard_id);
 
         if let Ok(data) = store.get(&key) {
@@ -2307,12 +2301,10 @@ mod tests {
         let tx = PreparedTx {
             tx_id: 100,
             lock_handle: 200,
-            operations: vec![
-                Transaction::Put {
-                    key: "key1".to_string(),
-                    data: vec![1, 2, 3],
-                },
-            ],
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1, 2, 3],
+            }],
             delta: DeltaVector::new(vec![1.0, 2.0], ["key1".to_string()].into(), 100),
             prepared_at_ms: now_epoch_millis(),
         };
@@ -2415,7 +2407,9 @@ mod tests {
         let lock_manager = LockManager::new();
 
         // Add some locks
-        lock_manager.try_lock(1, &["key1".to_string(), "key2".to_string()]).unwrap();
+        lock_manager
+            .try_lock(1, &["key1".to_string(), "key2".to_string()])
+            .unwrap();
         lock_manager.try_lock(2, &["key3".to_string()]).unwrap();
 
         // Serialize
@@ -2441,7 +2435,7 @@ mod tests {
             tx_id: 1,
             lock_handle: 1,
             acquired_at_ms: now_epoch_millis().saturating_sub(10_000), // 10 seconds ago
-            timeout_ms: 5000, // 5 second timeout
+            timeout_ms: 5000,                                          // 5 second timeout
         };
         assert!(old_lock.is_expired());
 
@@ -2493,7 +2487,8 @@ mod tests {
             &store,
             consensus2,
             DistributedTxConfig::default(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(restored.pending_count(), 0);
     }
@@ -2518,7 +2513,8 @@ mod tests {
             &store,
             consensus2,
             DistributedTxConfig::default(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(restored.pending_count(), 2);
         assert!(restored.get(tx1.tx_id).is_some());
@@ -2557,7 +2553,8 @@ mod tests {
             &store,
             consensus2,
             DistributedTxConfig::default(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(restored.pending_count(), 2);
     }
@@ -2581,7 +2578,8 @@ mod tests {
             &store,
             consensus2,
             DistributedTxConfig::default(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(restored.pending_count(), 0);
     }

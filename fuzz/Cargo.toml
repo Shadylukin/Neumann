@@ -395,3 +395,12 @@ path = "fuzz_targets/chain_metrics.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 16: Raft pre-vote and leadership transfer targets
+
+[[bin]]
+name = "raft_prevote"
+path = "fuzz_targets/raft_prevote.rs"
+test = false
+doc = false
+bench = false
