@@ -30,7 +30,9 @@
 //! let reconstructed = delta.to_dense(&archetype);
 //! ```
 
-use crate::SparseVector;
+use serde::{Deserialize, Serialize};
+
+use crate::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
 /// A vector stored as a delta from a reference archetype.
 ///
@@ -304,7 +306,7 @@ impl DeltaVector {
 }
 
 /// Registry for archetype vectors used as references for delta encoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchetypeRegistry {
     /// Stored archetype vectors.
     archetypes: Vec<Vec<f32>>,
@@ -513,6 +515,32 @@ impl ArchetypeRegistry {
             avg_delta_nnz: total_delta_nnz as f32 / n,
             archetype_usage,
         }
+    }
+
+    /// Persist the registry to TensorStore.
+    ///
+    /// Serializes the registry using bincode and stores it under a system key.
+    pub fn save_to_store(&self, store: &TensorStore) -> Result<(), String> {
+        let bytes = bincode::serialize(self).map_err(|e| e.to_string())?;
+        let mut data = TensorData::new();
+        data.set("_bytes", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
+        store
+            .put("_system:archetype_registry", data)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Load a registry from TensorStore.
+    ///
+    /// Returns None if no registry exists or if deserialization fails.
+    /// The max_archetypes parameter is ignored if loading succeeds (the stored
+    /// value is used instead).
+    pub fn load_from_store(store: &TensorStore, _max_archetypes: usize) -> Option<Self> {
+        let data = store.get("_system:archetype_registry").ok()?;
+        let bytes = match data.get("_bytes")? {
+            TensorValue::Scalar(ScalarValue::Bytes(b)) => b,
+            _ => return None,
+        };
+        bincode::deserialize(bytes).ok()
     }
 }
 
@@ -1510,5 +1538,81 @@ mod tests {
         assert!(approx_eq(config.convergence_threshold, 1e-4, 1e-6));
         assert_eq!(config.seed, 42);
         assert!(matches!(config.init_method, KMeansInit::KMeansPlusPlus));
+    }
+
+    #[test]
+    fn test_registry_snapshot_roundtrip() {
+        let mut registry = ArchetypeRegistry::new(16);
+        registry.register(vec![1.0, 0.0, 0.0, 0.0]);
+        registry.register(vec![0.0, 1.0, 0.0, 0.0]);
+        registry.register(vec![0.707, 0.707, 0.0, 0.0]);
+
+        let bytes = bincode::serialize(&registry).unwrap();
+        let restored: ArchetypeRegistry = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored.get(0), registry.get(0));
+        assert_eq!(restored.get(1), registry.get(1));
+        assert_eq!(restored.get(2), registry.get(2));
+        assert!(approx_eq(
+            restored.magnitude_sq(0).unwrap(),
+            registry.magnitude_sq(0).unwrap(),
+            1e-6
+        ));
+    }
+
+    #[test]
+    fn test_registry_store_persistence() {
+        let store = TensorStore::new();
+        let mut registry = ArchetypeRegistry::new(16);
+        registry.register(vec![1.0, 2.0, 3.0]);
+        registry.register(vec![4.0, 5.0, 6.0]);
+
+        registry.save_to_store(&store).unwrap();
+
+        let restored = ArchetypeRegistry::load_from_store(&store, 256).unwrap();
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.get(0), Some(&[1.0f32, 2.0, 3.0][..]));
+        assert_eq!(restored.get(1), Some(&[4.0f32, 5.0, 6.0][..]));
+    }
+
+    #[test]
+    fn test_registry_load_missing_returns_none() {
+        let store = TensorStore::new();
+        let result = ArchetypeRegistry::load_from_store(&store, 256);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_registry_preserves_archetypes_across_save_load() {
+        let store = TensorStore::new();
+        let mut registry = ArchetypeRegistry::new(256);
+
+        // Add some archetypes with specific patterns
+        for i in 0..10 {
+            let mut v = vec![0.0f32; 8];
+            v[i % 8] = 1.0;
+            registry.register(v);
+        }
+
+        // Save
+        registry.save_to_store(&store).unwrap();
+
+        // Load
+        let restored = ArchetypeRegistry::load_from_store(&store, 256).unwrap();
+
+        // Verify all archetypes preserved
+        assert_eq!(restored.len(), 10);
+        for i in 0..10 {
+            let original = registry.get(i).unwrap();
+            let loaded = restored.get(i).unwrap();
+            assert_eq!(original, loaded);
+        }
+
+        // Verify find_best_archetype still works
+        let query = vec![0.99, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let (best_id, sim) = restored.find_best_archetype(&query).unwrap();
+        assert_eq!(best_id, 0);
+        assert!(sim > 0.9);
     }
 }

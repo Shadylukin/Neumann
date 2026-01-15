@@ -57,6 +57,7 @@ tls = ["tokio-rustls", "rustls-pemfile"]
 criterion = "0.5"
 tokio-test = "0.4"
 rcgen = "0.13"
+tempfile = "3.10"
 
 [[bench]]
 name = "tensor_chain_bench"

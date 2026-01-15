@@ -599,6 +599,8 @@ pub struct RaftNode {
     last_compaction: RwLock<Option<Instant>>,
     /// Optional TensorStore reference for snapshot persistence.
     store: Option<Arc<tensor_store::TensorStore>>,
+    /// Optional Write-Ahead Log for durable state changes.
+    wal: Option<Arc<parking_lot::Mutex<crate::raft_wal::RaftWal>>>,
 }
 
 impl RaftNode {
@@ -642,6 +644,7 @@ impl RaftNode {
             compaction_tick_counter: AtomicU64::new(0),
             last_compaction: RwLock::new(None),
             store: None,
+            wal: None,
         }
     }
 
@@ -928,7 +931,57 @@ impl RaftNode {
             compaction_tick_counter: AtomicU64::new(0),
             last_compaction: RwLock::new(None),
             store: None,
+            wal: None,
         }
+    }
+
+    /// Create a Raft node with WAL for durable state changes.
+    ///
+    /// The WAL ensures that term and voted_for changes are persisted to disk
+    /// before being applied in memory, preventing split-brain scenarios.
+    pub fn with_wal(
+        node_id: NodeId,
+        peers: Vec<NodeId>,
+        transport: Arc<dyn Transport>,
+        config: RaftConfig,
+        wal_path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        use crate::raft_wal::{RaftRecoveryState, RaftWal};
+
+        let wal = RaftWal::open(wal_path)?;
+        let recovery = RaftRecoveryState::from_wal(&wal)?;
+
+        let mut node = Self::with_state(
+            node_id,
+            peers,
+            transport,
+            config,
+            recovery.current_term,
+            recovery.voted_for,
+            Vec::new(), // Log entries recovered separately
+        );
+
+        node.wal = Some(Arc::new(parking_lot::Mutex::new(wal)));
+
+        Ok(node)
+    }
+
+    /// Persist term and vote to WAL before applying state change.
+    ///
+    /// Returns Ok(()) if WAL is disabled or if write succeeds.
+    /// Returns Err if WAL write fails (state change should be aborted).
+    fn persist_term_and_vote(&self, term: u64, voted_for: Option<&str>) -> Result<()> {
+        use crate::raft_wal::RaftWalEntry;
+
+        if let Some(ref wal) = self.wal {
+            wal.lock()
+                .append(&RaftWalEntry::TermAndVote {
+                    term,
+                    voted_for: voted_for.map(String::from),
+                })
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Check if a node is healthy according to membership.
@@ -1115,6 +1168,16 @@ impl RaftNode {
 
         // Update term if needed
         if rv.term > persistent.current_term {
+            // CRITICAL: Persist BEFORE applying state change
+            if let Err(e) = self.persist_term_and_vote(rv.term, None) {
+                tracing::error!("WAL persist failed during term update: {}", e);
+                // Return current state - don't update term
+                return Some(Message::RequestVoteResponse(RequestVoteResponse {
+                    term: persistent.current_term,
+                    vote_granted: false,
+                    voter_id: self.node_id.clone(),
+                }));
+            }
             persistent.current_term = rv.term;
             persistent.voted_for = None;
             *self.state.write() = RaftState::Follower;
@@ -1158,9 +1221,17 @@ impl RaftNode {
             let log_ok = log_strictly_better || (log_equal && geometric_ok);
 
             if can_vote && log_ok && candidate_healthy {
-                vote_granted = true;
-                persistent.voted_for = Some(rv.candidate_id.clone());
-                *self.last_heartbeat.write() = Instant::now();
+                // CRITICAL: Persist vote BEFORE granting
+                if let Err(e) =
+                    self.persist_term_and_vote(persistent.current_term, Some(&rv.candidate_id))
+                {
+                    tracing::error!("WAL persist failed during vote grant: {}", e);
+                    // Don't grant vote if WAL fails
+                } else {
+                    vote_granted = true;
+                    persistent.voted_for = Some(rv.candidate_id.clone());
+                    *self.last_heartbeat.write() = Instant::now();
+                }
             }
         }
 
@@ -1179,6 +1250,11 @@ impl RaftNode {
 
         let mut persistent = self.persistent.write();
         if rvr.term > persistent.current_term {
+            // CRITICAL: Persist BEFORE applying state change
+            if let Err(e) = self.persist_term_and_vote(rvr.term, None) {
+                tracing::error!("WAL persist failed during step-down: {}", e);
+                return; // Don't step down if WAL fails
+            }
             persistent.current_term = rvr.term;
             persistent.voted_for = None;
             *self.state.write() = RaftState::Follower;
@@ -1286,6 +1362,13 @@ impl RaftNode {
         // If we see a higher term, step down
         if pvr.term > persistent.current_term {
             drop(persistent);
+
+            // CRITICAL: Persist BEFORE applying state change
+            if let Err(e) = self.persist_term_and_vote(pvr.term, None) {
+                tracing::error!("WAL persist failed during pre-vote step-down: {}", e);
+                return; // Don't step down if WAL fails
+            }
+
             let mut persistent = self.persistent.write();
             persistent.current_term = pvr.term;
             persistent.voted_for = None;
@@ -1392,6 +1475,18 @@ impl RaftNode {
 
         // Update term if needed
         if ae.term > persistent.current_term {
+            // CRITICAL: Persist BEFORE applying state change
+            if let Err(e) = self.persist_term_and_vote(ae.term, None) {
+                tracing::error!("WAL persist failed during AppendEntries step-down: {}", e);
+                // Return failure response with current term
+                return Some(Message::AppendEntriesResponse(AppendEntriesResponse {
+                    term: persistent.current_term,
+                    success: false,
+                    match_index: 0,
+                    follower_id: self.node_id.clone(),
+                    used_fast_path: false,
+                }));
+            }
             persistent.current_term = ae.term;
             persistent.voted_for = None;
             *self.state.write() = RaftState::Follower;
@@ -1495,6 +1590,11 @@ impl RaftNode {
 
         let mut persistent = self.persistent.write();
         if aer.term > persistent.current_term {
+            // CRITICAL: Persist BEFORE applying state change
+            if let Err(e) = self.persist_term_and_vote(aer.term, None) {
+                tracing::error!("WAL persist failed during leader step-down: {}", e);
+                return; // Don't step down if WAL fails
+            }
             persistent.current_term = aer.term;
             persistent.voted_for = None;
             *self.state.write() = RaftState::Follower;
@@ -1626,7 +1726,15 @@ impl RaftNode {
     /// Start an election.
     pub fn start_election(&self) {
         let mut persistent = self.persistent.write();
-        persistent.current_term += 1;
+        let new_term = persistent.current_term + 1;
+
+        // CRITICAL: Persist BEFORE applying state change
+        if let Err(e) = self.persist_term_and_vote(new_term, Some(&self.node_id)) {
+            tracing::error!("WAL persist failed during election start: {}", e);
+            return; // Abort election if WAL write fails
+        }
+
+        persistent.current_term = new_term;
         persistent.voted_for = Some(self.node_id.clone());
 
         *self.state.write() = RaftState::Candidate;
@@ -5693,8 +5801,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("hash mismatch"));
 
         // Create metadata with CORRECT hash - should succeed
-        let correct_metadata =
-            SnapshotMetadata::new(1, 1, correct_hash, vec![], data.len() as u64);
+        let correct_metadata = SnapshotMetadata::new(1, 1, correct_hash, vec![], data.len() as u64);
         let result = node.install_snapshot(correct_metadata, &data);
         assert!(result.is_ok());
     }

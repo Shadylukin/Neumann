@@ -422,3 +422,44 @@ path = "fuzz_targets/tx_abort_msg.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 18: Archetype persistence targets
+
+[[bin]]
+name = "archetype_registry"
+path = "fuzz_targets/archetype_registry.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 19: WAL roundtrip targets
+
+[[bin]]
+name = "raft_wal_roundtrip"
+path = "fuzz_targets/raft_wal_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tx_wal_recovery"
+path = "fuzz_targets/tx_wal_recovery.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 20: Gossip protocol targets
+
+[[bin]]
+name = "gossip_merge"
+path = "fuzz_targets/gossip_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gossip_message"
+path = "fuzz_targets/gossip_message.rs"
+test = false
+doc = false
+bench = false

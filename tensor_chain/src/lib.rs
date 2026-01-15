@@ -49,13 +49,16 @@ pub mod distributed_tx;
 pub mod embedding;
 pub mod error;
 pub mod geometric_membership;
+pub mod gossip;
 pub mod membership;
 pub mod metrics;
 pub mod network;
 pub mod raft;
+pub mod raft_wal;
 pub mod state_machine;
 pub mod tcp;
 pub mod transaction;
+pub mod tx_wal;
 pub mod validation;
 
 // Re-exports
@@ -88,6 +91,9 @@ pub use distributed_tx::{
 pub use embedding::{EmbeddingError, EmbeddingState};
 pub use error::{ChainError, Result};
 pub use geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager, RankedPeer};
+pub use gossip::{
+    GossipConfig, GossipMembershipManager, GossipMessage, GossipNodeState, LWWMembershipState,
+};
 use graph_engine::GraphEngine;
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
@@ -106,6 +112,7 @@ pub use raft::{
     FastPathState, FastPathStats, QuorumTracker, RaftConfig, RaftNode, RaftState, RaftStats,
     RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
+pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
     Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
@@ -115,6 +122,9 @@ use tensor_store::TensorStore;
 use tokio::sync::broadcast;
 pub use transaction::{
     TransactionDelta, TransactionManager, TransactionState, TransactionWorkspace,
+};
+pub use tx_wal::{
+    PrepareVoteKind, RecoveredPreparedTx, TxOutcome, TxRecoveryState, TxWal, TxWalEntry,
 };
 pub use validation::{
     FastPathResult, FastPathValidator, StateValidation, TransitionValidation, TransitionValidator,

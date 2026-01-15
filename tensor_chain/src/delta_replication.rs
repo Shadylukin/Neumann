@@ -21,7 +21,7 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tensor_store::ArchetypeRegistry;
+use tensor_store::{ArchetypeRegistry, TensorStore};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -462,6 +462,31 @@ impl DeltaReplicationManager {
             sequence: AtomicU64::new(0),
             stats: Arc::new(ReplicationStats::new()),
         }
+    }
+
+    /// Create with persistence support, loading existing registry from store.
+    ///
+    /// If a registry exists in the store, it is loaded. Otherwise, a new empty
+    /// registry is created. Use `persist_registry()` to save changes.
+    pub fn with_store(
+        local_node: NodeId,
+        config: DeltaReplicationConfig,
+        store: &TensorStore,
+    ) -> Self {
+        let registry = ArchetypeRegistry::load_from_store(store, 256)
+            .unwrap_or_else(|| ArchetypeRegistry::new(256));
+        Self::with_registry(local_node, config, Arc::new(RwLock::new(registry)))
+    }
+
+    /// Persist the archetype registry to the store.
+    ///
+    /// Should be called periodically or after significant archetype changes
+    /// to ensure durability across restarts.
+    pub fn persist_registry(&self, store: &TensorStore) -> Result<()> {
+        self.registry
+            .read()
+            .save_to_store(store)
+            .map_err(|e| ChainError::StorageError(e))
     }
 
     /// Encode an embedding update (internal helper).

@@ -85,6 +85,10 @@ pub enum Message {
     QueryRequest(QueryRequest),
     /// Response with query results.
     QueryResponse(QueryResponse),
+
+    // Gossip protocol messages
+    /// Gossip message for membership protocol.
+    Gossip(crate::gossip::GossipMessage),
 }
 
 impl Message {
