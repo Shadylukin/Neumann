@@ -25,6 +25,7 @@ use super::{
     connection::{ConnectionManager, ConnectionPool},
     error::{TcpError, TcpResult},
     framing::{Handshake, LengthDelimitedCodec},
+    rate_limit::PeerRateLimiter,
     stream::{box_stream, DynRead, DynStream, DynWrite},
 };
 use crate::{
@@ -64,6 +65,9 @@ pub struct TcpTransport {
 
     /// Bound address after start.
     bound_addr: RwLock<Option<SocketAddr>>,
+
+    /// Per-peer rate limiter.
+    rate_limiter: Arc<PeerRateLimiter>,
 }
 
 impl TcpTransport {
@@ -73,6 +77,7 @@ impl TcpTransport {
     pub fn new(config: TcpTransportConfig) -> Self {
         let (incoming_tx, incoming_rx) = mpsc::channel(config.recv_buffer_size);
         let (shutdown_tx, _) = broadcast::channel(1);
+        let rate_limiter = Arc::new(PeerRateLimiter::new(config.rate_limit.clone()));
 
         Self {
             local_id: config.node_id.clone(),
@@ -85,6 +90,7 @@ impl TcpTransport {
             codec: LengthDelimitedCodec::new(config.max_message_size),
             config,
             bound_addr: RwLock::new(None),
+            rate_limiter,
         }
     }
 
@@ -569,6 +575,15 @@ pub struct TransportStats {
 #[async_trait]
 impl Transport for TcpTransport {
     async fn send(&self, to: &NodeId, msg: Message) -> Result<()> {
+        // Check rate limit before sending
+        if !self.rate_limiter.check(to) {
+            let available = self.rate_limiter.available_tokens(to);
+            return Err(ChainError::NetworkError(format!(
+                "rate limited: peer {} (available tokens: {})",
+                to, available
+            )));
+        }
+
         let pool = self
             .connections
             .get_pool(to)
@@ -620,6 +635,7 @@ impl Transport for TcpTransport {
 
     async fn disconnect(&self, peer_id: &NodeId) -> Result<()> {
         self.connections.remove_pool(peer_id);
+        self.rate_limiter.remove_peer(peer_id);
         Ok(())
     }
 
@@ -1011,6 +1027,7 @@ mod tests {
             shutdown_tx,
             running: AtomicBool::new(false),
             codec: LengthDelimitedCodec::new(1024),
+            rate_limiter: Arc::new(PeerRateLimiter::new(config.rate_limit.clone())),
             config,
             bound_addr: RwLock::new(None),
         };
@@ -1518,5 +1535,113 @@ mod tests {
         // No valid message should have been received
         let recv_result = rx.try_recv();
         assert!(recv_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiting() {
+        use crate::tcp::rate_limit::RateLimitConfig;
+
+        // Create transport with very aggressive rate limiting
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+            .with_rate_limit(
+                RateLimitConfig::default()
+                    .with_bucket_size(3)
+                    .with_refill_rate(0.0),
+            );
+        let transport = TcpTransport::new(config);
+
+        // Create a pool without connections (will fail to send)
+        transport
+            .connections
+            .get_or_create_pool(&"peer1".to_string(), "127.0.0.1:12345".parse().unwrap());
+
+        // First 3 messages should pass rate limit check (but fail on send)
+        for _ in 0..3 {
+            let result = transport
+                .send(&"peer1".to_string(), Message::Ping { term: 1 })
+                .await;
+            // Should fail due to no connection, not rate limiting
+            assert!(result.is_err());
+            assert!(!result.unwrap_err().to_string().contains("rate limited"));
+        }
+
+        // 4th message should be rate limited
+        let result = transport
+            .send(&"peer1".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("rate limited"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiting_disabled() {
+        use crate::tcp::rate_limit::RateLimitConfig;
+
+        // Create transport with rate limiting disabled
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+            .with_rate_limit(RateLimitConfig::disabled());
+        let transport = TcpTransport::new(config);
+
+        // Create a pool without connections
+        transport
+            .connections
+            .get_or_create_pool(&"peer1".to_string(), "127.0.0.1:12345".parse().unwrap());
+
+        // Should never be rate limited
+        for _ in 0..100 {
+            let result = transport
+                .send(&"peer1".to_string(), Message::Ping { term: 1 })
+                .await;
+            // Should fail due to no connection, not rate limiting
+            assert!(result.is_err());
+            assert!(!result.unwrap_err().to_string().contains("rate limited"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_clears_rate_limit() {
+        use crate::tcp::rate_limit::RateLimitConfig;
+
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+            .with_rate_limit(
+                RateLimitConfig::default()
+                    .with_bucket_size(2)
+                    .with_refill_rate(0.0),
+            );
+        let transport = TcpTransport::new(config);
+
+        // Create a pool
+        transport
+            .connections
+            .get_or_create_pool(&"peer1".to_string(), "127.0.0.1:12345".parse().unwrap());
+
+        // Exhaust rate limit
+        for _ in 0..2 {
+            let _ = transport
+                .send(&"peer1".to_string(), Message::Ping { term: 1 })
+                .await;
+        }
+
+        // Should be rate limited now
+        let result = transport
+            .send(&"peer1".to_string(), Message::Ping { term: 1 })
+            .await;
+        assert!(result.unwrap_err().to_string().contains("rate limited"));
+
+        // Disconnect
+        transport.disconnect(&"peer1".to_string()).await.unwrap();
+
+        // Re-create pool
+        transport
+            .connections
+            .get_or_create_pool(&"peer1".to_string(), "127.0.0.1:12345".parse().unwrap());
+
+        // Should have fresh rate limit bucket
+        let result = transport
+            .send(&"peer1".to_string(), Message::Ping { term: 1 })
+            .await;
+        // Should fail due to no connection, not rate limiting
+        assert!(result.is_err());
+        assert!(!result.unwrap_err().to_string().contains("rate limited"));
     }
 }

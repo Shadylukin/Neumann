@@ -48,6 +48,7 @@ pub mod config;
 pub mod connection;
 pub mod error;
 pub mod framing;
+pub mod rate_limit;
 pub mod stream;
 #[cfg(feature = "tls")]
 pub mod tls;
@@ -56,6 +57,7 @@ pub mod transport;
 // Re-exports
 pub use compression::{CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY};
 pub use config::{ReconnectConfig, TcpTransportConfig, TlsConfig};
+pub use rate_limit::{PeerRateLimiter, RateLimitConfig};
 pub use connection::{
     Connection, ConnectionManager, ConnectionPool, ConnectionState, ConnectionStats,
 };

@@ -51,6 +51,9 @@ pub enum TcpError {
         operation: &'static str,
         message: String,
     },
+
+    /// Rate limited: peer is being sent messages too fast.
+    RateLimited { peer: String, available: u32 },
 }
 
 impl fmt::Display for TcpError {
@@ -85,6 +88,13 @@ impl fmt::Display for TcpError {
             Self::HandshakeFailed(msg) => write!(f, "handshake failed: {}", msg),
             Self::Compression { operation, message } => {
                 write!(f, "compression {} error: {}", operation, message)
+            },
+            Self::RateLimited { peer, available } => {
+                write!(
+                    f,
+                    "rate limited: peer {} (available tokens: {})",
+                    peer, available
+                )
             },
         }
     }
@@ -222,6 +232,18 @@ mod tests {
         let display = err.to_string();
         assert!(display.contains("decompress"));
         assert!(display.contains("invalid data"));
+    }
+
+    #[test]
+    fn test_rate_limited_display() {
+        let err = TcpError::RateLimited {
+            peer: "node1".to_string(),
+            available: 0,
+        };
+        let display = err.to_string();
+        assert!(display.contains("rate limited"));
+        assert!(display.contains("node1"));
+        assert!(display.contains("0"));
     }
 
     #[test]

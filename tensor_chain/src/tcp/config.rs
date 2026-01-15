@@ -4,7 +4,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use super::compression::CompressionConfig;
+use super::{compression::CompressionConfig, rate_limit::RateLimitConfig};
 use crate::block::NodeId;
 
 /// Configuration for TCP transport.
@@ -59,6 +59,10 @@ pub struct TcpTransportConfig {
     /// Compression configuration.
     #[serde(default)]
     pub compression: CompressionConfig,
+
+    /// Per-peer rate limiting configuration.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 fn default_pool_size() -> usize {
@@ -102,6 +106,7 @@ impl Default for TcpTransportConfig {
             max_pending_messages: default_max_pending(),
             recv_buffer_size: default_recv_buffer(),
             compression: CompressionConfig::default(),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -183,6 +188,18 @@ impl TcpTransportConfig {
     /// Disable compression.
     pub fn compression_disabled(mut self) -> Self {
         self.compression.enabled = false;
+        self
+    }
+
+    /// Set rate limit config.
+    pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limit = config;
+        self
+    }
+
+    /// Disable rate limiting.
+    pub fn rate_limit_disabled(mut self) -> Self {
+        self.rate_limit.enabled = false;
         self
     }
 }
@@ -582,5 +599,34 @@ mod tests {
 
         assert_eq!(config.compression.method, CompressionMethod::None);
         assert_eq!(config.compression.min_size, 1024);
+    }
+
+    #[test]
+    fn test_config_rate_limit() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
+
+        assert!(config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.bucket_size, 100);
+    }
+
+    #[test]
+    fn test_config_rate_limit_disabled() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .rate_limit_disabled();
+
+        assert!(!config.rate_limit.enabled);
+    }
+
+    #[test]
+    fn test_config_with_rate_limit() {
+        use crate::tcp::rate_limit::RateLimitConfig;
+
+        let rate_limit = RateLimitConfig::aggressive();
+
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_rate_limit(rate_limit);
+
+        assert_eq!(config.rate_limit.bucket_size, 50);
+        assert_eq!(config.rate_limit.refill_rate, 25.0);
     }
 }

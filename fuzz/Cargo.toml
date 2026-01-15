@@ -137,6 +137,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tcp_rate_limit"
+path = "fuzz_targets/tcp_rate_limit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "membership"
 path = "fuzz_targets/membership.rs"
 test = false
