@@ -105,11 +105,44 @@ impl TransitionValidator {
         &self.global
     }
 
+    /// Execute a closure with a mutable reference to the local codebook for a domain.
+    ///
+    /// The local codebook is created if it doesn't exist and persisted across calls.
+    pub fn with_local<F, R>(&self, domain: &str, f: F) -> R
+    where
+        F: FnOnce(&mut LocalCodebook) -> R,
+    {
+        let mut locals = self.locals.write();
+        let local = locals.entry(domain.to_string()).or_insert_with(|| {
+            LocalCodebook::new(
+                domain,
+                self.global.dimension(),
+                self.config.codebook_config.local_capacity,
+                self.config.codebook_config.ema_alpha,
+            )
+        });
+        f(local)
+    }
+
     /// Get or create a local codebook for a domain.
+    ///
+    /// Note: Returns a new LocalCodebook initialized with the same config for backwards
+    /// compatibility. Prefer `with_local()` for operations that need persistence.
+    #[deprecated(note = "Use with_local() for operations that need persistence")]
     pub fn get_or_create_local(&self, domain: &str) -> LocalCodebook {
+        let mut locals = self.locals.write();
+        let local = locals.entry(domain.to_string()).or_insert_with(|| {
+            LocalCodebook::new(
+                domain,
+                self.global.dimension(),
+                self.config.codebook_config.local_capacity,
+                self.config.codebook_config.ema_alpha,
+            )
+        });
+        // Return a new LocalCodebook with the same config (for backwards compatibility)
         LocalCodebook::new(
-            domain,
-            self.global.dimension(),
+            local.domain(),
+            local.dimension(),
             self.config.codebook_config.local_capacity,
             self.config.codebook_config.ema_alpha,
         )
@@ -775,6 +808,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_transition_validator_get_or_create_local() {
         let validator = create_test_validator();
         let local = validator.get_or_create_local("new_domain");
@@ -1057,5 +1091,48 @@ mod tests {
         assert!(validation.is_valid);
         assert!(validation.local_entry.is_none());
         assert_eq!(validation.local_similarity, 0.0);
+    }
+
+    #[test]
+    fn test_with_local_persists_across_calls() {
+        let validator = create_test_validator();
+
+        // Use with_local to add an entry - use very low threshold to force new entry
+        validator.with_local("my_domain", |local| {
+            local.quantize_and_update(&[1.0, 0.0, 0.0], 0.01); // Very low threshold
+        });
+
+        // Verify the entry persists across calls
+        let entry_count = validator.with_local("my_domain", |local| local.len());
+        assert_eq!(entry_count, 1);
+
+        // Add another entry using orthogonal vector
+        validator.with_local("my_domain", |local| {
+            local.quantize_and_update(&[0.0, 1.0, 0.0], 0.01); // Orthogonal, low threshold
+        });
+
+        // Verify both entries persist
+        let entry_count = validator.with_local("my_domain", |local| local.len());
+        assert_eq!(entry_count, 2);
+    }
+
+    #[test]
+    fn test_with_local_creates_and_persists() {
+        let validator = create_test_validator();
+
+        // Initially, local codebook doesn't exist
+        let locals = validator.locals.read();
+        assert!(!locals.contains_key("new_domain"));
+        drop(locals);
+
+        // Use with_local - should create the local codebook
+        validator.with_local("new_domain", |local| {
+            assert_eq!(local.domain(), "new_domain");
+            assert!(local.is_empty());
+        });
+
+        // Verify it was persisted
+        let locals = validator.locals.read();
+        assert!(locals.contains_key("new_domain"));
     }
 }

@@ -558,12 +558,14 @@ pub struct TensorChain {
 impl TensorChain {
     /// Create a new TensorChain with the given store.
     pub fn new(store: TensorStore, node_id: impl Into<NodeId>) -> Self {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
         let graph = Arc::new(GraphEngine::with_store(store));
         let config = ChainConfig::new(node_id);
         let chain = Chain::new(graph.clone(), config.node_id.clone());
 
         // Initialize codebook with default dimension (matches delta embedding size)
-        let global_codebook = GlobalCodebook::new(4);
+        let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
@@ -579,11 +581,13 @@ impl TensorChain {
 
     /// Create with custom configuration.
     pub fn with_config(store: TensorStore, config: ChainConfig) -> Self {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
         let graph = Arc::new(GraphEngine::with_store(store));
         let chain = Chain::new(graph.clone(), config.node_id.clone());
 
         // Initialize codebook with default dimension
-        let global_codebook = GlobalCodebook::new(4);
+        let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
@@ -767,9 +771,11 @@ impl TensorChain {
         let mut merged_workspaces = Vec::new();
 
         // Find merge candidates
-        let candidates = self
-            .tx_manager
-            .find_merge_candidates(workspace, self.config.auto_merge.orthogonal_threshold);
+        let candidates = self.tx_manager.find_merge_candidates(
+            workspace,
+            self.config.auto_merge.orthogonal_threshold,
+            self.config.auto_merge.merge_window_ms,
+        );
 
         // Limit to max_merge_batch
         let max_merge = self.config.auto_merge.max_merge_batch;
@@ -993,12 +999,14 @@ impl TensorChain {
     /// This is the recommended constructor for production use, as it preserves
     /// learned codebooks across restarts.
     pub fn load_or_create(store: TensorStore, config: ChainConfig) -> Self {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
         let graph = Arc::new(GraphEngine::with_store(store));
         let chain = Chain::new(graph.clone(), config.node_id.clone());
 
         // Try to load existing codebook from store
         let global_codebook = Self::try_load_codebook_from_store(graph.store())
-            .unwrap_or_else(|| GlobalCodebook::new(4));
+            .unwrap_or_else(|| GlobalCodebook::new(DEFAULT_EMBEDDING_DIM));
 
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
@@ -1514,12 +1522,14 @@ mod tests {
 
     #[test]
     fn test_codebook_manager_accessor() {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
         let store = TensorStore::new();
         let chain = TensorChain::new(store, "node1");
 
         let manager = chain.codebook_manager();
-        // Default codebook has dimension 4
-        assert_eq!(manager.global().dimension(), 4);
+        // Default codebook has dimension matching DEFAULT_EMBEDDING_DIM
+        assert_eq!(manager.global().dimension(), DEFAULT_EMBEDDING_DIM);
     }
 
     #[test]
@@ -1577,13 +1587,18 @@ mod tests {
 
     #[test]
     fn test_load_or_create_with_empty_store() {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
         let store = TensorStore::new();
         let config = ChainConfig::new("node1");
 
         let chain = TensorChain::load_or_create(store, config);
 
-        // Should create default codebook (empty, dimension 4)
-        assert_eq!(chain.codebook_manager().global().dimension(), 4);
+        // Should create default codebook (empty, dimension matches DEFAULT_EMBEDDING_DIM)
+        assert_eq!(
+            chain.codebook_manager().global().dimension(),
+            DEFAULT_EMBEDDING_DIM
+        );
         assert_eq!(chain.codebook_manager().global().len(), 0);
     }
 

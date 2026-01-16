@@ -457,10 +457,15 @@ impl TransactionManager {
     ///
     /// Returns candidates where cosine similarity is below the threshold,
     /// indicating orthogonal (non-conflicting) changes.
+    ///
+    /// The `merge_window_ms` parameter specifies the maximum age (in milliseconds)
+    /// of transactions to consider for merging. Transactions older than this
+    /// window are excluded.
     pub fn find_merge_candidates(
         &self,
         workspace: &TransactionWorkspace,
         orthogonal_threshold: f32,
+        merge_window_ms: u64,
     ) -> Vec<MergeCandidate> {
         let target_delta = workspace.to_delta_vector();
 
@@ -468,6 +473,11 @@ impl TransactionManager {
         if target_delta.magnitude() == 0.0 {
             return Vec::new();
         }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
         let active = self.active.read();
         let mut candidates = Vec::new();
@@ -480,6 +490,12 @@ impl TransactionManager {
 
             // Skip non-active transactions
             if !other.is_active() {
+                continue;
+            }
+
+            // Skip transactions outside the merge window
+            let elapsed = now.saturating_sub(other.started_at());
+            if elapsed > merge_window_ms {
                 continue;
             }
 
@@ -705,8 +721,8 @@ mod tests {
         ws2.set_before_embedding(vec![0.0; 4]);
         ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Direction: Y (orthogonal to X)
 
-        // Find merge candidates for ws1
-        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        // Find merge candidates for ws1 (60s window to include all)
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
 
         // ws2 should be a merge candidate (orthogonal)
         assert_eq!(candidates.len(), 1);
@@ -738,8 +754,8 @@ mod tests {
         ws2.set_before_embedding(vec![0.0; 4]);
         ws2.compute_delta(vec![0.9, 0.1, 0.0, 0.0]); // Similar to X (not orthogonal)
 
-        // Find merge candidates for ws1 with strict threshold
-        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        // Find merge candidates for ws1 with strict threshold (60s window)
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
 
         // ws2 should NOT be a merge candidate (too similar)
         assert!(candidates.is_empty());
@@ -1129,7 +1145,7 @@ mod tests {
         let ws = manager.begin(&store).unwrap();
         // Don't compute any delta - it will have zero magnitude
 
-        let candidates = manager.find_merge_candidates(&ws, 0.1);
+        let candidates = manager.find_merge_candidates(&ws, 0.1, 60_000);
         assert!(candidates.is_empty());
     }
 
@@ -1160,7 +1176,7 @@ mod tests {
         ws2.mark_committed();
 
         // Should not find ws2 as a candidate
-        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
         assert!(candidates.is_empty());
     }
 
@@ -1184,7 +1200,7 @@ mod tests {
         ws2.compute_delta(vec![0.0, 0.0, 0.0, 0.0]);
 
         // Should not find ws2 as a candidate
-        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
         assert!(candidates.is_empty());
     }
 
@@ -1223,11 +1239,49 @@ mod tests {
         ws3.set_before_embedding(vec![0.0; 4]);
         ws3.compute_delta(vec![0.05, 0.99, 0.0, 0.0]); // Almost orthogonal
 
-        let candidates = manager.find_merge_candidates(&ws1, 0.1);
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
 
         // Should have 2 candidates, sorted by similarity (most orthogonal first)
         assert_eq!(candidates.len(), 2);
         assert!(candidates[0].similarity <= candidates[1].similarity);
+    }
+
+    #[test]
+    fn test_merge_window_excludes_old_transactions() {
+        let store = TensorStore::new();
+        let manager = TransactionManager::new();
+
+        // Create two workspaces with orthogonal deltas
+        let ws1 = manager.begin(&store).unwrap();
+        ws1.add_operation(ChainTransaction::Put {
+            key: "key1".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        ws1.set_before_embedding(vec![0.0; 4]);
+        ws1.compute_delta(vec![1.0, 0.0, 0.0, 0.0]);
+
+        let ws2 = manager.begin(&store).unwrap();
+        ws2.add_operation(ChainTransaction::Put {
+            key: "key2".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        ws2.set_before_embedding(vec![0.0; 4]);
+        ws2.compute_delta(vec![0.0, 1.0, 0.0, 0.0]); // Orthogonal
+
+        // With a large window (60s), ws2 should be included
+        // since both transactions were just created (elapsed ~0ms)
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 60_000);
+        assert_eq!(candidates.len(), 1);
+
+        // Sleep for a short time to ensure elapsed time is > 0
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // With a very small window (1ms), ws2 should be excluded
+        // since elapsed time is now ~10ms
+        let candidates = manager.find_merge_candidates(&ws1, 0.1, 1);
+        assert!(candidates.is_empty());
     }
 
     #[test]

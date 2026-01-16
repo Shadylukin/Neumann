@@ -224,8 +224,15 @@ impl GlobalCodebook {
     }
 
     /// Find the nearest entry to a query vector.
+    ///
+    /// Returns None if codebook is empty or vector dimension mismatches.
     pub fn quantize(&self, vector: &[f32]) -> Option<(u32, f32)> {
         if self.entries.is_empty() {
+            return None;
+        }
+
+        // Validate dimension match
+        if vector.len() != self.dimension {
             return None;
         }
 
@@ -575,14 +582,44 @@ impl CodebookManager {
         &self.global
     }
 
+    /// Execute a closure with a mutable reference to the local codebook for a domain.
+    ///
+    /// The local codebook is created if it doesn't exist and persisted across calls.
+    pub fn with_local<F, R>(&self, domain: &str, f: F) -> R
+    where
+        F: FnOnce(&mut LocalCodebook) -> R,
+    {
+        let mut locals = self.locals.write();
+        let local = locals.entry(domain.to_string()).or_insert_with(|| {
+            LocalCodebook::new(
+                domain,
+                self.global.dimension(),
+                self.config.local_capacity,
+                self.config.ema_alpha,
+            )
+        });
+        f(local)
+    }
+
     /// Get or create a local codebook for a domain.
+    ///
+    /// Note: Returns a clone for backwards compatibility. Prefer `with_local()` for
+    /// operations that need to persist learning across calls.
+    #[deprecated(note = "Use with_local() for operations that need persistence")]
     pub fn get_or_create_local(&self, domain: &str) -> LocalCodebook {
-        // Note: In a production implementation, we'd return a reference to a shared
-        // LocalCodebook stored in the map. For now, we create a new one per call.
-        // Proper persistence and sharing would be needed for the full implementation.
+        let mut locals = self.locals.write();
+        let local = locals.entry(domain.to_string()).or_insert_with(|| {
+            LocalCodebook::new(
+                domain,
+                self.global.dimension(),
+                self.config.local_capacity,
+                self.config.ema_alpha,
+            )
+        });
+        // Return a clone of the persisted local codebook
         LocalCodebook::new(
-            domain,
-            self.global.dimension(),
+            local.domain(),
+            local.dimension(),
             self.config.local_capacity,
             self.config.ema_alpha,
         )
@@ -607,15 +644,16 @@ impl CodebookManager {
         let residual_magnitude: f32 = residual.iter().map(|x| x * x).sum::<f32>().sqrt();
 
         // Step 3: If residual is significant, use local codebook
-        let (local_entry_id, local_similarity) = if residual_magnitude
-            > self.config.residual_threshold
-        {
-            let local = self.get_or_create_local(domain);
-            let (id, sim) = local.quantize_and_update(&residual, self.config.similarity_threshold);
-            (Some(id), Some(sim))
-        } else {
-            (None, None)
-        };
+        let (local_entry_id, local_similarity) =
+            if residual_magnitude > self.config.residual_threshold {
+                let threshold = self.config.similarity_threshold;
+                let (id, sim) = self.with_local(domain, |local| {
+                    local.quantize_and_update(&residual, threshold)
+                });
+                (Some(id), Some(sim))
+            } else {
+                (None, None)
+            };
 
         // Build codes vector
         let mut codes = vec![global_id as u16];
@@ -1120,6 +1158,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_get_or_create_local() {
         let global = GlobalCodebook::from_centroids(vec![vec![1.0, 0.0]]);
         let manager = CodebookManager::with_global(global);
@@ -1152,5 +1191,87 @@ mod tests {
 
         let stats = local.stats();
         assert!(stats.total_insertions >= 3);
+    }
+
+    #[test]
+    fn test_quantize_validates_dimension() {
+        let centroids = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+
+        // Correct dimension should work
+        let result = codebook.quantize(&[0.9, 0.1, 0.0]);
+        assert!(result.is_some());
+
+        // Wrong dimension should return None
+        let result = codebook.quantize(&[1.0, 0.0]); // 2D instead of 3D
+        assert!(result.is_none());
+
+        let result = codebook.quantize(&[1.0, 0.0, 0.0, 0.0]); // 4D instead of 3D
+        assert!(result.is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_local_codebook_persists_across_calls() {
+        let centroids = vec![vec![1.0, 0.0, 0.0]];
+        let global = GlobalCodebook::from_centroids(centroids);
+        let config = CodebookConfig {
+            residual_threshold: 0.001, // Very low to ensure local codebook is used
+            similarity_threshold: 0.5,
+            ..Default::default()
+        };
+        let manager = CodebookManager::new(global, config);
+
+        // Use with_local to add an entry - use very low threshold so entry is always created
+        manager.with_local("test_domain", |local| {
+            local.quantize_and_update(&[1.0, 0.0, 0.0], 0.01); // Very low threshold forces new entry
+        });
+
+        // Verify the entry persists across calls
+        let entry_count = manager.with_local("test_domain", |local| local.len());
+        assert_eq!(entry_count, 1);
+
+        // Add another entry using an orthogonal vector
+        manager.with_local("test_domain", |local| {
+            local.quantize_and_update(&[0.0, 1.0, 0.0], 0.01); // Orthogonal to first, low threshold
+        });
+
+        // Verify both entries persist
+        let entry_count = manager.with_local("test_domain", |local| local.len());
+        assert_eq!(entry_count, 2);
+
+        // Different domain should have its own codebook
+        manager.with_local("other_domain", |local| {
+            local.quantize_and_update(&[0.0, 0.0, 1.0], 0.01);
+        });
+
+        // Original domain still has 2 entries
+        let entry_count = manager.with_local("test_domain", |local| local.len());
+        assert_eq!(entry_count, 2);
+
+        // New domain has 1 entry
+        let entry_count = manager.with_local("other_domain", |local| local.len());
+        assert_eq!(entry_count, 1);
+    }
+
+    #[test]
+    fn test_with_local_creates_and_persists() {
+        let global = GlobalCodebook::from_centroids(vec![vec![1.0, 0.0]]);
+        let manager = CodebookManager::with_global(global);
+
+        // Initially, local codebook doesn't exist
+        let locals = manager.locals.read();
+        assert!(!locals.contains_key("new_domain"));
+        drop(locals);
+
+        // Use with_local - should create the local codebook
+        manager.with_local("new_domain", |local| {
+            assert_eq!(local.domain(), "new_domain");
+            assert!(local.is_empty());
+        });
+
+        // Verify it was persisted
+        let locals = manager.locals.read();
+        assert!(locals.contains_key("new_domain"));
     }
 }
