@@ -12,17 +12,37 @@ pub struct AccessController;
 /// Edge type prefix for vault access grants.
 const VAULT_ACCESS_PREFIX: &str = "VAULT_ACCESS";
 
+/// Allowlisted edge types that can be traversed during access control checks.
+/// Only these edge types can grant transitive access permissions.
+/// - VAULT_ACCESS_* edges grant explicit vault permissions
+/// - MEMBER edges allow group membership traversal
+const ALLOWED_TRAVERSAL_EDGES: &[&str] = &[
+    "VAULT_ACCESS",
+    "VAULT_ACCESS_READ",
+    "VAULT_ACCESS_WRITE",
+    "VAULT_ACCESS_ADMIN",
+    "MEMBER",
+];
+
+/// Check if an edge type is allowed for access control traversal.
+fn is_allowed_edge_type(edge_type: &str) -> bool {
+    ALLOWED_TRAVERSAL_EDGES
+        .iter()
+        .any(|&allowed| edge_type.starts_with(allowed))
+}
+
 impl AccessController {
     /// Check if a path exists from source to target in the graph.
     ///
     /// Uses BFS following only outgoing edges from each node.
+    /// Only traverses edges in the allowlist (VAULT_ACCESS_*, MEMBER).
     /// Returns true if path exists, false otherwise.
     pub fn check_path(graph: &GraphEngine, source: &str, target: &str) -> bool {
         if source == target {
             return true;
         }
 
-        // BFS traversal - only follow outgoing edges
+        // BFS traversal - only follow outgoing edges with allowed types
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
 
@@ -30,17 +50,24 @@ impl AccessController {
         visited.insert(source.to_string());
 
         while let Some(current) = queue.pop_front() {
-            // Only follow outgoing edges (directional access)
-            let neighbors = graph.get_entity_neighbors_out(&current).unwrap_or_default();
+            // Get outgoing edges to check their types
+            if let Ok(outgoing) = graph.get_entity_outgoing(&current) {
+                for edge_key in outgoing {
+                    if let Ok((_, to, edge_type, _)) = graph.get_entity_edge(&edge_key) {
+                        // Only traverse allowed edge types
+                        if !is_allowed_edge_type(&edge_type) {
+                            continue;
+                        }
 
-            for neighbor in neighbors {
-                if neighbor == target {
-                    return true;
-                }
+                        if to == target {
+                            return true;
+                        }
 
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor.clone());
-                    queue.push_back(neighbor);
+                        if !visited.contains(&to) {
+                            visited.insert(to.clone());
+                            queue.push_back(to);
+                        }
+                    }
                 }
             }
         }
@@ -90,11 +117,16 @@ impl AccessController {
             if let Ok(outgoing) = graph.get_entity_outgoing(&current) {
                 for edge_key in outgoing {
                     if let Ok((_, to, edge_type, _)) = graph.get_entity_edge(&edge_key) {
+                        // Only traverse allowed edge types
+                        if !is_allowed_edge_type(&edge_type) {
+                            continue;
+                        }
+
                         // Determine permission from edge type
                         let edge_perm = if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
                             Permission::from_edge_type(&edge_type)
                         } else {
-                            // Non-VAULT_ACCESS edges inherit current permission
+                            // Allowed non-VAULT_ACCESS edges (e.g., MEMBER) inherit current permission
                             Some(current_perm)
                         };
 
@@ -232,10 +264,10 @@ mod tests {
     fn test_cycle_handling() {
         let graph = GraphEngine::new();
 
-        // Create a cycle: a -> b -> c -> a
-        graph.add_entity_edge("node:a", "node:b", "LINK").unwrap();
-        graph.add_entity_edge("node:b", "node:c", "LINK").unwrap();
-        graph.add_entity_edge("node:c", "node:a", "LINK").unwrap();
+        // Create a cycle: a -> b -> c -> a using allowed MEMBER edges
+        graph.add_entity_edge("node:a", "node:b", "MEMBER").unwrap();
+        graph.add_entity_edge("node:b", "node:c", "MEMBER").unwrap();
+        graph.add_entity_edge("node:c", "node:a", "MEMBER").unwrap();
 
         // Should not hang, should find path
         assert!(AccessController::check_path(&graph, "node:a", "node:c"));
@@ -248,10 +280,10 @@ mod tests {
     fn test_long_path() {
         let graph = GraphEngine::new();
 
-        // Create a long chain: node:0 -> node:1 -> ... -> node:10
+        // Create a long chain: node:0 -> node:1 -> ... -> node:10 using allowed MEMBER edges
         for i in 0..10 {
             graph
-                .add_entity_edge(&format!("node:{i}"), &format!("node:{}", i + 1), "NEXT")
+                .add_entity_edge(&format!("node:{i}"), &format!("node:{}", i + 1), "MEMBER")
                 .unwrap();
         }
 
@@ -262,10 +294,21 @@ mod tests {
     }
 
     #[test]
+    fn test_disallowed_edge_type_blocked() {
+        let graph = GraphEngine::new();
+
+        // Create path using disallowed edge type
+        graph.add_entity_edge("node:a", "node:b", "RANDOM_EDGE").unwrap();
+
+        // Path should NOT be found because RANDOM_EDGE is not allowlisted
+        assert!(!AccessController::check_path(&graph, "node:a", "node:b"));
+    }
+
+    #[test]
     fn test_directional_path() {
         let graph = GraphEngine::new();
 
-        graph.add_entity_edge("node:a", "node:b", "LINK").unwrap();
+        graph.add_entity_edge("node:a", "node:b", "MEMBER").unwrap();
 
         // Only forward direction works (a -> b)
         assert!(AccessController::check_path(&graph, "node:a", "node:b"));

@@ -48,6 +48,11 @@ pub struct TcpTransportConfig {
     #[serde(default)]
     pub tls: Option<TlsConfig>,
 
+    /// Require TLS for all connections. If true and tls is None, connections will fail.
+    /// Default is false for backwards compatibility, but should be enabled in production.
+    #[serde(default)]
+    pub require_tls: bool,
+
     /// Maximum queued outbound messages per peer.
     #[serde(default = "default_max_pending")]
     pub max_pending_messages: usize,
@@ -103,6 +108,7 @@ impl Default for TcpTransportConfig {
             keepalive_interval_secs: default_keepalive_interval(),
             reconnect: ReconnectConfig::default(),
             tls: None,
+            require_tls: false,
             max_pending_messages: default_max_pending(),
             recv_buffer_size: default_recv_buffer(),
             compression: CompressionConfig::default(),
@@ -166,6 +172,12 @@ impl TcpTransportConfig {
     /// Set TLS config.
     pub fn with_tls(mut self, config: TlsConfig) -> Self {
         self.tls = Some(config);
+        self
+    }
+
+    /// Require TLS for all connections (recommended for production).
+    pub fn with_require_tls(mut self, require: bool) -> Self {
+        self.require_tls = require;
         self
     }
 
@@ -348,6 +360,7 @@ mod tests {
         assert!(config.keepalive);
         assert_eq!(config.keepalive_interval_secs, 30);
         assert!(config.tls.is_none());
+        assert!(!config.require_tls); // Default is false for backwards compatibility
     }
 
     #[test]
@@ -628,5 +641,24 @@ mod tests {
 
         assert_eq!(config.rate_limit.bucket_size, 50);
         assert_eq!(config.rate_limit.refill_rate, 25.0);
+    }
+
+    #[test]
+    fn test_config_require_tls() {
+        // Default should be false for backwards compatibility
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
+        assert!(!config.require_tls);
+
+        // Can enable require_tls
+        let config = config.with_require_tls(true);
+        assert!(config.require_tls);
+
+        // With TLS config and require_tls
+        let tls = TlsConfig::new("/cert.pem", "/key.pem");
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_require_tls(true);
+        assert!(config.require_tls);
+        assert!(config.tls.is_some());
     }
 }

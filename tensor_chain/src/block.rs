@@ -308,8 +308,21 @@ impl Block {
     }
 
     /// Add a validator signature to this block.
-    pub fn add_signature(&mut self, signature: ValidatorSignature) {
+    /// Rejects duplicate signers.
+    pub fn add_signature(&mut self, signature: ValidatorSignature) -> crate::Result<()> {
+        // Check for duplicate signer
+        if self
+            .signatures
+            .iter()
+            .any(|s| s.validator == signature.validator)
+        {
+            return Err(crate::ChainError::ValidationFailed(format!(
+                "duplicate signer: {}",
+                signature.validator
+            )));
+        }
         self.signatures.push(signature);
+        Ok(())
     }
 
     /// Get all keys affected by transactions in this block.
@@ -664,10 +677,33 @@ mod tests {
             block_hash: block.hash(),
         };
 
-        block.add_signature(sig.clone());
+        block.add_signature(sig.clone()).unwrap();
 
         assert_eq!(block.signatures.len(), 1);
         assert_eq!(block.signatures[0], sig);
+    }
+
+    #[test]
+    fn test_block_reject_duplicate_signer() {
+        let mut block = Block::genesis("node1".to_string());
+        let hash = block.hash();
+
+        let sig = ValidatorSignature {
+            validator: "validator1".to_string(),
+            signature: vec![1, 2, 3],
+            block_hash: hash,
+        };
+
+        // First signature should succeed
+        block.add_signature(sig.clone()).unwrap();
+
+        // Second signature from same validator should fail
+        let result = block.add_signature(sig);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate signer"));
     }
 
     #[test]
@@ -896,7 +932,7 @@ mod tests {
                 signature: vec![i as u8],
                 block_hash: hash,
             };
-            block.add_signature(sig);
+            block.add_signature(sig).unwrap();
         }
 
         assert_eq!(block.signatures.len(), 3);

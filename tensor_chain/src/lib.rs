@@ -57,6 +57,7 @@ pub mod network;
 pub mod partition_merge;
 pub mod raft;
 pub mod raft_wal;
+pub mod signing;
 pub mod snapshot_buffer;
 pub mod snapshot_streaming;
 pub mod state_machine;
@@ -129,6 +130,7 @@ pub use raft::{
     RaftConfig, RaftNode, RaftState, RaftStats, RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
 pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
+pub use signing::{Identity, PublicIdentity, SequenceTracker, SignedMessage};
 pub use snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferError};
 pub use snapshot_streaming::{
     deserialize_entries, serialize_entries, SnapshotReader, SnapshotWriter, StreamingError,
@@ -723,12 +725,14 @@ impl TensorChain {
         };
 
         // Build the block with merged operations, delta embedding, and quantized codes
+        // TODO(Part D): Replace placeholder signature with proper Ed25519 signing via Identity
         let block = self
             .chain
             .new_block()
             .add_transactions(merged_operations)
             .with_dense_embedding(&merged_delta)
             .with_codes(quantized_codes)
+            .with_signature(vec![0u8; 64])
             .build();
 
         // Append to chain

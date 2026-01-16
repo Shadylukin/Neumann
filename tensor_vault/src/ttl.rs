@@ -1,6 +1,7 @@
 //! TTL (Time-To-Live) tracking for vault grants.
 //!
 //! Enables time-limited access grants that automatically expire.
+//! Supports persistence for survival across restarts.
 
 #![allow(clippy::missing_panics_doc)]
 
@@ -8,8 +9,40 @@ use std::{
     cmp::Ordering,
     collections::BinaryHeap,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use serde::{Deserialize, Serialize};
+use tensor_store::TensorStore;
+
+use crate::{Result, VaultError};
+
+/// Storage key for persisted TTL grants.
+const TTL_STORAGE_KEY: &str = "_vault_ttl_grants";
+
+/// Serializable grant expiration for persistence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersistedGrant {
+    /// Unix timestamp (milliseconds) when this grant expires.
+    pub expires_at_ms: i64,
+    /// The entity that was granted access.
+    pub entity: String,
+    /// The secret key.
+    pub secret_key: String,
+}
+
+impl PersistedGrant {
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    fn is_expired(&self) -> bool {
+        self.expires_at_ms <= Self::now_ms()
+    }
+}
 
 /// An entry in the grant TTL tracker.
 #[derive(Debug, Clone)]
@@ -158,6 +191,125 @@ impl GrantTTLTracker {
         }
 
         removed
+    }
+
+    /// Convert an Instant to Unix timestamp milliseconds.
+    fn instant_to_unix_ms(instant: Instant) -> i64 {
+        let now = Instant::now();
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        // Calculate the difference and apply to current Unix time
+        if instant > now {
+            let delta = (instant - now).as_millis() as i64;
+            now_unix + delta
+        } else {
+            let delta = (now - instant).as_millis() as i64;
+            now_unix - delta
+        }
+    }
+
+    /// Convert Unix timestamp milliseconds to an Instant.
+    fn unix_ms_to_instant(unix_ms: i64) -> Instant {
+        let now = Instant::now();
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+
+        let delta = unix_ms - now_unix;
+        if delta >= 0 {
+            // Safe: delta is guaranteed non-negative here
+            now + Duration::from_millis(delta.unsigned_abs())
+        } else {
+            // Safe: we're subtracting a duration that was computed from the clock difference
+            now.checked_sub(Duration::from_millis(delta.unsigned_abs()))
+                .unwrap_or(now)
+        }
+    }
+
+    /// Persist all grants to the store.
+    pub fn persist(&self, store: &TensorStore) -> Result<()> {
+        // Collect grants while holding the lock, then release it
+        let grants: Vec<PersistedGrant> = {
+            let heap = self.heap.lock().unwrap();
+            heap.iter()
+                .map(|e| PersistedGrant {
+                    expires_at_ms: Self::instant_to_unix_ms(e.expires_at),
+                    entity: e.entity.clone(),
+                    secret_key: e.secret_key.clone(),
+                })
+                .collect()
+        };
+
+        if grants.is_empty() {
+            // Remove the storage key if no grants
+            let _ = store.delete(TTL_STORAGE_KEY);
+            return Ok(());
+        }
+
+        let data = serde_json::to_vec(&grants)
+            .map_err(|e| VaultError::CryptoError(format!("Failed to serialize TTL grants: {e}")))?;
+
+        let mut tensor = tensor_store::TensorData::new();
+        tensor.set(
+            "_data",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(data)),
+        );
+        store
+            .put(TTL_STORAGE_KEY, tensor)
+            .map_err(|e| VaultError::CryptoError(format!("Failed to persist TTL grants: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Load grants from the store.
+    /// Returns a new tracker with the loaded grants.
+    pub fn load(store: &TensorStore) -> Result<Self> {
+        let tracker = Self::new();
+
+        let Ok(tensor) = store.get(TTL_STORAGE_KEY) else {
+            return Ok(tracker); // Key not found, return empty tracker
+        };
+
+        let Some(tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Bytes(data))) =
+            tensor.get("_data")
+        else {
+            return Ok(tracker);
+        };
+
+        let grants: Vec<PersistedGrant> = serde_json::from_slice(data)
+            .map_err(|e| VaultError::CryptoError(format!("Failed to deserialize TTL grants: {e}")))?;
+
+        {
+            let mut heap = tracker.heap.lock().unwrap();
+            for grant in grants {
+                // Skip already expired grants
+                if !grant.is_expired() {
+                    heap.push(GrantTTLEntry {
+                        expires_at: Self::unix_ms_to_instant(grant.expires_at_ms),
+                        entity: grant.entity,
+                        secret_key: grant.secret_key,
+                    });
+                }
+            }
+        }
+
+        Ok(tracker)
+    }
+
+    /// Get all grants as serializable format for persistence.
+    pub fn to_persisted(&self) -> Vec<PersistedGrant> {
+        let heap = self.heap.lock().unwrap();
+        heap.iter()
+            .map(|e| PersistedGrant {
+                expires_at_ms: Self::instant_to_unix_ms(e.expires_at),
+                entity: e.entity.clone(),
+                secret_key: e.secret_key.clone(),
+            })
+            .collect()
     }
 }
 
@@ -310,5 +462,72 @@ mod tests {
 
         // key2 should still be tracked
         assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn test_persist_and_load() {
+        use std::sync::Arc;
+
+        let store = Arc::new(TensorStore::new());
+
+        // Create tracker with grants
+        let tracker = GrantTTLTracker::new();
+        tracker.add("user:alice", "key1", Duration::from_secs(3600));
+        tracker.add("user:bob", "key2", Duration::from_secs(7200));
+
+        assert_eq!(tracker.len(), 2);
+
+        // Persist
+        tracker.persist(&store).unwrap();
+
+        // Load into new tracker
+        let loaded = GrantTTLTracker::load(&store).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+    }
+
+    #[test]
+    fn test_persist_skips_expired() {
+        use std::sync::Arc;
+
+        let store = Arc::new(TensorStore::new());
+
+        let tracker = GrantTTLTracker::new();
+        let now = Instant::now();
+
+        // Add expired and valid grants
+        tracker.add_with_expiration("user:expired", "key", now - Duration::from_secs(1));
+        tracker.add_with_expiration("user:valid", "key", now + Duration::from_secs(3600));
+
+        assert_eq!(tracker.len(), 2);
+
+        // Persist (includes both)
+        tracker.persist(&store).unwrap();
+
+        // Load - should skip expired
+        let loaded = GrantTTLTracker::load(&store).unwrap();
+        assert_eq!(loaded.len(), 1);
+    }
+
+    #[test]
+    fn test_load_empty_store() {
+        use std::sync::Arc;
+
+        let store = Arc::new(TensorStore::new());
+        let loaded = GrantTTLTracker::load(&store).unwrap();
+
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_to_persisted() {
+        let tracker = GrantTTLTracker::new();
+        tracker.add("user:alice", "key1", Duration::from_secs(60));
+
+        let persisted = tracker.to_persisted();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].entity, "user:alice");
+        assert_eq!(persisted[0].secret_key, "key1");
+        assert!(persisted[0].expires_at_ms > 0);
     }
 }

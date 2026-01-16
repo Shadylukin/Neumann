@@ -303,8 +303,10 @@ impl Vault {
         self.obfuscator.generate_storage_id(secret_key, nonce)
     }
 
-    fn secret_node_key(secret_key: &str) -> String {
-        format!("vault_secret:{secret_key}")
+    fn secret_node_key(&self, secret_key: &str) -> String {
+        // Use obfuscated key to hide plaintext secret names from graph
+        let obfuscated = self.obfuscator.obfuscate_key(secret_key);
+        format!("vault_secret:{obfuscated}")
     }
 
     fn current_timestamp() -> i64 {
@@ -323,7 +325,7 @@ impl Vault {
         self.check_rate_limit(requester, Operation::Set)?;
 
         // For new secrets, only root can create. For existing, need Write permission.
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
         let vault_storage_key = self.vault_key(key);
         let is_update = self.store.exists(&secret_node);
 
@@ -362,11 +364,11 @@ impl Vault {
             // Encrypt the original key name for list() to work
             let (encrypted_key, key_nonce) = self.cipher.encrypt(key.as_bytes())?;
 
-            // Obfuscate metadata
+            // Encrypt metadata using AEAD
             let creator_bytes = requester.as_bytes();
-            let obfuscated_creator = self.obfuscator.obfuscate_metadata(creator_bytes);
+            let obfuscated_creator = self.obfuscator.encrypt_metadata(creator_bytes)?;
             let timestamp_bytes = timestamp.to_le_bytes();
-            let obfuscated_timestamp = self.obfuscator.obfuscate_metadata(&timestamp_bytes);
+            let obfuscated_timestamp = self.obfuscator.encrypt_metadata(&timestamp_bytes)?;
 
             let mut t = TensorData::new();
             t.set(
@@ -629,7 +631,7 @@ impl Vault {
         // Requester needs Admin permission to grant access
         self.check_access_with_permission(requester, key, Permission::Admin)?;
 
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
         if !self.store.exists(&secret_node) {
             return Err(VaultError::NotFound(key.to_string()));
         }
@@ -679,7 +681,7 @@ impl Vault {
         // Only those with Admin permission can revoke access
         self.check_access_with_permission(requester, key, Permission::Admin)?;
 
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
 
         // Find and delete the access edge (handles all permission levels)
         if let Ok(edges) = self.graph.get_entity_outgoing(entity) {
@@ -718,7 +720,7 @@ impl Vault {
         let mut revoked = 0;
 
         for (entity, key) in expired {
-            let secret_node = Self::secret_node_key(&key);
+            let secret_node = self.secret_node_key(&key);
 
             // Find and delete the access edge
             if let Ok(edges) = self.graph.get_entity_outgoing(&entity) {
@@ -758,7 +760,7 @@ impl Vault {
             .map_err(|_| VaultError::NotFound(key.to_string()))?;
 
         // Also clean up the secret node
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
         let _ = self.store.delete(&secret_node);
 
         // Log audit
@@ -823,9 +825,9 @@ impl Vault {
         );
         tensor.set("_versions", TensorValue::Pointers(versions));
 
-        // Obfuscate rotation metadata
-        let rotator_obf = self.obfuscator.obfuscate_metadata(requester.as_bytes());
-        let timestamp_obf = self.obfuscator.obfuscate_metadata(&timestamp.to_le_bytes());
+        // Encrypt rotation metadata using AEAD
+        let rotator_obf = self.obfuscator.encrypt_metadata(requester.as_bytes())?;
+        let timestamp_obf = self.obfuscator.encrypt_metadata(&timestamp.to_le_bytes())?;
 
         tensor.set(
             "_rotator_obf",
@@ -923,7 +925,7 @@ impl Vault {
             return Ok(());
         }
 
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
 
         if AccessController::check_path_with_permission(
             &self.graph,
@@ -953,7 +955,7 @@ impl Vault {
         }
 
         // Check if path exists from requester to secret node
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
 
         AccessController::check_path(&self.graph, requester, &secret_node)
     }
@@ -979,19 +981,23 @@ impl Vault {
             return Some(Permission::Admin);
         }
 
-        let secret_node = Self::secret_node_key(key);
+        let secret_node = self.secret_node_key(key);
         AccessController::get_permission_level(&self.graph, requester, &secret_node)
     }
 
     fn log_operation(&self, requester: &str, key: &str, operation: &AuditOperation) {
+        // Obfuscate secret key in audit logs to hide plaintext names
+        let obfuscated_key = self.obfuscator.obfuscate_key(key);
         let audit_log = AuditLog::new(&self.store);
-        audit_log.record(requester, key, operation);
+        audit_log.record(requester, &obfuscated_key, operation);
     }
 
     /// Query audit entries for a specific secret.
     pub fn audit_log(&self, key: &str) -> Vec<AuditEntry> {
+        // Use same obfuscation when querying
+        let obfuscated_key = self.obfuscator.obfuscate_key(key);
         let audit = AuditLog::new(&self.store);
-        audit.by_secret(key)
+        audit.by_secret(&obfuscated_key)
     }
 
     /// Query audit entries by entity (who performed operations).
@@ -1305,14 +1311,13 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
         // Create a chain: alice -> team -> secret
+        // Use MEMBER edge for team membership (manually, as it's not a vault operation)
         vault
             .graph
             .add_entity_edge("user:alice", "team:devs", "MEMBER")
             .unwrap();
-        vault
-            .graph
-            .add_entity_edge("team:devs", "vault_secret:secret", "VAULT_ACCESS")
-            .unwrap();
+        // Use grant() to properly create the team -> secret edge with obfuscated key
+        vault.grant(Vault::ROOT, "team:devs", "secret").unwrap();
 
         // Alice can access via transitive path
         let value = vault.get("user:alice", "secret").unwrap();
@@ -1954,27 +1959,42 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_compat_old_vault_access_edge() {
+    fn test_secret_node_key_is_obfuscated() {
         let vault = create_test_vault();
 
-        vault.set(Vault::ROOT, "secret", "value").unwrap();
+        vault.set(Vault::ROOT, "my_api_key", "value").unwrap();
 
-        // Manually create old-style VAULT_ACCESS edge (simulating pre-upgrade data)
-        vault
-            .graph
-            .add_entity_edge("user:legacy", "vault_secret:secret", "VAULT_ACCESS")
-            .unwrap();
+        // Grant access to test that edges use obfuscated keys
+        vault.grant(Vault::ROOT, "user:alice", "my_api_key").unwrap();
 
-        // Old-style edge should grant Admin access
-        assert_eq!(
-            vault.get_permission("user:legacy", "secret"),
-            Some(Permission::Admin)
-        );
+        // Verify that plaintext secret name is NOT in graph node keys
+        let edge_keys = vault.graph.get_entity_outgoing("user:alice").unwrap();
+        assert!(!edge_keys.is_empty(), "Expected grant to create edge");
 
-        // Legacy user can do Admin operations
-        assert!(vault.get("user:legacy", "secret").is_ok());
-        assert!(vault.set("user:legacy", "secret", "updated").is_ok());
-        assert!(vault.grant("user:legacy", "user:other", "secret").is_ok());
+        for edge_key in &edge_keys {
+            let (from, to, edge_type, _undirected) =
+                vault.graph.get_entity_edge(edge_key).unwrap();
+
+            // Sanity check: edge is from alice
+            assert_eq!(from, "user:alice");
+            assert!(edge_type.starts_with("VAULT_ACCESS"));
+
+            // Edge target should NOT contain plaintext secret name
+            assert!(
+                !to.contains("my_api_key"),
+                "Secret name should be obfuscated in graph: found {}",
+                to
+            );
+            // But should still have the vault_secret prefix
+            assert!(
+                to.starts_with("vault_secret:"),
+                "Edge should point to vault secret node: {}",
+                to
+            );
+        }
+
+        // Access still works correctly despite obfuscation
+        assert!(vault.get("user:alice", "my_api_key").is_ok());
     }
 
     // === TTL Grant Tests ===

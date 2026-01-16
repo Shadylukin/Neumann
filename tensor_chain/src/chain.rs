@@ -122,6 +122,20 @@ impl Chain {
             block.header.tx_root = block.compute_tx_root();
         }
 
+        // Verify tx_root matches transactions
+        if !block.verify_tx_root() {
+            return Err(ChainError::ValidationFailed(
+                "tx_root does not match transactions".to_string(),
+            ));
+        }
+
+        // Reject unsigned blocks (except genesis)
+        if expected_height > 1 && block.header.signature.is_empty() {
+            return Err(ChainError::ValidationFailed(
+                "block must be signed by proposer".to_string(),
+            ));
+        }
+
         // Store the block
         let block_hash = block.hash();
         self.store_block(&block)?;
@@ -239,6 +253,7 @@ impl Chain {
             transactions: Vec::new(),
             delta_embedding: SparseVector::new(0),
             quantized_codes: Vec::new(),
+            signature: Vec::new(),
         }
     }
 
@@ -344,6 +359,7 @@ pub struct BlockBuilder {
     transactions: Vec<Transaction>,
     delta_embedding: SparseVector,
     quantized_codes: Vec<u16>,
+    signature: Vec<u8>,
 }
 
 impl BlockBuilder {
@@ -377,6 +393,12 @@ impl BlockBuilder {
         self
     }
 
+    /// Set the proposer signature.
+    pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
+        self.signature = signature;
+        self
+    }
+
     /// Build the block.
     pub fn build(self) -> Block {
         let header = BlockHeader::new(
@@ -387,7 +409,8 @@ impl BlockBuilder {
             self.proposer,
         )
         .with_embedding(self.delta_embedding)
-        .with_codes(self.quantized_codes);
+        .with_codes(self.quantized_codes)
+        .with_signature(self.signature);
 
         let mut block = Block::new(header, self.transactions);
 
@@ -406,6 +429,10 @@ mod tests {
         let store = tensor_store::TensorStore::new();
         let graph = Arc::new(GraphEngine::with_store(store));
         Chain::new(graph, "test_node".to_string())
+    }
+
+    fn test_signature() -> Vec<u8> {
+        vec![0u8; 64]
     }
 
     #[test]
@@ -455,6 +482,7 @@ mod tests {
                     key: format!("key{}", i),
                     data: vec![i as u8],
                 })
+                .with_signature(test_signature())
                 .build();
 
             chain.append(block).unwrap();
@@ -503,6 +531,7 @@ mod tests {
                     key: "shared_key".to_string(),
                     data: vec![i as u8],
                 })
+                .with_signature(test_signature())
                 .build();
             chain.append(block).unwrap();
         }
@@ -520,7 +549,7 @@ mod tests {
         chain.initialize().unwrap();
 
         for _ in 1..=3 {
-            let block = chain.new_block().build();
+            let block = chain.new_block().with_signature(test_signature()).build();
             chain.append(block).unwrap();
         }
 
@@ -598,7 +627,7 @@ mod tests {
 
         // Add 5 blocks
         for _ in 1..=5 {
-            let block = chain.new_block().build();
+            let block = chain.new_block().with_signature(test_signature()).build();
             chain.append(block).unwrap();
         }
 
@@ -617,7 +646,7 @@ mod tests {
 
         // Add 2 blocks
         for _ in 1..=2 {
-            let block = chain.new_block().build();
+            let block = chain.new_block().with_signature(test_signature()).build();
             chain.append(block).unwrap();
         }
 
@@ -660,7 +689,7 @@ mod tests {
         // Initialize and add blocks
         chain1.initialize().unwrap();
         for _ in 1..=3 {
-            let block = chain1.new_block().build();
+            let block = chain1.new_block().with_signature(test_signature()).build();
             chain1.append(block).unwrap();
         }
         assert_eq!(chain1.height(), 3);
@@ -690,7 +719,7 @@ mod tests {
 
         // Add valid blocks
         for _ in 1..=3 {
-            let block = chain.new_block().build();
+            let block = chain.new_block().with_signature(test_signature()).build();
             chain.append(block).unwrap();
         }
 
@@ -721,6 +750,7 @@ mod tests {
                     key: format!("key{}", i),
                     data: vec![i as u8],
                 })
+                .with_signature(test_signature())
                 .build();
             chain.append(block).unwrap();
         }
@@ -760,7 +790,7 @@ mod tests {
 
         // Add blocks
         for _ in 1..=2 {
-            let block = chain.new_block().build();
+            let block = chain.new_block().with_signature(test_signature()).build();
             chain.append(block).unwrap();
         }
 
@@ -781,15 +811,15 @@ mod tests {
 
         let genesis_hash = chain.tip_hash();
 
-        // Add a block
+        // Add a block (height 1 - no signature required)
         let block = chain.new_block().build();
         let hash1 = chain.append(block).unwrap();
 
         assert_ne!(chain.tip_hash(), genesis_hash);
         assert_eq!(chain.tip_hash(), hash1);
 
-        // Add another block
-        let block = chain.new_block().build();
+        // Add another block (height 2+ requires signature)
+        let block = chain.new_block().with_signature(test_signature()).build();
         let hash2 = chain.append(block).unwrap();
 
         assert_ne!(chain.tip_hash(), hash1);

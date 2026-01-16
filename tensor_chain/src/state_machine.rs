@@ -633,6 +633,7 @@ mod tests {
                 data: vec![1, 2, 3],
             })
             .with_dense_embedding(embedding)
+            .with_signature(vec![0u8; 64])
             .build()
     }
 

@@ -1,9 +1,15 @@
-//! Master key derivation using Argon2id.
+//! Master key derivation using Argon2id with HKDF-based subkey separation.
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use hkdf::Hkdf;
+use rand::RngCore;
+use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Result, VaultConfig, VaultError};
+
+/// Salt size for Argon2id key derivation.
+pub const SALT_SIZE: usize = 16;
 
 /// AES-256 key size in bytes.
 pub const KEY_SIZE: usize = 32;
@@ -24,7 +30,11 @@ impl MasterKey {
             .salt
             .as_ref()
             .map_or(DEFAULT_SALT.as_slice(), |s| s.as_slice());
+        Self::derive_with_salt(input, salt, config)
+    }
 
+    /// Derive a master key with a specific salt.
+    pub fn derive_with_salt(input: &[u8], salt: &[u8], config: &VaultConfig) -> Result<Self> {
         let params = Params::new(
             config.argon2_memory_cost,
             config.argon2_time_cost,
@@ -43,6 +53,15 @@ impl MasterKey {
         Ok(Self { bytes: key })
     }
 
+    /// Derive a master key with a newly generated random salt.
+    /// Returns both the key and the salt (which should be persisted).
+    pub fn derive_with_random_salt(input: &[u8], config: &VaultConfig) -> Result<(Self, [u8; SALT_SIZE])> {
+        let mut salt = [0u8; SALT_SIZE];
+        rand::thread_rng().fill_bytes(&mut salt);
+        let key = Self::derive_with_salt(input, &salt, config)?;
+        Ok((key, salt))
+    }
+
     /// Create from raw bytes (for testing and fuzzing).
     #[cfg(any(test, feature = "fuzzing"))]
     pub fn from_bytes(bytes: [u8; KEY_SIZE]) -> Self {
@@ -51,6 +70,32 @@ impl MasterKey {
 
     pub fn as_bytes(&self) -> &[u8; KEY_SIZE] {
         &self.bytes
+    }
+
+    /// Derive a subkey using HKDF with domain separation.
+    /// Each domain produces a cryptographically independent key.
+    #[allow(clippy::missing_panics_doc)] // HKDF expand never fails for 32-byte output
+    pub fn derive_subkey(&self, domain: &[u8]) -> [u8; KEY_SIZE] {
+        let hk = Hkdf::<Sha256>::new(None, &self.bytes);
+        let mut output = [0u8; KEY_SIZE];
+        hk.expand(domain, &mut output)
+            .expect("HKDF expand should never fail with 32-byte output");
+        output
+    }
+
+    /// Derive encryption key for AES-256-GCM.
+    pub fn encryption_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_encryption_v1")
+    }
+
+    /// Derive obfuscation key for HMAC-based operations.
+    pub fn obfuscation_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_obfuscation_v1")
+    }
+
+    /// Derive metadata encryption key.
+    pub fn metadata_key(&self) -> [u8; KEY_SIZE] {
+        self.derive_subkey(b"neumann_vault_metadata_v1")
     }
 }
 
@@ -124,5 +169,74 @@ mod tests {
         let key = MasterKey::from_bytes(bytes);
 
         assert_eq!(key.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn test_hkdf_subkey_derivation() {
+        let key = MasterKey::from_bytes([1u8; KEY_SIZE]);
+
+        let subkey1 = key.derive_subkey(b"domain1");
+        let subkey2 = key.derive_subkey(b"domain2");
+
+        // Different domains produce different keys
+        assert_ne!(subkey1, subkey2);
+        // Same domain produces same key
+        assert_eq!(subkey1, key.derive_subkey(b"domain1"));
+    }
+
+    #[test]
+    fn test_hkdf_subkeys_are_independent() {
+        let key = MasterKey::from_bytes([42u8; KEY_SIZE]);
+
+        let encryption = key.encryption_key();
+        let obfuscation = key.obfuscation_key();
+        let metadata = key.metadata_key();
+
+        // All subkeys are different from each other
+        assert_ne!(encryption, obfuscation);
+        assert_ne!(encryption, metadata);
+        assert_ne!(obfuscation, metadata);
+
+        // And different from the master key
+        assert_ne!(&encryption, key.as_bytes());
+        assert_ne!(&obfuscation, key.as_bytes());
+        assert_ne!(&metadata, key.as_bytes());
+    }
+
+    #[test]
+    fn test_hkdf_subkeys_are_deterministic() {
+        let key1 = MasterKey::from_bytes([99u8; KEY_SIZE]);
+        let key2 = MasterKey::from_bytes([99u8; KEY_SIZE]);
+
+        assert_eq!(key1.encryption_key(), key2.encryption_key());
+        assert_eq!(key1.obfuscation_key(), key2.obfuscation_key());
+        assert_eq!(key1.metadata_key(), key2.metadata_key());
+    }
+
+    #[test]
+    fn test_derive_with_random_salt() {
+        let config = VaultConfig::default();
+
+        // Generate two keys with random salts
+        let (key1, salt1) = MasterKey::derive_with_random_salt(b"password", &config).unwrap();
+        let (key2, salt2) = MasterKey::derive_with_random_salt(b"password", &config).unwrap();
+
+        // Random salts should be different
+        assert_ne!(salt1, salt2);
+
+        // Same password with different salts produces different keys
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
+    }
+
+    #[test]
+    fn test_derive_with_salt_reproducible() {
+        let config = VaultConfig::default();
+        let salt = [7u8; SALT_SIZE];
+
+        // Deriving with same salt should produce same key
+        let key1 = MasterKey::derive_with_salt(b"password", &salt, &config).unwrap();
+        let key2 = MasterKey::derive_with_salt(b"password", &salt, &config).unwrap();
+
+        assert_eq!(key1.as_bytes(), key2.as_bytes());
     }
 }
