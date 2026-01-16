@@ -352,28 +352,46 @@ impl SparseVector {
     }
 
     /// Cosine similarity with another sparse vector.
+    /// Returns a value in [-1.0, 1.0], with 0.0 for degenerate cases.
+    /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
     pub fn cosine_similarity(&self, other: &SparseVector) -> f32 {
         let dot = self.dot(other);
         let mag_a = self.magnitude();
         let mag_b = other.magnitude();
 
         if mag_a == 0.0 || mag_b == 0.0 {
+            return 0.0;
+        }
+
+        let result = dot / (mag_a * mag_b);
+
+        // SECURITY: Sanitize result to valid range to prevent consensus issues
+        if result.is_nan() || result.is_infinite() {
             0.0
         } else {
-            dot / (mag_a * mag_b)
+            result.clamp(-1.0, 1.0)
         }
     }
 
     /// Cosine distance with a dense vector (1 - similarity).
+    /// Returns a value in [0.0, 2.0], with 1.0 (max distance) for degenerate cases.
+    /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
     pub fn cosine_distance_dense(&self, dense: &[f32]) -> f32 {
         let dot = self.dot_dense(dense);
         let mag_sparse = self.magnitude();
         let mag_dense: f32 = dense.iter().map(|x| x * x).sum::<f32>().sqrt();
 
         if mag_sparse == 0.0 || mag_dense == 0.0 {
-            1.0 // Maximum distance
+            return 1.0; // Maximum distance
+        }
+
+        let similarity = dot / (mag_sparse * mag_dense);
+
+        // SECURITY: Sanitize result to valid range
+        if similarity.is_nan() || similarity.is_infinite() {
+            1.0 // Maximum distance for invalid cases
         } else {
-            1.0 - (dot / (mag_sparse * mag_dense))
+            1.0 - similarity.clamp(-1.0, 1.0)
         }
     }
 
@@ -995,6 +1013,78 @@ mod tests {
         let b = SparseVector::from_dense(&[0.0, 1.0]);
 
         assert!(a.cosine_similarity(&b).abs() < 1e-6);
+    }
+
+    // === Security Tests for NaN/Inf Sanitization ===
+
+    #[test]
+    fn cosine_similarity_zero_vector_returns_zero() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let zero = SparseVector::new(3);
+
+        // Zero vector should return 0.0 (not NaN)
+        let result = a.cosine_similarity(&zero);
+        assert!(!result.is_nan());
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_both_zero_returns_zero() {
+        let zero1 = SparseVector::new(3);
+        let zero2 = SparseVector::new(3);
+
+        let result = zero1.cosine_similarity(&zero2);
+        assert!(!result.is_nan());
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn cosine_similarity_clamps_to_valid_range() {
+        // Identical vectors should give exactly 1.0 (not 1.0000001 due to floating point)
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let result = a.cosine_similarity(&a);
+        assert!(result >= -1.0 && result <= 1.0);
+        assert!((result - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_opposite_returns_negative_one() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let b = SparseVector::from_dense(&[-1.0, 0.0, 0.0]);
+
+        let result = a.cosine_similarity(&b);
+        assert!(result >= -1.0 && result <= 1.0);
+        assert!((result - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_distance_dense_zero_sparse_returns_max_distance() {
+        let zero = SparseVector::new(3);
+        let dense = vec![1.0, 2.0, 3.0];
+
+        let result = zero.cosine_distance_dense(&dense);
+        assert!(!result.is_nan());
+        assert_eq!(result, 1.0); // Max distance
+    }
+
+    #[test]
+    fn cosine_distance_dense_zero_dense_returns_max_distance() {
+        let sparse = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let zero_dense = vec![0.0, 0.0, 0.0];
+
+        let result = sparse.cosine_distance_dense(&zero_dense);
+        assert!(!result.is_nan());
+        assert_eq!(result, 1.0); // Max distance
+    }
+
+    #[test]
+    fn cosine_distance_dense_valid_range() {
+        let sparse = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let dense = vec![1.0, 0.0, 0.0];
+
+        let result = sparse.cosine_distance_dense(&dense);
+        assert!(result >= 0.0 && result <= 2.0);
+        assert!(result < 1e-6); // Should be ~0 for identical vectors
     }
 
     #[test]

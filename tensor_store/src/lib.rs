@@ -46,7 +46,7 @@ pub use embedding_slab::{
 };
 pub use entity_index::{EntityId, EntityIndex, EntityIndexSnapshot};
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};
-pub use hnsw::{EmbeddingStorage, HNSWConfig, HNSWIndex, HNSWMemoryStats};
+pub use hnsw::{EmbeddingStorage, EmbeddingStorageError, HNSWConfig, HNSWIndex, HNSWMemoryStats};
 pub use instrumentation::{
     HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
 };

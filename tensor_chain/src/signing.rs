@@ -285,6 +285,72 @@ pub struct SignedMessage {
     pub timestamp_ms: u64,
 }
 
+/// Registry of known validators with their public keys.
+/// Used for verifying block signatures and validator messages.
+pub struct ValidatorRegistry {
+    validators: dashmap::DashMap<NodeId, PublicIdentity>,
+}
+
+impl Default for ValidatorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ValidatorRegistry {
+    /// Create a new empty validator registry.
+    pub fn new() -> Self {
+        Self {
+            validators: dashmap::DashMap::new(),
+        }
+    }
+
+    /// Register a validator's public key.
+    pub fn register(&self, identity: &Identity) {
+        let node_id = identity.node_id();
+        let public = identity.verifying_key();
+        self.validators.insert(node_id, public);
+    }
+
+    /// Register a validator from raw public key bytes.
+    pub fn register_public_key(&self, public_key: &[u8; 32]) -> Result<NodeId> {
+        let public = PublicIdentity::from_bytes(public_key)?;
+        let node_id = public.to_node_id();
+        self.validators.insert(node_id.clone(), public);
+        Ok(node_id)
+    }
+
+    /// Get a validator's public identity by NodeId.
+    pub fn get(&self, node_id: &str) -> Option<PublicIdentity> {
+        self.validators.get(node_id).map(|v| v.clone())
+    }
+
+    /// Check if a validator is registered.
+    pub fn contains(&self, node_id: &str) -> bool {
+        self.validators.contains_key(node_id)
+    }
+
+    /// Remove a validator from the registry.
+    pub fn remove(&self, node_id: &str) -> Option<PublicIdentity> {
+        self.validators.remove(node_id).map(|(_, v)| v)
+    }
+
+    /// Get the number of registered validators.
+    pub fn len(&self) -> usize {
+        self.validators.len()
+    }
+
+    /// Check if the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.validators.is_empty()
+    }
+
+    /// Get all registered NodeIds.
+    pub fn node_ids(&self) -> Vec<NodeId> {
+        self.validators.iter().map(|v| v.key().clone()).collect()
+    }
+}
+
 impl SignedMessage {
     /// Verify the signature and check identity binding.
     /// Returns the payload if valid.
@@ -549,5 +615,100 @@ mod tests {
         // Replay of first message should fail
         let result = msg1.verify_with_tracker(&tracker);
         assert!(result.is_err());
+    }
+
+    // === ValidatorRegistry tests ===
+
+    #[test]
+    fn test_validator_registry_new() {
+        let registry = ValidatorRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_validator_registry_register() {
+        let registry = ValidatorRegistry::new();
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        registry.register(&identity);
+
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains(&node_id));
+    }
+
+    #[test]
+    fn test_validator_registry_get() {
+        let registry = ValidatorRegistry::new();
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        registry.register(&identity);
+
+        let public = registry.get(&node_id).unwrap();
+        assert_eq!(public.to_node_id(), node_id);
+    }
+
+    #[test]
+    fn test_validator_registry_get_nonexistent() {
+        let registry = ValidatorRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_validator_registry_register_public_key() {
+        let registry = ValidatorRegistry::new();
+        let identity = Identity::generate();
+        let pub_key = identity.public_key_bytes();
+
+        let node_id = registry.register_public_key(&pub_key).unwrap();
+        assert_eq!(node_id, identity.node_id());
+        assert!(registry.contains(&node_id));
+    }
+
+    #[test]
+    fn test_validator_registry_remove() {
+        let registry = ValidatorRegistry::new();
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        registry.register(&identity);
+        assert!(registry.contains(&node_id));
+
+        let removed = registry.remove(&node_id);
+        assert!(removed.is_some());
+        assert!(!registry.contains(&node_id));
+    }
+
+    #[test]
+    fn test_validator_registry_node_ids() {
+        let registry = ValidatorRegistry::new();
+        let id1 = Identity::generate();
+        let id2 = Identity::generate();
+
+        registry.register(&id1);
+        registry.register(&id2);
+
+        let node_ids = registry.node_ids();
+        assert_eq!(node_ids.len(), 2);
+        assert!(node_ids.contains(&id1.node_id()));
+        assert!(node_ids.contains(&id2.node_id()));
+    }
+
+    #[test]
+    fn test_validator_registry_verify_signature() {
+        let registry = ValidatorRegistry::new();
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        registry.register(&identity);
+
+        let message = b"test message";
+        let signature = identity.sign(message);
+
+        let public = registry.get(&node_id).unwrap();
+        assert!(public.verify(message, &signature).is_ok());
     }
 }

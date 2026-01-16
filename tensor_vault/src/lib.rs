@@ -338,7 +338,7 @@ impl Vault {
         }
 
         // Pad plaintext to hide length, then encrypt
-        let padded = obfuscation::pad_plaintext(value.as_bytes());
+        let padded = obfuscation::pad_plaintext(value.as_bytes())?;
         let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
         let timestamp = Self::current_timestamp();
 
@@ -782,7 +782,7 @@ impl Vault {
         }
 
         // Pad and encrypt new value
-        let padded = obfuscation::pad_plaintext(new_value.as_bytes());
+        let padded = obfuscation::pad_plaintext(new_value.as_bytes())?;
         let (ciphertext, nonce) = self.cipher.encrypt(&padded)?;
         let timestamp = Self::current_timestamp();
 
@@ -1716,9 +1716,9 @@ mod tests {
     #[test]
     fn test_padding_hides_length() {
         // Short values should be padded to same size
-        let short1 = obfuscation::pad_plaintext(b"a");
-        let short2 = obfuscation::pad_plaintext(b"abc");
-        let short3 = obfuscation::pad_plaintext(b"hello world!");
+        let short1 = obfuscation::pad_plaintext(b"a").unwrap();
+        let short2 = obfuscation::pad_plaintext(b"abc").unwrap();
+        let short3 = obfuscation::pad_plaintext(b"hello world!").unwrap();
 
         // All short values pad to Small (256 bytes)
         assert_eq!(short1.len(), 256);

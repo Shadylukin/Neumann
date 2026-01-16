@@ -95,6 +95,10 @@ impl AccessController {
     /// Get the highest permission level for a requester on a target.
     ///
     /// Returns None if no access path exists.
+    ///
+    /// SECURITY: MEMBER edges allow graph traversal but do NOT grant permission
+    /// to the target. Only VAULT_ACCESS_* edges grant actual permissions.
+    /// This prevents privilege escalation via group membership.
     pub fn get_permission_level(
         graph: &GraphEngine,
         source: &str,
@@ -109,10 +113,10 @@ impl AccessController {
         let mut queue = VecDeque::new();
         let mut best_permission: Option<Permission> = None;
 
-        queue.push_back((source.to_string(), Permission::Admin));
+        queue.push_back(source.to_string());
         visited.insert(source.to_string());
 
-        while let Some((current, current_perm)) = queue.pop_front() {
+        while let Some(current) = queue.pop_front() {
             // Get outgoing edges to check their types
             if let Ok(outgoing) = graph.get_entity_outgoing(&current) {
                 for edge_key in outgoing {
@@ -122,30 +126,25 @@ impl AccessController {
                             continue;
                         }
 
-                        // Determine permission from edge type
-                        let edge_perm = if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
-                            Permission::from_edge_type(&edge_type)
-                        } else {
-                            // Allowed non-VAULT_ACCESS edges (e.g., MEMBER) inherit current permission
-                            Some(current_perm)
-                        };
-
-                        if let Some(perm) = edge_perm {
-                            // Take the minimum permission along the path
-                            let path_perm = Self::min_permission(current_perm, perm);
-
+                        // SECURITY FIX: Only VAULT_ACCESS_* edges can grant permission
+                        // MEMBER edges allow traversal but do NOT grant permission to target
+                        if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
                             if to == target {
-                                // Found target - update best permission if better
-                                best_permission = Some(match best_permission {
-                                    None => path_perm,
-                                    Some(existing) => Self::max_permission(existing, path_perm),
-                                });
-                                continue;
+                                // Found target via VAULT_ACCESS edge - extract permission
+                                if let Some(perm) = Permission::from_edge_type(&edge_type) {
+                                    best_permission = Some(match best_permission {
+                                        None => perm,
+                                        Some(existing) => Self::max_permission(existing, perm),
+                                    });
+                                }
                             }
-
+                            // Don't continue traversal past VAULT_ACCESS edges
+                            // (they point to secrets, not to groups)
+                        } else {
+                            // MEMBER edge - allow traversal but no permission granted
                             if !visited.contains(&to) {
                                 visited.insert(to.clone());
-                                queue.push_back((to, path_perm));
+                                queue.push_back(to);
                             }
                         }
                     }
@@ -577,5 +576,100 @@ mod tests {
         assert!(accessors.contains(&"user:alice".to_string()));
         assert!(accessors.contains(&"user:bob".to_string()));
         assert!(accessors.contains(&"user:carol".to_string()));
+    }
+
+    // === Security Tests for MEMBER Edge Permission ===
+
+    #[test]
+    fn test_member_edge_direct_to_secret_no_permission() {
+        let graph = GraphEngine::new();
+
+        // SECURITY: MEMBER edge directly to secret should NOT grant permission
+        graph
+            .add_entity_edge("user:alice", "secret:key", "MEMBER")
+            .unwrap();
+
+        // Should return None - no VAULT_ACCESS_* edge to secret
+        let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
+        assert_eq!(perm, None);
+    }
+
+    #[test]
+    fn test_member_chain_without_vault_access_no_permission() {
+        let graph = GraphEngine::new();
+
+        // alice -> team (MEMBER) -> secret (MEMBER)
+        // SECURITY: This should NOT grant any permission
+        graph
+            .add_entity_edge("user:alice", "team:devs", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("team:devs", "secret:key", "MEMBER")
+            .unwrap();
+
+        let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
+        assert_eq!(perm, None);
+    }
+
+    #[test]
+    fn test_member_traversal_to_vault_access_grants_permission() {
+        let graph = GraphEngine::new();
+
+        // alice -> team (MEMBER) -> secret (VAULT_ACCESS_WRITE)
+        // Should grant Write permission via the chain
+        graph
+            .add_entity_edge("user:alice", "team:devs", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("team:devs", "secret:key", "VAULT_ACCESS_WRITE")
+            .unwrap();
+
+        let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
+        assert_eq!(perm, Some(Permission::Write));
+    }
+
+    #[test]
+    fn test_member_with_mixed_access_paths() {
+        let graph = GraphEngine::new();
+
+        // alice -> team1 (MEMBER) -> secret (MEMBER) - no permission
+        // alice -> team2 (MEMBER) -> secret (VAULT_ACCESS_READ) - Read permission
+        // Should get Read from the valid path
+        graph
+            .add_entity_edge("user:alice", "team:team1", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("team:team1", "secret:key", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("user:alice", "team:team2", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("team:team2", "secret:key", "VAULT_ACCESS_READ")
+            .unwrap();
+
+        let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
+        assert_eq!(perm, Some(Permission::Read));
+    }
+
+    #[test]
+    fn test_check_path_still_works_with_member() {
+        let graph = GraphEngine::new();
+
+        // check_path (for path existence) should still work with MEMBER edges
+        graph
+            .add_entity_edge("user:alice", "team:devs", "MEMBER")
+            .unwrap();
+        graph
+            .add_entity_edge("team:devs", "secret:key", "MEMBER")
+            .unwrap();
+
+        // Path exists (MEMBER edges connect the nodes)
+        assert!(AccessController::check_path(&graph, "user:alice", "secret:key"));
+        // But no permission is granted
+        assert_eq!(
+            AccessController::get_permission_level(&graph, "user:alice", "secret:key"),
+            None
+        );
     }
 }

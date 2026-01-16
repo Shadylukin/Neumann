@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tensor_store::SparseVector;
 
 use crate::error::{ChainError, Result};
+use crate::signing::ValidatorRegistry;
 
 /// Unique identifier for a node in the network.
 pub type NodeId = String;
@@ -140,6 +141,55 @@ impl BlockHeader {
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
+    }
+
+    /// Get the canonical bytes of this header for signing/verification.
+    /// This includes all fields except the signature itself.
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+
+        bytes.extend(self.height.to_le_bytes());
+        bytes.extend(self.prev_hash);
+        bytes.extend(self.tx_root);
+        bytes.extend(self.state_root);
+
+        // Serialize embedding deterministically
+        let embedding_bytes = bincode::serialize(&self.delta_embedding).unwrap_or_default();
+        bytes.extend(&embedding_bytes);
+
+        // Quantized codes
+        for code in &self.quantized_codes {
+            bytes.extend(code.to_le_bytes());
+        }
+
+        bytes.extend(self.timestamp.to_le_bytes());
+        bytes.extend(self.proposer.as_bytes());
+
+        bytes
+    }
+
+    /// Verify the proposer's signature on this block header.
+    /// Returns Ok(()) if valid, Err if signature is missing, invalid, or proposer unknown.
+    pub fn verify_signature(&self, registry: &ValidatorRegistry) -> Result<()> {
+        // SECURITY: Require non-empty signature
+        if self.signature.is_empty() {
+            return Err(ChainError::ValidationFailed(
+                "missing block signature".to_string(),
+            ));
+        }
+
+        // Look up proposer's public key
+        let public_key = registry.get(&self.proposer).ok_or_else(|| {
+            ChainError::ValidationFailed(format!("unknown proposer: {}", self.proposer))
+        })?;
+
+        // Get the canonical bytes to verify
+        let message = self.signing_bytes();
+
+        // Verify the signature
+        public_key
+            .verify(&message, &self.signature)
+            .map_err(|_| ChainError::ValidationFailed("invalid block signature".to_string()))
     }
 }
 
@@ -936,5 +986,122 @@ mod tests {
         }
 
         assert_eq!(block.signatures.len(), 3);
+    }
+
+    // === Security Tests for Block Signature Verification ===
+
+    #[test]
+    fn test_verify_signature_valid() {
+        use crate::signing::Identity;
+
+        // Create an identity and register it
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        // Create a registry and register the validator
+        let registry = ValidatorRegistry::new();
+        registry.register(&identity);
+
+        // Create a header with the identity's node_id as proposer
+        let mut header =
+            BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
+
+        // Sign the header
+        let signing_bytes = header.signing_bytes();
+        let signature = identity.sign(&signing_bytes);
+        header = header.with_signature(signature);
+
+        // Verification should succeed
+        assert!(header.verify_signature(&registry).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_missing() {
+        let registry = ValidatorRegistry::new();
+
+        // Header with empty signature
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+
+        let result = header.verify_signature(&registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing block signature"));
+    }
+
+    #[test]
+    fn test_verify_signature_unknown_proposer() {
+        let registry = ValidatorRegistry::new(); // Empty registry
+
+        // Header with signature but unknown proposer
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "unknown_node".to_string())
+            .with_signature(vec![0u8; 64]);
+
+        let result = header.verify_signature(&registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown proposer"));
+    }
+
+    #[test]
+    fn test_verify_signature_invalid_signature() {
+        use crate::signing::Identity;
+
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        let registry = ValidatorRegistry::new();
+        registry.register(&identity);
+
+        // Create a header with invalid signature (wrong bytes)
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id)
+            .with_signature(vec![0u8; 64]); // Invalid signature
+
+        let result = header.verify_signature(&registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid block signature"));
+    }
+
+    #[test]
+    fn test_verify_signature_tampered_header() {
+        use crate::signing::Identity;
+
+        let identity = Identity::generate();
+        let node_id = identity.node_id();
+
+        let registry = ValidatorRegistry::new();
+        registry.register(&identity);
+
+        // Create and sign a header
+        let mut header =
+            BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
+        let signing_bytes = header.signing_bytes();
+        let signature = identity.sign(&signing_bytes);
+        header = header.with_signature(signature);
+
+        // Tamper with the header after signing
+        header.height = 999;
+
+        // Verification should fail
+        let result = header.verify_signature(&registry);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid block signature"));
+    }
+
+    #[test]
+    fn test_signing_bytes_deterministic() {
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string())
+            .with_dense_embedding(&[1.0, 2.0])
+            .with_codes(vec![1, 2, 3]);
+
+        let bytes1 = header.signing_bytes();
+        let bytes2 = header.signing_bytes();
+
+        assert_eq!(bytes1, bytes2);
+    }
+
+    #[test]
+    fn test_signing_bytes_different_for_different_headers() {
+        let header1 = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+        let header2 = BlockHeader::new(2, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
+
+        assert_ne!(header1.signing_bytes(), header2.signing_bytes());
     }
 }

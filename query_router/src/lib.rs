@@ -113,6 +113,8 @@ pub enum RouterError {
     MissingArgument(String),
     /// Type mismatch in query.
     TypeMismatch(String),
+    /// Authentication required for vault operations.
+    AuthenticationRequired,
 }
 
 impl std::fmt::Display for RouterError {
@@ -131,6 +133,9 @@ impl std::fmt::Display for RouterError {
             RouterError::InvalidArgument(msg) => write!(f, "Invalid argument: {}", msg),
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
+            RouterError::AuthenticationRequired => {
+                write!(f, "Authentication required: call SET IDENTITY before vault operations")
+            },
         }
     }
 }
@@ -458,8 +463,8 @@ pub struct QueryRouter {
     blob: Option<Arc<tokio::sync::Mutex<BlobStore>>>,
     /// Tokio runtime for async blob operations
     blob_runtime: Option<Arc<Runtime>>,
-    /// Current identity for vault access control
-    current_identity: String,
+    /// Current identity for vault access control (None = not authenticated)
+    current_identity: Option<String>,
     /// Optional HNSW index for faster vector search
     hnsw_index: Option<(HNSWIndex, Vec<String>)>,
     /// Optional checkpoint manager (requires blob storage)
@@ -490,7 +495,7 @@ impl QueryRouter {
             cache: None,
             blob: None,
             blob_runtime: None,
-            current_identity: Vault::ROOT.to_string(),
+            current_identity: None,
             hnsw_index: None,
             checkpoint: None,
             chain: None,
@@ -517,7 +522,7 @@ impl QueryRouter {
             cache: None,
             blob: None,
             blob_runtime: None,
-            current_identity: Vault::ROOT.to_string(),
+            current_identity: None,
             hnsw_index: None,
             checkpoint: None,
             chain: None,
@@ -552,7 +557,7 @@ impl QueryRouter {
             cache: None,
             blob: None,
             blob_runtime: None,
-            current_identity: Vault::ROOT.to_string(),
+            current_identity: None,
             hnsw_index: None,
             checkpoint: None,
             chain: None,
@@ -922,13 +927,28 @@ impl QueryRouter {
     }
 
     /// Set the current identity for vault access control.
+    /// This authenticates the session for vault operations.
     pub fn set_identity(&mut self, identity: &str) {
-        self.current_identity = identity.to_string();
+        self.current_identity = Some(identity.to_string());
     }
 
     /// Get the current identity.
-    pub fn current_identity(&self) -> &str {
-        &self.current_identity
+    /// Returns `None` if not authenticated.
+    pub fn current_identity(&self) -> Option<&str> {
+        self.current_identity.as_deref()
+    }
+
+    /// Get the current identity or return an authentication error.
+    /// Use this for operations that require authentication.
+    fn require_identity(&self) -> Result<&str> {
+        self.current_identity
+            .as_deref()
+            .ok_or(RouterError::AuthenticationRequired)
+    }
+
+    /// Check if the router is authenticated.
+    pub fn is_authenticated(&self) -> bool {
+        self.current_identity.is_some()
     }
 
     /// Build HNSW index for faster vector similarity search.
@@ -1674,7 +1694,8 @@ impl QueryRouter {
             .as_ref()
             .ok_or_else(|| RouterError::VaultError("Vault not initialized".to_string()))?;
 
-        let identity = &self.current_identity;
+        // SECURITY: Require explicit authentication for vault operations
+        let identity = self.require_identity()?;
 
         match &stmt.operation {
             VaultOp::Set { key, value } => {
@@ -9874,6 +9895,7 @@ mod tests {
     fn test_vault_set_get() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT); // Authenticate as root
 
         router
             .execute_parsed("VAULT SET 'secret_key' 'secret_value'")
@@ -9889,6 +9911,7 @@ mod tests {
     fn test_vault_delete() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         router
             .execute_parsed("VAULT SET 'to_delete' 'value'")
@@ -9902,6 +9925,7 @@ mod tests {
     fn test_vault_list() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         router.execute_parsed("VAULT SET 'key1' 'v1'").unwrap();
         router.execute_parsed("VAULT SET 'key2' 'v2'").unwrap();
@@ -9919,6 +9943,7 @@ mod tests {
     fn test_vault_list_with_pattern() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         router.execute_parsed("VAULT SET 'db_pass' 'v1'").unwrap();
         router.execute_parsed("VAULT SET 'db_user' 'v2'").unwrap();
@@ -9937,6 +9962,7 @@ mod tests {
     fn test_vault_rotate() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         router
             .execute_parsed("VAULT SET 'rotate_key' 'old_value'")
@@ -9955,6 +9981,7 @@ mod tests {
     fn test_vault_grant_revoke() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         router
             .execute_parsed("VAULT SET 'shared_key' 'shared_value'")
@@ -10341,6 +10368,7 @@ mod tests {
     fn test_vault_get_not_found() {
         let mut router = QueryRouter::new();
         router.init_vault(b"test_master_key_32bytes!").unwrap();
+        router.set_identity(Vault::ROOT);
 
         let result = router.execute_parsed("VAULT GET 'nonexistent'");
         assert!(result.is_err());
@@ -10485,11 +10513,40 @@ mod tests {
     #[test]
     fn test_set_identity() {
         let mut router = QueryRouter::new();
-        // Default identity is "node:root"
-        assert_eq!(router.current_identity(), "node:root");
+        // Default is not authenticated
+        assert_eq!(router.current_identity(), None);
+        assert!(!router.is_authenticated());
 
         router.set_identity("user:alice");
-        assert_eq!(router.current_identity(), "user:alice");
+        assert_eq!(router.current_identity(), Some("user:alice"));
+        assert!(router.is_authenticated());
+    }
+
+    #[test]
+    fn test_vault_requires_authentication() {
+        let mut router = QueryRouter::new();
+        router.init_vault(b"test_master_key_32bytes!").unwrap();
+
+        // Without authentication, vault operations should fail
+        let result = router.execute_parsed("VAULT GET 'api_key'");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, RouterError::AuthenticationRequired),
+            "Expected AuthenticationRequired, got: {:?}",
+            err
+        );
+
+        // After authentication, operations should work (will fail with AccessDenied, not AuthenticationRequired)
+        router.set_identity("user:alice");
+        let result = router.execute_parsed("VAULT GET 'nonexistent_key'");
+        // This should fail with AccessDenied or NotFound, not AuthenticationRequired
+        match result {
+            Err(RouterError::AuthenticationRequired) => {
+                panic!("Should not get AuthenticationRequired after set_identity")
+            },
+            _ => {}, // Any other error or success is fine
+        }
     }
 
     #[test]
@@ -10584,6 +10641,7 @@ mod tests {
         router
             .init_vault(b"32_byte_master_key_for_testing!")
             .unwrap();
+        router.set_identity(Vault::ROOT);
 
         let result = router.execute_parsed("VAULT ROTATE 'nonexistent' 'new_value'");
         assert!(result.is_err());
@@ -10595,6 +10653,7 @@ mod tests {
         router
             .init_vault(b"32_byte_master_key_for_testing!")
             .unwrap();
+        router.set_identity(Vault::ROOT);
 
         let result = router.execute_parsed("VAULT DELETE 'nonexistent'");
         assert!(result.is_err());

@@ -131,15 +131,17 @@ pub async fn wrap_client(
         }
     }
 
-    let client_config = if config.insecure_skip_verify {
+    // SECURITY: Use should_verify() which always returns true in release builds
+    let client_config = if config.should_verify() {
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    } else {
         // For testing only - skip certificate verification
+        // This branch is unreachable in release builds
         ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
-            .with_no_client_auth()
-    } else {
-        ClientConfig::builder()
-            .with_root_certificates(root_store)
             .with_no_client_auth()
     };
 

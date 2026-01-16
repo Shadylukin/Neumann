@@ -317,6 +317,7 @@ pub struct TlsConfig {
     pub require_client_auth: bool,
 
     /// Skip certificate verification (for testing only).
+    /// SECURITY: This field is ignored in release builds - verification is always enforced.
     #[serde(default)]
     pub insecure_skip_verify: bool,
 }
@@ -343,6 +344,21 @@ impl TlsConfig {
     pub fn with_client_auth(mut self) -> Self {
         self.require_client_auth = true;
         self
+    }
+
+    /// Check if certificate verification should be performed.
+    /// SECURITY: In release builds, this ALWAYS returns true regardless of
+    /// the `insecure_skip_verify` field, preventing TLS bypass in production.
+    #[inline]
+    pub fn should_verify(&self) -> bool {
+        #[cfg(any(test, debug_assertions))]
+        {
+            !self.insecure_skip_verify
+        }
+        #[cfg(not(any(test, debug_assertions)))]
+        {
+            true // Always verify in release builds
+        }
     }
 }
 
@@ -536,6 +552,22 @@ mod tests {
         let tls = TlsConfig::new("/path/to/cert.pem", "/path/to/key.pem").with_client_auth();
 
         assert!(tls.require_client_auth);
+    }
+
+    #[test]
+    fn test_tls_should_verify_default() {
+        let tls = TlsConfig::new("/path/to/cert.pem", "/path/to/key.pem");
+        // Default should verify
+        assert!(tls.should_verify());
+    }
+
+    #[test]
+    fn test_tls_should_verify_in_test_mode() {
+        // In test builds, insecure_skip_verify can disable verification
+        let mut tls = TlsConfig::new("/path/to/cert.pem", "/path/to/key.pem");
+        tls.insecure_skip_verify = true;
+        // In test mode (which this is), should_verify returns false
+        assert!(!tls.should_verify());
     }
 
     #[test]

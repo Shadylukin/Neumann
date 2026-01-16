@@ -75,6 +75,10 @@ pub mod flags {
     pub const LZ4: u8 = 0x01;
 }
 
+/// Maximum decompressed message size (16 MB).
+/// SECURITY: Prevents memory DoS from malicious size prefixes.
+pub const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
+
 /// Get the frame flags byte for a compression method.
 pub fn frame_flags(method: CompressionMethod) -> u8 {
     match method {
@@ -101,10 +105,34 @@ pub fn compress(data: &[u8], method: CompressionMethod) -> Vec<u8> {
 }
 
 /// Decompress data using the specified method.
+/// SECURITY: Validates the claimed size before decompression to prevent memory DoS.
 pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> {
     match method {
         CompressionMethod::None => Ok(data.to_vec()),
         CompressionMethod::Lz4 => {
+            // SECURITY: Validate claimed size BEFORE decompression
+            if data.len() < 4 {
+                return Err(TcpError::Compression {
+                    operation: "decompress",
+                    message: "LZ4 data too short for size prefix".to_string(),
+                });
+            }
+
+            // LZ4 prepends the uncompressed size as 4 bytes little-endian
+            let claimed_size =
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+
+            if claimed_size > MAX_DECOMPRESSED_SIZE {
+                return Err(TcpError::Compression {
+                    operation: "decompress",
+                    message: format!(
+                        "Claimed decompressed size {} exceeds maximum {}",
+                        claimed_size, MAX_DECOMPRESSED_SIZE
+                    ),
+                });
+            }
+
+            // Now safe to decompress
             lz4_flex::decompress_size_prepended(data).map_err(|e| TcpError::Compression {
                 operation: "decompress",
                 message: e.to_string(),
@@ -197,6 +225,57 @@ mod tests {
         let config = CompressionConfig::disabled();
         assert!(!config.enabled);
         assert_eq!(config.method, CompressionMethod::None);
+    }
+
+    // === Security Tests for LZ4 Size Validation ===
+
+    #[test]
+    fn test_lz4_decompress_too_short() {
+        // Less than 4 bytes (no size prefix)
+        let result = decompress(&[1, 2, 3], CompressionMethod::Lz4);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_lz4_decompress_oversized_claim() {
+        // Craft a malicious payload claiming enormous decompressed size
+        let mut malicious = Vec::new();
+        // Claim 1 GB decompressed size (way over our 16 MB limit)
+        malicious.extend_from_slice(&(1024u32 * 1024 * 1024).to_le_bytes());
+        // Add some garbage "compressed" data
+        malicious.extend_from_slice(&[0x00; 100]);
+
+        let result = decompress(&malicious, CompressionMethod::Lz4);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_lz4_decompress_valid_size_accepted() {
+        // Valid compressed data with reasonable size
+        let data = b"Hello, compression test!".repeat(10);
+        let compressed = compress(&data, CompressionMethod::Lz4);
+        let decompressed = decompress(&compressed, CompressionMethod::Lz4).unwrap();
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_lz4_decompress_just_over_max_rejected() {
+        // Test size just OVER the limit - should be rejected by size check
+        let mut data = Vec::new();
+        // Claim exactly MAX_DECOMPRESSED_SIZE + 1 bytes
+        data.extend_from_slice(&((MAX_DECOMPRESSED_SIZE + 1) as u32).to_le_bytes());
+        // Add minimal "compressed" data
+        data.extend_from_slice(&[0x00; 10]);
+
+        let result = decompress(&data, CompressionMethod::Lz4);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Should contain "exceeds maximum" - the size check should catch this
+        assert!(err.to_string().contains("exceeds maximum"));
     }
 
     #[test]

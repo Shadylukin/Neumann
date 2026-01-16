@@ -19,6 +19,12 @@ use crate::{key::MasterKey, Result, VaultError};
 /// Nonce size for metadata AEAD (12 bytes = 96 bits, standard for AES-GCM).
 pub const METADATA_NONCE_SIZE: usize = 12;
 
+/// Maximum plaintext size (64KB - 4 bytes for length prefix - 1 byte min padding).
+pub const MAX_PLAINTEXT_SIZE: usize = 65531;
+
+/// Length prefix size in bytes (u32).
+const LENGTH_PREFIX_SIZE: usize = 4;
+
 /// Padding block sizes for length hiding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaddingSize {
@@ -30,19 +36,33 @@ pub enum PaddingSize {
     Large = 4096,
     /// 16 KB - for very large secrets
     ExtraLarge = 16384,
+    /// 32 KB - for oversized secrets
+    Huge = 32768,
+    /// 64 KB - maximum supported size
+    Maximum = 65536,
 }
 
 impl PaddingSize {
     /// Select appropriate padding size for given plaintext length.
-    pub fn for_length(len: usize) -> Self {
-        if len <= 240 {
-            Self::Small
-        } else if len <= 1000 {
-            Self::Medium
-        } else if len <= 4000 {
-            Self::Large
+    /// Accounts for the 4-byte length prefix when selecting bucket.
+    pub fn for_length(len: usize) -> Option<Self> {
+        // Need space for: length prefix (4 bytes) + plaintext + at least 1 byte padding
+        let min_required = len.checked_add(LENGTH_PREFIX_SIZE + 1)?;
+
+        if min_required <= Self::Small as usize {
+            Some(Self::Small)
+        } else if min_required <= Self::Medium as usize {
+            Some(Self::Medium)
+        } else if min_required <= Self::Large as usize {
+            Some(Self::Large)
+        } else if min_required <= Self::ExtraLarge as usize {
+            Some(Self::ExtraLarge)
+        } else if min_required <= Self::Huge as usize {
+            Some(Self::Huge)
+        } else if min_required <= Self::Maximum as usize {
+            Some(Self::Maximum)
         } else {
-            Self::ExtraLarge
+            None // Plaintext too large
         }
     }
 }
@@ -204,16 +224,36 @@ impl Obfuscator {
 }
 
 /// Pad plaintext to hide its length.
-pub fn pad_plaintext(plaintext: &[u8]) -> Vec<u8> {
-    let target_size = PaddingSize::for_length(plaintext.len()) as usize;
-    let padding_len = target_size - plaintext.len() - 2; // -2 for length prefix
+/// Returns an error if plaintext exceeds MAX_PLAINTEXT_SIZE.
+pub fn pad_plaintext(plaintext: &[u8]) -> Result<Vec<u8>> {
+    if plaintext.len() > MAX_PLAINTEXT_SIZE {
+        return Err(VaultError::CryptoError(format!(
+            "Plaintext too large: {} bytes exceeds maximum {}",
+            plaintext.len(),
+            MAX_PLAINTEXT_SIZE
+        )));
+    }
+
+    let target_size = PaddingSize::for_length(plaintext.len())
+        .ok_or_else(|| {
+            VaultError::CryptoError(format!(
+                "Cannot determine padding size for {} bytes",
+                plaintext.len()
+            ))
+        })?
+        as usize;
+
+    // Safe subtraction: target_size >= LENGTH_PREFIX_SIZE + plaintext.len() + 1 by construction
+    let padding_len = target_size
+        .checked_sub(LENGTH_PREFIX_SIZE)
+        .and_then(|n| n.checked_sub(plaintext.len()))
+        .ok_or_else(|| VaultError::CryptoError("Padding calculation overflow".into()))?;
 
     let mut padded = Vec::with_capacity(target_size);
 
-    // Store original length as 2 bytes (max 65535)
-    let len = plaintext.len() as u16;
-    padded.push((len >> 8) as u8);
-    padded.push((len & 0xff) as u8);
+    // Store original length as 4 bytes (u32 little-endian)
+    let len_bytes = (plaintext.len() as u32).to_le_bytes();
+    padded.extend_from_slice(&len_bytes);
 
     // Original data
     padded.extend_from_slice(plaintext);
@@ -223,24 +263,35 @@ pub fn pad_plaintext(plaintext: &[u8]) -> Vec<u8> {
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut rng_bytes);
     padded.extend_from_slice(&rng_bytes);
 
-    padded
+    Ok(padded)
 }
 
 /// Remove padding from plaintext.
 pub fn unpad_plaintext(padded: &[u8]) -> Result<Vec<u8>> {
-    if padded.len() < 2 {
-        return Err(VaultError::CryptoError("Padded data too short".to_string()));
-    }
-
-    let len = ((padded[0] as usize) << 8) | (padded[1] as usize);
-
-    if len + 2 > padded.len() {
+    if padded.len() < LENGTH_PREFIX_SIZE {
         return Err(VaultError::CryptoError(
-            "Invalid padding length".to_string(),
+            "Padded data too short for length prefix".into(),
         ));
     }
 
-    Ok(padded[2..2 + len].to_vec())
+    // Read length as u32 little-endian
+    let len = u32::from_le_bytes([padded[0], padded[1], padded[2], padded[3]]) as usize;
+
+    // Validate length doesn't exceed remaining data
+    let data_start = LENGTH_PREFIX_SIZE;
+    let data_end = data_start
+        .checked_add(len)
+        .ok_or_else(|| VaultError::CryptoError("Length overflow".into()))?;
+
+    if data_end > padded.len() {
+        return Err(VaultError::CryptoError(format!(
+            "Invalid length prefix: {} exceeds padded data size {}",
+            len,
+            padded.len() - LENGTH_PREFIX_SIZE
+        )));
+    }
+
+    Ok(padded[data_start..data_end].to_vec())
 }
 
 mod hex {
@@ -390,7 +441,7 @@ mod tests {
     #[test]
     fn test_padding_small() {
         let plaintext = b"short";
-        let padded = pad_plaintext(plaintext);
+        let padded = pad_plaintext(plaintext).unwrap();
 
         assert_eq!(padded.len(), PaddingSize::Small as usize);
 
@@ -401,7 +452,7 @@ mod tests {
     #[test]
     fn test_padding_medium() {
         let plaintext = vec![b'x'; 500];
-        let padded = pad_plaintext(&plaintext);
+        let padded = pad_plaintext(&plaintext).unwrap();
 
         assert_eq!(padded.len(), PaddingSize::Medium as usize);
 
@@ -412,7 +463,7 @@ mod tests {
     #[test]
     fn test_padding_large() {
         let plaintext = vec![b'x'; 2000];
-        let padded = pad_plaintext(&plaintext);
+        let padded = pad_plaintext(&plaintext).unwrap();
 
         assert_eq!(padded.len(), PaddingSize::Large as usize);
 
@@ -421,14 +472,115 @@ mod tests {
     }
 
     #[test]
+    fn test_padding_extra_large() {
+        let plaintext = vec![b'x'; 10000];
+        let padded = pad_plaintext(&plaintext).unwrap();
+
+        assert_eq!(padded.len(), PaddingSize::ExtraLarge as usize);
+
+        let unpadded = unpad_plaintext(&padded).unwrap();
+        assert_eq!(unpadded, plaintext);
+    }
+
+    #[test]
+    fn test_padding_huge() {
+        let plaintext = vec![b'x'; 20000];
+        let padded = pad_plaintext(&plaintext).unwrap();
+
+        assert_eq!(padded.len(), PaddingSize::Huge as usize);
+
+        let unpadded = unpad_plaintext(&padded).unwrap();
+        assert_eq!(unpadded, plaintext);
+    }
+
+    #[test]
+    fn test_padding_maximum() {
+        let plaintext = vec![b'x'; 50000];
+        let padded = pad_plaintext(&plaintext).unwrap();
+
+        assert_eq!(padded.len(), PaddingSize::Maximum as usize);
+
+        let unpadded = unpad_plaintext(&padded).unwrap();
+        assert_eq!(unpadded, plaintext);
+    }
+
+    #[test]
+    fn test_padding_at_max_size() {
+        // Test at exactly MAX_PLAINTEXT_SIZE
+        let plaintext = vec![b'x'; MAX_PLAINTEXT_SIZE];
+        let padded = pad_plaintext(&plaintext).unwrap();
+
+        assert_eq!(padded.len(), PaddingSize::Maximum as usize);
+
+        let unpadded = unpad_plaintext(&padded).unwrap();
+        assert_eq!(unpadded, plaintext);
+    }
+
+    #[test]
+    fn test_padding_exceeds_max_size() {
+        // Test just over MAX_PLAINTEXT_SIZE - should fail
+        let plaintext = vec![b'x'; MAX_PLAINTEXT_SIZE + 1];
+        let result = pad_plaintext(&plaintext);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
     fn test_padding_sizes() {
-        assert_eq!(PaddingSize::for_length(10), PaddingSize::Small);
-        assert_eq!(PaddingSize::for_length(240), PaddingSize::Small);
-        assert_eq!(PaddingSize::for_length(241), PaddingSize::Medium);
-        assert_eq!(PaddingSize::for_length(1000), PaddingSize::Medium);
-        assert_eq!(PaddingSize::for_length(1001), PaddingSize::Large);
-        assert_eq!(PaddingSize::for_length(4000), PaddingSize::Large);
-        assert_eq!(PaddingSize::for_length(4001), PaddingSize::ExtraLarge);
+        // With 4-byte length prefix, need len + 5 bytes minimum
+        assert_eq!(PaddingSize::for_length(10), Some(PaddingSize::Small));
+        assert_eq!(PaddingSize::for_length(251), Some(PaddingSize::Small)); // 251 + 5 = 256
+        assert_eq!(PaddingSize::for_length(252), Some(PaddingSize::Medium)); // 252 + 5 = 257 > 256
+        assert_eq!(PaddingSize::for_length(1000), Some(PaddingSize::Medium));
+        assert_eq!(PaddingSize::for_length(1019), Some(PaddingSize::Medium)); // 1019 + 5 = 1024
+        assert_eq!(PaddingSize::for_length(1020), Some(PaddingSize::Large)); // 1020 + 5 = 1025 > 1024
+        assert_eq!(PaddingSize::for_length(4000), Some(PaddingSize::Large));
+        assert_eq!(PaddingSize::for_length(4091), Some(PaddingSize::Large)); // 4091 + 5 = 4096
+        assert_eq!(PaddingSize::for_length(4092), Some(PaddingSize::ExtraLarge));
+        assert_eq!(PaddingSize::for_length(16379), Some(PaddingSize::ExtraLarge)); // 16379 + 5 = 16384
+        assert_eq!(PaddingSize::for_length(16380), Some(PaddingSize::Huge));
+        assert_eq!(PaddingSize::for_length(32763), Some(PaddingSize::Huge)); // 32763 + 5 = 32768
+        assert_eq!(PaddingSize::for_length(32764), Some(PaddingSize::Maximum));
+        assert_eq!(PaddingSize::for_length(MAX_PLAINTEXT_SIZE), Some(PaddingSize::Maximum));
+        assert_eq!(PaddingSize::for_length(MAX_PLAINTEXT_SIZE + 1), None);
+    }
+
+    #[test]
+    fn test_unpad_too_short() {
+        // Less than 4 bytes (length prefix)
+        assert!(unpad_plaintext(&[]).is_err());
+        assert!(unpad_plaintext(&[1]).is_err());
+        assert!(unpad_plaintext(&[1, 2]).is_err());
+        assert!(unpad_plaintext(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn test_unpad_invalid_length() {
+        // Length prefix claims more data than available
+        let mut data = vec![0u8; 10];
+        // Claim 100 bytes of data
+        data[0..4].copy_from_slice(&100u32.to_le_bytes());
+
+        let result = unpad_plaintext(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn test_u32_length_prefix_roundtrip() {
+        // Test that we correctly use u32 (not u16) for length
+        // This would fail with the old u16 implementation
+        let plaintext = vec![b'x'; 40000]; // > 65535 would overflow u16
+        let padded = pad_plaintext(&plaintext).unwrap();
+
+        // Verify the length prefix is correct
+        let stored_len = u32::from_le_bytes([padded[0], padded[1], padded[2], padded[3]]);
+        assert_eq!(stored_len as usize, plaintext.len());
+
+        let unpadded = unpad_plaintext(&padded).unwrap();
+        assert_eq!(unpadded, plaintext);
     }
 
     #[test]

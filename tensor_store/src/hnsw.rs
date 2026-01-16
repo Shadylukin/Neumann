@@ -31,6 +31,44 @@ use tensor_compress::{
     tt_reconstruct, TTConfig, TTVector,
 };
 
+/// Error type for EmbeddingStorage operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmbeddingStorageError {
+    /// Delta storage requires an archetype registry.
+    DeltaRequiresRegistry,
+    /// Archetype not found in registry.
+    ArchetypeNotFound(usize),
+    /// Generic reconstruction error.
+    ReconstructionFailed(String),
+    /// HNSW index at capacity.
+    CapacityExceeded { limit: usize, current: usize },
+}
+
+impl std::fmt::Display for EmbeddingStorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeltaRequiresRegistry => {
+                write!(f, "Delta storage requires archetype registry")
+            }
+            Self::ArchetypeNotFound(id) => {
+                write!(f, "Archetype {} not found in registry", id)
+            }
+            Self::ReconstructionFailed(msg) => {
+                write!(f, "Reconstruction failed: {}", msg)
+            }
+            Self::CapacityExceeded { limit, current } => {
+                write!(
+                    f,
+                    "HNSW index at capacity: {} nodes (limit: {})",
+                    current, limit
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EmbeddingStorageError {}
+
 /// SIMD-accelerated vector operations for cosine similarity.
 pub mod simd {
     use wide::f32x8;
@@ -171,6 +209,25 @@ impl EmbeddingStorage {
                 registry.decode(d).expect("Archetype not found in registry")
             },
             EmbeddingStorage::TensorTrain(cached) => tt_reconstruct(&cached.tt),
+        }
+    }
+
+    /// Convert to dense representation with archetype registry support.
+    /// Returns `Result` instead of panicking on Delta storage without registry.
+    pub fn try_to_dense_with_registry(
+        &self,
+        registry: Option<&ArchetypeRegistry>,
+    ) -> Result<Vec<f32>, EmbeddingStorageError> {
+        match self {
+            EmbeddingStorage::Dense(v) => Ok(v.clone()),
+            EmbeddingStorage::Sparse(s) => Ok(s.to_dense()),
+            EmbeddingStorage::Delta(d) => {
+                let registry = registry.ok_or(EmbeddingStorageError::DeltaRequiresRegistry)?;
+                registry
+                    .decode(d)
+                    .ok_or_else(|| EmbeddingStorageError::ArchetypeNotFound(d.archetype_id()))
+            }
+            EmbeddingStorage::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
         }
     }
 
@@ -623,6 +680,9 @@ pub struct HNSWConfig {
     /// When using `insert_auto()`, vectors with sparsity above this threshold
     /// will be stored as sparse vectors for memory savings.
     pub sparsity_threshold: f32,
+    /// Maximum number of nodes allowed in the index (0 = unlimited).
+    /// Default: 10,000,000 (10M nodes) to prevent memory exhaustion.
+    pub max_nodes: usize,
 }
 
 impl Default for HNSWConfig {
@@ -635,6 +695,7 @@ impl Default for HNSWConfig {
             ef_search: 50,
             ml: 1.0 / (m as f64).ln(),
             sparsity_threshold: 0.5,
+            max_nodes: 10_000_000, // 10M nodes default limit
         }
     }
 }
@@ -666,6 +727,7 @@ impl HNSWConfig {
             ef_search: 200,
             ml: 1.0 / 32.0_f64.ln(),
             sparsity_threshold: 0.5,
+            max_nodes: 10_000_000,
         }
     }
 
@@ -678,6 +740,7 @@ impl HNSWConfig {
             ef_search: 20,
             ml: 1.0 / 8.0_f64.ln(),
             sparsity_threshold: 0.5,
+            max_nodes: 10_000_000,
         }
     }
 }
@@ -789,6 +852,24 @@ impl HNSWIndex {
         } else {
             self.insert_embedding(EmbeddingStorage::Dense(vector))
         }
+    }
+
+    /// Try to insert a vector into the index.
+    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    pub fn try_insert(
+        &self,
+        vector: Vec<f32>,
+    ) -> Result<usize, EmbeddingStorageError> {
+        self.try_insert_embedding(EmbeddingStorage::Dense(vector))
+    }
+
+    /// Try to insert a sparse vector into the index.
+    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    pub fn try_insert_sparse(
+        &self,
+        sparse: SparseVector,
+    ) -> Result<usize, EmbeddingStorageError> {
+        self.try_insert_embedding(EmbeddingStorage::Sparse(sparse))
     }
 
     /// Insert a vector with TensorTrain compression.
@@ -958,7 +1039,35 @@ impl HNSWIndex {
     }
 
     /// Insert an embedding (dense or sparse) into the index.
+    /// Panics if the index is at capacity (max_nodes).
+    /// Use `try_insert_embedding` for a non-panicking version.
     pub fn insert_embedding(&self, embedding: EmbeddingStorage) -> usize {
+        match self.try_insert_embedding(embedding) {
+            Ok(id) => id,
+            Err(EmbeddingStorageError::CapacityExceeded { limit, current }) => {
+                panic!("HNSW index at capacity: {} nodes (limit: {})", current, limit)
+            }
+            Err(e) => panic!("Insert failed: {}", e),
+        }
+    }
+
+    /// Insert an embedding with capacity checking.
+    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    pub fn try_insert_embedding(
+        &self,
+        embedding: EmbeddingStorage,
+    ) -> Result<usize, EmbeddingStorageError> {
+        // SECURITY: Check capacity before insertion to prevent memory exhaustion
+        if self.config.max_nodes > 0 {
+            let current_count = self.nodes.read().unwrap().len();
+            if current_count >= self.config.max_nodes {
+                return Err(EmbeddingStorageError::CapacityExceeded {
+                    limit: self.config.max_nodes,
+                    current: current_count,
+                });
+            }
+        }
+
         let node_level = self.random_level();
         let is_tt = embedding.is_tt();
         let node_id;
@@ -977,7 +1086,7 @@ impl HNSWIndex {
         if entry_id == usize::MAX {
             self.entry_point.store(node_id, AtomicOrdering::Relaxed);
             self.max_layer.store(node_level, AtomicOrdering::Relaxed);
-            return node_id;
+            return Ok(node_id);
         }
 
         let nodes = self.nodes.read().unwrap();
@@ -1050,7 +1159,7 @@ impl HNSWIndex {
             self.max_layer.store(node_level, AtomicOrdering::Relaxed);
         }
 
-        node_id
+        Ok(node_id)
     }
 
     /// Search for k nearest neighbors of the query vector.
@@ -1664,6 +1773,150 @@ mod tests {
         let reconstructed = delta.to_dense_with_registry(Some(&registry));
         assert!((reconstructed[0] - 0.9).abs() < 0.01);
         assert!((reconstructed[1] - 0.1).abs() < 0.01);
+    }
+
+    // === Security Tests for try_to_dense_with_registry ===
+
+    #[test]
+    fn test_try_to_dense_dense_ok() {
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+        let result = dense.try_to_dense_with_registry(None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_try_to_dense_sparse_ok() {
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[0.0, 1.0, 0.0, 2.0]));
+        let result = sparse.try_to_dense_with_registry(None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![0.0, 1.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn test_try_to_dense_delta_requires_registry() {
+        let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 4, vec![], vec![]));
+        let result = delta.try_to_dense_with_registry(None);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), EmbeddingStorageError::DeltaRequiresRegistry);
+    }
+
+    #[test]
+    fn test_try_to_dense_delta_with_registry() {
+        use crate::ArchetypeRegistry;
+
+        let mut registry = ArchetypeRegistry::new(10);
+        registry.register(vec![1.0, 0.0, 0.0, 0.0]).unwrap();
+
+        let delta_vec = DeltaVector::from_dense_with_reference(
+            &[0.9, 0.1, 0.0, 0.0],
+            &[1.0, 0.0, 0.0, 0.0],
+            0,
+            0.001,
+        );
+        let delta = EmbeddingStorage::Delta(delta_vec);
+        let result = delta.try_to_dense_with_registry(Some(&registry));
+        assert!(result.is_ok());
+        let reconstructed = result.unwrap();
+        assert!((reconstructed[0] - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_try_to_dense_delta_archetype_not_found() {
+        use crate::ArchetypeRegistry;
+
+        // Registry with no archetypes
+        let registry = ArchetypeRegistry::new(10);
+
+        // Delta referencing archetype 0 which doesn't exist
+        let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 4, vec![], vec![]));
+        let result = delta.try_to_dense_with_registry(Some(&registry));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), EmbeddingStorageError::ArchetypeNotFound(0));
+    }
+
+    #[test]
+    fn test_embedding_storage_error_display() {
+        let err = EmbeddingStorageError::DeltaRequiresRegistry;
+        assert!(err.to_string().contains("registry"));
+
+        let err = EmbeddingStorageError::ArchetypeNotFound(42);
+        assert!(err.to_string().contains("42"));
+
+        let err = EmbeddingStorageError::ReconstructionFailed("test".to_string());
+        assert!(err.to_string().contains("test"));
+
+        let err = EmbeddingStorageError::CapacityExceeded { limit: 100, current: 100 };
+        assert!(err.to_string().contains("100"));
+        assert!(err.to_string().contains("capacity"));
+    }
+
+    // === Security Tests for HNSW max_nodes limit ===
+
+    #[test]
+    fn test_hnsw_max_nodes_config_default() {
+        let config = HNSWConfig::default();
+        assert_eq!(config.max_nodes, 10_000_000);
+    }
+
+    #[test]
+    fn test_hnsw_max_nodes_enforced() {
+        let config = HNSWConfig {
+            max_nodes: 5, // Very small limit for testing
+            ..Default::default()
+        };
+        let index = HNSWIndex::with_config(config);
+
+        // Insert up to the limit
+        for i in 0..5 {
+            let result = index.try_insert(vec![i as f32, 0.0, 0.0, 0.0]);
+            assert!(result.is_ok(), "Insert {} should succeed", i);
+        }
+
+        // Next insert should fail
+        let result = index.try_insert(vec![99.0, 0.0, 0.0, 0.0]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            EmbeddingStorageError::CapacityExceeded { limit: 5, current: 5 }
+        );
+    }
+
+    #[test]
+    fn test_hnsw_max_nodes_zero_means_unlimited() {
+        let config = HNSWConfig {
+            max_nodes: 0, // Unlimited
+            ..Default::default()
+        };
+        let index = HNSWIndex::with_config(config);
+
+        // Should be able to insert many nodes without hitting limit
+        for i in 0..100 {
+            let result = index.try_insert(vec![i as f32, 0.0, 0.0]);
+            assert!(result.is_ok());
+        }
+        assert_eq!(index.len(), 100);
+    }
+
+    #[test]
+    fn test_hnsw_try_insert_sparse_capacity() {
+        let config = HNSWConfig {
+            max_nodes: 3,
+            ..Default::default()
+        };
+        let index = HNSWIndex::with_config(config);
+
+        // Insert sparse vectors up to limit
+        for i in 0..3 {
+            let sparse = SparseVector::from_dense(&[i as f32, 0.0, 0.0]);
+            let result = index.try_insert_sparse(sparse);
+            assert!(result.is_ok());
+        }
+
+        // Next should fail
+        let sparse = SparseVector::from_dense(&[99.0, 0.0, 0.0]);
+        let result = index.try_insert_sparse(sparse);
+        assert!(result.is_err());
     }
 
     #[test]
