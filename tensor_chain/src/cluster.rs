@@ -437,6 +437,10 @@ impl ClusterOrchestrator {
             std::time::Duration::from_millis(self.config.gossip.gossip_interval_ms);
         let mut last_gossip = std::time::Instant::now();
 
+        // Track cleanup timing for 2PC transaction timeouts (presumed abort)
+        let cleanup_interval = std::time::Duration::from_secs(30);
+        let mut last_cleanup = std::time::Instant::now();
+
         // Main loop
         loop {
             tokio::select! {
@@ -514,6 +518,21 @@ impl ClusterOrchestrator {
                         let _ = gossip.gossip_round().await;
                         last_gossip = std::time::Instant::now();
                     }
+
+                    // Clean up timed-out 2PC transactions (presumed abort)
+                    if last_cleanup.elapsed() >= cleanup_interval {
+                        let timed_out = dtx.cleanup_timeouts();
+                        if !timed_out.is_empty() {
+                            tracing::info!(
+                                "Cleaned up {} timed-out distributed transactions",
+                                timed_out.len()
+                            );
+                        }
+                        last_cleanup = std::time::Instant::now();
+                    }
+
+                    // Check quorum health and step down if lost (split-brain prevention)
+                    raft.check_quorum_health();
 
                     // Process pending abort broadcasts
                     dtx.process_pending_aborts(&*transport).await;

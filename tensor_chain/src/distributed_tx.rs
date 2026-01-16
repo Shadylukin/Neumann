@@ -22,6 +22,7 @@ use crate::{
     consensus::{ConsensusManager, DeltaVector},
     error::{ChainError, Result},
     network::{Message, Transport, TxAbortMsg},
+    tx_wal::{TxOutcome, TxRecoveryState, TxWal, TxWalEntry},
 };
 
 /// Milliseconds since UNIX epoch, serializable replacement for Instant.
@@ -680,6 +681,8 @@ pub struct DistributedTxCoordinator {
     abort_states: RwLock<HashMap<u64, AbortState>>,
     /// Transactions marked for abort broadcast (processed by async tick).
     pending_aborts: RwLock<Vec<(u64, String, Vec<usize>)>>,
+    /// Optional Write-Ahead Log for durable phase transitions.
+    wal: Option<RwLock<TxWal>>,
 }
 
 impl DistributedTxCoordinator {
@@ -693,12 +696,101 @@ impl DistributedTxCoordinator {
             stats: DistributedTxStats::new(),
             abort_states: RwLock::new(HashMap::new()),
             pending_aborts: RwLock::new(Vec::new()),
+            wal: None,
         }
     }
 
     /// Create with default configuration.
     pub fn with_consensus(consensus: ConsensusManager) -> Self {
         Self::new(consensus, DistributedTxConfig::default())
+    }
+
+    /// Add a Write-Ahead Log for durable phase transitions.
+    pub fn with_wal(mut self, wal: TxWal) -> Self {
+        self.wal = Some(RwLock::new(wal));
+        self
+    }
+
+    /// Log a WAL entry if WAL is configured.
+    fn log_wal_entry(&self, entry: &TxWalEntry) -> Result<()> {
+        if let Some(ref wal) = self.wal {
+            wal.write()
+                .append(entry)
+                .map_err(|e| ChainError::StorageError(format!("WAL write failed: {}", e)))?;
+        }
+        Ok(())
+    }
+
+    /// Recover coordinator state from the WAL.
+    ///
+    /// Returns statistics about recovered transactions:
+    /// - Prepared transactions are restored to pending
+    /// - Committing transactions are marked for completion
+    /// - Aborting transactions are marked for completion
+    pub fn recover_from_wal(&self) -> Result<RecoveryStats> {
+        let wal = match &self.wal {
+            Some(w) => w,
+            None => return Ok(RecoveryStats::default()),
+        };
+
+        let recovery_state = TxRecoveryState::from_wal(&wal.read())
+            .map_err(|e| ChainError::StorageError(format!("WAL replay failed: {}", e)))?;
+
+        let mut stats = RecoveryStats::default();
+        let mut pending = self.pending.write();
+
+        // Restore prepared transactions
+        for prepared in recovery_state.prepared_txs {
+            let mut tx = DistributedTransaction::new(
+                "recovered".to_string(), // Coordinator unknown during recovery
+                prepared.participants.clone(),
+            );
+            tx.tx_id = prepared.tx_id;
+            tx.phase = TxPhase::Prepared;
+            // Restore votes
+            for (shard, vote_kind) in prepared.votes {
+                let vote = match vote_kind {
+                    crate::tx_wal::PrepareVoteKind::Yes => PrepareVote::Yes {
+                        lock_handle: 0, // Lock handle lost during recovery
+                        delta: DeltaVector::zero(0),
+                    },
+                    crate::tx_wal::PrepareVoteKind::No => PrepareVote::No {
+                        reason: "recovered from WAL".to_string(),
+                    },
+                };
+                tx.votes.insert(shard, vote);
+            }
+            pending.insert(prepared.tx_id, tx);
+            stats.pending_prepare += 1;
+        }
+
+        // Re-drive committing transactions
+        for tx_id in recovery_state.committing_txs {
+            if let Some(tx) = pending.get_mut(&tx_id) {
+                tx.phase = TxPhase::Committing;
+                stats.pending_commit += 1;
+            }
+        }
+
+        // Re-drive aborting transactions
+        for tx_id in recovery_state.aborting_txs {
+            if let Some(tx) = pending.get_mut(&tx_id) {
+                tx.phase = TxPhase::Aborting;
+                stats.pending_abort += 1;
+            }
+        }
+
+        Ok(stats)
+    }
+
+    /// Truncate the WAL after checkpoint.
+    pub fn truncate_wal(&self) -> Result<()> {
+        if let Some(ref wal) = self.wal {
+            wal.write()
+                .truncate()
+                .map_err(|e| ChainError::StorageError(format!("WAL truncate failed: {}", e)))?;
+        }
+        Ok(())
     }
 
     /// Begin a new distributed transaction.
@@ -714,7 +806,14 @@ impl DistributedTxCoordinator {
             ));
         }
 
-        let tx = DistributedTransaction::new(coordinator, participants);
+        let tx = DistributedTransaction::new(coordinator, participants.clone());
+
+        // Log to WAL BEFORE applying state change
+        self.log_wal_entry(&TxWalEntry::TxBegin {
+            tx_id: tx.tx_id,
+            participants,
+        })?;
+
         self.pending.write().insert(tx.tx_id, tx.clone());
         self.stats.started.fetch_add(1, Ordering::Relaxed);
 
@@ -877,6 +976,13 @@ impl DistributedTxCoordinator {
             )));
         }
 
+        // Log phase change to WAL BEFORE applying state change
+        self.log_wal_entry(&TxWalEntry::PhaseChange {
+            tx_id,
+            from: TxPhase::Prepared,
+            to: TxPhase::Committing,
+        })?;
+
         tx.phase = TxPhase::Committing;
 
         // Release all locks
@@ -885,6 +991,12 @@ impl DistributedTxCoordinator {
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
+
+        // Log completion to WAL BEFORE applying state change
+        self.log_wal_entry(&TxWalEntry::TxComplete {
+            tx_id,
+            outcome: TxOutcome::Committed,
+        })?;
 
         tx.phase = TxPhase::Committed;
         self.stats.committed.fetch_add(1, Ordering::Relaxed);
@@ -962,6 +1074,15 @@ impl DistributedTxCoordinator {
             ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
         })?;
 
+        let from_phase = tx.phase;
+
+        // Log phase change to WAL BEFORE applying state change
+        self.log_wal_entry(&TxWalEntry::PhaseChange {
+            tx_id,
+            from: from_phase,
+            to: TxPhase::Aborting,
+        })?;
+
         tx.phase = TxPhase::Aborting;
 
         // Release all locks
@@ -970,6 +1091,12 @@ impl DistributedTxCoordinator {
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
+
+        // Log completion to WAL BEFORE applying state change
+        self.log_wal_entry(&TxWalEntry::TxComplete {
+            tx_id,
+            outcome: TxOutcome::Aborted,
+        })?;
 
         tx.phase = TxPhase::Aborted;
         self.stats.aborted.fetch_add(1, Ordering::Relaxed);
@@ -1196,6 +1323,7 @@ impl DistributedTxCoordinator {
             stats: DistributedTxStats::new(),
             abort_states: RwLock::new(HashMap::new()),
             pending_aborts: RwLock::new(Vec::new()),
+            wal: None,
         }
     }
 
@@ -1372,8 +1500,7 @@ impl DistributedTxCoordinator {
     /// Returns the number of locks released.
     pub fn release_orphaned_locks(&self, partition_start_ms: u64) -> usize {
         let pending = self.pending.read();
-        let active_tx_ids: std::collections::HashSet<u64> =
-            pending.keys().copied().collect();
+        let active_tx_ids: std::collections::HashSet<u64> = pending.keys().copied().collect();
         drop(pending);
 
         // Get all locks and find orphaned ones
@@ -3313,5 +3440,256 @@ mod tests {
         // Queue should be empty now
         let aborts2 = coordinator.take_pending_aborts();
         assert!(aborts2.is_empty());
+    }
+
+    // ========== WAL Integration Tests ==========
+
+    #[test]
+    fn test_coordinator_with_wal_logs_begin() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        // Begin a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+
+        // Verify WAL has the entry
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+        if let crate::tx_wal::TxWalEntry::TxBegin {
+            tx_id,
+            participants,
+        } = &entries[0]
+        {
+            assert_eq!(*tx_id, tx.tx_id);
+            assert_eq!(*participants, vec![0, 1]);
+        } else {
+            panic!("expected TxBegin entry");
+        }
+    }
+
+    #[test]
+    fn test_coordinator_with_wal_logs_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        // Create a prepared transaction manually
+        let tx_id = {
+            let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            tx.phase = TxPhase::Prepared;
+            tx.votes.insert(
+                0,
+                PrepareVote::Yes {
+                    lock_handle: 1,
+                    delta: crate::consensus::DeltaVector::zero(0),
+                },
+            );
+            let id = tx.tx_id;
+            coordinator.pending.write().insert(tx.tx_id, tx);
+            id
+        };
+
+        // Commit the transaction
+        coordinator.commit(tx_id).unwrap();
+
+        // Verify WAL has the phase change and completion entries
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        // Should have PhaseChange (Prepared->Committing) and TxComplete
+        assert_eq!(entries.len(), 2);
+
+        // First entry should be phase change
+        if let crate::tx_wal::TxWalEntry::PhaseChange {
+            tx_id: id,
+            from,
+            to,
+        } = &entries[0]
+        {
+            assert_eq!(*id, tx_id);
+            assert_eq!(*from, TxPhase::Prepared);
+            assert_eq!(*to, TxPhase::Committing);
+        } else {
+            panic!("expected PhaseChange entry");
+        }
+
+        // Second entry should be completion
+        if let crate::tx_wal::TxWalEntry::TxComplete { tx_id: id, outcome } = &entries[1] {
+            assert_eq!(*id, tx_id);
+            assert_eq!(*outcome, crate::tx_wal::TxOutcome::Committed);
+        } else {
+            panic!("expected TxComplete entry");
+        }
+    }
+
+    #[test]
+    fn test_coordinator_with_wal_logs_abort() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        // Create a transaction manually
+        let tx_id = {
+            let mut tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            tx.phase = TxPhase::Preparing;
+            let id = tx.tx_id;
+            coordinator.pending.write().insert(tx.tx_id, tx);
+            id
+        };
+
+        // Abort the transaction
+        coordinator.abort(tx_id, "test abort").unwrap();
+
+        // Verify WAL has the phase change and completion entries
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // First entry should be phase change to Aborting
+        if let crate::tx_wal::TxWalEntry::PhaseChange { to, .. } = &entries[0] {
+            assert_eq!(*to, TxPhase::Aborting);
+        } else {
+            panic!("expected PhaseChange entry");
+        }
+
+        // Second entry should be completion with Aborted outcome
+        if let crate::tx_wal::TxWalEntry::TxComplete { outcome, .. } = &entries[1] {
+            assert_eq!(*outcome, crate::tx_wal::TxOutcome::Aborted);
+        } else {
+            panic!("expected TxComplete entry");
+        }
+    }
+
+    #[test]
+    fn test_coordinator_recovers_from_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        // Create WAL with some entries
+        {
+            let mut wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+            // Transaction 1: prepared with YES vote
+            wal.append(&crate::tx_wal::TxWalEntry::TxBegin {
+                tx_id: 100,
+                participants: vec![0, 1],
+            })
+            .unwrap();
+            wal.append(&crate::tx_wal::TxWalEntry::PrepareVote {
+                tx_id: 100,
+                shard: 0,
+                vote: crate::tx_wal::PrepareVoteKind::Yes,
+            })
+            .unwrap();
+            wal.append(&crate::tx_wal::TxWalEntry::PhaseChange {
+                tx_id: 100,
+                from: TxPhase::Preparing,
+                to: TxPhase::Prepared,
+            })
+            .unwrap();
+
+            // Transaction 2: prepared with NO vote
+            wal.append(&crate::tx_wal::TxWalEntry::TxBegin {
+                tx_id: 200,
+                participants: vec![0],
+            })
+            .unwrap();
+            wal.append(&crate::tx_wal::TxWalEntry::PrepareVote {
+                tx_id: 200,
+                shard: 0,
+                vote: crate::tx_wal::PrepareVoteKind::No,
+            })
+            .unwrap();
+            wal.append(&crate::tx_wal::TxWalEntry::PhaseChange {
+                tx_id: 200,
+                from: TxPhase::Preparing,
+                to: TxPhase::Prepared,
+            })
+            .unwrap();
+        }
+
+        // Create coordinator and recover
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        let stats = coordinator.recover_from_wal().unwrap();
+
+        // Verify recovery stats - both transactions in prepared phase
+        assert_eq!(stats.pending_prepare, 2);
+        assert_eq!(stats.pending_commit, 0);
+        assert_eq!(stats.pending_abort, 0);
+
+        // Verify pending transactions were restored
+        assert_eq!(coordinator.pending_count(), 2);
+
+        // Verify transaction details
+        let tx100 = coordinator.get(100).unwrap();
+        assert_eq!(tx100.phase, TxPhase::Prepared);
+        assert_eq!(tx100.participants, vec![0, 1]);
+
+        let tx200 = coordinator.get(200).unwrap();
+        assert_eq!(tx200.phase, TxPhase::Prepared);
+        assert_eq!(tx200.participants, vec![0]);
+    }
+
+    #[test]
+    fn test_coordinator_truncate_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        // Begin a transaction (creates WAL entry)
+        let _ = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Truncate WAL
+        coordinator.truncate_wal().unwrap();
+
+        // Verify WAL is empty
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_coordinator_without_wal_works() {
+        // Coordinator without WAL should still work
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // Begin should work
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Create prepared state
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(tx) = pending.get_mut(&tx.tx_id) {
+                tx.phase = TxPhase::Prepared;
+                tx.votes.insert(
+                    0,
+                    PrepareVote::Yes {
+                        lock_handle: 1,
+                        delta: crate::consensus::DeltaVector::zero(0),
+                    },
+                );
+            }
+        }
+
+        // Commit should work
+        coordinator.commit(tx.tx_id).unwrap();
+        assert_eq!(coordinator.pending_count(), 0);
     }
 }

@@ -1879,6 +1879,12 @@ impl RaftNode {
                 if aer.success {
                     ls.next_index.insert(from.clone(), aer.match_index + 1);
                     ls.match_index.insert(from.clone(), aer.match_index);
+
+                    // Record successful response for quorum tracking
+                    self.quorum_tracker.record_success(from);
+                    self.stats
+                        .heartbeat_successes
+                        .fetch_add(1, Ordering::Relaxed);
                     true
                 } else {
                     // Decrement next_index and retry
@@ -1886,6 +1892,12 @@ impl RaftNode {
                     if *next > 1 {
                         *next -= 1;
                     }
+
+                    // Record failure for quorum tracking
+                    self.quorum_tracker.record_failure(from);
+                    self.stats
+                        .heartbeat_failures
+                        .fetch_add(1, Ordering::Relaxed);
                     false
                 }
             } else {
@@ -2114,6 +2126,13 @@ impl RaftNode {
             ));
         }
 
+        // Check quorum before accepting write to prevent split-brain
+        if !self.is_write_safe() {
+            return Err(ChainError::ConsensusError(
+                "quorum not available".to_string(),
+            ));
+        }
+
         // Capture sparse embedding before moving block
         let embedding = block.header.delta_embedding.clone();
 
@@ -2128,6 +2147,64 @@ impl RaftNode {
         self.fast_path_state.add_embedding(&self.node_id, embedding);
 
         Ok(index)
+    }
+
+    /// Check if it is safe to accept writes (quorum available).
+    ///
+    /// Returns true if both:
+    /// 1. QuorumTracker indicates we can reach a majority of peers
+    /// 2. MembershipManager (if present) indicates quorum is reachable
+    pub fn is_write_safe(&self) -> bool {
+        let peer_count = self.peers.read().len();
+
+        // Check QuorumTracker
+        if !self.quorum_tracker.has_quorum(peer_count) {
+            return false;
+        }
+
+        // Check MembershipManager if available
+        if let Some(ref membership) = self.membership {
+            if !membership.is_safe_to_write() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check quorum health and step down if quorum is lost.
+    ///
+    /// Called periodically to detect sustained quorum loss and prevent
+    /// split-brain scenarios where a leader continues accepting writes
+    /// without being able to replicate them.
+    pub fn check_quorum_health(&self) {
+        if *self.state.read() != RaftState::Leader {
+            return;
+        }
+
+        let peer_count = self.peers.read().len();
+        self.stats.quorum_checks.fetch_add(1, Ordering::Relaxed);
+
+        if !self.quorum_tracker.has_quorum(peer_count) {
+            // Step down if quorum lost
+            self.stats
+                .quorum_lost_events
+                .fetch_add(1, Ordering::Relaxed);
+            // Quorum size = majority = (total_nodes / 2) + 1
+            let quorum_needed = (peer_count + 2).div_ceil(2);
+            tracing::warn!(
+                "Stepping down: lost quorum contact (reachable: {}, needed: {})",
+                self.quorum_tracker.reachable_count(),
+                quorum_needed
+            );
+
+            // Step down to follower
+            *self.state.write() = RaftState::Follower;
+            *self.leader_state.write() = None;
+            self.stop_heartbeat_task();
+
+            self.stats.leader_step_downs.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Finalize committed entries up to a height.
@@ -3207,6 +3284,9 @@ mod tests {
         node.become_leader();
 
         assert!(node.is_leader());
+
+        // Establish quorum by recording successful response from peer
+        node.quorum_tracker.record_success(&"node2".to_string());
 
         // Propose a block
         let block = create_test_block(1);
@@ -6509,5 +6589,151 @@ mod tests {
         assert_eq!(snapshot.heartbeats_failed, 0);
         assert_eq!(snapshot.consecutive_failures, 0);
         assert!(snapshot.last_heartbeat_at.is_none());
+    }
+
+    #[test]
+    fn test_propose_rejects_without_quorum() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string(), "node3".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Become leader
+        node.become_leader();
+        assert!(node.is_leader());
+
+        // Without any quorum tracker updates, propose should fail
+        // (quorum_tracker has no responses recorded, so has_quorum returns false)
+        let block = create_test_block(1);
+        let result = node.propose(block);
+
+        assert!(result.is_err());
+        if let Err(crate::error::ChainError::ConsensusError(msg)) = result {
+            assert!(msg.contains("quorum not available"));
+        } else {
+            panic!("expected ConsensusError with quorum message");
+        }
+    }
+
+    #[test]
+    fn test_propose_succeeds_with_quorum() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string(), "node3".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Become leader
+        node.become_leader();
+        assert!(node.is_leader());
+
+        // Record successful responses from peers to establish quorum
+        node.quorum_tracker.record_success(&"node2".to_string());
+        node.quorum_tracker.record_success(&"node3".to_string());
+
+        // Now propose should succeed
+        let block = create_test_block(1);
+        let result = node.propose(block);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_is_write_safe_checks_quorum() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string(), "node3".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Initially no quorum (no responses recorded)
+        assert!(!node.is_write_safe());
+
+        // Record one peer - still not quorum (need 2 out of 3)
+        node.quorum_tracker.record_success(&"node2".to_string());
+        // With 3 nodes total (self + 2 peers), need 2 reachable (self + 1 peer)
+        assert!(node.is_write_safe());
+
+        // Record second peer
+        node.quorum_tracker.record_success(&"node3".to_string());
+        assert!(node.is_write_safe());
+    }
+
+    #[test]
+    fn test_leader_steps_down_on_quorum_loss() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string(), "node3".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Become leader and establish quorum
+        node.become_leader();
+        node.quorum_tracker.record_success(&"node2".to_string());
+        node.quorum_tracker.record_success(&"node3".to_string());
+        assert!(node.is_leader());
+
+        // Simulate losing quorum by recording failures and clearing responses
+        node.quorum_tracker.reset();
+
+        // Check quorum health should trigger step-down
+        node.check_quorum_health();
+
+        // Node should have stepped down to follower
+        assert!(!node.is_leader());
+        assert_eq!(node.stats.quorum_lost_events.load(Ordering::Relaxed), 1);
+        assert_eq!(node.stats.leader_step_downs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_append_entries_response_updates_quorum_tracker() {
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = RaftNode::new(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            RaftConfig::default(),
+        );
+
+        // Become leader
+        node.become_leader();
+
+        // Simulate successful append entries response
+        let aer = AppendEntriesResponse {
+            term: node.current_term(),
+            success: true,
+            follower_id: "node2".to_string(),
+            match_index: 0,
+            used_fast_path: false,
+        };
+        node.handle_message(&"node2".to_string(), &Message::AppendEntriesResponse(aer));
+
+        // Verify quorum tracker was updated
+        assert!(node.quorum_tracker.is_reachable(&"node2".to_string()));
+        assert_eq!(node.stats.heartbeat_successes.load(Ordering::Relaxed), 1);
+
+        // Simulate failed response
+        let aer_fail = AppendEntriesResponse {
+            term: node.current_term(),
+            success: false,
+            follower_id: "node2".to_string(),
+            match_index: 0,
+            used_fast_path: false,
+        };
+        node.handle_message(
+            &"node2".to_string(),
+            &Message::AppendEntriesResponse(aer_fail),
+        );
+
+        assert_eq!(node.stats.heartbeat_failures.load(Ordering::Relaxed), 1);
     }
 }
