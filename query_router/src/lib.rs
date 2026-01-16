@@ -134,7 +134,10 @@ impl std::fmt::Display for RouterError {
             RouterError::TypeMismatch(msg) => write!(f, "Type mismatch: {}", msg),
             RouterError::MissingArgument(msg) => write!(f, "Missing argument: {}", msg),
             RouterError::AuthenticationRequired => {
-                write!(f, "Authentication required: call SET IDENTITY before vault operations")
+                write!(
+                    f,
+                    "Authentication required: call SET IDENTITY before vault operations"
+                )
             },
         }
     }
@@ -1511,6 +1514,8 @@ impl QueryRouter {
     // ========== Cache Execution ==========
 
     fn exec_cache(&self, stmt: &CacheStmt) -> Result<QueryResult> {
+        let _identity = self.require_identity()?;
+
         let cache = self
             .cache
             .as_ref()
@@ -1776,6 +1781,8 @@ impl QueryRouter {
     // ========== Blob Execution ==========
 
     fn exec_blob(&self, stmt: &BlobStmt) -> Result<QueryResult> {
+        let _identity = self.require_identity()?;
+
         // Handle BLOB INIT specially - doesn't require blob to be initialized
         if matches!(stmt.operation, BlobOp::Init) {
             if self.blob.is_some() {
@@ -2040,6 +2047,8 @@ impl QueryRouter {
     }
 
     fn exec_blobs(&self, stmt: &BlobsStmt) -> Result<QueryResult> {
+        let _identity = self.require_identity()?;
+
         let blob = self
             .blob
             .as_ref()
@@ -2234,6 +2243,8 @@ impl QueryRouter {
     // ========== Chain Execution ==========
 
     fn exec_chain(&self, stmt: &ChainStmt) -> Result<QueryResult> {
+        let _identity = self.require_identity()?;
+
         let chain = self
             .chain
             .as_ref()
@@ -9684,6 +9695,7 @@ mod tests {
     fn test_cache_stats() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
         let result = router.execute_parsed("CACHE STATS");
         assert!(result.is_ok());
         if let QueryResult::Value(output) = result.unwrap() {
@@ -9697,6 +9709,7 @@ mod tests {
     fn test_cache_init_command() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
         let result = router.execute_parsed("CACHE INIT");
         assert!(result.is_ok());
         if let QueryResult::Value(output) = result.unwrap() {
@@ -9710,6 +9723,7 @@ mod tests {
     fn test_cache_clear() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
         let result = router.execute_parsed("CACHE CLEAR");
         assert!(result.is_ok());
         if let QueryResult::Value(output) = result.unwrap() {
@@ -9730,6 +9744,7 @@ mod tests {
     fn test_cache_evict() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
         let result = router.execute_parsed("CACHE EVICT");
         assert!(result.is_ok());
         if let QueryResult::Value(output) = result.unwrap() {
@@ -9743,6 +9758,7 @@ mod tests {
     fn test_cache_evict_with_count() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
         let result = router.execute_parsed("CACHE EVICT 50");
         assert!(result.is_ok());
         if let QueryResult::Value(output) = result.unwrap() {
@@ -9756,6 +9772,7 @@ mod tests {
     fn test_cache_put_get() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
 
         // Put a value
         let result = router.execute_parsed("CACHE PUT 'testkey' 'testvalue'");
@@ -9776,6 +9793,7 @@ mod tests {
     fn test_cache_get_not_found() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("CACHE GET 'nonexistent'");
         assert!(result.is_ok());
@@ -10000,7 +10018,8 @@ mod tests {
 
     #[test]
     fn test_blob_not_initialized() {
-        let router = QueryRouter::new();
+        let mut router = QueryRouter::new();
+        router.set_identity("user:test");
         let result = router.execute_parsed("BLOB PUT 'test.txt' 'hello'");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -10011,6 +10030,7 @@ mod tests {
     fn test_blob_put_get_delete() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Put a blob
         let put_result = router
@@ -10046,6 +10066,7 @@ mod tests {
     fn test_blob_info() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'info_test.txt' 'test data'")
@@ -10071,6 +10092,7 @@ mod tests {
     fn test_blob_link_unlink() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'link_test.txt' 'data'")
@@ -10106,6 +10128,7 @@ mod tests {
     fn test_blob_tag_untag() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'tag_test.txt' 'data'")
@@ -10141,6 +10164,7 @@ mod tests {
     fn test_blob_verify() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'verify_test.txt' 'verify me'")
@@ -10163,6 +10187,7 @@ mod tests {
     fn test_blob_gc() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let gc_result = router.execute_parsed("BLOB GC").unwrap();
         match gc_result {
@@ -10178,6 +10203,7 @@ mod tests {
     fn test_blob_gc_full() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let gc_result = router.execute_parsed("BLOB GC FULL").unwrap();
         match gc_result {
@@ -10193,6 +10219,7 @@ mod tests {
     fn test_blob_repair() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let repair_result = router.execute_parsed("BLOB REPAIR").unwrap();
         match repair_result {
@@ -10208,6 +10235,7 @@ mod tests {
     fn test_blob_stats() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let stats_result = router.execute_parsed("BLOB STATS").unwrap();
         match stats_result {
@@ -10222,6 +10250,7 @@ mod tests {
     fn test_blob_meta_set_get() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'meta_test.txt' 'data'")
@@ -10259,6 +10288,7 @@ mod tests {
     fn test_blob_put_missing_data() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // PUT without DATA or FROM should fail
         let result = router.execute_parsed("BLOB PUT 'missing.txt'");
@@ -10271,6 +10301,7 @@ mod tests {
     fn test_blobs_list() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Add some blobs
         router
@@ -10294,6 +10325,7 @@ mod tests {
     fn test_blobs_list_with_pattern() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Test that BLOBS with a pattern expression parses and executes
         let list_result = router.execute_parsed("BLOBS 'some_prefix'");
@@ -10307,6 +10339,7 @@ mod tests {
     fn test_blobs_find_by_link() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'linked.txt' 'data'")
@@ -10333,6 +10366,7 @@ mod tests {
     fn test_blobs_find_by_tag() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'tagged.txt' 'data'")
@@ -10357,7 +10391,8 @@ mod tests {
 
     #[test]
     fn test_blobs_not_initialized() {
-        let router = QueryRouter::new();
+        let mut router = QueryRouter::new();
+        router.set_identity("user:test");
         let result = router.execute_parsed("BLOBS LIST");
         assert!(result.is_err());
     }
@@ -10378,6 +10413,7 @@ mod tests {
     fn test_blob_get_not_found() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOB GET 'artifact:nonexistent'");
         assert!(result.is_err());
@@ -10387,6 +10423,7 @@ mod tests {
     fn test_blob_delete_not_found() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOB DELETE 'artifact:nonexistent'");
         assert!(result.is_err());
@@ -10396,6 +10433,7 @@ mod tests {
     fn test_blob_info_not_found() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOB INFO 'artifact:nonexistent'");
         assert!(result.is_err());
@@ -10405,6 +10443,7 @@ mod tests {
     fn test_blob_verify_not_found() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOB VERIFY 'artifact:nonexistent'");
         assert!(result.is_err());
@@ -10421,6 +10460,7 @@ mod tests {
     fn test_blob_put_with_options() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Test with LINK and TAG options
         let result = router
@@ -10470,6 +10510,7 @@ mod tests {
     fn test_blobs_for_entity() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOBS FOR 'task:123'");
         match result {
@@ -10482,6 +10523,7 @@ mod tests {
     fn test_blobs_by_type() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOBS WHERE TYPE = 'text/plain'");
         match result {
@@ -10550,6 +10592,110 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_requires_authentication() {
+        let mut router = QueryRouter::new();
+        router.init_cache_default().unwrap();
+
+        // Without authentication, cache operations should fail
+        let result = router.execute_parsed("CACHE STATS");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, RouterError::AuthenticationRequired),
+            "Expected AuthenticationRequired, got: {:?}",
+            err
+        );
+
+        // After authentication, operations should work
+        router.set_identity("user:test");
+        let result = router.execute_parsed("CACHE STATS");
+        match result {
+            Err(RouterError::AuthenticationRequired) => {
+                panic!("Should not get AuthenticationRequired after set_identity")
+            },
+            _ => {},
+        }
+    }
+
+    #[test]
+    fn test_blob_requires_authentication() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Without authentication, blob operations should fail
+        let result = router.execute_parsed("BLOB INIT");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, RouterError::AuthenticationRequired),
+            "Expected AuthenticationRequired, got: {:?}",
+            err
+        );
+
+        // After authentication, operations should work
+        router.set_identity("user:test");
+        let result = router.execute_parsed("BLOB INIT");
+        match result {
+            Err(RouterError::AuthenticationRequired) => {
+                panic!("Should not get AuthenticationRequired after set_identity")
+            },
+            _ => {},
+        }
+    }
+
+    #[test]
+    fn test_blobs_requires_authentication() {
+        let mut router = QueryRouter::new();
+        router.init_blob().unwrap();
+
+        // Without authentication, blobs operations should fail
+        let result = router.execute_parsed("BLOBS");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, RouterError::AuthenticationRequired),
+            "Expected AuthenticationRequired, got: {:?}",
+            err
+        );
+
+        // After authentication, operations should work
+        router.set_identity("user:test");
+        let result = router.execute_parsed("BLOBS");
+        match result {
+            Err(RouterError::AuthenticationRequired) => {
+                panic!("Should not get AuthenticationRequired after set_identity")
+            },
+            _ => {},
+        }
+    }
+
+    #[test]
+    fn test_chain_requires_authentication() {
+        let mut router = QueryRouter::new();
+        router.init_chain("test_node").unwrap();
+
+        // Without authentication, chain operations should fail
+        let result = router.execute_parsed("CHAIN HEIGHT");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, RouterError::AuthenticationRequired),
+            "Expected AuthenticationRequired, got: {:?}",
+            err
+        );
+
+        // After authentication, operations should work
+        router.set_identity("user:test");
+        let result = router.execute_parsed("CHAIN HEIGHT");
+        match result {
+            Err(RouterError::AuthenticationRequired) => {
+                panic!("Should not get AuthenticationRequired after set_identity")
+            },
+            _ => {},
+        }
+    }
+
+    #[test]
     fn test_init_cache_default() {
         let mut router = QueryRouter::new();
         let result = router.init_cache_default();
@@ -10600,6 +10746,7 @@ mod tests {
     fn test_blob_from_path() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Try to read from a non-existent path
         let result = router.execute_parsed("BLOB PUT 'from_path.txt' FROM '/nonexistent/path'");
@@ -10610,6 +10757,7 @@ mod tests {
     fn test_blob_get_to_path() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         // Put a blob first
         let put_result = router
@@ -10726,6 +10874,7 @@ mod tests {
     fn test_blob_get_to_valid_path() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let put_result = router
             .execute_parsed("BLOB PUT 'get_to_valid.txt' 'test'")
@@ -11149,7 +11298,8 @@ mod tests {
 
     #[test]
     fn parsed_blob_init_not_initialized() {
-        let router = QueryRouter::new();
+        let mut router = QueryRouter::new();
+        router.set_identity("user:test");
         let result = router.execute_parsed("BLOB INIT");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -11163,6 +11313,7 @@ mod tests {
     fn parsed_blob_init_already_initialized() {
         let mut router = QueryRouter::new();
         router.init_blob().unwrap();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("BLOB INIT");
         assert!(result.is_ok());
@@ -11252,6 +11403,7 @@ mod tests {
         let mut config = CacheConfig::default();
         config.embedding_dim = 3;
         router.init_cache_with_config(config);
+        router.set_identity("user:test");
 
         let result = router.execute_parsed(
             "CACHE SEMANTIC PUT 'What is 2+2?' 'The answer is 4' EMBEDDING [1.0, 0.0, 0.0]",
@@ -11272,6 +11424,7 @@ mod tests {
         let mut config = CacheConfig::default();
         config.embedding_dim = 2;
         router.init_cache_with_config(config);
+        router.set_identity("user:test");
 
         // First put something
         router
@@ -11292,6 +11445,7 @@ mod tests {
     fn parsed_cache_semantic_get_with_threshold() {
         let mut router = QueryRouter::new();
         router.init_cache();
+        router.set_identity("user:test");
 
         let result = router.execute_parsed("CACHE SEMANTIC GET 'unknown query' THRESHOLD 0.9");
         assert!(result.is_ok());
@@ -12577,6 +12731,7 @@ mod tests {
     fn test_chain_height() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN HEIGHT").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12592,6 +12747,7 @@ mod tests {
     fn test_chain_tip() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN TIP").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12607,6 +12763,7 @@ mod tests {
     fn test_chain_verify() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN VERIFY").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12623,6 +12780,7 @@ mod tests {
     fn test_chain_block_not_found() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN BLOCK 999").unwrap();
         let result = router.execute_statement(&stmt);
@@ -12633,6 +12791,7 @@ mod tests {
     fn test_chain_history() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN HISTORY 'test_key'").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12649,6 +12808,7 @@ mod tests {
     fn test_chain_drift() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("CHAIN DRIFT FROM 0 TO 100").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12665,6 +12825,7 @@ mod tests {
     fn test_chain_begin() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("BEGIN CHAIN TRANSACTION").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12680,6 +12841,7 @@ mod tests {
     fn test_show_codebook_global() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("SHOW CODEBOOK GLOBAL").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12695,6 +12857,7 @@ mod tests {
     fn test_show_codebook_local() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("SHOW CODEBOOK LOCAL 'users'").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
@@ -12711,6 +12874,7 @@ mod tests {
     fn test_analyze_codebook_transitions() {
         let mut router = QueryRouter::new();
         router.init_chain("test_node").unwrap();
+        router.set_identity("user:test");
 
         let stmt = parser::parse("ANALYZE CODEBOOK TRANSITIONS").unwrap();
         let result = router.execute_statement(&stmt).unwrap();
