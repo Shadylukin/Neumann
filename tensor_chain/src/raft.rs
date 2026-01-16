@@ -227,7 +227,6 @@ pub struct RaftStats {
 }
 
 impl RaftStats {
-    /// Create new stats.
     pub fn new() -> Self {
         Self::default()
     }
@@ -248,7 +247,6 @@ impl RaftStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get the fast-path acceptance rate.
     pub fn acceptance_rate(&self) -> f32 {
         let accepted = self.fast_path_accepted.load(Ordering::Relaxed);
         let rejected = self.fast_path_rejected.load(Ordering::Relaxed);
@@ -260,14 +258,12 @@ impl RaftStats {
         }
     }
 
-    /// Get total blocks validated.
     pub fn total_validated(&self) -> u64 {
         self.fast_path_accepted.load(Ordering::Relaxed)
             + self.fast_path_rejected.load(Ordering::Relaxed)
             + self.full_validation_required.load(Ordering::Relaxed)
     }
 
-    /// Get the heartbeat success rate.
     pub fn heartbeat_success_rate(&self) -> f32 {
         let successes = self.heartbeat_successes.load(Ordering::Relaxed);
         let failures = self.heartbeat_failures.load(Ordering::Relaxed);
@@ -335,7 +331,6 @@ pub struct QuorumTracker {
 }
 
 impl QuorumTracker {
-    /// Create a new quorum tracker.
     pub fn new(response_timeout: std::time::Duration, max_failures: u32) -> Self {
         Self {
             last_response: RwLock::new(HashMap::new()),
@@ -410,7 +405,6 @@ impl QuorumTracker {
             .insert(node_id.clone(), Instant::now());
     }
 
-    /// Get the list of unreachable peers.
     pub fn unreachable_peers(&self) -> Vec<NodeId> {
         let last = self.last_response.read();
         last.keys()
@@ -461,7 +455,6 @@ pub struct SnapshotMetadata {
 }
 
 impl SnapshotMetadata {
-    /// Create new snapshot metadata.
     pub fn new(
         last_included_index: u64,
         last_included_term: u64,
@@ -607,7 +600,6 @@ impl Default for FastPathState {
 }
 
 impl FastPathState {
-    /// Create new fast-path state.
     pub fn new(max_history: usize) -> Self {
         Self {
             leader_embeddings: RwLock::new(HashMap::new()),
@@ -643,7 +635,6 @@ impl FastPathState {
             .unwrap_or_default()
     }
 
-    /// Get sparse embeddings for a leader.
     pub fn get_sparse_embeddings(&self, leader: &NodeId) -> Vec<SparseVector> {
         self.leader_embeddings
             .read()
@@ -657,7 +648,6 @@ impl FastPathState {
         self.leader_embeddings.write().remove(leader);
     }
 
-    /// Get the number of embeddings stored for a leader.
     pub fn leader_history_size(&self, leader: &NodeId) -> usize {
         self.leader_embeddings
             .read()
@@ -730,7 +720,6 @@ pub struct RaftNode {
 }
 
 impl RaftNode {
-    /// Create a new Raft node.
     pub fn new(
         node_id: NodeId,
         peers: Vec<NodeId>,
@@ -783,7 +772,6 @@ impl RaftNode {
         }
     }
 
-    /// Create a new Raft node with membership manager.
     pub fn with_membership(
         node_id: NodeId,
         peers: Vec<NodeId>,
@@ -796,7 +784,6 @@ impl RaftNode {
         node
     }
 
-    /// Set the membership manager.
     pub fn set_membership(&mut self, membership: Arc<MembershipManager>) {
         self.membership = Some(membership);
     }
@@ -1158,89 +1145,72 @@ impl RaftNode {
         ((similarity + 1.0) / 2.0).clamp(0.0, 1.0)
     }
 
-    /// Get the node ID.
     pub fn node_id(&self) -> &NodeId {
         &self.node_id
     }
 
-    /// Get the current state.
     pub fn state(&self) -> RaftState {
         *self.state.read()
     }
 
-    /// Get the current term.
     pub fn current_term(&self) -> u64 {
         self.persistent.read().current_term
     }
 
-    /// Get the current leader.
     pub fn current_leader(&self) -> Option<NodeId> {
         self.current_leader.read().clone()
     }
 
-    /// Set the current leader (test helper).
     pub fn set_current_leader(&self, leader_id: Option<NodeId>) {
         *self.current_leader.write() = leader_id;
     }
 
-    /// Reset last heartbeat to simulate election timeout elapsed (test helper).
     pub fn reset_heartbeat_for_election(&self) {
         *self.last_heartbeat.write() = Instant::now() - std::time::Duration::from_secs(10);
     }
 
-    /// Check if this node is the leader.
     pub fn is_leader(&self) -> bool {
         *self.state.read() == RaftState::Leader
     }
 
-    /// Get the commit index.
     pub fn commit_index(&self) -> u64 {
         self.volatile.read().commit_index
     }
 
-    /// Get the finalized height.
     pub fn finalized_height(&self) -> u64 {
         self.finalized_height.load(Ordering::SeqCst)
     }
 
-    /// Set the finalized height directly (test helper).
     pub fn set_finalized_height(&self, height: u64) {
         self.finalized_height.store(height, Ordering::SeqCst);
     }
 
-    /// Get the log length.
     pub fn log_length(&self) -> usize {
         self.persistent.read().log.len()
     }
 
-    /// Get fast-path statistics.
     pub fn fast_path_stats(&self) -> &FastPathStats {
         &self.fast_path_state.stats
     }
 
-    /// Get fast-path state.
     pub fn fast_path_state(&self) -> &FastPathState {
         &self.fast_path_state
     }
 
-    /// Get the Raft stats.
     pub fn stats(&self) -> &RaftStats {
         &self.stats
     }
 
-    /// Get the quorum tracker.
     pub fn quorum_tracker(&self) -> &QuorumTracker {
         &self.quorum_tracker
     }
 
-    /// Get a reference to the transport layer.
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.transport
     }
 
     // ========== Dynamic Membership APIs ==========
 
-    /// Get the current membership configuration.
     pub fn membership_config(&self) -> crate::network::RaftMembershipConfig {
         self.membership_config.read().clone()
     }
@@ -1348,22 +1318,18 @@ impl RaftNode {
         false
     }
 
-    /// Check if the cluster has quorum for the given set of votes.
     pub fn has_quorum(&self, votes: &std::collections::HashSet<NodeId>) -> bool {
         self.membership_config.read().has_quorum(votes)
     }
 
-    /// Get all nodes that should receive log entries.
     pub fn replication_targets(&self) -> Vec<NodeId> {
         self.membership_config.read().replication_targets()
     }
 
-    /// Check if currently in joint consensus mode.
     pub fn in_joint_consensus(&self) -> bool {
         self.membership_config.read().in_joint_consensus()
     }
 
-    /// Get the last log index.
     pub fn last_log_index(&self) -> u64 {
         let log = &self.persistent.read().log;
         if log.is_empty() {
@@ -1732,7 +1698,6 @@ impl RaftNode {
         }
     }
 
-    /// Check if a leadership transfer is currently in progress.
     pub fn is_transfer_in_progress(&self) -> bool {
         self.transfer_state.read().is_some()
     }
@@ -3070,12 +3035,10 @@ impl RaftNode {
         }
     }
 
-    /// Check if the heartbeat task is currently running.
     pub fn is_heartbeat_running(&self) -> bool {
         self.heartbeat_task.read().handle.is_some()
     }
 
-    /// Get a snapshot of heartbeat statistics.
     pub fn heartbeat_stats_snapshot(&self) -> HeartbeatStatsSnapshot {
         self.heartbeat_stats.snapshot()
     }

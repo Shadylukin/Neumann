@@ -42,7 +42,6 @@ pub struct GossipNodeState {
 }
 
 impl GossipNodeState {
-    /// Create a new gossip state for a node.
     pub fn new(node_id: NodeId, health: NodeHealth, timestamp: u64, incarnation: u64) -> Self {
         let updated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -111,12 +110,10 @@ pub struct LWWMembershipState {
 }
 
 impl LWWMembershipState {
-    /// Create a new empty state.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Get the current Lamport time.
     pub fn lamport_time(&self) -> u64 {
         self.lamport_time
     }
@@ -132,12 +129,10 @@ impl LWWMembershipState {
         self.lamport_time = self.lamport_time.max(incoming_time) + 1;
     }
 
-    /// Get state for a specific node.
     pub fn get(&self, node_id: &NodeId) -> Option<&GossipNodeState> {
         self.states.get(node_id)
     }
 
-    /// Get all node states.
     pub fn all_states(&self) -> impl Iterator<Item = &GossipNodeState> {
         self.states.values()
     }
@@ -262,12 +257,10 @@ impl LWWMembershipState {
         (healthy, degraded, failed)
     }
 
-    /// Get number of nodes.
     pub fn len(&self) -> usize {
         self.states.len()
     }
 
-    /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.states.is_empty()
     }
@@ -359,7 +352,6 @@ pub struct GossipMembershipManager {
 }
 
 impl GossipMembershipManager {
-    /// Create a new gossip manager.
     pub fn new(local_node: NodeId, config: GossipConfig, transport: Arc<dyn Transport>) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -1075,11 +1067,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Mark a node as failed first
         {
@@ -1110,11 +1099,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Mark as failed and track heal
         {
@@ -1134,11 +1120,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Mark as failed
         {
@@ -1165,11 +1148,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Mark multiple nodes as failed
         {
@@ -1193,11 +1173,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Initial state has lamport time from local node update
         let initial_time = manager.lamport_time();
@@ -1216,11 +1193,8 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let manager = GossipMembershipManager::new(
-            "node1".to_string(),
-            GossipConfig::default(),
-            transport,
-        );
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
 
         // Add some nodes
         manager.add_peer("node2".to_string());
@@ -1228,5 +1202,733 @@ mod tests {
 
         let view = manager.membership_view();
         assert_eq!(view.len(), 3); // local + 2 peers
+    }
+
+    // ========== Gossip Target Selection Tests ==========
+
+    #[test]
+    fn test_select_gossip_targets_fallback_random() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.geometric_routing = false; // Disable geometric
+        config.fanout = 2;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        manager.add_peer("node2".to_string());
+        manager.add_peer("node3".to_string());
+        manager.add_peer("node4".to_string());
+
+        let targets = manager.select_gossip_targets(2);
+        assert!(targets.len() <= 2);
+        // Should not include self
+        assert!(!targets.contains(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_select_gossip_targets_excludes_self() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.geometric_routing = false;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Add self as peer (shouldn't happen but test robustness)
+        manager.add_peer("node1".to_string());
+        manager.add_peer("node2".to_string());
+
+        let targets = manager.select_gossip_targets(5);
+        assert!(!targets.contains(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_select_gossip_targets_empty_peers() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.geometric_routing = false;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        let targets = manager.select_gossip_targets(3);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_select_gossip_targets_no_duplicates() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.geometric_routing = false;
+        config.fanout = 3;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        manager.add_peer("node2".to_string());
+        manager.add_peer("node3".to_string());
+        manager.add_peer("node4".to_string());
+
+        // Run multiple rounds to test various selection paths
+        for _ in 0..10 {
+            let targets = manager.select_gossip_targets(3);
+            let unique: std::collections::HashSet<_> = targets.iter().collect();
+            assert_eq!(targets.len(), unique.len(), "no duplicates");
+        }
+    }
+
+    // ========== Message Handler Tests ==========
+
+    #[test]
+    fn test_handle_sync_sender_marked_healthy() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Add node2 as peer with unknown health
+        manager.add_peer("node2".to_string());
+
+        // Handle sync from node2
+        let states = vec![GossipNodeState::new(
+            "node3".to_string(),
+            NodeHealth::Healthy,
+            1,
+            0,
+        )];
+        manager.handle_gossip(GossipMessage::Sync {
+            sender: "node2".to_string(),
+            states,
+            sender_time: 5,
+        });
+
+        // node2 should now be healthy
+        let node2_state = manager.node_state(&"node2".to_string());
+        assert!(node2_state.is_some());
+        assert_eq!(node2_state.unwrap().health, NodeHealth::Healthy);
+    }
+
+    #[test]
+    fn test_handle_sync_callbacks_invoked() {
+        use crate::membership::ClusterView;
+        use crate::network::MemoryTransport;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Create a callback that counts invocations
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+
+        struct CountingCallback {
+            count: Arc<AtomicUsize>,
+        }
+        impl MembershipCallback for CountingCallback {
+            fn on_health_change(
+                &self,
+                _node_id: &NodeId,
+                _old_health: NodeHealth,
+                _new_health: NodeHealth,
+            ) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+            fn on_view_change(&self, _view: &ClusterView) {}
+        }
+
+        manager.register_callback(Arc::new(CountingCallback { count: count_clone }));
+
+        // Handle sync with a new node
+        let states = vec![GossipNodeState::new(
+            "node2".to_string(),
+            NodeHealth::Healthy,
+            100, // High timestamp to ensure it wins
+            0,
+        )];
+
+        manager.handle_gossip(GossipMessage::Sync {
+            sender: "node3".to_string(),
+            states,
+            sender_time: 100,
+        });
+
+        // Callback should have been invoked for node2
+        assert!(count.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_suspect_self_refutation() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        let initial_incarnation = manager.incarnation.load(Ordering::SeqCst);
+
+        // When we're suspected, we should refute by incrementing incarnation
+        manager.handle_gossip(GossipMessage::Suspect {
+            reporter: "node2".to_string(),
+            suspect: "node1".to_string(), // Self is suspected
+            incarnation: 0,
+        });
+
+        // Give time for async broadcast_alive to spawn
+        tokio::task::yield_now().await;
+
+        // Incarnation should have increased
+        let new_incarnation = manager.incarnation.load(Ordering::SeqCst);
+        assert!(new_incarnation > initial_incarnation);
+    }
+
+    #[test]
+    fn test_handle_suspect_remote_tracking() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Add node2 first
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Healthy, 0);
+        }
+
+        // Suspect node2
+        manager.handle_gossip(GossipMessage::Suspect {
+            reporter: "node3".to_string(),
+            suspect: "node2".to_string(),
+            incarnation: 0,
+        });
+
+        // node2 should now be in suspicions
+        let suspicions = manager.suspicions.read();
+        assert!(suspicions.contains_key(&"node2".to_string()));
+
+        // Health should be degraded
+        let state = manager.node_state(&"node2".to_string());
+        assert_eq!(state.unwrap().health, NodeHealth::Degraded);
+    }
+
+    #[test]
+    fn test_handle_alive_clears_suspicion() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Add and suspect node2
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Healthy, 0);
+        }
+        manager.handle_gossip(GossipMessage::Suspect {
+            reporter: "node3".to_string(),
+            suspect: "node2".to_string(),
+            incarnation: 0,
+        });
+
+        // Verify suspicion exists
+        assert!(manager.suspicions.read().contains_key(&"node2".to_string()));
+
+        // Handle alive with higher incarnation
+        manager.handle_gossip(GossipMessage::Alive {
+            node_id: "node2".to_string(),
+            incarnation: 1,
+        });
+
+        // Suspicion should be cleared
+        assert!(!manager.suspicions.read().contains_key(&"node2".to_string()));
+
+        // Health should be back to healthy
+        let state = manager.node_state(&"node2".to_string());
+        assert_eq!(state.unwrap().health, NodeHealth::Healthy);
+    }
+
+    #[test]
+    fn test_handle_ping_ack_success_for_unknown_target() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Handle successful ping ack for a target we don't know about
+        // This exercises the early return path when state.get(target) returns None
+        manager.handle_gossip(GossipMessage::PingAck {
+            origin: "node3".to_string(),
+            target: "unknown_node".to_string(),
+            sequence: 1,
+            success: true,
+        });
+
+        // Should not crash and no suspicions should be modified
+        assert!(manager.suspicions.read().is_empty());
+    }
+
+    #[test]
+    fn test_handle_ping_ack_failure_keeps_suspicion() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Setup node2 with suspicion
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+        }
+        manager.suspicions.write().insert(
+            "node2".to_string(),
+            PendingSuspicion {
+                started_at: Instant::now(),
+                incarnation: 0,
+            },
+        );
+
+        // Handle failed ping ack
+        manager.handle_gossip(GossipMessage::PingAck {
+            origin: "node3".to_string(),
+            target: "node2".to_string(),
+            sequence: 1,
+            success: false,
+        });
+
+        // Suspicion should still exist
+        assert!(manager.suspicions.read().contains_key(&"node2".to_string()));
+    }
+
+    // ========== Suspicion Protocol Tests ==========
+
+    #[test]
+    fn test_expire_suspicions_timeout() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.suspicion_timeout_ms = 1; // 1ms timeout for quick test
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Add and suspect node2
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+        }
+        manager.suspicions.write().insert(
+            "node2".to_string(),
+            PendingSuspicion {
+                started_at: Instant::now() - Duration::from_millis(10), // Already expired
+                incarnation: 0,
+            },
+        );
+
+        // Expire suspicions
+        manager.expire_suspicions();
+
+        // node2 should now be failed
+        let state = manager.node_state(&"node2".to_string());
+        assert_eq!(state.unwrap().health, NodeHealth::Failed);
+
+        // Suspicion should be removed
+        assert!(!manager.suspicions.read().contains_key(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_expire_suspicions_not_yet_timed_out() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.suspicion_timeout_ms = 60000; // 60s timeout
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // Add and suspect node2
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+        }
+        manager.suspicions.write().insert(
+            "node2".to_string(),
+            PendingSuspicion {
+                started_at: Instant::now(),
+                incarnation: 0,
+            },
+        );
+
+        // Expire suspicions (nothing should happen)
+        manager.expire_suspicions();
+
+        // node2 should still be degraded
+        let state = manager.node_state(&"node2".to_string());
+        assert_eq!(state.unwrap().health, NodeHealth::Degraded);
+
+        // Suspicion should still exist
+        assert!(manager.suspicions.read().contains_key(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_expire_suspicions_callback_invoked() {
+        use crate::membership::ClusterView;
+        use crate::network::MemoryTransport;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.suspicion_timeout_ms = 1;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+
+        struct CountingCallback {
+            count: Arc<AtomicUsize>,
+        }
+        impl MembershipCallback for CountingCallback {
+            fn on_health_change(
+                &self,
+                _node_id: &NodeId,
+                _old_health: NodeHealth,
+                _new_health: NodeHealth,
+            ) {
+                self.count.fetch_add(1, Ordering::SeqCst);
+            }
+            fn on_view_change(&self, _view: &ClusterView) {}
+        }
+
+        manager.register_callback(Arc::new(CountingCallback { count: count_clone }));
+
+        // Add and suspect node2
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+        }
+        manager.suspicions.write().insert(
+            "node2".to_string(),
+            PendingSuspicion {
+                started_at: Instant::now() - Duration::from_millis(10),
+                incarnation: 0,
+            },
+        );
+
+        // Expire suspicions
+        manager.expire_suspicions();
+
+        // Callback should have been invoked
+        assert!(count.load(Ordering::SeqCst) >= 1);
+    }
+
+    // ========== Gossip Round Tests ==========
+
+    #[tokio::test]
+    async fn test_gossip_round_increments_counter() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        let initial = manager.round_count();
+
+        let _ = manager.gossip_round().await;
+
+        assert_eq!(manager.round_count(), initial + 1);
+    }
+
+    #[tokio::test]
+    async fn test_gossip_round_with_empty_targets() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let mut config = GossipConfig::default();
+        config.geometric_routing = false;
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), config, transport);
+
+        // No peers, so targets will be empty
+        let result = manager.gossip_round().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_suspect_node_starts_suspicion() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Add node2
+        manager.add_peer("node2".to_string());
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Healthy, 0);
+        }
+
+        // Suspect node2
+        let _ = manager.suspect_node(&"node2".to_string()).await;
+
+        // Should have suspicion entry
+        assert!(manager.suspicions.read().contains_key(&"node2".to_string()));
+    }
+
+    // ========== Edge Case Tests ==========
+
+    #[test]
+    fn test_add_peer_duplicates_filtered() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        manager.add_peer("node2".to_string());
+        manager.add_peer("node2".to_string()); // Duplicate
+        manager.add_peer("node2".to_string()); // Another duplicate
+
+        let peers = manager.known_peers.read();
+        let count = peers.iter().filter(|p| *p == "node2").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_node_state_nonexistent_returns_none() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        let state = manager.node_state(&"nonexistent".to_string());
+        assert!(state.is_none());
+    }
+
+    #[test]
+    fn test_with_geometric_constructor() {
+        use crate::geometric_membership::{
+            GeometricMembershipConfig, GeometricMembershipManager,
+        };
+        use crate::membership::{ClusterConfig, LocalNodeConfig, MembershipManager};
+        use crate::network::MemoryTransport;
+        use std::net::SocketAddr;
+
+        let transport: Arc<dyn crate::network::Transport> =
+            Arc::new(MemoryTransport::new("node1".to_string()));
+
+        // Create proper ClusterConfig
+        let local_config = LocalNodeConfig {
+            node_id: "node1".to_string(),
+            bind_address: "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
+        };
+        let cluster_config = ClusterConfig::new("test-cluster", local_config);
+
+        // Create inner membership manager
+        let inner = Arc::new(MembershipManager::new(cluster_config, Arc::clone(&transport)));
+        let geo_config = GeometricMembershipConfig::default();
+        let geometric = Arc::new(GeometricMembershipManager::new(inner, geo_config));
+
+        let manager = GossipMembershipManager::with_geometric(
+            "node1".to_string(),
+            GossipConfig::default(),
+            transport,
+            geometric,
+        );
+
+        assert!(manager.geometric.is_some());
+    }
+
+    #[test]
+    fn test_lww_fail_node() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Healthy, 0);
+
+        assert!(state.fail(&"node1".to_string()));
+        assert_eq!(
+            state.get(&"node1".to_string()).unwrap().health,
+            NodeHealth::Failed
+        );
+
+        // Fail again should return false (already failed)
+        assert!(!state.fail(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_lww_fail_nonexistent() {
+        let mut state = LWWMembershipState::new();
+
+        // Failing a nonexistent node returns false
+        assert!(!state.fail(&"nonexistent".to_string()));
+    }
+
+    #[test]
+    fn test_lww_suspect_wrong_incarnation() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Healthy, 5);
+
+        // Suspect with wrong incarnation should fail
+        assert!(!state.suspect(&"node1".to_string(), 0));
+        assert_eq!(
+            state.get(&"node1".to_string()).unwrap().health,
+            NodeHealth::Healthy
+        );
+    }
+
+    #[test]
+    fn test_lww_refute_lower_incarnation() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Degraded, 5);
+
+        // Refute with lower incarnation should fail
+        assert!(!state.refute(&"node1".to_string(), 3));
+        assert_eq!(
+            state.get(&"node1".to_string()).unwrap().health,
+            NodeHealth::Degraded
+        );
+    }
+
+    #[test]
+    fn test_lww_is_empty() {
+        let state = LWWMembershipState::new();
+        assert!(state.is_empty());
+        assert_eq!(state.len(), 0);
+    }
+
+    #[test]
+    fn test_gossip_config_default() {
+        let config = GossipConfig::default();
+        assert_eq!(config.fanout, 3);
+        assert_eq!(config.gossip_interval_ms, 200);
+        assert_eq!(config.suspicion_timeout_ms, 5000);
+        assert_eq!(config.max_states_per_message, 20);
+        assert!(config.geometric_routing);
+        assert_eq!(config.indirect_ping_count, 3);
+        assert_eq!(config.indirect_ping_timeout_ms, 500);
+    }
+
+    #[test]
+    fn test_gossip_node_state_equal_incarnation() {
+        let state1 = GossipNodeState::new("node1".to_string(), NodeHealth::Healthy, 5, 1);
+        let state2 = GossipNodeState::new("node1".to_string(), NodeHealth::Degraded, 5, 1);
+
+        // Same incarnation and timestamp - neither supersedes
+        assert!(!state1.supersedes(&state2));
+        assert!(!state2.supersedes(&state1));
+    }
+
+    #[test]
+    fn test_shutdown() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Should not panic
+        manager.shutdown();
+    }
+
+    #[test]
+    fn test_all_states() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        manager.add_peer("node2".to_string());
+        manager.add_peer("node3".to_string());
+
+        let states = manager.all_states();
+        assert_eq!(states.len(), 3); // node1 + node2 + node3
+    }
+
+    #[test]
+    fn test_node_count() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        assert_eq!(manager.node_count(), 1); // Just local node
+
+        manager.add_peer("node2".to_string());
+        assert_eq!(manager.node_count(), 2);
+    }
+
+    #[test]
+    fn test_health_counts_from_manager() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        // Initially just local node (healthy)
+        let (healthy, degraded, failed) = manager.health_counts();
+        assert_eq!(healthy, 1);
+        assert_eq!(degraded, 0);
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn test_lww_count_by_health_unknown() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Unknown, 0);
+
+        let (healthy, degraded, failed) = state.count_by_health();
+        assert_eq!(healthy, 0);
+        assert_eq!(degraded, 0);
+        assert_eq!(failed, 1); // Unknown counts as failed
+    }
+
+    #[test]
+    fn test_merge_returns_changed_nodes() {
+        let mut state = LWWMembershipState::new();
+
+        let incoming = vec![
+            GossipNodeState::new("node1".to_string(), NodeHealth::Healthy, 1, 0),
+            GossipNodeState::new("node2".to_string(), NodeHealth::Healthy, 1, 0),
+        ];
+
+        let changed = state.merge(&incoming);
+        assert_eq!(changed.len(), 2);
+        assert!(changed.contains(&"node1".to_string()));
+        assert!(changed.contains(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_merge_empty_incoming() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Healthy, 0);
+
+        let changed = state.merge(&[]);
+        assert!(changed.is_empty());
     }
 }

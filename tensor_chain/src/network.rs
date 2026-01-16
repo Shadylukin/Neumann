@@ -248,7 +248,6 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// Create a new log entry with a block.
     pub fn new(term: u64, index: u64, block: Block) -> Self {
         Self {
             term,
@@ -844,10 +843,8 @@ pub trait Transport: Send + Sync {
     /// Disconnect from a peer.
     async fn disconnect(&self, peer_id: &NodeId) -> Result<()>;
 
-    /// Get list of connected peers.
     fn peers(&self) -> Vec<NodeId>;
 
-    /// Get local node ID.
     fn local_id(&self) -> &NodeId;
 }
 
@@ -896,7 +893,6 @@ pub struct MemoryTransport {
 }
 
 impl MemoryTransport {
-    /// Create a new memory transport.
     pub fn new(local_id: NodeId) -> Self {
         let (tx, rx) = mpsc::channel(1000);
         Self {
@@ -921,7 +917,9 @@ impl MemoryTransport {
 
     /// Set latency for a specific peer (overrides global latency).
     pub fn set_peer_latency(&self, peer_id: &NodeId, latency: (u64, u64)) {
-        self.peer_latency_ms.write().insert(peer_id.clone(), latency);
+        self.peer_latency_ms
+            .write()
+            .insert(peer_id.clone(), latency);
     }
 
     /// Clear peer-specific latency (will use global latency if set).
@@ -929,7 +927,6 @@ impl MemoryTransport {
         self.peer_latency_ms.write().remove(peer_id);
     }
 
-    /// Get the latency to apply for a specific peer.
     fn get_latency_for_peer(&self, peer_id: &NodeId) -> Option<(u64, u64)> {
         // Check peer-specific latency first
         if let Some(latency) = self.peer_latency_ms.read().get(peer_id) {
@@ -983,12 +980,10 @@ impl MemoryTransport {
         self.partitioned.read().contains(peer_id)
     }
 
-    /// Get count of dropped messages due to partition.
     pub fn dropped_message_count(&self) -> u64 {
         self.dropped_messages.load(Ordering::Relaxed)
     }
 
-    /// Get all partitioned peers.
     pub fn partitioned_peers(&self) -> Vec<NodeId> {
         self.partitioned.read().iter().cloned().collect()
     }
@@ -1109,7 +1104,6 @@ pub trait MessageHandler: Send + Sync {
 }
 
 impl NetworkManager {
-    /// Create a new network manager.
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
             transport,
@@ -1122,7 +1116,6 @@ impl NetworkManager {
         self.handlers.write().push(handler);
     }
 
-    /// Get the transport.
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.transport
     }
@@ -1167,7 +1160,6 @@ pub struct QueryHandler {
 }
 
 impl QueryHandler {
-    /// Create a new query handler.
     pub fn new(executor: Arc<dyn QueryExecutor>, local_shard_id: usize) -> Self {
         Self {
             executor,
@@ -1211,7 +1203,6 @@ pub struct TxHandler {
 }
 
 impl TxHandler {
-    /// Create a new transaction handler.
     pub fn new(participant: Arc<crate::distributed_tx::TxParticipant>) -> Self {
         Self { participant }
     }

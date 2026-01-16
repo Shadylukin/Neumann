@@ -42,7 +42,6 @@ pub struct LocalNodeConfig {
 }
 
 impl LocalNodeConfig {
-    /// Create a new local node config.
     pub fn new(node_id: impl Into<NodeId>, bind_address: SocketAddr) -> Self {
         Self {
             node_id: node_id.into(),
@@ -61,7 +60,6 @@ pub struct PeerConfig {
 }
 
 impl PeerConfig {
-    /// Create a new peer config.
     pub fn new(node_id: impl Into<NodeId>, address: SocketAddr) -> Self {
         Self {
             node_id: node_id.into(),
@@ -92,7 +90,6 @@ pub struct OrchestratorConfig {
 }
 
 impl OrchestratorConfig {
-    /// Create a new orchestrator config.
     pub fn new(local: LocalNodeConfig, peers: Vec<PeerConfig>) -> Self {
         Self {
             local,

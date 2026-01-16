@@ -204,7 +204,6 @@ impl DeltaVector {
         }
     }
 
-    /// Check if this delta is empty (no changes).
     pub fn is_empty(&self) -> bool {
         self.nnz() == 0
     }
@@ -272,7 +271,6 @@ impl DeltaVector {
             .is_some()
     }
 
-    /// Get overlapping keys with another delta.
     pub fn overlapping_keys(&self, other: &DeltaVector) -> HashSet<String> {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -346,7 +344,6 @@ pub struct ConsensusManager {
 }
 
 impl ConsensusManager {
-    /// Create a new consensus manager.
     pub fn new(config: ConsensusConfig) -> Self {
         Self { config }
     }
