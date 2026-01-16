@@ -42,6 +42,8 @@ pub enum EmbeddingStorageError {
     ReconstructionFailed(String),
     /// HNSW index at capacity.
     CapacityExceeded { limit: usize, current: usize },
+    /// Delta vectors not supported in HNSW index (convert to Dense first).
+    DeltaNotSupported,
 }
 
 impl std::fmt::Display for EmbeddingStorageError {
@@ -49,20 +51,26 @@ impl std::fmt::Display for EmbeddingStorageError {
         match self {
             Self::DeltaRequiresRegistry => {
                 write!(f, "Delta storage requires archetype registry")
-            }
+            },
             Self::ArchetypeNotFound(id) => {
                 write!(f, "Archetype {} not found in registry", id)
-            }
+            },
             Self::ReconstructionFailed(msg) => {
                 write!(f, "Reconstruction failed: {}", msg)
-            }
+            },
             Self::CapacityExceeded { limit, current } => {
                 write!(
                     f,
                     "HNSW index at capacity: {} nodes (limit: {})",
                     current, limit
                 )
-            }
+            },
+            Self::DeltaNotSupported => {
+                write!(
+                    f,
+                    "Delta vectors not supported - convert to Dense or use archetype-aware index"
+                )
+            },
         }
     }
 }
@@ -226,7 +234,7 @@ impl EmbeddingStorage {
                 registry
                     .decode(d)
                     .ok_or_else(|| EmbeddingStorageError::ArchetypeNotFound(d.archetype_id()))
-            }
+            },
             EmbeddingStorage::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
         }
     }
@@ -856,19 +864,13 @@ impl HNSWIndex {
 
     /// Try to insert a vector into the index.
     /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
-    pub fn try_insert(
-        &self,
-        vector: Vec<f32>,
-    ) -> Result<usize, EmbeddingStorageError> {
+    pub fn try_insert(&self, vector: Vec<f32>) -> Result<usize, EmbeddingStorageError> {
         self.try_insert_embedding(EmbeddingStorage::Dense(vector))
     }
 
     /// Try to insert a sparse vector into the index.
     /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
-    pub fn try_insert_sparse(
-        &self,
-        sparse: SparseVector,
-    ) -> Result<usize, EmbeddingStorageError> {
+    pub fn try_insert_sparse(&self, sparse: SparseVector) -> Result<usize, EmbeddingStorageError> {
         self.try_insert_embedding(EmbeddingStorage::Sparse(sparse))
     }
 
@@ -1039,24 +1041,37 @@ impl HNSWIndex {
     }
 
     /// Insert an embedding (dense or sparse) into the index.
-    /// Panics if the index is at capacity (max_nodes).
+    /// Panics if the index is at capacity (max_nodes) or if Delta vectors are used.
     /// Use `try_insert_embedding` for a non-panicking version.
     pub fn insert_embedding(&self, embedding: EmbeddingStorage) -> usize {
         match self.try_insert_embedding(embedding) {
             Ok(id) => id,
             Err(EmbeddingStorageError::CapacityExceeded { limit, current }) => {
-                panic!("HNSW index at capacity: {} nodes (limit: {})", current, limit)
-            }
+                panic!(
+                    "HNSW index at capacity: {} nodes (limit: {})",
+                    current, limit
+                )
+            },
+            Err(EmbeddingStorageError::DeltaNotSupported) => {
+                panic!("Delta vectors require archetype registry. Convert to Dense first.")
+            },
             Err(e) => panic!("Insert failed: {}", e),
         }
     }
 
     /// Insert an embedding with capacity checking.
     /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    /// Returns `Err(DeltaNotSupported)` if a Delta vector is provided.
     pub fn try_insert_embedding(
         &self,
         embedding: EmbeddingStorage,
     ) -> Result<usize, EmbeddingStorageError> {
+        // SECURITY: Reject Delta vectors - they require archetype registry for distance
+        // computations and would panic during search operations
+        if matches!(embedding, EmbeddingStorage::Delta(_)) {
+            return Err(EmbeddingStorageError::DeltaNotSupported);
+        }
+
         // SECURITY: Check capacity before insertion to prevent memory exhaustion
         if self.config.max_nodes > 0 {
             let current_count = self.nodes.read().unwrap().len();
@@ -1558,10 +1573,13 @@ impl HNSWIndex {
         }
     }
 
-    /// Get the vector for a node ID (as dense, for compatibility)
+    /// Get the vector for a node ID (as dense, for compatibility).
+    /// Returns None if the vector cannot be converted to dense (e.g., Delta without registry).
     pub fn get_vector(&self, id: usize) -> Option<Vec<f32>> {
         let nodes = self.nodes.read().unwrap();
-        nodes.get(id).map(|n| n.embedding.to_dense())
+        nodes
+            .get(id)
+            .and_then(|n| n.embedding.try_to_dense_with_registry(None).ok())
     }
 
     /// Get the embedding storage for a node ID
@@ -1798,7 +1816,10 @@ mod tests {
         let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 4, vec![], vec![]));
         let result = delta.try_to_dense_with_registry(None);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), EmbeddingStorageError::DeltaRequiresRegistry);
+        assert_eq!(
+            result.unwrap_err(),
+            EmbeddingStorageError::DeltaRequiresRegistry
+        );
     }
 
     #[test]
@@ -1832,7 +1853,10 @@ mod tests {
         let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 4, vec![], vec![]));
         let result = delta.try_to_dense_with_registry(Some(&registry));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), EmbeddingStorageError::ArchetypeNotFound(0));
+        assert_eq!(
+            result.unwrap_err(),
+            EmbeddingStorageError::ArchetypeNotFound(0)
+        );
     }
 
     #[test]
@@ -1846,9 +1870,16 @@ mod tests {
         let err = EmbeddingStorageError::ReconstructionFailed("test".to_string());
         assert!(err.to_string().contains("test"));
 
-        let err = EmbeddingStorageError::CapacityExceeded { limit: 100, current: 100 };
+        let err = EmbeddingStorageError::CapacityExceeded {
+            limit: 100,
+            current: 100,
+        };
         assert!(err.to_string().contains("100"));
         assert!(err.to_string().contains("capacity"));
+
+        let err = EmbeddingStorageError::DeltaNotSupported;
+        assert!(err.to_string().contains("Delta"));
+        assert!(err.to_string().contains("not supported"));
     }
 
     // === Security Tests for HNSW max_nodes limit ===
@@ -1878,7 +1909,10 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            EmbeddingStorageError::CapacityExceeded { limit: 5, current: 5 }
+            EmbeddingStorageError::CapacityExceeded {
+                limit: 5,
+                current: 5
+            }
         );
     }
 
@@ -1917,6 +1951,42 @@ mod tests {
         let sparse = SparseVector::from_dense(&[99.0, 0.0, 0.0]);
         let result = index.try_insert_sparse(sparse);
         assert!(result.is_err());
+    }
+
+    // === Security Tests for Delta vector rejection ===
+
+    #[test]
+    fn test_hnsw_rejects_delta_vectors() {
+        let index = HNSWIndex::new();
+        let delta = EmbeddingStorage::Delta(DeltaVector::from_parts(0, 4, vec![], vec![]));
+        let result = index.try_insert_embedding(delta);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            EmbeddingStorageError::DeltaNotSupported
+        );
+    }
+
+    #[test]
+    fn test_hnsw_dense_sparse_still_work_after_delta_rejection() {
+        let index = HNSWIndex::new();
+
+        // Dense vectors should still insert successfully
+        let dense = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+        let result = index.try_insert_embedding(dense);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        // Sparse vectors should still insert successfully
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&[4.0, 5.0, 6.0]));
+        let result = index.try_insert_embedding(sparse);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+
+        // Verify both are searchable
+        assert_eq!(index.len(), 2);
+        let results = index.search(&[1.0, 2.0, 3.0], 2);
+        assert_eq!(results.len(), 2);
     }
 
     #[test]

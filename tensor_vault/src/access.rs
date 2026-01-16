@@ -168,14 +168,6 @@ impl AccessController {
         }
     }
 
-    fn min_permission(a: Permission, b: Permission) -> Permission {
-        match (a, b) {
-            (Permission::Read, _) | (_, Permission::Read) => Permission::Read,
-            (Permission::Write, _) | (_, Permission::Write) => Permission::Write,
-            (Permission::Admin, Permission::Admin) => Permission::Admin,
-        }
-    }
-
     fn max_permission(a: Permission, b: Permission) -> Permission {
         match (a, b) {
             (Permission::Admin, _) | (_, Permission::Admin) => Permission::Admin,
@@ -297,7 +289,9 @@ mod tests {
         let graph = GraphEngine::new();
 
         // Create path using disallowed edge type
-        graph.add_entity_edge("node:a", "node:b", "RANDOM_EDGE").unwrap();
+        graph
+            .add_entity_edge("node:a", "node:b", "RANDOM_EDGE")
+            .unwrap();
 
         // Path should NOT be found because RANDOM_EDGE is not allowlisted
         assert!(!AccessController::check_path(&graph, "node:a", "node:b"));
@@ -665,7 +659,11 @@ mod tests {
             .unwrap();
 
         // Path exists (MEMBER edges connect the nodes)
-        assert!(AccessController::check_path(&graph, "user:alice", "secret:key"));
+        assert!(AccessController::check_path(
+            &graph,
+            "user:alice",
+            "secret:key"
+        ));
         // But no permission is granted
         assert_eq!(
             AccessController::get_permission_level(&graph, "user:alice", "secret:key"),

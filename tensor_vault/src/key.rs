@@ -14,9 +14,6 @@ pub const SALT_SIZE: usize = 16;
 /// AES-256 key size in bytes.
 pub const KEY_SIZE: usize = 32;
 
-/// Default salt for key derivation.
-const DEFAULT_SALT: &[u8; 16] = b"neumann_vault_16";
-
 /// Derived master key for encryption (zeroized on drop).
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey {
@@ -25,12 +22,17 @@ pub struct MasterKey {
 
 impl MasterKey {
     /// Derive a master key from raw input using Argon2id.
-    pub fn derive(input: &[u8], config: &VaultConfig) -> Result<Self> {
-        let salt = config
-            .salt
-            .as_ref()
-            .map_or(DEFAULT_SALT.as_slice(), |s| s.as_slice());
-        Self::derive_with_salt(input, salt, config)
+    ///
+    /// If `config.salt` is `None`, generates a cryptographically random salt.
+    /// Returns both the derived key and the salt used (for persistence).
+    pub fn derive(input: &[u8], config: &VaultConfig) -> Result<(Self, [u8; SALT_SIZE])> {
+        match config.salt {
+            Some(salt) => {
+                let key = Self::derive_with_salt(input, &salt, config)?;
+                Ok((key, salt))
+            }
+            None => Self::derive_with_random_salt(input, config),
+        }
     }
 
     /// Derive a master key with a specific salt.
@@ -55,7 +57,10 @@ impl MasterKey {
 
     /// Derive a master key with a newly generated random salt.
     /// Returns both the key and the salt (which should be persisted).
-    pub fn derive_with_random_salt(input: &[u8], config: &VaultConfig) -> Result<(Self, [u8; SALT_SIZE])> {
+    pub fn derive_with_random_salt(
+        input: &[u8],
+        config: &VaultConfig,
+    ) -> Result<(Self, [u8; SALT_SIZE])> {
         let mut salt = [0u8; SALT_SIZE];
         rand::thread_rng().fill_bytes(&mut salt);
         let key = Self::derive_with_salt(input, &salt, config)?;
@@ -104,19 +109,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_derive_deterministic() {
-        let config = VaultConfig::default();
-        let key1 = MasterKey::derive(b"password123", &config).unwrap();
-        let key2 = MasterKey::derive(b"password123", &config).unwrap();
+    fn test_derive_with_explicit_salt_deterministic() {
+        // Use explicit salt for deterministic derivation
+        let config = VaultConfig::default().with_salt([42u8; SALT_SIZE]);
+        let (key1, salt1) = MasterKey::derive(b"password123", &config).unwrap();
+        let (key2, salt2) = MasterKey::derive(b"password123", &config).unwrap();
 
         assert_eq!(key1.as_bytes(), key2.as_bytes());
+        assert_eq!(salt1, salt2);
+    }
+
+    #[test]
+    fn test_derive_without_salt_generates_random() {
+        // Without salt, each call generates a different random salt
+        let config = VaultConfig::default();
+        let (key1, salt1) = MasterKey::derive(b"password123", &config).unwrap();
+        let (key2, salt2) = MasterKey::derive(b"password123", &config).unwrap();
+
+        // Random salts should be different
+        assert_ne!(salt1, salt2);
+        // Same password with different salts produces different keys
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
     }
 
     #[test]
     fn test_different_passwords_different_keys() {
-        let config = VaultConfig::default();
-        let key1 = MasterKey::derive(b"password1", &config).unwrap();
-        let key2 = MasterKey::derive(b"password2", &config).unwrap();
+        // Use explicit salt for fair comparison
+        let config = VaultConfig::default().with_salt([42u8; SALT_SIZE]);
+        let (key1, _) = MasterKey::derive(b"password1", &config).unwrap();
+        let (key2, _) = MasterKey::derive(b"password2", &config).unwrap();
 
         assert_ne!(key1.as_bytes(), key2.as_bytes());
     }
@@ -132,33 +153,33 @@ mod tests {
             ..VaultConfig::default()
         };
 
-        let key1 = MasterKey::derive(b"password", &config1).unwrap();
-        let key2 = MasterKey::derive(b"password", &config2).unwrap();
+        let (key1, _) = MasterKey::derive(b"password", &config1).unwrap();
+        let (key2, _) = MasterKey::derive(b"password", &config2).unwrap();
 
         assert_ne!(key1.as_bytes(), key2.as_bytes());
     }
 
     #[test]
     fn test_empty_password() {
-        let config = VaultConfig::default();
-        let key = MasterKey::derive(b"", &config).unwrap();
+        let config = VaultConfig::default().with_salt([42u8; SALT_SIZE]);
+        let (key, _) = MasterKey::derive(b"", &config).unwrap();
 
         assert_eq!(key.as_bytes().len(), KEY_SIZE);
     }
 
     #[test]
     fn test_long_password() {
-        let config = VaultConfig::default();
+        let config = VaultConfig::default().with_salt([42u8; SALT_SIZE]);
         let long_password = vec![b'a'; 10000];
-        let key = MasterKey::derive(&long_password, &config).unwrap();
+        let (key, _) = MasterKey::derive(&long_password, &config).unwrap();
 
         assert_eq!(key.as_bytes().len(), KEY_SIZE);
     }
 
     #[test]
     fn test_key_is_32_bytes() {
-        let config = VaultConfig::default();
-        let key = MasterKey::derive(b"test", &config).unwrap();
+        let config = VaultConfig::default().with_salt([42u8; SALT_SIZE]);
+        let (key, _) = MasterKey::derive(b"test", &config).unwrap();
 
         assert_eq!(key.as_bytes().len(), 32);
     }

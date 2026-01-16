@@ -39,7 +39,7 @@ pub use access::AccessController;
 pub use audit::{AuditEntry, AuditLog, AuditOperation};
 pub use encryption::{Cipher, NONCE_SIZE};
 use graph_engine::GraphEngine;
-pub use key::{MasterKey, KEY_SIZE};
+pub use key::{MasterKey, KEY_SIZE, SALT_SIZE};
 pub use obfuscation::{Obfuscator, PaddingSize};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
 use serde::{Deserialize, Serialize};
@@ -190,6 +190,13 @@ impl Default for VaultConfig {
 }
 
 impl VaultConfig {
+    /// Create a config with an explicit salt.
+    #[must_use]
+    pub fn with_salt(mut self, salt: [u8; 16]) -> Self {
+        self.salt = Some(salt);
+        self
+    }
+
     /// Create a config with rate limiting enabled.
     #[must_use]
     pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
@@ -232,15 +239,38 @@ impl Vault {
     pub const ROOT: &'static str = "node:root";
     /// Edge type for access grants.
     const ACCESS_EDGE: &'static str = "VAULT_ACCESS";
+    /// Storage key for persisted salt.
+    const SALT_KEY: &'static str = "_vault:salt";
 
     /// Create a new vault with the given master key.
+    ///
+    /// If `config.salt` is `None`, the vault will:
+    /// 1. Try to load a previously persisted salt from storage
+    /// 2. If none exists, generate a cryptographically random salt and persist it
+    ///
+    /// This ensures consistent key derivation across vault reopens while
+    /// preventing hardcoded salt vulnerabilities.
     pub fn new(
         master_key: &[u8],
         graph: Arc<GraphEngine>,
         store: TensorStore,
         config: VaultConfig,
     ) -> Result<Self> {
-        let derived = MasterKey::derive(master_key, &config)?;
+        // Determine the salt to use
+        let derived = if config.salt.is_some() {
+            // Explicit salt provided - use it directly
+            let (key, _) = MasterKey::derive(master_key, &config)?;
+            key
+        } else if let Some(persisted_salt) = Self::load_salt(&store) {
+            // Use persisted salt for consistency
+            MasterKey::derive_with_salt(master_key, &persisted_salt, &config)?
+        } else {
+            // Generate new random salt and persist it
+            let (key, new_salt) = MasterKey::derive(master_key, &config)?;
+            Self::save_salt(&store, new_salt)?;
+            key
+        };
+
         let obfuscator = Obfuscator::new(&derived);
         let cipher = Cipher::new(derived);
 
@@ -259,6 +289,30 @@ impl Vault {
 
         vault.ensure_root_exists()?;
         Ok(vault)
+    }
+
+    fn load_salt(store: &TensorStore) -> Option<[u8; SALT_SIZE]> {
+        store.get(Self::SALT_KEY).ok().and_then(|data| {
+            if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("_salt") {
+                if bytes.len() == SALT_SIZE {
+                    let mut salt = [0u8; SALT_SIZE];
+                    salt.copy_from_slice(bytes);
+                    return Some(salt);
+                }
+            }
+            None
+        })
+    }
+
+    fn save_salt(store: &TensorStore, salt: [u8; SALT_SIZE]) -> Result<()> {
+        let mut data = TensorData::new();
+        data.set(
+            "_salt",
+            TensorValue::Scalar(ScalarValue::Bytes(salt.to_vec())),
+        );
+        store
+            .put(Self::SALT_KEY, data)
+            .map_err(|e| VaultError::StorageError(e.to_string()))
     }
 
     /// Create vault from NEUMANN_VAULT_KEY environment variable.
@@ -1965,15 +2019,16 @@ mod tests {
         vault.set(Vault::ROOT, "my_api_key", "value").unwrap();
 
         // Grant access to test that edges use obfuscated keys
-        vault.grant(Vault::ROOT, "user:alice", "my_api_key").unwrap();
+        vault
+            .grant(Vault::ROOT, "user:alice", "my_api_key")
+            .unwrap();
 
         // Verify that plaintext secret name is NOT in graph node keys
         let edge_keys = vault.graph.get_entity_outgoing("user:alice").unwrap();
         assert!(!edge_keys.is_empty(), "Expected grant to create edge");
 
         for edge_key in &edge_keys {
-            let (from, to, edge_type, _undirected) =
-                vault.graph.get_entity_edge(edge_key).unwrap();
+            let (from, to, edge_type, _undirected) = vault.graph.get_entity_edge(edge_key).unwrap();
 
             // Sanity check: edge is from alice
             assert_eq!(from, "user:alice");
