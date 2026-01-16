@@ -499,7 +499,16 @@ impl ConsensusManager {
                     error: result.error,
                 };
             }
-            accumulated = result.merged_delta.unwrap();
+            let Some(merged) = result.merged_delta else {
+                return MergeResult {
+                    success: false,
+                    merged_delta: None,
+                    parent_ids,
+                    action: MergeAction::Cancel,
+                    error: Some("merge succeeded but produced no delta".to_string()),
+                };
+            };
+            accumulated = merged;
             parent_ids.push(delta.tx_id);
         }
 
@@ -527,7 +536,7 @@ impl ConsensusManager {
 
         while !remaining.is_empty() {
             // Find most orthogonal delta to current accumulated
-            let current_idx = *order.last().unwrap();
+            let current_idx = *order.last().expect("order is non-empty by loop invariant");
             let best = remaining
                 .iter()
                 .enumerate()
@@ -536,7 +545,7 @@ impl ConsensusManager {
                     (pos, idx, sim)
                 })
                 .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap();
+                .expect("remaining is non-empty by loop condition");
 
             order.push(remaining.remove(best.0));
         }

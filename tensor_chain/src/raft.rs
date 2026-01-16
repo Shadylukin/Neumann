@@ -1778,34 +1778,35 @@ impl RaftNode {
             *self.last_heartbeat.write() = Instant::now();
 
             // Check if we can use fast-path using the validator
-            if self.config.enable_fast_path && ae.block_embedding.is_some() {
-                let sparse_embedding = ae.block_embedding.as_ref().unwrap();
-                // FastPathValidator still uses dense for similarity computation
-                let dense_embedding = sparse_embedding.to_dense();
-                let history = self.fast_path_state.get_embeddings(&ae.leader_id);
-                let result = self
-                    .fast_path_validator
-                    .check_fast_path(&dense_embedding, &history);
+            if self.config.enable_fast_path {
+                if let Some(sparse_embedding) = ae.block_embedding.as_ref() {
+                    // FastPathValidator still uses dense for similarity computation
+                    let dense_embedding = sparse_embedding.to_dense();
+                    let history = self.fast_path_state.get_embeddings(&ae.leader_id);
+                    let result = self
+                        .fast_path_validator
+                        .check_fast_path(&dense_embedding, &history);
 
-                used_fast_path = result.can_use_fast_path;
+                    used_fast_path = result.can_use_fast_path;
 
-                // Record statistics
-                if used_fast_path {
-                    self.fast_path_state.stats.record_fast_path();
-                } else if result.rejection_reason.as_deref()
-                    == Some("periodic full validation required")
-                {
-                    self.fast_path_state.stats.record_full_validation();
-                } else {
-                    self.fast_path_state.stats.record_rejected();
+                    // Record statistics
+                    if used_fast_path {
+                        self.fast_path_state.stats.record_fast_path();
+                    } else if result.rejection_reason.as_deref()
+                        == Some("periodic full validation required")
+                    {
+                        self.fast_path_state.stats.record_full_validation();
+                    } else {
+                        self.fast_path_state.stats.record_rejected();
+                    }
+
+                    // Record this validation for periodic full validation tracking
+                    self.fast_path_validator.record_validation(used_fast_path);
+
+                    // Track embedding for future fast-path checks (store as sparse)
+                    self.fast_path_state
+                        .add_embedding(&ae.leader_id, sparse_embedding.clone());
                 }
-
-                // Record this validation for periodic full validation tracking
-                self.fast_path_validator.record_validation(used_fast_path);
-
-                // Track embedding for future fast-path checks (store as sparse)
-                self.fast_path_state
-                    .add_embedding(&ae.leader_id, sparse_embedding.clone());
             }
 
             // Check log consistency
@@ -2440,13 +2441,9 @@ impl RaftNode {
         }
 
         // Validate the snapshot
-        if entries.is_empty() {
-            return Err(ChainError::SnapshotError(
-                "snapshot contains no entries".into(),
-            ));
-        }
-
-        let last_entry = entries.last().unwrap();
+        let last_entry = entries
+            .last()
+            .ok_or_else(|| ChainError::SnapshotError("snapshot contains no entries".into()))?;
         if last_entry.index != metadata.last_included_index {
             return Err(ChainError::SnapshotError(format!(
                 "snapshot index mismatch: expected {}, got {}",
@@ -2490,13 +2487,9 @@ impl RaftNode {
         })?;
 
         // Validate the snapshot
-        if entries.is_empty() {
-            return Err(ChainError::SnapshotError(
-                "snapshot contains no entries".into(),
-            ));
-        }
-
-        let last_entry = entries.last().unwrap();
+        let last_entry = entries
+            .last()
+            .ok_or_else(|| ChainError::SnapshotError("snapshot contains no entries".into()))?;
         if last_entry.index != metadata.last_included_index {
             return Err(ChainError::SnapshotError(format!(
                 "snapshot index mismatch: expected {}, got {}",
