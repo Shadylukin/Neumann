@@ -207,6 +207,38 @@ impl ChainMetrics {
             replication: self.replication.snapshot(),
         }
     }
+
+    /// Emit metrics as structured logs.
+    ///
+    /// This is useful for periodic metrics reporting to log aggregation systems.
+    pub fn emit_as_logs(&self) {
+        let s = self.snapshot();
+        tracing::info!(
+            target: "tensor_chain::metrics",
+            // Raft metrics
+            raft_heartbeat_successes = s.raft.heartbeat_successes,
+            raft_heartbeat_failures = s.raft.heartbeat_failures,
+            raft_fast_path_accepted = s.raft.fast_path_accepted,
+            raft_fast_path_rejected = s.raft.fast_path_rejected,
+            raft_quorum_lost_events = s.raft.quorum_lost_events,
+            raft_leader_step_downs = s.raft.leader_step_downs,
+            // DTX metrics
+            dtx_started = s.dtx.started,
+            dtx_committed = s.dtx.committed,
+            dtx_aborted = s.dtx.aborted,
+            dtx_timed_out = s.dtx.timed_out,
+            dtx_conflicts = s.dtx.conflicts,
+            // Membership metrics
+            membership_health_checks = s.membership.health_checks,
+            membership_health_check_failures = s.membership.health_check_failures,
+            membership_quorum_lost_events = s.membership.quorum_lost_events,
+            // Replication metrics
+            replication_updates_sent = s.replication.updates_sent,
+            replication_bytes_sent = s.replication.bytes_sent,
+            replication_bytes_saved = s.replication.bytes_saved,
+            "Chain metrics snapshot"
+        );
+    }
 }
 
 impl Default for ChainMetrics {
@@ -2014,5 +2046,24 @@ mod tests {
         let metrics = ChainMetrics::new();
         let debug = format!("{:?}", metrics);
         assert!(debug.contains("ChainMetrics"));
+    }
+
+    #[test]
+    fn test_chain_metrics_emit_as_logs() {
+        // Initialize tracing subscriber for this test
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("tensor_chain=debug")
+            .with_test_writer()
+            .try_init();
+
+        let metrics = ChainMetrics::new();
+
+        // Simulate some activity
+        metrics.dtx.started.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+        metrics.dtx.committed.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+
+        // This should emit logs (visible with --nocapture)
+        metrics.emit_as_logs();
     }
 }

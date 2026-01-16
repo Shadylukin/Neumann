@@ -801,21 +801,33 @@ impl DistributedTxCoordinator {
     ) -> Result<DistributedTransaction> {
         // Check concurrent transaction limit
         if self.pending.read().len() >= self.config.max_concurrent {
+            tracing::warn!(
+                pending = self.pending.read().len(),
+                max = self.config.max_concurrent,
+                "Distributed transaction rejected: too many concurrent transactions"
+            );
             return Err(ChainError::TransactionFailed(
                 "too many concurrent distributed transactions".to_string(),
             ));
         }
 
-        let tx = DistributedTransaction::new(coordinator, participants.clone());
+        let tx = DistributedTransaction::new(coordinator.clone(), participants.clone());
 
         // Log to WAL BEFORE applying state change
         self.log_wal_entry(&TxWalEntry::TxBegin {
             tx_id: tx.tx_id,
-            participants,
+            participants: participants.clone(),
         })?;
 
         self.pending.write().insert(tx.tx_id, tx.clone());
         self.stats.started.fetch_add(1, Ordering::Relaxed);
+
+        tracing::info!(
+            tx_id = tx.tx_id,
+            coordinator = %coordinator,
+            participants = ?participants,
+            "Distributed transaction started"
+        );
 
         Ok(tx)
     }
@@ -834,10 +846,28 @@ impl DistributedTxCoordinator {
             .map(|op| op.affected_key().to_string())
             .collect();
 
+        tracing::debug!(
+            tx_id = request.tx_id,
+            keys = ?keys,
+            "Processing prepare request"
+        );
+
         // Try to acquire locks
         let lock_handle = match self.lock_manager.try_lock(request.tx_id, &keys) {
-            Ok(handle) => handle,
+            Ok(handle) => {
+                tracing::debug!(
+                    tx_id = request.tx_id,
+                    lock_handle = handle,
+                    "Locks acquired"
+                );
+                handle
+            }
             Err(conflicting_tx) => {
+                tracing::warn!(
+                    tx_id = request.tx_id,
+                    conflicting_tx = conflicting_tx,
+                    "Lock conflict detected"
+                );
                 return PrepareVote::Conflict {
                     similarity: 1.0, // Same keys = maximum conflict
                     conflicting_tx,
@@ -871,6 +901,12 @@ impl DistributedTxCoordinator {
                             .collect();
 
                         if !overlap.is_empty() {
+                            tracing::warn!(
+                                tx_id = request.tx_id,
+                                conflicting_tx = pending_tx.tx_id,
+                                similarity = similarity,
+                                "Semantic conflict detected"
+                            );
                             self.lock_manager.release(request.tx_id);
                             return PrepareVote::Conflict {
                                 similarity,
@@ -882,6 +918,11 @@ impl DistributedTxCoordinator {
             }
         }
 
+        tracing::debug!(
+            tx_id = request.tx_id,
+            "Prepare vote: YES"
+        );
+
         PrepareVote::Yes { lock_handle, delta }
     }
 
@@ -889,6 +930,13 @@ impl DistributedTxCoordinator {
     pub fn record_vote(&self, tx_id: u64, shard: ShardId, vote: PrepareVote) -> Option<TxPhase> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id)?;
+
+        tracing::debug!(
+            tx_id = tx_id,
+            shard = shard,
+            vote = ?vote,
+            "Recording vote"
+        );
 
         // Extract delta from YES vote
         if let PrepareVote::Yes { delta, .. } = &vote {
@@ -914,6 +962,11 @@ impl DistributedTxCoordinator {
                                     .collect();
 
                                 if !overlap.is_empty() {
+                                    tracing::warn!(
+                                        tx_id = tx_id,
+                                        similarity = sim,
+                                        "Cross-shard conflict detected, aborting"
+                                    );
                                     tx.phase = TxPhase::Aborting;
                                     self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
                                     // Queue abort for broadcast
@@ -931,9 +984,18 @@ impl DistributedTxCoordinator {
 
                     // All orthogonal - can merge and commit
                     self.stats.orthogonal_merges.fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(
+                        tx_id = tx_id,
+                        "Deltas verified orthogonal, ready to commit"
+                    );
                     drop(merged);
                 }
 
+                tracing::info!(
+                    tx_id = tx_id,
+                    phase = ?TxPhase::Prepared,
+                    "Transaction prepared"
+                );
                 tx.phase = TxPhase::Prepared;
                 Some(TxPhase::Prepared)
             } else {
@@ -948,6 +1010,12 @@ impl DistributedTxCoordinator {
                 } else {
                     "participant voted no"
                 };
+
+                tracing::warn!(
+                    tx_id = tx_id,
+                    reason = reason,
+                    "Transaction aborting"
+                );
 
                 // Queue abort for broadcast
                 let shards = tx.participants.clone();
@@ -966,15 +1034,26 @@ impl DistributedTxCoordinator {
     pub fn commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
+            tracing::warn!(tx_id = tx_id, "Commit failed: transaction not found");
             ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
         })?;
 
         if tx.phase != TxPhase::Prepared {
+            tracing::warn!(
+                tx_id = tx_id,
+                phase = ?tx.phase,
+                "Commit failed: transaction not in prepared phase"
+            );
             return Err(ChainError::TransactionFailed(format!(
                 "transaction {} not in prepared phase",
                 tx_id
             )));
         }
+
+        tracing::debug!(
+            tx_id = tx_id,
+            "Transitioning to committing phase"
+        );
 
         // Log phase change to WAL BEFORE applying state change
         self.log_wal_entry(&TxWalEntry::PhaseChange {
@@ -988,6 +1067,11 @@ impl DistributedTxCoordinator {
         // Release all locks
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
+                tracing::debug!(
+                    tx_id = tx_id,
+                    lock_handle = lock_handle,
+                    "Releasing lock"
+                );
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
@@ -1003,6 +1087,11 @@ impl DistributedTxCoordinator {
 
         // Remove from pending
         pending.remove(&tx_id);
+
+        tracing::info!(
+            tx_id = tx_id,
+            "Transaction committed"
+        );
 
         Ok(())
     }
@@ -1068,13 +1157,21 @@ impl DistributedTxCoordinator {
     }
 
     /// Abort a transaction.
-    pub fn abort(&self, tx_id: u64, _reason: &str) -> Result<()> {
+    pub fn abort(&self, tx_id: u64, reason: &str) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
+            tracing::warn!(tx_id = tx_id, "Abort failed: transaction not found");
             ChainError::TransactionFailed(format!("transaction {} not found", tx_id))
         })?;
 
         let from_phase = tx.phase;
+
+        tracing::warn!(
+            tx_id = tx_id,
+            from_phase = ?from_phase,
+            reason = reason,
+            "Aborting transaction"
+        );
 
         // Log phase change to WAL BEFORE applying state change
         self.log_wal_entry(&TxWalEntry::PhaseChange {
@@ -1088,6 +1185,11 @@ impl DistributedTxCoordinator {
         // Release all locks
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
+                tracing::debug!(
+                    tx_id = tx_id,
+                    lock_handle = lock_handle,
+                    "Releasing lock on abort"
+                );
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
@@ -1104,6 +1206,12 @@ impl DistributedTxCoordinator {
         // Remove from pending
         pending.remove(&tx_id);
 
+        tracing::info!(
+            tx_id = tx_id,
+            reason = reason,
+            "Transaction aborted"
+        );
+
         Ok(())
     }
 
@@ -1116,8 +1224,23 @@ impl DistributedTxCoordinator {
             .map(|(id, _)| *id)
             .collect();
 
+        if !timed_out.is_empty() {
+            tracing::warn!(
+                count = timed_out.len(),
+                tx_ids = ?timed_out,
+                "Cleaning up timed out transactions"
+            );
+        }
+
         for tx_id in &timed_out {
             if let Some(tx) = pending.remove(tx_id) {
+                tracing::warn!(
+                    tx_id = tx_id,
+                    phase = ?tx.phase,
+                    participants = ?tx.participants,
+                    "Transaction timed out"
+                );
+
                 // Queue abort broadcast to participants
                 self.pending_aborts.write().push((
                     *tx_id,
@@ -1136,7 +1259,13 @@ impl DistributedTxCoordinator {
         }
 
         // Also cleanup expired locks
-        self.lock_manager.cleanup_expired();
+        let expired_locks = self.lock_manager.cleanup_expired();
+        if expired_locks > 0 {
+            tracing::debug!(
+                count = expired_locks,
+                "Cleaned up expired locks"
+            );
+        }
 
         timed_out
     }
@@ -1584,10 +1713,21 @@ impl TxParticipant {
             .map(|op| op.affected_key().to_string())
             .collect();
 
+        tracing::debug!(
+            tx_id = request.tx_id,
+            keys = ?keys,
+            "Participant processing prepare request"
+        );
+
         // Try to acquire locks
         let lock_handle = match self.locks.try_lock(request.tx_id, &keys) {
             Ok(handle) => handle,
             Err(conflicting_tx) => {
+                tracing::warn!(
+                    tx_id = request.tx_id,
+                    conflicting_tx = conflicting_tx,
+                    "Participant lock conflict"
+                );
                 return PrepareVote::Conflict {
                     similarity: 1.0,
                     conflicting_tx,
@@ -1613,6 +1753,12 @@ impl TxParticipant {
             },
         );
 
+        tracing::debug!(
+            tx_id = request.tx_id,
+            lock_handle = lock_handle,
+            "Participant prepared transaction"
+        );
+
         PrepareVote::Yes { lock_handle, delta }
     }
 
@@ -1622,12 +1768,20 @@ impl TxParticipant {
 
         if let Some(tx) = prepared.remove(&tx_id) {
             self.locks.release_by_handle(tx.lock_handle);
+            tracing::info!(
+                tx_id = tx_id,
+                "Participant committed transaction"
+            );
             TxResponse {
                 tx_id,
                 success: true,
                 error: None,
             }
         } else {
+            tracing::warn!(
+                tx_id = tx_id,
+                "Participant commit failed: transaction not found"
+            );
             TxResponse {
                 tx_id,
                 success: false,
@@ -1642,6 +1796,15 @@ impl TxParticipant {
 
         if let Some(tx) = prepared.remove(&tx_id) {
             self.locks.release_by_handle(tx.lock_handle);
+            tracing::info!(
+                tx_id = tx_id,
+                "Participant aborted transaction"
+            );
+        } else {
+            tracing::debug!(
+                tx_id = tx_id,
+                "Participant abort: transaction not found (may already be cleaned up)"
+            );
         }
 
         TxResponse {

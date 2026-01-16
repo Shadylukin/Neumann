@@ -563,6 +563,13 @@ impl MembershipManager {
                     .map(|start| start.elapsed().as_millis() as u64)
                     .unwrap_or(0);
 
+                tracing::info!(
+                    node_id = %node_id,
+                    partition_duration_ms = partition_duration_ms,
+                    consecutive_successes = status.consecutive_successes,
+                    "Node healed from partition"
+                );
+
                 healed.push((node_id.clone(), partition_duration_ms));
             }
         }
@@ -602,6 +609,13 @@ impl MembershipManager {
             *running = true;
         }
 
+        tracing::info!(
+            node_id = %self.config.local.node_id,
+            cluster_id = %self.config.cluster_id,
+            peers = self.config.peers.len(),
+            "Membership manager started"
+        );
+
         // Initial connection to all peers
         for peer in &self.config.peers {
             let peer_config = crate::network::PeerConfig {
@@ -618,6 +632,7 @@ impl MembershipManager {
     /// Run a single health check round.
     pub async fn check_health(&self) -> Result<()> {
         let peer_ids = self.peer_ids();
+        self.stats.health_checks.fetch_add(1, Ordering::Relaxed);
 
         for peer_id in peer_ids {
             let start = Instant::now();
@@ -640,6 +655,12 @@ impl MembershipManager {
             match ping_result {
                 Ok(Ok(())) => {
                     let rtt = start.elapsed().as_millis() as u64;
+                    self.stats.ping_timing.record(rtt);
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        rtt_ms = rtt,
+                        "Health check succeeded"
+                    );
                     let mut nodes = self.nodes.write();
                     if let Some(status) = nodes.get_mut(&peer_id) {
                         status.record_success(rtt);
@@ -647,6 +668,13 @@ impl MembershipManager {
                 },
                 _ => {
                     // Timeout or send error
+                    self.stats
+                        .health_check_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        "Health check failed"
+                    );
                     if !self.in_grace_period() {
                         let mut nodes = self.nodes.write();
                         if let Some(status) = nodes.get_mut(&peer_id) {
@@ -665,6 +693,12 @@ impl MembershipManager {
 
             // Notify callbacks on health change
             if old_health != new_health {
+                tracing::info!(
+                    peer_id = %peer_id,
+                    old_health = ?old_health,
+                    new_health = ?new_health,
+                    "Node health state changed"
+                );
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 let callbacks = self.callbacks.read();
                 for callback in callbacks.iter() {
@@ -673,8 +707,20 @@ impl MembershipManager {
             }
         }
 
-        // Notify callbacks of view change
+        // Check partition status and log if changed
+        let current_partition_status = self.partition_status();
         let view = self.view();
+
+        if current_partition_status == PartitionStatus::QuorumLost {
+            self.stats.quorum_lost_events.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(
+                healthy = view.healthy_count(),
+                total = view.total_count(),
+                "QUORUM LOST - rejecting writes"
+            );
+        }
+
+        // Notify callbacks of view change
         let callbacks = self.callbacks.read();
         for callback in callbacks.iter() {
             callback.on_view_change(&view);
@@ -706,6 +752,10 @@ impl MembershipManager {
 
     /// Shutdown the membership manager.
     pub fn shutdown(&self) {
+        tracing::info!(
+            node_id = %self.config.local.node_id,
+            "Membership manager shutting down"
+        );
         *self.running.write() = false;
         let _ = self.shutdown_tx.send(());
     }

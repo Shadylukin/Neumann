@@ -1437,6 +1437,12 @@ impl RaftNode {
 
         // Update term if needed
         if rv.term > persistent.current_term {
+            tracing::debug!(
+                node_id = %self.node_id,
+                old_term = persistent.current_term,
+                new_term = rv.term,
+                "Updating term from RequestVote"
+            );
             // CRITICAL: Persist BEFORE applying state change
             if let Err(e) = self.persist_term_and_vote(rv.term, None) {
                 tracing::error!("WAL persist failed during term update: {}", e);
@@ -1500,7 +1506,23 @@ impl RaftNode {
                     vote_granted = true;
                     persistent.voted_for = Some(rv.candidate_id.clone());
                     *self.last_heartbeat.write() = Instant::now();
+                    tracing::debug!(
+                        node_id = %self.node_id,
+                        candidate = %rv.candidate_id,
+                        term = rv.term,
+                        "Vote granted"
+                    );
                 }
+            } else {
+                tracing::debug!(
+                    node_id = %self.node_id,
+                    candidate = %rv.candidate_id,
+                    term = rv.term,
+                    can_vote = can_vote,
+                    log_ok = log_ok,
+                    candidate_healthy = candidate_healthy,
+                    "Vote denied"
+                );
             }
         }
 
@@ -1519,6 +1541,12 @@ impl RaftNode {
 
         let mut persistent = self.persistent.write();
         if rvr.term > persistent.current_term {
+            tracing::debug!(
+                node_id = %self.node_id,
+                old_term = persistent.current_term,
+                new_term = rvr.term,
+                "Stepping down due to higher term in vote response"
+            );
             // CRITICAL: Persist BEFORE applying state change
             if let Err(e) = self.persist_term_and_vote(rvr.term, None) {
                 tracing::error!("WAL persist failed during step-down: {}", e);
@@ -1534,9 +1562,22 @@ impl RaftNode {
             let mut votes = self.votes_received.write();
             if !votes.contains(from) {
                 votes.push(from.clone());
+                tracing::debug!(
+                    node_id = %self.node_id,
+                    from = %from,
+                    votes = votes.len(),
+                    quorum = self.quorum_size(),
+                    "Received vote"
+                );
 
                 // Check if we have quorum
                 if votes.len() >= self.quorum_size() {
+                    tracing::info!(
+                        node_id = %self.node_id,
+                        term = persistent.current_term,
+                        votes = votes.len(),
+                        "Won election with quorum"
+                    );
                     drop(votes);
                     drop(persistent);
                     self.become_leader();
@@ -1550,6 +1591,15 @@ impl RaftNode {
     /// Pre-vote prevents disruptive elections from partitioned nodes by requiring
     /// candidates to confirm they can win before incrementing their term.
     pub fn start_pre_vote(&self) {
+        let persistent = self.persistent.read();
+        let term = persistent.current_term;
+        tracing::debug!(
+            node_id = %self.node_id,
+            term = term,
+            "Starting pre-vote phase"
+        );
+        drop(persistent);
+
         *self.in_pre_vote.write() = true;
         *self.pre_votes_received.write() = vec![self.node_id.clone()]; // Vote for self
 
@@ -1630,6 +1680,12 @@ impl RaftNode {
 
         // If we see a higher term, step down
         if pvr.term > persistent.current_term {
+            tracing::debug!(
+                node_id = %self.node_id,
+                old_term = persistent.current_term,
+                new_term = pvr.term,
+                "Stepping down from pre-vote due to higher term"
+            );
             drop(persistent);
 
             // CRITICAL: Persist BEFORE applying state change
@@ -1650,9 +1706,22 @@ impl RaftNode {
             let mut votes = self.pre_votes_received.write();
             if !votes.contains(from) {
                 votes.push(from.clone());
+                tracing::debug!(
+                    node_id = %self.node_id,
+                    from = %from,
+                    pre_votes = votes.len(),
+                    quorum = self.quorum_size(),
+                    "Received pre-vote"
+                );
 
                 // Check if we have quorum
                 if votes.len() >= self.quorum_size() {
+                    tracing::debug!(
+                        node_id = %self.node_id,
+                        term = persistent.current_term,
+                        pre_votes = votes.len(),
+                        "Pre-vote succeeded, starting election"
+                    );
                     drop(votes);
                     drop(persistent);
                     *self.in_pre_vote.write() = false;
@@ -2008,6 +2077,12 @@ impl RaftNode {
         let mut persistent = self.persistent.write();
         let new_term = persistent.current_term + 1;
 
+        tracing::info!(
+            node_id = %self.node_id,
+            new_term = new_term,
+            "Starting election"
+        );
+
         // CRITICAL: Persist BEFORE applying state change
         if let Err(e) = self.persist_term_and_vote(new_term, Some(&self.node_id)) {
             tracing::error!("WAL persist failed during election start: {}", e);
@@ -2048,6 +2123,14 @@ impl RaftNode {
     /// Become leader after winning election.
     /// This is public to allow testing scenarios.
     pub fn become_leader(&self) {
+        let term = self.persistent.read().current_term;
+
+        tracing::info!(
+            node_id = %self.node_id,
+            term = term,
+            "Became leader"
+        );
+
         *self.state.write() = RaftState::Leader;
         *self.current_leader.write() = Some(self.node_id.clone());
 
@@ -6735,5 +6818,346 @@ mod tests {
         );
 
         assert_eq!(node.stats.heartbeat_failures.load(Ordering::Relaxed), 1);
+    }
+
+    // ========== Dynamic Membership Tests ==========
+
+    #[test]
+    fn test_add_learner_success() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        let result = node.add_learner("node3".to_string());
+        assert!(result.is_ok());
+
+        let config = node.membership_config();
+        assert!(config.learners.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_add_learner_not_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        // Node is follower
+
+        let result = node.add_learner("node3".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_learner_already_voter() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // node2 is already a voter/peer
+        let result = node.add_learner("node2".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_learner_already_learner() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Add as learner first
+        node.add_learner("node3".to_string()).unwrap();
+
+        // Try to add again
+        let result = node.add_learner("node3".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_promote_learner_success() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        node.add_learner("node3".to_string()).unwrap();
+        let result = node.promote_learner(&"node3".to_string());
+        assert!(result.is_ok());
+
+        let config = node.membership_config();
+        assert!(config.voters.contains(&"node3".to_string()));
+        assert!(!config.learners.contains(&"node3".to_string()));
+    }
+
+    #[test]
+    fn test_promote_learner_not_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        // Node is follower
+
+        let result = node.promote_learner(&"node3".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_promote_learner_not_a_learner() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Try to promote a node that's not a learner
+        let result = node.promote_learner(&"node3".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_node_success() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+        node.become_leader();
+
+        let result = node.remove_node(&"node3".to_string());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_remove_node_not_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        // Node is follower
+
+        let result = node.remove_node(&"node2".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_node_cannot_remove_self() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        let result = node.remove_node(&"node1".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_node_not_in_cluster() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        let result = node.remove_node(&"node_unknown".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_learner_caught_up_not_learner() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // node2 is a voter, not a learner
+        assert!(!node.is_learner_caught_up(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_is_learner_caught_up_no_match_index() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        node.add_learner("node3".to_string()).unwrap();
+
+        // No match index recorded yet
+        assert!(!node.is_learner_caught_up(&"node3".to_string()));
+    }
+
+    // ========== Log and Replication Tests ==========
+
+    #[test]
+    fn test_get_uncommitted_entries_returns_committed_not_applied() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add entries to the log
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=5 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        // Set commit_index to 5 but leave last_applied at 0
+        {
+            let mut volatile = node.volatile.write();
+            volatile.commit_index = 5;
+            volatile.last_applied = 2;
+        }
+
+        // get_uncommitted_entries returns entries between last_applied and commit_index
+        let entries = node.get_uncommitted_entries();
+        assert_eq!(entries.len(), 3); // Entries 3, 4, 5 (indices 2..5)
+    }
+
+    #[test]
+    fn test_mark_applied() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add some log entries
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=5 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+
+        // Commit them
+        {
+            let mut volatile = node.volatile.write();
+            volatile.commit_index = 5;
+        }
+
+        // Mark as applied
+        node.mark_applied(3);
+        assert_eq!(node.volatile.read().last_applied, 3);
+    }
+
+    #[test]
+    fn test_log_length() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        assert_eq!(node.log_length(), 0);
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.log.push(create_test_log_entry(1));
+            persistent.log.push(create_test_log_entry(2));
+        }
+
+        assert_eq!(node.log_length(), 2);
+    }
+
+    #[test]
+    fn test_finalize_to() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Add and commit some entries
+        {
+            let mut persistent = node.persistent.write();
+            for i in 1..=5 {
+                persistent.log.push(create_test_log_entry(i));
+            }
+        }
+        {
+            let mut volatile = node.volatile.write();
+            volatile.commit_index = 5;
+        }
+
+        // Finalize
+        let result = node.finalize_to(3);
+        assert!(result.is_ok());
+        assert_eq!(node.finalized_height(), 3);
+    }
+
+    #[test]
+    fn test_finalize_to_beyond_commit() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        node.become_leader();
+
+        // Commit index is 0
+        let result = node.finalize_to(5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replication_targets_includes_peers() {
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        let targets = node.replication_targets();
+        // Should include the peers node2 and node3
+        assert!(targets.contains(&"node2".to_string()));
+        assert!(targets.contains(&"node3".to_string()));
+        // Note: node1 may or may not be included depending on membership config implementation
+    }
+
+    #[test]
+    fn test_in_joint_consensus() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Initially not in joint consensus
+        assert!(!node.in_joint_consensus());
+    }
+
+    // ========== State Embedding Tests ==========
+
+    #[test]
+    fn test_update_state_embedding_sparse() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        let mut emb = SparseVector::new(100);
+        emb.set(0, 1.0);
+        emb.set(50, 0.5);
+
+        node.update_state_embedding(emb.clone());
+
+        // Verify by checking the state embedding in the node
+        let stored = node.state_embedding.read().clone();
+        assert_eq!(stored.nnz(), emb.nnz());
+    }
+
+    #[test]
+    fn test_update_state_embedding_dense_with_zeros() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Dense vector with zeros that should be filtered
+        let dense = vec![1.0, 2.0, 3.0, 0.0, 0.0, 4.0];
+        node.update_state_embedding_dense(dense);
+
+        let stored = node.state_embedding.read().clone();
+        // Should have 4 non-zero elements (zeros filtered)
+        assert!(stored.nnz() > 0);
+    }
+
+    // ========== Additional Edge Case Tests ==========
+
+    #[test]
+    fn test_last_log_index_empty() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        assert_eq!(node.last_log_index(), 0);
+    }
+
+    #[test]
+    fn test_last_log_index_with_entries() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        {
+            let mut persistent = node.persistent.write();
+            persistent.log.push(create_test_log_entry(1));
+            persistent.log.push(create_test_log_entry(2));
+            persistent.log.push(create_test_log_entry(3));
+        }
+
+        assert_eq!(node.last_log_index(), 3);
+    }
+
+    #[test]
+    fn test_set_current_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        assert!(node.current_leader().is_none());
+
+        node.set_current_leader(Some("node2".to_string()));
+        assert_eq!(node.current_leader(), Some("node2".to_string()));
+
+        node.set_current_leader(None);
+        assert!(node.current_leader().is_none());
+    }
+
+    #[test]
+    fn test_reset_heartbeat_for_election_resets_time() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Reset heartbeat for election sets it back in time to trigger timeout
+        node.reset_heartbeat_for_election();
+
+        // The heartbeat should have been set in the past (10 seconds ago)
+        let heartbeat = node.last_heartbeat.read();
+        let elapsed = heartbeat.elapsed();
+
+        // Should be at least 10 seconds ago (the function subtracts 10 seconds)
+        assert!(elapsed.as_secs() >= 9);
+    }
+
+    #[test]
+    fn test_set_finalized_height() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        assert_eq!(node.finalized_height(), 0);
+
+        node.set_finalized_height(42);
+        assert_eq!(node.finalized_height(), 42);
     }
 }

@@ -409,6 +409,15 @@ impl ConsensusManager {
             )
         };
 
+        tracing::debug!(
+            tx_id_1 = d1.tx_id,
+            tx_id_2 = d2.tx_id,
+            class = ?class,
+            similarity = similarity,
+            structural_overlap = structural_overlap,
+            "Conflict classification"
+        );
+
         ConflictResult {
             class,
             similarity,
@@ -424,6 +433,13 @@ impl ConsensusManager {
         let conflict = self.detect_conflict(d1, d2);
 
         if !conflict.can_merge {
+            tracing::debug!(
+                tx_id_1 = d1.tx_id,
+                tx_id_2 = d2.tx_id,
+                class = ?conflict.class,
+                similarity = conflict.similarity,
+                "Merge rejected"
+            );
             return MergeResult {
                 success: false,
                 merged_delta: None,
@@ -444,6 +460,11 @@ impl ConsensusManager {
             MergeAction::Deduplicate => d1.clone(),
             MergeAction::Cancel => DeltaVector::zero(d1.dimension()),
             MergeAction::Reject => {
+                tracing::debug!(
+                    tx_id_1 = d1.tx_id,
+                    tx_id_2 = d2.tx_id,
+                    "Merge rejected by action"
+                );
                 return MergeResult {
                     success: false,
                     merged_delta: None,
@@ -453,6 +474,13 @@ impl ConsensusManager {
                 };
             },
         };
+
+        tracing::debug!(
+            tx_id_1 = d1.tx_id,
+            tx_id_2 = d2.tx_id,
+            action = ?conflict.action,
+            "Merge succeeded"
+        );
 
         MergeResult {
             success: true,
@@ -485,12 +513,22 @@ impl ConsensusManager {
             };
         }
 
+        tracing::debug!(
+            delta_count = deltas.len(),
+            "Starting batch merge"
+        );
+
         let mut accumulated = deltas[0].clone();
         let mut parent_ids = vec![deltas[0].tx_id];
 
         for delta in &deltas[1..] {
             let result = self.merge(&accumulated, delta);
             if !result.success {
+                tracing::debug!(
+                    merged_count = parent_ids.len(),
+                    failed_tx_id = delta.tx_id,
+                    "Batch merge failed"
+                );
                 return MergeResult {
                     success: false,
                     merged_delta: None,
@@ -511,6 +549,11 @@ impl ConsensusManager {
             accumulated = merged;
             parent_ids.push(delta.tx_id);
         }
+
+        tracing::debug!(
+            merged_count = parent_ids.len(),
+            "Batch merge complete"
+        );
 
         MergeResult {
             success: true,
@@ -584,6 +627,14 @@ impl ConsensusManager {
                     });
                 }
             }
+        }
+
+        if !conflicts.is_empty() {
+            tracing::debug!(
+                delta_count = deltas.len(),
+                conflicts_found = conflicts.len(),
+                "Batch conflict detection complete"
+            );
         }
 
         conflicts
