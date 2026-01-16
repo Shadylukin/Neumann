@@ -17,7 +17,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tensor_store::SparseVector;
 
-use crate::{block::NodeId, distributed_tx::TxPhase, gossip::GossipNodeState, ShardId};
+use crate::{
+    block::NodeId, distributed_tx::TxPhase, error::ChainError, gossip::GossipNodeState, ShardId,
+};
 
 /// Configuration for partition merge behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,7 +613,7 @@ impl MembershipReconciler {
     pub fn merge(
         local: &MembershipViewSummary,
         remote: &MembershipViewSummary,
-    ) -> (MembershipViewSummary, Vec<MergeConflict>) {
+    ) -> Result<(MembershipViewSummary, Vec<MergeConflict>), ChainError> {
         let mut merged_states: HashMap<String, GossipNodeState> = HashMap::new();
         let mut conflicts = Vec::new();
 
@@ -665,10 +667,15 @@ impl MembershipReconciler {
                             (*l).clone()
                         }
                     }
-                }
+                },
                 (Some(l), None) => (*l).clone(),
                 (None, Some(r)) => (*r).clone(),
-                (None, None) => unreachable!(),
+                (None, None) => {
+                    return Err(ChainError::InvalidState(format!(
+                        "node {} not found in either view during merge",
+                        node_id
+                    )));
+                }
             };
             merged_states.insert(node_id, winner);
         }
@@ -682,7 +689,7 @@ impl MembershipReconciler {
             generation: local.generation.max(remote.generation) + 1,
         };
 
-        (merged, conflicts)
+        Ok((merged, conflicts))
     }
 }
 
@@ -758,7 +765,7 @@ impl DataReconciler {
                     conflicts,
                     requires_manual: false,
                 };
-            }
+            },
             (None, Some(r)) => {
                 return DataReconcileResult {
                     success: true,
@@ -766,7 +773,7 @@ impl DataReconciler {
                     conflicts,
                     requires_manual: false,
                 };
-            }
+            },
             (None, None) => {
                 return DataReconcileResult {
                     success: true,
@@ -774,7 +781,7 @@ impl DataReconciler {
                     conflicts,
                     requires_manual: false,
                 };
-            }
+            },
         };
 
         // Compute similarity
@@ -812,8 +819,14 @@ impl DataReconciler {
             conflicts.push(MergeConflict {
                 conflict_type: ConflictType::DataConflict,
                 key: format!("state@{}vs{}", local.node_id, remote.node_id),
-                local_value: format!("idx:{} term:{}", local.last_committed_index, local.last_committed_term),
-                remote_value: format!("idx:{} term:{}", remote.last_committed_index, remote.last_committed_term),
+                local_value: format!(
+                    "idx:{} term:{}",
+                    local.last_committed_index, local.last_committed_term
+                ),
+                remote_value: format!(
+                    "idx:{} term:{}",
+                    remote.last_committed_index, remote.last_committed_term
+                ),
                 resolution: ConflictResolution::Manual,
             });
 
@@ -865,7 +878,7 @@ impl TransactionReconciler {
         &self,
         local_txs: &[PendingTxState],
         remote_txs: &[PendingTxState],
-    ) -> TxReconcileResult {
+    ) -> Result<TxReconcileResult, ChainError> {
         let mut to_commit = Vec::new();
         let mut to_abort = Vec::new();
         let mut conflicts = Vec::new();
@@ -898,8 +911,8 @@ impl TransactionReconciler {
                     let all_yes = !merged_votes.is_empty() && merged_votes.values().all(|v| *v);
 
                     // Check timeout
-                    let is_timed_out = l.is_timed_out(self.tx_timeout_ms)
-                        || r.is_timed_out(self.tx_timeout_ms);
+                    let is_timed_out =
+                        l.is_timed_out(self.tx_timeout_ms) || r.is_timed_out(self.tx_timeout_ms);
 
                     if has_no || is_timed_out {
                         to_abort.push(tx_id);
@@ -916,7 +929,7 @@ impl TransactionReconciler {
                         });
                         to_abort.push(tx_id);
                     }
-                }
+                },
                 (Some(l), None) => {
                     // Only local has it
                     if l.is_timed_out(self.tx_timeout_ms) || l.any_no() {
@@ -927,7 +940,7 @@ impl TransactionReconciler {
                         // Abort incomplete transactions from partition
                         to_abort.push(tx_id);
                     }
-                }
+                },
                 (None, Some(r)) => {
                     // Only remote has it
                     if r.is_timed_out(self.tx_timeout_ms) || r.any_no() {
@@ -939,23 +952,28 @@ impl TransactionReconciler {
                         to_abort.push(tx_id);
                     }
                 }
-                (None, None) => unreachable!(),
+                (None, None) => {
+                    return Err(ChainError::InvalidState(format!(
+                        "tx {} not found in either list during reconcile",
+                        tx_id
+                    )));
+                }
             }
         }
 
-        TxReconcileResult {
+        Ok(TxReconcileResult {
             to_commit,
             to_abort,
             conflicts,
-        }
+        })
     }
 }
 
 use parking_lot::RwLock;
 
 use crate::network::{
-    DataMergeRequest, DataMergeResponse, MergeAck, MergeFinalize, MergeInit,
-    MergeViewExchange, TxReconcileRequest, TxReconcileResponse,
+    DataMergeRequest, DataMergeResponse, MergeAck, MergeFinalize, MergeInit, MergeViewExchange,
+    TxReconcileRequest, TxReconcileResponse,
 };
 
 /// Coordinates partition healing and state reconciliation.
@@ -1141,7 +1159,9 @@ impl PartitionMergeManager {
         // Accept and create local session
         self.record_merge_attempt(&msg.initiator);
         let mut session = MergeSession::new(msg.session_id, msg.healed_nodes);
-        session.remote_summaries.insert(msg.initiator.clone(), msg.local_summary);
+        session
+            .remote_summaries
+            .insert(msg.initiator.clone(), msg.local_summary);
         session.advance_phase(); // Move to ViewExchange
 
         self.sessions.write().insert(msg.session_id, session);
@@ -1162,7 +1182,9 @@ impl PartitionMergeManager {
             if msg.accepted {
                 // Store remote summary if provided
                 if let Some(summary) = msg.local_summary {
-                    session.remote_summaries.insert(msg.responder.clone(), summary);
+                    session
+                        .remote_summaries
+                        .insert(msg.responder.clone(), summary);
                 }
                 // Move to next phase if all acks received
                 if session.phase == MergePhase::HealDetection {
@@ -1182,7 +1204,9 @@ impl PartitionMergeManager {
     pub fn handle_view_exchange(&self, msg: MergeViewExchange) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&msg.session_id) {
-            session.remote_views.insert(msg.view.node_id.clone(), msg.view);
+            session
+                .remote_views
+                .insert(msg.view.node_id.clone(), msg.view);
 
             // Check if we have all views
             if session.has_all_views() && session.phase == MergePhase::ViewExchange {
@@ -1192,10 +1216,7 @@ impl PartitionMergeManager {
     }
 
     /// Handle data merge request.
-    pub fn handle_data_merge_request(
-        &self,
-        msg: DataMergeRequest,
-    ) -> Option<DataMergeResponse> {
+    pub fn handle_data_merge_request(&self, msg: DataMergeRequest) -> Option<DataMergeResponse> {
         let sessions = self.sessions.read();
         let session = sessions.get(&msg.session_id)?;
 
@@ -1204,7 +1225,9 @@ impl PartitionMergeManager {
             let remote_summary = PartitionStateSummary::new(msg.requester.clone())
                 .with_log_position(msg.last_committed_index, msg.last_committed_term);
 
-            let result = self.data_reconciler.reconcile(local_summary, &remote_summary);
+            let result = self
+                .data_reconciler
+                .reconcile(local_summary, &remote_summary);
 
             Some(DataMergeResponse {
                 session_id: msg.session_id,
@@ -1223,16 +1246,18 @@ impl PartitionMergeManager {
         &self,
         msg: TxReconcileRequest,
         local_pending: &[PendingTxState],
-    ) -> TxReconcileResponse {
-        let result = self.tx_reconciler.reconcile(local_pending, &msg.pending_txs);
+    ) -> Result<TxReconcileResponse, ChainError> {
+        let result = self
+            .tx_reconciler
+            .reconcile(local_pending, &msg.pending_txs)?;
 
-        TxReconcileResponse {
+        Ok(TxReconcileResponse {
             session_id: msg.session_id,
             responder: self.local_node.clone(),
             pending_txs: local_pending.to_vec(),
             to_commit: result.to_commit,
             to_abort: result.to_abort,
-        }
+        })
     }
 
     /// Handle merge finalize message.
@@ -1305,7 +1330,12 @@ impl PartitionMergeManager {
     }
 
     /// Add a remote summary to a session.
-    pub fn add_remote_summary(&self, session_id: u64, node: NodeId, summary: PartitionStateSummary) {
+    pub fn add_remote_summary(
+        &self,
+        session_id: u64,
+        node: NodeId,
+        summary: PartitionStateSummary,
+    ) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
             session.remote_summaries.insert(node, summary);
@@ -1672,10 +1702,14 @@ mod tests {
             },
         ]);
 
-        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote);
+        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote).unwrap();
 
         assert_eq!(merged.node_states.len(), 1);
-        let node1 = merged.node_states.iter().find(|s| s.node_id == "node1").unwrap();
+        let node1 = merged
+            .node_states
+            .iter()
+            .find(|s| s.node_id == "node1")
+            .unwrap();
         assert_eq!(node1.incarnation, 6);
         assert_eq!(node1.health, NodeHealth::Failed);
         assert!(conflicts.is_empty());
@@ -1706,9 +1740,13 @@ mod tests {
             },
         ]);
 
-        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote);
+        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote).unwrap();
 
-        let node1 = merged.node_states.iter().find(|s| s.node_id == "node1").unwrap();
+        let node1 = merged
+            .node_states
+            .iter()
+            .find(|s| s.node_id == "node1")
+            .unwrap();
         assert_eq!(node1.health, NodeHealth::Failed);
         // Conflict recorded for same incarnation different health
         assert_eq!(conflicts.len(), 1);
@@ -1740,7 +1778,7 @@ mod tests {
             },
         ]);
 
-        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote);
+        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote).unwrap();
 
         assert_eq!(merged.node_states.len(), 2);
         assert!(conflicts.is_empty());
@@ -1768,10 +1806,8 @@ mod tests {
         let mut remote_emb = SparseVector::new(100);
         remote_emb.set(50, 1.0);
 
-        let local = PartitionStateSummary::new("local".to_string())
-            .with_embedding(local_emb);
-        let remote = PartitionStateSummary::new("remote".to_string())
-            .with_embedding(remote_emb);
+        let local = PartitionStateSummary::new("local".to_string()).with_embedding(local_emb);
+        let remote = PartitionStateSummary::new("remote".to_string()).with_embedding(remote_emb);
 
         let reconciler = DataReconciler::default();
         let result = reconciler.reconcile(&local, &remote);
@@ -1812,7 +1848,10 @@ mod tests {
         assert!(!result.success);
         assert!(result.requires_manual);
         assert!(!result.conflicts.is_empty());
-        assert_eq!(result.conflicts[0].conflict_type, ConflictType::DataConflict);
+        assert_eq!(
+            result.conflicts[0].conflict_type,
+            ConflictType::DataConflict
+        );
     }
 
     #[test]
@@ -1826,7 +1865,7 @@ mod tests {
         remote_tx.votes.insert(2, true);
 
         let reconciler = TransactionReconciler::default();
-        let result = reconciler.reconcile(&[local_tx], &[remote_tx]);
+        let result = reconciler.reconcile(&[local_tx], &[remote_tx]).unwrap();
 
         assert!(result.to_commit.contains(&1));
         assert!(result.to_abort.is_empty());
@@ -1841,7 +1880,7 @@ mod tests {
         remote_tx.votes.insert(1, false);
 
         let reconciler = TransactionReconciler::default();
-        let result = reconciler.reconcile(&[local_tx], &[remote_tx]);
+        let result = reconciler.reconcile(&[local_tx], &[remote_tx]).unwrap();
 
         assert!(result.to_abort.contains(&1));
         assert!(result.to_commit.is_empty());
@@ -1854,7 +1893,7 @@ mod tests {
         tx.votes.insert(1, true);
 
         let reconciler = TransactionReconciler::default();
-        let result = reconciler.reconcile(&[tx], &[]);
+        let result = reconciler.reconcile(&[tx], &[]).unwrap();
 
         assert!(result.to_commit.contains(&1));
     }
@@ -1872,7 +1911,7 @@ mod tests {
         // Update the test to expect commit since all existing votes are YES.
         // A proper incomplete check would need participant tracking.
         let reconciler = TransactionReconciler::default();
-        let result = reconciler.reconcile(&[tx], &[]);
+        let result = reconciler.reconcile(&[tx], &[]).unwrap();
 
         // With only YES votes, transaction commits (reconciler doesn't check participants)
         assert!(result.to_commit.contains(&1));
@@ -1882,20 +1921,16 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_creation() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         assert_eq!(manager.active_session_count(), 0);
     }
 
     #[test]
     fn test_partition_merge_manager_start_merge() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         let session_id = manager.start_merge(vec!["node1".to_string(), "node2".to_string()]);
         assert!(session_id.is_some());
@@ -1907,8 +1942,7 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_concurrent_limit() {
-        let config = PartitionMergeConfig::default()
-            .with_heal_threshold(1);
+        let config = PartitionMergeConfig::default().with_heal_threshold(1);
         let manager = PartitionMergeManager::new("local".to_string(), config);
 
         // Default max_concurrent_merges is 1
@@ -1922,28 +1956,33 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_advance_session() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
 
-        assert_eq!(manager.session_phase(session_id), Some(MergePhase::HealDetection));
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::HealDetection)
+        );
 
         manager.advance_session(session_id);
-        assert_eq!(manager.session_phase(session_id), Some(MergePhase::ViewExchange));
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::ViewExchange)
+        );
 
         manager.advance_session(session_id);
-        assert_eq!(manager.session_phase(session_id), Some(MergePhase::MembershipReconciliation));
+        assert_eq!(
+            manager.session_phase(session_id),
+            Some(MergePhase::MembershipReconciliation)
+        );
     }
 
     #[test]
     fn test_partition_merge_manager_fail_session() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
         manager.fail_session(session_id, "test error");
@@ -1956,10 +1995,8 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_complete_session() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
 
@@ -1983,8 +2020,7 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_cooldown() {
-        let config = PartitionMergeConfig::default()
-            .with_heal_threshold(1);
+        let config = PartitionMergeConfig::default().with_heal_threshold(1);
         // Set a very short cooldown for testing
         let mut config = config;
         config.merge_cooldown_ms = 1000; // 1 second
@@ -2008,25 +2044,317 @@ mod tests {
 
     #[test]
     fn test_partition_merge_manager_set_summaries() {
-        let manager = PartitionMergeManager::new(
-            "local".to_string(),
-            PartitionMergeConfig::default(),
-        );
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
 
         let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
 
         // Set local summary
-        let local_summary = PartitionStateSummary::new("local".to_string())
-            .with_log_position(100, 5);
+        let local_summary =
+            PartitionStateSummary::new("local".to_string()).with_log_position(100, 5);
         manager.set_local_summary(session_id, local_summary);
 
         // Set remote summary
-        let remote_summary = PartitionStateSummary::new("node1".to_string())
-            .with_log_position(80, 5);
+        let remote_summary =
+            PartitionStateSummary::new("node1".to_string()).with_log_position(80, 5);
         manager.add_remote_summary(session_id, "node1".to_string(), remote_summary);
 
         let session = manager.get_session(session_id).unwrap();
         assert!(session.local_summary.is_some());
         assert!(session.remote_summaries.contains_key(&"node1".to_string()));
+    }
+
+    // ========== Timeout Processing Tests ==========
+
+    #[test]
+    fn test_process_timeouts_retry() {
+        let mut config = PartitionMergeConfig::default();
+        config.phase_timeout_ms = 1; // 1ms timeout
+        config.max_retries = 3;
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Wait for timeout
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Process timeouts - should increment retry count
+        let timed_out = manager.process_timeouts();
+        assert!(
+            timed_out.is_empty(),
+            "Session should retry, not be removed yet"
+        );
+
+        // Check retry count incremented
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(session.retries, 1);
+    }
+
+    #[test]
+    fn test_process_timeouts_max_retries_exceeded() {
+        let mut config = PartitionMergeConfig::default();
+        config.phase_timeout_ms = 1; // 1ms timeout
+        config.max_retries = 2;
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Wait and process timeouts until max retries exceeded
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_millis(10));
+            manager.process_timeouts();
+        }
+
+        // Session should be removed after max retries
+        assert!(manager.get_session(session_id).is_none());
+    }
+
+    #[test]
+    fn test_process_timeouts_session_removed() {
+        let mut config = PartitionMergeConfig::default();
+        config.phase_timeout_ms = 1;
+        config.max_retries = 0; // No retries
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+
+        let timed_out = manager.process_timeouts();
+
+        // Session should be in timed_out list and removed
+        assert!(timed_out.contains(&session_id));
+        assert_eq!(manager.active_session_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_tx_is_timed_out() {
+        let tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+
+        // Fresh transaction should not be timed out with reasonable timeout
+        assert!(!tx.is_timed_out(10_000)); // 10 second timeout
+
+        // With a 0ms timeout and instant creation, should not be timed out yet
+        // because is_timed_out checks: now - started_at > timeout, and 0 > 0 is false
+        assert!(!tx.is_timed_out(0));
+
+        // Wait a tiny bit and try again - now it should be timed out with 0ms timeout
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(tx.is_timed_out(0));
+    }
+
+    // ========== Data Reconciler Edge Cases ==========
+
+    #[test]
+    fn test_data_reconciler_local_only_embedding() {
+        let mut local_emb = SparseVector::new(100);
+        local_emb.set(0, 1.0);
+
+        let local = PartitionStateSummary::new("local".to_string())
+            .with_embedding(local_emb)
+            .with_hash([1u8; 32]);
+        let remote = PartitionStateSummary::new("remote".to_string())
+            .with_hash([2u8; 32]); // No embedding
+
+        let reconciler = DataReconciler::default();
+        let result = reconciler.reconcile(&local, &remote);
+
+        // Should succeed since remote has no embedding to conflict with
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_data_reconciler_remote_only_embedding() {
+        let mut remote_emb = SparseVector::new(100);
+        remote_emb.set(0, 1.0);
+
+        let local = PartitionStateSummary::new("local".to_string())
+            .with_hash([1u8; 32]); // No embedding
+        let remote = PartitionStateSummary::new("remote".to_string())
+            .with_embedding(remote_emb)
+            .with_hash([2u8; 32]);
+
+        let reconciler = DataReconciler::default();
+        let result = reconciler.reconcile(&local, &remote);
+
+        // Should succeed since local has no embedding to conflict with
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_data_reconciler_no_embeddings() {
+        let local = PartitionStateSummary::new("local".to_string()).with_hash([1u8; 32]);
+        let remote = PartitionStateSummary::new("remote".to_string()).with_hash([2u8; 32]);
+
+        let reconciler = DataReconciler::default();
+        let result = reconciler.reconcile(&local, &remote);
+
+        // With no embeddings on either side, reconciliation succeeds (nothing to merge)
+        assert!(result.success);
+        assert!(!result.requires_manual);
+        assert!(result.merged_data.is_none());
+    }
+
+    // ========== Session Management Edge Cases ==========
+
+    #[test]
+    fn test_advance_session_from_terminal() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Fail the session
+        manager.fail_session(session_id, "test error");
+        assert_eq!(manager.session_phase(session_id), Some(MergePhase::Failed));
+
+        // Try to advance - should be no-op since Failed is terminal
+        manager.advance_session(session_id);
+        assert_eq!(manager.session_phase(session_id), Some(MergePhase::Failed));
+    }
+
+    #[test]
+    fn test_merge_session_is_phase_timed_out() {
+        let session = MergeSession::new(1, vec!["node2".to_string()]);
+
+        // Fresh session should not be timed out with 1 second timeout
+        assert!(!session.is_phase_timed_out(1000));
+
+        // Should be timed out with 0ms timeout
+        assert!(session.is_phase_timed_out(0));
+    }
+
+    #[test]
+    fn test_merge_session_duration() {
+        let session = MergeSession::new(1, vec!["node2".to_string()]);
+
+        // Duration should be very small for fresh session
+        let duration = session.duration();
+        assert!(duration.as_millis() < 100);
+    }
+
+    #[test]
+    fn test_merge_session_has_all_views() {
+        let mut session = MergeSession::new(1, vec!["node2".to_string(), "node3".to_string()]);
+
+        assert!(!session.has_all_views());
+
+        session.remote_views.insert(
+            "node2".to_string(),
+            MembershipViewSummary::new("node2".to_string(), 1, 1),
+        );
+        assert!(!session.has_all_views());
+
+        session.remote_views.insert(
+            "node3".to_string(),
+            MembershipViewSummary::new("node3".to_string(), 1, 1),
+        );
+        assert!(session.has_all_views());
+    }
+
+    #[test]
+    fn test_partition_merge_manager_active_sessions() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+
+        assert!(manager.active_sessions().is_empty());
+
+        let config = PartitionMergeConfig::default();
+        // Set max_concurrent_merges > 1
+        let mut config = config;
+        config.max_concurrent_merges = 5;
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+
+        let id1 = manager.start_merge(vec!["node1".to_string()]).unwrap();
+        let id2 = manager.start_merge(vec!["node2".to_string()]).unwrap();
+
+        let active = manager.active_sessions();
+        assert_eq!(active.len(), 2);
+        assert!(active.contains(&id1));
+        assert!(active.contains(&id2));
+    }
+
+    #[test]
+    fn test_partition_merge_manager_set_local_view() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let view = MembershipViewSummary::new("local".to_string(), 100, 5);
+        manager.set_local_view(session_id, view);
+
+        let session = manager.get_session(session_id).unwrap();
+        assert!(session.local_view.is_some());
+        assert_eq!(session.local_view.as_ref().unwrap().lamport_time, 100);
+    }
+
+    #[test]
+    fn test_partition_merge_manager_handle_view_exchange() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        let view = MembershipViewSummary::new("node1".to_string(), 100, 5);
+        let msg = MergeViewExchange {
+            session_id,
+            sender: "node1".to_string(),
+            view,
+        };
+        manager.handle_view_exchange(msg);
+
+        let session = manager.get_session(session_id).unwrap();
+        assert!(session.remote_views.contains_key(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_transaction_reconciler_empty_inputs() {
+        let reconciler = TransactionReconciler::default();
+        let result = reconciler.reconcile(&[], &[]).unwrap();
+
+        assert!(result.to_commit.is_empty());
+        assert!(result.to_abort.is_empty());
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_partition_state_summary_with_embedding() {
+        let mut emb = SparseVector::new(10);
+        emb.set(0, 1.0);
+        emb.set(5, 0.5);
+
+        let summary = PartitionStateSummary::new("node1".to_string()).with_embedding(emb.clone());
+
+        assert_eq!(summary.state_embedding.as_ref().unwrap().nnz(), 2);
+    }
+
+    #[test]
+    fn test_membership_view_summary_with_states() {
+        use crate::gossip::GossipNodeState;
+        use crate::membership::NodeHealth;
+
+        let states = vec![GossipNodeState {
+            node_id: "node1".to_string(),
+            health: NodeHealth::Healthy,
+            timestamp: 100,
+            updated_at: 100,
+            incarnation: 1,
+        }];
+
+        let view =
+            MembershipViewSummary::new("local".to_string(), 100, 5).with_states(states.clone());
+
+        assert_eq!(view.node_states.len(), 1);
+        assert_eq!(view.node_states[0].node_id, "node1");
+    }
+
+    #[test]
+    fn test_partition_merge_config_max_retries() {
+        let mut config = PartitionMergeConfig::default();
+        assert_eq!(config.max_retries, 3);
+
+        config.max_retries = 5;
+        assert_eq!(config.max_retries, 5);
     }
 }

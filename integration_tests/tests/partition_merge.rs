@@ -3,14 +3,13 @@
 //! Tests the full merge flow: heal detection, view exchange, data reconciliation,
 //! transaction reconciliation, and finalization.
 
-use tensor_chain::{
-    DataReconciler, MembershipReconciler, MembershipViewSummary, MergePhase,
-    PartitionMergeConfig, PartitionMergeManager, PartitionStateSummary, PendingTxState,
-    TransactionReconciler,
-};
 use tensor_chain::distributed_tx::TxPhase;
 use tensor_chain::gossip::GossipNodeState;
 use tensor_chain::membership::NodeHealth;
+use tensor_chain::{
+    DataReconciler, MembershipReconciler, MembershipViewSummary, MergePhase, PartitionMergeConfig,
+    PartitionMergeManager, PartitionStateSummary, PendingTxState, TransactionReconciler,
+};
 use tensor_store::SparseVector;
 
 /// Test heal detection and merge session initiation.
@@ -67,7 +66,7 @@ fn test_membership_view_reconciliation() {
         },
     ]);
 
-    let (merged, _conflicts) = MembershipReconciler::merge(&local, &remote);
+    let (merged, _conflicts) = MembershipReconciler::merge(&local, &remote).unwrap();
 
     // Should have 3 unique nodes in merged view (node2, node3, node4)
     assert_eq!(merged.node_states.len(), 3);
@@ -190,10 +189,9 @@ fn test_pending_tx_reconciliation() {
     local_tx3.votes.insert(1, true);
 
     let reconciler = TransactionReconciler::default();
-    let result = reconciler.reconcile(
-        &[local_tx1, local_tx2, local_tx3],
-        &[remote_tx1, remote_tx2],
-    );
+    let result = reconciler
+        .reconcile(&[local_tx1, local_tx2, local_tx3], &[remote_tx1, remote_tx2])
+        .unwrap();
 
     // Transaction 1: All YES -> commit
     assert!(result.to_commit.contains(&1));
@@ -216,7 +214,10 @@ fn test_full_partition_merge_flow() {
         .start_merge(vec!["node2".to_string()])
         .expect("should start merge");
 
-    assert_eq!(manager.session_phase(session_id), Some(MergePhase::HealDetection));
+    assert_eq!(
+        manager.session_phase(session_id),
+        Some(MergePhase::HealDetection)
+    );
 
     // 2. Set local state summary
     let local_summary = PartitionStateSummary::new("node1".to_string())
@@ -226,7 +227,10 @@ fn test_full_partition_merge_flow() {
 
     // 3. Advance through phases
     manager.advance_session(session_id); // -> ViewExchange
-    assert_eq!(manager.session_phase(session_id), Some(MergePhase::ViewExchange));
+    assert_eq!(
+        manager.session_phase(session_id),
+        Some(MergePhase::ViewExchange)
+    );
 
     // Set local view
     let local_view = MembershipViewSummary::new("node1".to_string(), 100, 1);
@@ -251,10 +255,16 @@ fn test_full_partition_merge_flow() {
     );
 
     manager.advance_session(session_id); // -> Finalization
-    assert_eq!(manager.session_phase(session_id), Some(MergePhase::Finalization));
+    assert_eq!(
+        manager.session_phase(session_id),
+        Some(MergePhase::Finalization)
+    );
 
     manager.advance_session(session_id); // -> Completed
-    assert_eq!(manager.session_phase(session_id), Some(MergePhase::Completed));
+    assert_eq!(
+        manager.session_phase(session_id),
+        Some(MergePhase::Completed)
+    );
 
     // 4. Complete the session
     manager.complete_session(session_id);

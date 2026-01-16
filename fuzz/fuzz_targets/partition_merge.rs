@@ -6,7 +6,6 @@
 #![no_main]
 
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
-use std::collections::HashMap;
 use tensor_chain::{
     DataReconciler, MembershipReconciler, MembershipViewSummary, PartitionStateSummary,
     PendingTxState, TransactionReconciler,
@@ -133,7 +132,7 @@ fn to_pending_tx(fuzz: &FuzzPendingTx) -> PendingTxState {
     );
     tx.started_at = fuzz.started_at;
     for (shard, vote) in &fuzz.votes {
-        tx.votes.insert(*shard, *vote);
+        tx.votes.insert(*shard as usize, *vote);
     }
     tx
 }
@@ -142,7 +141,10 @@ fuzz_target!(|input: FuzzInput| {
     // Test membership reconciliation
     let local_view = to_membership_view(&input.local_view);
     let remote_view = to_membership_view(&input.remote_view);
-    let (merged_view, _conflicts) = MembershipReconciler::merge(&local_view, &remote_view);
+    let (merged_view, _conflicts) = match MembershipReconciler::merge(&local_view, &remote_view) {
+        Ok(result) => result,
+        Err(_) => return, // Invalid state detected, skip this input
+    };
 
     // Verify merged view properties
     // 1. All nodes from both views should be in merged
@@ -184,7 +186,10 @@ fuzz_target!(|input: FuzzInput| {
 
     let timeout = input.tx_timeout_ms.max(1); // Avoid zero timeout
     let tx_reconciler = TransactionReconciler { tx_timeout_ms: timeout };
-    let tx_result = tx_reconciler.reconcile(&local_txs, &remote_txs);
+    let tx_result = match tx_reconciler.reconcile(&local_txs, &remote_txs) {
+        Ok(result) => result,
+        Err(_) => return, // Invalid state detected, skip this input
+    };
 
     // Verify transaction reconciliation properties
     // 1. Each tx should be in exactly one of: to_commit, to_abort, or neither (if complete)
