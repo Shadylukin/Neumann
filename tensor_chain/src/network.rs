@@ -13,6 +13,8 @@ use std::{
     },
 };
 
+use tracing;
+
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -128,6 +130,40 @@ impl Message {
 
     pub fn has_routing_embedding(&self) -> bool {
         self.routing_embedding().is_some()
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Message::RequestVote(_) => "RequestVote",
+            Message::RequestVoteResponse(_) => "RequestVoteResponse",
+            Message::PreVote(_) => "PreVote",
+            Message::PreVoteResponse(_) => "PreVoteResponse",
+            Message::TimeoutNow(_) => "TimeoutNow",
+            Message::AppendEntries(_) => "AppendEntries",
+            Message::AppendEntriesResponse(_) => "AppendEntriesResponse",
+            Message::BlockRequest(_) => "BlockRequest",
+            Message::BlockResponse(_) => "BlockResponse",
+            Message::SnapshotRequest(_) => "SnapshotRequest",
+            Message::SnapshotResponse(_) => "SnapshotResponse",
+            Message::Ping { .. } => "Ping",
+            Message::Pong { .. } => "Pong",
+            Message::TxPrepare(_) => "TxPrepare",
+            Message::TxPrepareResponse(_) => "TxPrepareResponse",
+            Message::TxCommit(_) => "TxCommit",
+            Message::TxAbort(_) => "TxAbort",
+            Message::TxAck(_) => "TxAck",
+            Message::QueryRequest(_) => "QueryRequest",
+            Message::QueryResponse(_) => "QueryResponse",
+            Message::Gossip(_) => "Gossip",
+            Message::MergeInit(_) => "MergeInit",
+            Message::MergeAck(_) => "MergeAck",
+            Message::ViewExchange(_) => "ViewExchange",
+            Message::DataMergeRequest(_) => "DataMergeRequest",
+            Message::DataMergeResponse(_) => "DataMergeResponse",
+            Message::TxReconcileRequest(_) => "TxReconcileRequest",
+            Message::TxReconcileResponse(_) => "TxReconcileResponse",
+            Message::MergeFinalize(_) => "MergeFinalize",
+        }
     }
 }
 
@@ -945,16 +981,31 @@ impl MemoryTransport {
     }
 
     pub fn connect_to(&self, other_id: NodeId, sender: mpsc::Sender<(NodeId, Message)>) {
+        tracing::debug!(
+            local_id = %self.local_id,
+            peer_id = %other_id,
+            "Peer connected"
+        );
         self.peers.write().insert(other_id, sender);
     }
 
     /// Simulate network partition - messages to this peer will be dropped.
     pub fn partition(&self, peer_id: &NodeId) {
+        tracing::info!(
+            local_id = %self.local_id,
+            peer_id = %peer_id,
+            "Network partition simulated"
+        );
         self.partitioned.write().insert(peer_id.clone());
     }
 
     /// Heal partition - restore communication with peer.
     pub fn heal(&self, peer_id: &NodeId) {
+        tracing::info!(
+            local_id = %self.local_id,
+            peer_id = %peer_id,
+            "Network partition healed"
+        );
         self.partitioned.write().remove(peer_id);
     }
 
@@ -990,6 +1041,11 @@ impl Transport for MemoryTransport {
         // Check if peer is partitioned - silently drop message
         if self.partitioned.read().contains(to) {
             self.dropped_messages.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                from = %self.local_id,
+                to = %to,
+                "Message dropped: network partition"
+            );
             return Err(ChainError::NetworkError(format!(
                 "network partition: {} -> {}",
                 self.local_id, to
@@ -1001,10 +1057,17 @@ impl Transport for MemoryTransport {
 
         let sender = {
             let peers = self.peers.read();
-            peers
-                .get(to)
-                .cloned()
-                .ok_or_else(|| ChainError::NetworkError(format!("peer not found: {}", to)))?
+            match peers.get(to).cloned() {
+                Some(s) => s,
+                None => {
+                    tracing::debug!(
+                        from = %self.local_id,
+                        to = %to,
+                        "Send failed: peer not found"
+                    );
+                    return Err(ChainError::NetworkError(format!("peer not found: {}", to)));
+                }
+            }
         };
 
         sender
@@ -1057,6 +1120,11 @@ impl Transport for MemoryTransport {
     }
 
     async fn disconnect(&self, peer_id: &NodeId) -> Result<()> {
+        tracing::debug!(
+            local_id = %self.local_id,
+            peer_id = %peer_id,
+            "Peer disconnected"
+        );
         self.peers.write().remove(peer_id);
         Ok(())
     }
@@ -1102,6 +1170,12 @@ impl NetworkManager {
     pub async fn process_messages(&self) -> Result<()> {
         loop {
             let (from, msg) = self.transport.recv().await?;
+
+            tracing::debug!(
+                from = %from,
+                msg_type = msg.type_name(),
+                "Message received"
+            );
 
             // Collect responses without holding lock across await
             let responses: Vec<(NodeId, Message)> = {
@@ -1150,11 +1224,25 @@ impl MessageHandler for QueryHandler {
     fn handle(&self, _from: &NodeId, msg: &Message) -> Option<Message> {
         match msg {
             Message::QueryRequest(request) => {
+                tracing::debug!(
+                    query_id = request.query_id,
+                    shard_id = request.shard_id,
+                    "Executing remote query"
+                );
+
                 let start = std::time::Instant::now();
 
                 let (result, success, error) = match self.executor.execute(&request.query) {
                     Ok(bytes) => (bytes, true, None),
-                    Err(e) => (Vec::new(), false, Some(e)),
+                    Err(e) => {
+                        tracing::warn!(
+                            query_id = request.query_id,
+                            shard_id = request.shard_id,
+                            error = %e,
+                            "Remote query failed"
+                        );
+                        (Vec::new(), false, Some(e))
+                    }
                 };
 
                 let execution_time_us = start.elapsed().as_micros() as u64;
@@ -1190,6 +1278,13 @@ impl MessageHandler for TxHandler {
     fn handle(&self, from: &NodeId, msg: &Message) -> Option<Message> {
         match msg {
             Message::TxPrepare(prepare) => {
+                tracing::debug!(
+                    tx_id = prepare.tx_id,
+                    shard_id = prepare.shard_id,
+                    coordinator = %from,
+                    "Handling TxPrepare"
+                );
+
                 // Convert TxPrepareMsg to PrepareRequest
                 let request = crate::distributed_tx::PrepareRequest {
                     tx_id: prepare.tx_id,
@@ -1225,6 +1320,11 @@ impl MessageHandler for TxHandler {
                 }))
             },
             Message::TxCommit(commit) => {
+                tracing::debug!(
+                    tx_id = commit.tx_id,
+                    "Handling TxCommit"
+                );
+
                 let response = self.participant.commit(commit.tx_id);
 
                 Some(Message::TxAck(TxAckMsg {
@@ -1235,6 +1335,12 @@ impl MessageHandler for TxHandler {
                 }))
             },
             Message::TxAbort(abort) => {
+                tracing::debug!(
+                    tx_id = abort.tx_id,
+                    reason = %abort.reason,
+                    "Handling TxAbort"
+                );
+
                 let response = self.participant.abort(abort.tx_id);
 
                 Some(Message::TxAck(TxAckMsg {

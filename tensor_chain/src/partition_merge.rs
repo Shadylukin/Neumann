@@ -623,6 +623,12 @@ impl MembershipReconciler {
                     } else {
                         // Same incarnation - check health status
                         if l.health != r.health {
+                            tracing::debug!(
+                                node_id = %node_id,
+                                local_health = ?l.health,
+                                remote_health = ?r.health,
+                                "Membership conflict detected"
+                            );
                             conflicts.push(MergeConflict {
                                 conflict_type: ConflictType::MembershipConflict,
                                 key: node_id.clone(),
@@ -760,6 +766,12 @@ impl DataReconciler {
         // Classify the conflict
         if similarity.abs() < self.orthogonal_threshold {
             // Orthogonal - safe to merge via addition
+            tracing::debug!(
+                local_node = %local.node_id,
+                remote_node = %remote.node_id,
+                similarity = similarity,
+                "Orthogonal merge"
+            );
             let merged = local_emb.add(remote_emb);
             DataReconcileResult {
                 success: true,
@@ -786,6 +798,12 @@ impl DataReconciler {
             }
         } else {
             // Conflicting - requires manual resolution
+            tracing::warn!(
+                local_node = %local.node_id,
+                remote_node = %remote.node_id,
+                similarity = similarity,
+                "Data conflict detected"
+            );
             conflicts.push(MergeConflict {
                 conflict_type: ConflictType::DataConflict,
                 key: format!("state@{}vs{}", local.node_id, remote.node_id),
@@ -885,11 +903,29 @@ impl TransactionReconciler {
                         l.is_timed_out(self.tx_timeout_ms) || r.is_timed_out(self.tx_timeout_ms);
 
                     if has_no || is_timed_out {
+                        tracing::debug!(
+                            tx_id = tx_id,
+                            has_no = has_no,
+                            is_timed_out = is_timed_out,
+                            decision = "abort",
+                            "Transaction decision"
+                        );
                         to_abort.push(tx_id);
                     } else if all_yes {
+                        tracing::debug!(
+                            tx_id = tx_id,
+                            decision = "commit",
+                            "Transaction decision"
+                        );
                         to_commit.push(tx_id);
                     } else {
                         // Incomplete votes - log conflict, abort to be safe
+                        tracing::warn!(
+                            tx_id = tx_id,
+                            local_phase = ?l.phase,
+                            remote_phase = ?r.phase,
+                            "Incomplete votes"
+                        );
                         conflicts.push(MergeConflict {
                             conflict_type: ConflictType::TransactionConflict,
                             key: format!("tx:{}", tx_id),
@@ -1023,6 +1059,11 @@ impl PartitionMergeManager {
     pub fn start_merge(&self, healed_nodes: Vec<NodeId>) -> Option<u64> {
         // Check concurrent session limit
         if self.sessions.read().len() >= self.config.max_concurrent_merges {
+            tracing::debug!(
+                current = self.sessions.read().len(),
+                max = self.config.max_concurrent_merges,
+                "Merge blocked: concurrent limit"
+            );
             return None;
         }
 
@@ -1033,6 +1074,7 @@ impl PartitionMergeManager {
             .collect();
 
         if eligible.is_empty() {
+            tracing::debug!("Merge blocked: cooldown active for all nodes");
             return None;
         }
 
@@ -1045,10 +1087,16 @@ impl PartitionMergeManager {
         let session_id = self
             .next_session_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let session = MergeSession::new(session_id, eligible);
+        let session = MergeSession::new(session_id, eligible.clone());
 
         self.sessions.write().insert(session_id, session);
         self.stats.record_session_start();
+
+        tracing::info!(
+            session_id = session_id,
+            participants = ?eligible,
+            "Merge session started"
+        );
 
         Some(session_id)
     }
@@ -1064,7 +1112,17 @@ impl PartitionMergeManager {
     pub fn advance_session(&self, session_id: u64) -> Option<MergePhase> {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
+            let from_phase = session.phase;
             session.advance_phase();
+            let to_phase = session.phase;
+            if from_phase != to_phase {
+                tracing::debug!(
+                    session_id = session_id,
+                    from_phase = ?from_phase,
+                    to_phase = ?to_phase,
+                    "Phase transition"
+                );
+            }
             Some(session.phase)
         } else {
             None
@@ -1072,10 +1130,18 @@ impl PartitionMergeManager {
     }
 
     pub fn fail_session(&self, session_id: u64, error: impl Into<String>) {
+        let error_str = error.into();
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
-            session.fail(error);
+            let phase = session.phase;
+            session.fail(error_str.clone());
             self.stats.record_session_failed();
+            tracing::warn!(
+                session_id = session_id,
+                phase = ?phase,
+                error = %error_str,
+                "Merge session failed"
+            );
         }
     }
 
@@ -1083,6 +1149,7 @@ impl PartitionMergeManager {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.remove(&session_id) {
             let duration_ms = session.duration().as_millis() as u64;
+            let conflict_count = session.conflicts.len();
             self.stats.record_session_complete(duration_ms);
 
             // Record conflicts
@@ -1090,12 +1157,25 @@ impl PartitionMergeManager {
                 let auto_resolved = !matches!(conflict.resolution, ConflictResolution::Manual);
                 self.stats.record_conflict(auto_resolved);
             }
+
+            tracing::info!(
+                session_id = session_id,
+                duration_ms = duration_ms,
+                conflict_count = conflict_count,
+                "Merge session completed"
+            );
         }
     }
 
     pub fn handle_merge_init(&self, msg: MergeInit) -> Option<MergeAck> {
         // Check if we can participate
         if !self.can_merge_with(&msg.initiator) {
+            tracing::debug!(
+                session_id = msg.session_id,
+                initiator = %msg.initiator,
+                reason = "cooldown active",
+                "Merge init rejected"
+            );
             return Some(MergeAck {
                 session_id: msg.session_id,
                 responder: self.local_node.clone(),
@@ -1107,6 +1187,12 @@ impl PartitionMergeManager {
 
         // Check concurrent limit
         if self.sessions.read().len() >= self.config.max_concurrent_merges {
+            tracing::debug!(
+                session_id = msg.session_id,
+                initiator = %msg.initiator,
+                reason = "too many concurrent merges",
+                "Merge init rejected"
+            );
             return Some(MergeAck {
                 session_id: msg.session_id,
                 responder: self.local_node.clone(),
@@ -1126,6 +1212,12 @@ impl PartitionMergeManager {
 
         self.sessions.write().insert(msg.session_id, session);
 
+        tracing::info!(
+            session_id = msg.session_id,
+            initiator = %msg.initiator,
+            "Merge init accepted"
+        );
+
         Some(MergeAck {
             session_id: msg.session_id,
             responder: self.local_node.clone(),
@@ -1139,6 +1231,11 @@ impl PartitionMergeManager {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&msg.session_id) {
             if msg.accepted {
+                tracing::debug!(
+                    session_id = msg.session_id,
+                    responder = %msg.responder,
+                    "Merge ack received"
+                );
                 // Store remote summary if provided
                 if let Some(summary) = msg.local_summary {
                     session
@@ -1151,10 +1248,22 @@ impl PartitionMergeManager {
                 }
                 true
             } else {
-                session.fail(msg.reject_reason.unwrap_or_else(|| "rejected".to_string()));
+                let reason = msg.reject_reason.clone().unwrap_or_else(|| "rejected".to_string());
+                tracing::warn!(
+                    session_id = msg.session_id,
+                    responder = %msg.responder,
+                    reason = %reason,
+                    "Merge ack rejected"
+                );
+                session.fail(reason);
                 false
             }
         } else {
+            tracing::warn!(
+                session_id = msg.session_id,
+                responder = %msg.responder,
+                "Merge ack for unknown session"
+            );
             false
         }
     }
@@ -1162,6 +1271,13 @@ impl PartitionMergeManager {
     pub fn handle_view_exchange(&self, msg: MergeViewExchange) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&msg.session_id) {
+            tracing::debug!(
+                session_id = msg.session_id,
+                sender = %msg.sender,
+                lamport_time = msg.view.lamport_time,
+                node_count = msg.view.node_states.len(),
+                "View exchange received"
+            );
             session
                 .remote_views
                 .insert(msg.view.node_id.clone(), msg.view);
@@ -1174,6 +1290,14 @@ impl PartitionMergeManager {
     }
 
     pub fn handle_data_merge_request(&self, msg: DataMergeRequest) -> Option<DataMergeResponse> {
+        tracing::debug!(
+            session_id = msg.session_id,
+            requester = %msg.requester,
+            remote_index = msg.last_committed_index,
+            remote_term = msg.last_committed_term,
+            "Data merge request received"
+        );
+
         let sessions = self.sessions.read();
         let session = sessions.get(&msg.session_id)?;
 
@@ -1203,9 +1327,25 @@ impl PartitionMergeManager {
         msg: TxReconcileRequest,
         local_pending: &[PendingTxState],
     ) -> Result<TxReconcileResponse, ChainError> {
+        tracing::debug!(
+            session_id = msg.session_id,
+            requester = %msg.requester,
+            remote_pending_count = msg.pending_txs.len(),
+            local_pending_count = local_pending.len(),
+            "Transaction reconcile request received"
+        );
+
         let result = self
             .tx_reconciler
             .reconcile(local_pending, &msg.pending_txs)?;
+
+        tracing::debug!(
+            session_id = msg.session_id,
+            to_commit = result.to_commit.len(),
+            to_abort = result.to_abort.len(),
+            conflicts = result.conflicts.len(),
+            "Transaction reconcile completed"
+        );
 
         Ok(TxReconcileResponse {
             session_id: msg.session_id,
@@ -1218,9 +1358,17 @@ impl PartitionMergeManager {
 
     pub fn handle_merge_finalize(&self, msg: MergeFinalize) -> bool {
         if msg.success {
+            tracing::info!(
+                session_id = msg.session_id,
+                "Merge finalized successfully"
+            );
             self.complete_session(msg.session_id);
             true
         } else {
+            tracing::warn!(
+                session_id = msg.session_id,
+                "Merge finalize failed"
+            );
             self.fail_session(msg.session_id, "merge failed");
             false
         }
@@ -1238,7 +1386,20 @@ impl PartitionMergeManager {
                 if session.retries < self.config.max_retries {
                     session.retries += 1;
                     session.phase_started_at = Instant::now();
+                    tracing::debug!(
+                        session_id = *session_id,
+                        phase = ?session.phase,
+                        retry = session.retries,
+                        max_retries = self.config.max_retries,
+                        "Phase timeout, retrying"
+                    );
                 } else {
+                    tracing::warn!(
+                        session_id = *session_id,
+                        phase = ?session.phase,
+                        retries = session.retries,
+                        "Max retries exceeded"
+                    );
                     session.fail("max retries exceeded");
                     timed_out.push(*session_id);
                 }

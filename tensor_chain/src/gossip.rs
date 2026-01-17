@@ -152,7 +152,20 @@ impl LWWMembershipState {
 
         for state in incoming {
             let should_update = match self.states.get(&state.node_id) {
-                Some(existing) => state.supersedes(existing),
+                Some(existing) => {
+                    let supersedes = state.supersedes(existing);
+                    if supersedes {
+                        tracing::debug!(
+                            node_id = %state.node_id,
+                            old_incarnation = existing.incarnation,
+                            new_incarnation = state.incarnation,
+                            old_timestamp = existing.timestamp,
+                            new_timestamp = state.timestamp,
+                            "State superseded"
+                        );
+                    }
+                    supersedes
+                },
                 None => true,
             };
 
@@ -195,6 +208,12 @@ impl LWWMembershipState {
             if let Some(state) = self.states.get_mut(node_id) {
                 state.health = NodeHealth::Degraded;
                 state.timestamp = timestamp;
+                tracing::debug!(
+                    node_id = %node_id,
+                    incarnation = incarnation,
+                    timestamp = timestamp,
+                    "Node suspected"
+                );
                 return true;
             }
         }
@@ -214,6 +233,11 @@ impl LWWMembershipState {
             if let Some(state) = self.states.get_mut(node_id) {
                 state.health = NodeHealth::Failed;
                 state.timestamp = timestamp;
+                tracing::warn!(
+                    node_id = %node_id,
+                    timestamp = timestamp,
+                    "Node marked as failed"
+                );
                 return true;
             }
         }
@@ -223,10 +247,8 @@ impl LWWMembershipState {
     /// Refute suspicion with new incarnation.
     pub fn refute(&mut self, node_id: &NodeId, new_incarnation: u64) -> bool {
         // Check if we should refute (without mutable borrow)
-        let should_refute = self
-            .states
-            .get(node_id)
-            .is_some_and(|state| new_incarnation > state.incarnation);
+        let old_incarnation = self.states.get(node_id).map(|s| s.incarnation);
+        let should_refute = old_incarnation.is_some_and(|inc| new_incarnation > inc);
 
         if should_refute {
             let timestamp = self.tick();
@@ -234,6 +256,12 @@ impl LWWMembershipState {
                 state.incarnation = new_incarnation;
                 state.health = NodeHealth::Healthy;
                 state.timestamp = timestamp;
+                tracing::debug!(
+                    node_id = %node_id,
+                    old_incarnation = ?old_incarnation,
+                    new_incarnation = new_incarnation,
+                    "Suspicion refuted"
+                );
                 return true;
             }
         }
@@ -453,6 +481,11 @@ impl GossipMembershipManager {
                         .collect();
 
                     if !targets.is_empty() {
+                        tracing::debug!(
+                            count = targets.len(),
+                            targets = ?targets,
+                            "Selected targets via geometric routing"
+                        );
                         return targets;
                     }
                 }
@@ -477,12 +510,20 @@ impl GossipMembershipManager {
             }
         }
 
+        if !selected.is_empty() {
+            tracing::debug!(
+                count = selected.len(),
+                targets = ?selected,
+                "Selected targets via random fallback"
+            );
+        }
+
         selected
     }
 
     /// Run a single gossip round.
     pub async fn gossip_round(&self) -> Result<()> {
-        self.round_counter.fetch_add(1, Ordering::Relaxed);
+        let round = self.round_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
         let targets = self.select_gossip_targets(self.config.fanout);
         if targets.is_empty() {
@@ -494,6 +535,14 @@ impl GossipMembershipManager {
             .read()
             .states_for_gossip(self.config.max_states_per_message);
         let sender_time = self.state.read().lamport_time();
+
+        tracing::debug!(
+            round = round,
+            target_count = targets.len(),
+            state_count = states.len(),
+            lamport_time = sender_time,
+            "Starting gossip round"
+        );
 
         let msg = Message::Gossip(GossipMessage::Sync {
             sender: self.local_node.clone(),
@@ -558,11 +607,26 @@ impl GossipMembershipManager {
     }
 
     fn handle_sync(&self, sender: &NodeId, states: Vec<GossipNodeState>, sender_time: u64) {
+        tracing::debug!(
+            sender = %sender,
+            state_count = states.len(),
+            sender_time = sender_time,
+            "Gossip sync received"
+        );
+
         let changed = {
             let mut state = self.state.write();
             state.sync_time(sender_time);
             state.merge(&states)
         };
+
+        if !changed.is_empty() {
+            tracing::debug!(
+                updated_count = changed.len(),
+                updated_nodes = ?changed,
+                "States updated from gossip sync"
+            );
+        }
 
         // Notify callbacks for changed nodes
         for node_id in changed {
@@ -598,10 +662,16 @@ impl GossipMembershipManager {
         self.suspicions.write().remove(sender);
     }
 
-    fn handle_suspect(&self, _reporter: &NodeId, suspect: &NodeId, incarnation: u64) {
+    fn handle_suspect(&self, reporter: &NodeId, suspect: &NodeId, incarnation: u64) {
         // If we're being suspected, refute it
         if suspect == &self.local_node {
             let new_incarnation = self.incarnation.fetch_add(1, Ordering::SeqCst) + 1;
+            tracing::info!(
+                reporter = %reporter,
+                old_incarnation = incarnation,
+                new_incarnation = new_incarnation,
+                "Refuting suspicion against self"
+            );
             self.broadcast_alive(new_incarnation);
             return;
         }
@@ -609,6 +679,12 @@ impl GossipMembershipManager {
         // Start suspicion timer
         let mut suspicions = self.suspicions.write();
         if !suspicions.contains_key(suspect) {
+            tracing::debug!(
+                suspect = %suspect,
+                reporter = %reporter,
+                incarnation = incarnation,
+                "Starting suspicion timer for node"
+            );
             self.state.write().suspect(suspect, incarnation);
             suspicions.insert(
                 suspect.clone(),
@@ -622,11 +698,23 @@ impl GossipMembershipManager {
 
     fn handle_alive(&self, node_id: &NodeId, incarnation: u64) {
         if self.state.write().refute(node_id, incarnation) {
+            tracing::debug!(
+                node_id = %node_id,
+                incarnation = incarnation,
+                "Alive received, clearing suspicion"
+            );
             self.suspicions.write().remove(node_id);
         }
     }
 
     fn handle_ping_req(&self, origin: &NodeId, target: &NodeId, sequence: u64) {
+        tracing::debug!(
+            origin = %origin,
+            target = %target,
+            sequence = sequence,
+            "Handling indirect ping request"
+        );
+
         // Try to ping the target
         let transport = Arc::clone(&self.transport);
         let origin = origin.clone();
@@ -654,7 +742,15 @@ impl GossipMembershipManager {
         });
     }
 
-    fn handle_ping_ack(&self, _origin: &NodeId, target: &NodeId, _sequence: u64, success: bool) {
+    fn handle_ping_ack(&self, origin: &NodeId, target: &NodeId, sequence: u64, success: bool) {
+        tracing::debug!(
+            origin = %origin,
+            target = %target,
+            sequence = sequence,
+            success = success,
+            "Handling indirect ping ack"
+        );
+
         if success {
             // Target is alive - clear suspicion
             if let Some(state) = self.state.read().get(target) {
@@ -690,12 +786,19 @@ impl GossipMembershipManager {
             let suspicions = self.suspicions.read();
             for (node_id, suspicion) in suspicions.iter() {
                 if now.duration_since(suspicion.started_at) >= timeout {
-                    to_fail.push(node_id.clone());
+                    to_fail.push((node_id.clone(), suspicion.started_at));
                 }
             }
         }
 
-        for node_id in to_fail {
+        for (node_id, started_at) in to_fail {
+            let elapsed_ms = now.duration_since(started_at).as_millis() as u64;
+            tracing::warn!(
+                node_id = %node_id,
+                timeout_ms = self.config.suspicion_timeout_ms,
+                elapsed_ms = elapsed_ms,
+                "Suspicion timeout, marking node as failed"
+            );
             self.suspicions.write().remove(&node_id);
             if self.state.write().fail(&node_id) {
                 // Notify callbacks
@@ -715,6 +818,12 @@ impl GossipMembershipManager {
             .get(node_id)
             .map(|s| s.incarnation)
             .unwrap_or(0);
+
+        tracing::debug!(
+            node_id = %node_id,
+            incarnation = incarnation,
+            "Initiating suspicion protocol for node"
+        );
 
         // Start local suspicion
         {
@@ -814,9 +923,19 @@ impl GossipMembershipManager {
         if let Some(hp) = progress.get_mut(node) {
             // Already tracking - increment counter
             hp.consecutive_successes += 1;
+            tracing::debug!(
+                node_id = %node,
+                consecutive_successes = hp.consecutive_successes,
+                "Heal progress recorded"
+            );
         } else if was_failed || partition_start.is_some() {
             // Start tracking heal progress
             let start = partition_start.unwrap_or_else(Instant::now);
+            tracing::debug!(
+                node_id = %node,
+                was_failed = was_failed,
+                "Heal progress tracking started"
+            );
             progress.insert(
                 node.clone(),
                 HealProgress {
@@ -843,6 +962,13 @@ impl GossipMembershipManager {
         if let Some(hp) = progress.get(node) {
             if hp.consecutive_successes >= threshold {
                 let partition_duration_ms = hp.partition_start.elapsed().as_millis() as u64;
+                tracing::info!(
+                    node_id = %node,
+                    threshold = threshold,
+                    consecutive_successes = hp.consecutive_successes,
+                    partition_duration_ms = partition_duration_ms,
+                    "Heal confirmed"
+                );
                 return Some(partition_duration_ms);
             }
         }
