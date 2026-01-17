@@ -439,4 +439,346 @@ mod tests {
             assert_eq!(entry, restored);
         }
     }
+
+    #[test]
+    fn test_tx_wal_open_permission_denied() {
+        let dir = tempdir().unwrap();
+        let readonly_dir = dir.path().join("readonly");
+        std::fs::create_dir(&readonly_dir).unwrap();
+
+        let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&readonly_dir, perms).unwrap();
+
+        let result = TxWal::open(readonly_dir.join("tx.wal"));
+        assert!(result.is_err());
+
+        let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&readonly_dir, perms).unwrap();
+    }
+
+    #[test]
+    fn test_tx_wal_append_disk_full_simulation() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let mut wal = TxWal::open(&wal_path).unwrap();
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+
+        drop(wal);
+
+        let mut perms = std::fs::metadata(&wal_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&wal_path, perms).unwrap();
+
+        let result = TxWal::open(&wal_path);
+        if let Ok(mut wal) = result {
+            let append_result = wal.append(&TxWalEntry::TxBegin {
+                tx_id: 2,
+                participants: vec![1],
+            });
+            assert!(append_result.is_err());
+        }
+
+        let mut perms = std::fs::metadata(&wal_path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&wal_path, perms).unwrap();
+    }
+
+    #[test]
+    fn test_tx_wal_replay_io_error() {
+        let dir = tempdir().unwrap();
+        let nonexistent_path = dir.path().join("nonexistent").join("tx.wal");
+
+        let wal = TxWal {
+            file: BufWriter::new(File::create(dir.path().join("temp.wal")).unwrap()),
+            path: nonexistent_path,
+            entry_count: 0,
+        };
+
+        let result = wal.replay();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tx_wal_truncate_error_handling() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let mut wal = TxWal::open(&wal_path).unwrap();
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+
+        let readonly_dir = dir.path().join("readonly");
+        std::fs::create_dir(&readonly_dir).unwrap();
+        let readonly_wal_path = readonly_dir.join("tx.wal");
+        std::fs::copy(&wal_path, &readonly_wal_path).unwrap();
+
+        let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&readonly_dir, perms).unwrap();
+
+        let mut readonly_wal = TxWal {
+            file: BufWriter::new(File::open(&wal_path).unwrap()),
+            path: readonly_dir.join("new_file.wal"),
+            entry_count: 1,
+        };
+
+        let result = readonly_wal.truncate();
+        assert!(result.is_err());
+
+        let mut perms = std::fs::metadata(&readonly_dir).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&readonly_dir, perms).unwrap();
+    }
+
+    #[test]
+    fn test_tx_wal_handles_partial_length_write() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        {
+            let mut wal = TxWal::open(&wal_path).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            })
+            .unwrap();
+        }
+
+        {
+            let mut file = OpenOptions::new().append(true).open(&wal_path).unwrap();
+            file.write_all(&[0x01, 0x02]).unwrap();
+        }
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_tx_wal_handles_partial_data_write() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        {
+            let mut wal = TxWal::open(&wal_path).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            })
+            .unwrap();
+        }
+
+        {
+            let mut file = OpenOptions::new().append(true).open(&wal_path).unwrap();
+            file.write_all(&100u32.to_le_bytes()).unwrap();
+            file.write_all(&[0x01, 0x02, 0x03]).unwrap();
+        }
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_tx_wal_corrupted_bincode_stops_replay() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        {
+            let mut wal = TxWal::open(&wal_path).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            })
+            .unwrap();
+        }
+
+        {
+            let mut file = OpenOptions::new().append(true).open(&wal_path).unwrap();
+            let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
+            file.write_all(&(garbage.len() as u32).to_le_bytes())
+                .unwrap();
+            file.write_all(&garbage).unwrap();
+        }
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_tx_wal_empty_replay_returns_empty_vec() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(wal.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_tx_wal_very_large_entry_serializes_correctly() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let large_participants: Vec<usize> = (0..10000).collect();
+
+        let mut wal = TxWal::open(&wal_path).unwrap();
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 999,
+            participants: large_participants.clone(),
+        })
+        .unwrap();
+
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            TxWalEntry::TxBegin {
+                tx_id,
+                participants,
+            } => {
+                assert_eq!(*tx_id, 999);
+                assert_eq!(participants.len(), 10000);
+                assert_eq!(*participants, large_participants);
+            },
+            _ => panic!("Expected TxBegin entry"),
+        }
+    }
+
+    #[test]
+    fn test_tx_wal_maximum_entry_count() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let mut wal = TxWal::open(&wal_path).unwrap();
+        for i in 0..1000 {
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: i,
+                participants: vec![0],
+            })
+            .unwrap();
+        }
+        assert_eq!(wal.entry_count(), 1000);
+
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1000);
+    }
+
+    #[test]
+    fn test_tx_wal_path_accessor() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        assert_eq!(wal.path(), wal_path.as_path());
+    }
+
+    #[test]
+    fn test_tx_wal_entry_count_after_reopen() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+
+        {
+            let mut wal = TxWal::open(&wal_path).unwrap();
+            for i in 0..5 {
+                wal.append(&TxWalEntry::TxBegin {
+                    tx_id: i,
+                    participants: vec![0],
+                })
+                .unwrap();
+            }
+            assert_eq!(wal.entry_count(), 5);
+        }
+
+        {
+            let wal = TxWal::open(&wal_path).unwrap();
+            assert_eq!(wal.entry_count(), 5);
+        }
+    }
+
+    #[test]
+    fn test_tx_recovery_state_vote_without_begin_ignored() {
+        let entries = vec![
+            TxWalEntry::PrepareVote {
+                tx_id: 999,
+                shard: 0,
+                vote: PrepareVoteKind::Yes,
+            },
+            TxWalEntry::PhaseChange {
+                tx_id: 999,
+                from: TxPhase::Preparing,
+                to: TxPhase::Prepared,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert!(state.prepared_txs.is_empty());
+        assert!(state.committing_txs.is_empty());
+        assert!(state.aborting_txs.is_empty());
+    }
+
+    #[test]
+    fn test_tx_recovery_state_multiple_transactions() {
+        let entries = vec![
+            TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0, 1],
+            },
+            TxWalEntry::TxBegin {
+                tx_id: 2,
+                participants: vec![2, 3],
+            },
+            TxWalEntry::TxBegin {
+                tx_id: 3,
+                participants: vec![4],
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 1,
+                shard: 0,
+                vote: PrepareVoteKind::Yes,
+            },
+            TxWalEntry::PrepareVote {
+                tx_id: 2,
+                shard: 2,
+                vote: PrepareVoteKind::Yes,
+            },
+            TxWalEntry::PhaseChange {
+                tx_id: 1,
+                from: TxPhase::Preparing,
+                to: TxPhase::Prepared,
+            },
+            TxWalEntry::PhaseChange {
+                tx_id: 2,
+                from: TxPhase::Preparing,
+                to: TxPhase::Committing,
+            },
+            TxWalEntry::PhaseChange {
+                tx_id: 3,
+                from: TxPhase::Preparing,
+                to: TxPhase::Aborting,
+            },
+        ];
+
+        let state = TxRecoveryState::from_entries(&entries);
+        assert_eq!(state.prepared_txs.len(), 1);
+        assert_eq!(state.prepared_txs[0].tx_id, 1);
+        assert_eq!(state.committing_txs.len(), 1);
+        assert_eq!(state.committing_txs[0], 2);
+        assert_eq!(state.aborting_txs.len(), 1);
+        assert_eq!(state.aborting_txs[0], 3);
+    }
 }

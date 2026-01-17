@@ -856,7 +856,10 @@ mod tests {
             timeout_ms: 1000,
         };
         let result = orchestrator.handle_query_request(&"peer1".to_string(), &request);
-        assert!(result.is_none(), "Should return None when no executor is registered");
+        assert!(
+            result.is_none(),
+            "Should return None when no executor is registered"
+        );
 
         orchestrator.shutdown().await.unwrap();
     }
@@ -1117,9 +1120,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_loop_raft_tick_interval() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        // Use tokio::time::pause() for deterministic timing
         tokio::time::pause();
 
         let local = LocalNodeConfig::new("test_node", test_addr(0));
@@ -1185,8 +1185,7 @@ mod tests {
         let _ = shutdown_tx.send(());
 
         // Should complete without hanging
-        let result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(500), handle).await;
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(500), handle).await;
         assert!(result.is_ok(), "Run loop should exit gracefully");
         assert!(result.unwrap().unwrap().is_ok());
     }
@@ -1229,7 +1228,10 @@ mod tests {
 
         // Should start successfully despite peer being unreachable
         let result = ClusterOrchestrator::start(config).await;
-        assert!(result.is_ok(), "Startup should continue despite peer connection failure");
+        assert!(
+            result.is_ok(),
+            "Startup should continue despite peer connection failure"
+        );
 
         let orchestrator = result.unwrap();
         assert_eq!(orchestrator.node_id(), "node1");
@@ -1281,5 +1283,725 @@ mod tests {
         let config = OrchestratorConfig::new(local, vec![]).with_delta_replication(delta_config);
 
         assert_eq!(config.delta_replication.max_batch_size, 100);
+    }
+
+    // ============= Query Execution Tests =============
+
+    #[tokio::test]
+    async fn test_send_query_success_returns_response() {
+        let local1 = LocalNodeConfig::new("node1", test_addr(0));
+        let config1 = OrchestratorConfig::new(local1, vec![]);
+        let orchestrator1 = Arc::new(ClusterOrchestrator::start(config1).await.unwrap());
+        let addr1 = orchestrator1.transport().bound_addr().unwrap();
+
+        struct MockExecutor;
+        impl crate::network::QueryExecutor for MockExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                Ok(b"success_result".to_vec())
+            }
+        }
+        orchestrator1.register_query_executor(Arc::new(MockExecutor));
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch1_run = orchestrator1.clone();
+        let handle = tokio::spawn(async move { orch1_run.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let peers2 = vec![PeerConfig::new("node1", addr1)];
+        let config2 = OrchestratorConfig::new(local2, peers2);
+        let orchestrator2 = Arc::new(ClusterOrchestrator::start(config2).await.unwrap());
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let connect_result = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr1.to_string(),
+            })
+            .await;
+
+        if connect_result.is_err() {
+            let _ = shutdown_tx.send(());
+            let _ = handle.await;
+            orchestrator1.shutdown().await.unwrap();
+            orchestrator2.shutdown().await.unwrap();
+            return;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let request = crate::network::QueryRequest {
+            query_id: 42,
+            query: "SELECT * FROM test".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 2000,
+        };
+
+        let result = orchestrator2
+            .send_query(&"node1".to_string(), request)
+            .await;
+        if result.is_ok() {
+            let response = result.unwrap();
+            assert_eq!(response.query_id, 42);
+            assert!(response.success);
+            assert_eq!(response.result, b"success_result");
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        orchestrator1.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_query_timeout_returns_error() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+
+        let request = crate::network::QueryRequest {
+            query_id: 99,
+            query: "SELECT * FROM test".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 50,
+        };
+
+        let result = orchestrator
+            .send_query(&"nonexistent_node".to_string(), request)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("peer") || err.to_string().contains("not found"),
+            "Expected peer not found error, got: {}",
+            err
+        );
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_query_network_error_propagates() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+
+        let request = crate::network::QueryRequest {
+            query_id: 1,
+            query: "SELECT 1".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        };
+
+        let result = orchestrator
+            .send_query(&"nonexistent_peer".to_string(), request)
+            .await;
+        assert!(result.is_err());
+
+        orchestrator.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_query_wrong_query_id_ignored() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let peers2 = vec![PeerConfig::new("node1", addr)];
+        let config2 = OrchestratorConfig::new(local2, peers2);
+        let orchestrator2 = Arc::new(ClusterOrchestrator::start(config2).await.unwrap());
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        // Use very short timeout for test efficiency
+        let request = crate::network::QueryRequest {
+            query_id: 100,
+            query: "SELECT 1".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 50, // Short timeout for testing
+        };
+
+        // Query should timeout since no executor registered to respond with matching query_id
+        let result = orchestrator2
+            .send_query(&"node1".to_string(), request)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "Should timeout since no matching response arrives"
+        );
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_send_query_concurrent_queries_correlate_correctly() {
+        let local1 = LocalNodeConfig::new("node1", test_addr(0));
+        let config1 = OrchestratorConfig::new(local1, vec![]);
+        let orchestrator1 = Arc::new(ClusterOrchestrator::start(config1).await.unwrap());
+        let addr1 = orchestrator1.transport().bound_addr().unwrap();
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let peers2 = vec![PeerConfig::new("node1", addr1)];
+        let config2 = OrchestratorConfig::new(local2, peers2);
+        let orchestrator2 = Arc::new(ClusterOrchestrator::start(config2).await.unwrap());
+
+        use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+        struct CountingExecutor {
+            counter: AtomicU64,
+        }
+        impl crate::network::QueryExecutor for CountingExecutor {
+            fn execute(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
+                let count = self.counter.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(format!("result_{}_{}", query, count).into_bytes())
+            }
+        }
+        orchestrator1.register_query_executor(Arc::new(CountingExecutor {
+            counter: AtomicU64::new(0),
+        }));
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch1_run = orchestrator1.clone();
+        let handle = tokio::spawn(async move { orch1_run.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr1.to_string(),
+            })
+            .await;
+
+        let orch2_a = orchestrator2.clone();
+        let orch2_b = orchestrator2.clone();
+
+        let handle_a = tokio::spawn(async move {
+            let req = crate::network::QueryRequest {
+                query_id: 1,
+                query: "query_a".to_string(),
+                shard_id: 0,
+                embedding: None,
+                timeout_ms: 2000,
+            };
+            orch2_a.send_query(&"node1".to_string(), req).await
+        });
+
+        let handle_b = tokio::spawn(async move {
+            let req = crate::network::QueryRequest {
+                query_id: 2,
+                query: "query_b".to_string(),
+                shard_id: 0,
+                embedding: None,
+                timeout_ms: 2000,
+            };
+            orch2_b.send_query(&"node1".to_string(), req).await
+        });
+
+        let (result_a, result_b) = tokio::join!(handle_a, handle_b);
+        let resp_a = result_a.unwrap();
+        let resp_b = result_b.unwrap();
+
+        if let Ok(a) = resp_a {
+            assert_eq!(a.query_id, 1);
+        }
+        if let Ok(b) = resp_b {
+            assert_eq!(b.query_id, 2);
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        orchestrator1.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    // ============= Run Loop Message Handling Tests =============
+
+    #[tokio::test]
+    async fn test_run_loop_handles_query_request_message() {
+        let local1 = LocalNodeConfig::new("node1", test_addr(0));
+        let config1 = OrchestratorConfig::new(local1, vec![]);
+        let orchestrator1 = Arc::new(ClusterOrchestrator::start(config1).await.unwrap());
+        let addr1 = orchestrator1.transport().bound_addr().unwrap();
+
+        struct TestExecutor;
+        impl crate::network::QueryExecutor for TestExecutor {
+            fn execute(&self, _query: &str) -> std::result::Result<Vec<u8>, String> {
+                Ok(b"handled".to_vec())
+            }
+        }
+        orchestrator1.register_query_executor(Arc::new(TestExecutor));
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch1 = orchestrator1.clone();
+        let handle = tokio::spawn(async move { orch1.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr1)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr1.to_string(),
+            })
+            .await;
+
+        let query_msg = Message::QueryRequest(crate::network::QueryRequest {
+            query_id: 123,
+            query: "TEST QUERY".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), query_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator1.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_handles_gossip_message() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let gossip_config = GossipConfig {
+            gossip_interval_ms: 500,
+            ..GossipConfig::default()
+        };
+        let config = OrchestratorConfig::new(local, vec![]).with_gossip(gossip_config);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let gossip_msg = Message::Gossip(crate::gossip::GossipMessage::Sync {
+            sender: "node2".to_string(),
+            states: vec![],
+            sender_time: 1,
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), gossip_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_routes_raft_messages() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let ping_msg = Message::Ping { term: 1 };
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), ping_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_tx_prepare_full_flow() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let prepare_msg = Message::TxPrepare(crate::network::TxPrepareMsg {
+            tx_id: 500,
+            coordinator: "node2".to_string(),
+            shard_id: 0,
+            operations: vec![crate::block::Transaction::Put {
+                key: "test_key".to_string(),
+                data: vec![1, 2, 3],
+            }],
+            delta_embedding: tensor_store::SparseVector::from_dense(&[1.0, 0.0]),
+            timeout_ms: 5000,
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), prepare_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_tx_commit_full_flow() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let prepare_msg = crate::network::TxPrepareMsg {
+            tx_id: 600,
+            coordinator: "node2".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: tensor_store::SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+        let _ = orchestrator.handle_tx_prepare(&prepare_msg);
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let commit_msg = Message::TxCommit(crate::network::TxCommitMsg {
+            tx_id: 600,
+            shards: vec![0],
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), commit_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_tx_abort_full_flow() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let prepare_msg = crate::network::TxPrepareMsg {
+            tx_id: 700,
+            coordinator: "node2".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: tensor_store::SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+        let _ = orchestrator.handle_tx_prepare(&prepare_msg);
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let abort_msg = Message::TxAbort(crate::network::TxAbortMsg {
+            tx_id: 700,
+            reason: "test abort".to_string(),
+            shards: vec![0],
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), abort_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_records_peer_embeddings() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+        let addr = orchestrator.transport().bound_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(0));
+        let config2 = OrchestratorConfig::new(local2, vec![PeerConfig::new("node1", addr)]);
+        let orchestrator2 = ClusterOrchestrator::start(config2).await.unwrap();
+
+        let _ = orchestrator2
+            .transport()
+            .connect(&crate::network::PeerConfig {
+                node_id: "node1".to_string(),
+                address: addr.to_string(),
+            })
+            .await;
+
+        let test_embedding = tensor_store::SparseVector::from_dense(&[0.5, 0.5, 0.0]);
+        let prepare_msg = Message::TxPrepare(crate::network::TxPrepareMsg {
+            tx_id: 800,
+            coordinator: "node2".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: test_embedding,
+            timeout_ms: 5000,
+        });
+        let _ = orchestrator2
+            .transport()
+            .send(&"node1".to_string(), prepare_msg)
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+
+        orchestrator.shutdown().await.unwrap();
+        orchestrator2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_updates_local_embedding_from_state_machine() {
+        tokio::time::pause();
+
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::advance(tokio::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // ============= Builder & Error Handling Tests =============
+
+    #[tokio::test]
+    async fn test_orchestrator_config_with_gossip_custom_interval() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let gossip_config = GossipConfig {
+            gossip_interval_ms: 250,
+            fanout: 5,
+            ..GossipConfig::default()
+        };
+        let config = OrchestratorConfig::new(local, vec![]).with_gossip(gossip_config);
+
+        assert_eq!(config.gossip.gossip_interval_ms, 250);
+        assert_eq!(config.gossip.fanout, 5);
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_config_chained_builders() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![])
+            .with_fast_path_threshold(0.85)
+            .with_raft(RaftConfig {
+                heartbeat_interval: 200,
+                election_timeout: (500, 1000),
+                ..RaftConfig::default()
+            })
+            .with_gossip(GossipConfig {
+                gossip_interval_ms: 300,
+                ..GossipConfig::default()
+            })
+            .with_dtx(DistributedTxConfig {
+                commit_timeout_ms: 15000,
+                ..DistributedTxConfig::default()
+            })
+            .with_delta_replication(DeltaReplicationConfig {
+                max_batch_size: 200,
+                ..DeltaReplicationConfig::default()
+            })
+            .with_geometric(GeometricMembershipConfig::default());
+
+        assert!((config.fast_path_threshold - 0.85).abs() < 0.001);
+        assert_eq!(config.raft.heartbeat_interval, 200);
+        assert_eq!(config.raft.election_timeout, (500, 1000));
+        assert_eq!(config.gossip.gossip_interval_ms, 300);
+        assert_eq!(config.dtx.commit_timeout_ms, 15000);
+        assert_eq!(config.delta_replication.max_batch_size, 200);
+    }
+
+    #[tokio::test]
+    async fn test_start_transport_failure_returns_error() {
+        let local1 = LocalNodeConfig::new("node1", test_addr(12345));
+        let config1 = OrchestratorConfig::new(local1, vec![]);
+        let _orchestrator1 = ClusterOrchestrator::start(config1).await.unwrap();
+
+        let local2 = LocalNodeConfig::new("node2", test_addr(12345));
+        let config2 = OrchestratorConfig::new(local2, vec![]);
+        let result = ClusterOrchestrator::start(config2).await;
+
+        assert!(result.is_err());
+        match result {
+            Err(err) => {
+                let err_str = err.to_string();
+                assert!(
+                    err_str.contains("Failed to start transport")
+                        || err_str.contains("address")
+                        || err_str.contains("bind"),
+                    "Unexpected error: {}",
+                    err_str
+                );
+            },
+            Ok(_) => panic!("Expected error but got success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_continues_on_message_send_failure() {
+        let local = LocalNodeConfig::new("node1", test_addr(0));
+        let config = OrchestratorConfig::new(local, vec![]);
+        let orchestrator = Arc::new(ClusterOrchestrator::start(config).await.unwrap());
+
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+        let orch = orchestrator.clone();
+
+        let handle = tokio::spawn(async move { orch.run(shutdown_rx).await });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let _ = shutdown_tx.send(());
+        let result = handle.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "Run loop should continue despite message send failures"
+        );
+
+        orchestrator.shutdown().await.unwrap();
     }
 }

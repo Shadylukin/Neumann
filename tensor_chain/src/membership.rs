@@ -712,7 +712,9 @@ impl MembershipManager {
         let view = self.view();
 
         if current_partition_status == PartitionStatus::QuorumLost {
-            self.stats.quorum_lost_events.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .quorum_lost_events
+                .fetch_add(1, Ordering::Relaxed);
             tracing::error!(
                 healthy = view.healthy_count(),
                 total = view.total_count(),
@@ -1605,5 +1607,646 @@ mod tests {
         // This is QuorumLost, not Stalemate
         let status = manager.partition_status();
         assert_eq!(status, PartitionStatus::QuorumLost);
+    }
+
+    // ========== Priority 1: Partition Healing Tests ==========
+
+    #[test]
+    fn test_detect_healed_nodes_returns_healed_node() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9700".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9701".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = Some(Instant::now() - Duration::from_secs(10));
+            status.consecutive_successes = 5;
+        }
+
+        let healed = manager.detect_healed_nodes(3);
+        assert_eq!(healed.len(), 1);
+        assert_eq!(healed[0].0, "node2");
+        assert!(healed[0].1 >= 10_000);
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_threshold_not_met() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9702".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9703".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = Some(Instant::now());
+            status.consecutive_successes = 2;
+        }
+
+        let healed = manager.detect_healed_nodes(5);
+        assert!(healed.is_empty());
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_never_partitioned() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9704".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9705".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = None;
+            status.consecutive_successes = 10;
+        }
+
+        let healed = manager.detect_healed_nodes(3);
+        assert!(healed.is_empty());
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_multiple_nodes() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9706".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9707".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9708".parse().unwrap())
+        .with_peer("node4", "127.0.0.1:9709".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            for node_id in &["node2", "node3", "node4"] {
+                let status = nodes.get_mut(&node_id.to_string()).unwrap();
+                status.health = NodeHealth::Healthy;
+                status.partition_start = Some(Instant::now() - Duration::from_secs(5));
+                status.consecutive_successes = 5;
+            }
+        }
+
+        let healed = manager.detect_healed_nodes(3);
+        assert_eq!(healed.len(), 3);
+    }
+
+    #[test]
+    fn test_detect_healed_nodes_partition_duration_calculation() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9710".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9711".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        let partition_duration = Duration::from_secs(30);
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.health = NodeHealth::Healthy;
+            status.partition_start = Some(Instant::now() - partition_duration);
+            status.consecutive_successes = 5;
+        }
+
+        let healed = manager.detect_healed_nodes(3);
+        assert_eq!(healed.len(), 1);
+        let duration_ms = healed[0].1;
+        assert!(duration_ms >= 30_000);
+        assert!(duration_ms < 31_000);
+    }
+
+    // ========== Priority 1: Clear Partition State Tests ==========
+
+    #[test]
+    fn test_clear_partition_state_resets_node() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9712".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9713".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.partition_start = Some(Instant::now());
+            status.consecutive_successes = 10;
+        }
+
+        manager.clear_partition_state(&"node2".to_string());
+
+        let status = manager.node_status(&"node2".to_string()).unwrap();
+        assert!(status.partition_start.is_none());
+        assert_eq!(status.consecutive_successes, 0);
+    }
+
+    #[test]
+    fn test_clear_partition_state_nonexistent_node() {
+        let config = create_test_config();
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.clear_partition_state(&"nonexistent".to_string());
+    }
+
+    #[test]
+    fn test_clear_partition_states_multiple_nodes() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9714".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9715".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9716".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            for node_id in &["node2", "node3"] {
+                let status = nodes.get_mut(&node_id.to_string()).unwrap();
+                status.partition_start = Some(Instant::now());
+                status.consecutive_successes = 7;
+            }
+        }
+
+        manager.clear_partition_states(&["node2".to_string(), "node3".to_string()]);
+
+        for node_id in &["node2", "node3"] {
+            let status = manager.node_status(&node_id.to_string()).unwrap();
+            assert!(status.partition_start.is_none());
+            assert_eq!(status.consecutive_successes, 0);
+        }
+    }
+
+    #[test]
+    fn test_clear_partition_states_mixed_existing_nonexisting() {
+        let config = create_test_config();
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        {
+            let mut nodes = manager.nodes.write();
+            let status = nodes.get_mut(&"node2".to_string()).unwrap();
+            status.partition_start = Some(Instant::now());
+            status.consecutive_successes = 5;
+        }
+
+        manager.clear_partition_states(&[
+            "node2".to_string(),
+            "nonexistent1".to_string(),
+            "nonexistent2".to_string(),
+        ]);
+
+        let status = manager.node_status(&"node2".to_string()).unwrap();
+        assert!(status.partition_start.is_none());
+        assert_eq!(status.consecutive_successes, 0);
+    }
+
+    // ========== Priority 1: on_partition_heal Callback Tests ==========
+
+    #[test]
+    fn test_on_partition_heal_callback_invoked() {
+        use std::sync::Mutex;
+
+        struct HealCallback {
+            healed: Mutex<Vec<(Vec<NodeId>, u64)>>,
+        }
+
+        impl MembershipCallback for HealCallback {
+            fn on_health_change(&self, _: &NodeId, _: NodeHealth, _: NodeHealth) {}
+            fn on_view_change(&self, _: &ClusterView) {}
+            fn on_partition_heal(&self, healed_nodes: &[NodeId], partition_duration_ms: u64) {
+                self.healed
+                    .lock()
+                    .unwrap()
+                    .push((healed_nodes.to_vec(), partition_duration_ms));
+            }
+        }
+
+        let callback = HealCallback {
+            healed: Mutex::new(Vec::new()),
+        };
+
+        callback.on_partition_heal(&["node2".to_string(), "node3".to_string()], 5000);
+
+        let healed = callback.healed.lock().unwrap();
+        assert_eq!(healed.len(), 1);
+        assert_eq!(healed[0].0, vec!["node2".to_string(), "node3".to_string()]);
+        assert_eq!(healed[0].1, 5000);
+    }
+
+    #[test]
+    fn test_on_partition_heal_default_implementation() {
+        struct NoOpCallback;
+
+        impl MembershipCallback for NoOpCallback {
+            fn on_health_change(&self, _: &NodeId, _: NodeHealth, _: NodeHealth) {}
+            fn on_view_change(&self, _: &ClusterView) {}
+        }
+
+        let callback = NoOpCallback;
+        callback.on_partition_heal(&["node2".to_string()], 1000);
+    }
+
+    // ========== Priority 1: Quorum Edge Cases ==========
+
+    #[test]
+    fn test_partition_status_single_node_cluster() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9717".parse().unwrap(),
+            },
+        )
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumReachable);
+        assert!(manager.is_safe_to_write());
+    }
+
+    #[test]
+    fn test_partition_status_two_node_cluster_split() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9718".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9719".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.mark_failed(&"node2".to_string());
+
+        assert_eq!(manager.partition_status(), PartitionStatus::Stalemate);
+    }
+
+    #[test]
+    fn test_partition_status_three_node_quorum() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9720".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9721".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9722".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.mark_healthy(&"node2".to_string());
+
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumReachable);
+        assert!(manager.is_safe_to_write());
+    }
+
+    #[test]
+    fn test_partition_status_stalemate_verified() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9723".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9724".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9725".parse().unwrap())
+        .with_peer("node4", "127.0.0.1:9726".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.mark_healthy(&"node2".to_string());
+        manager.mark_failed(&"node3".to_string());
+        manager.mark_failed(&"node4".to_string());
+
+        assert_eq!(manager.partition_status(), PartitionStatus::Stalemate);
+        assert!(!manager.is_safe_to_write());
+    }
+
+    #[test]
+    fn test_partition_status_five_node_quorum_boundary() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9727".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9728".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9729".parse().unwrap())
+        .with_peer("node4", "127.0.0.1:9730".parse().unwrap())
+        .with_peer("node5", "127.0.0.1:9731".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.mark_healthy(&"node2".to_string());
+        manager.mark_failed(&"node3".to_string());
+        manager.mark_failed(&"node4".to_string());
+        manager.mark_failed(&"node5".to_string());
+
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumLost);
+
+        manager.mark_healthy(&"node3".to_string());
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumReachable);
+    }
+
+    // ========== Priority 2: Complex Failure Patterns ==========
+
+    #[test]
+    fn test_oscillating_node_health() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9732".parse().unwrap());
+
+        status.record_success(50);
+        assert_eq!(status.health, NodeHealth::Healthy);
+        assert_eq!(status.consecutive_successes, 1);
+
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Degraded);
+        assert_eq!(status.consecutive_successes, 0);
+
+        status.record_success(50);
+        assert_eq!(status.health, NodeHealth::Healthy);
+        assert_eq!(status.consecutive_successes, 1);
+
+        status.record_failure(3);
+        status.record_failure(3);
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Failed);
+
+        status.record_success(50);
+        assert_eq!(status.health, NodeHealth::Healthy);
+        assert_eq!(status.consecutive_successes, 1);
+    }
+
+    #[tokio::test]
+    async fn test_cascading_failures() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+        health.failure_threshold = 1;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9733".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9734".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9735".parse().unwrap())
+        .with_peer("node4", "127.0.0.1:9736".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport);
+
+        manager.mark_healthy(&"node2".to_string());
+        manager.mark_healthy(&"node3".to_string());
+        manager.mark_healthy(&"node4".to_string());
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumReachable);
+
+        manager.mark_failed(&"node2".to_string());
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumReachable);
+
+        manager.mark_failed(&"node3".to_string());
+        assert_eq!(manager.partition_status(), PartitionStatus::Stalemate);
+
+        manager.mark_failed(&"node4".to_string());
+        assert_eq!(manager.partition_status(), PartitionStatus::QuorumLost);
+    }
+
+    #[tokio::test]
+    async fn test_recovery_after_grace_period() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+        health.failure_threshold = 2;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9737".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9738".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        let manager = MembershipManager::new(config, transport.clone());
+
+        transport.set_fail_sends(true);
+        manager.check_health().await.unwrap();
+        manager.check_health().await.unwrap();
+
+        let status = manager.node_status(&"node2".to_string()).unwrap();
+        assert_eq!(status.health, NodeHealth::Failed);
+
+        transport.set_fail_sends(false);
+        manager.check_health().await.unwrap();
+
+        let status = manager.node_status(&"node2".to_string()).unwrap();
+        assert_eq!(status.health, NodeHealth::Healthy);
+    }
+
+    #[test]
+    fn test_health_check_failure_during_degraded() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9739".parse().unwrap());
+
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Degraded);
+        assert_eq!(status.consecutive_failures, 1);
+
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Degraded);
+        assert_eq!(status.consecutive_failures, 2);
+
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Failed);
+        assert_eq!(status.consecutive_failures, 3);
+        assert!(status.partition_start.is_some());
+    }
+
+    // ========== Priority 2: NodeStatus & Stats ==========
+
+    #[test]
+    fn test_node_status_update_embedding() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9740".parse().unwrap());
+        assert!(status.state_embedding.is_none());
+        assert!(status.embedding_updated.is_none());
+
+        let embedding = SparseVector::from_parts(100, vec![0, 5, 10], vec![1.0, 2.0, 3.0]);
+        status.update_embedding(embedding.clone());
+
+        assert!(status.state_embedding.is_some());
+        assert!(status.embedding_updated.is_some());
+
+        let stored = status.state_embedding.unwrap();
+        assert_eq!(stored.positions(), embedding.positions());
+        assert_eq!(stored.values(), embedding.values());
+    }
+
+    #[test]
+    fn test_node_status_record_failure_tracks_partition_start() {
+        let mut status = NodeStatus::new("node1".to_string(), "127.0.0.1:9741".parse().unwrap());
+        assert!(status.partition_start.is_none());
+
+        status.record_failure(3);
+        assert!(status.partition_start.is_none());
+
+        status.record_failure(3);
+        assert!(status.partition_start.is_none());
+
+        status.record_failure(3);
+        assert_eq!(status.health, NodeHealth::Failed);
+        assert!(status.partition_start.is_some());
+
+        let first_partition_start = status.partition_start;
+        status.record_failure(3);
+        assert_eq!(status.partition_start, first_partition_start);
+    }
+
+    #[tokio::test]
+    async fn test_membership_stats_quorum_lost_events_incremented() {
+        let mut health = HealthConfig::default();
+        health.startup_grace_ms = 0;
+        health.failure_threshold = 1;
+
+        let config = ClusterConfig::new(
+            "test-cluster",
+            LocalNodeConfig {
+                node_id: "node1".to_string(),
+                bind_address: "127.0.0.1:9742".parse().unwrap(),
+            },
+        )
+        .with_peer("node2", "127.0.0.1:9743".parse().unwrap())
+        .with_peer("node3", "127.0.0.1:9744".parse().unwrap())
+        .with_health(health);
+
+        let transport = Arc::new(MockTransport::new("node1"));
+        transport.set_fail_sends(true);
+        let manager = MembershipManager::new(config, transport);
+
+        let initial = manager.stats.quorum_lost_events.load(Ordering::Relaxed);
+
+        manager.check_health().await.unwrap();
+
+        let after = manager.stats.quorum_lost_events.load(Ordering::Relaxed);
+        assert!(after > initial);
+    }
+
+    #[test]
+    fn test_membership_stats_partition_events_tracked() {
+        let stats = MembershipStats::new();
+        assert_eq!(stats.partition_events.load(Ordering::Relaxed), 0);
+
+        stats.partition_events.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(stats.partition_events.load(Ordering::Relaxed), 1);
+
+        stats.partition_events.fetch_add(5, Ordering::Relaxed);
+        assert_eq!(stats.partition_events.load(Ordering::Relaxed), 6);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.partition_events, 6);
     }
 }

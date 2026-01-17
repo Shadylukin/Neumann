@@ -463,4 +463,325 @@ mod tests {
         let entries = wal.replay().unwrap();
         assert_eq!(entries.len(), 1);
     }
+
+    #[test]
+    fn test_recovery_state_multiple_votes_same_term() {
+        let entries = vec![
+            RaftWalEntry::VoteCast {
+                term: 1,
+                candidate_id: "node1".to_string(),
+            },
+            RaftWalEntry::VoteCast {
+                term: 1,
+                candidate_id: "node2".to_string(),
+            },
+            RaftWalEntry::VoteCast {
+                term: 1,
+                candidate_id: "node3".to_string(),
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 1);
+        assert_eq!(state.voted_for, Some("node3".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_state_vote_in_lower_term_ignored() {
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 5,
+                voted_for: Some("node5".to_string()),
+            },
+            RaftWalEntry::VoteCast {
+                term: 3,
+                candidate_id: "node3".to_string(),
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 5);
+        assert_eq!(state.voted_for, Some("node5".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_state_term_and_vote_combined() {
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 2,
+                voted_for: None,
+            },
+            RaftWalEntry::VoteCast {
+                term: 2,
+                candidate_id: "node_a".to_string(),
+            },
+            RaftWalEntry::TermAndVote {
+                term: 3,
+                voted_for: Some("node_b".to_string()),
+            },
+            RaftWalEntry::VoteCast {
+                term: 3,
+                candidate_id: "node_c".to_string(),
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 3);
+        assert_eq!(state.voted_for, Some("node_c".to_string()));
+    }
+
+    #[test]
+    fn test_raft_wal_append_returns_io_error_on_failure() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("readonly.wal");
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 1 })
+                .unwrap();
+        }
+
+        let mut perms = fs::metadata(&wal_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&wal_path, perms).unwrap();
+
+        let result = RaftWal::open(&wal_path);
+        if result.is_ok() {
+            let mut wal = result.unwrap();
+            let append_result = wal.append(&RaftWalEntry::TermChange { new_term: 2 });
+            assert!(append_result.is_err());
+        }
+
+        let mut perms = fs::metadata(&wal_path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&wal_path, perms).unwrap();
+    }
+
+    #[test]
+    fn test_raft_wal_open_creates_file_if_missing() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("nonexistent.wal");
+
+        assert!(!wal_path.exists());
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        assert!(wal_path.exists());
+        assert_eq!(wal.entry_count(), 0);
+    }
+
+    #[test]
+    fn test_raft_wal_count_entries_handles_empty_file() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("empty.wal");
+
+        File::create(&wal_path).unwrap();
+        assert!(wal_path.exists());
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        assert_eq!(wal.entry_count(), 0);
+
+        let entries = wal.replay().unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_raft_wal_very_large_term_number() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("large_term.wal");
+
+        let large_term = u64::MAX - 1;
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            wal.append(&RaftWalEntry::TermChange {
+                new_term: large_term,
+            })
+            .unwrap();
+            wal.append(&RaftWalEntry::VoteCast {
+                term: large_term,
+                candidate_id: "node_max".to_string(),
+            })
+            .unwrap();
+        }
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0],
+            RaftWalEntry::TermChange {
+                new_term: large_term
+            }
+        );
+        assert_eq!(
+            entries[1],
+            RaftWalEntry::VoteCast {
+                term: large_term,
+                candidate_id: "node_max".to_string()
+            }
+        );
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, large_term);
+        assert_eq!(state.voted_for, Some("node_max".to_string()));
+    }
+
+    #[test]
+    fn test_raft_wal_concurrent_append_thread_safety() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("concurrent.wal");
+
+        let wal = Arc::new(Mutex::new(RaftWal::open(&wal_path).unwrap()));
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let wal_clone = Arc::clone(&wal);
+            let handle = thread::spawn(move || {
+                let mut wal = wal_clone.lock().unwrap();
+                wal.append(&RaftWalEntry::TermChange { new_term: i as u64 })
+                    .unwrap();
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let wal = wal.lock().unwrap();
+        assert_eq!(wal.entry_count(), 10);
+
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 10);
+    }
+
+    #[test]
+    fn test_raft_wal_reopen_append_continue() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("reopen.wal");
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 1 })
+                .unwrap();
+            wal.append(&RaftWalEntry::TermChange { new_term: 2 })
+                .unwrap();
+            assert_eq!(wal.entry_count(), 2);
+        }
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            assert_eq!(wal.entry_count(), 2);
+            wal.append(&RaftWalEntry::TermChange { new_term: 3 })
+                .unwrap();
+            assert_eq!(wal.entry_count(), 3);
+        }
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0], RaftWalEntry::TermChange { new_term: 1 });
+        assert_eq!(entries[1], RaftWalEntry::TermChange { new_term: 2 });
+        assert_eq!(entries[2], RaftWalEntry::TermChange { new_term: 3 });
+    }
+
+    #[test]
+    fn test_raft_wal_multiple_snapshots_last_wins() {
+        let entries = vec![
+            RaftWalEntry::SnapshotTaken {
+                last_included_index: 10,
+                last_included_term: 1,
+            },
+            RaftWalEntry::SnapshotTaken {
+                last_included_index: 50,
+                last_included_term: 3,
+            },
+            RaftWalEntry::SnapshotTaken {
+                last_included_index: 100,
+                last_included_term: 5,
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.last_snapshot_index, Some(100));
+        assert_eq!(state.last_snapshot_term, Some(5));
+    }
+
+    #[test]
+    fn test_raft_wal_log_append_entries_recorded() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("log_append.wal");
+
+        let hash1 = [1u8; 32];
+        let hash2 = [2u8; 32];
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            wal.append(&RaftWalEntry::LogAppend {
+                index: 1,
+                term: 1,
+                command_hash: hash1,
+            })
+            .unwrap();
+            wal.append(&RaftWalEntry::LogAppend {
+                index: 2,
+                term: 1,
+                command_hash: hash2,
+            })
+            .unwrap();
+        }
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0],
+            RaftWalEntry::LogAppend {
+                index: 1,
+                term: 1,
+                command_hash: hash1
+            }
+        );
+        assert_eq!(
+            entries[1],
+            RaftWalEntry::LogAppend {
+                index: 2,
+                term: 1,
+                command_hash: hash2
+            }
+        );
+    }
+
+    #[test]
+    fn test_raft_wal_log_truncate_entry_recorded() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("log_truncate.wal");
+
+        {
+            let mut wal = RaftWal::open(&wal_path).unwrap();
+            wal.append(&RaftWalEntry::LogAppend {
+                index: 1,
+                term: 1,
+                command_hash: [0u8; 32],
+            })
+            .unwrap();
+            wal.append(&RaftWalEntry::LogAppend {
+                index: 2,
+                term: 1,
+                command_hash: [0u8; 32],
+            })
+            .unwrap();
+            wal.append(&RaftWalEntry::LogTruncate { from_index: 2 })
+                .unwrap();
+        }
+
+        let wal = RaftWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2], RaftWalEntry::LogTruncate { from_index: 2 });
+    }
 }
