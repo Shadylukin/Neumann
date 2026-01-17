@@ -2,7 +2,9 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tensor_store::{snapshot_save, snapshot_load, ScalarValue, SlabRouter, TensorData, TensorValue};
+use tensor_store::{
+    snapshot_load, snapshot_save, ScalarValue, SlabRouter, TensorData, TensorValue,
+};
 
 #[derive(Arbitrary, Debug)]
 struct Entry {
@@ -67,16 +69,12 @@ fuzz_target!(|input: Input| {
         Err(_) => {
             let _ = std::fs::remove_file(&path);
             return;
-        }
+        },
     };
 
     // Verify all expected keys exist and have correct values
     for (key, (expected_id, expected_name)) in &expected {
-        assert!(
-            loaded.exists(key),
-            "Key {} missing after roundtrip",
-            key
-        );
+        assert!(loaded.exists(key), "Key {} missing after roundtrip", key);
 
         let data = loaded.get(key).expect("Key should exist");
 

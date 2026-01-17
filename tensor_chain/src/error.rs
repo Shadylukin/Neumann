@@ -117,6 +117,53 @@ pub enum ChainError {
         /// The timeout in milliseconds.
         timeout_ms: u64,
     },
+
+    /// Message validation failed.
+    #[error("message validation failed: {message_type}: {reason}")]
+    MessageValidationFailed {
+        /// Type of message that failed validation.
+        message_type: &'static str,
+        /// Reason for validation failure.
+        reason: String,
+    },
+
+    /// Invalid embedding in message.
+    #[error("invalid embedding (dimension {dimension}): {reason}")]
+    InvalidEmbedding {
+        /// Dimension of the invalid embedding.
+        dimension: usize,
+        /// Reason for invalidity.
+        reason: String,
+    },
+
+    /// Numeric field out of bounds.
+    #[error("numeric out of bounds: {field} = {value} (expected {expected})")]
+    NumericOutOfBounds {
+        /// Field name.
+        field: String,
+        /// Actual value.
+        value: String,
+        /// Expected bounds.
+        expected: String,
+    },
+
+    /// Delta update integrity check failed.
+    #[error("update integrity failed for key '{key}' at index {index}")]
+    UpdateIntegrityFailed {
+        /// Key of the update.
+        key: String,
+        /// Index in the batch.
+        index: usize,
+    },
+
+    /// Delta batch integrity check failed.
+    #[error("batch integrity failed: sequence {sequence} from {source_node}")]
+    BatchIntegrityFailed {
+        /// Batch sequence number.
+        sequence: u64,
+        /// Source node.
+        source_node: String,
+    },
 }
 
 impl From<bincode::Error> for ChainError {

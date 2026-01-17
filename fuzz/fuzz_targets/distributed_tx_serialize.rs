@@ -25,9 +25,17 @@ enum TxOp {
 
 #[derive(Arbitrary, Debug)]
 enum Vote {
-    Yes { lock_handle: u64, delta: Vec<f32> },
-    No { reason: String },
-    Conflict { similarity: f32, conflicting_tx: u64 },
+    Yes {
+        lock_handle: u64,
+        delta: Vec<f32>,
+    },
+    No {
+        reason: String,
+    },
+    Conflict {
+        similarity: f32,
+        conflicting_tx: u64,
+    },
 }
 
 #[derive(Arbitrary, Debug)]
@@ -85,13 +93,13 @@ fuzz_target!(|data: FuzzMessage| {
                     TxOp::Put { key, data } => {
                         assert!(key.len() < 1024 * 1024); // Reasonable key size
                         assert!(data.len() < 1024 * 1024); // Reasonable data size
-                    }
+                    },
                     TxOp::Delete { key } => {
                         assert!(key.len() < 1024 * 1024);
-                    }
+                    },
                 }
             }
-        }
+        },
         FuzzMessage::PrepareResponse(resp) => {
             let _ = resp.tx_id;
             let _ = resp.shard_id;
@@ -99,10 +107,10 @@ fuzz_target!(|data: FuzzMessage| {
                 Vote::Yes { lock_handle, delta } => {
                     let _ = lock_handle;
                     let _ = delta.len();
-                }
+                },
                 Vote::No { reason } => {
                     let _ = reason.len();
-                }
+                },
                 Vote::Conflict {
                     similarity,
                     conflicting_tx,
@@ -112,18 +120,18 @@ fuzz_target!(|data: FuzzMessage| {
                         assert!(*similarity >= -1.0 && *similarity <= 1.0 || true);
                     }
                     let _ = conflicting_tx;
-                }
+                },
             }
-        }
+        },
         FuzzMessage::Commit(msg) => {
             let _ = msg.tx_id;
             let _ = msg.shards.len();
-        }
+        },
         FuzzMessage::Abort(msg) => {
             let _ = msg.tx_id;
             let _ = msg.reason.len();
             let _ = msg.shards.len();
-        }
+        },
         FuzzMessage::Ack(msg) => {
             let _ = msg.tx_id;
             let _ = msg.shard_id;
@@ -131,6 +139,6 @@ fuzz_target!(|data: FuzzMessage| {
             if let Some(err) = &msg.error {
                 let _ = err.len();
             }
-        }
+        },
     }
 });

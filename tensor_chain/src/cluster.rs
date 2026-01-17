@@ -23,6 +23,7 @@ use crate::{
     geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager},
     gossip::{GossipConfig, GossipMembershipManager},
     membership::{ClusterConfig, MembershipManager},
+    message_validation::{CompositeValidator, MessageValidationConfig, MessageValidator},
     network::{
         Message, QueryExecutor, QueryRequest, QueryResponse, Transport, TxAckMsg, TxCommitMsg,
         TxPrepareMsg, TxPrepareResponseMsg,
@@ -92,7 +93,11 @@ impl Default for HandlerTimeoutConfig {
 }
 
 impl HandlerTimeoutConfig {
-    pub fn new(query_timeout_ms: u64, prepare_timeout_ms: u64, commit_abort_timeout_ms: u64) -> Self {
+    pub fn new(
+        query_timeout_ms: u64,
+        prepare_timeout_ms: u64,
+        commit_abort_timeout_ms: u64,
+    ) -> Self {
         Self {
             query_timeout_ms,
             prepare_timeout_ms,
@@ -122,6 +127,8 @@ pub struct OrchestratorConfig {
     pub fast_path_threshold: f32,
     /// Handler timeout configuration.
     pub handler_timeouts: HandlerTimeoutConfig,
+    /// Message validation configuration.
+    pub message_validation: MessageValidationConfig,
 }
 
 impl OrchestratorConfig {
@@ -136,6 +143,7 @@ impl OrchestratorConfig {
             delta_replication: DeltaReplicationConfig::default(),
             fast_path_threshold: 0.95,
             handler_timeouts: HandlerTimeoutConfig::default(),
+            message_validation: MessageValidationConfig::default(),
         }
     }
 
@@ -180,6 +188,12 @@ impl OrchestratorConfig {
         self.handler_timeouts = handler_timeouts;
         self
     }
+
+    /// Set the message validation configuration.
+    pub fn with_message_validation(mut self, message_validation: MessageValidationConfig) -> Self {
+        self.message_validation = message_validation;
+        self
+    }
 }
 
 /// Orchestrates cluster startup and manages node components.
@@ -213,6 +227,8 @@ pub struct ClusterOrchestrator {
     query_executor: RwLock<Option<Arc<dyn QueryExecutor>>>,
     /// Local shard ID for query responses.
     local_shard_id: usize,
+    /// Message validator for incoming messages.
+    validator: Arc<CompositeValidator>,
 }
 
 impl ClusterOrchestrator {
@@ -323,6 +339,9 @@ impl ClusterOrchestrator {
             config.fast_path_threshold,
         ));
 
+        // 13. Create message validator
+        let validator = Arc::new(CompositeValidator::new(config.message_validation.clone()));
+
         Ok(Self {
             config,
             transport,
@@ -337,6 +356,7 @@ impl ClusterOrchestrator {
             store,
             query_executor: RwLock::new(None),
             local_shard_id: 0,
+            validator,
         })
     }
 
@@ -425,18 +445,17 @@ impl ClusterOrchestrator {
             },
             Err(_) => {
                 // Timeout
-                tracing::warn!(
-                    "Query from {} timed out after {}ms",
-                    from_node,
-                    timeout_ms
-                );
+                tracing::warn!("Query from {} timed out after {}ms", from_node, timeout_ms);
                 Some(Message::QueryResponse(QueryResponse {
                     query_id,
                     shard_id,
                     result: Vec::new(),
                     execution_time_us: timeout_ms * 1000,
                     success: false,
-                    error: Some(format!("query execution timeout: exceeded {}ms", timeout_ms)),
+                    error: Some(format!(
+                        "query execution timeout: exceeded {}ms",
+                        timeout_ms
+                    )),
                 }))
             },
         }
@@ -459,19 +478,16 @@ impl ClusterOrchestrator {
         let shard_id = msg.shard_id;
 
         let result = tokio::time::timeout(timeout, async move {
-            tokio::task::spawn_blocking(move || dtx.handle_prepare(request))
-                .await
+            tokio::task::spawn_blocking(move || dtx.handle_prepare(request)).await
         })
         .await;
 
         match result {
-            Ok(Ok(vote)) => {
-                Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
-                    tx_id,
-                    shard_id,
-                    vote: vote.into(),
-                }))
-            },
+            Ok(Ok(vote)) => Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
+                tx_id,
+                shard_id,
+                vote: vote.into(),
+            })),
             Ok(Err(_)) | Err(_) => {
                 // Timeout or panic - vote No
                 tracing::warn!("TX prepare {} timed out after {}ms", tx_id, timeout_ms);
@@ -500,20 +516,17 @@ impl ClusterOrchestrator {
         let shard_id = self.local_shard_id;
 
         let result = tokio::time::timeout(timeout, async move {
-            tokio::task::spawn_blocking(move || dtx.commit(tx_id).is_ok())
-                .await
+            tokio::task::spawn_blocking(move || dtx.commit(tx_id).is_ok()).await
         })
         .await;
 
         match result {
-            Ok(Ok(success)) => {
-                Some(Message::TxAck(TxAckMsg {
-                    tx_id,
-                    shard_id,
-                    success,
-                    error: None,
-                }))
-            },
+            Ok(Ok(success)) => Some(Message::TxAck(TxAckMsg {
+                tx_id,
+                shard_id,
+                success,
+                error: None,
+            })),
             Ok(Err(_)) | Err(_) => {
                 tracing::warn!("TX commit {} timed out after {}ms", tx_id, timeout_ms);
                 Some(Message::TxAck(TxAckMsg {
@@ -544,20 +557,17 @@ impl ClusterOrchestrator {
         let shard_id = self.local_shard_id;
 
         let result = tokio::time::timeout(timeout, async move {
-            tokio::task::spawn_blocking(move || dtx.abort(tx_id, &reason).is_ok())
-                .await
+            tokio::task::spawn_blocking(move || dtx.abort(tx_id, &reason).is_ok()).await
         })
         .await;
 
         match result {
-            Ok(Ok(success)) => {
-                Some(Message::TxAck(TxAckMsg {
-                    tx_id,
-                    shard_id,
-                    success,
-                    error: None,
-                }))
-            },
+            Ok(Ok(success)) => Some(Message::TxAck(TxAckMsg {
+                tx_id,
+                shard_id,
+                success,
+                error: None,
+            })),
             Ok(Err(_)) | Err(_) => {
                 tracing::warn!("TX abort {} timed out after {}ms", tx_id, timeout_ms);
                 Some(Message::TxAck(TxAckMsg {
@@ -611,6 +621,16 @@ impl ClusterOrchestrator {
                     transport.recv()
                 ) => {
                     if let Ok(Ok((from, msg))) = recv_result {
+                        // Validate message before processing
+                        if let Err(e) = self.validator.validate(&msg, &from) {
+                            tracing::warn!(
+                                from = %from,
+                                error = %e,
+                                "Message validation failed, skipping"
+                            );
+                            continue;
+                        }
+
                         // Record peer embeddings from messages for geometric routing
                         if let Some(embedding) = msg.routing_embedding() {
                             geometric.record_peer_embedding(&from, embedding.clone());
@@ -1014,7 +1034,9 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &request).await;
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
         assert!(
             result.is_none(),
             "Should return None when no executor is registered"
@@ -1060,7 +1082,9 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &request).await;
+        let result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &request)
+            .await;
         assert!(result.is_some());
 
         if let Some(Message::QueryResponse(response)) = result {
@@ -1081,7 +1105,9 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let error_result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &error_request).await;
+        let error_result = orchestrator
+            .handle_query_request_with_timeout(&"peer1".to_string(), &error_request)
+            .await;
         assert!(error_result.is_some());
 
         if let Some(Message::QueryResponse(response)) = error_result {
@@ -1114,7 +1140,9 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let response = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
+        let response = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
         assert!(response.is_some());
 
         if let Some(Message::TxPrepareResponse(resp)) = response {
@@ -1150,7 +1178,9 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::from_dense(&[1.0, 0.0]),
             timeout_ms: 5000,
         };
-        let response1 = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg1).await;
+        let response1 = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg1)
+            .await;
         assert!(response1.is_some());
         if let Some(Message::TxPrepareResponse(resp)) = response1 {
             assert!(matches!(resp.vote, crate::network::TxVote::Yes { .. }));
@@ -1168,7 +1198,9 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::from_dense(&[0.0, 1.0]),
             timeout_ms: 5000,
         };
-        let response2 = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg2).await;
+        let response2 = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg2)
+            .await;
         assert!(response2.is_some());
 
         if let Some(Message::TxPrepareResponse(resp)) = response2 {
@@ -1197,7 +1229,9 @@ mod tests {
             tx_id: 100,
             shards: vec![0], // local_shard_id is 0
         };
-        let ack = orchestrator.handle_tx_commit_with_timeout(&commit_msg).await;
+        let ack = orchestrator
+            .handle_tx_commit_with_timeout(&commit_msg)
+            .await;
 
         // Verify ack is returned (may or may not succeed depending on local state)
         assert!(ack.is_some());
@@ -1223,7 +1257,9 @@ mod tests {
             tx_id: 100,
             shards: vec![5], // Not local shard (which is 0)
         };
-        let ack = orchestrator.handle_tx_commit_with_timeout(&commit_msg).await;
+        let ack = orchestrator
+            .handle_tx_commit_with_timeout(&commit_msg)
+            .await;
 
         // Should return None since this node's shard isn't in the list
         assert!(ack.is_none());
@@ -1904,7 +1940,9 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::new(0),
             timeout_ms: 5000,
         };
-        let _ = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
+        let _ = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
 
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let orch = orchestrator.clone();
@@ -1958,7 +1996,9 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::new(0),
             timeout_ms: 5000,
         };
-        let _ = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
+        let _ = orchestrator
+            .handle_tx_prepare_with_timeout(&prepare_msg)
+            .await;
 
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let orch = orchestrator.clone();

@@ -52,6 +52,7 @@ pub mod error;
 pub mod geometric_membership;
 pub mod gossip;
 pub mod membership;
+pub mod message_validation;
 pub mod metrics;
 pub mod network;
 pub mod partition_merge;
@@ -109,6 +110,9 @@ pub use membership::{
     MembershipManager, MembershipStats, MembershipStatsSnapshot, NodeHealth, NodeStatus,
     PartitionStatus, PeerNodeConfig,
 };
+pub use message_validation::{
+    CompositeValidator, EmbeddingValidator, MessageValidationConfig, MessageValidator,
+};
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
     AppendEntries, AppendEntriesResponse, ConfigChange, DataMergeRequest, DataMergeResponse,
@@ -137,8 +141,8 @@ pub use snapshot_streaming::{
 };
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
-    Handshake, LengthDelimitedCodec, ReconnectConfig, TcpError, TcpResult, TcpTransport,
-    TcpTransportConfig, TlsConfig, TransportStats,
+    Handshake, LengthDelimitedCodec, NodeIdVerification, ReconnectConfig, TcpError, TcpResult,
+    TcpTransport, TcpTransportConfig, TlsConfig, TransportStats,
 };
 use tensor_store::TensorStore;
 use tokio::sync::broadcast;
@@ -623,7 +627,11 @@ impl TensorChain {
         }
     }
 
-    pub fn with_identity(store: TensorStore, config: ChainConfig, identity: signing::Identity) -> Self {
+    pub fn with_identity(
+        store: TensorStore,
+        config: ChainConfig,
+        identity: signing::Identity,
+    ) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
         let graph = Arc::new(GraphEngine::with_store(store));
@@ -2098,14 +2106,26 @@ mod tests {
         let block = chain.get_block(1).unwrap().unwrap();
 
         // Verify the signature is present and non-empty
-        assert_eq!(block.header.signature.len(), 64, "Ed25519 signature should be 64 bytes");
-        assert_ne!(block.header.signature, vec![0u8; 64], "Signature should not be all zeros");
+        assert_eq!(
+            block.header.signature.len(),
+            64,
+            "Ed25519 signature should be 64 bytes"
+        );
+        assert_ne!(
+            block.header.signature,
+            vec![0u8; 64],
+            "Signature should not be all zeros"
+        );
 
         // Verify the signature manually using the identity's public key
         let public_identity = chain.identity().verifying_key();
         let signing_bytes = block.header.signing_bytes();
         let result = public_identity.verify(&signing_bytes, &block.header.signature);
-        assert!(result.is_ok(), "Ed25519 signature should verify: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Ed25519 signature should verify: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2160,6 +2180,10 @@ mod tests {
         let public_identity = chain.identity().verifying_key();
         let signing_bytes = block.header.signing_bytes();
         let result = public_identity.verify(&signing_bytes, &block.header.signature);
-        assert!(result.is_ok(), "Block signature should verify: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Block signature should verify: {:?}",
+            result
+        );
     }
 }

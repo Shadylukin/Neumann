@@ -56,7 +56,7 @@ fuzz_target!(|input: FramingInput| {
         TestCase::DecodeRaw => {
             // Try to decode raw bytes as payload (without length prefix)
             let _ = codec.decode_payload(&input.raw_bytes);
-        }
+        },
 
         TestCase::EncodeRequestVote {
             term,
@@ -78,7 +78,7 @@ fuzz_target!(|input: FramingInput| {
             });
 
             test_roundtrip(&codec, &msg);
-        }
+        },
 
         TestCase::EncodeVoteResponse {
             term,
@@ -94,7 +94,7 @@ fuzz_target!(|input: FramingInput| {
             });
 
             test_roundtrip(&codec, &msg);
-        }
+        },
 
         TestCase::EncodeAppendEntriesHeartbeat {
             term,
@@ -123,12 +123,12 @@ fuzz_target!(|input: FramingInput| {
             });
 
             test_roundtrip(&codec, &msg);
-        }
+        },
 
         TestCase::EncodePing { term } => {
             let msg = Message::Ping { term };
             test_roundtrip(&codec, &msg);
-        }
+        },
 
         TestCase::Handshake {
             node_id,
@@ -158,7 +158,7 @@ fuzz_target!(|input: FramingInput| {
                 let decoded: Result<Handshake, _> = bincode::deserialize(&encoded[4..]);
                 assert!(decoded.is_ok(), "Failed to decode valid handshake");
             }
-        }
+        },
     }
 });
 

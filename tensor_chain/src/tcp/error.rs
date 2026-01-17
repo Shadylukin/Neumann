@@ -46,6 +46,21 @@ pub enum TcpError {
     /// Handshake failed.
     HandshakeFailed(String),
 
+    /// Identity verification failed during TLS handshake.
+    IdentityVerificationFailed {
+        reason: String,
+        claimed_node_id: String,
+    },
+
+    /// Certificate NodeId does not match claimed NodeId.
+    CertificateNodeIdMismatch {
+        cert_node_id: String,
+        claimed_node_id: String,
+    },
+
+    /// Client certificate required but not provided.
+    ClientCertificateRequired,
+
     /// Compression/decompression error.
     Compression {
         operation: &'static str,
@@ -86,6 +101,29 @@ impl fmt::Display for TcpError {
             Self::Shutdown => write!(f, "transport is shutting down"),
             Self::InvalidFrame(msg) => write!(f, "invalid frame: {}", msg),
             Self::HandshakeFailed(msg) => write!(f, "handshake failed: {}", msg),
+            Self::IdentityVerificationFailed {
+                reason,
+                claimed_node_id,
+            } => {
+                write!(
+                    f,
+                    "identity verification failed for node '{}': {}",
+                    claimed_node_id, reason
+                )
+            },
+            Self::CertificateNodeIdMismatch {
+                cert_node_id,
+                claimed_node_id,
+            } => {
+                write!(
+                    f,
+                    "certificate NodeId mismatch: cert='{}', claimed='{}'",
+                    cert_node_id, claimed_node_id
+                )
+            },
+            Self::ClientCertificateRequired => {
+                write!(f, "client certificate required but not provided")
+            },
             Self::Compression { operation, message } => {
                 write!(f, "compression {} error: {}", operation, message)
             },
@@ -293,5 +331,36 @@ mod tests {
         };
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("Timeout"));
+    }
+
+    #[test]
+    fn test_identity_verification_failed_display() {
+        let err = TcpError::IdentityVerificationFailed {
+            reason: "public key mismatch".to_string(),
+            claimed_node_id: "node1".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("identity verification failed"));
+        assert!(display.contains("node1"));
+        assert!(display.contains("public key mismatch"));
+    }
+
+    #[test]
+    fn test_certificate_node_id_mismatch_display() {
+        let err = TcpError::CertificateNodeIdMismatch {
+            cert_node_id: "node-cert".to_string(),
+            claimed_node_id: "node-claimed".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("mismatch"));
+        assert!(display.contains("node-cert"));
+        assert!(display.contains("node-claimed"));
+    }
+
+    #[test]
+    fn test_client_certificate_required_display() {
+        let err = TcpError::ClientCertificateRequired;
+        let display = err.to_string();
+        assert!(display.contains("client certificate required"));
     }
 }

@@ -106,7 +106,7 @@ fuzz_target!(|input: MembershipInput| {
                 assert_eq!(decoded.local.node_id, config.local.node_id);
                 assert_eq!(decoded.peers.len(), config.peers.len());
             }
-        }
+        },
 
         TestCase::BincodeRoundtrip {
             cluster_id,
@@ -150,7 +150,7 @@ fuzz_target!(|input: MembershipInput| {
                 let decoded = decoded.unwrap();
                 assert_eq!(decoded.cluster_id, config.cluster_id);
             }
-        }
+        },
 
         TestCase::ParseHealthConfig {
             ping_interval_ms,
@@ -178,8 +178,11 @@ fuzz_target!(|input: MembershipInput| {
             // Bincode roundtrip
             if let Ok(bytes) = bincode::serialize(&config) {
                 let decoded: Result<HealthConfig, _> = bincode::deserialize(&bytes);
-                assert!(decoded.is_ok(), "Failed to parse valid bincode health config");
+                assert!(
+                    decoded.is_ok(),
+                    "Failed to parse valid bincode health config"
+                );
             }
-        }
+        },
     }
 });

@@ -281,6 +281,18 @@ impl ReconnectConfig {
     }
 }
 
+/// How to verify that a peer's NodeId matches their TLS certificate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NodeIdVerification {
+    /// No verification - NodeId is trusted from handshake (testing only).
+    #[default]
+    None,
+    /// NodeId must match certificate Common Name (CN).
+    CommonName,
+    /// NodeId must match a Subject Alternative Name (SAN) DNS entry.
+    SubjectAltName,
+}
+
 /// TLS configuration for encrypted connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -302,6 +314,10 @@ pub struct TlsConfig {
     /// SECURITY: This field is ignored in release builds - verification is always enforced.
     #[serde(default)]
     pub insecure_skip_verify: bool,
+
+    /// How to verify NodeId against TLS certificate.
+    #[serde(default)]
+    pub node_id_verification: NodeIdVerification,
 }
 
 impl TlsConfig {
@@ -312,6 +328,7 @@ impl TlsConfig {
             ca_cert_path: None,
             require_client_auth: false,
             insecure_skip_verify: false,
+            node_id_verification: NodeIdVerification::default(),
         }
     }
 
@@ -322,6 +339,11 @@ impl TlsConfig {
 
     pub fn with_client_auth(mut self) -> Self {
         self.require_client_auth = true;
+        self
+    }
+
+    pub fn with_node_id_verification(mut self, mode: NodeIdVerification) -> Self {
+        self.node_id_verification = mode;
         self
     }
 
@@ -671,5 +693,45 @@ mod tests {
             .with_require_tls(true);
         assert!(config.require_tls);
         assert!(config.tls.is_some());
+    }
+
+    #[test]
+    fn test_node_id_verification_default() {
+        let mode = NodeIdVerification::default();
+        assert_eq!(mode, NodeIdVerification::None);
+    }
+
+    #[test]
+    fn test_node_id_verification_variants() {
+        let none = NodeIdVerification::None;
+        let cn = NodeIdVerification::CommonName;
+        let san = NodeIdVerification::SubjectAltName;
+
+        assert_eq!(format!("{:?}", none), "None");
+        assert_eq!(format!("{:?}", cn), "CommonName");
+        assert_eq!(format!("{:?}", san), "SubjectAltName");
+    }
+
+    #[test]
+    fn test_tls_config_with_node_id_verification() {
+        let tls = TlsConfig::new("/cert.pem", "/key.pem")
+            .with_node_id_verification(NodeIdVerification::CommonName);
+
+        assert_eq!(tls.node_id_verification, NodeIdVerification::CommonName);
+    }
+
+    #[test]
+    fn test_tls_config_node_id_verification_default() {
+        let tls = TlsConfig::new("/cert.pem", "/key.pem");
+        assert_eq!(tls.node_id_verification, NodeIdVerification::None);
+    }
+
+    #[test]
+    fn test_node_id_verification_serde() {
+        // Use bincode for serialization since serde_json isn't a dependency
+        let cn = NodeIdVerification::CommonName;
+        let serialized = bincode::serialize(&cn).unwrap();
+        let deserialized: NodeIdVerification = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized, NodeIdVerification::CommonName);
     }
 }

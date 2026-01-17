@@ -82,7 +82,10 @@ async fn test_handshake_write_timeout_success() {
     assert!(result.is_ok());
 
     // Wait for server to finish
-    timeout(Duration::from_secs(1), server).await.unwrap().unwrap();
+    timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -175,7 +178,10 @@ async fn test_frame_roundtrip_with_timeout() {
         panic!("unexpected message type");
     }
 
-    timeout(Duration::from_secs(1), server).await.unwrap().unwrap();
+    timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -273,7 +279,10 @@ async fn test_multiple_frames_with_timeout() {
         }
     }
 
-    timeout(Duration::from_secs(1), server).await.unwrap().unwrap();
+    timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]

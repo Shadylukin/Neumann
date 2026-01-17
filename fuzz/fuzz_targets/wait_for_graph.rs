@@ -2,9 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tensor_chain::{
-    DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy, WaitForGraph,
-};
+use tensor_chain::{DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy, WaitForGraph};
 
 #[derive(Arbitrary, Debug)]
 struct FuzzInput {
@@ -81,15 +79,15 @@ fuzz_target!(|input: FuzzInput| {
                 if waiter != holder {
                     graph.add_wait(waiter, holder, priority.map(|p| p as u32));
                 }
-            }
+            },
 
             GraphOp::RemoveWait { waiter, holder } => {
                 graph.remove_wait(*waiter as u64, *holder as u64);
-            }
+            },
 
             GraphOp::RemoveTransaction { tx_id } => {
                 graph.remove_transaction(*tx_id as u64);
-            }
+            },
 
             GraphOp::DetectCycles => {
                 let cycles = detector.detect();
@@ -110,7 +108,7 @@ fuzz_target!(|input: FuzzInput| {
                         );
                     }
                 }
-            }
+            },
 
             GraphOp::WouldCreateCycle { waiter, holder } => {
                 let waiter = *waiter as u64;
@@ -121,35 +119,35 @@ fuzz_target!(|input: FuzzInput| {
                 if waiter == holder {
                     assert!(would_cycle, "self-wait should always create cycle");
                 }
-            }
+            },
 
             GraphOp::WaitingFor { tx_id } => {
                 let waiting = graph.waiting_for(*tx_id as u64);
                 // Just ensure it doesn't panic and returns a set
                 let _ = waiting.len();
-            }
+            },
 
             GraphOp::WaitingOn { tx_id } => {
                 let waiting = graph.waiting_on(*tx_id as u64);
                 let _ = waiting.len();
-            }
+            },
 
             GraphOp::Clear => {
                 graph.clear();
                 assert!(graph.is_empty(), "graph should be empty after clear");
                 assert_eq!(graph.edge_count(), 0, "edge count should be 0 after clear");
-            }
+            },
 
             GraphOp::EdgeCount => {
                 let count = graph.edge_count();
                 // Edge count should be non-negative (always true for usize)
                 let _ = count;
-            }
+            },
 
             GraphOp::TransactionCount => {
                 let count = graph.transaction_count();
                 let _ = count;
-            }
+            },
         }
     }
 

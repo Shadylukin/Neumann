@@ -121,11 +121,25 @@ struct VolatileState {
 }
 
 /// Volatile state on leaders (reinitialized after election).
-struct LeaderState {
+struct LeaderVolatileState {
     /// For each server, index of next log entry to send.
     next_index: HashMap<NodeId, u64>,
     /// For each server, index of highest log entry known to be replicated.
     match_index: HashMap<NodeId, u64>,
+}
+
+/// Combined leadership state for atomic transitions.
+///
+/// This struct consolidates state, current_leader, and leader-specific state
+/// into a single atomic unit. This ensures that observers never see partial
+/// leadership transitions (e.g., state=Leader but leader_state=None).
+struct LeadershipState {
+    /// Current role (follower/candidate/leader).
+    role: RaftState,
+    /// Current leader (if known).
+    current_leader: Option<NodeId>,
+    /// Leader-specific volatile state (only Some when role=Leader).
+    leader_volatile: Option<LeaderVolatileState>,
 }
 
 /// Persistent state on all servers.
@@ -650,16 +664,13 @@ impl FastPathState {
 pub struct RaftNode {
     /// Local node ID.
     node_id: NodeId,
-    /// Current state (follower/candidate/leader).
-    state: RwLock<RaftState>,
+    /// Combined leadership state for atomic transitions.
+    /// Contains role, current_leader, and leader-specific volatile state.
+    leadership: RwLock<LeadershipState>,
     /// Persistent state.
     persistent: RwLock<PersistentState>,
     /// Volatile state.
     volatile: RwLock<VolatileState>,
-    /// Leader-specific state.
-    leader_state: RwLock<Option<LeaderState>>,
-    /// Current leader (if known).
-    current_leader: RwLock<Option<NodeId>>,
     /// List of peer node IDs.
     peers: RwLock<Vec<NodeId>>,
     /// Transport for network communication.
@@ -723,7 +734,11 @@ impl RaftNode {
 
         Self {
             node_id,
-            state: RwLock::new(RaftState::Follower),
+            leadership: RwLock::new(LeadershipState {
+                role: RaftState::Follower,
+                current_leader: None,
+                leader_volatile: None,
+            }),
             persistent: RwLock::new(PersistentState {
                 current_term: 0,
                 voted_for: None,
@@ -733,8 +748,6 @@ impl RaftNode {
                 commit_index: 0,
                 last_applied: 0,
             }),
-            leader_state: RwLock::new(None),
-            current_leader: RwLock::new(None),
             peers: RwLock::new(peers),
             transport,
             last_heartbeat: RwLock::new(Instant::now()),
@@ -1015,7 +1028,11 @@ impl RaftNode {
 
         Self {
             node_id,
-            state: RwLock::new(RaftState::Follower),
+            leadership: RwLock::new(LeadershipState {
+                role: RaftState::Follower,
+                current_leader: None,
+                leader_volatile: None,
+            }),
             persistent: RwLock::new(PersistentState {
                 current_term: term,
                 voted_for,
@@ -1025,8 +1042,6 @@ impl RaftNode {
                 commit_index: 0,
                 last_applied: 0,
             }),
-            leader_state: RwLock::new(None),
-            current_leader: RwLock::new(None),
             peers: RwLock::new(peers),
             transport,
             last_heartbeat: RwLock::new(Instant::now()),
@@ -1136,7 +1151,7 @@ impl RaftNode {
     }
 
     pub fn state(&self) -> RaftState {
-        *self.state.read()
+        self.leadership.read().role
     }
 
     pub fn current_term(&self) -> u64 {
@@ -1144,11 +1159,11 @@ impl RaftNode {
     }
 
     pub fn current_leader(&self) -> Option<NodeId> {
-        self.current_leader.read().clone()
+        self.leadership.read().current_leader.clone()
     }
 
     pub fn set_current_leader(&self, leader_id: Option<NodeId>) {
-        *self.current_leader.write() = leader_id;
+        self.leadership.write().current_leader = leader_id;
     }
 
     pub fn reset_heartbeat_for_election(&self) {
@@ -1156,7 +1171,7 @@ impl RaftNode {
     }
 
     pub fn is_leader(&self) -> bool {
-        *self.state.read() == RaftState::Leader
+        self.leadership.read().role == RaftState::Leader
     }
 
     pub fn commit_index(&self) -> u64 {
@@ -1292,8 +1307,8 @@ impl RaftNode {
         }
 
         // Check if we have leader state and the learner's match index
-        if let Some(ref leader_state) = *self.leader_state.read() {
-            if let Some(&match_index) = leader_state.match_index.get(node_id) {
+        if let Some(ref leader_volatile) = self.leadership.read().leader_volatile {
+            if let Some(&match_index) = leader_volatile.match_index.get(node_id) {
                 let commit_index = self.commit_index();
                 // Consider caught up if within 10 entries of commit index
                 return match_index + 10 >= commit_index;
@@ -1405,7 +1420,7 @@ impl RaftNode {
             }
             persistent.current_term = rv.term;
             persistent.voted_for = None;
-            *self.state.write() = RaftState::Follower;
+            self.leadership.write().role = RaftState::Follower;
         }
 
         // Grant vote if:
@@ -1485,7 +1500,7 @@ impl RaftNode {
 
     /// Handle RequestVoteResponse RPC.
     fn handle_request_vote_response(&self, from: &NodeId, rvr: &RequestVoteResponse) {
-        if *self.state.read() != RaftState::Candidate {
+        if self.leadership.read().role != RaftState::Candidate {
             return;
         }
 
@@ -1504,7 +1519,7 @@ impl RaftNode {
             }
             persistent.current_term = rvr.term;
             persistent.voted_for = None;
-            *self.state.write() = RaftState::Follower;
+            self.leadership.write().role = RaftState::Follower;
             return;
         }
 
@@ -1647,7 +1662,7 @@ impl RaftNode {
             let mut persistent = self.persistent.write();
             persistent.current_term = pvr.term;
             persistent.voted_for = None;
-            *self.state.write() = RaftState::Follower;
+            self.leadership.write().role = RaftState::Follower;
             *self.in_pre_vote.write() = false;
             return;
         }
@@ -1698,7 +1713,7 @@ impl RaftNode {
     /// - A transfer is already in progress
     pub fn transfer_leadership(&self, target: &NodeId) -> Result<()> {
         // Verify we're the leader
-        if *self.state.read() != RaftState::Leader {
+        if self.leadership.read().role != RaftState::Leader {
             return Err(ChainError::ConsensusError(
                 "cannot transfer leadership: not leader".to_string(),
             ));
@@ -1735,7 +1750,7 @@ impl RaftNode {
     /// This causes the node to immediately start an election (skipping pre-vote).
     fn handle_timeout_now(&self, from: &NodeId, tn: &TimeoutNow) -> Option<Message> {
         // Verify sender is our believed leader
-        let current_leader = self.current_leader.read().clone();
+        let current_leader = self.leadership.read().current_leader.clone();
         if current_leader.as_ref() != Some(from) && current_leader.as_ref() != Some(&tn.leader_id) {
             return None;
         }
@@ -1775,23 +1790,23 @@ impl RaftNode {
             }
             persistent.current_term = ae.term;
             persistent.voted_for = None;
-            *self.state.write() = RaftState::Follower;
+            self.leadership.write().role = RaftState::Follower;
         }
 
         if ae.term == persistent.current_term {
-            // Valid leader
-            *self.state.write() = RaftState::Follower;
-
-            // Detect leader change and clear stale embeddings
-            let old_leader = self.current_leader.read().clone();
-            if old_leader.as_ref() != Some(&ae.leader_id) {
-                if let Some(ref old) = old_leader {
-                    self.fast_path_state.clear_leader(old);
+            // Valid leader - update atomically
+            {
+                let mut leadership = self.leadership.write();
+                let old_leader = leadership.current_leader.clone();
+                if old_leader.as_ref() != Some(&ae.leader_id) {
+                    if let Some(ref old) = old_leader {
+                        self.fast_path_state.clear_leader(old);
+                    }
+                    self.fast_path_validator.reset();
                 }
-                self.fast_path_validator.reset();
+                leadership.role = RaftState::Follower;
+                leadership.current_leader = Some(ae.leader_id.clone());
             }
-
-            *self.current_leader.write() = Some(ae.leader_id.clone());
             *self.last_heartbeat.write() = Instant::now();
 
             // Check if we can use fast-path using the validator
@@ -1871,7 +1886,7 @@ impl RaftNode {
 
     /// Handle AppendEntriesResponse RPC.
     fn handle_append_entries_response(&self, from: &NodeId, aer: &AppendEntriesResponse) {
-        if *self.state.read() != RaftState::Leader {
+        if self.leadership.read().role != RaftState::Leader {
             return;
         }
 
@@ -1884,15 +1899,18 @@ impl RaftNode {
             }
             persistent.current_term = aer.term;
             persistent.voted_for = None;
-            *self.state.write() = RaftState::Follower;
-            *self.leader_state.write() = None;
+            {
+                let mut leadership = self.leadership.write();
+                leadership.role = RaftState::Follower;
+                leadership.leader_volatile = None;
+            }
             self.stop_heartbeat_task();
             return;
         }
 
         let should_advance_commit = {
-            let mut leader_state = self.leader_state.write();
-            if let Some(ref mut ls) = *leader_state {
+            let mut leadership = self.leadership.write();
+            if let Some(ref mut ls) = leadership.leader_volatile {
                 if aer.success {
                     ls.next_index.insert(from.clone(), aer.match_index + 1);
                     ls.match_index.insert(from.clone(), aer.match_index);
@@ -1933,7 +1951,7 @@ impl RaftNode {
     /// Handle SnapshotRequest RPC from a follower requesting snapshot chunks.
     fn handle_snapshot_request(&self, _from: &NodeId, sr: &SnapshotRequest) -> Option<Message> {
         // Only leaders should respond to snapshot requests
-        if *self.state.read() != RaftState::Leader {
+        if self.leadership.read().role != RaftState::Leader {
             return None;
         }
 
@@ -1972,7 +1990,7 @@ impl RaftNode {
     /// Handle SnapshotResponse RPC when receiving snapshot chunks.
     fn handle_snapshot_response(&self, _from: &NodeId, sr: &SnapshotResponse) {
         // Only followers should process snapshot responses
-        if *self.state.read() != RaftState::Follower {
+        if self.leadership.read().role != RaftState::Follower {
             return;
         }
 
@@ -2040,7 +2058,7 @@ impl RaftNode {
         persistent.current_term = new_term;
         persistent.voted_for = Some(self.node_id.clone());
 
-        *self.state.write() = RaftState::Candidate;
+        self.leadership.write().role = RaftState::Candidate;
         *self.votes_received.write() = vec![self.node_id.clone()]; // Vote for self
 
         // Compute last log info while holding the write lock to avoid deadlock
@@ -2069,9 +2087,25 @@ impl RaftNode {
     }
 
     /// Become leader after winning election.
+    ///
+    /// This method performs an atomic leadership transition. All leadership state
+    /// (role, current_leader, leader_volatile) is updated in a single lock acquisition
+    /// to ensure observers never see partial state.
+    ///
     /// This is public to allow testing scenarios.
     pub fn become_leader(&self) {
+        // Gather read-only data first (outside write lock)
         let term = self.persistent.read().current_term;
+        let (last_log_index, _) = self.last_log_info();
+        let peers = self.peers.read().clone();
+
+        // Build leader volatile state outside lock
+        let mut next_index = HashMap::new();
+        let mut match_index = HashMap::new();
+        for peer in peers {
+            next_index.insert(peer.clone(), last_log_index + 1);
+            match_index.insert(peer, 0);
+        }
 
         tracing::info!(
             node_id = %self.node_id,
@@ -2079,21 +2113,11 @@ impl RaftNode {
             "Became leader"
         );
 
-        *self.state.write() = RaftState::Leader;
-        *self.current_leader.write() = Some(self.node_id.clone());
-
-        // Initialize leader state
-        let (last_log_index, _) = self.last_log_info();
-        let peers = self.peers.read().clone();
-        let mut next_index = HashMap::new();
-        let mut match_index = HashMap::new();
-
-        for peer in peers {
-            next_index.insert(peer.clone(), last_log_index + 1);
-            match_index.insert(peer, 0);
-        }
-
-        *self.leader_state.write() = Some(LeaderState {
+        // Single atomic write - all leadership state updated together
+        let mut leadership = self.leadership.write();
+        leadership.role = RaftState::Leader;
+        leadership.current_leader = Some(self.node_id.clone());
+        leadership.leader_volatile = Some(LeaderVolatileState {
             next_index,
             match_index,
         });
@@ -2115,15 +2139,15 @@ impl RaftNode {
 
     /// Try to advance the commit index (leader only).
     fn try_advance_commit_index(&self) {
-        if *self.state.read() != RaftState::Leader {
+        let leadership = self.leadership.read();
+        if leadership.role != RaftState::Leader {
             return;
         }
 
         let persistent = self.persistent.read();
-        let leader_state = self.leader_state.read();
         let mut volatile = self.volatile.write();
 
-        if let Some(ref ls) = *leader_state {
+        if let Some(ref ls) = leadership.leader_volatile {
             // Find the highest N such that majority have match_index >= N
             let mut match_indices: Vec<u64> = ls.match_index.values().copied().collect();
             match_indices.push(persistent.log.len() as u64); // Include self
@@ -2146,7 +2170,7 @@ impl RaftNode {
 
     /// Propose a block (leader only).
     pub fn propose(&self, block: Block) -> Result<u64> {
-        if *self.state.read() != RaftState::Leader {
+        if self.leadership.read().role != RaftState::Leader {
             return Err(ChainError::ConsensusError("not leader".to_string()));
         }
 
@@ -2209,7 +2233,7 @@ impl RaftNode {
     /// split-brain scenarios where a leader continues accepting writes
     /// without being able to replicate them.
     pub fn check_quorum_health(&self) {
-        if *self.state.read() != RaftState::Leader {
+        if self.leadership.read().role != RaftState::Leader {
             return;
         }
 
@@ -2229,9 +2253,12 @@ impl RaftNode {
                 quorum_needed
             );
 
-            // Step down to follower
-            *self.state.write() = RaftState::Follower;
-            *self.leader_state.write() = None;
+            // Step down to follower atomically
+            {
+                let mut leadership = self.leadership.write();
+                leadership.role = RaftState::Follower;
+                leadership.leader_volatile = None;
+            }
             self.stop_heartbeat_task();
 
             self.stats.leader_step_downs.fetch_add(1, Ordering::Relaxed);
@@ -2733,11 +2760,12 @@ impl RaftNode {
     ///
     /// Returns true if the follower's next_index is before our first log entry.
     pub fn needs_snapshot_for_follower(&self, follower: &NodeId) -> bool {
-        let leader_state = self.leader_state.read();
+        let leadership = self.leadership.read();
         let persistent = self.persistent.read();
         let snapshot_state = self.snapshot_state.read();
 
-        let next_idx = leader_state
+        let next_idx = leadership
+            .leader_volatile
             .as_ref()
             .and_then(|ls| ls.next_index.get(follower))
             .copied()
@@ -2827,9 +2855,10 @@ impl RaftNode {
         follower: &NodeId,
     ) -> (u64, u64, Vec<LogEntry>, Option<SparseVector>) {
         let persistent = self.persistent.read();
-        let leader_state = self.leader_state.read();
+        let leadership = self.leadership.read();
 
-        let next_idx = leader_state
+        let next_idx = leadership
+            .leader_volatile
             .as_ref()
             .and_then(|ls| ls.next_index.get(follower))
             .copied()
@@ -2881,7 +2910,7 @@ impl RaftNode {
             persistent.current_term += 1;
             persistent.voted_for = Some(self.node_id.clone());
 
-            *self.state.write() = RaftState::Candidate;
+            self.leadership.write().role = RaftState::Candidate;
             *self.votes_received.write() = vec![self.node_id.clone()]; // Vote for self
 
             let (last_log_index, last_log_term) = if persistent.log.is_empty() {
@@ -3025,7 +3054,7 @@ impl RaftNode {
     pub async fn send_heartbeats(&self) -> Result<()> {
         // Build all messages in a sync block (no await)
         let messages: Vec<(NodeId, Message)> = {
-            if *self.state.read() != RaftState::Leader {
+            if self.leadership.read().role != RaftState::Leader {
                 return Ok(());
             }
 
@@ -3087,7 +3116,7 @@ impl RaftNode {
     /// Tick the Raft node - check for election timeout (async version).
     pub async fn tick_async(&self) -> Result<()> {
         let elapsed = self.last_heartbeat.read().elapsed().as_millis() as u64;
-        let state = *self.state.read();
+        let state = self.leadership.read().role;
 
         match state {
             RaftState::Follower | RaftState::Candidate => {
@@ -3182,7 +3211,7 @@ async fn heartbeat_loop(node: Arc<RaftNode>, mut shutdown_rx: tokio::sync::onesh
             _ = &mut shutdown_rx => break,
             _ = ticker.tick() => {
                 // Exit if no longer leader
-                if *node.state.read() != RaftState::Leader {
+                if node.state() != RaftState::Leader {
                     break;
                 }
 
@@ -3644,8 +3673,10 @@ mod tests {
 
         // Get initial next_index for node2
         let initial_next = {
-            let ls = node.leader_state.read();
-            ls.as_ref()
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
                 .unwrap()
                 .next_index
                 .get(&"node2".to_string())
@@ -3666,8 +3697,10 @@ mod tests {
 
         // next_index should be decremented
         let new_next = {
-            let ls = node.leader_state.read();
-            ls.as_ref()
+            let leadership = node.leadership.read();
+            leadership
+                .leader_volatile
+                .as_ref()
                 .unwrap()
                 .next_index
                 .get(&"node2".to_string())
@@ -3696,8 +3729,8 @@ mod tests {
 
         // Simulate successful replication to node2
         {
-            let mut ls = node.leader_state.write();
-            if let Some(ref mut state) = *ls {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut state) = leadership.leader_volatile {
                 state.match_index.insert("node2".to_string(), 2);
             }
         }
@@ -3760,7 +3793,7 @@ mod tests {
         // First, establish node2 as leader and add sufficient embedding history (min_leader_history
         // = 3)
         {
-            *node.current_leader.write() = Some("node2".to_string());
+            node.set_current_leader(Some("node2".to_string()));
             // Need at least 3 embeddings for fast-path to be considered
             node.fast_path_state
                 .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
@@ -3811,7 +3844,7 @@ mod tests {
             .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
         node.fast_path_state
             .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
 
         // Now receive from node3 - should trigger leader change cleanup
         let ae = AppendEntries {
@@ -3858,7 +3891,7 @@ mod tests {
         // Only 1 embedding in history (need 3 minimum)
         node.fast_path_state
             .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
 
         let ae = AppendEntries {
             term: 1,
@@ -3895,7 +3928,7 @@ mod tests {
             config,
         );
 
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
         // Add sufficient history
         node.fast_path_state
             .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
@@ -3941,7 +3974,7 @@ mod tests {
             config,
         );
 
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
         // Add sufficient history for fast-path
         node.fast_path_state
             .add_dense_embedding(&"node2".to_string(), vec![1.0, 0.0, 0.0]);
@@ -4196,8 +4229,12 @@ mod tests {
     fn test_try_advance_commit_index_no_leader_state() {
         let node = create_test_node("node1", vec!["node2".to_string()]);
 
-        // Set to leader but without proper leader state
-        *node.state.write() = RaftState::Leader;
+        // Set to leader but without proper leader volatile state
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Leader;
+            // Intentionally leave leader_volatile as None
+        }
 
         node.try_advance_commit_index();
         assert_eq!(node.commit_index(), 0);
@@ -4512,8 +4549,8 @@ mod tests {
 
         // Simulate replication
         {
-            let mut ls = node.leader_state.write();
-            if let Some(ref mut state) = *ls {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut state) = leadership.leader_volatile {
                 state.match_index.insert("node2".to_string(), 1);
             }
         }
@@ -4912,8 +4949,8 @@ mod tests {
 
         // Manually set next_index to 1 to get all entries
         {
-            let mut ls = node.leader_state.write();
-            if let Some(ref mut leader_state) = *ls {
+            let mut leadership = node.leadership.write();
+            if let Some(ref mut leader_state) = leadership.leader_volatile {
                 leader_state.next_index.insert("node2".to_string(), 1);
             }
         }
@@ -5455,7 +5492,6 @@ mod tests {
         let node = create_test_node("leader", vec!["follower".to_string()]);
 
         // Make this node a leader
-        *node.state.write() = RaftState::Leader;
         node.become_leader();
 
         // Without snapshot, should not need snapshot transfer
@@ -5510,7 +5546,11 @@ mod tests {
     #[test]
     fn test_handle_snapshot_response_not_follower() {
         let node = create_test_node("leader", vec![]);
-        *node.state.write() = RaftState::Leader;
+        // Set to leader directly (without full leadership state setup)
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Leader;
+        }
 
         let response = SnapshotResponse {
             snapshot_height: 10,
@@ -6046,7 +6086,7 @@ mod tests {
         let node = create_test_node("node1", vec!["node2".to_string()]);
 
         // Set node2 as current leader
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 1;
@@ -6069,7 +6109,7 @@ mod tests {
         let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
 
         // Set node2 as current leader
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
 
         let tn = TimeoutNow {
             term: 0,
@@ -6089,7 +6129,7 @@ mod tests {
         let node = create_test_node("node1", vec!["node2".to_string()]);
 
         // Set node2 as current leader and set term
-        *node.current_leader.write() = Some("node2".to_string());
+        node.set_current_leader(Some("node2".to_string()));
         {
             let mut persistent = node.persistent.write();
             persistent.current_term = 5;
@@ -6498,7 +6538,7 @@ mod tests {
     #[test]
     fn test_heartbeat_not_running_for_follower() {
         let node = create_test_node_arc("node1", vec!["node2".to_string()]);
-        assert_eq!(*node.state.read(), RaftState::Follower);
+        assert_eq!(node.state(), RaftState::Follower);
         assert!(!node.is_heartbeat_running());
     }
 
@@ -6539,7 +6579,10 @@ mod tests {
         assert!(node.is_heartbeat_running());
 
         // Step down to follower
-        *node.state.write() = RaftState::Follower;
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Follower;
+        }
 
         // Heartbeat loop should exit on next tick
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -7100,5 +7143,194 @@ mod tests {
 
         node.set_finalized_height(42);
         assert_eq!(node.finalized_height(), 42);
+    }
+
+    #[test]
+    fn test_become_leader_atomicity() {
+        // Verify that leadership state transitions are atomic - within a single
+        // lock acquisition, readers see fully consistent state with no partial updates.
+        // This tests that all leadership fields are updated together atomically.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let node = Arc::new(create_test_node(
+            "node1",
+            vec!["node2".to_string(), "node3".to_string()],
+        ));
+
+        // Set initial term
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+        }
+
+        let iterations = 1000;
+        let inconsistencies = Arc::new(AtomicUsize::new(0));
+
+        // Spawn reader threads that check for consistent state within single lock
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let node = Arc::clone(&node);
+                let inconsistencies = Arc::clone(&inconsistencies);
+                thread::spawn(move || {
+                    for _ in 0..iterations {
+                        // Read all leadership state in single lock acquisition
+                        let leadership = node.leadership.read();
+                        let role = leadership.role;
+                        let current_leader = leadership.current_leader.clone();
+                        let has_volatile = leadership.leader_volatile.is_some();
+                        drop(leadership);
+
+                        // Check consistency: if leader, must have all leader properties
+                        if role == RaftState::Leader {
+                            // Leader must have current_leader set to self
+                            if current_leader != Some("node1".to_string()) {
+                                inconsistencies.fetch_add(1, Ordering::Relaxed);
+                            }
+                            // Leader must have volatile state initialized
+                            if !has_volatile {
+                                inconsistencies.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+
+                        // If follower, should not have leader volatile state
+                        if role == RaftState::Follower {
+                            // Follower should not have leader volatile state
+                            if has_volatile {
+                                inconsistencies.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+
+                        thread::yield_now();
+                    }
+                })
+            })
+            .collect();
+
+        // Writer thread that toggles leadership
+        let writer = {
+            let node = Arc::clone(&node);
+            thread::spawn(move || {
+                for i in 0..iterations {
+                    if i % 2 == 0 {
+                        node.become_leader();
+                    } else {
+                        // Transition to follower - atomically clear leadership
+                        let mut leadership = node.leadership.write();
+                        leadership.role = RaftState::Follower;
+                        leadership.current_leader = None;
+                        leadership.leader_volatile = None;
+                    }
+                    thread::yield_now();
+                }
+            })
+        };
+
+        // Wait for all threads
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        writer.join().unwrap();
+
+        // Should have zero inconsistencies - all reads within single lock
+        // should see fully consistent state
+        assert_eq!(
+            inconsistencies.load(Ordering::Relaxed),
+            0,
+            "Detected inconsistent leadership state during concurrent access"
+        );
+    }
+
+    #[test]
+    fn test_become_leader_no_partial_state() {
+        // Verify all-or-nothing semantics: either we see full leader state or none
+        let node = create_test_node("node1", vec!["node2".to_string(), "node3".to_string()]);
+
+        // Initially not a leader
+        assert_eq!(node.state(), RaftState::Follower);
+        assert!(!node.is_leader());
+        assert!(node.current_leader().is_none());
+
+        // Set term and become leader
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+        }
+        node.become_leader();
+
+        // After become_leader, all state should be consistent
+        assert_eq!(node.state(), RaftState::Leader);
+        assert!(node.is_leader());
+        assert_eq!(node.current_leader(), Some("node1".to_string()));
+
+        // Leader volatile state should be initialized
+        {
+            let leadership = node.leadership.read();
+            let leader_volatile = leadership.leader_volatile.as_ref().unwrap();
+            // next_index should be initialized for all peers
+            assert!(leader_volatile.next_index.contains_key("node2"));
+            assert!(leader_volatile.next_index.contains_key("node3"));
+            // match_index should be initialized to 0
+            assert_eq!(leader_volatile.match_index.get("node2"), Some(&0));
+            assert_eq!(leader_volatile.match_index.get("node3"), Some(&0));
+        }
+
+        // Transition back to follower - atomically
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Follower;
+            leadership.current_leader = None;
+            leadership.leader_volatile = None;
+        }
+
+        // All leader state should be cleared
+        assert_eq!(node.state(), RaftState::Follower);
+        assert!(!node.is_leader());
+        {
+            let leadership = node.leadership.read();
+            assert!(leadership.leader_volatile.is_none());
+        }
+    }
+
+    #[test]
+    fn test_leadership_state_transitions() {
+        // Test the full cycle of leadership state transitions
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Start as follower
+        assert_eq!(node.state(), RaftState::Follower);
+
+        // Become candidate - atomically
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Candidate;
+        }
+        assert_eq!(node.state(), RaftState::Candidate);
+        assert!(!node.is_leader());
+
+        // Become leader
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 1;
+        }
+        node.become_leader();
+        assert_eq!(node.state(), RaftState::Leader);
+        assert!(node.is_leader());
+        assert_eq!(node.current_leader(), Some("node1".to_string()));
+
+        // Back to follower (e.g., higher term discovered) - atomically
+        {
+            let mut leadership = node.leadership.write();
+            leadership.role = RaftState::Follower;
+            leadership.current_leader = None;
+            leadership.leader_volatile = None;
+        }
+        {
+            let mut persistent = node.persistent.write();
+            persistent.current_term = 2;
+        }
+        assert_eq!(node.state(), RaftState::Follower);
+        assert!(!node.is_leader());
+        assert_eq!(node.current_term(), 2);
     }
 }

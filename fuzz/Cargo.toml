@@ -522,3 +522,19 @@ path = "fuzz_targets/raft_heartbeat.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 26: Security validation targets
+
+[[bin]]
+name = "message_validate"
+path = "fuzz_targets/message_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta_checksum"
+path = "fuzz_targets/delta_checksum.rs"
+test = false
+doc = false
+bench = false

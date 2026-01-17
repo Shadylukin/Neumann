@@ -280,8 +280,9 @@ impl GrantTTLTracker {
             return Ok(tracker);
         };
 
-        let grants: Vec<PersistedGrant> = serde_json::from_slice(data)
-            .map_err(|e| VaultError::CryptoError(format!("Failed to deserialize TTL grants: {e}")))?;
+        let grants: Vec<PersistedGrant> = serde_json::from_slice(data).map_err(|e| {
+            VaultError::CryptoError(format!("Failed to deserialize TTL grants: {e}"))
+        })?;
 
         {
             let mut heap = tracker.heap.lock().unwrap();

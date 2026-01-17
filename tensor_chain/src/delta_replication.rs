@@ -45,6 +45,9 @@ pub struct DeltaUpdate {
     pub version: u64,
     /// Original embedding dimension.
     pub dimension: usize,
+    /// BLAKE2b-256 checksum for integrity verification.
+    #[serde(default)]
+    pub checksum: Option<[u8; 32]>,
 }
 
 impl DeltaUpdate {
@@ -65,6 +68,7 @@ impl DeltaUpdate {
             delta_values: sparse.values().to_vec(),
             version,
             dimension: embedding.len(),
+            checksum: None,
         })
     }
 
@@ -78,7 +82,43 @@ impl DeltaUpdate {
             delta_values: embedding.to_vec(),
             version,
             dimension: embedding.len(),
+            checksum: None,
         }
+    }
+
+    /// Compute BLAKE2b-256 checksum of update contents.
+    pub fn compute_checksum(&self) -> [u8; 32] {
+        use blake2::digest::consts::U32;
+        use blake2::{Blake2b, Digest};
+
+        let mut hasher = Blake2b::<U32>::new();
+        hasher.update(self.key.as_bytes());
+        hasher.update(self.archetype_id.to_le_bytes());
+        hasher.update(self.version.to_le_bytes());
+        hasher.update(self.dimension.to_le_bytes());
+
+        for idx in &self.delta_indices {
+            hasher.update(idx.to_le_bytes());
+        }
+        for val in &self.delta_values {
+            hasher.update(val.to_le_bytes());
+        }
+
+        hasher.finalize().into()
+    }
+
+    /// Verify integrity checksum. Returns true if checksum is None (legacy).
+    pub fn verify_checksum(&self) -> bool {
+        match self.checksum {
+            Some(stored) => stored == self.compute_checksum(),
+            None => true, // Legacy updates without checksum are accepted
+        }
+    }
+
+    /// Add checksum to this update.
+    pub fn with_checksum(mut self) -> Self {
+        self.checksum = Some(self.compute_checksum());
+        self
     }
 
     pub fn is_full_update(&self) -> bool {
@@ -143,6 +183,9 @@ pub struct DeltaBatch {
     pub sequence: u64,
     /// Whether this completes a sync operation.
     pub is_final: bool,
+    /// BLAKE2b-256 checksum of batch contents (source + sequence + update checksums).
+    #[serde(default)]
+    pub checksum: Option<[u8; 32]>,
 }
 
 impl DeltaBatch {
@@ -152,6 +195,7 @@ impl DeltaBatch {
             source,
             sequence,
             is_final: false,
+            checksum: None,
         }
     }
 
@@ -161,6 +205,62 @@ impl DeltaBatch {
 
     pub fn finalize(mut self) -> Self {
         self.is_final = true;
+        self
+    }
+
+    /// Compute BLAKE2b-256 checksum of batch contents.
+    pub fn compute_checksum(&self) -> [u8; 32] {
+        use blake2::digest::consts::U32;
+        use blake2::{Blake2b, Digest};
+
+        let mut hasher = Blake2b::<U32>::new();
+        hasher.update(self.source.as_bytes());
+        hasher.update(self.sequence.to_le_bytes());
+
+        // Include each update's checksum (compute on the fly if missing)
+        for update in &self.updates {
+            let update_checksum = update.checksum.unwrap_or_else(|| update.compute_checksum());
+            hasher.update(update_checksum);
+        }
+
+        hasher.finalize().into()
+    }
+
+    /// Verify batch integrity. All updates must have valid checksums.
+    pub fn verify(&self) -> Result<()> {
+        // Verify each update
+        for (index, update) in self.updates.iter().enumerate() {
+            if !update.verify_checksum() {
+                return Err(ChainError::UpdateIntegrityFailed {
+                    key: update.key.clone(),
+                    index,
+                });
+            }
+        }
+
+        // Verify batch checksum if present
+        if let Some(stored) = self.checksum {
+            if stored != self.compute_checksum() {
+                return Err(ChainError::BatchIntegrityFailed {
+                    sequence: self.sequence,
+                    source_node: self.source.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add checksums to batch and all updates.
+    pub fn with_checksum(mut self) -> Self {
+        // Add checksums to all updates
+        self.updates = self
+            .updates
+            .into_iter()
+            .map(|u| u.with_checksum())
+            .collect();
+        // Add batch checksum
+        self.checksum = Some(self.compute_checksum());
         self
     }
 
@@ -592,22 +692,28 @@ impl DeltaReplicationManager {
             .map(|u| u.dimension * std::mem::size_of::<f32>())
             .sum();
 
-        self.stats.record_batch(&batch, full_bytes);
+        // Add checksums to batch for integrity verification
+        let batch_with_checksums = batch.with_checksum();
 
-        let batch_bytes = bincode::serialize(&batch)
+        self.stats.record_batch(&batch_with_checksums, full_bytes);
+
+        let batch_bytes = bincode::serialize(&batch_with_checksums)
             .map_err(|e| ChainError::NetworkError(format!("Failed to serialize batch: {e}")))?;
 
+        // Use batch checksum in snapshot_hash field
+        let snapshot_hash = batch_with_checksums.checksum.unwrap_or([0u8; 32]);
+
         let msg = Message::SnapshotResponse(crate::network::SnapshotResponse {
-            snapshot_height: batch.sequence,
-            snapshot_hash: [0u8; 32],
+            snapshot_height: batch_with_checksums.sequence,
+            snapshot_hash,
             data: batch_bytes,
-            offset: batch.sequence * self.config.max_batch_size as u64,
-            total_size: if batch.is_final {
-                (batch.sequence + 1) * self.config.max_batch_size as u64
+            offset: batch_with_checksums.sequence * self.config.max_batch_size as u64,
+            total_size: if batch_with_checksums.is_final {
+                (batch_with_checksums.sequence + 1) * self.config.max_batch_size as u64
             } else {
                 u64::MAX
             },
-            is_last: batch.is_final,
+            is_last: batch_with_checksums.is_final,
         });
 
         transport.send(peer, msg).await
@@ -682,10 +788,15 @@ impl DeltaReplicationManager {
     }
 
     /// Apply a received batch to local state.
+    ///
+    /// Verifies batch integrity checksums before applying updates.
     pub fn apply_batch<F>(&self, batch: &DeltaBatch, mut apply_fn: F) -> Result<usize>
     where
         F: FnMut(&str, Vec<f32>) -> Result<()>,
     {
+        // Verify batch integrity before applying
+        batch.verify()?;
+
         let registry = self.registry.read();
         let mut applied = 0;
 
@@ -1120,6 +1231,7 @@ mod tests {
             delta_values: vec![0.1],
             version: 1,
             dimension: 4,
+            checksum: None,
         };
 
         let mut batch = DeltaBatch::new("node2".to_string(), 0);
@@ -1138,6 +1250,7 @@ mod tests {
             delta_values: vec![],
             version: 1,
             dimension: 0, // Zero dimension
+            checksum: None,
         };
         // Should return 1.0 when full_bytes == 0
         assert!(approx_eq(update.compression_ratio(), 1.0, 0.01));
@@ -1189,6 +1302,7 @@ mod tests {
             delta_values: vec![1.0, 2.0, 3.0],
             version: 1,
             dimension: 4,
+            checksum: None,
         };
 
         // Should handle gracefully without panic
@@ -1227,6 +1341,7 @@ mod tests {
             delta_values: vec![0.1, -0.2],
             version: 1,
             dimension: 4,
+            checksum: None,
         };
 
         let decoded = update.decode(&registry);
@@ -1362,6 +1477,7 @@ mod tests {
             delta_values: vec![0.1, 0.2],
             version: 1,
             dimension: 2,
+            checksum: None,
         };
 
         // Should decode without panic, ignoring out-of-bounds
@@ -1408,5 +1524,166 @@ mod tests {
         assert_eq!(batch.sequence, decoded.sequence);
         assert_eq!(batch.is_final, decoded.is_final);
         assert_eq!(batch.len(), decoded.len());
+    }
+
+    // Checksum tests
+
+    #[test]
+    fn test_delta_update_checksum_compute() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42);
+        let checksum = update.compute_checksum();
+
+        // Checksum should be deterministic
+        assert_eq!(checksum, update.compute_checksum());
+
+        // Different data should produce different checksum
+        let update2 = DeltaUpdate::full("key2".to_string(), &[1.0, 2.0, 3.0], 42);
+        assert_ne!(checksum, update2.compute_checksum());
+    }
+
+    #[test]
+    fn test_delta_update_checksum_verify_valid() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42).with_checksum();
+
+        assert!(update.checksum.is_some());
+        assert!(update.verify_checksum());
+    }
+
+    #[test]
+    fn test_delta_update_checksum_verify_invalid() {
+        let mut update =
+            DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42).with_checksum();
+
+        // Corrupt the checksum
+        update.checksum = Some([0u8; 32]);
+        assert!(!update.verify_checksum());
+    }
+
+    #[test]
+    fn test_delta_update_checksum_verify_legacy() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42);
+
+        // Legacy updates without checksum should pass
+        assert!(update.checksum.is_none());
+        assert!(update.verify_checksum());
+    }
+
+    #[test]
+    fn test_delta_batch_checksum_compute() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch.add(DeltaUpdate::full("key2".to_string(), &[2.0], 2));
+
+        let checksum = batch.compute_checksum();
+
+        // Checksum should be deterministic
+        assert_eq!(checksum, batch.compute_checksum());
+
+        // Different sequence should produce different checksum
+        let mut batch2 = DeltaBatch::new("node1".to_string(), 99);
+        batch2.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch2.add(DeltaUpdate::full("key2".to_string(), &[2.0], 2));
+        assert_ne!(checksum, batch2.compute_checksum());
+    }
+
+    #[test]
+    fn test_delta_batch_verify_valid() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch = batch.with_checksum();
+
+        assert!(batch.checksum.is_some());
+        assert!(batch.verify().is_ok());
+    }
+
+    #[test]
+    fn test_delta_batch_verify_invalid_update() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        let mut update = DeltaUpdate::full("key1".to_string(), &[1.0], 1).with_checksum();
+        // Corrupt the update checksum
+        update.checksum = Some([0u8; 32]);
+        batch.add(update);
+
+        let result = batch.verify();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainError::UpdateIntegrityFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_delta_batch_verify_invalid_batch_checksum() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch = batch.with_checksum();
+
+        // Corrupt the batch checksum
+        batch.checksum = Some([0u8; 32]);
+
+        let result = batch.verify();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainError::BatchIntegrityFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_delta_batch_with_checksum_adds_to_all_updates() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        batch.add(DeltaUpdate::full("key2".to_string(), &[2.0], 2));
+
+        // Updates should not have checksums initially
+        assert!(batch.updates.iter().all(|u| u.checksum.is_none()));
+
+        let batch = batch.with_checksum();
+
+        // All updates should now have checksums
+        assert!(batch.updates.iter().all(|u| u.checksum.is_some()));
+        assert!(batch.checksum.is_some());
+    }
+
+    #[test]
+    fn test_apply_batch_rejects_invalid_checksum() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        let mut batch = DeltaBatch::new("node2".to_string(), 0);
+        let mut update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1).with_checksum();
+        // Corrupt the update checksum
+        update.checksum = Some([0u8; 32]);
+        batch.add(update);
+
+        let result = manager.apply_batch(&batch, |_, _| Ok(()));
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainError::UpdateIntegrityFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_checksum_serialization_roundtrip() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1).with_checksum();
+        let bytes = bincode::serialize(&update).unwrap();
+        let decoded: DeltaUpdate = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(update.checksum, decoded.checksum);
+        assert!(decoded.verify_checksum());
+    }
+
+    #[test]
+    fn test_batch_checksum_serialization_roundtrip() {
+        let mut batch = DeltaBatch::new("node1".to_string(), 42);
+        batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        let batch = batch.with_checksum();
+
+        let bytes = bincode::serialize(&batch).unwrap();
+        let decoded: DeltaBatch = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(batch.checksum, decoded.checksum);
+        assert!(decoded.verify().is_ok());
     }
 }

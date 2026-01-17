@@ -18,10 +18,7 @@ fuzz_target!(|input: CipherInput| {
     // Test encrypt/decrypt roundtrip
     if let Ok((ciphertext, nonce)) = cipher.encrypt(&input.plaintext) {
         if let Ok(decrypted) = cipher.decrypt(&ciphertext, &nonce) {
-            assert_eq!(
-                input.plaintext, decrypted,
-                "Cipher roundtrip failed"
-            );
+            assert_eq!(input.plaintext, decrypted, "Cipher roundtrip failed");
         }
     }
 });

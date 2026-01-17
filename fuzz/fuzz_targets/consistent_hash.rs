@@ -73,7 +73,10 @@ fuzz_target!(|input: ConsistentHashInput| {
     for key in input.keys.iter().take(10) {
         let result1 = partitioner.partition(key);
         let result2 = partitioner.partition(key);
-        assert_eq!(result1.primary, result2.primary, "Partitioning should be deterministic");
+        assert_eq!(
+            result1.primary, result2.primary,
+            "Partitioning should be deterministic"
+        );
         assert_eq!(result1.partition, result2.partition);
     }
 
@@ -83,6 +86,9 @@ fuzz_target!(|input: ConsistentHashInput| {
         let removed = partitioner.remove_node(&to_remove);
         assert_eq!(removed.len(), virtual_nodes);
         assert_eq!(partitioner.nodes().len(), nodes.len() - 1);
-        assert_eq!(partitioner.total_partitions(), (nodes.len() - 1) * virtual_nodes);
+        assert_eq!(
+            partitioner.total_partitions(),
+            (nodes.len() - 1) * virtual_nodes
+        );
     }
 });

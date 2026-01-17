@@ -175,6 +175,9 @@ fuzz_target!(|input: ConsensusMergeInput| {
 
         let overlap12 = d1.overlaps_with(d2);
         let overlap21 = d2.overlaps_with(d1);
-        assert_eq!(overlap12, overlap21, "Overlap detection should be symmetric");
+        assert_eq!(
+            overlap12, overlap21,
+            "Overlap detection should be symmetric"
+        );
     }
 });

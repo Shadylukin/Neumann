@@ -31,7 +31,12 @@ fuzz_target!(|data: &[u8]| {
         let incarnation = data.get(offset + 2).copied().unwrap_or(0) as u64;
         let node_id = format!("node{}", i);
 
-        states.push(GossipNodeState::new(node_id, health, timestamp, incarnation));
+        states.push(GossipNodeState::new(
+            node_id,
+            health,
+            timestamp,
+            incarnation,
+        ));
         offset += 3;
     }
 

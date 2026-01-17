@@ -60,7 +60,10 @@ fuzz_target!(|input: FuzzInput| {
     };
 
     // Verify fields preserved
-    assert_eq!(metadata.last_included_index, deserialized.last_included_index);
+    assert_eq!(
+        metadata.last_included_index,
+        deserialized.last_included_index
+    );
     assert_eq!(metadata.last_included_term, deserialized.last_included_term);
     assert_eq!(metadata.snapshot_hash, deserialized.snapshot_hash);
     assert_eq!(metadata.size, deserialized.size);

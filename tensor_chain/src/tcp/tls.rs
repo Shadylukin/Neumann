@@ -1,6 +1,7 @@
 //! TLS support for TCP transport.
 //!
-//! Provides wrapper functions to upgrade TCP streams to TLS.
+//! Provides wrapper functions to upgrade TCP streams to TLS,
+//! including mutual TLS (mTLS) with certificate-based NodeId verification.
 
 #[cfg(feature = "tls")]
 use std::io::BufReader;
@@ -14,12 +15,14 @@ use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "tls")]
+use tokio_rustls::rustls::server::ParsedCertificate;
+#[cfg(feature = "tls")]
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 #[cfg(feature = "tls")]
-use super::config::TlsConfig;
+use super::config::{NodeIdVerification, TlsConfig};
 #[cfg(feature = "tls")]
 use super::error::{TcpError, TcpResult};
 
@@ -30,6 +33,40 @@ pub type ServerTlsStream = tokio_rustls::server::TlsStream<TcpStream>;
 /// TLS stream type for client connections.
 #[cfg(feature = "tls")]
 pub type ClientTlsStream = tokio_rustls::client::TlsStream<TcpStream>;
+
+/// Identity extracted from a peer's TLS certificate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPeerIdentity {
+    /// NodeId extracted from certificate (CN or SAN).
+    pub node_id: String,
+    /// How the NodeId was extracted.
+    pub source: NodeIdSource,
+}
+
+/// Source of NodeId in the certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeIdSource {
+    /// Extracted from Common Name (CN).
+    CommonName,
+    /// Extracted from Subject Alternative Name (SAN).
+    SubjectAltName,
+}
+
+impl VerifiedPeerIdentity {
+    pub fn from_common_name(node_id: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            source: NodeIdSource::CommonName,
+        }
+    }
+
+    pub fn from_san(node_id: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            source: NodeIdSource::SubjectAltName,
+        }
+    }
+}
 
 #[cfg(feature = "tls")]
 fn load_certs(path: &Path) -> TcpResult<Vec<CertificateDer<'static>>> {
@@ -91,22 +128,196 @@ fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
     )))
 }
 
+/// Extract NodeId from a certificate based on the verification mode.
+///
+/// For CommonName mode: extracts from the CN field of the subject.
+/// For SubjectAltName mode: extracts from the first DNS SAN entry.
+#[cfg(feature = "tls")]
+pub fn extract_node_id_from_cert(
+    cert: &CertificateDer<'_>,
+    mode: &NodeIdVerification,
+) -> TcpResult<Option<VerifiedPeerIdentity>> {
+    match mode {
+        NodeIdVerification::None => Ok(None),
+        NodeIdVerification::CommonName => extract_from_common_name(cert),
+        NodeIdVerification::SubjectAltName => extract_from_san(cert),
+    }
+}
+
+#[cfg(feature = "tls")]
+fn extract_from_common_name(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
+    // Parse the certificate using rustls
+    let parsed = ParsedCertificate::try_from(cert)
+        .map_err(|e| TcpError::TlsError(format!("failed to parse certificate: {:?}", e)))?;
+
+    // Extract subject from the parsed certificate
+    // Note: rustls ParsedCertificate doesn't expose CN directly, so we use the DER
+    // For now, use a simple heuristic to extract CN from the certificate subject
+    let cert_der = cert.as_ref();
+
+    // Simple DER parsing for CN extraction (OID 2.5.4.3)
+    // This is a simplified approach - production would use x509-parser
+    if let Some(cn) = extract_cn_from_der(cert_der) {
+        Ok(Some(VerifiedPeerIdentity::from_common_name(cn)))
+    } else {
+        // Suppressing unused variable warning
+        let _ = parsed;
+        Err(TcpError::TlsError(
+            "no Common Name found in certificate".to_string(),
+        ))
+    }
+}
+
+#[cfg(feature = "tls")]
+fn extract_from_san(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
+    let cert_der = cert.as_ref();
+
+    // Simple DER parsing for SAN extraction (OID 2.5.29.17)
+    if let Some(san) = extract_san_from_der(cert_der) {
+        Ok(Some(VerifiedPeerIdentity::from_san(san)))
+    } else {
+        Err(TcpError::TlsError(
+            "no Subject Alternative Name found in certificate".to_string(),
+        ))
+    }
+}
+
+/// Simple CN extraction from DER-encoded certificate.
+/// OID for commonName: 2.5.4.3 -> 55 04 03
+#[cfg(feature = "tls")]
+fn extract_cn_from_der(der: &[u8]) -> Option<String> {
+    // Look for OID 2.5.4.3 (commonName) pattern: 55 04 03
+    let cn_oid = [0x55, 0x04, 0x03];
+
+    for i in 0..der.len().saturating_sub(cn_oid.len()) {
+        if der[i..].starts_with(&cn_oid) {
+            // Skip OID and length bytes to get to the value
+            let offset = i + cn_oid.len();
+            if offset + 2 < der.len() {
+                let value_type = der[offset];
+                let value_len = der[offset + 1] as usize;
+
+                // Check for PrintableString (0x13) or UTF8String (0x0C)
+                if (value_type == 0x13 || value_type == 0x0C) && offset + 2 + value_len <= der.len()
+                {
+                    let value_bytes = &der[offset + 2..offset + 2 + value_len];
+                    if let Ok(s) = std::str::from_utf8(value_bytes) {
+                        return Some(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Simple SAN extraction from DER-encoded certificate.
+/// Looks for DNS entries in the SAN extension.
+#[cfg(feature = "tls")]
+fn extract_san_from_der(der: &[u8]) -> Option<String> {
+    // Look for SAN extension OID 2.5.29.17 -> 55 1D 11
+    let san_oid = [0x55, 0x1D, 0x11];
+
+    for i in 0..der.len().saturating_sub(san_oid.len()) {
+        if der[i..].starts_with(&san_oid) {
+            // Found SAN extension, look for dNSName entries (context tag 2)
+            for j in i + san_oid.len()..der.len().saturating_sub(2) {
+                // dNSName is context tag [2] = 0x82
+                if der[j] == 0x82 {
+                    let len = der[j + 1] as usize;
+                    if j + 2 + len <= der.len() {
+                        let value_bytes = &der[j + 2..j + 2 + len];
+                        if let Ok(s) = std::str::from_utf8(value_bytes) {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Wrap a TCP stream with TLS (server-side).
+///
+/// When `require_client_auth` is true, the server will request a client certificate.
+/// Use `wrap_server_with_identity` to also extract the client's NodeId from the certificate.
 #[cfg(feature = "tls")]
 pub async fn wrap_server(stream: TcpStream, config: &TlsConfig) -> TcpResult<ServerTlsStream> {
+    let (stream, _identity) = wrap_server_with_identity(stream, config).await?;
+    Ok(stream)
+}
+
+/// Wrap a TCP stream with TLS and extract client identity if available.
+///
+/// Returns the TLS stream and optionally the verified peer identity
+/// extracted from the client certificate (when using mTLS).
+#[cfg(feature = "tls")]
+pub async fn wrap_server_with_identity(
+    stream: TcpStream,
+    config: &TlsConfig,
+) -> TcpResult<(ServerTlsStream, Option<VerifiedPeerIdentity>)> {
     let certs = load_certs(&config.cert_path)?;
     let key = load_private_key(&config.key_path)?;
 
-    let server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| TcpError::TlsError(format!("TLS config error: {}", e)))?;
+    let server_config = if config.require_client_auth {
+        // mTLS: require client certificate
+        let mut root_store = RootCertStore::empty();
+
+        // Load CA certs for client verification
+        if let Some(ca_path) = &config.ca_cert_path {
+            let ca_certs = load_certs(ca_path)?;
+            for cert in ca_certs {
+                root_store
+                    .add(cert)
+                    .map_err(|e| TcpError::TlsError(format!("failed to add CA cert: {}", e)))?;
+            }
+        }
+
+        let client_verifier =
+            tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                .build()
+                .map_err(|e| {
+                    TcpError::TlsError(format!("failed to build client verifier: {}", e))
+                })?;
+
+        ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(certs, key)
+            .map_err(|e| TcpError::TlsError(format!("TLS config error: {}", e)))?
+    } else {
+        // No client auth
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| TcpError::TlsError(format!("TLS config error: {}", e)))?
+    };
 
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    acceptor
+    let tls_stream = acceptor
         .accept(stream)
         .await
-        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {}", e)))
+        .map_err(|e| TcpError::TlsError(format!("TLS handshake failed: {}", e)))?;
+
+    // Extract peer identity from client certificate if mTLS is enabled
+    let peer_identity = if config.require_client_auth {
+        // Get peer certificates from the connection
+        let (_, server_conn) = tls_stream.get_ref();
+        if let Some(certs) = server_conn.peer_certificates() {
+            if let Some(cert) = certs.first() {
+                extract_node_id_from_cert(cert, &config.node_id_verification)?
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok((tls_stream, peer_identity))
 }
 
 #[cfg(feature = "tls")]
@@ -683,5 +894,76 @@ mod tests {
         let result = client_task.await.unwrap();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("failed to open"));
+    }
+
+    // VerifiedPeerIdentity Tests
+    #[test]
+    fn test_verified_peer_identity_from_common_name() {
+        let identity = VerifiedPeerIdentity::from_common_name("node1");
+        assert_eq!(identity.node_id, "node1");
+        assert_eq!(identity.source, NodeIdSource::CommonName);
+    }
+
+    #[test]
+    fn test_verified_peer_identity_from_san() {
+        let identity = VerifiedPeerIdentity::from_san("node2.cluster.local");
+        assert_eq!(identity.node_id, "node2.cluster.local");
+        assert_eq!(identity.source, NodeIdSource::SubjectAltName);
+    }
+
+    #[test]
+    fn test_verified_peer_identity_debug() {
+        let identity = VerifiedPeerIdentity::from_common_name("test-node");
+        let debug_str = format!("{:?}", identity);
+        assert!(debug_str.contains("test-node"));
+        assert!(debug_str.contains("CommonName"));
+    }
+
+    #[test]
+    fn test_extract_node_id_none_mode() {
+        let certs = generate_test_certs();
+        let loaded = load_certs(&certs.cert_path).unwrap();
+        let cert = loaded.first().unwrap();
+
+        let result = extract_node_id_from_cert(cert, &NodeIdVerification::None);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_extract_node_id_common_name() {
+        let certs = generate_test_certs();
+        let loaded = load_certs(&certs.cert_path).unwrap();
+        let cert = loaded.first().unwrap();
+
+        let result = extract_node_id_from_cert(cert, &NodeIdVerification::CommonName);
+        // rcgen sets CN to "rcgen self signed cert" by default
+        assert!(result.is_ok());
+        let identity = result.unwrap().expect("should extract CN");
+        assert!(!identity.node_id.is_empty(), "CN should not be empty");
+        assert_eq!(identity.source, NodeIdSource::CommonName);
+    }
+
+    #[test]
+    fn test_extract_node_id_san() {
+        let certs = generate_test_certs();
+        let loaded = load_certs(&certs.cert_path).unwrap();
+        let cert = loaded.first().unwrap();
+
+        let result = extract_node_id_from_cert(cert, &NodeIdVerification::SubjectAltName);
+        // The test cert has SAN=localhost
+        assert!(result.is_ok());
+        let identity = result.unwrap().expect("should extract SAN");
+        assert_eq!(identity.node_id, "localhost");
+        assert_eq!(identity.source, NodeIdSource::SubjectAltName);
+    }
+
+    #[test]
+    fn test_node_id_verification_builder() {
+        let certs = generate_test_certs();
+        let config = TlsConfig::new(&certs.cert_path, &certs.key_path)
+            .with_node_id_verification(NodeIdVerification::CommonName);
+
+        assert_eq!(config.node_id_verification, NodeIdVerification::CommonName);
     }
 }

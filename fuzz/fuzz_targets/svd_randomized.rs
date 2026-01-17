@@ -38,7 +38,12 @@ fuzz_target!(|input: SvdInput| {
 
     if let Ok(svd) = svd_truncated(&matrix, rank, 1e-4) {
         // Verify rank constraint
-        assert!(svd.rank <= rank, "SVD rank {} exceeds requested {}", svd.rank, rank);
+        assert!(
+            svd.rank <= rank,
+            "SVD rank {} exceeds requested {}",
+            svd.rank,
+            rank
+        );
 
         // Verify output shapes
         assert_eq!(svd.u.rows, rows, "U rows mismatch");
@@ -49,12 +54,7 @@ fuzz_target!(|input: SvdInput| {
 
         // Verify singular values are non-negative
         for (i, &s) in svd.s.iter().enumerate() {
-            assert!(
-                s >= -1e-6,
-                "Singular value {} is negative: {}",
-                i,
-                s
-            );
+            assert!(s >= -1e-6, "Singular value {} is negative: {}", i, s);
         }
 
         // Verify singular values are in descending order

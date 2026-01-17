@@ -28,31 +28,31 @@ fuzz_target!(|input: EntityIndexInput| {
                 if !key.is_empty() && key.len() < 256 {
                     let _ = index.get_or_create(&key);
                 }
-            }
+            },
             EntityIndexOp::Get(key) => {
                 if !key.is_empty() && key.len() < 256 {
                     let _ = index.get(&key);
                 }
-            }
+            },
             EntityIndexOp::Contains(key) => {
                 if !key.is_empty() && key.len() < 256 {
                     let _ = index.contains(&key);
                 }
-            }
+            },
             EntityIndexOp::Remove(key) => {
                 if !key.is_empty() && key.len() < 256 {
                     let _ = index.remove(&key);
                 }
-            }
+            },
             EntityIndexOp::KeyFor(id) => {
                 let entity_id = tensor_store::EntityId(u64::from(id));
                 let _ = index.key_for(entity_id);
-            }
+            },
             EntityIndexOp::ScanPrefix(prefix) => {
                 if prefix.len() < 64 {
                     let _ = index.scan_prefix(&prefix);
                 }
-            }
+            },
         }
     }
 

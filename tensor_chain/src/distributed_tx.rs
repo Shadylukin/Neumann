@@ -6,6 +6,19 @@
 //!
 //! Tensor-native optimization: Orthogonal deltas can commit in parallel
 //! without coordination using vector similarity.
+//!
+//! ## Lock Ordering (to prevent deadlocks)
+//!
+//! When acquiring multiple locks, always follow this order:
+//!
+//! 1. `pending` - Transaction state map
+//! 2. `lock_manager.locks` - Key-level locks
+//! 3. `lock_manager.tx_locks` - Per-transaction lock sets
+//! 4. `pending_aborts` - Abort queue
+//!
+//! **Critical**: Never acquire `pending_aborts` while holding `pending`.
+//! The `record_vote` method releases `pending` before acquiring `pending_aborts`
+//! to maintain this invariant.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -470,7 +483,10 @@ impl LockManager {
             );
         }
 
-        tx_locks.entry(tx_id).or_default().extend(keys.iter().cloned());
+        tx_locks
+            .entry(tx_id)
+            .or_default()
+            .extend(keys.iter().cloned());
         drop(tx_locks);
         drop(locks);
         wait_graph.remove_transaction(tx_id);
@@ -937,100 +953,137 @@ impl DistributedTxCoordinator {
         PrepareVote::Yes { lock_handle, delta }
     }
 
+    /// Records a vote from a participant shard.
+    ///
+    /// This method uses a phased approach to minimize lock duration:
+    /// - Phase 1: Quick lookup and vote recording (brief pending lock)
+    /// - Phase 2: Expensive conflict detection (NO LOCKS HELD)
+    /// - Phase 3: Brief re-acquisition for state update
+    ///
+    /// This prevents deadlocks with release_orphaned_locks by never holding
+    /// pending lock while acquiring pending_aborts lock.
     pub fn record_vote(&self, tx_id: u64, shard: ShardId, vote: PrepareVote) -> Option<TxPhase> {
-        let mut pending = self.pending.write();
-        let tx = pending.get_mut(&tx_id)?;
+        // Phase 1: Quick lookup and vote recording (brief lock)
+        let (needs_conflict_check, tx_snapshot, abort_info) = {
+            let mut pending = self.pending.write();
+            let tx = pending.get_mut(&tx_id)?;
 
-        tracing::debug!(
-            tx_id = tx_id,
-            shard = shard,
-            vote = ?vote,
-            "Recording vote"
-        );
+            tracing::debug!(
+                tx_id = tx_id,
+                shard = shard,
+                vote = ?vote,
+                "Recording vote"
+            );
 
-        // Extract delta from YES vote
-        if let PrepareVote::Yes { delta, .. } = &vote {
-            tx.add_delta(shard, delta.clone());
+            // Extract delta from YES vote
+            if let PrepareVote::Yes { delta, .. } = &vote {
+                tx.add_delta(shard, delta.clone());
+            }
+
+            tx.record_vote(shard, vote);
+
+            if tx.all_voted() {
+                if tx.all_yes() {
+                    // Need conflict check - clone state for phase 2
+                    (true, Some(tx.clone()), None)
+                } else {
+                    // Abort case - set phase and collect info for pending_aborts
+                    tx.phase = TxPhase::Aborting;
+                    let reason = if tx
+                        .votes
+                        .values()
+                        .any(|v| matches!(v, PrepareVote::Conflict { .. }))
+                    {
+                        self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
+                        "conflict detected"
+                    } else {
+                        "participant voted no"
+                    };
+                    let shards = tx.participants.clone();
+                    tracing::warn!(tx_id = tx_id, reason = reason, "Transaction aborting");
+                    (false, None, Some((reason.to_string(), shards)))
+                }
+            } else {
+                // Not all voted yet
+                (false, None, None)
+            }
+        }; // pending lock released
+
+        // Handle abort case - acquire pending_aborts AFTER releasing pending
+        if let Some((reason, shards)) = abort_info {
+            self.pending_aborts.write().push((tx_id, reason, shards));
+            return Some(TxPhase::Aborting);
         }
 
-        tx.record_vote(shard, vote);
+        // Phase 2: Expensive conflict detection (NO LOCKS HELD)
+        if needs_conflict_check {
+            let tx = tx_snapshot.unwrap();
 
-        if tx.all_voted() {
-            if tx.all_yes() {
-                // Check cross-shard conflicts
-                if let Some(merged) = tx.merged_delta() {
-                    // Verify deltas are orthogonal
-                    let deltas: Vec<_> = tx.deltas.values().cloned().collect();
-                    for i in 0..deltas.len() {
-                        for j in (i + 1)..deltas.len() {
-                            let sim = deltas[i].cosine_similarity(&deltas[j]);
-                            if sim.abs() >= self.config.orthogonal_threshold {
-                                // Not orthogonal - need to check keys
-                                let overlap: HashSet<_> = deltas[i]
-                                    .affected_keys
-                                    .intersection(&deltas[j].affected_keys)
-                                    .collect();
+            // Check cross-shard conflicts using cloned data
+            if tx.merged_delta().is_some() {
+                // Verify deltas are orthogonal
+                let deltas: Vec<_> = tx.deltas.values().cloned().collect();
+                for i in 0..deltas.len() {
+                    for j in (i + 1)..deltas.len() {
+                        let sim = deltas[i].cosine_similarity(&deltas[j]);
+                        if sim.abs() >= self.config.orthogonal_threshold {
+                            // Not orthogonal - need to check keys
+                            let overlap: HashSet<_> = deltas[i]
+                                .affected_keys
+                                .intersection(&deltas[j].affected_keys)
+                                .collect();
 
-                                if !overlap.is_empty() {
-                                    tracing::warn!(
-                                        tx_id = tx_id,
-                                        similarity = sim,
-                                        "Cross-shard conflict detected, aborting"
-                                    );
-                                    tx.phase = TxPhase::Aborting;
-                                    self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
-                                    // Queue abort for broadcast
-                                    let shards = tx.participants.clone();
-                                    self.pending_aborts.write().push((
-                                        tx_id,
-                                        "cross-shard conflict".to_string(),
-                                        shards,
-                                    ));
-                                    return Some(TxPhase::Aborting);
+                            if !overlap.is_empty() {
+                                tracing::warn!(
+                                    tx_id = tx_id,
+                                    similarity = sim,
+                                    "Cross-shard conflict detected, aborting"
+                                );
+
+                                // Phase 3a: Re-acquire pending lock to set abort state
+                                {
+                                    let mut pending = self.pending.write();
+                                    if let Some(tx) = pending.get_mut(&tx_id) {
+                                        tx.phase = TxPhase::Aborting;
+                                    }
                                 }
+
+                                self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
+
+                                // Queue abort for broadcast (after releasing pending)
+                                let shards = tx.participants.clone();
+                                self.pending_aborts.write().push((
+                                    tx_id,
+                                    "cross-shard conflict".to_string(),
+                                    shards,
+                                ));
+                                return Some(TxPhase::Aborting);
                             }
                         }
                     }
-
-                    // All orthogonal - can merge and commit
-                    self.stats.orthogonal_merges.fetch_add(1, Ordering::Relaxed);
-                    tracing::debug!(tx_id = tx_id, "Deltas verified orthogonal, ready to commit");
-                    drop(merged);
                 }
 
-                tracing::info!(
-                    tx_id = tx_id,
-                    phase = ?TxPhase::Prepared,
-                    "Transaction prepared"
-                );
-                tx.phase = TxPhase::Prepared;
-                Some(TxPhase::Prepared)
-            } else {
-                tx.phase = TxPhase::Aborting;
-                let reason = if tx
-                    .votes
-                    .values()
-                    .any(|v| matches!(v, PrepareVote::Conflict { .. }))
-                {
-                    self.stats.conflicts.fetch_add(1, Ordering::Relaxed);
-                    "conflict detected"
-                } else {
-                    "participant voted no"
-                };
-
-                tracing::warn!(tx_id = tx_id, reason = reason, "Transaction aborting");
-
-                // Queue abort for broadcast
-                let shards = tx.participants.clone();
-                self.pending_aborts
-                    .write()
-                    .push((tx_id, reason.to_string(), shards));
-
-                Some(TxPhase::Aborting)
+                // All orthogonal - can merge and commit
+                self.stats.orthogonal_merges.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(tx_id = tx_id, "Deltas verified orthogonal, ready to commit");
             }
-        } else {
-            None
+
+            // Phase 3b: Brief re-acquisition for success state update
+            {
+                let mut pending = self.pending.write();
+                if let Some(tx) = pending.get_mut(&tx_id) {
+                    tracing::info!(
+                        tx_id = tx_id,
+                        phase = ?TxPhase::Prepared,
+                        "Transaction prepared"
+                    );
+                    tx.phase = TxPhase::Prepared;
+                    return Some(TxPhase::Prepared);
+                }
+            }
         }
+
+        None
     }
 
     pub fn commit(&self, tx_id: u64) -> Result<()> {
@@ -4471,5 +4524,131 @@ mod tests {
         // tx 2's lock remains
         assert!(lock_manager.is_locked("key2"));
         assert_eq!(lock_manager.lock_holder("key2"), Some(2));
+    }
+
+    #[test]
+    fn test_record_vote_and_release_orphaned_locks_no_deadlock() {
+        // Verify that concurrent record_vote and release_orphaned_locks don't deadlock.
+        // This tests the phased locking approach in record_vote that releases
+        // pending lock before acquiring pending_aborts.
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let coordinator = Arc::new(create_test_coordinator());
+        let iterations = 100;
+        let deadlock_detected = Arc::new(AtomicBool::new(false));
+        let operations_completed = Arc::new(AtomicUsize::new(0));
+
+        // Thread 1: Continuously call record_vote on various transactions
+        let coord1 = Arc::clone(&coordinator);
+        let ops1 = Arc::clone(&operations_completed);
+        let record_vote_thread = thread::spawn(move || {
+            for i in 0..iterations {
+                // Create a transaction first
+                let tx = coord1.begin("node1".to_string(), vec![0, 1]).unwrap();
+                let tx_id = tx.tx_id;
+
+                // Record votes from both shards
+                let vote1 = PrepareVote::Yes {
+                    lock_handle: i as u64,
+                    delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+                };
+                coord1.record_vote(tx_id, 0, vote1);
+
+                let vote2 = PrepareVote::Yes {
+                    lock_handle: i as u64 + 1000,
+                    delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+                };
+                coord1.record_vote(tx_id, 1, vote2);
+
+                ops1.fetch_add(1, Ordering::Relaxed);
+                thread::yield_now();
+            }
+        });
+
+        // Thread 2: Continuously call release_orphaned_locks
+        let coord2 = Arc::clone(&coordinator);
+        let ops2 = Arc::clone(&operations_completed);
+        let release_thread = thread::spawn(move || {
+            for _ in 0..iterations {
+                let partition_time = now_epoch_millis() + 10_000;
+                coord2.release_orphaned_locks(partition_time);
+                ops2.fetch_add(1, Ordering::Relaxed);
+                thread::yield_now();
+            }
+        });
+
+        // Thread 3: Continuously call pending_aborts (which record_vote also uses)
+        let coord3 = Arc::clone(&coordinator);
+        let ops3 = Arc::clone(&operations_completed);
+        let aborts_thread = thread::spawn(move || {
+            for _ in 0..iterations {
+                let _aborts = coord3.take_pending_aborts();
+                ops3.fetch_add(1, Ordering::Relaxed);
+                thread::yield_now();
+            }
+        });
+
+        // Set a watchdog - if threads don't complete in 5 seconds, assume deadlock
+        let deadlock = Arc::clone(&deadlock_detected);
+        let watchdog = thread::spawn(move || {
+            thread::sleep(Duration::from_secs(5));
+            deadlock.store(true, Ordering::Relaxed);
+        });
+
+        // Wait for threads to complete
+        record_vote_thread.join().unwrap();
+        release_thread.join().unwrap();
+        aborts_thread.join().unwrap();
+
+        // If watchdog hasn't triggered, we didn't deadlock
+        assert!(
+            !deadlock_detected.load(Ordering::Relaxed),
+            "Deadlock detected between record_vote and release_orphaned_locks"
+        );
+
+        // Verify operations completed
+        assert!(
+            operations_completed.load(Ordering::Relaxed) >= iterations * 3,
+            "Not all operations completed"
+        );
+
+        // Watchdog will timeout on its own, no need to join
+        drop(watchdog);
+    }
+
+    #[test]
+    fn test_record_vote_phased_abort_handling() {
+        // Verify that abort votes correctly release pending lock before
+        // acquiring pending_aborts lock
+        let coordinator = create_test_coordinator();
+
+        // Create transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record YES from shard 0
+        let vote1 = PrepareVote::Yes {
+            lock_handle: 1,
+            delta: DeltaVector::new(vec![1.0], HashSet::new(), tx_id),
+        };
+        assert!(coordinator.record_vote(tx_id, 0, vote1).is_none());
+
+        // Record NO from shard 1 - this should trigger abort handling
+        let vote2 = PrepareVote::No {
+            reason: "test abort".to_string(),
+        };
+        let result = coordinator.record_vote(tx_id, 1, vote2);
+
+        // Should return Aborting phase
+        assert_eq!(result, Some(TxPhase::Aborting));
+
+        // Abort should be queued in pending_aborts
+        let aborts = coordinator.take_pending_aborts();
+        assert_eq!(aborts.len(), 1);
+        assert_eq!(aborts[0].0, tx_id);
+        assert_eq!(aborts[0].1, "participant voted no");
     }
 }

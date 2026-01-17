@@ -912,11 +912,7 @@ impl TransactionReconciler {
                         );
                         to_abort.push(tx_id);
                     } else if all_yes {
-                        tracing::debug!(
-                            tx_id = tx_id,
-                            decision = "commit",
-                            "Transaction decision"
-                        );
+                        tracing::debug!(tx_id = tx_id, decision = "commit", "Transaction decision");
                         to_commit.push(tx_id);
                     } else {
                         // Incomplete votes - log conflict, abort to be safe
@@ -1248,7 +1244,10 @@ impl PartitionMergeManager {
                 }
                 true
             } else {
-                let reason = msg.reject_reason.clone().unwrap_or_else(|| "rejected".to_string());
+                let reason = msg
+                    .reject_reason
+                    .clone()
+                    .unwrap_or_else(|| "rejected".to_string());
                 tracing::warn!(
                     session_id = msg.session_id,
                     responder = %msg.responder,
@@ -1358,17 +1357,11 @@ impl PartitionMergeManager {
 
     pub fn handle_merge_finalize(&self, msg: MergeFinalize) -> bool {
         if msg.success {
-            tracing::info!(
-                session_id = msg.session_id,
-                "Merge finalized successfully"
-            );
+            tracing::info!(session_id = msg.session_id, "Merge finalized successfully");
             self.complete_session(msg.session_id);
             true
         } else {
-            tracing::warn!(
-                session_id = msg.session_id,
-                "Merge finalize failed"
-            );
+            tracing::warn!(session_id = msg.session_id, "Merge finalize failed");
             self.fail_session(msg.session_id, "merge failed");
             false
         }

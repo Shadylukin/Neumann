@@ -14,9 +14,7 @@ use std::{sync::Arc, time::Duration};
 use tensor_chain::{MemoryTransport, RaftConfig, RaftNode, RaftState};
 use tokio::time::sleep;
 
-fn create_connected_cluster(
-    auto_heartbeat: bool,
-) -> (Arc<RaftNode>, Arc<RaftNode>, Arc<RaftNode>) {
+fn create_connected_cluster(auto_heartbeat: bool) -> (Arc<RaftNode>, Arc<RaftNode>, Arc<RaftNode>) {
     let transport1 = Arc::new(MemoryTransport::new("node1".to_string()));
     let transport2 = Arc::new(MemoryTransport::new("node2".to_string()));
     let transport3 = Arc::new(MemoryTransport::new("node3".to_string()));

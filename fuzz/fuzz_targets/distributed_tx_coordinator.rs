@@ -114,7 +114,7 @@ fuzz_target!(|input: FuzzInput| {
                 let num = (*num_shards as usize).clamp(1, 10);
                 let shards: Vec<usize> = (0..num).collect();
                 let _ = coordinator.begin(format!("node{}", coord_id), shards);
-            }
+            },
             CoordinatorOp::RecordVoteYes {
                 tx_id,
                 shard_id,
@@ -128,8 +128,12 @@ fuzz_target!(|input: FuzzInput| {
                     delta,
                 };
                 let _ = coordinator.record_vote(*tx_id, *shard_id as usize, vote);
-            }
-            CoordinatorOp::RecordVoteNo { tx_id, shard_id, reason } => {
+            },
+            CoordinatorOp::RecordVoteNo {
+                tx_id,
+                shard_id,
+                reason,
+            } => {
                 let reason = if reason.len() > 100 {
                     reason[..100].to_string()
                 } else {
@@ -137,7 +141,7 @@ fuzz_target!(|input: FuzzInput| {
                 };
                 let vote = PrepareVote::No { reason };
                 let _ = coordinator.record_vote(*tx_id, *shard_id as usize, vote);
-            }
+            },
             CoordinatorOp::RecordVoteConflict {
                 tx_id,
                 shard_id,
@@ -154,10 +158,10 @@ fuzz_target!(|input: FuzzInput| {
                     conflicting_tx: *conflicting_tx,
                 };
                 let _ = coordinator.record_vote(*tx_id, *shard_id as usize, vote);
-            }
+            },
             CoordinatorOp::Commit { tx_id } => {
                 let _ = coordinator.commit(*tx_id);
-            }
+            },
             CoordinatorOp::Abort { tx_id, reason } => {
                 let reason = if reason.len() > 100 {
                     &reason[..100]
@@ -165,12 +169,12 @@ fuzz_target!(|input: FuzzInput| {
                     reason
                 };
                 let _ = coordinator.abort(*tx_id, reason);
-            }
+            },
             CoordinatorOp::PendingCount => {
                 let count = coordinator.pending_count();
                 // Should never exceed max_concurrent
                 assert!(count <= input.config.max_concurrent as usize + 10);
-            }
+            },
         }
     }
 

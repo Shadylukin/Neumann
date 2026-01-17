@@ -47,7 +47,7 @@ fuzz_target!(|input: Input| {
                 let tensor = create_tensor(value);
                 let _ = router.put(&key, tensor);
                 expected_keys.insert(key, value);
-            }
+            },
             Op::Get { key } => {
                 let result = router.get(&key);
                 if let Some(&expected_value) = expected_keys.get(&key) {
@@ -67,11 +67,11 @@ fuzz_target!(|input: Input| {
                         );
                     }
                 }
-            }
+            },
             Op::Delete { key } => {
                 let _ = router.delete(&key);
                 expected_keys.remove(&key);
-            }
+            },
             Op::Exists { key } => {
                 let exists = router.exists(&key);
                 let should_exist = expected_keys.contains_key(&key);
@@ -80,7 +80,7 @@ fuzz_target!(|input: Input| {
                     "Exists mismatch for key {}: expected {}, got {}",
                     key, should_exist, exists
                 );
-            }
+            },
             Op::Scan { prefix } => {
                 if prefix.len() > 64 {
                     continue;
@@ -95,7 +95,7 @@ fuzz_target!(|input: Input| {
                         prefix
                     );
                 }
-            }
+            },
         }
     }
 

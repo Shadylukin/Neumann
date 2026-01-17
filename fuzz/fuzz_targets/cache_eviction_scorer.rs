@@ -39,7 +39,12 @@ fuzz_target!(|input: FuzzInput| {
     };
 
     let scorer = EvictionScorer::new(strategy);
-    let score = scorer.score(last_access_secs, input.access_count, cost_per_hit, input.size_bytes);
+    let score = scorer.score(
+        last_access_secs,
+        input.access_count,
+        cost_per_hit,
+        input.size_bytes,
+    );
 
     // Verify the score is finite (no NaN or infinity)
     assert!(

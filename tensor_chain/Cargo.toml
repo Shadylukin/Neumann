@@ -43,6 +43,8 @@ memmap2 = "0.9"
 thiserror = "1"
 hex = "0.4"
 tracing = "0.1"
+crc32fast = "1.4"
+libc = "0.2"
 
 # TCP transport
 bytes = "1.5"

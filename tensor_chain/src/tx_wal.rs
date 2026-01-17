@@ -9,6 +9,14 @@
 //! 1. Phase transitions MUST be persisted before being applied
 //! 2. All writes MUST be fsynced before returning
 //! 3. Recovery MUST complete any prepared transactions
+//!
+//! ## Format Versions
+//!
+//! V1 (legacy): `[4-byte length][bincode payload]`
+//! V2 (current): `[4-byte length][4-byte CRC32][bincode payload]`
+//!
+//! V2 format is automatically detected during replay by checking if the
+//! checksum bytes could be a valid bincode discriminant.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -17,6 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::distributed_tx::TxPhase;
+use crate::raft_wal::{WalConfig, WalError};
 
 /// A WAL entry for 2PC transaction state changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,13 +77,23 @@ pub struct TxWal {
     file: BufWriter<File>,
     path: PathBuf,
     entry_count: u64,
+    current_size: u64,
+    config: WalConfig,
 }
 
 impl TxWal {
-    /// Open or create a WAL file.
+    /// Open or create a WAL file with default configuration.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_with_config(path, WalConfig::default())
+    }
+
+    /// Open or create a WAL file with custom configuration.
+    pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
+
+        // Get current file size
+        let current_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
         let entry_count = Self::count_entries(&path)?;
 
@@ -82,6 +101,8 @@ impl TxWal {
             file: BufWriter::new(file),
             path,
             entry_count,
+            current_size,
+            config,
         })
     }
 
@@ -104,28 +125,183 @@ impl TxWal {
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
-            let mut data = vec![0u8; len];
-            match reader.read_exact(&mut data) {
-                Ok(()) => count += 1,
+
+            // Read potential checksum (4 bytes)
+            let mut checksum_buf = [0u8; 4];
+            match reader.read_exact(&mut checksum_buf) {
+                Ok(()) => {},
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
+            }
+
+            // Detect format: V1 vs V2
+            let is_v2 = !Self::looks_like_bincode_start(&checksum_buf);
+
+            if is_v2 {
+                // V2: skip the remaining payload bytes
+                let mut data = vec![0u8; len];
+                match reader.read_exact(&mut data) {
+                    Ok(()) => count += 1,
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                // V1: we already read 4 bytes of payload, read the rest
+                if len > 4 {
+                    let mut remaining = vec![0u8; len - 4];
+                    match reader.read_exact(&mut remaining) {
+                        Ok(()) => count += 1,
+                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    count += 1;
+                }
             }
         }
 
         Ok(count)
     }
 
+    /// Check if bytes look like a bincode discriminant start.
+    fn looks_like_bincode_start(bytes: &[u8; 4]) -> bool {
+        let value = u32::from_le_bytes(*bytes);
+        // Our enum has variants 0-3, so valid bincode discriminants are small
+        value <= 10
+    }
+
+    /// Get available disk space for the WAL directory.
+    fn available_disk_space(&self) -> io::Result<u64> {
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+
+            let parent = self.path.parent().unwrap_or(Path::new("."));
+            let c_path = CString::new(parent.as_os_str().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid path"))?;
+
+            let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+            let result = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(u64::MAX)
+        }
+    }
+
+    /// Check if there's enough disk space for a write.
+    fn check_space(&self, write_size: u64) -> Result<(), WalError> {
+        if !self.config.pre_check_space {
+            return Ok(());
+        }
+        let available = self.available_disk_space()?;
+        let required = write_size + self.config.min_free_space_bytes;
+        if available < required {
+            return Err(WalError::DiskSpaceLow {
+                available,
+                required,
+            });
+        }
+        Ok(())
+    }
+
+    /// Check if WAL size exceeds the limit.
+    fn check_size_limit(&self, additional_size: u64) -> Result<(), WalError> {
+        let new_size = self.current_size + additional_size;
+        if new_size > self.config.max_size_bytes {
+            return Err(WalError::SizeLimitExceeded {
+                current: new_size,
+                max: self.config.max_size_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Get the path for a rotated WAL file.
+    fn rotated_path(&self, index: usize) -> PathBuf {
+        let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
+        self.path.with_file_name(format!("{}.{}", file_name, index))
+    }
+
+    /// Rotate the WAL file.
+    pub fn rotate(&mut self) -> Result<(), WalError> {
+        self.file.flush()?;
+        self.file.get_ref().sync_all()?;
+
+        // Delete oldest FIRST to make room for the shift
+        let oldest = self.rotated_path(self.config.max_rotated_files);
+        if oldest.exists() {
+            std::fs::remove_file(&oldest)?;
+        }
+
+        // Rename: .N-1 -> .N, .N-2 -> .N-1, ..., .1 -> .2
+        for i in (1..self.config.max_rotated_files).rev() {
+            let from = self.rotated_path(i);
+            let to = self.rotated_path(i + 1);
+            if from.exists() {
+                std::fs::rename(&from, &to)?;
+            }
+        }
+
+        // Rename current WAL to .1
+        if self.path.exists() {
+            std::fs::rename(&self.path, self.rotated_path(1))?;
+        }
+
+        // Create fresh WAL
+        let file = File::create(&self.path)?;
+        self.file = BufWriter::new(file);
+        self.current_size = 0;
+        self.entry_count = 0;
+
+        Ok(())
+    }
+
     /// Append an entry to the WAL with fsync.
     pub fn append(&mut self, entry: &TxWalEntry) -> io::Result<()> {
         let bytes = bincode::serialize(entry).map_err(io::Error::other)?;
+        let write_size = 4 + 4 + bytes.len() as u64; // length + checksum + payload
 
+        // Check disk space
+        self.check_space(write_size)?;
+
+        // Check size limit and auto-rotate if needed
+        if let Err(WalError::SizeLimitExceeded { .. }) = self.check_size_limit(write_size) {
+            if self.config.auto_rotate {
+                self.rotate()?;
+            } else {
+                return Err(WalError::SizeLimitExceeded {
+                    current: self.current_size + write_size,
+                    max: self.config.max_size_bytes,
+                }
+                .into());
+            }
+        }
+
+        // Compute checksum
+        let checksum = if self.config.enable_checksums {
+            crc32fast::hash(&bytes)
+        } else {
+            0
+        };
+
+        // Write length-prefixed entry with checksum (V2 format)
         self.file.write_all(&(bytes.len() as u32).to_le_bytes())?;
+        self.file.write_all(&checksum.to_le_bytes())?;
         self.file.write_all(&bytes)?;
         self.file.flush()?;
 
         // CRITICAL: fsync to ensure durability
         self.file.get_ref().sync_all()?;
 
+        self.current_size += write_size;
         self.entry_count += 1;
         Ok(())
     }
@@ -135,14 +311,21 @@ impl TxWal {
         let file = File::create(&self.path)?;
         self.file = BufWriter::new(file);
         self.entry_count = 0;
+        self.current_size = 0;
         Ok(())
     }
 
     /// Replay all entries from the WAL.
     pub fn replay(&self) -> io::Result<Vec<TxWalEntry>> {
+        self.replay_with_validation(self.config.verify_on_replay)
+    }
+
+    /// Replay all entries with optional checksum verification.
+    pub fn replay_with_validation(&self, verify_checksums: bool) -> io::Result<Vec<TxWalEntry>> {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
         let mut entries = Vec::new();
+        let mut entry_index = 0u64;
 
         loop {
             let mut len_buf = [0u8; 4];
@@ -153,16 +336,65 @@ impl TxWal {
             }
 
             let len = u32::from_le_bytes(len_buf) as usize;
-            let mut data = vec![0u8; len];
 
-            match reader.read_exact(&mut data) {
+            // Read potential checksum (4 bytes)
+            let mut checksum_buf = [0u8; 4];
+            match reader.read_exact(&mut checksum_buf) {
                 Ok(()) => {},
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
             }
 
+            // Detect format: V1 vs V2
+            let is_v2 = !Self::looks_like_bincode_start(&checksum_buf);
+
+            let data = if is_v2 {
+                // V2: checksum_buf contains CRC32, read payload separately
+                let mut data = vec![0u8; len];
+                match reader.read_exact(&mut data) {
+                    Ok(()) => {},
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                    Err(e) => return Err(e),
+                }
+
+                // Verify checksum if enabled
+                if verify_checksums {
+                    let stored_checksum = u32::from_le_bytes(checksum_buf);
+                    let computed_checksum = crc32fast::hash(&data);
+                    if stored_checksum != 0 && stored_checksum != computed_checksum {
+                        return Err(WalError::ChecksumMismatch {
+                            index: entry_index,
+                            expected: stored_checksum,
+                            actual: computed_checksum,
+                        }
+                        .into());
+                    }
+                }
+
+                data
+            } else {
+                // V1: checksum_buf is actually the start of payload
+                let mut data = Vec::with_capacity(len);
+                data.extend_from_slice(&checksum_buf);
+
+                if len > 4 {
+                    let mut remaining = vec![0u8; len - 4];
+                    match reader.read_exact(&mut remaining) {
+                        Ok(()) => {},
+                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => return Err(e),
+                    }
+                    data.extend_from_slice(&remaining);
+                }
+
+                data
+            };
+
             match bincode::deserialize::<TxWalEntry>(&data) {
-                Ok(entry) => entries.push(entry),
+                Ok(entry) => {
+                    entries.push(entry);
+                    entry_index += 1;
+                },
                 Err(_) => break, // Corrupted entry - stop replay
             }
         }
@@ -178,6 +410,16 @@ impl TxWal {
     /// Get the path to the WAL file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Get the current size of the WAL in bytes.
+    pub fn current_size(&self) -> u64 {
+        self.current_size
+    }
+
+    /// Get the current configuration.
+    pub fn config(&self) -> &WalConfig {
+        &self.config
     }
 }
 
@@ -277,6 +519,7 @@ impl TxRecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -501,6 +744,8 @@ mod tests {
             file: BufWriter::new(File::create(dir.path().join("temp.wal")).unwrap()),
             path: nonexistent_path,
             entry_count: 0,
+            current_size: 0,
+            config: WalConfig::default(),
         };
 
         let result = wal.replay();
@@ -532,6 +777,8 @@ mod tests {
             file: BufWriter::new(File::open(&wal_path).unwrap()),
             path: readonly_dir.join("new_file.wal"),
             entry_count: 1,
+            current_size: 0,
+            config: WalConfig::default(),
         };
 
         let result = readonly_wal.truncate();
@@ -780,5 +1027,210 @@ mod tests {
         assert_eq!(state.committing_txs[0], 2);
         assert_eq!(state.aborting_txs.len(), 1);
         assert_eq!(state.aborting_txs[0], 3);
+    }
+
+    // New tests for V2 features
+
+    #[test]
+    fn test_tx_wal_v2_checksum_roundtrip() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("v2_checksum.wal");
+
+        let config = WalConfig {
+            enable_checksums: true,
+            verify_on_replay: true,
+            ..Default::default()
+        };
+
+        {
+            let mut wal = TxWal::open_with_config(&wal_path, config.clone()).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 42,
+                participants: vec![0, 1],
+            })
+            .unwrap();
+            wal.append(&TxWalEntry::PrepareVote {
+                tx_id: 42,
+                shard: 0,
+                vote: PrepareVoteKind::Yes,
+            })
+            .unwrap();
+        }
+
+        let wal = TxWal::open_with_config(&wal_path, config).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_tx_wal_corrupted_checksum_detected() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("corrupted.wal");
+
+        let config = WalConfig {
+            enable_checksums: true,
+            verify_on_replay: true,
+            ..Default::default()
+        };
+
+        {
+            let mut wal = TxWal::open_with_config(&wal_path, config.clone()).unwrap();
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: 1,
+                participants: vec![0],
+            })
+            .unwrap();
+        }
+
+        // Corrupt the checksum
+        {
+            let mut data = fs::read(&wal_path).unwrap();
+            if data.len() > 7 {
+                data[4] ^= 0xFF;
+                data[5] ^= 0xFF;
+                fs::write(&wal_path, data).unwrap();
+            }
+        }
+
+        let wal = TxWal::open_with_config(&wal_path, config).unwrap();
+        let result = wal.replay();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tx_wal_rotation_at_size_limit() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("rotate.wal");
+
+        let config = WalConfig {
+            max_size_bytes: 200,
+            auto_rotate: true,
+            max_rotated_files: 2,
+            ..Default::default()
+        };
+
+        let mut wal = TxWal::open_with_config(&wal_path, config).unwrap();
+
+        for i in 0..20 {
+            wal.append(&TxWalEntry::TxBegin {
+                tx_id: i,
+                participants: vec![0, 1, 2],
+            })
+            .unwrap();
+        }
+
+        let rotated1 = dir.path().join("rotate.wal.1");
+        assert!(rotated1.exists());
+    }
+
+    #[test]
+    fn test_tx_wal_manual_rotation() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("manual_rotate.wal");
+
+        let config = WalConfig {
+            auto_rotate: false,
+            max_rotated_files: 3,
+            ..Default::default()
+        };
+
+        let mut wal = TxWal::open_with_config(&wal_path, config).unwrap();
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+
+        wal.rotate().unwrap();
+
+        assert_eq!(wal.entry_count(), 0);
+        assert_eq!(wal.current_size(), 0);
+
+        let rotated1 = dir.path().join("manual_rotate.wal.1");
+        assert!(rotated1.exists());
+    }
+
+    #[test]
+    fn test_tx_wal_v1_backward_compatible() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("v1_compat.wal");
+
+        // Write V1 format manually
+        {
+            let entry = TxWalEntry::TxBegin {
+                tx_id: 42,
+                participants: vec![0, 1],
+            };
+            let bytes = bincode::serialize(&entry).unwrap();
+
+            let mut file = File::create(&wal_path).unwrap();
+            file.write_all(&(bytes.len() as u32).to_le_bytes()).unwrap();
+            file.write_all(&bytes).unwrap();
+            file.sync_all().unwrap();
+        }
+
+        let wal = TxWal::open(&wal_path).unwrap();
+        let entries = wal.replay().unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            TxWalEntry::TxBegin {
+                tx_id,
+                participants,
+            } => {
+                assert_eq!(*tx_id, 42);
+                assert_eq!(*participants, vec![0, 1]);
+            },
+            _ => panic!("Expected TxBegin"),
+        }
+    }
+
+    #[test]
+    fn test_tx_wal_current_size_tracking() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("size_track.wal");
+
+        let mut wal = TxWal::open(&wal_path).unwrap();
+        assert_eq!(wal.current_size(), 0);
+
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+        let size_after_one = wal.current_size();
+        assert!(size_after_one > 0);
+
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 2,
+            participants: vec![0],
+        })
+        .unwrap();
+        let size_after_two = wal.current_size();
+        assert!(size_after_two > size_after_one);
+    }
+
+    #[test]
+    fn test_tx_wal_size_limit_without_auto_rotate() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("no_auto_rotate.wal");
+
+        let config = WalConfig {
+            max_size_bytes: 50,
+            auto_rotate: false,
+            ..Default::default()
+        };
+
+        let mut wal = TxWal::open_with_config(&wal_path, config).unwrap();
+        wal.append(&TxWalEntry::TxBegin {
+            tx_id: 1,
+            participants: vec![0],
+        })
+        .unwrap();
+
+        let result = wal.append(&TxWalEntry::TxBegin {
+            tx_id: 2,
+            participants: vec![0],
+        });
+        assert!(result.is_err());
     }
 }

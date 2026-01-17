@@ -34,15 +34,15 @@ fuzz_target!(|input: FuzzInput| {
             Op::RecordSuccess { node } => {
                 let node_id = format!("node{}", node % 20);
                 tracker.record_success(&node_id);
-            }
+            },
             Op::RecordFailure { node } => {
                 let node_id = format!("node{}", node % 20);
                 tracker.record_failure(&node_id);
-            }
+            },
             Op::CheckReachable { node } => {
                 let node_id = format!("node{}", node % 20);
                 let _ = tracker.is_reachable(&node_id);
-            }
+            },
             Op::HasQuorum { total_peers } => {
                 let total = (*total_peers as usize).clamp(1, 20);
                 let has_quorum = tracker.has_quorum(total);
@@ -57,12 +57,12 @@ fuzz_target!(|input: FuzzInput| {
                     "Quorum check inconsistent: reachable={}, total={}, quorum_size={}",
                     reachable, total, quorum_size
                 );
-            }
+            },
             Op::ReachableCount => {
                 let count = tracker.reachable_count();
                 // Count should never exceed number of unique nodes (20 max in this test)
                 assert!(count <= 20, "Reachable count exceeded max nodes");
-            }
+            },
         }
     }
 

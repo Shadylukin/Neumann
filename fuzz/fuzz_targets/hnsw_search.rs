@@ -75,7 +75,7 @@ fuzz_target!(|input: Input| {
                 let sparse = SparseVector::from_dense(vec);
                 let _ = index.insert_sparse(sparse);
                 inserted_count += 1;
-            }
+            },
             Op::Search { vector_idx, k } => {
                 if inserted_count == 0 {
                     continue;
@@ -102,7 +102,7 @@ fuzz_target!(|input: Input| {
                         score
                     );
                 }
-            }
+            },
         }
     }
 

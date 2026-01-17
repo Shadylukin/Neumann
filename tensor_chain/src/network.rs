@@ -1066,7 +1066,7 @@ impl Transport for MemoryTransport {
                         "Send failed: peer not found"
                     );
                     return Err(ChainError::NetworkError(format!("peer not found: {}", to)));
-                }
+                },
             }
         };
 
@@ -1242,7 +1242,7 @@ impl MessageHandler for QueryHandler {
                             "Remote query failed"
                         );
                         (Vec::new(), false, Some(e))
-                    }
+                    },
                 };
 
                 let execution_time_us = start.elapsed().as_micros() as u64;
@@ -1320,10 +1320,7 @@ impl MessageHandler for TxHandler {
                 }))
             },
             Message::TxCommit(commit) => {
-                tracing::debug!(
-                    tx_id = commit.tx_id,
-                    "Handling TxCommit"
-                );
+                tracing::debug!(tx_id = commit.tx_id, "Handling TxCommit");
 
                 let response = self.participant.commit(commit.tx_id);
 

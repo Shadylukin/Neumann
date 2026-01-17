@@ -133,7 +133,11 @@ fuzz_target!(|input: CodebookInput| {
                 (id as usize) < centroids.len(),
                 "Residual ID should be valid"
             );
-            assert_eq!(residual.len(), dimension, "Residual should have same dimension");
+            assert_eq!(
+                residual.len(),
+                dimension,
+                "Residual should have same dimension"
+            );
         }
     }
 
@@ -187,10 +191,7 @@ fuzz_target!(|input: CodebookInput| {
         // quantize_and_update should not panic
         let (id, sim) = local.quantize_and_update(&observation, 0.9);
         assert!(id < 1000, "ID should be reasonable"); // Just a sanity check
-        assert!(
-            sim >= -1.0 && sim <= 1.0,
-            "Similarity should be bounded"
-        );
+        assert!(sim >= -1.0 && sim <= 1.0, "Similarity should be bounded");
     }
 
     // Property 8: CodebookManager works with global

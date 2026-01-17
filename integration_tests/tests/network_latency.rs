@@ -73,7 +73,11 @@ async fn test_raft_with_no_latency() {
 
     assert_eq!(node1.state(), RaftState::Leader);
     // Should be very fast without latency
-    assert!(elapsed < Duration::from_millis(10), "Expected <10ms, got {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_millis(10),
+        "Expected <10ms, got {:?}",
+        elapsed
+    );
 
     node1.stop_heartbeat_task();
 }

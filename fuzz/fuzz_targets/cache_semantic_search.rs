@@ -99,7 +99,7 @@ fuzz_target!(|input: FuzzInput| {
                 distance_ba,
                 diff
             );
-        }
-        _ => {}
+        },
+        _ => {},
     }
 });

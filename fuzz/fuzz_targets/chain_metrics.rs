@@ -45,24 +45,37 @@ fuzz_target!(|test_case: TestCase| {
             if let Ok(snapshot) = bincode::deserialize::<ChainMetricsSnapshot>(&bytes) {
                 // If successful, verify roundtrip works
                 if let Ok(roundtrip_bytes) = bincode::serialize(&snapshot) {
-                    let restored: Result<ChainMetricsSnapshot, _> = bincode::deserialize(&roundtrip_bytes);
-                    assert!(restored.is_ok(), "Roundtrip should succeed for valid snapshot");
+                    let restored: Result<ChainMetricsSnapshot, _> =
+                        bincode::deserialize(&roundtrip_bytes);
+                    assert!(
+                        restored.is_ok(),
+                        "Roundtrip should succeed for valid snapshot"
+                    );
                 }
 
                 // Verify computed rates don't panic or return NaN
                 let heartbeat_rate = snapshot.heartbeat_success_rate();
                 assert!(!heartbeat_rate.is_nan(), "Heartbeat rate should not be NaN");
-                assert!((0.0..=1.0).contains(&heartbeat_rate), "Heartbeat rate should be 0-1");
+                assert!(
+                    (0.0..=1.0).contains(&heartbeat_rate),
+                    "Heartbeat rate should be 0-1"
+                );
 
                 let tx_rate = snapshot.tx_commit_rate();
                 assert!(!tx_rate.is_nan(), "Tx commit rate should not be NaN");
-                assert!((0.0..=1.0).contains(&tx_rate), "Tx commit rate should be 0-1");
+                assert!(
+                    (0.0..=1.0).contains(&tx_rate),
+                    "Tx commit rate should be 0-1"
+                );
 
                 let health_rate = snapshot.health_check_success_rate();
                 assert!(!health_rate.is_nan(), "Health check rate should not be NaN");
-                assert!((0.0..=1.0).contains(&health_rate), "Health check rate should be 0-1");
+                assert!(
+                    (0.0..=1.0).contains(&health_rate),
+                    "Health check rate should be 0-1"
+                );
             }
-        }
+        },
 
         TestCase::RoundtripValues { snapshot: input } => {
             // Create a valid snapshot from fuzzed input
@@ -70,16 +83,29 @@ fuzz_target!(|test_case: TestCase| {
 
             // Serialize and deserialize
             let bytes = bincode::serialize(&snapshot).expect("Serialization should succeed");
-            let restored: ChainMetricsSnapshot = bincode::deserialize(&bytes).expect("Deserialization should succeed");
+            let restored: ChainMetricsSnapshot =
+                bincode::deserialize(&bytes).expect("Deserialization should succeed");
 
             // Verify values match
-            assert_eq!(snapshot.raft.fast_path_accepted, restored.raft.fast_path_accepted);
-            assert_eq!(snapshot.raft.heartbeat_successes, restored.raft.heartbeat_successes);
-            assert_eq!(snapshot.raft.heartbeat_failures, restored.raft.heartbeat_failures);
+            assert_eq!(
+                snapshot.raft.fast_path_accepted,
+                restored.raft.fast_path_accepted
+            );
+            assert_eq!(
+                snapshot.raft.heartbeat_successes,
+                restored.raft.heartbeat_successes
+            );
+            assert_eq!(
+                snapshot.raft.heartbeat_failures,
+                restored.raft.heartbeat_failures
+            );
             assert_eq!(snapshot.dtx.started, restored.dtx.started);
             assert_eq!(snapshot.dtx.committed, restored.dtx.committed);
-            assert_eq!(snapshot.membership.health_checks, restored.membership.health_checks);
-        }
+            assert_eq!(
+                snapshot.membership.health_checks,
+                restored.membership.health_checks
+            );
+        },
 
         TestCase::ComputeRates { snapshot: input } => {
             let snapshot = create_snapshot_from_input(&input);
@@ -94,7 +120,10 @@ fuzz_target!(|test_case: TestCase| {
             } else {
                 // Rate should be successes / total
                 let expected = snapshot.raft.heartbeat_successes as f64 / total_heartbeats as f64;
-                assert!((heartbeat_rate - expected).abs() < 0.0001, "Heartbeat rate mismatch");
+                assert!(
+                    (heartbeat_rate - expected).abs() < 0.0001,
+                    "Heartbeat rate mismatch"
+                );
             }
 
             let tx_rate = snapshot.tx_commit_rate();
@@ -123,7 +152,7 @@ fuzz_target!(|test_case: TestCase| {
             {
                 assert!(empty, "Should be empty when no operations recorded");
             }
-        }
+        },
     }
 });
 

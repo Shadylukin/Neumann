@@ -17,12 +17,7 @@ fuzz_target!(|input: ConfigInput| {
     let tolerance = f32::from_bits(input.tolerance_bits);
 
     // Limit shape to reasonable size
-    let shape: Vec<usize> = input
-        .shape
-        .iter()
-        .take(8)
-        .map(|&s| s as usize)
-        .collect();
+    let shape: Vec<usize> = input.shape.iter().take(8).map(|&s| s as usize).collect();
 
     // Create config
     let config = TTConfig {
@@ -58,9 +53,7 @@ fuzz_target!(|input: ConfigInput| {
         Err(TTError::InvalidTolerance(_)) => {
             // Tolerance must be 0 < tol <= 1 and finite
             assert!(
-                config.tolerance <= 0.0
-                    || config.tolerance > 1.0
-                    || !config.tolerance.is_finite()
+                config.tolerance <= 0.0 || config.tolerance > 1.0 || !config.tolerance.is_finite()
             );
         },
         Err(_) => {

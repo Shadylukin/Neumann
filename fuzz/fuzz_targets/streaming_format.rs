@@ -20,11 +20,11 @@ fuzz_target!(|data: &[u8]| {
             match entry_result {
                 Ok(_entry) => {
                     // Valid entry - continue
-                }
+                },
                 Err(_) => {
                     // Error reading entry - expected for malformed data
                     break;
-                }
+                },
             }
         }
     }

@@ -47,28 +47,28 @@ fuzz_target!(|input: FuzzInput| {
                 if !keys.is_empty() {
                     let _ = lock_manager.try_lock(*tx_id, &keys);
                 }
-            }
+            },
             LockOp::Release { tx_id } => {
                 lock_manager.release(*tx_id);
-            }
+            },
             LockOp::ReleaseByHandle { handle } => {
                 lock_manager.release_by_handle(*handle);
-            }
+            },
             LockOp::IsLocked { key } => {
                 if key.len() < 100 {
                     let _ = lock_manager.is_locked(&key);
                 }
-            }
+            },
             LockOp::LockHolder { key } => {
                 if key.len() < 100 {
                     let _ = lock_manager.lock_holder(&key);
                 }
-            }
+            },
             LockOp::ActiveCount => {
                 let count = lock_manager.active_lock_count();
                 // Active count should be consistent
                 assert!(count < 10000, "Too many active locks");
-            }
+            },
         }
     }
 

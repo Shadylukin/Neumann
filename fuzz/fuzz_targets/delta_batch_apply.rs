@@ -53,11 +53,7 @@ fn make_embedding(bytes: &[u8]) -> Vec<f32> {
     if bytes.is_empty() {
         vec![0.0; 4]
     } else {
-        bytes
-            .iter()
-            .take(128)
-            .map(|&b| b as f32 / 255.0)
-            .collect()
+        bytes.iter().take(128).map(|&b| b as f32 / 255.0).collect()
     }
 }
 
@@ -95,7 +91,7 @@ fuzz_target!(|input: FuzzInput| {
             Err(_) => {
                 backpressure_hit = true;
                 break;
-            }
+            },
         }
     }
 

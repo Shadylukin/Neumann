@@ -11,8 +11,8 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use std::sync::Arc;
 use tensor_chain::{
-    MemoryTransport, Message, RaftConfig, RaftNode,
     network::{AppendEntries, AppendEntriesResponse, RequestVote, RequestVoteResponse},
+    MemoryTransport, Message, RaftConfig, RaftNode,
 };
 
 #[derive(Debug, Arbitrary)]
@@ -56,11 +56,7 @@ fn make_node_id(bytes: &[u8]) -> String {
 }
 
 fn make_embedding(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .iter()
-        .take(128)
-        .map(|&b| b as f32 / 255.0)
-        .collect()
+    bytes.iter().take(128).map(|&b| b as f32 / 255.0).collect()
 }
 
 fuzz_target!(|input: FuzzInput| {
@@ -78,7 +74,7 @@ fuzz_target!(|input: FuzzInput| {
                 last_log_term: input.term.saturating_sub(1),
                 state_embedding: make_embedding(&input.embedding),
             })
-        }
+        },
         1 => {
             // RequestVoteResponse
             Message::RequestVoteResponse(RequestVoteResponse {
@@ -86,7 +82,7 @@ fuzz_target!(|input: FuzzInput| {
                 vote_granted: input.vote_granted,
                 voter_id: node_id.clone(),
             })
-        }
+        },
         2 => {
             // AppendEntries (empty)
             Message::AppendEntries(AppendEntries {
@@ -102,7 +98,7 @@ fuzz_target!(|input: FuzzInput| {
                     Some(make_embedding(&input.embedding))
                 },
             })
-        }
+        },
         3 => {
             // AppendEntriesResponse
             Message::AppendEntriesResponse(AppendEntriesResponse {
@@ -112,15 +108,15 @@ fuzz_target!(|input: FuzzInput| {
                 follower_id: node_id.clone(),
                 used_fast_path: input.success, // Use success flag as proxy
             })
-        }
+        },
         4 => {
             // Ping
             Message::Ping { term: input.term }
-        }
+        },
         _ => {
             // Pong
             Message::Pong { term: input.term }
-        }
+        },
     };
 
     // Test 1: Serialization roundtrip
@@ -139,25 +135,25 @@ fuzz_target!(|input: FuzzInput| {
         (Message::RequestVote(a), Message::RequestVote(b)) => {
             assert_eq!(a.term, b.term);
             assert_eq!(a.candidate_id, b.candidate_id);
-        }
+        },
         (Message::RequestVoteResponse(a), Message::RequestVoteResponse(b)) => {
             assert_eq!(a.term, b.term);
             assert_eq!(a.vote_granted, b.vote_granted);
-        }
+        },
         (Message::AppendEntries(a), Message::AppendEntries(b)) => {
             assert_eq!(a.term, b.term);
             assert_eq!(a.leader_id, b.leader_id);
-        }
+        },
         (Message::AppendEntriesResponse(a), Message::AppendEntriesResponse(b)) => {
             assert_eq!(a.term, b.term);
             assert_eq!(a.success, b.success);
-        }
+        },
         (Message::Ping { term: a }, Message::Ping { term: b }) => {
             assert_eq!(a, b);
-        }
+        },
         (Message::Pong { term: a }, Message::Pong { term: b }) => {
             assert_eq!(a, b);
-        }
+        },
         _ => panic!("Message type changed during serialization"),
     }
 

@@ -96,7 +96,11 @@ fuzz_target!(|input: FuzzInput| {
 
     // Test 4: Values should be within error bounds (~1% for int8 quantization)
     assert_eq!(dequantized.delta_values.len(), update.delta_values.len());
-    for (orig, deq) in update.delta_values.iter().zip(dequantized.delta_values.iter()) {
+    for (orig, deq) in update
+        .delta_values
+        .iter()
+        .zip(dequantized.delta_values.iter())
+    {
         let error = (orig - deq).abs();
         // Allow up to 2% error for int8 quantization
         assert!(

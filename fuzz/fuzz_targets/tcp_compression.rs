@@ -49,7 +49,7 @@ fuzz_target!(|input: CompressionInput| {
             {
                 assert_eq!(data, decompressed, "LZ4 roundtrip failed");
             }
-        }
+        },
 
         TestCase::CompressDecompressNone => {
             // No compression should be identity
@@ -61,7 +61,7 @@ fuzz_target!(|input: CompressionInput| {
                 tensor_chain::tcp::compression::decompress(&compressed, CompressionMethod::None)
                     .expect("None decompression should succeed");
             assert_eq!(data, decompressed, "None decompression should be identity");
-        }
+        },
 
         TestCase::DecodeV2WithFlags { flags } => {
             // Build a v2 payload with flags + data
@@ -74,7 +74,7 @@ fuzz_target!(|input: CompressionInput| {
             let codec = LengthDelimitedCodec::new(1024 * 1024);
             // Should handle gracefully (either succeed or return error)
             let _ = codec.decode_payload_v2(&payload);
-        }
+        },
 
         TestCase::V2RoundtripCompressed {
             term,
@@ -107,7 +107,7 @@ fuzz_target!(|input: CompressionInput| {
                 let decoded = codec.decode_payload_v2(payload);
                 assert!(decoded.is_ok(), "Failed to decode valid v2 message");
             }
-        }
+        },
 
         TestCase::V2RoundtripUncompressed {
             term,
@@ -142,7 +142,6 @@ fuzz_target!(|input: CompressionInput| {
                 let decoded = codec.decode_payload_v2(payload);
                 assert!(decoded.is_ok(), "Failed to decode valid v2 message");
             }
-        }
-
+        },
     }
 });

@@ -1124,7 +1124,9 @@ fn bench_raft_operations(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_2pc_operations(c: &mut Criterion) {
-    use tensor_chain::{ConsensusManager, DistributedTxConfig, DistributedTxCoordinator, LockManager, TxParticipant};
+    use tensor_chain::{
+        ConsensusManager, DistributedTxConfig, DistributedTxCoordinator, LockManager, TxParticipant,
+    };
 
     let mut group = c.benchmark_group("2pc_operations");
 
@@ -1280,15 +1282,13 @@ fn bench_gossip_operations(c: &mut Criterion) {
 
     // Benchmark gossip message deserialization
     group.bench_function("gossip_message_deserialize", |b| {
-        let states = vec![
-            GossipNodeState {
-                node_id: "peer1".to_string(),
-                health: NodeHealth::Healthy,
-                timestamp: 100,
-                updated_at: 1000,
-                incarnation: 1,
-            },
-        ];
+        let states = vec![GossipNodeState {
+            node_id: "peer1".to_string(),
+            health: NodeHealth::Healthy,
+            timestamp: 100,
+            updated_at: 1000,
+            incarnation: 1,
+        }];
         let msg = GossipMessage::Sync {
             sender: "node1".to_string(),
             states,
@@ -1310,7 +1310,9 @@ fn bench_gossip_operations(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_snapshot_operations(c: &mut Criterion) {
-    use tensor_chain::{RaftConfig, RaftNode, MemoryTransport, SnapshotMetadata, RaftMembershipConfig};
+    use tensor_chain::{
+        MemoryTransport, RaftConfig, RaftMembershipConfig, RaftNode, SnapshotMetadata,
+    };
 
     let mut group = c.benchmark_group("snapshot_operations");
 
@@ -1365,7 +1367,11 @@ fn bench_snapshot_operations(c: &mut Criterion) {
     group.bench_function("raft_membership_config_create", |b| {
         b.iter(|| {
             let config = RaftMembershipConfig {
-                voters: vec!["node1".to_string(), "node2".to_string(), "node3".to_string()],
+                voters: vec![
+                    "node1".to_string(),
+                    "node2".to_string(),
+                    "node3".to_string(),
+                ],
                 learners: vec!["learner1".to_string()],
                 joint: None,
                 config_index: 10,
@@ -1381,7 +1387,10 @@ fn bench_snapshot_operations(c: &mut Criterion) {
                 let store = TensorStore::new();
                 for i in 0..10 {
                     let mut data = tensor_store::TensorData::new();
-                    data.set("id".to_string(), tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(i)));
+                    data.set(
+                        "id".to_string(),
+                        tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(i)),
+                    );
                     let _ = store.put(&format!("key_{}", i), data);
                 }
                 store
@@ -1409,8 +1418,10 @@ fn bench_snapshot_operations(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_membership_operations(c: &mut Criterion) {
-    use tensor_chain::{ClusterConfig, LocalNodeConfig, MembershipManager, MembershipStats, MemoryTransport};
     use std::net::SocketAddr;
+    use tensor_chain::{
+        ClusterConfig, LocalNodeConfig, MembershipManager, MembershipStats, MemoryTransport,
+    };
 
     let mut group = c.benchmark_group("membership_operations");
 
@@ -1460,8 +1471,12 @@ fn bench_membership_operations(c: &mut Criterion) {
     group.bench_function("membership_stats_snapshot", |b| {
         let stats = MembershipStats::new();
         // Add some data
-        stats.health_checks.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
-        stats.health_check_failures.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+        stats
+            .health_checks
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        stats
+            .health_check_failures
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed);
 
         b.iter(|| black_box(stats.snapshot()))
     });

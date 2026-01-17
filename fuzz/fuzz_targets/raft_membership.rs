@@ -38,10 +38,19 @@ enum TestCase {
 
 #[derive(Arbitrary, Debug)]
 enum ConfigChangeType {
-    AddLearner { node_id: String },
-    PromoteLearner { node_id: String },
-    RemoveNode { node_id: String },
-    JointChange { additions: Vec<String>, removals: Vec<String> },
+    AddLearner {
+        node_id: String,
+    },
+    PromoteLearner {
+        node_id: String,
+    },
+    RemoveNode {
+        node_id: String,
+    },
+    JointChange {
+        additions: Vec<String>,
+        removals: Vec<String>,
+    },
 }
 
 #[derive(Arbitrary, Debug)]
@@ -91,14 +100,17 @@ fuzz_target!(|input: RaftMembershipInput| {
             // Bincode roundtrip
             if let Ok(bytes) = bincode::serialize(&config) {
                 let decoded: Result<RaftMembershipConfig, _> = bincode::deserialize(&bytes);
-                assert!(decoded.is_ok(), "Failed to deserialize RaftMembershipConfig");
+                assert!(
+                    decoded.is_ok(),
+                    "Failed to deserialize RaftMembershipConfig"
+                );
 
                 let decoded = decoded.unwrap();
                 assert_eq!(decoded.voters, config.voters);
                 assert_eq!(decoded.learners, config.learners);
                 assert_eq!(decoded.config_index, config.config_index);
             }
-        }
+        },
 
         TestCase::JointQuorum {
             old_voters,
@@ -129,7 +141,7 @@ fuzz_target!(|input: RaftMembershipInput| {
 
             // Verify joint quorum calculation
             assert_eq!(joint.has_joint_quorum(&vote_set), expected);
-        }
+        },
 
         TestCase::ConfigChangeRoundtrip { change_type } => {
             let change = match change_type {
@@ -142,7 +154,10 @@ fuzz_target!(|input: RaftMembershipInput| {
                 ConfigChangeType::RemoveNode { node_id } => ConfigChange::RemoveNode {
                     node_id: node_id.chars().take(32).collect(),
                 },
-                ConfigChangeType::JointChange { additions, removals } => ConfigChange::JointChange {
+                ConfigChangeType::JointChange {
+                    additions,
+                    removals,
+                } => ConfigChange::JointChange {
                     additions: truncate_strings(additions, 32, 10),
                     removals: truncate_strings(removals, 32, 10),
                 },
@@ -154,7 +169,7 @@ fuzz_target!(|input: RaftMembershipInput| {
                 assert!(decoded.is_ok(), "Failed to deserialize ConfigChange");
                 assert_eq!(decoded.unwrap(), change);
             }
-        }
+        },
 
         TestCase::MembershipOps { operations } => {
             let mut config = RaftMembershipConfig::new(vec![
@@ -171,25 +186,22 @@ fuzz_target!(|input: RaftMembershipInput| {
                         if !config.voters.contains(&id) && !config.learners.contains(&id) {
                             config.add_learner(id);
                         }
-                    }
+                    },
                     MembershipOp::PromoteLearner(id) => {
                         let id: String = id.chars().take(32).collect();
                         config.promote_learner(&id);
-                    }
+                    },
                     MembershipOp::RemoveNode(id) => {
                         let id: String = id.chars().take(32).collect();
                         config.remove_node(&id);
-                    }
+                    },
                 }
             }
 
             // After any sequence of operations, config should be valid
             // (voters + learners should have no duplicates)
-            let all_nodes: Vec<&String> = config
-                .voters
-                .iter()
-                .chain(config.learners.iter())
-                .collect();
+            let all_nodes: Vec<&String> =
+                config.voters.iter().chain(config.learners.iter()).collect();
             let unique: HashSet<&String> = all_nodes.iter().copied().collect();
             assert_eq!(all_nodes.len(), unique.len(), "No duplicates allowed");
 
@@ -198,6 +210,6 @@ fuzz_target!(|input: RaftMembershipInput| {
                 let decoded: Result<RaftMembershipConfig, _> = bincode::deserialize(&bytes);
                 assert!(decoded.is_ok());
             }
-        }
+        },
     }
 });

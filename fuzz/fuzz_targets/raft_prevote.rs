@@ -87,7 +87,7 @@ fuzz_target!(|test_case: TestCase| {
             if let Ok(bytes) = bincode::serialize(&msg) {
                 let _ = bincode::deserialize::<Message>(&bytes);
             }
-        }
+        },
 
         TestCase::PreVoteResponseSerialization {
             term,
@@ -116,7 +116,7 @@ fuzz_target!(|test_case: TestCase| {
             if let Ok(bytes) = bincode::serialize(&msg) {
                 let _ = bincode::deserialize::<Message>(&bytes);
             }
-        }
+        },
 
         TestCase::TimeoutNowSerialization { term, leader_id } => {
             let leader_id: String = leader_id.chars().take(64).collect();
@@ -139,7 +139,7 @@ fuzz_target!(|test_case: TestCase| {
             if let Ok(bytes) = bincode::serialize(&msg) {
                 let _ = bincode::deserialize::<Message>(&bytes);
             }
-        }
+        },
 
         TestCase::DeserializeArbitrary { bytes } => {
             // Try to deserialize arbitrary bytes as various types
@@ -148,7 +148,7 @@ fuzz_target!(|test_case: TestCase| {
             let _ = bincode::deserialize::<PreVoteResponse>(&bytes);
             let _ = bincode::deserialize::<TimeoutNow>(&bytes);
             let _ = bincode::deserialize::<Message>(&bytes);
-        }
+        },
 
         TestCase::MessageVariantRoundtrip { variant } => {
             let msg = match variant {
@@ -169,7 +169,7 @@ fuzz_target!(|test_case: TestCase| {
                         last_log_term,
                         state_embedding: SparseVector::new(dim),
                     })
-                }
+                },
                 MessageVariant::PreVoteResponse {
                     term,
                     vote_granted,
@@ -182,12 +182,12 @@ fuzz_target!(|test_case: TestCase| {
                         vote_granted,
                         voter_id,
                     })
-                }
+                },
                 MessageVariant::TimeoutNow { term, leader_id } => {
                     let leader_id: String = leader_id.chars().take(64).collect();
 
                     Message::TimeoutNow(TimeoutNow { term, leader_id })
-                }
+                },
             };
 
             // Test roundtrip
@@ -195,13 +195,13 @@ fuzz_target!(|test_case: TestCase| {
                 if let Ok(restored) = bincode::deserialize::<Message>(&bytes) {
                     // Verify the variant matches
                     match (&msg, &restored) {
-                        (Message::PreVote(_), Message::PreVote(_)) => {}
-                        (Message::PreVoteResponse(_), Message::PreVoteResponse(_)) => {}
-                        (Message::TimeoutNow(_), Message::TimeoutNow(_)) => {}
+                        (Message::PreVote(_), Message::PreVote(_)) => {},
+                        (Message::PreVoteResponse(_), Message::PreVoteResponse(_)) => {},
+                        (Message::TimeoutNow(_), Message::TimeoutNow(_)) => {},
                         _ => panic!("Message variant mismatch after roundtrip"),
                     }
                 }
             }
-        }
+        },
     }
 });

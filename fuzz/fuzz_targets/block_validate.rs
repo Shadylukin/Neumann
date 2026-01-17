@@ -146,8 +146,8 @@ fuzz_target!(|input: BlockValidateInput| {
             | Transaction::NodeCreate { key, .. }
             | Transaction::NodeDelete { key } => {
                 let _ = chain.history(key);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 

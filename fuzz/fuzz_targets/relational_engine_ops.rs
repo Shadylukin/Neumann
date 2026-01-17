@@ -117,7 +117,10 @@ fuzz_target!(|input: FuzzInput| {
 
     for op in input.ops.into_iter().take(100) {
         match op {
-            FuzzOp::CreateTable { table_name, columns } => {
+            FuzzOp::CreateTable {
+                table_name,
+                columns,
+            } => {
                 let name = sanitize_name(&table_name);
                 if name.is_empty() || columns.is_empty() {
                     continue;
@@ -146,7 +149,7 @@ fuzz_target!(|input: FuzzInput| {
                 if engine.create_table(&name, schema).is_ok() {
                     tables.push((name, cols));
                 }
-            }
+            },
             FuzzOp::Insert { table_idx, values } => {
                 if tables.is_empty() {
                     continue;
@@ -174,8 +177,11 @@ fuzz_target!(|input: FuzzInput| {
                 }
 
                 let _ = engine.insert(table_name, row_values);
-            }
-            FuzzOp::Select { table_idx, condition } => {
+            },
+            FuzzOp::Select {
+                table_idx,
+                condition,
+            } => {
                 if tables.is_empty() {
                     continue;
                 }
@@ -184,7 +190,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let cond = build_condition(&condition, cols);
                 let _ = engine.select(table_name, cond);
-            }
+            },
             FuzzOp::Update {
                 table_idx,
                 updates,
@@ -212,8 +218,11 @@ fuzz_target!(|input: FuzzInput| {
                 if !update_values.is_empty() {
                     let _ = engine.update(table_name, cond, update_values);
                 }
-            }
-            FuzzOp::Delete { table_idx, condition } => {
+            },
+            FuzzOp::Delete {
+                table_idx,
+                condition,
+            } => {
                 if tables.is_empty() {
                     continue;
                 }
@@ -222,7 +231,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let cond = build_condition(&condition, cols);
                 let _ = engine.delete_rows(table_name, cond);
-            }
+            },
         }
     }
 });
@@ -237,26 +246,26 @@ fn build_condition(fuzz_cond: &FuzzCondition, cols: &[FuzzColumn]) -> Condition 
         FuzzCondition::Eq(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Eq(sanitize_name(&col.name), val.to_value())
-        }
+        },
         FuzzCondition::Ne(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Ne(sanitize_name(&col.name), val.to_value())
-        }
+        },
         FuzzCondition::Lt(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Lt(sanitize_name(&col.name), val.to_value())
-        }
+        },
         FuzzCondition::Le(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Le(sanitize_name(&col.name), val.to_value())
-        }
+        },
         FuzzCondition::Gt(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Gt(sanitize_name(&col.name), val.to_value())
-        }
+        },
         FuzzCondition::Ge(col_idx, val) => {
             let col = &cols[*col_idx % cols.len()];
             Condition::Ge(sanitize_name(&col.name), val.to_value())
-        }
+        },
     }
 }

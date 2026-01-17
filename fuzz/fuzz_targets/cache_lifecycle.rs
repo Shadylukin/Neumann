@@ -131,10 +131,10 @@ fuzz_target!(|input: FuzzInput| {
             } => {
                 let emb = generate_embedding(dim, *embedding_seed);
                 let _ = cache.put(prompt, &emb, response, "fuzz-model", None);
-            }
+            },
             CacheOp::PutSimple { key, value } => {
                 let _ = cache.put_simple(key, value);
-            }
+            },
             CacheOp::PutEmbedding {
                 source,
                 content,
@@ -142,46 +142,49 @@ fuzz_target!(|input: FuzzInput| {
             } => {
                 let emb = generate_embedding(dim, *embedding_seed);
                 let _ = cache.put_embedding(source, content, emb, "fuzz-model");
-            }
-            CacheOp::Get { prompt, use_embedding } => {
+            },
+            CacheOp::Get {
+                prompt,
+                use_embedding,
+            } => {
                 let emb = if *use_embedding {
                     Some(generate_embedding(dim, 42))
                 } else {
                     None
                 };
                 let _ = cache.get(prompt, emb.as_deref());
-            }
+            },
             CacheOp::GetSimple { key } => {
                 let _ = cache.get_simple(key);
-            }
+            },
             CacheOp::GetEmbedding { source, content } => {
                 let _ = cache.get_embedding(source, content);
-            }
+            },
             CacheOp::Invalidate { prompt } => {
                 let _ = cache.invalidate(prompt);
-            }
+            },
             CacheOp::InvalidateVersion { version } => {
                 let _ = cache.invalidate_version(version);
-            }
+            },
             CacheOp::InvalidateEmbeddings { source } => {
                 let _ = cache.invalidate_embeddings(source);
-            }
+            },
             CacheOp::CleanupExpired => {
                 let _ = cache.cleanup_expired();
-            }
+            },
             CacheOp::Evict { count } => {
                 let _ = cache.evict(*count as usize);
-            }
+            },
             CacheOp::Clear => {
                 cache.clear();
-            }
+            },
             CacheOp::GetStats => {
                 let stats = cache.stats_snapshot();
                 // Verify stats are consistent
                 let _ = stats.total_entries();
                 let _ = stats.hit_rate(tensor_cache::CacheLayer::Exact);
                 let _ = stats.cost_saved_dollars;
-            }
+            },
         }
     }
 

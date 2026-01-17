@@ -102,7 +102,7 @@ fuzz_target!(|input: BufferInput| {
 
             // Cleanup
             let _ = buffer.cleanup();
-        }
+        },
 
         TestCase::ChunkAccess {
             data,
@@ -140,7 +140,7 @@ fuzz_target!(|input: BufferInput| {
             }
 
             let _ = buffer.cleanup();
-        }
+        },
 
         TestCase::StreamingRoundtrip { entry_count, term } => {
             let count = (entry_count as usize).min(100);
@@ -177,7 +177,7 @@ fuzz_target!(|input: BufferInput| {
                     }
                 }
             }
-        }
+        },
 
         TestCase::HashConsistency { chunks, max_memory } => {
             let config = make_config(max_memory);
@@ -216,7 +216,7 @@ fuzz_target!(|input: BufferInput| {
             }
 
             let _ = buffer.cleanup();
-        }
+        },
 
         TestCase::SpillThreshold {
             chunk_sizes,
@@ -246,7 +246,7 @@ fuzz_target!(|input: BufferInput| {
 
             let _ = buffer.finalize();
             let _ = buffer.cleanup();
-        }
+        },
 
         TestCase::DeserializeArbitrary { data } => {
             if data.len() > 1024 * 1024 {
@@ -268,6 +268,6 @@ fuzz_target!(|input: BufferInput| {
                 }
                 let _ = buffer.cleanup();
             }
-        }
+        },
     }
 });

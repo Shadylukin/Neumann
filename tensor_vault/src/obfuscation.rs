@@ -234,14 +234,12 @@ pub fn pad_plaintext(plaintext: &[u8]) -> Result<Vec<u8>> {
         )));
     }
 
-    let target_size = PaddingSize::for_length(plaintext.len())
-        .ok_or_else(|| {
-            VaultError::CryptoError(format!(
-                "Cannot determine padding size for {} bytes",
-                plaintext.len()
-            ))
-        })?
-        as usize;
+    let target_size = PaddingSize::for_length(plaintext.len()).ok_or_else(|| {
+        VaultError::CryptoError(format!(
+            "Cannot determine padding size for {} bytes",
+            plaintext.len()
+        ))
+    })? as usize;
 
     // Safe subtraction: target_size >= LENGTH_PREFIX_SIZE + plaintext.len() + 1 by construction
     let padding_len = target_size
@@ -539,11 +537,17 @@ mod tests {
         assert_eq!(PaddingSize::for_length(4000), Some(PaddingSize::Large));
         assert_eq!(PaddingSize::for_length(4091), Some(PaddingSize::Large)); // 4091 + 5 = 4096
         assert_eq!(PaddingSize::for_length(4092), Some(PaddingSize::ExtraLarge));
-        assert_eq!(PaddingSize::for_length(16379), Some(PaddingSize::ExtraLarge)); // 16379 + 5 = 16384
+        assert_eq!(
+            PaddingSize::for_length(16379),
+            Some(PaddingSize::ExtraLarge)
+        ); // 16379 + 5 = 16384
         assert_eq!(PaddingSize::for_length(16380), Some(PaddingSize::Huge));
         assert_eq!(PaddingSize::for_length(32763), Some(PaddingSize::Huge)); // 32763 + 5 = 32768
         assert_eq!(PaddingSize::for_length(32764), Some(PaddingSize::Maximum));
-        assert_eq!(PaddingSize::for_length(MAX_PLAINTEXT_SIZE), Some(PaddingSize::Maximum));
+        assert_eq!(
+            PaddingSize::for_length(MAX_PLAINTEXT_SIZE),
+            Some(PaddingSize::Maximum)
+        );
         assert_eq!(PaddingSize::for_length(MAX_PLAINTEXT_SIZE + 1), None);
     }
 

@@ -56,7 +56,10 @@ fuzz_target!(|input: TtInput| {
     // Deserialize
     let tt2: TTVector = match bincode::deserialize(&bytes) {
         Ok(tt) => tt,
-        Err(e) => panic!("deserialization failed after successful serialization: {}", e),
+        Err(e) => panic!(
+            "deserialization failed after successful serialization: {}",
+            e
+        ),
     };
 
     // Property: core count should match
