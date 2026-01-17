@@ -494,12 +494,35 @@ impl LockManager {
 /// Serializable representation of LockManager state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableLockState {
-    /// Locks by key.
-    pub locks: HashMap<String, KeyLock>,
-    /// Locks by transaction ID.
-    pub tx_locks: HashMap<u64, Vec<String>>,
-    /// Default lock timeout in milliseconds.
-    pub default_timeout_ms: u64,
+    locks: HashMap<String, KeyLock>,
+    tx_locks: HashMap<u64, Vec<String>>,
+    default_timeout_ms: u64,
+}
+
+impl SerializableLockState {
+    pub fn new(
+        locks: HashMap<String, KeyLock>,
+        tx_locks: HashMap<u64, Vec<String>>,
+        default_timeout_ms: u64,
+    ) -> Self {
+        Self {
+            locks,
+            tx_locks,
+            default_timeout_ms,
+        }
+    }
+
+    pub fn locks(&self) -> &HashMap<String, KeyLock> {
+        &self.locks
+    }
+
+    pub fn tx_locks(&self) -> &HashMap<u64, Vec<String>> {
+        &self.tx_locks
+    }
+
+    pub fn default_timeout_ms(&self) -> u64 {
+        self.default_timeout_ms
+    }
 }
 
 /// Serializable state for crash recovery of the distributed transaction coordinator.
@@ -655,13 +678,13 @@ pub struct RecoveryStats {
 
 /// Tracks abort acknowledgments from participants.
 #[derive(Debug, Clone)]
-pub struct AbortState {
+pub(crate) struct AbortState {
     /// Shards that need to acknowledge abort.
-    pub pending_acks: HashSet<usize>,
+    pub(crate) pending_acks: HashSet<usize>,
     /// When abort was initiated (epoch millis).
-    pub initiated_at: EpochMillis,
+    pub(crate) initiated_at: EpochMillis,
     /// Number of retry attempts.
-    pub retry_count: u32,
+    pub(crate) retry_count: u32,
 }
 
 /// Coordinator for distributed transactions.
@@ -861,7 +884,7 @@ impl DistributedTxCoordinator {
                     "Locks acquired"
                 );
                 handle
-            }
+            },
             Err(conflicting_tx) => {
                 tracing::warn!(
                     tx_id = request.tx_id,
@@ -918,10 +941,7 @@ impl DistributedTxCoordinator {
             }
         }
 
-        tracing::debug!(
-            tx_id = request.tx_id,
-            "Prepare vote: YES"
-        );
+        tracing::debug!(tx_id = request.tx_id, "Prepare vote: YES");
 
         PrepareVote::Yes { lock_handle, delta }
     }
@@ -984,10 +1004,7 @@ impl DistributedTxCoordinator {
 
                     // All orthogonal - can merge and commit
                     self.stats.orthogonal_merges.fetch_add(1, Ordering::Relaxed);
-                    tracing::debug!(
-                        tx_id = tx_id,
-                        "Deltas verified orthogonal, ready to commit"
-                    );
+                    tracing::debug!(tx_id = tx_id, "Deltas verified orthogonal, ready to commit");
                     drop(merged);
                 }
 
@@ -1011,11 +1028,7 @@ impl DistributedTxCoordinator {
                     "participant voted no"
                 };
 
-                tracing::warn!(
-                    tx_id = tx_id,
-                    reason = reason,
-                    "Transaction aborting"
-                );
+                tracing::warn!(tx_id = tx_id, reason = reason, "Transaction aborting");
 
                 // Queue abort for broadcast
                 let shards = tx.participants.clone();
@@ -1050,10 +1063,7 @@ impl DistributedTxCoordinator {
             )));
         }
 
-        tracing::debug!(
-            tx_id = tx_id,
-            "Transitioning to committing phase"
-        );
+        tracing::debug!(tx_id = tx_id, "Transitioning to committing phase");
 
         // Log phase change to WAL BEFORE applying state change
         self.log_wal_entry(&TxWalEntry::PhaseChange {
@@ -1067,11 +1077,7 @@ impl DistributedTxCoordinator {
         // Release all locks
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
-                tracing::debug!(
-                    tx_id = tx_id,
-                    lock_handle = lock_handle,
-                    "Releasing lock"
-                );
+                tracing::debug!(tx_id = tx_id, lock_handle = lock_handle, "Releasing lock");
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
@@ -1088,10 +1094,7 @@ impl DistributedTxCoordinator {
         // Remove from pending
         pending.remove(&tx_id);
 
-        tracing::info!(
-            tx_id = tx_id,
-            "Transaction committed"
-        );
+        tracing::info!(tx_id = tx_id, "Transaction committed");
 
         Ok(())
     }
@@ -1206,11 +1209,7 @@ impl DistributedTxCoordinator {
         // Remove from pending
         pending.remove(&tx_id);
 
-        tracing::info!(
-            tx_id = tx_id,
-            reason = reason,
-            "Transaction aborted"
-        );
+        tracing::info!(tx_id = tx_id, reason = reason, "Transaction aborted");
 
         Ok(())
     }
@@ -1261,10 +1260,7 @@ impl DistributedTxCoordinator {
         // Also cleanup expired locks
         let expired_locks = self.lock_manager.cleanup_expired();
         if expired_locks > 0 {
-            tracing::debug!(
-                count = expired_locks,
-                "Cleaned up expired locks"
-            );
+            tracing::debug!(count = expired_locks, "Cleaned up expired locks");
         }
 
         timed_out
@@ -1768,10 +1764,7 @@ impl TxParticipant {
 
         if let Some(tx) = prepared.remove(&tx_id) {
             self.locks.release_by_handle(tx.lock_handle);
-            tracing::info!(
-                tx_id = tx_id,
-                "Participant committed transaction"
-            );
+            tracing::info!(tx_id = tx_id, "Participant committed transaction");
             TxResponse {
                 tx_id,
                 success: true,
@@ -1796,10 +1789,7 @@ impl TxParticipant {
 
         if let Some(tx) = prepared.remove(&tx_id) {
             self.locks.release_by_handle(tx.lock_handle);
-            tracing::info!(
-                tx_id = tx_id,
-                "Participant aborted transaction"
-            );
+            tracing::info!(tx_id = tx_id, "Participant aborted transaction");
         } else {
             tracing::debug!(
                 tx_id = tx_id,

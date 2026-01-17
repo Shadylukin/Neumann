@@ -540,18 +540,18 @@ fn test_coordinator_state_bincode_roundtrip() {
 
     let state = CoordinatorState {
         pending,
-        lock_state: SerializableLockState {
-            locks: HashMap::new(),
-            tx_locks: HashMap::new(),
-            default_timeout_ms: 30000,
-        },
+        lock_state: SerializableLockState::new(
+            HashMap::new(),
+            HashMap::new(),
+            30000,
+        ),
     };
 
     let bytes = bincode::serialize(&state).unwrap();
     let restored: CoordinatorState = bincode::deserialize(&bytes).unwrap();
 
     assert_eq!(restored.pending.len(), 1);
-    assert_eq!(restored.lock_state.default_timeout_ms, 30000);
+    assert_eq!(restored.lock_state.default_timeout_ms(), 30000);
 }
 
 #[test]
@@ -575,11 +575,11 @@ fn test_participant_state_bincode_roundtrip() {
 
     let state = ParticipantState {
         prepared,
-        lock_state: SerializableLockState {
-            locks: HashMap::new(),
-            tx_locks: HashMap::new(),
-            default_timeout_ms: 30000,
-        },
+        lock_state: SerializableLockState::new(
+            HashMap::new(),
+            HashMap::new(),
+            30000,
+        ),
     };
 
     let bytes = bincode::serialize(&state).unwrap();

@@ -29,17 +29,18 @@ use crate::{
 };
 
 /// Default embedding dimension for state snapshots.
-pub const DEFAULT_EMBEDDING_DIM: usize = 128;
+pub(crate) const DEFAULT_EMBEDDING_DIM: usize = 128;
 
 /// Embedding state for a transaction workspace.
 ///
 /// Wraps EmbeddingState to provide a mutable API for transaction lifecycle.
 /// Uses type-safe state machine internally, eliminating Option ceremony.
 #[derive(Debug, Clone, Default)]
-pub struct WorkspaceEmbedding {
+pub(crate) struct WorkspaceEmbedding {
     state: EmbeddingState,
 }
 
+#[allow(dead_code)]
 impl WorkspaceEmbedding {
     /// Create a new workspace embedding from the initial state.
     pub fn new(before: Vec<f32>) -> Self {
@@ -111,13 +112,13 @@ impl WorkspaceEmbedding {
 
 /// A candidate for merging with another transaction.
 #[derive(Debug, Clone)]
-pub struct MergeCandidate {
+pub(crate) struct MergeCandidate {
     /// The transaction workspace.
-    pub workspace: Arc<TransactionWorkspace>,
+    pub(crate) workspace: Arc<TransactionWorkspace>,
     /// Delta vector for conflict detection.
-    pub delta: DeltaVector,
+    pub(crate) delta: DeltaVector,
     /// Cosine similarity with the reference transaction.
-    pub similarity: f32,
+    pub(crate) similarity: f32,
 }
 
 /// Monotonic transaction ID counter.
@@ -301,7 +302,8 @@ impl TransactionWorkspace {
     }
 
     /// Get a copy of the workspace embedding.
-    pub fn embedding(&self) -> WorkspaceEmbedding {
+    #[allow(dead_code)]
+    pub(crate) fn embedding(&self) -> WorkspaceEmbedding {
         self.embedding.read().clone()
     }
 
@@ -461,7 +463,7 @@ impl TransactionManager {
     /// The `merge_window_ms` parameter specifies the maximum age (in milliseconds)
     /// of transactions to consider for merging. Transactions older than this
     /// window are excluded.
-    pub fn find_merge_candidates(
+    pub(crate) fn find_merge_candidates(
         &self,
         workspace: &TransactionWorkspace,
         orthogonal_threshold: f32,
