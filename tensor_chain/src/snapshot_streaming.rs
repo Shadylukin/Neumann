@@ -66,6 +66,13 @@ const HEADER_SIZE: usize = 16;
 /// Maximum entry size (100 MB).
 const MAX_ENTRY_SIZE: usize = 100 * 1024 * 1024;
 
+/// Convert a slice to a fixed-size array, returning an error if lengths don't match.
+fn slice_to_array<const N: usize>(slice: &[u8]) -> Result<[u8; N]> {
+    slice.try_into().map_err(|_| {
+        StreamingError::InvalidFormat(format!("expected {} bytes, got {}", N, slice.len()))
+    })
+}
+
 /// Streaming snapshot writer for incremental log entry serialization.
 ///
 /// Writes log entries one at a time using a length-prefixed format,
@@ -215,7 +222,7 @@ impl<'a> SnapshotReader<'a> {
             return Err(StreamingError::InvalidFormat("invalid magic".to_string()));
         }
 
-        let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let version = u32::from_le_bytes(slice_to_array(&header[4..8])?);
         if version > STREAMING_VERSION {
             return Err(StreamingError::InvalidFormat(format!(
                 "unsupported version: {}",
@@ -223,7 +230,7 @@ impl<'a> SnapshotReader<'a> {
             )));
         }
 
-        let entry_count = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let entry_count = u64::from_le_bytes(slice_to_array(&header[8..16])?);
 
         Ok(Self {
             buffer,
@@ -263,7 +270,7 @@ impl<'a> SnapshotReader<'a> {
         }
 
         let len_bytes = self.buffer.as_slice(self.read_offset, 4)?;
-        let len = u32::from_le_bytes(len_bytes.try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(slice_to_array(len_bytes)?) as usize;
         self.read_offset += 4;
 
         if len > MAX_ENTRY_SIZE {
@@ -488,5 +495,309 @@ mod tests {
         writer.write_entry(&create_test_entry(1, 1)).unwrap();
 
         assert!(writer.bytes_written() > initial_bytes);
+    }
+
+    // ========== Error Handling Tests ==========
+
+    #[test]
+    fn test_streaming_reader_version_mismatch() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write header with version 99 (unsupported)
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&99u32.to_le_bytes()); // Invalid version
+        header[8..16].copy_from_slice(&0u64.to_le_bytes());
+        buffer.write(&header).unwrap();
+        buffer.finalize().unwrap();
+
+        let result = SnapshotReader::new(&buffer);
+        assert!(result.is_err());
+        match result {
+            Err(StreamingError::InvalidFormat(msg)) => {
+                assert!(msg.contains("unsupported version"));
+            },
+            _ => panic!("expected InvalidFormat error"),
+        }
+    }
+
+    #[test]
+    fn test_streaming_reader_buffer_too_small() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write less than HEADER_SIZE bytes
+        buffer.write(b"SNAP").unwrap(); // Only 4 bytes
+        buffer.finalize().unwrap();
+
+        let result = SnapshotReader::new(&buffer);
+        assert!(result.is_err());
+        match result {
+            Err(StreamingError::InvalidFormat(msg)) => {
+                assert!(msg.contains("too small"));
+            },
+            _ => panic!("expected InvalidFormat error"),
+        }
+    }
+
+    #[test]
+    fn test_streaming_length_prefix_eof() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write valid header claiming 1 entry but no entry data
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&1u64.to_le_bytes()); // Claims 1 entry
+        buffer.write(&header).unwrap();
+        // No entry data follows
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&buffer).unwrap();
+        let result = reader.read_entry();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(StreamingError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_streaming_entry_data_eof() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write valid header claiming 1 entry
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&1u64.to_le_bytes());
+        buffer.write(&header).unwrap();
+
+        // Write length prefix claiming 100 bytes but only write 10
+        buffer.write(&100u32.to_le_bytes()).unwrap();
+        buffer.write(&[0u8; 10]).unwrap(); // Only 10 bytes, not 100
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&buffer).unwrap();
+        let result = reader.read_entry();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(StreamingError::UnexpectedEof)));
+    }
+
+    #[test]
+    fn test_streaming_corrupted_entry_count() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write header claiming 5 entries
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&5u64.to_le_bytes()); // Claims 5 entries
+        buffer.write(&header).unwrap();
+
+        // Only write 1 valid entry
+        let entry = create_test_entry(1, 1);
+        let bytes = bincode::serialize(&entry).unwrap();
+        buffer.write(&(bytes.len() as u32).to_le_bytes()).unwrap();
+        buffer.write(&bytes).unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&buffer).unwrap();
+        assert_eq!(reader.entry_count(), 5); // Claims 5
+
+        // First entry should succeed
+        assert!(reader.read_entry().unwrap().is_some());
+
+        // Second entry should fail with EOF
+        let result = reader.read_entry();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_streaming_invalid_magic_variations() {
+        let test_cases = [
+            b"XXXX",             // Wrong magic
+            b"snap",             // Lowercase
+            b"SNP\0",            // Truncated
+            b"\x00\x00\x00\x00", // Null bytes
+        ];
+
+        for magic in test_cases {
+            let config = test_config();
+            let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+            let mut header = [0u8; HEADER_SIZE];
+            header[0..4].copy_from_slice(magic);
+            header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+            header[8..16].copy_from_slice(&0u64.to_le_bytes());
+            buffer.write(&header).unwrap();
+            buffer.finalize().unwrap();
+
+            let result = SnapshotReader::new(&buffer);
+            assert!(result.is_err(), "expected error for magic {:?}", magic);
+        }
+    }
+
+    #[test]
+    fn test_streaming_large_version_number() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write header with max u32 version
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        header[8..16].copy_from_slice(&0u64.to_le_bytes());
+        buffer.write(&header).unwrap();
+        buffer.finalize().unwrap();
+
+        let result = SnapshotReader::new(&buffer);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_streaming_iterator_with_error() {
+        // Use writer to create valid starting point, then manually construct corrupted snapshot
+        let mut writer = SnapshotWriter::new(test_config()).unwrap();
+        writer.write_entry(&create_test_entry(1, 1)).unwrap();
+        let buffer = writer.finish().unwrap();
+
+        // Get bytes, then create new buffer with corrupted entry count
+        let bytes = buffer.as_bytes().unwrap();
+
+        // Create a modified buffer claiming more entries than exist
+        let config = test_config();
+        let mut corrupt_buffer = SnapshotBuffer::new(config).unwrap();
+
+        // Write modified header with entry_count = 3 (but only 1 entry exists)
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&3u64.to_le_bytes()); // Claim 3 entries
+        corrupt_buffer.write(&header).unwrap();
+
+        // Copy entry data (skip original header)
+        if bytes.len() > HEADER_SIZE {
+            corrupt_buffer.write(&bytes[HEADER_SIZE..]).unwrap();
+        }
+        corrupt_buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&corrupt_buffer).unwrap();
+        assert_eq!(reader.entry_count(), 3);
+
+        // First entry should succeed
+        let first = reader.read_entry();
+        assert!(first.is_ok());
+        assert!(first.unwrap().is_some());
+
+        // Second read should fail with EOF
+        let second = reader.read_entry();
+        assert!(second.is_err());
+    }
+
+    #[test]
+    fn test_streaming_entry_too_large() {
+        // Test that we reject entries larger than MAX_ENTRY_SIZE on read
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&1u64.to_le_bytes());
+        buffer.write(&header).unwrap();
+
+        // Write length prefix > MAX_ENTRY_SIZE (100MB + 1)
+        let too_large = (MAX_ENTRY_SIZE + 1) as u32;
+        buffer.write(&too_large.to_le_bytes()).unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&buffer).unwrap();
+        let result = reader.read_entry();
+        assert!(result.is_err());
+        match result {
+            Err(StreamingError::InvalidFormat(msg)) => {
+                assert!(msg.contains("too large"));
+            },
+            _ => panic!("expected InvalidFormat error"),
+        }
+    }
+
+    #[test]
+    fn test_streaming_deserialize_error() {
+        let config = test_config();
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&STREAMING_MAGIC);
+        header[4..8].copy_from_slice(&STREAMING_VERSION.to_le_bytes());
+        header[8..16].copy_from_slice(&1u64.to_le_bytes());
+        buffer.write(&header).unwrap();
+
+        // Write a small length prefix with garbage data
+        buffer.write(&10u32.to_le_bytes()).unwrap();
+        buffer.write(&[0xFF; 10]).unwrap(); // Invalid bincode data
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotReader::new(&buffer).unwrap();
+        let result = reader.read_entry();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(StreamingError::Serialization(_))));
+    }
+
+    #[test]
+    fn test_streaming_with_defaults() {
+        let writer = SnapshotWriter::with_defaults().unwrap();
+        assert_eq!(writer.entry_count(), 0);
+        assert_eq!(writer.last_index(), 0);
+        assert_eq!(writer.last_term(), 0);
+    }
+
+    #[test]
+    fn test_deserialize_legacy_format() {
+        // Test that deserialize_entries handles legacy bincode format
+        let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_entry(i, 1)).collect();
+
+        // Serialize using legacy bincode format (not streaming)
+        let legacy_bytes = bincode::serialize(&entries).unwrap();
+
+        // Should be able to deserialize
+        let result = deserialize_entries(&legacy_bytes).unwrap();
+        assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let io_err = StreamingError::Io(io::Error::new(io::ErrorKind::NotFound, "test"));
+        assert!(io_err.to_string().contains("I/O error"));
+
+        let buf_err = StreamingError::Buffer(SnapshotBufferError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "test",
+        )));
+        assert!(buf_err.to_string().contains("buffer error"));
+
+        let ser_err = StreamingError::Serialization("test".to_string());
+        assert!(ser_err.to_string().contains("serialization error"));
+
+        let fmt_err = StreamingError::InvalidFormat("test".to_string());
+        assert!(fmt_err.to_string().contains("invalid format"));
+
+        let eof_err = StreamingError::UnexpectedEof;
+        assert!(eof_err.to_string().contains("unexpected end"));
+    }
+
+    #[test]
+    fn test_error_from_conversions() {
+        // Test From<io::Error>
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "test");
+        let streaming_err: StreamingError = io_err.into();
+        assert!(matches!(streaming_err, StreamingError::Io(_)));
+
+        // Test From<SnapshotBufferError>
+        let buf_err = SnapshotBufferError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        let streaming_err: StreamingError = buf_err.into();
+        assert!(matches!(streaming_err, StreamingError::Buffer(_)));
     }
 }

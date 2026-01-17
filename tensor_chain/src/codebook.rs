@@ -634,7 +634,10 @@ impl CodebookManager {
             .ok_or_else(|| ChainError::CodebookError("empty global codebook".to_string()))?;
 
         // Step 2: Compute residual
-        let global_centroid = &self.global.get(global_id).unwrap().centroid;
+        let global_entry = self.global.get(global_id).ok_or_else(|| {
+            ChainError::CodebookError(format!("global entry {} not found", global_id))
+        })?;
+        let global_centroid = &global_entry.centroid;
         let residual: Vec<f32> = vector
             .iter()
             .zip(global_centroid.iter())

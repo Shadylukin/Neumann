@@ -165,8 +165,10 @@ impl PublicIdentity {
             )));
         }
 
-        let sig_bytes: [u8; 64] = signature.try_into().expect("length checked above");
-        let sig = Signature::from_bytes(&sig_bytes);
+        let sig_bytes: &[u8; 64] = signature.try_into().map_err(|_| {
+            ChainError::CryptoError("signature conversion failed".to_string())
+        })?;
+        let sig = Signature::from_bytes(sig_bytes);
 
         self.verifying_key
             .verify(message, &sig)
