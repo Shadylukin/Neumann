@@ -9,6 +9,7 @@ use super::error::{TcpError, TcpResult};
 
 /// Compression method used for network messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CompressionMethod {
     /// No compression.
     #[default]

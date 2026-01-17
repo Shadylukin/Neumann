@@ -283,6 +283,7 @@ impl ReconnectConfig {
 
 /// How to verify that a peer's NodeId matches their TLS certificate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NodeIdVerification {
     /// No verification - NodeId is trusted from handshake (testing only).
     #[default]

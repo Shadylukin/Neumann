@@ -640,7 +640,9 @@ impl ClusterOrchestrator {
                         match msg {
                             Message::QueryRequest(request) => {
                                 if let Some(response) = self.handle_query_request_with_timeout(&from, &request).await {
-                                    let _ = transport.send(&from, response).await;
+                                    if let Err(e) = transport.send(&from, response).await {
+                                        tracing::debug!(peer = %from, error = %e, "failed to send query response");
+                                    }
                                 }
                             }
                             Message::Gossip(gossip_msg) => {
@@ -650,7 +652,9 @@ impl ClusterOrchestrator {
                             // 2PC distributed transaction messages
                             Message::TxPrepare(prepare_msg) => {
                                 if let Some(response) = self.handle_tx_prepare_with_timeout(&prepare_msg).await {
-                                    let _ = transport.send(&from, response).await;
+                                    if let Err(e) = transport.send(&from, response).await {
+                                        tracing::debug!(peer = %from, error = %e, "failed to send tx prepare response");
+                                    }
                                 }
                             }
                             Message::TxPrepareResponse(response_msg) => {
@@ -658,12 +662,16 @@ impl ClusterOrchestrator {
                             }
                             Message::TxCommit(commit_msg) => {
                                 if let Some(ack) = self.handle_tx_commit_with_timeout(&commit_msg).await {
-                                    let _ = transport.send(&from, ack).await;
+                                    if let Err(e) = transport.send(&from, ack).await {
+                                        tracing::debug!(peer = %from, error = %e, "failed to send tx commit ack");
+                                    }
                                 }
                             }
                             Message::TxAbort(abort_msg) => {
                                 if let Some(ack) = self.handle_tx_abort_with_timeout(&abort_msg).await {
-                                    let _ = transport.send(&from, ack).await;
+                                    if let Err(e) = transport.send(&from, ack).await {
+                                        tracing::debug!(peer = %from, error = %e, "failed to send tx abort ack");
+                                    }
                                 }
                             }
                             Message::TxAck(ack_msg) => {

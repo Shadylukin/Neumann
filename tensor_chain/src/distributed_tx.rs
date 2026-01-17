@@ -62,6 +62,7 @@ fn next_dtx_id() -> u64 {
 
 /// Phase of a distributed transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TxPhase {
     /// Transaction is being prepared (Phase 1).
     #[default]
@@ -197,6 +198,7 @@ pub struct PrepareRequest {
 
 /// Vote from a participant in response to prepare request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum PrepareVote {
     /// Participant is ready to commit.
     Yes {
@@ -1346,7 +1348,9 @@ impl DistributedTxCoordinator {
                 // Fire-and-forget send to shard coordinator
                 // The target node ID would come from a shard->node mapping
                 let target = format!("shard-{}", shard_id);
-                let _ = transport.send(&target, Message::TxAbort(abort_msg)).await;
+                if let Err(e) = transport.send(&target, Message::TxAbort(abort_msg)).await {
+                    tracing::warn!(tx_id, shard = shard_id, error = %e, "failed to send abort to shard");
+                }
             }
         }
     }

@@ -7,6 +7,7 @@ pub type Result<T> = std::result::Result<T, ChainError>;
 
 /// Errors that can occur in tensor_chain operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ChainError {
     /// Block validation failed.
     #[error("block validation failed: {0}")]

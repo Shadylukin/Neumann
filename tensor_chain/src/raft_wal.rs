@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 /// WAL-specific error types.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum WalError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -91,6 +92,7 @@ impl Default for WalConfig {
 
 /// A WAL entry for Raft state changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum RaftWalEntry {
     /// Term changed (election started or higher term seen).
     TermChange { new_term: u64 },

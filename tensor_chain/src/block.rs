@@ -103,7 +103,13 @@ impl BlockHeader {
         hasher.update(self.state_root);
 
         // Hash embedding (serialize sparse vector for deterministic hashing)
-        let embedding_bytes = bincode::serialize(&self.delta_embedding).unwrap_or_default();
+        let embedding_bytes = match bincode::serialize(&self.delta_embedding) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize delta_embedding for hash");
+                Vec::new()
+            },
+        };
         hasher.update(&embedding_bytes);
 
         // Hash quantized codes
@@ -148,7 +154,13 @@ impl BlockHeader {
         bytes.extend(self.state_root);
 
         // Serialize embedding deterministically
-        let embedding_bytes = bincode::serialize(&self.delta_embedding).unwrap_or_default();
+        let embedding_bytes = match bincode::serialize(&self.delta_embedding) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize delta_embedding for signing");
+                Vec::new()
+            },
+        };
         bytes.extend(&embedding_bytes);
 
         // Quantized codes
@@ -189,6 +201,7 @@ impl BlockHeader {
 
 /// A transaction representing a tensor operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum Transaction {
     /// Store tensor data.
     Put { key: String, data: Vec<u8> },
@@ -242,7 +255,13 @@ impl Transaction {
     }
 
     pub fn hash(&self) -> [u8; 32] {
-        let bytes = bincode::serialize(self).unwrap_or_default();
+        let bytes = match bincode::serialize(self) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize transaction for hash");
+                Vec::new()
+            },
+        };
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         hasher.finalize().into()

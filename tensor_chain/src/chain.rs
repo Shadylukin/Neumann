@@ -13,7 +13,7 @@ use std::sync::{
 };
 
 use graph_engine::GraphEngine;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tensor_store::SparseVector;
 
 use crate::{
@@ -44,6 +44,9 @@ pub struct Chain {
 
     /// Node ID of this chain instance.
     node_id: NodeId,
+
+    /// Serialize block appends to prevent TOCTOU race conditions.
+    append_lock: Mutex<()>,
 }
 
 impl Chain {
@@ -53,6 +56,7 @@ impl Chain {
             height: AtomicU64::new(0),
             tip_hash: RwLock::new([0u8; 32]),
             node_id,
+            append_lock: Mutex::new(()),
         }
     }
 
@@ -94,6 +98,10 @@ impl Chain {
 
     /// Append a new block to the chain.
     pub fn append(&self, mut block: Block) -> Result<BlockHash> {
+        // Serialize appends to prevent TOCTOU race conditions where two
+        // concurrent appends read the same height and both attempt to append
+        let _guard = self.append_lock.lock();
+
         let current_height = self.height();
         let expected_height = current_height + 1;
 
@@ -839,5 +847,63 @@ mod tests {
 
         assert_ne!(chain.tip_hash(), hash1);
         assert_eq!(chain.tip_hash(), hash2);
+    }
+
+    #[test]
+    fn test_concurrent_append_serialization() {
+        use std::thread;
+
+        let store = tensor_store::TensorStore::new();
+        let graph = Arc::new(GraphEngine::with_store(store));
+        let chain = Arc::new(Chain::new(graph, "test_node".to_string()));
+        chain.initialize().unwrap();
+
+        // Spawn multiple threads trying to append simultaneously
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let chain = Arc::clone(&chain);
+                thread::spawn(move || {
+                    // Create a block for the next height
+                    let block = chain.new_block().with_signature(test_signature()).build();
+                    chain.append(block).map(|_| i)
+                })
+            })
+            .collect();
+
+        // Collect results
+        let mut successes = 0;
+        for handle in handles {
+            if handle.join().unwrap().is_ok() {
+                successes += 1;
+            }
+        }
+
+        // With the append_lock, exactly one thread should succeed per height
+        // Since all threads try to append at height 1, only one should succeed
+        assert!(successes >= 1, "at least one append should succeed");
+        assert_eq!(
+            chain.height() as usize,
+            successes,
+            "chain height should match successful appends"
+        );
+    }
+
+    #[test]
+    fn test_chain_append_sequential_heights() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Append multiple blocks sequentially
+        for _ in 0..5 {
+            let block = chain.new_block().with_signature(test_signature()).build();
+            chain.append(block).unwrap();
+        }
+
+        // Verify sequential heights
+        assert_eq!(chain.height(), 5);
+        for i in 0..=5 {
+            let block = chain.get_block_at(i).unwrap().unwrap();
+            assert_eq!(block.header.height, i);
+        }
     }
 }

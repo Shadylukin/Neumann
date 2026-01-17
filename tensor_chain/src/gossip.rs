@@ -554,8 +554,11 @@ impl GossipMembershipManager {
         for target in targets {
             let transport = Arc::clone(&self.transport);
             let msg = msg.clone();
+            let target_clone = target.clone();
             tokio::spawn(async move {
-                let _ = transport.send(&target, msg).await;
+                if let Err(e) = transport.send(&target_clone, msg).await {
+                    tracing::debug!(peer = %target_clone, error = %e, "failed to send gossip sync");
+                }
             });
         }
 
@@ -771,7 +774,9 @@ impl GossipMembershipManager {
 
         tokio::spawn(async move {
             for target in targets {
-                let _ = transport.send(&target, msg.clone()).await;
+                if let Err(e) = transport.send(&target, msg.clone()).await {
+                    tracing::debug!(peer = %target, error = %e, "failed to broadcast gossip");
+                }
             }
         });
     }
@@ -849,7 +854,9 @@ impl GossipMembershipManager {
 
         let targets = self.select_gossip_targets(self.config.fanout);
         for target in targets {
-            let _ = self.transport.send(&target, msg.clone()).await;
+            if let Err(e) = self.transport.send(&target, msg.clone()).await {
+                tracing::debug!(peer = %target, error = %e, "failed to send suspect message");
+            }
         }
 
         // Try indirect pings
@@ -874,7 +881,9 @@ impl GossipMembershipManager {
         });
 
         for intermediary in intermediaries {
-            let _ = self.transport.send(&intermediary, msg.clone()).await;
+            if let Err(e) = self.transport.send(&intermediary, msg.clone()).await {
+                tracing::debug!(peer = %intermediary, error = %e, "failed to send indirect ping");
+            }
         }
     }
 

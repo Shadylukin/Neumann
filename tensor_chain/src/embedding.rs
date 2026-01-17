@@ -36,6 +36,7 @@ pub enum EmbeddingState {
 
 /// Error when attempting an invalid embedding state transition.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum EmbeddingError {
     /// Attempted to get delta from Initial state.
     NotComputed,

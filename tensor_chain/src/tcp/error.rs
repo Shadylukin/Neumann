@@ -6,6 +6,7 @@ use crate::error::ChainError;
 
 /// Errors specific to TCP transport operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TcpError {
     /// Connection to peer failed.
     ConnectionFailed { peer: String, reason: String },

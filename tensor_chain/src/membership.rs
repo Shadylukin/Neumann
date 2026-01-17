@@ -29,6 +29,7 @@ use crate::{
 
 /// Health state of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub enum NodeHealth {
     /// Node is responding to health checks.
     Healthy,
@@ -46,6 +47,7 @@ pub enum NodeHealth {
 /// "Split-brain" technically refers to two leaders existing simultaneously.
 /// Since quorum tracking prevents that, these states indicate quorum availability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub enum PartitionStatus {
     /// Majority of nodes reachable - safe to accept writes.
     QuorumReachable,
@@ -604,8 +606,10 @@ impl MembershipManager {
                 node_id: peer.node_id.clone(),
                 address: peer.address.to_string(),
             };
-            // Ignore connection errors - health check will retry
-            let _ = self.transport.connect(&peer_config).await;
+            // Connection errors are expected - health check will retry
+            if let Err(e) = self.transport.connect(&peer_config).await {
+                tracing::debug!(peer = %peer.node_id, error = %e, "failed to connect to peer during bootstrap");
+            }
         }
 
         Ok(())

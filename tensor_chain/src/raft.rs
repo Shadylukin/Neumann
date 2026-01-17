@@ -32,6 +32,7 @@ use crate::{
 
 /// Raft node state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RaftState {
     /// Follower state - receives log entries from leader.
     Follower,
@@ -2125,7 +2126,7 @@ impl RaftNode {
 
     /// Become leader and automatically start heartbeat task if configured.
     ///
-    /// This is the preferred method when working with Arc<RaftNode> as it
+    /// This is the preferred method when working with `Arc<RaftNode>` as it
     /// handles automatic heartbeat spawning.
     pub fn become_leader_with_heartbeat(self: &Arc<Self>) {
         self.become_leader();
@@ -2384,7 +2385,7 @@ impl RaftNode {
         Ok((metadata, buffer))
     }
 
-    /// Create a snapshot and return data as Vec<u8>.
+    /// Create a snapshot and return data as `Vec<u8>`.
     ///
     /// For large snapshots, prefer `create_snapshot_streaming()` which is more
     /// memory-efficient.
@@ -2747,7 +2748,7 @@ impl RaftNode {
 
     /// Get the accumulated snapshot data after receiving all chunks.
     ///
-    /// Returns a copy of the data as a Vec<u8> for backwards compatibility.
+    /// Returns a copy of the data as a `Vec<u8>` for backwards compatibility.
     pub fn take_pending_snapshot_data(&self) -> Vec<u8> {
         self.snapshot_state
             .write()
@@ -3087,8 +3088,9 @@ impl RaftNode {
 
         // Now send messages (async)
         for (peer, msg) in messages {
-            // Send to peer, ignore failures (peer may be down)
-            let _ = self.transport.send(&peer, msg).await;
+            if let Err(e) = self.transport.send(&peer, msg).await {
+                tracing::debug!(peer = %peer, error = %e, "failed to send raft message");
+            }
         }
 
         Ok(())

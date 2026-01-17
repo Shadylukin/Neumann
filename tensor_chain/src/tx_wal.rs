@@ -29,6 +29,7 @@ use crate::raft_wal::{WalConfig, WalError};
 
 /// A WAL entry for 2PC transaction state changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum TxWalEntry {
     /// Transaction begin with list of participants.
     TxBegin {
@@ -56,6 +57,7 @@ pub enum TxWalEntry {
 
 /// Vote type during prepare phase.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PrepareVoteKind {
     /// Participant votes YES.
     Yes,
@@ -65,6 +67,7 @@ pub enum PrepareVoteKind {
 
 /// Outcome of a completed transaction.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TxOutcome {
     /// Transaction was committed.
     Committed,

@@ -664,7 +664,9 @@ impl DeltaReplicationManager {
                         // Final drain before shutdown
                         let batches = manager.flush();
                         for batch in batches {
-                            let _ = manager.send_batch(transport.as_ref(), &peer, batch).await;
+                            if let Err(e) = manager.send_batch(transport.as_ref(), &peer, batch).await {
+                                tracing::debug!(peer = %peer, error = %e, "failed to send final replication batch on shutdown");
+                            }
                         }
                         running_clone.store(false, Ordering::Relaxed);
                         break;

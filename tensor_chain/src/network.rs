@@ -37,6 +37,7 @@ pub struct PeerConfig {
 
 /// Message types for consensus protocol.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Message {
     // Raft messages
     /// Request vote during leader election.

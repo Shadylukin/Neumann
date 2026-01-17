@@ -334,6 +334,7 @@ impl TransitionValidator {
 
 /// Mode for validation - controls how thorough validation should be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ValidationMode {
     /// Full validation using codebook-based state and transition checks.
     #[default]
