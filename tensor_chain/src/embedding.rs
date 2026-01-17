@@ -60,26 +60,22 @@ impl std::fmt::Display for EmbeddingError {
 impl std::error::Error for EmbeddingError {}
 
 impl EmbeddingState {
-    /// Create a new embedding state from the initial before-state.
     pub fn new(before: SparseVector) -> Self {
         Self::Initial { before }
     }
 
-    /// Create from a dense before-state vector.
     pub fn from_dense(before: &[f32]) -> Self {
         Self::Initial {
             before: SparseVector::from_dense(before),
         }
     }
 
-    /// Create an empty initial state with given dimension.
     pub fn empty(dimension: usize) -> Self {
         Self::Initial {
             before: SparseVector::new(dimension),
         }
     }
 
-    /// Get the before-state embedding (always available).
     pub fn before(&self) -> &SparseVector {
         match self {
             Self::Initial { before } => before,
@@ -87,12 +83,10 @@ impl EmbeddingState {
         }
     }
 
-    /// Check if delta has been computed.
     pub fn is_computed(&self) -> bool {
         matches!(self, Self::Computed { .. })
     }
 
-    /// Get the delta embedding if computed.
     pub fn delta(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
@@ -100,7 +94,6 @@ impl EmbeddingState {
         }
     }
 
-    /// Get the after-state embedding if computed.
     pub fn after(&self) -> Option<&SparseVector> {
         match self {
             Self::Initial { .. } => None,
@@ -133,7 +126,6 @@ impl EmbeddingState {
         }
     }
 
-    /// Compute delta from a dense after-state vector.
     pub fn compute_from_dense(self, after: &[f32]) -> Result<Self, EmbeddingError> {
         self.compute(SparseVector::from_dense(after))
     }
@@ -170,7 +162,6 @@ impl EmbeddingState {
         }
     }
 
-    /// Get dimension of the embedding space.
     pub fn dimension(&self) -> usize {
         self.before().dimension()
     }
@@ -186,7 +177,6 @@ impl EmbeddingState {
         }
     }
 
-    /// Get the delta magnitude, or 0 if not computed.
     pub fn delta_magnitude(&self) -> f32 {
         match self {
             Self::Initial { .. } => 0.0,

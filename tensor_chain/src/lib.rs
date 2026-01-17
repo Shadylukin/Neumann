@@ -173,7 +173,6 @@ pub struct ChainMetrics {
 }
 
 impl ChainMetrics {
-    /// Create a new ChainMetrics instance with fresh stats.
     pub fn new() -> Self {
         Self {
             raft: Arc::new(RaftStats::new()),
@@ -183,7 +182,6 @@ impl ChainMetrics {
         }
     }
 
-    /// Create from existing stats instances.
     pub fn from_components(
         raft: Arc<RaftStats>,
         dtx: Arc<DistributedTxStats>,
@@ -274,7 +272,6 @@ pub struct ChainMetricsSnapshot {
 }
 
 impl ChainMetricsSnapshot {
-    /// Check if any operations have been recorded.
     pub fn is_empty(&self) -> bool {
         self.raft.fast_path_accepted == 0
             && self.raft.heartbeat_successes == 0
@@ -283,7 +280,6 @@ impl ChainMetricsSnapshot {
             && self.replication.updates_sent == 0
     }
 
-    /// Get total heartbeat count (successes + failures).
     pub fn total_heartbeats(&self) -> u64 {
         self.raft.heartbeat_successes + self.raft.heartbeat_failures
     }
@@ -345,7 +341,6 @@ pub struct RaftHandle {
 }
 
 impl RaftHandle {
-    /// Create a new RaftHandle by spawning the RaftNode's run loop.
     pub fn spawn(node: Arc<RaftNode>) -> Self {
         let node_id = node.node_id().to_string();
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -359,22 +354,18 @@ impl RaftHandle {
         }
     }
 
-    /// Get the node ID.
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
 
-    /// Signal the Raft node to shut down gracefully.
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(());
     }
 
-    /// Check if the Raft node task has finished.
     pub fn is_finished(&self) -> bool {
         self.join_handle.is_finished()
     }
 
-    /// Wait for the Raft node to finish and return its result.
     pub async fn join(self) -> Result<()> {
         match self.join_handle.await {
             Ok(result) => result,
@@ -385,7 +376,6 @@ impl RaftHandle {
         }
     }
 
-    /// Shut down and wait for the Raft node to finish.
     pub async fn shutdown_and_wait(self) -> Result<()> {
         self.shutdown();
         self.join().await
@@ -418,7 +408,6 @@ impl Default for AutoMergeConfig {
 }
 
 impl AutoMergeConfig {
-    /// Create a disabled auto-merge config.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -426,19 +415,16 @@ impl AutoMergeConfig {
         }
     }
 
-    /// Set the orthogonal threshold.
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.orthogonal_threshold = threshold;
         self
     }
 
-    /// Set the maximum batch size.
     pub fn with_max_batch(mut self, max: usize) -> Self {
         self.max_merge_batch = max;
         self
     }
 
-    /// Set the merge window.
     pub fn with_window(mut self, ms: u64) -> Self {
         self.merge_window_ms = ms;
         self
@@ -468,7 +454,6 @@ impl Default for GeometricRoutingConfig {
 }
 
 impl GeometricRoutingConfig {
-    /// Create a disabled geometric routing config.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -476,13 +461,11 @@ impl GeometricRoutingConfig {
         }
     }
 
-    /// Set the minimum similarity threshold.
     pub fn with_min_similarity(mut self, threshold: f32) -> Self {
         self.min_similarity = threshold.clamp(0.0, 1.0);
         self
     }
 
-    /// Disable fallback to hash-based routing.
     pub fn without_fallback(mut self) -> Self {
         self.fallback_to_hash = false;
         self
@@ -516,7 +499,6 @@ impl Default for ChainConfig {
 }
 
 impl ChainConfig {
-    /// Create a new config with the given node ID.
     pub fn new(node_id: impl Into<NodeId>) -> Self {
         Self {
             node_id: node_id.into(),
@@ -524,37 +506,31 @@ impl ChainConfig {
         }
     }
 
-    /// Set the maximum transactions per block.
     pub fn with_max_txs(mut self, max: usize) -> Self {
         self.max_txs_per_block = max;
         self
     }
 
-    /// Set the conflict threshold.
     pub fn with_conflict_threshold(mut self, threshold: f32) -> Self {
         self.conflict_threshold = threshold;
         self
     }
 
-    /// Enable or disable auto-merge.
     pub fn with_auto_merge(mut self, enabled: bool) -> Self {
         self.auto_merge.enabled = enabled;
         self
     }
 
-    /// Set the full auto-merge configuration.
     pub fn with_auto_merge_config(mut self, config: AutoMergeConfig) -> Self {
         self.auto_merge = config;
         self
     }
 
-    /// Set the geometric routing configuration.
     pub fn with_geometric_routing(mut self, config: GeometricRoutingConfig) -> Self {
         self.geometric_routing = config;
         self
     }
 
-    /// Disable geometric routing.
     pub fn without_geometric_routing(mut self) -> Self {
         self.geometric_routing.enabled = false;
         self
@@ -622,7 +598,6 @@ impl TensorChain {
         }
     }
 
-    /// Create with custom configuration.
     pub fn with_config(store: TensorStore, config: ChainConfig) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
@@ -648,7 +623,6 @@ impl TensorChain {
         }
     }
 
-    /// Create with a specific Ed25519 identity for signing.
     pub fn with_identity(store: TensorStore, config: ChainConfig, identity: signing::Identity) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
@@ -671,7 +645,6 @@ impl TensorChain {
         }
     }
 
-    /// Create with custom codebook configuration.
     pub fn with_codebook(
         store: TensorStore,
         config: ChainConfig,
@@ -700,52 +673,42 @@ impl TensorChain {
         }
     }
 
-    /// Initialize the chain (creates genesis block if needed).
     pub fn initialize(&self) -> Result<()> {
         self.chain.initialize()
     }
 
-    /// Get the current chain height.
     pub fn height(&self) -> u64 {
         self.chain.height()
     }
 
-    /// Get the tip block hash.
     pub fn tip_hash(&self) -> BlockHash {
         self.chain.tip_hash()
     }
 
-    /// Get the node ID.
     pub fn node_id(&self) -> &NodeId {
         &self.config.node_id
     }
 
-    /// Get the codebook manager.
     pub fn codebook_manager(&self) -> &CodebookManager {
         &self.codebook_manager
     }
 
-    /// Get the transition validator.
     pub fn transition_validator(&self) -> &TransitionValidator {
         &self.transition_validator
     }
 
-    /// Get the Ed25519 identity used for signing blocks.
     pub fn identity(&self) -> &signing::Identity {
         &self.identity
     }
 
-    /// Get the public key bytes of the signing identity.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.identity.public_key_bytes()
     }
 
-    /// Get the geometric routing configuration.
     pub fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
         &self.config.geometric_routing
     }
 
-    /// Check if geometric routing is enabled.
     pub fn is_geometric_routing_enabled(&self) -> bool {
         self.config.geometric_routing.enabled
     }
@@ -765,7 +728,6 @@ impl TensorChain {
         self.config.node_id.clone()
     }
 
-    /// Begin a new transaction.
     pub fn begin(&self) -> Result<Arc<TransactionWorkspace>> {
         self.tx_manager.begin(self.graph.store())
     }
@@ -907,69 +869,56 @@ impl TensorChain {
         Ok((all_operations, delta.to_dense(final_dim), merged_workspaces))
     }
 
-    /// Rollback a transaction.
     pub fn rollback(&self, workspace: Arc<TransactionWorkspace>) -> Result<()> {
         workspace.rollback(self.graph.store())?;
         self.tx_manager.remove(workspace.id());
         Ok(())
     }
 
-    /// Get a block at a specific height.
     pub fn get_block(&self, height: u64) -> Result<Option<Block>> {
         self.chain.get_block_at(height)
     }
 
-    /// Get the tip block.
     pub fn get_tip(&self) -> Result<Option<Block>> {
         self.chain.get_tip()
     }
 
-    /// Get the genesis block.
     pub fn get_genesis(&self) -> Result<Option<Block>> {
         self.chain.get_genesis()
     }
 
-    /// Verify the entire chain.
     pub fn verify(&self) -> Result<()> {
         self.chain.verify_chain()
     }
 
-    /// Get change history for a key.
     pub fn history(&self, key: &str) -> Result<Vec<(u64, Transaction)>> {
         self.chain.history(key)
     }
 
-    /// Get blocks in a height range.
     pub fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<Block>> {
         self.chain.get_blocks_range(start, end)
     }
 
-    /// Iterate over all blocks.
     pub fn iter(&self) -> ChainIterator<'_> {
         self.chain.iter()
     }
 
-    /// Get the number of active transactions.
     pub fn active_transactions(&self) -> usize {
         self.tx_manager.active_count()
     }
 
-    /// Access the underlying store (for advanced operations).
     pub fn store(&self) -> &TensorStore {
         self.graph.store()
     }
 
-    /// Access the graph engine (for advanced operations).
     pub fn graph(&self) -> &GraphEngine {
         &self.graph
     }
 
-    /// Directly append a pre-built block (for consensus/sync).
     pub fn append_block(&self, block: Block) -> Result<BlockHash> {
         self.chain.append(block)
     }
 
-    /// Create a new block builder.
     pub fn new_block(&self) -> BlockBuilder {
         self.chain.new_block()
     }

@@ -151,17 +151,14 @@ impl Connection {
         }
     }
 
-    /// Get current connection state.
     pub fn state(&self) -> ConnectionState {
         *self.state.read()
     }
 
-    /// Check if connection is active.
     pub fn is_connected(&self) -> bool {
         matches!(self.state(), ConnectionState::Connected)
     }
 
-    /// Set the stream after successful connection.
     pub fn set_stream<S>(&self, stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -172,14 +169,12 @@ impl Connection {
         *self.state.write() = ConnectionState::Connected;
     }
 
-    /// Mark connection as disconnected.
     pub fn mark_disconnected(&self) {
         *self.state.write() = ConnectionState::Disconnected;
         *self.reader.write() = None;
         *self.writer.write() = None;
     }
 
-    /// Mark connection as reconnecting.
     pub fn mark_reconnecting(&self, attempt: usize, next_retry: Instant) {
         *self.state.write() = ConnectionState::Reconnecting {
             attempt,
@@ -190,17 +185,14 @@ impl Connection {
         self.stats.record_reconnect();
     }
 
-    /// Take the reader (for spawning read task).
     pub fn take_reader(&self) -> Option<DynRead> {
         self.reader.write().take()
     }
 
-    /// Take the writer (for spawning write task).
     pub fn take_writer(&self) -> Option<DynWrite> {
         self.writer.write().take()
     }
 
-    /// Get the codec.
     pub fn codec(&self) -> &LengthDelimitedCodec {
         &self.codec
     }
@@ -229,7 +221,6 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    /// Create a new connection pool.
     pub fn new(peer_id: NodeId, address: SocketAddr, config: &TcpTransportConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.max_pending_messages);
         Self {
@@ -245,7 +236,6 @@ impl ConnectionPool {
         }
     }
 
-    /// Add a connection to the pool.
     pub fn add_connection<S>(&self, stream: S) -> Arc<Connection>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -262,7 +252,6 @@ impl ConnectionPool {
         conn
     }
 
-    /// Create a connection in connecting state.
     pub fn add_connecting(&self) -> Arc<Connection> {
         let id = self.connection_counter.fetch_add(1, Ordering::Relaxed);
         let conn = Arc::new(Connection::connecting(
@@ -275,12 +264,10 @@ impl ConnectionPool {
         conn
     }
 
-    /// Remove a connection from the pool.
     pub fn remove_connection(&self, id: usize) {
         self.connections.write().retain(|c| c.id != id);
     }
 
-    /// Get a connection for sending (round-robin).
     pub fn get_connection(&self) -> Option<Arc<Connection>> {
         let conns = self.connections.read();
         if conns.is_empty() {
@@ -298,12 +285,10 @@ impl ConnectionPool {
         Some(connected[idx].clone())
     }
 
-    /// Get all connections.
     pub fn connections(&self) -> Vec<Arc<Connection>> {
         self.connections.read().clone()
     }
 
-    /// Get number of active connections.
     pub fn active_count(&self) -> usize {
         self.connections
             .read()
@@ -312,12 +297,10 @@ impl ConnectionPool {
             .count()
     }
 
-    /// Get total connection count.
     pub fn total_count(&self) -> usize {
         self.connections.read().len()
     }
 
-    /// Queue a message for sending.
     pub fn queue_message(&self, msg: Message) -> TcpResult<()> {
         self.outbound_tx.try_send(msg).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => TcpError::BackpressureFull {
@@ -328,17 +311,14 @@ impl ConnectionPool {
         })
     }
 
-    /// Take the outbound receiver (for spawning writer task).
     pub fn take_outbound_rx(&self) -> Option<mpsc::Receiver<Message>> {
         self.outbound_rx.write().take()
     }
 
-    /// Check if pool needs more connections.
     pub fn needs_connections(&self) -> bool {
         self.active_count() < self.pool_size
     }
 
-    /// Get target pool size.
     pub fn target_size(&self) -> usize {
         self.pool_size
     }
@@ -357,7 +337,6 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    /// Create a new connection manager.
     pub fn new(config: TcpTransportConfig) -> Self {
         Self {
             local_id: config.node_id.clone(),
@@ -367,7 +346,6 @@ impl ConnectionManager {
         }
     }
 
-    /// Get or create a connection pool for a peer.
     pub fn get_or_create_pool(&self, peer_id: &NodeId, address: SocketAddr) -> Arc<ConnectionPool> {
         // Check if exists
         if let Some(pool) = self.pools.read().get(peer_id) {
@@ -383,33 +361,27 @@ impl ConnectionManager {
         pool
     }
 
-    /// Get a connection pool for a peer.
     pub fn get_pool(&self, peer_id: &NodeId) -> Option<Arc<ConnectionPool>> {
         self.pools.read().get(peer_id).cloned()
     }
 
-    /// Remove a connection pool.
     pub fn remove_pool(&self, peer_id: &NodeId) {
         self.pools.write().remove(peer_id);
         self.peer_configs.write().remove(peer_id);
     }
 
-    /// Get all peer IDs.
     pub fn peer_ids(&self) -> Vec<NodeId> {
         self.pools.read().keys().cloned().collect()
     }
 
-    /// Get local node ID.
     pub fn local_id(&self) -> &NodeId {
         &self.local_id
     }
 
-    /// Get configuration.
     pub fn config(&self) -> &TcpTransportConfig {
         &self.config
     }
 
-    /// Get peer address.
     pub fn peer_address(&self, peer_id: &NodeId) -> Option<SocketAddr> {
         self.peer_configs.read().get(peer_id).copied()
     }

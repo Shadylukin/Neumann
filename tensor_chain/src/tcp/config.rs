@@ -118,7 +118,6 @@ impl Default for TcpTransportConfig {
 }
 
 impl TcpTransportConfig {
-    /// Create a new config with the given node ID and bind address.
     pub fn new(node_id: impl Into<NodeId>, bind_address: SocketAddr) -> Self {
         Self {
             node_id: node_id.into(),
@@ -127,89 +126,74 @@ impl TcpTransportConfig {
         }
     }
 
-    /// Set connection pool size.
     pub fn with_pool_size(mut self, size: usize) -> Self {
         self.pool_size = size;
         self
     }
 
-    /// Set connection timeout.
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout_ms = timeout.as_millis() as u64;
         self
     }
 
-    /// Set IO timeout.
     pub fn with_io_timeout(mut self, timeout: Duration) -> Self {
         self.io_timeout_ms = timeout.as_millis() as u64;
         self
     }
 
-    /// Set maximum message size.
     pub fn with_max_message_size(mut self, size: usize) -> Self {
         self.max_message_size = size;
         self
     }
 
-    /// Set reconnection config.
     pub fn with_reconnect(mut self, config: ReconnectConfig) -> Self {
         self.reconnect = config;
         self
     }
 
-    /// Set keepalive enabled/disabled.
     pub fn with_keepalive(mut self, enabled: bool) -> Self {
         self.keepalive = enabled;
         self
     }
 
-    /// Set keepalive interval in seconds.
     pub fn with_keepalive_interval_secs(mut self, secs: u64) -> Self {
         self.keepalive_interval_secs = secs;
         self
     }
 
-    /// Set TLS config.
     pub fn with_tls(mut self, config: TlsConfig) -> Self {
         self.tls = Some(config);
         self
     }
 
-    /// Require TLS for all connections (recommended for production).
     pub fn with_require_tls(mut self, require: bool) -> Self {
         self.require_tls = require;
         self
     }
 
-    /// Get connection timeout as Duration.
     pub fn connect_timeout(&self) -> Duration {
         Duration::from_millis(self.connect_timeout_ms)
     }
 
-    /// Get IO timeout as Duration.
     pub fn io_timeout(&self) -> Duration {
         Duration::from_millis(self.io_timeout_ms)
     }
 
-    /// Set compression config.
     pub fn with_compression(mut self, config: CompressionConfig) -> Self {
         self.compression = config;
         self
     }
 
-    /// Disable compression.
     pub fn compression_disabled(mut self) -> Self {
         self.compression.enabled = false;
         self
     }
 
-    /// Set rate limit config.
     pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
         self.rate_limit = config;
         self
     }
 
-    /// Disable rate limiting.
     pub fn rate_limit_disabled(mut self) -> Self {
         self.rate_limit.enabled = false;
         self
@@ -274,7 +258,6 @@ impl Default for ReconnectConfig {
 }
 
 impl ReconnectConfig {
-    /// Calculate backoff duration for a given attempt.
     pub fn backoff_for_attempt(&self, attempt: usize) -> Duration {
         let base = self.initial_backoff_ms as f64 * self.multiplier.powi(attempt as i32);
         let capped = base.min(self.max_backoff_ms as f64);
@@ -287,7 +270,6 @@ impl ReconnectConfig {
         Duration::from_millis(final_ms as u64)
     }
 
-    /// Check if another attempt should be made.
     pub fn should_retry(&self, attempt: usize) -> bool {
         if !self.enabled {
             return false;
@@ -323,7 +305,6 @@ pub struct TlsConfig {
 }
 
 impl TlsConfig {
-    /// Create a new TLS config with certificate and key paths.
     pub fn new(cert_path: impl Into<PathBuf>, key_path: impl Into<PathBuf>) -> Self {
         Self {
             cert_path: cert_path.into(),
@@ -334,13 +315,11 @@ impl TlsConfig {
         }
     }
 
-    /// Set CA certificate path for peer verification.
     pub fn with_ca_cert(mut self, path: impl Into<PathBuf>) -> Self {
         self.ca_cert_path = Some(path.into());
         self
     }
 
-    /// Require client certificates (mutual TLS).
     pub fn with_client_auth(mut self) -> Self {
         self.require_client_auth = true;
         self

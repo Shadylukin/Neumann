@@ -1215,8 +1215,7 @@ mod tests {
         config.geometric_routing = false; // Disable geometric
         config.fanout = 2;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         manager.add_peer("node2".to_string());
         manager.add_peer("node3".to_string());
@@ -1236,8 +1235,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.geometric_routing = false;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         // Add self as peer (shouldn't happen but test robustness)
         manager.add_peer("node1".to_string());
@@ -1255,8 +1253,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.geometric_routing = false;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         let targets = manager.select_gossip_targets(3);
         assert!(targets.is_empty());
@@ -1271,8 +1268,7 @@ mod tests {
         config.geometric_routing = false;
         config.fanout = 3;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         manager.add_peer("node2".to_string());
         manager.add_peer("node3".to_string());
@@ -1525,8 +1521,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.suspicion_timeout_ms = 1; // 1ms timeout for quick test
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         // Add and suspect node2
         manager.add_peer("node2".to_string());
@@ -1561,8 +1556,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.suspicion_timeout_ms = 60000; // 60s timeout
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         // Add and suspect node2
         manager.add_peer("node2".to_string());
@@ -1599,8 +1593,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.suspicion_timeout_ms = 1;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         let count = Arc::new(AtomicUsize::new(0));
         let count_clone = count.clone();
@@ -1668,8 +1661,7 @@ mod tests {
         let mut config = GossipConfig::default();
         config.geometric_routing = false;
 
-        let manager =
-            GossipMembershipManager::new("node1".to_string(), config, transport);
+        let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         // No peers, so targets will be empty
         let result = manager.gossip_round().await;
@@ -1731,9 +1723,7 @@ mod tests {
 
     #[test]
     fn test_with_geometric_constructor() {
-        use crate::geometric_membership::{
-            GeometricMembershipConfig, GeometricMembershipManager,
-        };
+        use crate::geometric_membership::{GeometricMembershipConfig, GeometricMembershipManager};
         use crate::membership::{ClusterConfig, LocalNodeConfig, MembershipManager};
         use crate::network::MemoryTransport;
         use std::net::SocketAddr;
@@ -1749,7 +1739,10 @@ mod tests {
         let cluster_config = ClusterConfig::new("test-cluster", local_config);
 
         // Create inner membership manager
-        let inner = Arc::new(MembershipManager::new(cluster_config, Arc::clone(&transport)));
+        let inner = Arc::new(MembershipManager::new(
+            cluster_config,
+            Arc::clone(&transport),
+        ));
         let geo_config = GeometricMembershipConfig::default();
         let geometric = Arc::new(GeometricMembershipManager::new(inner, geo_config));
 

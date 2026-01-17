@@ -78,7 +78,6 @@ impl MembershipStats {
         Self::default()
     }
 
-    /// Take a point-in-time snapshot.
     pub fn snapshot(&self) -> MembershipStatsSnapshot {
         MembershipStatsSnapshot {
             health_checks: self.health_checks.load(Ordering::Relaxed),
@@ -147,7 +146,6 @@ impl NodeStatus {
         }
     }
 
-    /// Update the node's state embedding.
     pub fn update_embedding(&mut self, embedding: SparseVector) {
         self.state_embedding = Some(embedding);
         self.embedding_updated = Some(Instant::now());
@@ -237,17 +235,14 @@ impl ClusterView {
         }
     }
 
-    /// Check if a node is healthy.
     pub fn is_healthy(&self, node_id: &NodeId) -> bool {
         self.healthy_nodes.contains(node_id)
     }
 
-    /// Get the number of healthy nodes.
     pub fn healthy_count(&self) -> usize {
         self.healthy_nodes.len()
     }
 
-    /// Get the total number of nodes.
     pub fn total_count(&self) -> usize {
         self.nodes.len()
     }
@@ -334,7 +329,6 @@ pub struct ClusterConfig {
 }
 
 impl ClusterConfig {
-    /// Create a new cluster config.
     pub fn new(cluster_id: impl Into<String>, local: LocalNodeConfig) -> Self {
         Self {
             cluster_id: cluster_id.into(),
@@ -344,7 +338,6 @@ impl ClusterConfig {
         }
     }
 
-    /// Add a peer node.
     pub fn with_peer(mut self, node_id: impl Into<NodeId>, address: SocketAddr) -> Self {
         self.peers.push(PeerNodeConfig {
             node_id: node_id.into(),
@@ -353,7 +346,6 @@ impl ClusterConfig {
         self
     }
 
-    /// Set health configuration.
     pub fn with_health(mut self, health: HealthConfig) -> Self {
         self.health = health;
         self
@@ -413,7 +405,6 @@ pub struct MembershipManager {
 }
 
 impl MembershipManager {
-    /// Create a new membership manager.
     pub fn new(config: ClusterConfig, transport: Arc<dyn Transport>) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -446,12 +437,10 @@ impl MembershipManager {
         }
     }
 
-    /// Register a callback for membership changes.
     pub fn register_callback(&self, callback: Arc<dyn MembershipCallback>) {
         self.callbacks.write().push(callback);
     }
 
-    /// Get the current cluster view.
     pub fn view(&self) -> ClusterView {
         let nodes = self.nodes.read();
         let statuses: Vec<NodeStatus> = nodes.values().cloned().collect();
@@ -463,7 +452,6 @@ impl MembershipManager {
         )
     }
 
-    /// Compute the current partition status.
     pub fn partition_status(&self) -> PartitionStatus {
         if self.in_grace_period() {
             return PartitionStatus::Unknown;
@@ -508,27 +496,22 @@ impl MembershipManager {
         self.partition_status() == PartitionStatus::QuorumReachable
     }
 
-    /// Get the status of a specific node.
     pub fn node_status(&self, node_id: &NodeId) -> Option<NodeStatus> {
         self.nodes.read().get(node_id).cloned()
     }
 
-    /// Check if we're still in the startup grace period.
     pub fn in_grace_period(&self) -> bool {
         self.start_time.elapsed() < Duration::from_millis(self.config.health.startup_grace_ms)
     }
 
-    /// Get the local node ID.
     pub fn local_id(&self) -> &NodeId {
         &self.config.local.node_id
     }
 
-    /// Get the cluster ID.
     pub fn cluster_id(&self) -> &str {
         &self.config.cluster_id
     }
 
-    /// Get all peer node IDs (excludes local node).
     pub fn peer_ids(&self) -> Vec<NodeId> {
         let local_id = &self.config.local.node_id;
         self.nodes
@@ -599,7 +582,6 @@ impl MembershipManager {
         }
     }
 
-    /// Start the health checking loop.
     pub async fn start(&self) -> Result<()> {
         {
             let mut running = self.running.write();
@@ -629,7 +611,6 @@ impl MembershipManager {
         Ok(())
     }
 
-    /// Run a single health check round.
     pub async fn check_health(&self) -> Result<()> {
         let peer_ids = self.peer_ids();
         self.stats.health_checks.fetch_add(1, Ordering::Relaxed);
@@ -731,7 +712,6 @@ impl MembershipManager {
         Ok(())
     }
 
-    /// Run the health checking loop until shutdown.
     pub async fn run(&self) -> Result<()> {
         self.start().await?;
 
@@ -752,7 +732,6 @@ impl MembershipManager {
         Ok(())
     }
 
-    /// Shutdown the membership manager.
     pub fn shutdown(&self) {
         tracing::info!(
             node_id = %self.config.local.node_id,
@@ -762,12 +741,10 @@ impl MembershipManager {
         let _ = self.shutdown_tx.send(());
     }
 
-    /// Check if the manager is running.
     pub fn is_running(&self) -> bool {
         *self.running.read()
     }
 
-    /// Manually mark a node as failed.
     pub fn mark_failed(&self, node_id: &NodeId) {
         let old_health;
         {
@@ -792,7 +769,6 @@ impl MembershipManager {
         }
     }
 
-    /// Manually mark a node as healthy.
     pub fn mark_healthy(&self, node_id: &NodeId) {
         let old_health;
         {

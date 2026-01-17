@@ -48,7 +48,6 @@ pub struct DeltaUpdate {
 }
 
 impl DeltaUpdate {
-    /// Create a delta update from embedding and archetype.
     pub fn from_embedding(
         key: String,
         embedding: &[f32],
@@ -82,17 +81,14 @@ impl DeltaUpdate {
         }
     }
 
-    /// Check if this is a full update (not delta-compressed).
     pub fn is_full_update(&self) -> bool {
         self.archetype_id == u32::MAX
     }
 
-    /// Get the number of non-zero delta values.
     pub fn nnz(&self) -> usize {
         self.delta_values.len()
     }
 
-    /// Memory bytes used by this update.
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.key.len()
@@ -150,7 +146,6 @@ pub struct DeltaBatch {
 }
 
 impl DeltaBatch {
-    /// Create a new batch.
     pub fn new(source: NodeId, sequence: u64) -> Self {
         Self {
             updates: Vec::new(),
@@ -160,18 +155,15 @@ impl DeltaBatch {
         }
     }
 
-    /// Add an update to the batch.
     pub fn add(&mut self, update: DeltaUpdate) {
         self.updates.push(update);
     }
 
-    /// Mark as final batch in sync.
     pub fn finalize(mut self) -> Self {
         self.is_final = true;
         self
     }
 
-    /// Get total memory bytes.
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.source.len()
@@ -182,7 +174,6 @@ impl DeltaBatch {
                 .sum::<usize>()
     }
 
-    /// Get average compression ratio.
     pub fn avg_compression_ratio(&self) -> f32 {
         if self.updates.is_empty() {
             return 1.0;
@@ -195,12 +186,10 @@ impl DeltaBatch {
         total / self.updates.len() as f32
     }
 
-    /// Number of updates.
     pub fn len(&self) -> usize {
         self.updates.len()
     }
 
-    /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.updates.is_empty()
     }
@@ -257,7 +246,6 @@ pub struct ReplicationStatsSnapshot {
 }
 
 impl ReplicationStats {
-    /// Create new stats.
     pub fn new() -> Self {
         Self::default()
     }
@@ -293,24 +281,20 @@ impl ReplicationStats {
         self.full_updates.fetch_add(full_count, Ordering::Relaxed);
     }
 
-    /// Record a backpressure event.
     pub fn record_backpressure(&self) {
         self.backpressure_events.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record an auto-drain operation.
     pub fn record_auto_drain(&self) {
         self.auto_drains.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Update queue depth.
     pub fn set_queue_depth(&self, depth: usize) {
         self.queue_depth.store(depth, Ordering::Relaxed);
         // Update peak if needed
         self.peak_queue_depth.fetch_max(depth, Ordering::Relaxed);
     }
 
-    /// Increment queue depth and return new value.
     pub fn increment_queue_depth(&self) -> usize {
         let new_depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
         self.peak_queue_depth
@@ -318,12 +302,10 @@ impl ReplicationStats {
         new_depth
     }
 
-    /// Decrement queue depth.
     pub fn decrement_queue_depth(&self) {
         self.queue_depth.fetch_sub(1, Ordering::Relaxed);
     }
 
-    /// Get current queue depth.
     pub fn queue_depth(&self) -> usize {
         self.queue_depth.load(Ordering::Relaxed)
     }
@@ -338,7 +320,6 @@ impl ReplicationStats {
         (sent + saved) as f32 / sent as f32
     }
 
-    /// Get a snapshot of current stats.
     pub fn snapshot(&self) -> ReplicationStatsSnapshot {
         ReplicationStatsSnapshot {
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
@@ -365,12 +346,10 @@ pub struct DrainHandle {
 }
 
 impl DrainHandle {
-    /// Signal the background worker to shut down.
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(()).await;
     }
 
-    /// Check if the worker is still running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
@@ -432,7 +411,6 @@ impl std::fmt::Debug for DeltaReplicationManager {
 }
 
 impl DeltaReplicationManager {
-    /// Create a new delta replication manager.
     pub fn new(local_node: NodeId, config: DeltaReplicationConfig) -> Self {
         let (pending_tx, pending_rx) = mpsc::channel(config.max_pending);
         Self {
@@ -690,7 +668,6 @@ impl DeltaReplicationManager {
         batches
     }
 
-    /// Send batches to a peer.
     pub async fn send_to_peer<T: Transport>(&self, transport: &T, peer: &NodeId) -> Result<usize> {
         let batches = self.flush();
         let mut total_sent = 0;
@@ -730,17 +707,14 @@ impl DeltaReplicationManager {
         Ok(applied)
     }
 
-    /// Get replication statistics snapshot.
     pub fn stats(&self) -> ReplicationStatsSnapshot {
         self.stats.snapshot()
     }
 
-    /// Get number of pending updates.
     pub fn pending_count(&self) -> usize {
         self.stats.queue_depth()
     }
 
-    /// Get the archetype registry.
     pub fn registry(&self) -> Arc<RwLock<ArchetypeRegistry>> {
         self.registry.clone()
     }
@@ -751,7 +725,6 @@ impl DeltaReplicationManager {
         registry.discover_archetypes(samples, k, tensor_store::KMeansConfig::default())
     }
 
-    /// Sync archetypes with another node.
     pub fn get_archetype_sync(&self) -> Vec<Vec<f32>> {
         let registry = self.registry.read();
         (0..registry.len())
@@ -759,7 +732,6 @@ impl DeltaReplicationManager {
             .collect()
     }
 
-    /// Apply synced archetypes from another node.
     pub fn apply_archetype_sync(&self, archetypes: Vec<Vec<f32>>) -> usize {
         let mut registry = self.registry.write();
         let mut added = 0;

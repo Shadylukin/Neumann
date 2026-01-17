@@ -57,12 +57,12 @@ pub mod transport;
 // Re-exports
 pub use compression::{CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY};
 pub use config::{ReconnectConfig, TcpTransportConfig, TlsConfig};
-pub use rate_limit::{PeerRateLimiter, RateLimitConfig};
 pub use connection::{
     Connection, ConnectionManager, ConnectionPool, ConnectionState, ConnectionStats,
 };
 pub use error::{TcpError, TcpResult};
 pub use framing::{Handshake, LengthDelimitedCodec};
+pub use rate_limit::{PeerRateLimiter, RateLimitConfig};
 pub use stream::{box_stream, split_stream, AsyncStream, DynRead, DynStream, DynWrite};
 #[cfg(feature = "tls")]
 pub use tls::{wrap_client, wrap_server, ClientTlsStream, ServerTlsStream};

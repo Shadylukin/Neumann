@@ -42,14 +42,12 @@ pub(crate) struct WorkspaceEmbedding {
 
 #[allow(dead_code)]
 impl WorkspaceEmbedding {
-    /// Create a new workspace embedding from the initial state.
     pub fn new(before: Vec<f32>) -> Self {
         Self {
             state: EmbeddingState::from_dense(&before),
         }
     }
 
-    /// Create an empty embedding (for stores without embeddings).
     pub fn empty(dim: usize) -> Self {
         Self {
             state: EmbeddingState::empty(dim),
@@ -72,32 +70,26 @@ impl WorkspaceEmbedding {
         self.state.delta_or_zero()
     }
 
-    /// Check if the delta has been computed.
     pub fn has_delta(&self) -> bool {
         self.state.is_computed()
     }
 
-    /// Get the before-state embedding as a dense vector.
     pub fn before(&self) -> Vec<f32> {
         self.state.before().to_dense()
     }
 
-    /// Get the after-state embedding as a dense vector, if computed.
     pub fn after(&self) -> Option<Vec<f32>> {
         self.state.after().map(|v| v.to_dense())
     }
 
-    /// Get the delta embedding as a dense vector, if computed.
     pub fn delta(&self) -> Option<Vec<f32>> {
         self.state.delta().map(|v| v.to_dense())
     }
 
-    /// Get the dimension of the embedding space.
     pub fn dimension(&self) -> usize {
         self.state.dimension()
     }
 
-    /// Get the underlying EmbeddingState (for advanced usage).
     pub fn state(&self) -> &EmbeddingState {
         &self.state
     }
@@ -170,7 +162,6 @@ pub struct TransactionWorkspace {
 }
 
 impl TransactionWorkspace {
-    /// Create a new transaction workspace from the current store state.
     pub fn begin(store: &TensorStore) -> Result<Self> {
         let checkpoint_bytes = store
             .snapshot_bytes()
@@ -192,27 +183,22 @@ impl TransactionWorkspace {
         })
     }
 
-    /// Get the transaction ID.
     pub fn id(&self) -> u64 {
         self.id
     }
 
-    /// Get the current state.
     pub fn state(&self) -> TransactionState {
         *self.state.read()
     }
 
-    /// Get when the transaction started.
     pub fn started_at(&self) -> u64 {
         self.started_at
     }
 
-    /// Check if the transaction is active.
     pub fn is_active(&self) -> bool {
         *self.state.read() == TransactionState::Active
     }
 
-    /// Add an operation to this transaction.
     pub fn add_operation(&self, op: ChainTransaction) -> Result<()> {
         if !self.is_active() {
             return Err(ChainError::TransactionFailed(
@@ -230,22 +216,18 @@ impl TransactionWorkspace {
         Ok(())
     }
 
-    /// Get all operations in this transaction.
     pub fn operations(&self) -> Vec<ChainTransaction> {
         self.operations.read().clone()
     }
 
-    /// Get all affected keys.
     pub fn affected_keys(&self) -> HashSet<String> {
         self.affected_keys.read().clone()
     }
 
-    /// Get the number of operations.
     pub fn operation_count(&self) -> usize {
         self.operations.read().len()
     }
 
-    /// Mark transaction as committing.
     pub fn mark_committing(&self) -> Result<()> {
         let mut state = self.state.write();
         if *state != TransactionState::Active {
@@ -258,12 +240,10 @@ impl TransactionWorkspace {
         Ok(())
     }
 
-    /// Mark transaction as committed.
     pub fn mark_committed(&self) {
         *self.state.write() = TransactionState::Committed;
     }
 
-    /// Mark transaction as failed.
     pub fn mark_failed(&self) {
         *self.state.write() = TransactionState::Failed;
     }
@@ -285,12 +265,10 @@ impl TransactionWorkspace {
         Ok(())
     }
 
-    /// Get the checkpoint bytes (for delta computation).
     pub fn checkpoint_bytes(&self) -> &[u8] {
         &self.checkpoint_bytes
     }
 
-    /// Set the before-state embedding (captured at transaction begin).
     pub fn set_before_embedding(&self, embedding: Vec<f32>) {
         self.embedding.write().set_before(embedding);
     }
@@ -307,12 +285,10 @@ impl TransactionWorkspace {
         self.embedding.read().clone()
     }
 
-    /// Get the delta embedding, or zeros if not computed.
     pub fn delta_embedding(&self) -> Vec<f32> {
         self.embedding.read().delta_or_zero()
     }
 
-    /// Check if the delta has been computed.
     pub fn has_delta(&self) -> bool {
         self.embedding.read().has_delta()
     }
@@ -351,7 +327,6 @@ pub struct TransactionDelta {
 }
 
 impl TransactionDelta {
-    /// Create a new delta from a transaction workspace.
     pub fn from_workspace(workspace: &TransactionWorkspace) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -369,7 +344,6 @@ impl TransactionDelta {
         }
     }
 
-    /// Create an empty delta.
     pub fn empty() -> Self {
         Self {
             tx_id: 0,
@@ -382,20 +356,17 @@ impl TransactionDelta {
         }
     }
 
-    /// Set the delta embedding.
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
-    /// Mark this as a merge of parent transactions.
     pub fn as_merge(mut self, parent_ids: Vec<u64>) -> Self {
         self.is_merge = true;
         self.merge_parents = parent_ids;
         self
     }
 
-    /// Check if this delta has any affected keys overlapping with another.
     pub fn overlaps_with(&self, other: &TransactionDelta) -> bool {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -403,7 +374,6 @@ impl TransactionDelta {
             .is_some()
     }
 
-    /// Get overlapping keys with another delta.
     pub fn overlapping_keys(&self, other: &TransactionDelta) -> HashSet<String> {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -419,14 +389,12 @@ pub struct TransactionManager {
 }
 
 impl TransactionManager {
-    /// Create a new transaction manager.
     pub fn new() -> Self {
         Self {
             active: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
-    /// Begin a new transaction.
     pub fn begin(&self, store: &TensorStore) -> Result<Arc<TransactionWorkspace>> {
         let workspace = Arc::new(TransactionWorkspace::begin(store)?);
         self.active
@@ -435,22 +403,18 @@ impl TransactionManager {
         Ok(workspace)
     }
 
-    /// Get an active transaction by ID.
     pub fn get(&self, tx_id: u64) -> Option<Arc<TransactionWorkspace>> {
         self.active.read().get(&tx_id).cloned()
     }
 
-    /// Remove a transaction from active tracking.
     pub fn remove(&self, tx_id: u64) -> Option<Arc<TransactionWorkspace>> {
         self.active.write().remove(&tx_id)
     }
 
-    /// Get count of active transactions.
     pub fn active_count(&self) -> usize {
         self.active.read().len()
     }
 
-    /// Get all active transaction IDs.
     pub fn active_ids(&self) -> Vec<u64> {
         self.active.read().keys().copied().collect()
     }
@@ -530,7 +494,6 @@ impl TransactionManager {
         candidates
     }
 
-    /// Get all active transactions.
     pub fn active_transactions(&self) -> Vec<Arc<TransactionWorkspace>> {
         self.active.read().values().cloned().collect()
     }

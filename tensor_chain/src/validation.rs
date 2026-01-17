@@ -86,7 +86,6 @@ pub struct TransitionValidator {
 }
 
 impl TransitionValidator {
-    /// Create a new transition validator.
     pub fn new(global: Arc<GlobalCodebook>, config: ValidationConfig) -> Self {
         Self {
             global,
@@ -95,12 +94,10 @@ impl TransitionValidator {
         }
     }
 
-    /// Create with default configuration.
     pub fn with_global(global: Arc<GlobalCodebook>) -> Self {
         Self::new(global, ValidationConfig::default())
     }
 
-    /// Get the global codebook.
     pub fn global(&self) -> &GlobalCodebook {
         &self.global
     }
@@ -148,17 +145,14 @@ impl TransitionValidator {
         )
     }
 
-    /// Register a local codebook for a domain.
     pub fn register_local(&self, domain: &str, local: LocalCodebook) {
         self.locals.write().insert(domain.to_string(), local);
     }
 
-    /// Check if a state is valid (near a codebook entry).
     pub fn is_valid_state(&self, domain: &str, state: &[f32]) -> bool {
         self.validate_state(domain, state).is_valid
     }
 
-    /// Validate a state and return detailed results.
     pub fn validate_state(&self, domain: &str, state: &[f32]) -> StateValidation {
         // Check global codebook
         let (global_entry, global_similarity) = self.global.quantize(state).unwrap_or((0, 0.0));
@@ -191,12 +185,10 @@ impl TransitionValidator {
         }
     }
 
-    /// Check if a transition is valid.
     pub fn is_valid_transition(&self, domain: &str, from: &[f32], to: &[f32]) -> bool {
         self.validate_transition(domain, from, to).is_valid
     }
 
-    /// Validate a transition and return detailed results.
     pub fn validate_transition(
         &self,
         domain: &str,
@@ -260,7 +252,6 @@ impl TransitionValidator {
         }
     }
 
-    /// Validate a batch of transitions.
     pub fn validate_batch(
         &self,
         domain: &str,
@@ -272,7 +263,6 @@ impl TransitionValidator {
             .collect()
     }
 
-    /// Check if a sequence of states forms a valid path.
     pub fn validate_path(&self, domain: &str, states: &[Vec<f32>]) -> Result<()> {
         if states.len() < 2 {
             return Ok(());
@@ -293,7 +283,6 @@ impl TransitionValidator {
         Ok(())
     }
 
-    /// Compute the accumulated drift over a sequence of states.
     pub fn compute_path_drift(&self, states: &[Vec<f32>]) -> f32 {
         if states.len() < 2 {
             return 0.0;
@@ -312,7 +301,6 @@ impl TransitionValidator {
             .sum()
     }
 
-    /// Find the state in the path that deviates most from valid states.
     pub fn find_max_deviation(&self, domain: &str, states: &[Vec<f32>]) -> Option<(usize, f32)> {
         states
             .iter()
@@ -327,7 +315,6 @@ impl TransitionValidator {
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
     }
 
-    /// Update the local codebook for a domain with observed states.
     pub fn learn_from_states(&self, domain: &str, states: &[Vec<f32>], threshold: f32) {
         let mut locals = self.locals.write();
         let local = locals.entry(domain.to_string()).or_insert_with(|| {
@@ -372,7 +359,6 @@ pub struct FastPathResult {
 }
 
 impl FastPathResult {
-    /// Create a result indicating fast-path can be used.
     pub fn accept(similarity: f32, blocks_checked: usize) -> Self {
         Self {
             can_use_fast_path: true,
@@ -382,7 +368,6 @@ impl FastPathResult {
         }
     }
 
-    /// Create a result indicating fast-path cannot be used.
     pub fn reject(reason: &str, similarity: f32, blocks_checked: usize) -> Self {
         Self {
             can_use_fast_path: false,
@@ -417,7 +402,6 @@ impl Default for FastPathValidator {
 }
 
 impl FastPathValidator {
-    /// Create a new fast-path validator with custom thresholds.
     pub fn new(similarity_threshold: f32, min_leader_history: usize) -> Self {
         Self {
             similarity_threshold,
@@ -427,7 +411,6 @@ impl FastPathValidator {
         }
     }
 
-    /// Check if fast-path validation can be used.
     pub fn check_fast_path(
         &self,
         block_embedding: &[f32],
@@ -484,7 +467,6 @@ impl FastPathValidator {
         }
     }
 
-    /// Reset the full validation counter.
     pub fn reset(&self) {
         self.blocks_since_full
             .store(0, std::sync::atomic::Ordering::Relaxed);

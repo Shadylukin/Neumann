@@ -113,7 +113,6 @@ pub struct SnapshotBuffer {
 }
 
 impl SnapshotBuffer {
-    /// Create a new snapshot buffer.
     pub fn new(config: SnapshotBufferConfig) -> Result<Self> {
         // Ensure temp directory exists
         fs::create_dir_all(&config.temp_dir)?;
@@ -128,12 +127,10 @@ impl SnapshotBuffer {
         })
     }
 
-    /// Create with default configuration.
     pub fn with_defaults() -> Result<Self> {
         Self::new(SnapshotBufferConfig::default())
     }
 
-    /// Write data to the buffer.
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -228,25 +225,21 @@ impl SnapshotBuffer {
         Ok(())
     }
 
-    /// Get total bytes written.
     #[must_use]
     pub fn total_len(&self) -> u64 {
         self.total_bytes
     }
 
-    /// Check if buffer is in file mode.
     #[must_use]
     pub fn is_file_backed(&self) -> bool {
         matches!(self.mode, BufferMode::File { .. })
     }
 
-    /// Get the SHA-256 hash of all written data.
     #[must_use]
     pub fn hash(&self) -> [u8; 32] {
         self.hasher.clone().finalize().into()
     }
 
-    /// Read a chunk of data at the given offset.
     pub fn read_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         if offset + len as u64 > self.total_bytes {
             return Err(SnapshotBufferError::OutOfBounds {
@@ -265,7 +258,7 @@ impl SnapshotBuffer {
         }
     }
 
-    /// Get a slice of the buffer (zero-copy for file mode).
+    /// Zero-copy for file mode; copies for memory mode.
     pub fn as_slice(&self, offset: u64, len: usize) -> Result<&[u8]> {
         if offset + len as u64 > self.total_bytes {
             return Err(SnapshotBufferError::OutOfBounds {
@@ -284,12 +277,10 @@ impl SnapshotBuffer {
         }
     }
 
-    /// Get the entire buffer as bytes.
     pub fn as_bytes(&self) -> Result<&[u8]> {
         self.as_slice(0, self.total_bytes as usize)
     }
 
-    /// Clean up any temporary files.
     pub fn cleanup(&mut self) -> Result<()> {
         if let BufferMode::File { path, .. } = &self.mode {
             let path = path.clone();
@@ -304,7 +295,6 @@ impl SnapshotBuffer {
         Ok(())
     }
 
-    /// Get the temp file path if in file mode.
     #[must_use]
     pub fn temp_path(&self) -> Option<&Path> {
         match &self.mode {
@@ -313,7 +303,6 @@ impl SnapshotBuffer {
         }
     }
 
-    /// Get the buffer configuration.
     #[must_use]
     pub fn config(&self) -> &SnapshotBufferConfig {
         &self.config
@@ -331,8 +320,7 @@ impl Drop for SnapshotBuffer {
 
 impl Write for SnapshotBuffer {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write(buf)
-            .map_err(io::Error::other)?;
+        self.write(buf).map_err(io::Error::other)?;
         Ok(buf.len())
     }
 
@@ -351,7 +339,6 @@ pub struct SnapshotBufferReader<'a> {
 }
 
 impl<'a> SnapshotBufferReader<'a> {
-    /// Create a new reader starting at offset 0.
     pub fn new(buffer: &'a SnapshotBuffer) -> Self {
         Self {
             buffer,
@@ -359,13 +346,11 @@ impl<'a> SnapshotBufferReader<'a> {
         }
     }
 
-    /// Get current position.
     #[must_use]
     pub fn position(&self) -> u64 {
         self.position
     }
 
-    /// Get remaining bytes.
     #[must_use]
     pub fn remaining(&self) -> u64 {
         self.buffer.total_bytes.saturating_sub(self.position)
@@ -663,5 +648,297 @@ mod tests {
 
         assert_eq!(config.max_memory_bytes, 1024);
         assert_eq!(config.temp_dir, PathBuf::from("/tmp/test"));
+    }
+
+    // ========== Seek Variants Tests ==========
+
+    #[test]
+    fn test_buffer_reader_seek_from_end() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        let data: Vec<u8> = (0..100).collect();
+        buffer.write(&data).unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotBufferReader::new(&buffer);
+
+        // Seek 10 bytes from end
+        reader.seek(SeekFrom::End(-10)).unwrap();
+        assert_eq!(reader.position(), 90);
+
+        // Read last 10 bytes
+        let mut buf = [0u8; 10];
+        reader.read(&mut buf).unwrap();
+        assert_eq!(&buf, &data[90..100]);
+    }
+
+    #[test]
+    fn test_buffer_reader_seek_from_current() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        let data: Vec<u8> = (0..100).collect();
+        buffer.write(&data).unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotBufferReader::new(&buffer);
+
+        // Move forward 20
+        reader.seek(SeekFrom::Current(20)).unwrap();
+        assert_eq!(reader.position(), 20);
+
+        // Move forward another 30
+        reader.seek(SeekFrom::Current(30)).unwrap();
+        assert_eq!(reader.position(), 50);
+
+        // Move backward 10
+        reader.seek(SeekFrom::Current(-10)).unwrap();
+        assert_eq!(reader.position(), 40);
+
+        // Read from position 40
+        let mut buf = [0u8; 10];
+        reader.read(&mut buf).unwrap();
+        assert_eq!(&buf, &data[40..50]);
+    }
+
+    #[test]
+    fn test_buffer_reader_seek_past_end() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        buffer.write(b"short").unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotBufferReader::new(&buffer);
+
+        // Seek past end (allowed, but read will return 0)
+        reader.seek(SeekFrom::Start(100)).unwrap();
+        assert_eq!(reader.position(), 100);
+
+        // Reading should return 0 bytes
+        let mut buf = [0u8; 10];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_buffer_reader_seek_negative_position() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+        buffer.write(b"test").unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotBufferReader::new(&buffer);
+
+        // Seek to negative position should error
+        let result = reader.seek(SeekFrom::Start(0));
+        assert!(result.is_ok());
+
+        let result = reader.seek(SeekFrom::Current(-10));
+        assert!(result.is_err());
+    }
+
+    // ========== Edge Case Tests ==========
+
+    #[test]
+    fn test_buffer_read_exact_boundary() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        let data = vec![0u8; 100];
+        buffer.write(&data).unwrap();
+        buffer.finalize().unwrap();
+
+        // Read exactly to the end
+        let chunk = buffer.as_slice(0, 100).unwrap();
+        assert_eq!(chunk.len(), 100);
+
+        // Read one more byte should fail
+        let result = buffer.as_slice(0, 101);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_buffer_read_chunk_method() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        let data: Vec<u8> = (0..200).collect();
+        buffer.write(&data).unwrap();
+        buffer.finalize().unwrap();
+
+        // read_chunk returns a Vec (copy)
+        let chunk = buffer.read_chunk(50, 100).unwrap();
+        assert_eq!(chunk.len(), 100);
+        assert_eq!(chunk, data[50..150].to_vec());
+    }
+
+    #[test]
+    fn test_buffer_empty_writes() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        // Empty writes should be no-ops
+        buffer.write(&[]).unwrap();
+        buffer.write(&[]).unwrap();
+        assert_eq!(buffer.total_len(), 0);
+
+        buffer.write(b"data").unwrap();
+        buffer.write(&[]).unwrap();
+        assert_eq!(buffer.total_len(), 4);
+
+        buffer.finalize().unwrap();
+        assert_eq!(buffer.as_bytes().unwrap(), b"data");
+    }
+
+    #[test]
+    fn test_buffer_finalize_idempotent() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        buffer.write(b"test").unwrap();
+        buffer.finalize().unwrap();
+        buffer.finalize().unwrap(); // Second finalize should be fine
+        buffer.finalize().unwrap(); // Third too
+
+        assert_eq!(buffer.as_bytes().unwrap(), b"test");
+    }
+
+    #[test]
+    fn test_buffer_multiple_file_growth_cycles() {
+        let config = SnapshotBufferConfig {
+            max_memory_bytes: 100,
+            temp_dir: std::env::temp_dir().join("snapshot_buffer_multi_growth_test"),
+            initial_file_capacity: 200,
+        };
+
+        let mut buffer = SnapshotBuffer::new(config).unwrap();
+
+        // First write triggers spill
+        buffer.write(&vec![1u8; 150]).unwrap();
+        assert!(buffer.is_file_backed());
+
+        // Write more to trigger first growth
+        buffer.write(&vec![2u8; 200]).unwrap();
+
+        // Write even more to trigger second growth
+        buffer.write(&vec![3u8; 500]).unwrap();
+
+        buffer.finalize().unwrap();
+        assert_eq!(buffer.total_len(), 850);
+
+        // Verify data integrity
+        let data = buffer.as_bytes().unwrap();
+        assert!(data[..150].iter().all(|&b| b == 1));
+        assert!(data[150..350].iter().all(|&b| b == 2));
+        assert!(data[350..].iter().all(|&b| b == 3));
+    }
+
+    #[test]
+    fn test_buffer_with_defaults() {
+        let buffer = SnapshotBuffer::with_defaults().unwrap();
+        assert!(!buffer.is_file_backed());
+        assert_eq!(buffer.total_len(), 0);
+    }
+
+    #[test]
+    fn test_buffer_reader_remaining() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+        buffer.write(b"0123456789").unwrap();
+        buffer.finalize().unwrap();
+
+        let mut reader = SnapshotBufferReader::new(&buffer);
+        assert_eq!(reader.remaining(), 10);
+        assert_eq!(reader.position(), 0);
+
+        let mut buf = [0u8; 5];
+        reader.read(&mut buf).unwrap();
+        assert_eq!(reader.remaining(), 5);
+        assert_eq!(reader.position(), 5);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let io_err = SnapshotBufferError::Io(io::Error::new(io::ErrorKind::NotFound, "test"));
+        assert!(io_err.to_string().contains("I/O error"));
+
+        let oob_err = SnapshotBufferError::OutOfBounds {
+            offset: 100,
+            len: 50,
+            total: 80,
+        };
+        assert!(oob_err.to_string().contains("out of bounds"));
+        assert!(oob_err.to_string().contains("100"));
+
+        let not_final = SnapshotBufferError::NotFinalized;
+        assert!(not_final.to_string().contains("not finalized"));
+    }
+
+    #[test]
+    fn test_error_from_io() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "test");
+        let buf_err: SnapshotBufferError = io_err.into();
+        assert!(matches!(buf_err, SnapshotBufferError::Io(_)));
+    }
+
+    #[test]
+    fn test_write_trait_implementation() {
+        use std::io::Write as IoWrite;
+
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+
+        // Use the Write trait
+        let n = IoWrite::write(&mut buffer, b"hello").unwrap();
+        assert_eq!(n, 5);
+
+        let n = IoWrite::write(&mut buffer, b" world").unwrap();
+        assert_eq!(n, 6);
+
+        buffer.flush().unwrap();
+        buffer.finalize().unwrap();
+
+        assert_eq!(buffer.as_bytes().unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn test_buffer_temp_path_memory_mode() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+        buffer.write(b"small").unwrap();
+        buffer.finalize().unwrap();
+
+        // Memory mode has no temp path
+        assert!(buffer.temp_path().is_none());
+    }
+
+    #[test]
+    fn test_buffer_config_accessor() {
+        let config = test_config();
+        let max_mem = config.max_memory_bytes;
+
+        let buffer = SnapshotBuffer::new(config).unwrap();
+        assert_eq!(buffer.config().max_memory_bytes, max_mem);
+    }
+
+    #[test]
+    fn test_buffer_hash_stability() {
+        let data = b"consistent hash test data";
+
+        // Create two buffers with same data
+        let mut buffer1 = SnapshotBuffer::new(test_config()).unwrap();
+        buffer1.write(data).unwrap();
+        buffer1.finalize().unwrap();
+
+        let mut buffer2 = SnapshotBuffer::new(test_config()).unwrap();
+        buffer2.write(data).unwrap();
+        buffer2.finalize().unwrap();
+
+        // Hashes should match
+        assert_eq!(buffer1.hash(), buffer2.hash());
+    }
+
+    #[test]
+    fn test_buffer_cleanup_memory_mode() {
+        let mut buffer = SnapshotBuffer::new(test_config()).unwrap();
+        buffer.write(b"memory").unwrap();
+        buffer.finalize().unwrap();
+
+        // Cleanup on memory mode is a no-op (no temp files to remove)
+        // total_bytes is only reset when switching from file mode back to memory
+        buffer.cleanup().unwrap();
+        // In memory mode, cleanup doesn't reset the buffer
+        assert_eq!(buffer.total_len(), 6);
     }
 }

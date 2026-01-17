@@ -40,7 +40,6 @@ impl Default for CompressionConfig {
 }
 
 impl CompressionConfig {
-    /// Create a config with compression disabled.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -49,13 +48,11 @@ impl CompressionConfig {
         }
     }
 
-    /// Set the compression method.
     pub fn with_method(mut self, method: CompressionMethod) -> Self {
         self.method = method;
         self
     }
 
-    /// Set the minimum size threshold.
     pub fn with_min_size(mut self, min_size: usize) -> Self {
         self.min_size = min_size;
         self
@@ -79,7 +76,6 @@ pub mod flags {
 /// SECURITY: Prevents memory DoS from malicious size prefixes.
 pub const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
 
-/// Get the frame flags byte for a compression method.
 pub fn frame_flags(method: CompressionMethod) -> u8 {
     match method {
         CompressionMethod::None => flags::NONE,
@@ -87,7 +83,6 @@ pub fn frame_flags(method: CompressionMethod) -> u8 {
     }
 }
 
-/// Get the compression method from frame flags.
 pub fn method_from_flags(flag_byte: u8) -> TcpResult<CompressionMethod> {
     match flag_byte & 0x01 {
         0 => Ok(CompressionMethod::None),
@@ -96,7 +91,6 @@ pub fn method_from_flags(flag_byte: u8) -> TcpResult<CompressionMethod> {
     }
 }
 
-/// Compress data using the specified method.
 pub fn compress(data: &[u8], method: CompressionMethod) -> Vec<u8> {
     match method {
         CompressionMethod::None => data.to_vec(),
@@ -119,8 +113,7 @@ pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> 
             }
 
             // LZ4 prepends the uncompressed size as 4 bytes little-endian
-            let claimed_size =
-                u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            let claimed_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
 
             if claimed_size > MAX_DECOMPRESSED_SIZE {
                 return Err(TcpError::Compression {
@@ -141,7 +134,6 @@ pub fn decompress(data: &[u8], method: CompressionMethod) -> TcpResult<Vec<u8>> 
     }
 }
 
-/// Check if compression is beneficial (compressed is smaller).
 pub fn is_beneficial(original_len: usize, compressed_len: usize) -> bool {
     compressed_len < original_len
 }

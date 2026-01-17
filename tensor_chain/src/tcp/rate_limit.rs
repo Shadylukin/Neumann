@@ -36,7 +36,6 @@ impl Default for RateLimitConfig {
 }
 
 impl RateLimitConfig {
-    /// Create a disabled rate limit config.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -44,7 +43,6 @@ impl RateLimitConfig {
         }
     }
 
-    /// Create an aggressive rate limit config (lower limits).
     pub fn aggressive() -> Self {
         Self {
             bucket_size: 50,
@@ -53,7 +51,6 @@ impl RateLimitConfig {
         }
     }
 
-    /// Create a permissive rate limit config (higher limits).
     pub fn permissive() -> Self {
         Self {
             bucket_size: 200,
@@ -62,19 +59,16 @@ impl RateLimitConfig {
         }
     }
 
-    /// Set bucket size.
     pub fn with_bucket_size(mut self, size: u32) -> Self {
         self.bucket_size = size;
         self
     }
 
-    /// Set refill rate (tokens per second).
     pub fn with_refill_rate(mut self, rate: f64) -> Self {
         self.refill_rate = rate;
         self
     }
 
-    /// Enable or disable rate limiting.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -125,7 +119,6 @@ pub struct PeerRateLimiter {
 }
 
 impl PeerRateLimiter {
-    /// Create a new rate limiter with the given config.
     pub fn new(config: RateLimitConfig) -> Self {
         Self {
             config,
@@ -156,22 +149,18 @@ impl PeerRateLimiter {
             .available(&self.config)
     }
 
-    /// Remove rate limit state for a peer (on disconnect).
     pub fn remove_peer(&self, peer: &NodeId) {
         self.buckets.remove(peer);
     }
 
-    /// Clear all rate limit state.
     pub fn clear(&self) {
         self.buckets.clear();
     }
 
-    /// Number of tracked peers.
     pub fn peer_count(&self) -> usize {
         self.buckets.len()
     }
 
-    /// Check if rate limiting is enabled.
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
     }

@@ -37,7 +37,6 @@ pub struct LengthDelimitedCodec {
 }
 
 impl LengthDelimitedCodec {
-    /// Create a new codec with the given maximum frame length.
     pub fn new(max_frame_length: usize) -> Self {
         Self {
             max_frame_length,
@@ -46,7 +45,6 @@ impl LengthDelimitedCodec {
         }
     }
 
-    /// Create a new codec with compression config.
     pub fn with_compression(max_frame_length: usize, compression: CompressionConfig) -> Self {
         Self {
             max_frame_length,
@@ -55,22 +53,18 @@ impl LengthDelimitedCodec {
         }
     }
 
-    /// Enable compression (called after handshake negotiation).
     pub fn set_compression_enabled(&mut self, enabled: bool) {
         self.compress_enabled = enabled && self.compression.enabled;
     }
 
-    /// Check if compression is enabled.
     pub fn compression_enabled(&self) -> bool {
         self.compress_enabled
     }
 
-    /// Get the compression config.
     pub fn compression_config(&self) -> &CompressionConfig {
         &self.compression
     }
 
-    /// Encode a message to bytes with length prefix.
     pub fn encode(&self, msg: &Message) -> TcpResult<Vec<u8>> {
         let payload = bincode::serialize(msg)?;
 
@@ -89,7 +83,6 @@ impl LengthDelimitedCodec {
         Ok(frame)
     }
 
-    /// Decode a message from bytes (without length prefix).
     pub fn decode_payload(&self, payload: &[u8]) -> TcpResult<Message> {
         if payload.len() > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
@@ -102,7 +95,6 @@ impl LengthDelimitedCodec {
         Ok(msg)
     }
 
-    /// Encode a message to bytes with v2 format (flags byte + optional compression).
     pub fn encode_v2(&self, msg: &Message) -> TcpResult<Vec<u8>> {
         let serialized = bincode::serialize(msg)?;
 
@@ -141,7 +133,6 @@ impl LengthDelimitedCodec {
         Ok(frame)
     }
 
-    /// Decode a v2 frame payload (flags byte + possibly compressed data).
     pub fn decode_payload_v2(&self, payload: &[u8]) -> TcpResult<Message> {
         if payload.is_empty() {
             return Err(TcpError::InvalidFrame("empty v2 payload".to_string()));
@@ -208,7 +199,6 @@ impl LengthDelimitedCodec {
         Ok(Some(msg))
     }
 
-    /// Write a frame to an async writer.
     pub async fn write_frame<W>(&self, writer: &mut W, msg: &Message) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -340,7 +330,6 @@ impl LengthDelimitedCodec {
         Ok(Some(msg))
     }
 
-    /// Write a v2 frame to an async writer.
     pub async fn write_frame_v2<W>(&self, writer: &mut W, msg: &Message) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -406,7 +395,6 @@ impl LengthDelimitedCodec {
         Ok(Some(msg))
     }
 
-    /// Write a v2 frame to an async writer with timeout.
     pub async fn write_frame_v2_with_timeout<W>(
         &self,
         writer: &mut W,
@@ -432,7 +420,6 @@ impl LengthDelimitedCodec {
         Ok(())
     }
 
-    /// Get the maximum frame length.
     pub fn max_frame_length(&self) -> usize {
         self.max_frame_length
     }
@@ -465,7 +452,6 @@ impl Handshake {
     /// Minimum supported protocol version for backward compatibility.
     pub const MIN_PROTOCOL_VERSION: u32 = 1;
 
-    /// Create a new handshake message.
     pub fn new(node_id: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
@@ -474,35 +460,29 @@ impl Handshake {
         }
     }
 
-    /// Add a capability.
     pub fn with_capability(mut self, cap: impl Into<String>) -> Self {
         self.capabilities.push(cap.into());
         self
     }
 
-    /// Add compression capability to the handshake.
     pub fn with_compression(self) -> Self {
         self.with_capability(super::compression::COMPRESSION_CAPABILITY)
     }
 
-    /// Check if compression capability is advertised.
     pub fn supports_compression(&self) -> bool {
         self.capabilities
             .iter()
             .any(|c| c == super::compression::COMPRESSION_CAPABILITY)
     }
 
-    /// Check if peer uses v2 protocol (supports compression).
     pub fn is_v2(&self) -> bool {
         self.protocol_version >= 2
     }
 
-    /// Check if both peers support compression.
     pub fn compression_negotiated(&self, peer: &Handshake) -> bool {
         self.is_v2() && peer.is_v2() && self.supports_compression() && peer.supports_compression()
     }
 
-    /// Encode handshake to bytes.
     pub fn encode(&self) -> TcpResult<Vec<u8>> {
         let payload = bincode::serialize(self)?;
         let length = payload.len() as u32;
@@ -512,7 +492,6 @@ impl Handshake {
         Ok(frame)
     }
 
-    /// Read handshake from an async reader.
     pub async fn read_from<R>(reader: &mut R, max_size: usize) -> TcpResult<Self>
     where
         R: AsyncRead + Unpin,
@@ -552,7 +531,6 @@ impl Handshake {
         Ok(handshake)
     }
 
-    /// Write handshake to an async writer.
     pub async fn write_to<W>(&self, writer: &mut W) -> TcpResult<()>
     where
         W: AsyncWrite + Unpin,
@@ -563,7 +541,6 @@ impl Handshake {
         Ok(())
     }
 
-    /// Read handshake from an async reader with timeout.
     pub async fn read_from_with_timeout<R>(
         reader: &mut R,
         max_size: usize,
@@ -617,7 +594,6 @@ impl Handshake {
         Ok(handshake)
     }
 
-    /// Write handshake to an async writer with timeout.
     pub async fn write_to_with_timeout<W>(
         &self,
         writer: &mut W,

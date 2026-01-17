@@ -102,19 +102,16 @@ impl PartitionMergeConfig {
         }
     }
 
-    /// Set heal confirmation threshold.
     pub fn with_heal_threshold(mut self, threshold: u32) -> Self {
         self.heal_confirmation_threshold = threshold;
         self
     }
 
-    /// Set phase timeout.
     pub fn with_phase_timeout(mut self, timeout_ms: u64) -> Self {
         self.phase_timeout_ms = timeout_ms;
         self
     }
 
-    /// Set auto merge behavior.
     pub fn with_auto_merge(mut self, enabled: bool) -> Self {
         self.auto_merge_on_heal = enabled;
         self
@@ -143,12 +140,10 @@ pub enum MergePhase {
 }
 
 impl MergePhase {
-    /// Check if the phase represents a terminal state.
     pub fn is_terminal(&self) -> bool {
         matches!(self, MergePhase::Completed | MergePhase::Failed)
     }
 
-    /// Get the next phase in the protocol sequence.
     pub fn next(&self) -> Option<MergePhase> {
         match self {
             MergePhase::HealDetection => Some(MergePhase::ViewExchange),
@@ -188,7 +183,6 @@ pub struct PartitionStateSummary {
 }
 
 impl PartitionStateSummary {
-    /// Create a new partition state summary.
     pub fn new(node_id: NodeId) -> Self {
         Self {
             node_id,
@@ -201,20 +195,17 @@ impl PartitionStateSummary {
         }
     }
 
-    /// Set the Raft log position.
     pub fn with_log_position(mut self, index: u64, term: u64) -> Self {
         self.last_committed_index = index;
         self.last_committed_term = term;
         self
     }
 
-    /// Set the state embedding.
     pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.state_embedding = Some(embedding);
         self
     }
 
-    /// Set the state hash.
     pub fn with_hash(mut self, hash: [u8; 32]) -> Self {
         self.state_hash = hash;
         self
@@ -229,7 +220,6 @@ impl PartitionStateSummary {
         }
     }
 
-    /// Check if states are identical (by hash).
     pub fn state_matches(&self, other: &PartitionStateSummary) -> bool {
         self.state_hash == other.state_hash
     }
@@ -255,7 +245,6 @@ pub struct MembershipViewSummary {
 }
 
 impl MembershipViewSummary {
-    /// Create a new membership view summary.
     pub fn new(node_id: NodeId, lamport_time: u64, generation: u64) -> Self {
         Self {
             node_id,
@@ -266,19 +255,16 @@ impl MembershipViewSummary {
         }
     }
 
-    /// Set node states.
     pub fn with_states(mut self, states: Vec<GossipNodeState>) -> Self {
         self.node_states = states;
         self
     }
 
-    /// Set state hash.
     pub fn with_hash(mut self, hash: [u8; 32]) -> Self {
         self.state_hash = hash;
         self
     }
 
-    /// Check if this view is newer than another.
     pub fn is_newer_than(&self, other: &MembershipViewSummary) -> bool {
         self.lamport_time > other.lamport_time
     }
@@ -310,7 +296,6 @@ pub struct PendingTxState {
 }
 
 impl PendingTxState {
-    /// Create a new pending transaction state.
     pub fn new(tx_id: u64, coordinator: NodeId, phase: TxPhase) -> Self {
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -328,17 +313,14 @@ impl PendingTxState {
         }
     }
 
-    /// Check if all votes are YES.
     pub fn all_yes(&self) -> bool {
         !self.votes.is_empty() && self.votes.values().all(|v| *v)
     }
 
-    /// Check if any vote is NO.
     pub fn any_no(&self) -> bool {
         self.votes.values().any(|v| !v)
     }
 
-    /// Check if the transaction has timed out.
     pub fn is_timed_out(&self, timeout_ms: u64) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -437,7 +419,6 @@ pub struct MergeSession {
 }
 
 impl MergeSession {
-    /// Create a new merge session.
     pub fn new(session_id: u64, participants: Vec<NodeId>) -> Self {
         let now = Instant::now();
         Self {
@@ -456,7 +437,6 @@ impl MergeSession {
         }
     }
 
-    /// Advance to the next phase.
     pub fn advance_phase(&mut self) {
         if let Some(next) = self.phase.next() {
             self.phase = next;
@@ -465,30 +445,25 @@ impl MergeSession {
         }
     }
 
-    /// Mark the session as failed.
     pub fn fail(&mut self, error: impl Into<String>) {
         self.phase = MergePhase::Failed;
         self.last_error = Some(error.into());
     }
 
-    /// Check if the current phase has timed out.
     pub fn is_phase_timed_out(&self, timeout_ms: u64) -> bool {
         self.phase_started_at.elapsed() > Duration::from_millis(timeout_ms)
     }
 
-    /// Get the duration of the entire session.
     pub fn duration(&self) -> Duration {
         self.started_at.elapsed()
     }
 
-    /// Check if we have all required remote summaries.
     pub fn has_all_summaries(&self) -> bool {
         self.participants
             .iter()
             .all(|p| self.remote_summaries.contains_key(p))
     }
 
-    /// Check if we have all required remote views.
     pub fn has_all_views(&self) -> bool {
         self.participants
             .iter()
@@ -549,7 +524,6 @@ impl PartitionMergeStats {
         }
     }
 
-    /// Take a snapshot of the statistics.
     pub fn snapshot(&self) -> PartitionMergeStatsSnapshot {
         PartitionMergeStatsSnapshot {
             sessions_started: self.sessions_started.load(Ordering::Relaxed),
@@ -576,7 +550,6 @@ pub struct PartitionMergeStatsSnapshot {
 }
 
 impl PartitionMergeStatsSnapshot {
-    /// Calculate success rate as a percentage.
     pub fn success_rate(&self) -> f64 {
         if self.sessions_started == 0 {
             return 0.0;
@@ -584,7 +557,6 @@ impl PartitionMergeStatsSnapshot {
         (self.sessions_completed as f64 / self.sessions_started as f64) * 100.0
     }
 
-    /// Calculate auto-resolution rate as a percentage.
     pub fn auto_resolve_rate(&self) -> f64 {
         if self.conflicts_encountered == 0 {
             return 100.0;
@@ -592,7 +564,6 @@ impl PartitionMergeStatsSnapshot {
         (self.conflicts_auto_resolved as f64 / self.conflicts_encountered as f64) * 100.0
     }
 
-    /// Calculate average merge duration in milliseconds.
     pub fn avg_merge_duration_ms(&self) -> f64 {
         if self.sessions_completed == 0 {
             return 0.0;
@@ -675,7 +646,7 @@ impl MembershipReconciler {
                         "node {} not found in either view during merge",
                         node_id
                     )));
-                }
+                },
             };
             merged_states.insert(node_id, winner);
         }
@@ -724,7 +695,6 @@ impl Default for DataReconciler {
 }
 
 impl DataReconciler {
-    /// Create reconciler with custom thresholds.
     pub fn new(orthogonal_threshold: f32, identical_threshold: f32) -> Self {
         Self {
             orthogonal_threshold,
@@ -951,13 +921,13 @@ impl TransactionReconciler {
                         // Abort incomplete transactions from partition
                         to_abort.push(tx_id);
                     }
-                }
+                },
                 (None, None) => {
                     return Err(ChainError::InvalidState(format!(
                         "tx {} not found in either list during reconcile",
                         tx_id
                     )));
-                }
+                },
             }
         }
 
@@ -1003,7 +973,6 @@ pub struct PartitionMergeManager {
 }
 
 impl PartitionMergeManager {
-    /// Create a new partition merge manager.
     pub fn new(local_node: NodeId, config: PartitionMergeConfig) -> Self {
         Self {
             local_node,
@@ -1017,7 +986,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Create with custom reconcilers.
     pub fn with_reconcilers(
         local_node: NodeId,
         config: PartitionMergeConfig,
@@ -1036,7 +1004,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Check if merge is allowed with a node (cooldown check).
     pub fn can_merge_with(&self, node: &NodeId) -> bool {
         let cooldowns = self.cooldowns.read();
         if let Some(last_attempt) = cooldowns.get(node) {
@@ -1046,7 +1013,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Record merge attempt for cooldown tracking.
     fn record_merge_attempt(&self, node: &NodeId) {
         self.cooldowns.write().insert(node.clone(), Instant::now());
     }
@@ -1087,17 +1053,14 @@ impl PartitionMergeManager {
         Some(session_id)
     }
 
-    /// Get a session by ID.
     pub fn get_session(&self, session_id: u64) -> Option<MergeSession> {
         self.sessions.read().get(&session_id).cloned()
     }
 
-    /// Get the current phase of a session.
     pub fn session_phase(&self, session_id: u64) -> Option<MergePhase> {
         self.sessions.read().get(&session_id).map(|s| s.phase)
     }
 
-    /// Advance a session to the next phase.
     pub fn advance_session(&self, session_id: u64) -> Option<MergePhase> {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -1108,7 +1071,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Mark a session as failed.
     pub fn fail_session(&self, session_id: u64, error: impl Into<String>) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -1117,7 +1079,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Complete a session successfully.
     pub fn complete_session(&self, session_id: u64) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.remove(&session_id) {
@@ -1132,7 +1093,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Handle incoming merge init message.
     pub fn handle_merge_init(&self, msg: MergeInit) -> Option<MergeAck> {
         // Check if we can participate
         if !self.can_merge_with(&msg.initiator) {
@@ -1175,7 +1135,6 @@ impl PartitionMergeManager {
         })
     }
 
-    /// Handle merge acknowledgment.
     pub fn handle_merge_ack(&self, msg: MergeAck) -> bool {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&msg.session_id) {
@@ -1200,7 +1159,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Handle view exchange message.
     pub fn handle_view_exchange(&self, msg: MergeViewExchange) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&msg.session_id) {
@@ -1215,7 +1173,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Handle data merge request.
     pub fn handle_data_merge_request(&self, msg: DataMergeRequest) -> Option<DataMergeResponse> {
         let sessions = self.sessions.read();
         let session = sessions.get(&msg.session_id)?;
@@ -1241,7 +1198,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Handle transaction reconcile request.
     pub fn handle_tx_reconcile_request(
         &self,
         msg: TxReconcileRequest,
@@ -1260,7 +1216,6 @@ impl PartitionMergeManager {
         })
     }
 
-    /// Handle merge finalize message.
     pub fn handle_merge_finalize(&self, msg: MergeFinalize) -> bool {
         if msg.success {
             self.complete_session(msg.session_id);
@@ -1303,17 +1258,14 @@ impl PartitionMergeManager {
         timed_out
     }
 
-    /// Get active session count.
     pub fn active_session_count(&self) -> usize {
         self.sessions.read().len()
     }
 
-    /// Get all active session IDs.
     pub fn active_sessions(&self) -> Vec<u64> {
         self.sessions.read().keys().copied().collect()
     }
 
-    /// Set local summary for a session.
     pub fn set_local_summary(&self, session_id: u64, summary: PartitionStateSummary) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -1321,7 +1273,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Set local view for a session.
     pub fn set_local_view(&self, session_id: u64, view: MembershipViewSummary) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -1329,7 +1280,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Add a remote summary to a session.
     pub fn add_remote_summary(
         &self,
         session_id: u64,
@@ -1342,7 +1292,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Add a conflict to a session.
     pub fn add_conflict(&self, session_id: u64, conflict: MergeConflict) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -1350,7 +1299,6 @@ impl PartitionMergeManager {
         }
     }
 
-    /// Get statistics snapshot.
     pub fn stats_snapshot(&self) -> PartitionMergeStatsSnapshot {
         self.stats.snapshot()
     }
@@ -2153,8 +2101,7 @@ mod tests {
         let local = PartitionStateSummary::new("local".to_string())
             .with_embedding(local_emb)
             .with_hash([1u8; 32]);
-        let remote = PartitionStateSummary::new("remote".to_string())
-            .with_hash([2u8; 32]); // No embedding
+        let remote = PartitionStateSummary::new("remote".to_string()).with_hash([2u8; 32]); // No embedding
 
         let reconciler = DataReconciler::default();
         let result = reconciler.reconcile(&local, &remote);
@@ -2168,8 +2115,7 @@ mod tests {
         let mut remote_emb = SparseVector::new(100);
         remote_emb.set(0, 1.0);
 
-        let local = PartitionStateSummary::new("local".to_string())
-            .with_hash([1u8; 32]); // No embedding
+        let local = PartitionStateSummary::new("local".to_string()).with_hash([1u8; 32]); // No embedding
         let remote = PartitionStateSummary::new("remote".to_string())
             .with_embedding(remote_emb)
             .with_hash([2u8; 32]);

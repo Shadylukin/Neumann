@@ -231,17 +231,14 @@ impl RaftStats {
         Self::default()
     }
 
-    /// Record a fast-path acceptance.
     pub fn record_fast_path(&self) {
         self.fast_path_accepted.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a fast-path rejection.
     pub fn record_rejected(&self) {
         self.fast_path_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a full validation.
     pub fn record_full_validation(&self) {
         self.full_validation_required
             .fetch_add(1, Ordering::Relaxed);
@@ -345,7 +342,6 @@ impl QuorumTracker {
         Self::new(std::time::Duration::from_secs(5), 3)
     }
 
-    /// Record a successful response from a peer.
     pub fn record_success(&self, node_id: &NodeId) {
         self.last_response
             .write()
@@ -353,13 +349,11 @@ impl QuorumTracker {
         self.consecutive_failures.write().remove(node_id);
     }
 
-    /// Record a failed attempt to reach a peer.
     pub fn record_failure(&self, node_id: &NodeId) {
         let mut failures = self.consecutive_failures.write();
         *failures.entry(node_id.clone()).or_insert(0) += 1;
     }
 
-    /// Check if a specific peer is currently reachable.
     pub fn is_reachable(&self, node_id: &NodeId) -> bool {
         // Check consecutive failures
         let failures = self.consecutive_failures.read();
@@ -374,7 +368,6 @@ impl QuorumTracker {
             .unwrap_or(false)
     }
 
-    /// Count the number of currently reachable peers.
     pub fn reachable_count(&self) -> usize {
         let last = self.last_response.read();
         last.keys().filter(|id| self.is_reachable(id)).count()
@@ -392,13 +385,11 @@ impl QuorumTracker {
         self.reachable_count() + 1 >= quorum_size
     }
 
-    /// Reset all tracking state.
     pub fn reset(&self) {
         self.last_response.write().clear();
         self.consecutive_failures.write().clear();
     }
 
-    /// Mark a peer as initially reachable (for new peers).
     pub fn mark_reachable(&self, node_id: &NodeId) {
         self.last_response
             .write()
@@ -608,7 +599,6 @@ impl FastPathState {
         }
     }
 
-    /// Add an embedding for a leader (sparse).
     pub fn add_embedding(&self, leader: &NodeId, embedding: SparseVector) {
         let mut embeddings = self.leader_embeddings.write();
         let history = embeddings.entry(leader.clone()).or_default();
@@ -621,7 +611,6 @@ impl FastPathState {
         }
     }
 
-    /// Add an embedding for a leader from dense vector.
     pub fn add_dense_embedding(&self, leader: &NodeId, embedding: Vec<f32>) {
         self.add_embedding(leader, SparseVector::from_dense(&embedding));
     }
@@ -947,7 +936,6 @@ impl RaftNode {
 
     // ========== Compaction Cooldown Methods ==========
 
-    /// Check if enough time has passed since last compaction.
     fn can_compact(&self) -> bool {
         match *self.last_compaction.read() {
             Some(instant) => {
@@ -957,7 +945,6 @@ impl RaftNode {
         }
     }
 
-    /// Update last compaction timestamp.
     fn mark_compacted(&self) {
         *self.last_compaction.write() = Some(Instant::now());
     }
@@ -1115,7 +1102,6 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Check if a node is healthy according to membership.
     fn is_peer_healthy(&self, peer_id: &NodeId) -> bool {
         match &self.membership {
             Some(membership) => membership.view().is_healthy(peer_id),
@@ -1215,7 +1201,6 @@ impl RaftNode {
         self.membership_config.read().clone()
     }
 
-    /// Set the membership configuration (used by state machine when applying config entries).
     pub fn set_membership_config(&self, config: crate::network::RaftMembershipConfig) {
         *self.membership_config.write() = config;
     }
@@ -1346,7 +1331,6 @@ impl RaftNode {
             .unwrap_or_else(|| (self.peers.read().len() + 1).div_ceil(2))
     }
 
-    /// Get last log index and term.
     fn last_log_info(&self) -> (u64, u64) {
         let log = &self.persistent.read().log;
         if log.is_empty() {
@@ -1702,7 +1686,6 @@ impl RaftNode {
         self.transfer_state.read().is_some()
     }
 
-    /// Cancel an in-progress leadership transfer.
     pub fn cancel_transfer(&self) {
         *self.transfer_state.write() = None;
     }
@@ -2269,7 +2252,6 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Get entries that need to be applied.
     pub fn get_uncommitted_entries(&self) -> Vec<LogEntry> {
         let persistent = self.persistent.read();
         let volatile = self.volatile.read();
@@ -2284,7 +2266,6 @@ impl RaftNode {
         }
     }
 
-    /// Mark entries as applied.
     pub fn mark_applied(&self, up_to: u64) {
         let mut volatile = self.volatile.write();
         if up_to <= volatile.commit_index {
@@ -2294,7 +2275,6 @@ impl RaftNode {
 
     // ========== Snapshot / Log Compaction Methods ==========
 
-    /// Check if log should be compacted based on configured threshold.
     pub fn should_compact(&self) -> bool {
         let persistent = self.persistent.read();
         let snapshot_state = self.snapshot_state.read();
@@ -2526,7 +2506,6 @@ impl RaftNode {
         Ok(())
     }
 
-    /// Get current snapshot metadata if available.
     pub fn get_snapshot_metadata(&self) -> Option<SnapshotMetadata> {
         self.snapshot_state.read().last_snapshot.clone()
     }
@@ -2735,7 +2714,6 @@ impl RaftNode {
         Ok(false)
     }
 
-    /// Get the accumulated snapshot buffer after receiving all chunks.
     pub fn take_pending_snapshot_buffer(&self) -> Option<SnapshotBuffer> {
         self.snapshot_state.write().finish_receive()
     }

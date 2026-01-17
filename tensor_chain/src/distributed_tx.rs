@@ -89,7 +89,6 @@ pub struct DistributedTransaction {
 }
 
 impl DistributedTransaction {
-    /// Create a new distributed transaction.
     pub fn new(coordinator: NodeId, participants: Vec<ShardId>) -> Self {
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -109,43 +108,36 @@ impl DistributedTransaction {
         }
     }
 
-    /// Add operations for a shard.
     pub fn add_operations(&mut self, shard: ShardId, ops: Vec<Transaction>) {
         self.operations.insert(shard, ops);
     }
 
-    /// Add delta for a shard.
     pub fn add_delta(&mut self, shard: ShardId, delta: DeltaVector) {
         self.deltas.insert(shard, delta);
     }
 
-    /// Record a vote from a participant.
     pub fn record_vote(&mut self, shard: ShardId, vote: PrepareVote) {
         self.votes.insert(shard, vote);
     }
 
-    /// Check if all participants have voted.
     pub fn all_voted(&self) -> bool {
         self.participants
             .iter()
             .all(|shard| self.votes.contains_key(shard))
     }
 
-    /// Check if all votes are YES.
     pub fn all_yes(&self) -> bool {
         self.votes
             .values()
             .all(|v| matches!(v, PrepareVote::Yes { .. }))
     }
 
-    /// Check if any vote is NO or Conflict.
     pub fn any_no(&self) -> bool {
         self.votes
             .values()
             .any(|v| matches!(v, PrepareVote::No { .. } | PrepareVote::Conflict { .. }))
     }
 
-    /// Check if the transaction has timed out.
     pub fn is_timed_out(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -154,7 +146,6 @@ impl DistributedTransaction {
         now - self.started_at > self.timeout_ms
     }
 
-    /// Get all affected keys across all shards.
     pub fn affected_keys(&self) -> HashSet<String> {
         self.deltas
             .values()
@@ -162,7 +153,6 @@ impl DistributedTransaction {
             .collect()
     }
 
-    /// Get the merged delta across all shards.
     pub fn merged_delta(&self) -> Option<DeltaVector> {
         let deltas: Vec<_> = self.deltas.values().cloned().collect();
         if deltas.is_empty() {
@@ -263,7 +253,6 @@ pub struct KeyLock {
 }
 
 impl KeyLock {
-    /// Check if the lock has expired.
     pub fn is_expired(&self) -> bool {
         now_epoch_millis().saturating_sub(self.acquired_at_ms) > self.timeout_ms
     }
@@ -284,7 +273,6 @@ pub struct LockManager {
 }
 
 impl LockManager {
-    /// Create a new lock manager.
     pub fn new() -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
@@ -334,7 +322,6 @@ impl LockManager {
         Ok(lock_handle)
     }
 
-    /// Release locks for a transaction.
     pub fn release(&self, tx_id: u64) {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -350,7 +337,6 @@ impl LockManager {
         }
     }
 
-    /// Release locks by handle.
     pub fn release_by_handle(&self, lock_handle: u64) {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -371,13 +357,11 @@ impl LockManager {
         }
     }
 
-    /// Check if a key is locked.
     pub fn is_locked(&self, key: &str) -> bool {
         let locks = self.locks.read();
         locks.get(key).is_some_and(|lock| !lock.is_expired())
     }
 
-    /// Get the transaction holding a lock.
     pub fn lock_holder(&self, key: &str) -> Option<u64> {
         let locks = self.locks.read();
         locks
@@ -386,7 +370,6 @@ impl LockManager {
             .map(|lock| lock.tx_id)
     }
 
-    /// Clean up expired locks.
     pub fn cleanup_expired(&self) -> usize {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -407,12 +390,10 @@ impl LockManager {
         expired.len()
     }
 
-    /// Get the number of active locks.
     pub fn active_lock_count(&self) -> usize {
         self.locks.read().len()
     }
 
-    /// Convert lock manager state to serializable form.
     pub fn to_serializable(&self) -> SerializableLockState {
         SerializableLockState {
             locks: self.locks.read().clone(),
@@ -421,7 +402,6 @@ impl LockManager {
         }
     }
 
-    /// Create lock manager from serialized state.
     pub fn from_serializable(state: SerializableLockState) -> Self {
         Self {
             locks: RwLock::new(state.locks),
@@ -472,7 +452,6 @@ impl LockManager {
         }
     }
 
-    /// Get all keys locked by a transaction.
     pub fn keys_for_transaction(&self, tx_id: u64) -> Vec<String> {
         self.tx_locks
             .read()
@@ -481,7 +460,6 @@ impl LockManager {
             .unwrap_or_default()
     }
 
-    /// Get the number of locks held by a transaction.
     pub fn lock_count_for_transaction(&self, tx_id: u64) -> usize {
         self.tx_locks
             .read()
@@ -602,12 +580,10 @@ pub struct DistributedTxStats {
 }
 
 impl DistributedTxStats {
-    /// Create new stats.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Get the commit rate.
     pub fn commit_rate(&self) -> f32 {
         let started = self.started.load(Ordering::Relaxed);
         if started == 0 {
@@ -616,7 +592,6 @@ impl DistributedTxStats {
         self.committed.load(Ordering::Relaxed) as f32 / started as f32
     }
 
-    /// Get the conflict rate.
     pub fn conflict_rate(&self) -> f32 {
         let started = self.started.load(Ordering::Relaxed);
         if started == 0 {
@@ -625,7 +600,6 @@ impl DistributedTxStats {
         self.conflicts.load(Ordering::Relaxed) as f32 / started as f32
     }
 
-    /// Take a point-in-time snapshot of all statistics.
     pub fn snapshot(&self) -> DistributedTxStatsSnapshot {
         DistributedTxStatsSnapshot {
             started: self.started.load(Ordering::Relaxed),
@@ -709,7 +683,6 @@ pub struct DistributedTxCoordinator {
 }
 
 impl DistributedTxCoordinator {
-    /// Create a new coordinator.
     pub fn new(consensus: ConsensusManager, config: DistributedTxConfig) -> Self {
         Self {
             pending: RwLock::new(HashMap::new()),
@@ -723,18 +696,15 @@ impl DistributedTxCoordinator {
         }
     }
 
-    /// Create with default configuration.
     pub fn with_consensus(consensus: ConsensusManager) -> Self {
         Self::new(consensus, DistributedTxConfig::default())
     }
 
-    /// Add a Write-Ahead Log for durable phase transitions.
     pub fn with_wal(mut self, wal: TxWal) -> Self {
         self.wal = Some(RwLock::new(wal));
         self
     }
 
-    /// Log a WAL entry if WAL is configured.
     fn log_wal_entry(&self, entry: &TxWalEntry) -> Result<()> {
         if let Some(ref wal) = self.wal {
             wal.write()
@@ -806,7 +776,6 @@ impl DistributedTxCoordinator {
         Ok(stats)
     }
 
-    /// Truncate the WAL after checkpoint.
     pub fn truncate_wal(&self) -> Result<()> {
         if let Some(ref wal) = self.wal {
             wal.write()
@@ -816,7 +785,6 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
-    /// Begin a new distributed transaction.
     pub fn begin(
         &self,
         coordinator: NodeId,
@@ -855,12 +823,10 @@ impl DistributedTxCoordinator {
         Ok(tx)
     }
 
-    /// Get a pending transaction.
     pub fn get(&self, tx_id: u64) -> Option<DistributedTransaction> {
         self.pending.read().get(&tx_id).cloned()
     }
 
-    /// Process prepare request and return vote.
     pub fn handle_prepare(&self, request: PrepareRequest) -> PrepareVote {
         // Extract affected keys from operations
         let keys: Vec<String> = request
@@ -946,7 +912,6 @@ impl DistributedTxCoordinator {
         PrepareVote::Yes { lock_handle, delta }
     }
 
-    /// Record vote and check if ready to commit/abort.
     pub fn record_vote(&self, tx_id: u64, shard: ShardId, vote: PrepareVote) -> Option<TxPhase> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id)?;
@@ -1043,7 +1008,6 @@ impl DistributedTxCoordinator {
         }
     }
 
-    /// Commit a prepared transaction.
     pub fn commit(&self, tx_id: u64) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1159,7 +1123,6 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
-    /// Abort a transaction.
     pub fn abort(&self, tx_id: u64, reason: &str) -> Result<()> {
         let mut pending = self.pending.write();
         let tx = pending.get_mut(&tx_id).ok_or_else(|| {
@@ -1214,7 +1177,6 @@ impl DistributedTxCoordinator {
         Ok(())
     }
 
-    /// Clean up timed out transactions.
     pub fn cleanup_timeouts(&self) -> Vec<u64> {
         let mut pending = self.pending.write();
         let timed_out: Vec<_> = pending
@@ -1266,22 +1228,18 @@ impl DistributedTxCoordinator {
         timed_out
     }
 
-    /// Get the number of pending transactions.
     pub fn pending_count(&self) -> usize {
         self.pending.read().len()
     }
 
-    /// Get the lock manager.
     pub fn lock_manager(&self) -> &LockManager {
         &self.lock_manager
     }
 
-    /// Get statistics.
     pub fn stats(&self) -> &DistributedTxStats {
         &self.stats
     }
 
-    /// Take pending aborts that need to be broadcast.
     pub fn take_pending_aborts(&self) -> Vec<(u64, String, Vec<usize>)> {
         std::mem::take(&mut *self.pending_aborts.write())
     }
@@ -1315,7 +1273,6 @@ impl DistributedTxCoordinator {
         }
     }
 
-    /// Track an abort for acknowledgment.
     pub fn track_abort(&self, tx_id: u64, shards: Vec<usize>) {
         let mut abort_states = self.abort_states.write();
         abort_states.insert(
@@ -1328,7 +1285,6 @@ impl DistributedTxCoordinator {
         );
     }
 
-    /// Handle abort acknowledgment from a shard.
     pub fn handle_abort_ack(&self, tx_id: u64, shard_id: usize) -> bool {
         let mut abort_states = self.abort_states.write();
         if let Some(state) = abort_states.get_mut(&tx_id) {
@@ -1365,7 +1321,6 @@ impl DistributedTxCoordinator {
         to_retry
     }
 
-    /// Clean up stale abort states that have exceeded max retries or timeout.
     pub fn cleanup_stale_aborts(&self) -> Vec<u64> {
         let now = now_epoch_millis();
         let max_abort_wait_ms = 30_000u64; // 30 seconds
@@ -1387,12 +1342,10 @@ impl DistributedTxCoordinator {
         stale
     }
 
-    /// Get the persistence key for coordinator state.
     fn persistence_key(node_id: &str) -> String {
         format!("_dtx:coordinator:{}:state", node_id)
     }
 
-    /// Convert coordinator state to serializable form.
     pub fn to_state(&self) -> CoordinatorState {
         CoordinatorState {
             pending: self.pending.read().clone(),
@@ -1400,7 +1353,6 @@ impl DistributedTxCoordinator {
         }
     }
 
-    /// Save coordinator state to TensorStore for crash recovery.
     pub fn save_to_store(&self, node_id: &str, store: &TensorStore) -> Result<()> {
         let state = self.to_state();
         let bytes = bincode::serialize(&state)?;
@@ -1434,7 +1386,6 @@ impl DistributedTxCoordinator {
         Ok(Self::new(consensus, config))
     }
 
-    /// Create coordinator with restored state.
     fn with_state(
         consensus: ConsensusManager,
         config: DistributedTxConfig,
@@ -1452,7 +1403,6 @@ impl DistributedTxCoordinator {
         }
     }
 
-    /// Clear persisted state from store (for cleanup after commit/abort).
     pub fn clear_persisted_state(node_id: &str, store: &TensorStore) {
         let _ = store.delete(&Self::persistence_key(node_id));
     }
@@ -1533,7 +1483,6 @@ impl DistributedTxCoordinator {
         stats
     }
 
-    /// Get pending transactions that need commit/abort decisions.
     pub fn get_pending_decisions(&self) -> Vec<(u64, TxPhase)> {
         self.pending
             .read()
@@ -1693,7 +1642,6 @@ impl Default for TxParticipant {
 }
 
 impl TxParticipant {
-    /// Create a new participant.
     pub fn new() -> Self {
         Self {
             prepared: RwLock::new(HashMap::new()),
@@ -1701,7 +1649,6 @@ impl TxParticipant {
         }
     }
 
-    /// Handle prepare request.
     pub fn prepare(&self, request: PrepareRequest) -> PrepareVote {
         let keys: Vec<String> = request
             .operations
@@ -1758,7 +1705,6 @@ impl TxParticipant {
         PrepareVote::Yes { lock_handle, delta }
     }
 
-    /// Handle commit request.
     pub fn commit(&self, tx_id: u64) -> TxResponse {
         let mut prepared = self.prepared.write();
 
@@ -1783,7 +1729,6 @@ impl TxParticipant {
         }
     }
 
-    /// Handle abort request.
     pub fn abort(&self, tx_id: u64) -> TxResponse {
         let mut prepared = self.prepared.write();
 
@@ -1804,12 +1749,10 @@ impl TxParticipant {
         }
     }
 
-    /// Get prepared transaction count.
     pub fn prepared_count(&self) -> usize {
         self.prepared.read().len()
     }
 
-    /// Clean up stale prepared transactions.
     pub fn cleanup_stale(&self, timeout: Duration) -> Vec<u64> {
         let mut prepared = self.prepared.write();
         let now = now_epoch_millis();
@@ -1829,12 +1772,10 @@ impl TxParticipant {
         stale
     }
 
-    /// Get the persistence key for participant state.
     fn persistence_key(node_id: &str, shard_id: ShardId) -> String {
         format!("_dtx:participant:{}:shard:{}:state", node_id, shard_id)
     }
 
-    /// Convert participant state to serializable form.
     pub fn to_state(&self) -> ParticipantState {
         ParticipantState {
             prepared: self.prepared.read().clone(),
@@ -1842,7 +1783,6 @@ impl TxParticipant {
         }
     }
 
-    /// Save participant state to TensorStore for crash recovery.
     pub fn save_to_store(
         &self,
         node_id: &str,
@@ -1877,7 +1817,6 @@ impl TxParticipant {
         Self::new()
     }
 
-    /// Create participant with restored state.
     fn with_state(state: ParticipantState) -> Self {
         Self {
             prepared: RwLock::new(state.prepared),
@@ -1885,7 +1824,6 @@ impl TxParticipant {
         }
     }
 
-    /// Clear persisted state from store.
     pub fn clear_persisted_state(node_id: &str, shard_id: ShardId, store: &TensorStore) {
         let _ = store.delete(&Self::persistence_key(node_id, shard_id));
     }
@@ -1921,7 +1859,6 @@ impl TxParticipant {
         prepared.keys().copied().collect()
     }
 
-    /// Get transaction IDs awaiting coordinator decision.
     pub fn get_awaiting_decision(&self) -> Vec<u64> {
         self.prepared.read().keys().copied().collect()
     }

@@ -126,7 +126,6 @@ impl Message {
         }
     }
 
-    /// Check if this message has a routing embedding.
     pub fn has_routing_embedding(&self) -> bool {
         self.routing_embedding().is_some()
     }
@@ -257,7 +256,6 @@ impl LogEntry {
         }
     }
 
-    /// Create a config change log entry.
     pub fn config(term: u64, index: u64, change: ConfigChange) -> Self {
         Self {
             term,
@@ -267,7 +265,6 @@ impl LogEntry {
         }
     }
 
-    /// Check if this entry contains a config change.
     pub fn is_config_change(&self) -> bool {
         self.config_change.is_some()
     }
@@ -536,7 +533,6 @@ impl JointConfig {
         old_votes >= old_quorum && new_votes >= new_quorum
     }
 
-    /// Get all unique voters from both configurations.
     pub fn all_voters(&self) -> Vec<NodeId> {
         let mut all: Vec<_> = self.old_voters.clone();
         for node in &self.new_voters {
@@ -600,19 +596,16 @@ impl RaftMembershipConfig {
         targets
     }
 
-    /// Check if in joint consensus mode.
     pub fn in_joint_consensus(&self) -> bool {
         self.joint.is_some()
     }
 
-    /// Add a learner node.
     pub fn add_learner(&mut self, node_id: NodeId) {
         if !self.learners.contains(&node_id) && !self.voters.contains(&node_id) {
             self.learners.push(node_id);
         }
     }
 
-    /// Promote a learner to voter.
     pub fn promote_learner(&mut self, node_id: &NodeId) -> bool {
         if let Some(pos) = self.learners.iter().position(|n| n == node_id) {
             self.learners.remove(pos);
@@ -623,7 +616,6 @@ impl RaftMembershipConfig {
         }
     }
 
-    /// Remove a node from voters or learners.
     pub fn remove_node(&mut self, node_id: &NodeId) -> bool {
         if let Some(pos) = self.voters.iter().position(|n| n == node_id) {
             self.voters.remove(pos);
@@ -636,12 +628,10 @@ impl RaftMembershipConfig {
         false
     }
 
-    /// Check if a node is a voter.
     pub fn is_voter(&self, node_id: &NodeId) -> bool {
         self.voters.contains(node_id)
     }
 
-    /// Check if a node is a learner.
     pub fn is_learner(&self, node_id: &NodeId) -> bool {
         self.learners.contains(node_id)
     }
@@ -828,19 +818,14 @@ pub struct MergeFinalize {
 /// Transport trait for network communication.
 #[async_trait]
 pub trait Transport: Send + Sync {
-    /// Send a message to a specific peer.
     async fn send(&self, to: &NodeId, msg: Message) -> Result<()>;
 
-    /// Broadcast a message to all known peers.
     async fn broadcast(&self, msg: Message) -> Result<()>;
 
-    /// Receive the next message.
     async fn recv(&self) -> Result<(NodeId, Message)>;
 
-    /// Connect to a peer.
     async fn connect(&self, peer: &PeerConfig) -> Result<()>;
 
-    /// Disconnect from a peer.
     async fn disconnect(&self, peer_id: &NodeId) -> Result<()>;
 
     fn peers(&self) -> Vec<NodeId>;
@@ -955,12 +940,10 @@ impl MemoryTransport {
         }
     }
 
-    /// Get sender for this node (used to connect other nodes).
     pub fn sender(&self) -> mpsc::Sender<(NodeId, Message)> {
         self.local_sender.clone()
     }
 
-    /// Connect to another memory transport.
     pub fn connect_to(&self, other_id: NodeId, sender: mpsc::Sender<(NodeId, Message)>) {
         self.peers.write().insert(other_id, sender);
     }
@@ -975,7 +958,6 @@ impl MemoryTransport {
         self.partitioned.write().remove(peer_id);
     }
 
-    /// Check if a peer is partitioned.
     pub fn is_partitioned(&self, peer_id: &NodeId) -> bool {
         self.partitioned.read().contains(peer_id)
     }
@@ -997,7 +979,6 @@ impl MemoryTransport {
         }
     }
 
-    /// Heal all partitions.
     pub fn heal_all(&self) {
         self.partitioned.write().clear();
     }
@@ -1099,7 +1080,6 @@ pub struct NetworkManager {
 
 /// Trait for handling incoming messages.
 pub trait MessageHandler: Send + Sync {
-    /// Handle a message from a peer.
     fn handle(&self, from: &NodeId, msg: &Message) -> Option<Message>;
 }
 
@@ -1111,7 +1091,6 @@ impl NetworkManager {
         }
     }
 
-    /// Register a message handler.
     pub fn add_handler(&self, handler: Box<dyn MessageHandler>) {
         self.handlers.write().push(handler);
     }
@@ -1120,7 +1099,6 @@ impl NetworkManager {
         &self.transport
     }
 
-    /// Process incoming messages.
     pub async fn process_messages(&self) -> Result<()> {
         loop {
             let (from, msg) = self.transport.recv().await?;

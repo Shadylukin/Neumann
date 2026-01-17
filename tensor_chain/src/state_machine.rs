@@ -42,7 +42,6 @@ pub struct TensorStateMachine {
 }
 
 impl TensorStateMachine {
-    /// Create a new state machine.
     pub fn new(chain: Arc<Chain>, raft: Arc<RaftNode>, store: TensorStore) -> Self {
         Self {
             chain,
@@ -54,7 +53,6 @@ impl TensorStateMachine {
         }
     }
 
-    /// Create with custom fast-path threshold.
     pub fn with_threshold(
         chain: Arc<Chain>,
         raft: Arc<RaftNode>,
@@ -71,12 +69,10 @@ impl TensorStateMachine {
         }
     }
 
-    /// Get the fast-path threshold.
     pub fn fast_path_threshold(&self) -> f32 {
         self.fast_path_threshold
     }
 
-    /// Get the number of recent embeddings stored.
     pub fn recent_embedding_count(&self) -> usize {
         self.recent_embeddings.read().len()
     }
@@ -117,7 +113,6 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    /// Apply a single log entry to the chain.
     fn apply_entry(&self, entry: &LogEntry) -> Result<()> {
         // Handle config changes first (membership updates)
         if let Some(ref config_change) = entry.config_change {
@@ -149,7 +144,6 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    /// Apply a config change to the Raft membership.
     fn apply_config_change(&self, index: u64, change: &crate::network::ConfigChange) -> Result<()> {
         use crate::network::ConfigChange;
 
@@ -210,7 +204,6 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    /// Apply a single transaction to the storage layer.
     fn apply_transaction(&self, tx: &Transaction) -> Result<()> {
         use tensor_store::ScalarValue;
 
@@ -328,7 +321,6 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    /// Check if block can use fast-path validation via embedding similarity.
     fn can_fast_path(&self, block: &Block) -> bool {
         let block_embedding = &block.header.delta_embedding;
 
@@ -352,7 +344,6 @@ impl TensorStateMachine {
         max_similarity >= self.fast_path_threshold
     }
 
-    /// Compute similarity of embedding to recent embeddings.
     pub fn recent_embedding_similarity(&self, embedding: &SparseVector) -> f32 {
         let recent = self.recent_embeddings.read();
         if recent.is_empty() || embedding.nnz() == 0 {
@@ -380,7 +371,6 @@ impl TensorStateMachine {
         Ok(())
     }
 
-    /// Track a block's embedding in recent history.
     fn track_embedding(&self, block: &Block) {
         let embedding = &block.header.delta_embedding;
         if embedding.nnz() == 0 {
@@ -396,7 +386,6 @@ impl TensorStateMachine {
         }
     }
 
-    /// Clear recent embedding history.
     pub fn clear_recent(&self) {
         self.recent_embeddings.write().clear();
     }
@@ -415,17 +404,14 @@ impl TensorStateMachine {
         recent.last().cloned()
     }
 
-    /// Get access to the underlying chain.
     pub fn chain(&self) -> &Chain {
         &self.chain
     }
 
-    /// Get access to the Raft node.
     pub fn raft(&self) -> &RaftNode {
         &self.raft
     }
 
-    /// Get access to the TensorStore.
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
@@ -801,5 +787,490 @@ mod tests {
         // Verify the node was written (node: prefix)
         let result = store.get("node:person:alice");
         assert!(result.is_ok(), "Node should be in store after apply");
+    }
+
+    // ========== Additional Transaction Type Tests ==========
+
+    #[test]
+    fn test_delete_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // First, put some data
+        let block1 = chain
+            .new_block()
+            .add_transaction(Transaction::Put {
+                key: "to_delete".to_string(),
+                data: vec![1, 2, 3],
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
+        assert!(store.get("to_delete").is_ok());
+
+        // Now delete it
+        let block2 = chain
+            .new_block()
+            .add_transaction(Transaction::Delete {
+                key: "to_delete".to_string(),
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
+
+        // Verify it's deleted
+        assert!(store.get("to_delete").is_err());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_key_succeeds() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // Delete a key that doesn't exist - should not error
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::Delete {
+                key: "nonexistent".to_string(),
+            })
+            .build();
+
+        let result = sm.apply_entry(&LogEntry::new(1, 1, block));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_node_delete_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // First create a node
+        let block1 = chain
+            .new_block()
+            .add_transaction(Transaction::NodeCreate {
+                key: "node_to_delete".to_string(),
+                label: "TestNode".to_string(),
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
+        assert!(store.get("node:node_to_delete").is_ok());
+
+        // Now delete it
+        let block2 = chain
+            .new_block()
+            .add_transaction(Transaction::NodeDelete {
+                key: "node_to_delete".to_string(),
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
+
+        // Verify it's deleted
+        assert!(store.get("node:node_to_delete").is_err());
+    }
+
+    #[test]
+    fn test_edge_create_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // Create an edge
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::EdgeCreate {
+                from: "node1".to_string(),
+                to: "node2".to_string(),
+                edge_type: "KNOWS".to_string(),
+            })
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
+
+        // Verify the edge was written (edge: prefix with format from:to:type)
+        let result = store.get("edge:node1:node2:KNOWS");
+        assert!(result.is_ok(), "Edge should be in store after apply");
+    }
+
+    #[test]
+    fn test_table_insert_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // Insert a row
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::TableInsert {
+                table: "users".to_string(),
+                values: vec![1, 2, 3, 4],
+            })
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
+
+        // Verify something was written with table: prefix
+        // (exact key depends on timestamp, so we just check store isn't empty)
+        assert!(!store.is_empty(), "Table row should be in store");
+    }
+
+    #[test]
+    fn test_table_update_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // Update a specific row
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::TableUpdate {
+                table: "users".to_string(),
+                row_id: 123,
+                values: vec![5, 6, 7, 8],
+            })
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
+
+        // Verify the row was written
+        let result = store.get("table:users:row:123");
+        assert!(result.is_ok(), "Updated row should be in store");
+    }
+
+    #[test]
+    fn test_table_delete_transaction_applied() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // First insert a row with known key (via update)
+        let block1 = chain
+            .new_block()
+            .add_transaction(Transaction::TableUpdate {
+                table: "users".to_string(),
+                row_id: 999,
+                values: vec![1, 2, 3],
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
+        assert!(store.get("table:users:row:999").is_ok());
+
+        // Now delete it
+        let block2 = chain
+            .new_block()
+            .add_transaction(Transaction::TableDelete {
+                table: "users".to_string(),
+                row_id: 999,
+            })
+            .with_signature(vec![0u8; 64])
+            .build();
+        sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
+
+        // Verify it's deleted
+        assert!(store.get("table:users:row:999").is_err());
+    }
+
+    // ========== Config Change Tests ==========
+
+    #[test]
+    fn test_apply_config_change_add_learner() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Get initial config
+        let initial_config = sm.raft().membership_config();
+        let initial_learners = initial_config.learners.len();
+
+        // Apply AddLearner config change
+        let change = crate::network::ConfigChange::AddLearner {
+            node_id: "new_learner".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify learner was added
+        let new_config = sm.raft().membership_config();
+        assert_eq!(new_config.learners.len(), initial_learners + 1);
+        assert!(new_config.learners.contains(&"new_learner".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_add_learner_already_voter() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Add a voter first
+        let mut config = raft.membership_config();
+        config.voters.push("existing_voter".to_string());
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Try to add it as learner - should be a no-op
+        let change = crate::network::ConfigChange::AddLearner {
+            node_id: "existing_voter".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify it wasn't added as learner
+        let new_config = sm.raft().membership_config();
+        assert!(!new_config.learners.contains(&"existing_voter".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_promote_learner() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Add a learner first
+        let mut config = raft.membership_config();
+        config.learners.push("learner_node".to_string());
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Promote the learner
+        let change = crate::network::ConfigChange::PromoteLearner {
+            node_id: "learner_node".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify it's now a voter and not a learner
+        let new_config = sm.raft().membership_config();
+        assert!(new_config.voters.contains(&"learner_node".to_string()));
+        assert!(!new_config.learners.contains(&"learner_node".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_promote_non_learner() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+        let initial_voters = sm.raft().membership_config().voters.len();
+
+        // Try to promote a node that isn't a learner - should be no-op
+        let change = crate::network::ConfigChange::PromoteLearner {
+            node_id: "not_a_learner".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify voter count unchanged
+        let new_config = sm.raft().membership_config();
+        assert_eq!(new_config.voters.len(), initial_voters);
+    }
+
+    #[test]
+    fn test_apply_config_change_remove_voter() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Add a voter first
+        let mut config = raft.membership_config();
+        config.voters.push("to_remove".to_string());
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Remove the voter
+        let change = crate::network::ConfigChange::RemoveNode {
+            node_id: "to_remove".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify it's removed
+        let new_config = sm.raft().membership_config();
+        assert!(!new_config.voters.contains(&"to_remove".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_remove_learner() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Add a learner first
+        let mut config = raft.membership_config();
+        config.learners.push("learner_to_remove".to_string());
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Remove the learner
+        let change = crate::network::ConfigChange::RemoveNode {
+            node_id: "learner_to_remove".to_string(),
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify it's removed
+        let new_config = sm.raft().membership_config();
+        assert!(!new_config
+            .learners
+            .contains(&"learner_to_remove".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_joint_enter() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Set up initial voters
+        let mut config = raft.membership_config();
+        config.voters = vec!["node1".to_string(), "node2".to_string()];
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Enter joint consensus - add node3, remove node2
+        let change = crate::network::ConfigChange::JointChange {
+            additions: vec!["node3".to_string()],
+            removals: vec!["node2".to_string()],
+        };
+        sm.apply_config_change(1, &change).unwrap();
+
+        // Verify we're in joint consensus
+        let new_config = sm.raft().membership_config();
+        assert!(new_config.joint.is_some());
+        let joint = new_config.joint.unwrap();
+        assert!(joint.old_voters.contains(&"node1".to_string()));
+        assert!(joint.old_voters.contains(&"node2".to_string()));
+        assert!(joint.new_voters.contains(&"node1".to_string()));
+        assert!(joint.new_voters.contains(&"node3".to_string()));
+        assert!(!joint.new_voters.contains(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_apply_config_change_joint_exit() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        // Set up initial joint consensus state
+        let mut config = raft.membership_config();
+        config.voters = vec!["node1".to_string(), "node2".to_string()];
+        config.joint = Some(crate::network::JointConfig {
+            old_voters: vec!["node1".to_string(), "node2".to_string()],
+            new_voters: vec!["node1".to_string(), "node3".to_string()],
+        });
+        raft.set_membership_config(config);
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Exit joint consensus
+        let change = crate::network::ConfigChange::JointChange {
+            additions: vec![],
+            removals: vec![],
+        };
+        sm.apply_config_change(2, &change).unwrap();
+
+        // Verify we've exited joint consensus with new config
+        let new_config = sm.raft().membership_config();
+        assert!(new_config.joint.is_none());
+        assert!(new_config.voters.contains(&"node1".to_string()));
+        assert!(new_config.voters.contains(&"node3".to_string()));
+        assert!(!new_config.voters.contains(&"node2".to_string()));
+    }
+
+    // ========== Additional Tests ==========
+
+    #[test]
+    fn test_apply_block_direct() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
+
+        // Create and apply a block directly
+        let block = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
+        sm.apply_block(&block).unwrap();
+
+        // Verify
+        assert_eq!(chain.height(), 1);
+        assert_eq!(sm.recent_embedding_count(), 1);
+    }
+
+    #[test]
+    fn test_apply_entry_config_only_no_transactions() {
+        let (chain, raft, store) = create_test_components();
+        chain.initialize().unwrap();
+
+        let sm = TensorStateMachine::new(chain.clone(), raft.clone(), store);
+
+        // Create a config-only entry with empty transactions
+        let block = Block {
+            header: BlockHeader {
+                height: 1,
+                prev_hash: [0u8; 32],
+                tx_root: [0u8; 32],
+                state_root: [0u8; 32],
+                timestamp: 0,
+                proposer: "test".to_string(),
+                signature: vec![],
+                delta_embedding: SparseVector::new(0),
+                quantized_codes: vec![],
+            },
+            transactions: vec![],
+            signatures: vec![],
+        };
+        let mut entry = LogEntry::new(1, 1, block);
+        entry.config_change = Some(crate::network::ConfigChange::AddLearner {
+            node_id: "new_node".to_string(),
+        });
+
+        // Apply - should process config but skip block
+        sm.apply_entry(&entry).unwrap();
+
+        // Verify config was applied
+        let config = sm.raft().membership_config();
+        assert!(config.learners.contains(&"new_node".to_string()));
+    }
+
+    #[test]
+    fn test_current_state_embedding_none() {
+        let (chain, raft, store) = create_test_components();
+        let sm = TensorStateMachine::new(chain, raft, store);
+
+        // No embeddings tracked
+        assert!(sm.current_state_embedding().is_none());
+    }
+
+    #[test]
+    fn test_current_state_embedding_returns_last() {
+        let (chain, raft, store) = create_test_components();
+        let sm = TensorStateMachine::new(chain, raft, store);
+
+        // Track some embeddings
+        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        sm.track_embedding(&block1);
+
+        let block2 = create_block_with_embedding(2, &[0.0, 1.0, 0.0, 0.0]);
+        sm.track_embedding(&block2);
+
+        // Should return the last one
+        let current = sm.current_state_embedding();
+        assert!(current.is_some());
+        // The last embedding should have index 1 as the only non-zero element
+        let emb = current.unwrap();
+        assert!(emb.nnz() > 0);
+    }
+
+    #[test]
+    fn test_track_embedding_empty_ignored() {
+        let (chain, raft, store) = create_test_components();
+        let sm = TensorStateMachine::new(chain, raft, store);
+
+        // Track an empty embedding - should be ignored
+        let block = create_block_with_embedding(1, &[]);
+        sm.track_embedding(&block);
+
+        assert_eq!(sm.recent_embedding_count(), 0);
     }
 }

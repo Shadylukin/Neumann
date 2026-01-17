@@ -31,41 +31,34 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Generate a new random identity.
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
         Self { signing_key }
     }
 
-    /// Create from raw private key bytes.
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let signing_key = SigningKey::from_bytes(bytes);
         Ok(Self { signing_key })
     }
 
-    /// Get the public key bytes.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
     }
 
-    /// Get the verifying (public) key.
     pub fn verifying_key(&self) -> PublicIdentity {
         PublicIdentity {
             verifying_key: self.signing_key.verifying_key(),
         }
     }
 
-    /// Derive the NodeId from this identity's public key.
     pub fn node_id(&self) -> NodeId {
         self.verifying_key().to_node_id()
     }
 
-    /// Derive a stable embedding from this identity's public key.
     pub fn to_embedding(&self) -> SparseVector {
         self.verifying_key().to_embedding()
     }
 
-    /// Sign a message.
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         let sig = self.signing_key.sign(message);
         sig.to_bytes().to_vec()
@@ -114,19 +107,16 @@ pub struct PublicIdentity {
 }
 
 impl PublicIdentity {
-    /// Create from raw public key bytes.
     pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let verifying_key = VerifyingKey::from_bytes(bytes)
             .map_err(|e| ChainError::CryptoError(format!("Invalid public key: {e}")))?;
         Ok(Self { verifying_key })
     }
 
-    /// Get the raw public key bytes.
     pub fn to_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
     }
 
-    /// Derive the NodeId from this public key.
     /// Uses BLAKE2b-128 for a compact but collision-resistant ID.
     pub fn to_node_id(&self) -> NodeId {
         let mut hasher = Blake2b::<U16>::new();
@@ -136,7 +126,6 @@ impl PublicIdentity {
         hex::encode(hash)
     }
 
-    /// Derive a stable geometric embedding from this public key.
     /// Uses BLAKE2b-512 to generate 16 f32 coordinates in [-1, 1].
     pub fn to_embedding(&self) -> SparseVector {
         let mut hasher = Blake2b::<U64>::new();
@@ -156,7 +145,6 @@ impl PublicIdentity {
         SparseVector::from_dense(&coords)
     }
 
-    /// Verify a signature on a message.
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<()> {
         if signature.len() != 64 {
             return Err(ChainError::CryptoError(format!(
@@ -210,7 +198,6 @@ impl SequenceTracker {
         }
     }
 
-    /// Create a new sequence tracker with custom max age.
     pub fn with_max_age_ms(max_age_ms: u64) -> Self {
         Self {
             sequences: dashmap::DashMap::new(),
@@ -259,7 +246,6 @@ impl SequenceTracker {
         Ok(())
     }
 
-    /// Get the last seen sequence number for a sender.
     pub fn last_sequence(&self, sender: &NodeId) -> Option<u64> {
         self.sequences.get(sender).map(|v| *v)
     }
@@ -300,21 +286,18 @@ impl Default for ValidatorRegistry {
 }
 
 impl ValidatorRegistry {
-    /// Create a new empty validator registry.
     pub fn new() -> Self {
         Self {
             validators: dashmap::DashMap::new(),
         }
     }
 
-    /// Register a validator's public key.
     pub fn register(&self, identity: &Identity) {
         let node_id = identity.node_id();
         let public = identity.verifying_key();
         self.validators.insert(node_id, public);
     }
 
-    /// Register a validator from raw public key bytes.
     pub fn register_public_key(&self, public_key: &[u8; 32]) -> Result<NodeId> {
         let public = PublicIdentity::from_bytes(public_key)?;
         let node_id = public.to_node_id();
@@ -322,32 +305,26 @@ impl ValidatorRegistry {
         Ok(node_id)
     }
 
-    /// Get a validator's public identity by NodeId.
     pub fn get(&self, node_id: &str) -> Option<PublicIdentity> {
         self.validators.get(node_id).map(|v| v.clone())
     }
 
-    /// Check if a validator is registered.
     pub fn contains(&self, node_id: &str) -> bool {
         self.validators.contains_key(node_id)
     }
 
-    /// Remove a validator from the registry.
     pub fn remove(&self, node_id: &str) -> Option<PublicIdentity> {
         self.validators.remove(node_id).map(|(_, v)| v)
     }
 
-    /// Get the number of registered validators.
     pub fn len(&self) -> usize {
         self.validators.len()
     }
 
-    /// Check if the registry is empty.
     pub fn is_empty(&self) -> bool {
         self.validators.is_empty()
     }
 
-    /// Get all registered NodeIds.
     pub fn node_ids(&self) -> Vec<NodeId> {
         self.validators.iter().map(|v| v.key().clone()).collect()
     }
@@ -395,7 +372,6 @@ impl SignedMessage {
         Ok(&self.payload)
     }
 
-    /// Verify and extract the sender's embedding.
     pub fn sender_embedding(&self) -> Result<SparseVector> {
         let identity = PublicIdentity::from_bytes(&self.public_key)?;
 

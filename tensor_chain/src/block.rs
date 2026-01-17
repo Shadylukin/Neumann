@@ -68,7 +68,6 @@ impl Default for BlockHeader {
 }
 
 impl BlockHeader {
-    /// Create a new block header.
     pub fn new(
         height: u64,
         prev_hash: BlockHash,
@@ -94,7 +93,6 @@ impl BlockHeader {
         }
     }
 
-    /// Compute the SHA-256 hash of this header.
     pub fn hash(&self) -> BlockHash {
         let mut hasher = Sha256::new();
 
@@ -119,25 +117,21 @@ impl BlockHeader {
         hasher.finalize().into()
     }
 
-    /// Set the delta embedding for this block.
     pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
-    /// Set the delta embedding from a dense vector.
     pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
         self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
-    /// Set the quantized codes for this block.
     pub fn with_codes(mut self, codes: Vec<u16>) -> Self {
         self.quantized_codes = codes;
         self
     }
 
-    /// Sign this header with the given signature.
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
@@ -233,7 +227,6 @@ pub enum Transaction {
 }
 
 impl Transaction {
-    /// Get the primary key affected by this transaction.
     pub fn affected_key(&self) -> &str {
         match self {
             Transaction::Put { key, .. } => key,
@@ -248,7 +241,6 @@ impl Transaction {
         }
     }
 
-    /// Compute the hash of this transaction.
     pub fn hash(&self) -> [u8; 32] {
         let bytes = bincode::serialize(self).unwrap_or_default();
         let mut hasher = Sha256::new();
@@ -282,7 +274,6 @@ pub struct Block {
 }
 
 impl Block {
-    /// Create a new block.
     pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
         Self {
             header,
@@ -291,7 +282,6 @@ impl Block {
         }
     }
 
-    /// Create the genesis block (height 0).
     pub fn genesis(proposer: NodeId) -> Self {
         let header = BlockHeader::new(
             0, [0u8; 32], // No previous block
@@ -307,12 +297,10 @@ impl Block {
         }
     }
 
-    /// Get the hash of this block's header.
     pub fn hash(&self) -> BlockHash {
         self.header.hash()
     }
 
-    /// Compute the merkle root of transactions.
     pub fn compute_tx_root(&self) -> BlockHash {
         if self.transactions.is_empty() {
             return [0u8; 32];
@@ -323,12 +311,10 @@ impl Block {
         merkle_root(&leaves)
     }
 
-    /// Verify that the tx_root matches the transactions.
     pub fn verify_tx_root(&self) -> bool {
         self.header.tx_root == self.compute_tx_root()
     }
 
-    /// Verify this block follows the previous block.
     pub fn verify_chain(&self, prev_block: &Block) -> Result<()> {
         // Check height is consecutive
         if self.header.height != prev_block.header.height + 1 {
@@ -375,7 +361,6 @@ impl Block {
         Ok(())
     }
 
-    /// Get all keys affected by transactions in this block.
     pub fn affected_keys(&self) -> Vec<&str> {
         self.transactions
             .iter()
@@ -750,10 +735,7 @@ mod tests {
         // Second signature from same validator should fail
         let result = block.add_signature(sig);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate signer"));
+        assert!(result.unwrap_err().to_string().contains("duplicate signer"));
     }
 
     #[test]
@@ -1003,8 +985,7 @@ mod tests {
         registry.register(&identity);
 
         // Create a header with the identity's node_id as proposer
-        let mut header =
-            BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
+        let mut header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
 
         // Sign the header
         let signing_bytes = header.signing_bytes();
@@ -1024,7 +1005,10 @@ mod tests {
 
         let result = header.verify_signature(&registry);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing block signature"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing block signature"));
     }
 
     #[test]
@@ -1032,8 +1016,14 @@ mod tests {
         let registry = ValidatorRegistry::new(); // Empty registry
 
         // Header with signature but unknown proposer
-        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "unknown_node".to_string())
-            .with_signature(vec![0u8; 64]);
+        let header = BlockHeader::new(
+            1,
+            [0u8; 32],
+            [0u8; 32],
+            [0u8; 32],
+            "unknown_node".to_string(),
+        )
+        .with_signature(vec![0u8; 64]);
 
         let result = header.verify_signature(&registry);
         assert!(result.is_err());
@@ -1056,7 +1046,10 @@ mod tests {
 
         let result = header.verify_signature(&registry);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid block signature"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid block signature"));
     }
 
     #[test]
@@ -1070,8 +1063,7 @@ mod tests {
         registry.register(&identity);
 
         // Create and sign a header
-        let mut header =
-            BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
+        let mut header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], node_id);
         let signing_bytes = header.signing_bytes();
         let signature = identity.sign(&signing_bytes);
         header = header.with_signature(signature);
@@ -1082,7 +1074,10 @@ mod tests {
         // Verification should fail
         let result = header.verify_signature(&registry);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid block signature"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid block signature"));
     }
 
     #[test]

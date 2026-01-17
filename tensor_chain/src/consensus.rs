@@ -76,7 +76,6 @@ pub enum ConflictClass {
 }
 
 impl ConflictClass {
-    /// Whether this classification allows merging.
     pub fn can_merge(&self) -> bool {
         matches!(
             self,
@@ -84,7 +83,6 @@ impl ConflictClass {
         )
     }
 
-    /// Whether this classification should be rejected.
     pub fn should_reject(&self) -> bool {
         matches!(self, Self::Ambiguous | Self::Conflicting)
     }
@@ -151,9 +149,6 @@ pub struct DeltaVector {
 }
 
 impl DeltaVector {
-    /// Create a new delta vector from a dense embedding.
-    ///
-    /// Converts to sparse representation automatically.
     pub fn new(vector: Vec<f32>, affected_keys: HashSet<String>, tx_id: u64) -> Self {
         Self {
             delta: SparseVector::from_dense(&vector),
@@ -162,7 +157,6 @@ impl DeltaVector {
         }
     }
 
-    /// Create a new delta vector from a sparse embedding.
     pub fn from_sparse(delta: SparseVector, affected_keys: HashSet<String>, tx_id: u64) -> Self {
         Self {
             delta,
@@ -195,7 +189,6 @@ impl DeltaVector {
         Self::from_sparse(delta, affected_keys, tx_id)
     }
 
-    /// Create a zero delta with the specified dimension.
     pub fn zero(dimension: usize) -> Self {
         Self {
             delta: SparseVector::new(dimension),
@@ -221,7 +214,6 @@ impl DeltaVector {
         result
     }
 
-    /// Compute cosine similarity with another delta.
     pub fn cosine_similarity(&self, other: &DeltaVector) -> f32 {
         self.delta.cosine_similarity(&other.delta)
     }
@@ -241,12 +233,10 @@ impl DeltaVector {
         self.delta.jaccard_index(&other.delta)
     }
 
-    /// Compute structural similarity (alias for jaccard_index).
     pub fn structural_similarity(&self, other: &DeltaVector) -> f32 {
         self.jaccard_index(other)
     }
 
-    /// Compute geodesic distance on the unit sphere.
     pub fn geodesic_distance(&self, other: &DeltaVector) -> f32 {
         self.delta.geodesic_distance(&other.delta)
     }
@@ -258,12 +248,10 @@ impl DeltaVector {
         self.delta.weighted_jaccard(&other.delta)
     }
 
-    /// Compute Euclidean distance.
     pub fn euclidean_distance(&self, other: &DeltaVector) -> f32 {
         self.delta.euclidean_distance(&other.delta)
     }
 
-    /// Check if this delta overlaps with another in key space.
     pub fn overlaps_with(&self, other: &DeltaVector) -> bool {
         self.affected_keys
             .intersection(&other.affected_keys)
@@ -285,7 +273,6 @@ impl DeltaVector {
         self.delta.jaccard_index(&other.delta) > 0.0
     }
 
-    /// Add another delta vector (for orthogonal merge).
     pub fn add(&self, other: &DeltaVector) -> DeltaVector {
         let delta = self.delta.add(&other.delta);
         let keys: HashSet<String> = self
@@ -296,7 +283,6 @@ impl DeltaVector {
         DeltaVector::from_sparse(delta, keys, 0) // New tx_id will be assigned
     }
 
-    /// Compute weighted average with another delta.
     pub fn weighted_average(&self, other: &DeltaVector, w1: f32, w2: f32) -> DeltaVector {
         let total = w1 + w2;
         if total == 0.0 {
@@ -311,19 +297,16 @@ impl DeltaVector {
         DeltaVector::from_sparse(delta, keys, 0)
     }
 
-    /// Project out the conflicting component (along a direction).
     pub fn project_non_conflicting(&self, conflict_direction: &SparseVector) -> DeltaVector {
         let delta = self.delta.project_orthogonal(conflict_direction);
         DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
     }
 
-    /// Project out the conflicting component from a dense direction.
     pub fn project_non_conflicting_dense(&self, conflict_direction: &[f32]) -> DeltaVector {
         let direction = SparseVector::from_dense(conflict_direction);
         self.project_non_conflicting(&direction)
     }
 
-    /// Scale the delta by a factor.
     pub fn scale(&self, factor: f32) -> DeltaVector {
         let delta = self.delta.scale(factor);
         DeltaVector::from_sparse(delta, self.affected_keys.clone(), self.tx_id)
@@ -348,7 +331,6 @@ impl ConsensusManager {
         Self { config }
     }
 
-    /// Create with default configuration.
     pub fn default_config() -> Self {
         Self::new(ConsensusConfig::default())
     }
@@ -425,7 +407,6 @@ impl ConsensusManager {
         }
     }
 
-    /// Attempt to merge two transaction deltas.
     pub fn merge(&self, d1: &DeltaVector, d2: &DeltaVector) -> MergeResult {
         let conflict = self.detect_conflict(d1, d2);
 
@@ -488,7 +469,6 @@ impl ConsensusManager {
         }
     }
 
-    /// Merge multiple deltas in order.
     pub fn merge_all(&self, deltas: &[DeltaVector]) -> MergeResult {
         if deltas.is_empty() {
             return MergeResult {
@@ -510,10 +490,7 @@ impl ConsensusManager {
             };
         }
 
-        tracing::debug!(
-            delta_count = deltas.len(),
-            "Starting batch merge"
-        );
+        tracing::debug!(delta_count = deltas.len(), "Starting batch merge");
 
         let mut accumulated = deltas[0].clone();
         let mut parent_ids = vec![deltas[0].tx_id];
@@ -547,10 +524,7 @@ impl ConsensusManager {
             parent_ids.push(delta.tx_id);
         }
 
-        tracing::debug!(
-            merged_count = parent_ids.len(),
-            "Batch merge complete"
-        );
+        tracing::debug!(merged_count = parent_ids.len(), "Batch merge complete");
 
         MergeResult {
             success: true,
@@ -561,7 +535,6 @@ impl ConsensusManager {
         }
     }
 
-    /// Find the best merge order for a set of deltas.
     pub fn find_merge_order(&self, deltas: &[DeltaVector]) -> Vec<usize> {
         if deltas.len() <= 2 {
             return (0..deltas.len()).collect();
@@ -593,7 +566,6 @@ impl ConsensusManager {
         order
     }
 
-    /// Convert a TransactionDelta to a DeltaVector.
     pub fn delta_to_vector(&self, delta: &TransactionDelta) -> DeltaVector {
         DeltaVector::new(
             delta.delta_embedding.clone(),

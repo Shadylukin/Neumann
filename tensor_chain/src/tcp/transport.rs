@@ -94,7 +94,6 @@ impl TcpTransport {
         }
     }
 
-    /// Start the transport (begin listening for connections).
     pub async fn start(&self) -> TcpResult<()> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(()); // Already running
@@ -113,12 +112,10 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Get the bound address after start.
     pub fn bound_addr(&self) -> Option<SocketAddr> {
         *self.bound_addr.read()
     }
 
-    /// Spawn the accept loop for incoming connections.
     fn spawn_accept_loop(&self, listener: TcpListener) -> JoinHandle<()> {
         let connections = self.connections.clone();
         let incoming_tx = self.incoming_tx.clone();
@@ -164,7 +161,6 @@ impl TcpTransport {
         })
     }
 
-    /// Handle an incoming connection.
     async fn handle_incoming_connection(
         stream: TcpStream,
         addr: SocketAddr,
@@ -267,7 +263,6 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Configure socket options.
     fn configure_socket(stream: &TcpStream, config: &TcpTransportConfig) -> TcpResult<()> {
         stream.set_nodelay(true)?;
 
@@ -281,7 +276,6 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Reader loop for a connection.
     async fn reader_loop(
         mut reader: DynRead,
         peer_id: NodeId,
@@ -322,7 +316,6 @@ impl TcpTransport {
         }
     }
 
-    /// Writer loop for a connection.
     async fn writer_loop(
         mut writer: DynWrite,
         mut rx: mpsc::Receiver<Message>,
@@ -348,7 +341,6 @@ impl TcpTransport {
         }
     }
 
-    /// Connect to a peer and establish the connection.
     async fn connect_to_peer(&self, peer_id: &NodeId, address: SocketAddr) -> TcpResult<()> {
         // Connect with timeout
         let stream = timeout(self.config.connect_timeout(), TcpStream::connect(address))
@@ -382,7 +374,6 @@ impl TcpTransport {
         self.perform_handshake(stream, peer_id, pool).await
     }
 
-    /// Perform handshake and set up connection.
     async fn perform_handshake(
         &self,
         mut stream: DynStream,
@@ -469,7 +460,6 @@ impl TcpTransport {
         Ok(())
     }
 
-    /// Send a message directly on a connection.
     async fn send_direct(&self, pool: &ConnectionPool, msg: &Message) -> TcpResult<()> {
         // Get a connection
         let conn = pool
@@ -488,7 +478,6 @@ impl TcpTransport {
         }
     }
 
-    /// Shutdown the transport.
     pub async fn shutdown(&self) {
         if !self.running.swap(false, Ordering::SeqCst) {
             return; // Already stopped
@@ -504,12 +493,10 @@ impl TcpTransport {
         }
     }
 
-    /// Check if transport is running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// Get transport statistics.
     pub fn stats(&self) -> TransportStats {
         let mut total_sent = 0u64;
         let mut total_recv = 0u64;

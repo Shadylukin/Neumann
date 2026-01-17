@@ -47,7 +47,6 @@ pub struct Chain {
 }
 
 impl Chain {
-    /// Create a new chain with the given graph engine.
     pub fn new(graph: Arc<GraphEngine>, node_id: NodeId) -> Self {
         Self {
             graph,
@@ -81,17 +80,14 @@ impl Chain {
         Ok(())
     }
 
-    /// Get the current chain height.
     pub fn height(&self) -> u64 {
         self.height.load(Ordering::SeqCst)
     }
 
-    /// Get the tip block hash.
     pub fn tip_hash(&self) -> BlockHash {
         *self.tip_hash.read()
     }
 
-    /// Check if the chain is empty (only genesis).
     pub fn is_empty(&self) -> bool {
         self.height() == 0
     }
@@ -156,7 +152,6 @@ impl Chain {
         Ok(block_hash)
     }
 
-    /// Get a block at a specific height.
     pub fn get_block_at(&self, height: u64) -> Result<Option<Block>> {
         let key = block_key(height);
 
@@ -177,12 +172,10 @@ impl Chain {
         Ok(Some(block))
     }
 
-    /// Get the tip block.
     pub fn get_tip(&self) -> Result<Option<Block>> {
         self.get_block_at(self.height())
     }
 
-    /// Get the genesis block.
     pub fn get_genesis(&self) -> Result<Option<Block>> {
         self.get_block_at(0)
     }
@@ -206,7 +199,6 @@ impl Chain {
         Ok(())
     }
 
-    /// Get blocks in a height range (inclusive).
     pub fn get_blocks_range(&self, start: u64, end: u64) -> Result<Vec<Block>> {
         let mut blocks = Vec::with_capacity((end - start + 1) as usize);
 
@@ -219,7 +211,6 @@ impl Chain {
         Ok(blocks)
     }
 
-    /// Iterate over all blocks from genesis to tip.
     pub fn iter(&self) -> ChainIterator<'_> {
         ChainIterator {
             chain: self,
@@ -245,7 +236,6 @@ impl Chain {
         Ok(history)
     }
 
-    /// Create a new block builder for the next height.
     pub fn new_block(&self) -> BlockBuilder {
         BlockBuilder {
             height: self.height() + 1,
@@ -364,43 +354,36 @@ pub struct BlockBuilder {
 }
 
 impl BlockBuilder {
-    /// Add a transaction to the block.
     pub fn add_transaction(mut self, tx: Transaction) -> Self {
         self.transactions.push(tx);
         self
     }
 
-    /// Add multiple transactions.
     pub fn add_transactions(mut self, txs: impl IntoIterator<Item = Transaction>) -> Self {
         self.transactions.extend(txs);
         self
     }
 
-    /// Set the delta embedding (sparse).
     pub fn with_embedding(mut self, embedding: SparseVector) -> Self {
         self.delta_embedding = embedding;
         self
     }
 
-    /// Set the delta embedding from a dense vector.
     pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
         self.delta_embedding = SparseVector::from_dense(embedding);
         self
     }
 
-    /// Set the quantized codes.
     pub fn with_codes(mut self, codes: Vec<u16>) -> Self {
         self.quantized_codes = codes;
         self
     }
 
-    /// Set the proposer signature.
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
     }
 
-    /// Build the block.
     pub fn build(self) -> Block {
         let header = BlockHeader::new(
             self.height,

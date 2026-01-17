@@ -53,7 +53,6 @@ pub struct CodebookEntry {
 }
 
 impl CodebookEntry {
-    /// Create a new codebook entry.
     pub fn new(id: u32, centroid: Vec<f32>) -> Self {
         let magnitude = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
         let now = current_timestamp_millis();
@@ -69,49 +68,40 @@ impl CodebookEntry {
         }
     }
 
-    /// Create with a label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Get the entry ID.
     pub fn id(&self) -> u32 {
         self.id
     }
 
-    /// Get the centroid vector.
     pub fn centroid(&self) -> &[f32] {
         &self.centroid
     }
 
-    /// Get the cached magnitude.
     pub fn magnitude(&self) -> f32 {
         self.magnitude
     }
 
-    /// Get access count.
     pub fn access_count(&self) -> u64 {
         self.access_count
     }
 
-    /// Get last access time.
     pub fn last_access(&self) -> u64 {
         self.last_access
     }
 
-    /// Get the label if set.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
 
-    /// Record an access.
     pub fn record_access(&mut self) {
         self.access_count += 1;
         self.last_access = current_timestamp_millis();
     }
 
-    /// Compute cosine similarity with a query vector.
     pub fn cosine_similarity(&self, query: &[f32]) -> f32 {
         if self.magnitude == 0.0 {
             return 0.0;
@@ -132,7 +122,6 @@ impl CodebookEntry {
         dot / (self.magnitude * query_mag)
     }
 
-    /// Update centroid via EMA.
     pub fn ema_update(&mut self, observation: &[f32], alpha: f32) {
         for (c, o) in self.centroid.iter_mut().zip(observation.iter()) {
             *c = alpha * o + (1.0 - alpha) * *c;
@@ -152,7 +141,6 @@ pub struct GlobalCodebook {
 }
 
 impl GlobalCodebook {
-    /// Create an empty global codebook.
     pub fn new(dimension: usize) -> Self {
         Self {
             entries: Vec::new(),
@@ -160,7 +148,6 @@ impl GlobalCodebook {
         }
     }
 
-    /// Create from pre-computed centroids.
     pub fn from_centroids(centroids: Vec<Vec<f32>>) -> Self {
         let dimension = centroids.first().map(|v| v.len()).unwrap_or(0);
         let entries = centroids
@@ -172,7 +159,6 @@ impl GlobalCodebook {
         Self { entries, dimension }
     }
 
-    /// Create from centroids with labels.
     pub fn from_centroids_with_labels(centroids: Vec<Vec<f32>>, labels: Vec<String>) -> Self {
         let dimension = centroids.first().map(|v| v.len()).unwrap_or(0);
         let entries = centroids
@@ -203,22 +189,18 @@ impl GlobalCodebook {
         Self::from_centroids(centroids)
     }
 
-    /// Get the dimension.
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
-    /// Get the number of entries.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Get an entry by ID.
     pub fn get(&self, id: u32) -> Option<&CodebookEntry> {
         self.entries.get(id as usize)
     }
@@ -264,7 +246,6 @@ impl GlobalCodebook {
         Some((id, residual))
     }
 
-    /// Check if a vector is within distance threshold of any entry.
     pub fn is_valid_state(&self, vector: &[f32], threshold: f32) -> bool {
         if let Some((_, sim)) = self.quantize(vector) {
             sim >= threshold
@@ -273,7 +254,6 @@ impl GlobalCodebook {
         }
     }
 
-    /// Iterate over all entries.
     pub fn iter(&self) -> impl Iterator<Item = &CodebookEntry> {
         self.entries.iter()
     }
@@ -328,7 +308,6 @@ pub struct LocalCodebook {
 }
 
 impl LocalCodebook {
-    /// Create a new local codebook.
     pub fn new(
         domain: impl Into<String>,
         dimension: usize,
@@ -351,37 +330,30 @@ impl LocalCodebook {
         }
     }
 
-    /// Get the domain name.
     pub fn domain(&self) -> &str {
         &self.domain
     }
 
-    /// Get the dimension.
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
-    /// Get the number of entries.
     pub fn len(&self) -> usize {
         self.entries.read().len()
     }
 
-    /// Check if empty.
     pub fn is_empty(&self) -> bool {
         self.entries.read().is_empty()
     }
 
-    /// Set the pruning strategy.
     pub fn set_pruning_strategy(&mut self, strategy: PruningStrategy) {
         self.pruning_strategy = strategy;
     }
 
-    /// Set minimum usage for pruning.
     pub fn set_min_usage_for_prune(&mut self, min: u64) {
         self.min_usage_for_prune = min;
     }
 
-    /// Find the nearest entry.
     pub fn quantize(&self, vector: &[f32]) -> Option<(u32, f32)> {
         self.total_lookups.fetch_add(1, Ordering::Relaxed);
 
@@ -420,7 +392,6 @@ impl LocalCodebook {
         (id, 1.0) // Perfect match with itself
     }
 
-    /// Update an entry via EMA.
     pub fn ema_update(&self, id: u32, observation: &[f32]) {
         let mut entries = self.entries.write();
         if let Some(entry) = entries.iter_mut().find(|e| e.id() == id) {
@@ -429,7 +400,6 @@ impl LocalCodebook {
         }
     }
 
-    /// Insert a new entry, pruning if necessary.
     fn insert(&self, vector: &[f32]) -> u32 {
         let mut entries = self.entries.write();
 
@@ -450,7 +420,6 @@ impl LocalCodebook {
         id
     }
 
-    /// Select an entry to prune based on strategy.
     fn select_entry_to_prune(&self, entries: &[CodebookEntry]) -> Option<usize> {
         let now = current_timestamp_millis();
 
@@ -479,7 +448,6 @@ impl LocalCodebook {
             .map(|(i, _)| i)
     }
 
-    /// Check if a vector is within threshold of any entry.
     pub fn is_valid_state(&self, vector: &[f32], threshold: f32) -> bool {
         if let Some((_, sim)) = self.quantize(vector) {
             sim >= threshold
@@ -488,7 +456,6 @@ impl LocalCodebook {
         }
     }
 
-    /// Get statistics.
     pub fn stats(&self) -> LocalCodebookStats {
         LocalCodebookStats {
             entry_count: self.len(),
@@ -563,7 +530,6 @@ impl Default for CodebookConfig {
 }
 
 impl CodebookManager {
-    /// Create a new codebook manager.
     pub fn new(global: GlobalCodebook, config: CodebookConfig) -> Self {
         Self {
             global,
@@ -572,12 +538,10 @@ impl CodebookManager {
         }
     }
 
-    /// Create with default configuration.
     pub fn with_global(global: GlobalCodebook) -> Self {
         Self::new(global, CodebookConfig::default())
     }
 
-    /// Get the global codebook.
     pub fn global(&self) -> &GlobalCodebook {
         &self.global
     }
@@ -625,7 +589,6 @@ impl CodebookManager {
         )
     }
 
-    /// Perform hierarchical quantization.
     pub fn quantize(&self, domain: &str, vector: &[f32]) -> Result<HierarchicalQuantization> {
         // Step 1: Global quantization
         let (global_id, global_sim) = self
@@ -673,7 +636,6 @@ impl CodebookManager {
         })
     }
 
-    /// Check if a state is valid (near a codebook entry).
     pub fn is_valid_state(&self, domain: &str, state: &[f32]) -> bool {
         // First check global
         if self
@@ -692,7 +654,6 @@ impl CodebookManager {
         false
     }
 
-    /// Check if a transition is valid.
     pub fn is_valid_transition(
         &self,
         domain: &str,

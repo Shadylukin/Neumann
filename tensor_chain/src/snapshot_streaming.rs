@@ -85,7 +85,6 @@ pub struct SnapshotWriter {
 }
 
 impl SnapshotWriter {
-    /// Create a new snapshot writer with the given buffer configuration.
     pub fn new(config: SnapshotBufferConfig) -> Result<Self> {
         let mut buffer = SnapshotBuffer::new(config)?;
 
@@ -101,12 +100,10 @@ impl SnapshotWriter {
         })
     }
 
-    /// Create with default configuration.
     pub fn with_defaults() -> Result<Self> {
         Self::new(SnapshotBufferConfig::default())
     }
 
-    /// Write a single log entry.
     pub fn write_entry(&mut self, entry: &LogEntry) -> Result<()> {
         let bytes = bincode::serialize(entry)?;
         let len = bytes.len() as u32;
@@ -131,25 +128,21 @@ impl SnapshotWriter {
         Ok(())
     }
 
-    /// Get the number of entries written.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
-    /// Get the last written index.
     #[must_use]
     pub fn last_index(&self) -> u64 {
         self.last_index
     }
 
-    /// Get the last written term.
     #[must_use]
     pub fn last_term(&self) -> u64 {
         self.last_term
     }
 
-    /// Get total bytes written (including header).
     #[must_use]
     pub fn bytes_written(&self) -> u64 {
         self.buffer.total_len()
@@ -207,7 +200,6 @@ pub struct SnapshotReader<'a> {
 }
 
 impl<'a> SnapshotReader<'a> {
-    /// Create a new snapshot reader.
     pub fn new(buffer: &'a SnapshotBuffer) -> Result<Self> {
         if buffer.total_len() < HEADER_SIZE as u64 {
             return Err(StreamingError::InvalidFormat(
@@ -240,25 +232,21 @@ impl<'a> SnapshotReader<'a> {
         })
     }
 
-    /// Get the total number of entries in the snapshot.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.entry_count
     }
 
-    /// Get the number of entries read so far.
     #[must_use]
     pub fn entries_read(&self) -> u64 {
         self.entries_read
     }
 
-    /// Get remaining entries to read.
     #[must_use]
     pub fn remaining(&self) -> u64 {
         self.entry_count.saturating_sub(self.entries_read)
     }
 
-    /// Read the next log entry.
     pub fn read_entry(&mut self) -> Result<Option<LogEntry>> {
         if self.entries_read >= self.entry_count {
             return Ok(None);
@@ -329,7 +317,6 @@ pub fn deserialize_entries(data: &[u8]) -> Result<Vec<LogEntry>> {
     }
 }
 
-/// Serialize entries to streaming format.
 pub fn serialize_entries(
     entries: &[LogEntry],
     config: SnapshotBufferConfig,
