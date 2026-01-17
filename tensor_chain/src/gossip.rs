@@ -20,10 +20,11 @@ use tokio::sync::broadcast;
 
 use crate::{
     block::NodeId,
-    error::Result,
+    error::{ChainError, Result},
     geometric_membership::GeometricMembershipManager,
     membership::{MembershipCallback, NodeHealth},
     network::{Message, Transport},
+    signing::{Identity, SequenceTracker, SignedGossipMessage, ValidatorRegistry},
 };
 
 /// State of a node in the gossip protocol.
@@ -311,6 +312,11 @@ pub struct GossipConfig {
     pub indirect_ping_count: usize,
     /// Timeout for indirect pings (milliseconds).
     pub indirect_ping_timeout_ms: u64,
+    /// Whether to require Ed25519 signatures on all gossip messages.
+    /// When true, unsigned messages are rejected.
+    pub require_signatures: bool,
+    /// Maximum age of signed messages in milliseconds (default: 5 minutes).
+    pub max_message_age_ms: u64,
 }
 
 impl Default for GossipConfig {
@@ -323,6 +329,8 @@ impl Default for GossipConfig {
             geometric_routing: true,
             indirect_ping_count: 3,
             indirect_ping_timeout_ms: 500,
+            require_signatures: false,
+            max_message_age_ms: 5 * 60 * 1000, // 5 minutes
         }
     }
 }
@@ -377,6 +385,15 @@ pub struct GossipMembershipManager {
     ping_sequence: AtomicU64,
     /// Gossip round counter.
     round_counter: AtomicU64,
+    // --- Signing support ---
+    /// Optional Ed25519 identity for signing outgoing messages.
+    identity: Option<Arc<Identity>>,
+    /// Registry of known validators for verifying signatures.
+    validator_registry: Option<Arc<ValidatorRegistry>>,
+    /// Sequence tracker for replay protection.
+    sequence_tracker: Option<Arc<SequenceTracker>>,
+    /// Monotonic sequence number for outgoing signed messages.
+    outgoing_sequence: AtomicU64,
 }
 
 impl GossipMembershipManager {
@@ -401,6 +418,10 @@ impl GossipMembershipManager {
             shutdown_tx,
             ping_sequence: AtomicU64::new(0),
             round_counter: AtomicU64::new(0),
+            identity: None,
+            validator_registry: None,
+            sequence_tracker: None,
+            outgoing_sequence: AtomicU64::new(0),
         }
     }
 
@@ -414,6 +435,84 @@ impl GossipMembershipManager {
         let mut manager = Self::new(local_node, config, transport);
         manager.geometric = Some(geometric);
         manager
+    }
+
+    /// Create with Ed25519 signing support.
+    ///
+    /// When signing is enabled, all outgoing gossip messages are signed and
+    /// incoming messages are verified. Set `config.require_signatures = true`
+    /// to reject unsigned messages.
+    pub fn with_signing(
+        local_node: NodeId,
+        config: GossipConfig,
+        transport: Arc<dyn Transport>,
+        identity: Arc<Identity>,
+        validator_registry: Arc<ValidatorRegistry>,
+        sequence_tracker: Arc<SequenceTracker>,
+    ) -> Self {
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let mut state = LWWMembershipState::new();
+        state.update_local(local_node.clone(), NodeHealth::Healthy, 0);
+
+        Self {
+            local_node,
+            incarnation: AtomicU64::new(0),
+            state: RwLock::new(state),
+            config,
+            transport,
+            geometric: None,
+            callbacks: RwLock::new(Vec::new()),
+            suspicions: RwLock::new(HashMap::new()),
+            heal_progress: RwLock::new(HashMap::new()),
+            known_peers: RwLock::new(Vec::new()),
+            shutdown_tx,
+            ping_sequence: AtomicU64::new(0),
+            round_counter: AtomicU64::new(0),
+            identity: Some(identity),
+            validator_registry: Some(validator_registry),
+            sequence_tracker: Some(sequence_tracker),
+            outgoing_sequence: AtomicU64::new(0),
+        }
+    }
+
+    /// Check if signatures are required for incoming gossip messages.
+    pub fn require_signatures(&self) -> bool {
+        self.config.require_signatures
+    }
+
+    /// Create a signed or unsigned Message::Gossip depending on configuration.
+    fn create_gossip_message(&self, gossip_msg: GossipMessage) -> Message {
+        if let Some(ref identity) = self.identity {
+            let seq = self.outgoing_sequence.fetch_add(1, Ordering::SeqCst);
+            match SignedGossipMessage::new(identity, &gossip_msg, seq) {
+                Ok(signed) => Message::SignedGossip(signed),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to sign gossip message, falling back to unsigned");
+                    Message::Gossip(gossip_msg)
+                },
+            }
+        } else {
+            Message::Gossip(gossip_msg)
+        }
+    }
+
+    /// Handle a signed gossip message.
+    ///
+    /// Verifies the signature and replay protection, then processes the gossip.
+    pub fn handle_signed_gossip(&self, signed: SignedGossipMessage) -> Result<()> {
+        let (registry, tracker) = match (&self.validator_registry, &self.sequence_tracker) {
+            (Some(r), Some(t)) => (r, t),
+            _ => {
+                return Err(ChainError::CryptoError(
+                    "signing not configured for gossip verification".into(),
+                ))
+            },
+        };
+
+        let msg = signed.verify_with_tracker(registry, tracker)?;
+        self.handle_gossip(msg);
+        Ok(())
     }
 
     /// Add a known peer.
@@ -544,7 +643,7 @@ impl GossipMembershipManager {
             "Starting gossip round"
         );
 
-        let msg = Message::Gossip(GossipMessage::Sync {
+        let msg = self.create_gossip_message(GossipMessage::Sync {
             sender: self.local_node.clone(),
             states,
             sender_time,
@@ -720,28 +819,33 @@ impl GossipMembershipManager {
 
         // Try to ping the target
         let transport = Arc::clone(&self.transport);
-        let origin = origin.clone();
-        let target = target.clone();
+        let origin_clone = origin.clone();
+        let target_clone = target.clone();
         let local = self.local_node.clone();
+
+        // Pre-create signed message templates for both success and failure
+        let ack_success = self.create_gossip_message(GossipMessage::PingAck {
+            origin: local.clone(),
+            target: target.clone(),
+            sequence,
+            success: true,
+        });
+        let ack_failure = self.create_gossip_message(GossipMessage::PingAck {
+            origin: local,
+            target: target.clone(),
+            sequence,
+            success: false,
+        });
 
         tokio::spawn(async move {
             let success = transport
-                .send(&target, Message::Ping { term: 0 })
+                .send(&target_clone, Message::Ping { term: 0 })
                 .await
                 .is_ok();
 
             // Send ack back to origin
-            let _ = transport
-                .send(
-                    &origin,
-                    Message::Gossip(GossipMessage::PingAck {
-                        origin: local,
-                        target,
-                        sequence,
-                        success,
-                    }),
-                )
-                .await;
+            let ack_msg = if success { ack_success } else { ack_failure };
+            let _ = transport.send(&origin_clone, ack_msg).await;
         });
     }
 
@@ -764,7 +868,7 @@ impl GossipMembershipManager {
 
     /// Broadcast alive message to refute suspicion.
     fn broadcast_alive(&self, incarnation: u64) {
-        let msg = Message::Gossip(GossipMessage::Alive {
+        let msg = self.create_gossip_message(GossipMessage::Alive {
             node_id: self.local_node.clone(),
             incarnation,
         });
@@ -846,7 +950,7 @@ impl GossipMembershipManager {
         }
 
         // Broadcast suspicion
-        let msg = Message::Gossip(GossipMessage::Suspect {
+        let msg = self.create_gossip_message(GossipMessage::Suspect {
             reporter: self.local_node.clone(),
             suspect: node_id.clone(),
             incarnation,
@@ -874,7 +978,7 @@ impl GossipMembershipManager {
 
         let sequence = self.ping_sequence.fetch_add(1, Ordering::Relaxed);
 
-        let msg = Message::Gossip(GossipMessage::PingReq {
+        let msg = self.create_gossip_message(GossipMessage::PingReq {
             origin: self.local_node.clone(),
             target: target.clone(),
             sequence,

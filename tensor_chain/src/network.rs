@@ -92,6 +92,8 @@ pub enum Message {
     // Gossip protocol messages
     /// Gossip message for membership protocol.
     Gossip(crate::gossip::GossipMessage),
+    /// Signed gossip message with Ed25519 authentication and replay protection.
+    SignedGossip(crate::signing::SignedGossipMessage),
 
     // Partition merge protocol messages
     /// Initialize merge session after partition heal.
@@ -156,6 +158,7 @@ impl Message {
             Message::QueryRequest(_) => "QueryRequest",
             Message::QueryResponse(_) => "QueryResponse",
             Message::Gossip(_) => "Gossip",
+            Message::SignedGossip(_) => "SignedGossip",
             Message::MergeInit(_) => "MergeInit",
             Message::MergeAck(_) => "MergeAck",
             Message::ViewExchange(_) => "ViewExchange",

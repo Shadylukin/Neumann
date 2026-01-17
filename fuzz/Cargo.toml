@@ -151,6 +151,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "gossip_signed"
+path = "fuzz_targets/gossip_signed.rs"
+test = false
+doc = false
+bench = false
+
 # Tier 4: Phase 2 targets
 
 [[bin]]

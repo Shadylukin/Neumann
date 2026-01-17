@@ -646,8 +646,18 @@ impl ClusterOrchestrator {
                                 }
                             }
                             Message::Gossip(gossip_msg) => {
-                                // Handle gossip protocol messages
-                                gossip.handle_gossip(gossip_msg);
+                                // Reject unsigned gossip in secure mode
+                                if gossip.require_signatures() {
+                                    tracing::warn!(peer = %from, "rejected unsigned gossip in secure mode");
+                                } else {
+                                    gossip.handle_gossip(gossip_msg);
+                                }
+                            }
+                            Message::SignedGossip(signed_gossip) => {
+                                // Verify signature and process gossip
+                                if let Err(e) = gossip.handle_signed_gossip(signed_gossip) {
+                                    tracing::warn!(peer = %from, error = %e, "failed to verify signed gossip");
+                                }
                             }
                             // 2PC distributed transaction messages
                             Message::TxPrepare(prepare_msg) => {

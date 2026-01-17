@@ -9,6 +9,7 @@ use crate::{
     block::NodeId,
     error::{ChainError, Result},
     network::Message,
+    signing::SignedGossipMessage,
 };
 
 /// Configuration for message validation.
@@ -32,6 +33,8 @@ pub struct MessageValidationConfig {
     pub max_embedding_magnitude: f32,
     /// Maximum query string length in bytes.
     pub max_query_len: usize,
+    /// Maximum age for signed messages in milliseconds.
+    pub max_message_age_ms: u64,
 }
 
 impl Default for MessageValidationConfig {
@@ -45,7 +48,8 @@ impl Default for MessageValidationConfig {
             max_key_len: 4096,
             max_embedding_dimension: 65536,
             max_embedding_magnitude: 1e6,
-            max_query_len: 1024 * 1024, // 1 MB
+            max_query_len: 1024 * 1024,        // 1 MB
+            max_message_age_ms: 5 * 60 * 1000, // 5 minutes
         }
     }
 }
@@ -405,6 +409,45 @@ impl CompositeValidator {
         self.validate_term(term, msg_type)?;
         Ok(())
     }
+
+    fn validate_signed_gossip(&self, msg: &SignedGossipMessage) -> Result<()> {
+        // Signature length check (Ed25519 signatures are 64 bytes)
+        if msg.envelope.signature.len() != 64 {
+            return Err(ChainError::MessageValidationFailed {
+                message_type: "SignedGossip",
+                reason: format!(
+                    "invalid signature length: expected 64, got {}",
+                    msg.envelope.signature.len()
+                ),
+            });
+        }
+
+        // Validate sender NodeId
+        self.validate_node_id(&msg.envelope.sender, "sender")?;
+
+        // Timestamp freshness check (reject messages too far in the future)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        if msg.envelope.timestamp_ms > now_ms + 60_000 {
+            return Err(ChainError::CryptoError(format!(
+                "message timestamp {} is in the future (now: {})",
+                msg.envelope.timestamp_ms, now_ms
+            )));
+        }
+
+        // Reject messages that are too old
+        if now_ms > msg.envelope.timestamp_ms + self.config.max_message_age_ms {
+            return Err(ChainError::CryptoError(format!(
+                "message too old: {} ms",
+                now_ms - msg.envelope.timestamp_ms
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 impl MessageValidator for CompositeValidator {
@@ -438,6 +481,7 @@ impl MessageValidator for CompositeValidator {
             Message::QueryRequest(m) => self.validate_query_request(m),
             Message::QueryResponse(m) => self.validate_query_response(m),
             Message::Gossip(_) => Ok(()), // Gossip has its own validation
+            Message::SignedGossip(m) => self.validate_signed_gossip(m),
             Message::MergeInit(_) => Ok(()),
             Message::MergeAck(_) => Ok(()),
             Message::ViewExchange(_) => Ok(()),

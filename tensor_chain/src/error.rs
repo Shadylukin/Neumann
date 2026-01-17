@@ -73,6 +73,26 @@ pub enum ChainError {
     #[error("crypto error: {0}")]
     CryptoError(String),
 
+    /// Gossip signature verification failed.
+    #[error("gossip signature invalid: {reason}")]
+    GossipSignatureInvalid {
+        /// Reason for signature invalidity.
+        reason: String,
+    },
+
+    /// Gossip message replay detected.
+    #[error("gossip replay detected: sender {sender}, sequence {sequence}")]
+    GossipReplayDetected {
+        /// Sender NodeId.
+        sender: String,
+        /// Replayed sequence number.
+        sequence: u64,
+    },
+
+    /// Unknown gossip sender not in validator registry.
+    #[error("unknown gossip sender: {0}")]
+    UnknownGossipSender(String),
+
     /// Chain is empty.
     #[error("chain is empty")]
     EmptyChain,

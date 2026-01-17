@@ -134,7 +134,10 @@ pub use raft::{
     RaftConfig, RaftNode, RaftState, RaftStats, RaftStatsSnapshot, SnapshotMetadata, TransferState,
 };
 pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
-pub use signing::{Identity, PublicIdentity, SequenceTracker, SignedMessage, ValidatorRegistry};
+pub use signing::{
+    Identity, PublicIdentity, SequenceTracker, SignedGossipMessage, SignedMessage,
+    ValidatorRegistry,
+};
 pub use snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferError};
 pub use snapshot_streaming::{
     deserialize_entries, serialize_entries, SnapshotReader, SnapshotWriter, StreamingError,
