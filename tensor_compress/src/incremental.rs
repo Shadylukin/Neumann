@@ -265,11 +265,14 @@ pub fn merge_deltas(deltas: &[DeltaSnapshot]) -> Result<DeltaSnapshot, DeltaErro
 }
 
 /// Create a delta by comparing two snapshots.
+///
+/// Returns an error if an internal inconsistency is detected (a key appears
+/// in neither snapshot despite being in the union of keys).
 pub fn diff_snapshots(
     old: &CompressedSnapshot,
     new: &CompressedSnapshot,
     base_ref: impl Into<String>,
-) -> DeltaSnapshot {
+) -> Result<DeltaSnapshot, DeltaError> {
     let old_keys: HashMap<String, &CompressedEntry> =
         old.entries.iter().map(|e| (e.key.clone(), e)).collect();
     let new_keys: HashMap<String, &CompressedEntry> =
@@ -295,11 +298,16 @@ pub fn diff_snapshots(
                     builder.put(key, (*new_entry).clone());
                 }
             },
-            (None, None) => unreachable!(),
+            (None, None) => {
+                debug_assert!(false, "key '{key}' not found in either snapshot");
+                return Err(DeltaError::Format(format!(
+                    "internal error: key '{key}' not found in either snapshot during diff"
+                )));
+            },
         }
     }
 
-    builder.build()
+    Ok(builder.build())
 }
 
 /// Chain of deltas with efficient lookup.
@@ -529,7 +537,7 @@ mod tests {
         let old = make_base_snapshot(vec![("a", 1), ("b", 2), ("c", 3)]);
         let new = make_base_snapshot(vec![("a", 10), ("c", 3), ("d", 4)]); // a changed, b deleted, d added
 
-        let delta = diff_snapshots(&old, &new, "old_snapshot");
+        let delta = diff_snapshots(&old, &new, "old_snapshot").unwrap();
 
         // Should have: a=put(changed), b=delete, d=put(new)
         assert_eq!(delta.entries.len(), 3);

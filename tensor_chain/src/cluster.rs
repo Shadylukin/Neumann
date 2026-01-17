@@ -6,7 +6,7 @@
 //! - Raft consensus with persistence
 //! - State machine for block application
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use graph_engine::GraphEngine;
 use parking_lot::RwLock;
@@ -68,6 +68,39 @@ impl PeerConfig {
     }
 }
 
+/// Timeout configuration for message handlers.
+///
+/// Prevents handlers from blocking indefinitely on slow operations.
+#[derive(Debug, Clone)]
+pub struct HandlerTimeoutConfig {
+    /// Timeout for query execution in milliseconds.
+    pub query_timeout_ms: u64,
+    /// Timeout for 2PC prepare operations in milliseconds.
+    pub prepare_timeout_ms: u64,
+    /// Timeout for 2PC commit/abort operations in milliseconds.
+    pub commit_abort_timeout_ms: u64,
+}
+
+impl Default for HandlerTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            query_timeout_ms: 5000,
+            prepare_timeout_ms: 3000,
+            commit_abort_timeout_ms: 2000,
+        }
+    }
+}
+
+impl HandlerTimeoutConfig {
+    pub fn new(query_timeout_ms: u64, prepare_timeout_ms: u64, commit_abort_timeout_ms: u64) -> Self {
+        Self {
+            query_timeout_ms,
+            prepare_timeout_ms,
+            commit_abort_timeout_ms,
+        }
+    }
+}
+
 /// Configuration for the cluster orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -87,6 +120,8 @@ pub struct OrchestratorConfig {
     pub delta_replication: DeltaReplicationConfig,
     /// Fast-path similarity threshold for state machine.
     pub fast_path_threshold: f32,
+    /// Handler timeout configuration.
+    pub handler_timeouts: HandlerTimeoutConfig,
 }
 
 impl OrchestratorConfig {
@@ -100,6 +135,7 @@ impl OrchestratorConfig {
             dtx: DistributedTxConfig::default(),
             delta_replication: DeltaReplicationConfig::default(),
             fast_path_threshold: 0.95,
+            handler_timeouts: HandlerTimeoutConfig::default(),
         }
     }
 
@@ -136,6 +172,12 @@ impl OrchestratorConfig {
     /// Set the delta replication configuration.
     pub fn with_delta_replication(mut self, delta_replication: DeltaReplicationConfig) -> Self {
         self.delta_replication = delta_replication;
+        self
+    }
+
+    /// Set the handler timeout configuration.
+    pub fn with_handler_timeouts(mut self, handler_timeouts: HandlerTimeoutConfig) -> Self {
+        self.handler_timeouts = handler_timeouts;
         self
     }
 }
@@ -305,62 +347,6 @@ impl ClusterOrchestrator {
         *self.query_executor.write() = Some(executor);
     }
 
-    /// Handle an incoming query request.
-    fn handle_query_request(&self, from: &NodeId, request: &QueryRequest) -> Option<Message> {
-        let executor = self.query_executor.read();
-        let executor = executor.as_ref()?;
-
-        let start = std::time::Instant::now();
-
-        let (result, success, error) = match executor.execute(&request.query) {
-            Ok(bytes) => (bytes, true, None),
-            Err(e) => (Vec::new(), false, Some(e)),
-        };
-
-        let execution_time_us = start.elapsed().as_micros() as u64;
-
-        // Log query execution
-        tracing::debug!(
-            "Executed query from {} in {}us: success={}",
-            from,
-            execution_time_us,
-            success
-        );
-
-        Some(Message::QueryResponse(QueryResponse {
-            query_id: request.query_id,
-            shard_id: self.local_shard_id,
-            result,
-            execution_time_us,
-            success,
-            error,
-        }))
-    }
-
-    /// Handle an incoming 2PC prepare request.
-    fn handle_tx_prepare(&self, msg: &TxPrepareMsg) -> Option<Message> {
-        // Convert network message to internal prepare request
-        let request = PrepareRequest {
-            tx_id: msg.tx_id,
-            coordinator: msg.coordinator.clone(),
-            operations: msg.operations.clone(),
-            delta_embedding: msg.delta_embedding.clone(),
-            timeout_ms: msg.timeout_ms,
-        };
-
-        // Process prepare and get vote
-        let vote = self.dtx.handle_prepare(request);
-
-        // Convert vote to network response
-        let response = TxPrepareResponseMsg {
-            tx_id: msg.tx_id,
-            shard_id: msg.shard_id,
-            vote: vote.into(),
-        };
-
-        Some(Message::TxPrepareResponse(response))
-    }
-
     /// Handle a 2PC prepare response (vote from participant).
     fn handle_tx_prepare_response(&self, msg: &TxPrepareResponseMsg) {
         // Record the vote - phase change happens automatically
@@ -369,46 +355,219 @@ impl ClusterOrchestrator {
             .record_vote(msg.tx_id, msg.shard_id, msg.vote.clone().into());
     }
 
-    /// Handle a 2PC commit message.
-    fn handle_tx_commit(&self, msg: &TxCommitMsg) -> Option<Message> {
-        // Only process if this node's shard is in the commit list
-        if !msg.shards.contains(&self.local_shard_id) {
-            return None;
-        }
-
-        // Commit locally and send ack
-        let success = self.dtx.commit(msg.tx_id).is_ok();
-
-        Some(Message::TxAck(TxAckMsg {
-            tx_id: msg.tx_id,
-            shard_id: self.local_shard_id,
-            success,
-            error: None,
-        }))
-    }
-
-    /// Handle a 2PC abort message.
-    fn handle_tx_abort(&self, msg: &crate::network::TxAbortMsg) -> Option<Message> {
-        // Only process if this node's shard is in the abort list
-        if !msg.shards.contains(&self.local_shard_id) {
-            return None;
-        }
-
-        // Abort locally and send ack
-        let success = self.dtx.abort(msg.tx_id, &msg.reason).is_ok();
-
-        Some(Message::TxAck(TxAckMsg {
-            tx_id: msg.tx_id,
-            shard_id: self.local_shard_id,
-            success,
-            error: None,
-        }))
-    }
-
     /// Handle a 2PC acknowledgment message.
     fn handle_tx_ack(&self, msg: &TxAckMsg) {
         // Record the ack for commit/abort tracking
         self.dtx.handle_abort_ack(msg.tx_id, msg.shard_id);
+    }
+
+    /// Handle query request with timeout.
+    async fn handle_query_request_with_timeout(
+        &self,
+        from: &NodeId,
+        request: &QueryRequest,
+    ) -> Option<Message> {
+        let timeout_ms = self.config.handler_timeouts.query_timeout_ms;
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let executor = {
+            let guard = self.query_executor.read();
+            guard.as_ref().cloned()
+        };
+
+        let executor = executor?;
+        let query = request.query.clone();
+        let query_id = request.query_id;
+        let shard_id = self.local_shard_id;
+        let from_node = from.clone();
+
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || {
+                let start = std::time::Instant::now();
+                let (result, success, error) = match executor.execute(&query) {
+                    Ok(bytes) => (bytes, true, None),
+                    Err(e) => (Vec::new(), false, Some(e)),
+                };
+                let execution_time_us = start.elapsed().as_micros() as u64;
+                (result, success, error, execution_time_us)
+            })
+            .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok((result, success, error, execution_time_us))) => {
+                tracing::debug!(
+                    "Executed query from {} in {}us: success={}",
+                    from_node,
+                    execution_time_us,
+                    success
+                );
+                Some(Message::QueryResponse(QueryResponse {
+                    query_id,
+                    shard_id,
+                    result,
+                    execution_time_us,
+                    success,
+                    error,
+                }))
+            },
+            Ok(Err(_)) => {
+                // spawn_blocking panicked
+                Some(Message::QueryResponse(QueryResponse {
+                    query_id,
+                    shard_id,
+                    result: Vec::new(),
+                    execution_time_us: timeout_ms * 1000,
+                    success: false,
+                    error: Some("query execution panicked".to_string()),
+                }))
+            },
+            Err(_) => {
+                // Timeout
+                tracing::warn!(
+                    "Query from {} timed out after {}ms",
+                    from_node,
+                    timeout_ms
+                );
+                Some(Message::QueryResponse(QueryResponse {
+                    query_id,
+                    shard_id,
+                    result: Vec::new(),
+                    execution_time_us: timeout_ms * 1000,
+                    success: false,
+                    error: Some(format!("query execution timeout: exceeded {}ms", timeout_ms)),
+                }))
+            },
+        }
+    }
+
+    /// Handle 2PC prepare with timeout.
+    async fn handle_tx_prepare_with_timeout(&self, msg: &TxPrepareMsg) -> Option<Message> {
+        let timeout_ms = self.config.handler_timeouts.prepare_timeout_ms;
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let dtx = self.dtx.clone();
+        let request = PrepareRequest {
+            tx_id: msg.tx_id,
+            coordinator: msg.coordinator.clone(),
+            operations: msg.operations.clone(),
+            delta_embedding: msg.delta_embedding.clone(),
+            timeout_ms: msg.timeout_ms,
+        };
+        let tx_id = msg.tx_id;
+        let shard_id = msg.shard_id;
+
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || dtx.handle_prepare(request))
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(vote)) => {
+                Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
+                    tx_id,
+                    shard_id,
+                    vote: vote.into(),
+                }))
+            },
+            Ok(Err(_)) | Err(_) => {
+                // Timeout or panic - vote No
+                tracing::warn!("TX prepare {} timed out after {}ms", tx_id, timeout_ms);
+                Some(Message::TxPrepareResponse(TxPrepareResponseMsg {
+                    tx_id,
+                    shard_id,
+                    vote: crate::network::TxVote::No {
+                        reason: format!("prepare timeout: exceeded {}ms", timeout_ms),
+                    },
+                }))
+            },
+        }
+    }
+
+    /// Handle 2PC commit with timeout.
+    async fn handle_tx_commit_with_timeout(&self, msg: &TxCommitMsg) -> Option<Message> {
+        if !msg.shards.contains(&self.local_shard_id) {
+            return None;
+        }
+
+        let timeout_ms = self.config.handler_timeouts.commit_abort_timeout_ms;
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let dtx = self.dtx.clone();
+        let tx_id = msg.tx_id;
+        let shard_id = self.local_shard_id;
+
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || dtx.commit(tx_id).is_ok())
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(success)) => {
+                Some(Message::TxAck(TxAckMsg {
+                    tx_id,
+                    shard_id,
+                    success,
+                    error: None,
+                }))
+            },
+            Ok(Err(_)) | Err(_) => {
+                tracing::warn!("TX commit {} timed out after {}ms", tx_id, timeout_ms);
+                Some(Message::TxAck(TxAckMsg {
+                    tx_id,
+                    shard_id,
+                    success: false,
+                    error: Some(format!("commit timeout: exceeded {}ms", timeout_ms)),
+                }))
+            },
+        }
+    }
+
+    /// Handle 2PC abort with timeout.
+    async fn handle_tx_abort_with_timeout(
+        &self,
+        msg: &crate::network::TxAbortMsg,
+    ) -> Option<Message> {
+        if !msg.shards.contains(&self.local_shard_id) {
+            return None;
+        }
+
+        let timeout_ms = self.config.handler_timeouts.commit_abort_timeout_ms;
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let dtx = self.dtx.clone();
+        let tx_id = msg.tx_id;
+        let reason = msg.reason.clone();
+        let shard_id = self.local_shard_id;
+
+        let result = tokio::time::timeout(timeout, async move {
+            tokio::task::spawn_blocking(move || dtx.abort(tx_id, &reason).is_ok())
+                .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(success)) => {
+                Some(Message::TxAck(TxAckMsg {
+                    tx_id,
+                    shard_id,
+                    success,
+                    error: None,
+                }))
+            },
+            Ok(Err(_)) | Err(_) => {
+                tracing::warn!("TX abort {} timed out after {}ms", tx_id, timeout_ms);
+                Some(Message::TxAck(TxAckMsg {
+                    tx_id,
+                    shard_id,
+                    success: false,
+                    error: Some(format!("abort timeout: exceeded {}ms", timeout_ms)),
+                }))
+            },
+        }
     }
 
     /// Run the node until shutdown signal.
@@ -457,10 +616,10 @@ impl ClusterOrchestrator {
                             geometric.record_peer_embedding(&from, embedding.clone());
                         }
 
-                        // Handle the message
+                        // Handle the message with timeout protection
                         match msg {
                             Message::QueryRequest(request) => {
-                                if let Some(response) = self.handle_query_request(&from, &request) {
+                                if let Some(response) = self.handle_query_request_with_timeout(&from, &request).await {
                                     let _ = transport.send(&from, response).await;
                                 }
                             }
@@ -470,7 +629,7 @@ impl ClusterOrchestrator {
                             }
                             // 2PC distributed transaction messages
                             Message::TxPrepare(prepare_msg) => {
-                                if let Some(response) = self.handle_tx_prepare(&prepare_msg) {
+                                if let Some(response) = self.handle_tx_prepare_with_timeout(&prepare_msg).await {
                                     let _ = transport.send(&from, response).await;
                                 }
                             }
@@ -478,12 +637,12 @@ impl ClusterOrchestrator {
                                 self.handle_tx_prepare_response(&response_msg);
                             }
                             Message::TxCommit(commit_msg) => {
-                                if let Some(ack) = self.handle_tx_commit(&commit_msg) {
+                                if let Some(ack) = self.handle_tx_commit_with_timeout(&commit_msg).await {
                                     let _ = transport.send(&from, ack).await;
                                 }
                             }
                             Message::TxAbort(abort_msg) => {
-                                if let Some(ack) = self.handle_tx_abort(&abort_msg) {
+                                if let Some(ack) = self.handle_tx_abort_with_timeout(&abort_msg).await {
                                     let _ = transport.send(&from, ack).await;
                                 }
                             }
@@ -855,7 +1014,7 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let result = orchestrator.handle_query_request(&"peer1".to_string(), &request);
+        let result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &request).await;
         assert!(
             result.is_none(),
             "Should return None when no executor is registered"
@@ -901,7 +1060,7 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let result = orchestrator.handle_query_request(&"peer1".to_string(), &request);
+        let result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &request).await;
         assert!(result.is_some());
 
         if let Some(Message::QueryResponse(response)) = result {
@@ -922,7 +1081,7 @@ mod tests {
             embedding: None,
             timeout_ms: 1000,
         };
-        let error_result = orchestrator.handle_query_request(&"peer1".to_string(), &error_request);
+        let error_result = orchestrator.handle_query_request_with_timeout(&"peer1".to_string(), &error_request).await;
         assert!(error_result.is_some());
 
         if let Some(Message::QueryResponse(response)) = error_result {
@@ -955,7 +1114,7 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let response = orchestrator.handle_tx_prepare(&prepare_msg);
+        let response = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
         assert!(response.is_some());
 
         if let Some(Message::TxPrepareResponse(resp)) = response {
@@ -991,7 +1150,7 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::from_dense(&[1.0, 0.0]),
             timeout_ms: 5000,
         };
-        let response1 = orchestrator.handle_tx_prepare(&prepare_msg1);
+        let response1 = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg1).await;
         assert!(response1.is_some());
         if let Some(Message::TxPrepareResponse(resp)) = response1 {
             assert!(matches!(resp.vote, crate::network::TxVote::Yes { .. }));
@@ -1009,7 +1168,7 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::from_dense(&[0.0, 1.0]),
             timeout_ms: 5000,
         };
-        let response2 = orchestrator.handle_tx_prepare(&prepare_msg2);
+        let response2 = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg2).await;
         assert!(response2.is_some());
 
         if let Some(Message::TxPrepareResponse(resp)) = response2 {
@@ -1038,7 +1197,7 @@ mod tests {
             tx_id: 100,
             shards: vec![0], // local_shard_id is 0
         };
-        let ack = orchestrator.handle_tx_commit(&commit_msg);
+        let ack = orchestrator.handle_tx_commit_with_timeout(&commit_msg).await;
 
         // Verify ack is returned (may or may not succeed depending on local state)
         assert!(ack.is_some());
@@ -1064,7 +1223,7 @@ mod tests {
             tx_id: 100,
             shards: vec![5], // Not local shard (which is 0)
         };
-        let ack = orchestrator.handle_tx_commit(&commit_msg);
+        let ack = orchestrator.handle_tx_commit_with_timeout(&commit_msg).await;
 
         // Should return None since this node's shard isn't in the list
         assert!(ack.is_none());
@@ -1084,7 +1243,7 @@ mod tests {
             reason: "test abort".to_string(),
             shards: vec![0],
         };
-        let ack = orchestrator.handle_tx_abort(&abort_msg);
+        let ack = orchestrator.handle_tx_abort_with_timeout(&abort_msg).await;
 
         assert!(ack.is_some());
         if let Some(Message::TxAck(ack_msg)) = ack {
@@ -1109,7 +1268,7 @@ mod tests {
             reason: "test abort".to_string(),
             shards: vec![5], // Not local shard
         };
-        let ack = orchestrator.handle_tx_abort(&abort_msg);
+        let ack = orchestrator.handle_tx_abort_with_timeout(&abort_msg).await;
 
         assert!(ack.is_none());
 
@@ -1745,7 +1904,7 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::new(0),
             timeout_ms: 5000,
         };
-        let _ = orchestrator.handle_tx_prepare(&prepare_msg);
+        let _ = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
 
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let orch = orchestrator.clone();
@@ -1799,7 +1958,7 @@ mod tests {
             delta_embedding: tensor_store::SparseVector::new(0),
             timeout_ms: 5000,
         };
-        let _ = orchestrator.handle_tx_prepare(&prepare_msg);
+        let _ = orchestrator.handle_tx_prepare_with_timeout(&prepare_msg).await;
 
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let orch = orchestrator.clone();

@@ -414,6 +414,9 @@ impl LockManager {
     ///
     /// On success, returns Ok(lock_handle).
     /// On conflict, updates the wait-for graph and returns Err(WaitInfo).
+    ///
+    /// This method atomically checks for conflicts and collects conflicting keys
+    /// while holding the write lock to avoid TOCTOU race conditions.
     pub fn try_lock_with_wait_tracking(
         &self,
         tx_id: u64,
@@ -421,35 +424,57 @@ impl LockManager {
         wait_graph: &crate::deadlock::WaitForGraph,
         priority: Option<u32>,
     ) -> std::result::Result<u64, crate::deadlock::WaitInfo> {
-        match self.try_lock(tx_id, keys) {
-            Ok(handle) => {
-                // Successfully acquired - remove any wait edges for this transaction
-                wait_graph.remove_transaction(tx_id);
-                Ok(handle)
-            },
-            Err(blocking_tx_id) => {
-                // Failed - add wait edge to graph
-                wait_graph.add_wait(tx_id, blocking_tx_id, priority);
+        let mut locks = self.locks.write();
+        let mut tx_locks = self.tx_locks.write();
 
-                // Collect conflicting keys
-                let conflicting_keys = {
-                    let locks = self.locks.read();
-                    keys.iter()
-                        .filter(|k| {
-                            locks.get(*k).is_some_and(|lock| {
-                                !lock.is_expired() && lock.tx_id == blocking_tx_id
-                            })
-                        })
-                        .cloned()
-                        .collect()
-                };
+        // Check for conflicts and collect conflicting keys atomically
+        let mut blocking_tx_id: Option<u64> = None;
+        let mut conflicting_keys = Vec::new();
 
-                Err(crate::deadlock::WaitInfo {
-                    blocking_tx_id,
-                    conflicting_keys,
-                })
-            },
+        for key in keys {
+            if let Some(existing) = locks.get(key) {
+                if !existing.is_expired() && existing.tx_id != tx_id {
+                    let blocker = blocking_tx_id.get_or_insert(existing.tx_id);
+                    if existing.tx_id == *blocker {
+                        conflicting_keys.push(key.clone());
+                    }
+                }
+            }
         }
+
+        if let Some(blocker_id) = blocking_tx_id {
+            drop(tx_locks);
+            drop(locks);
+            wait_graph.add_wait(tx_id, blocker_id, priority);
+            return Err(crate::deadlock::WaitInfo {
+                blocking_tx_id: blocker_id,
+                conflicting_keys,
+            });
+        }
+
+        // No conflicts - acquire all locks
+        let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now_ms = now_epoch_millis();
+        let timeout_ms = self.default_timeout.as_millis() as u64;
+
+        for key in keys {
+            locks.insert(
+                key.clone(),
+                KeyLock {
+                    key: key.clone(),
+                    tx_id,
+                    lock_handle,
+                    acquired_at_ms: now_ms,
+                    timeout_ms,
+                },
+            );
+        }
+
+        tx_locks.entry(tx_id).or_default().extend(keys.iter().cloned());
+        drop(tx_locks);
+        drop(locks);
+        wait_graph.remove_transaction(tx_id);
+        Ok(lock_handle)
     }
 
     pub fn keys_for_transaction(&self, tx_id: u64) -> Vec<String> {
@@ -4091,6 +4116,94 @@ mod tests {
         let wait_info = result.unwrap_err();
         assert_eq!(wait_info.blocking_tx_id, 1);
         assert!(wait_info.conflicting_keys.contains(&"key1".to_string()));
+    }
+
+    #[test]
+    fn test_try_lock_with_wait_tracking_conflicting_keys_accurate() {
+        let lock_manager = LockManager::new();
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        // tx1 locks key1 and key2
+        lock_manager
+            .try_lock(1, &["key1".to_string(), "key2".to_string()])
+            .unwrap();
+
+        // tx2 locks key3
+        lock_manager.try_lock(2, &["key3".to_string()]).unwrap();
+
+        // tx3 tries to lock key1, key2, key3, key4
+        // Only key1 and key2 are blocked by tx1 (the first blocker)
+        let result = lock_manager.try_lock_with_wait_tracking(
+            3,
+            &[
+                "key1".to_string(),
+                "key2".to_string(),
+                "key3".to_string(),
+                "key4".to_string(),
+            ],
+            &wait_graph,
+            Some(5),
+        );
+
+        assert!(result.is_err());
+        let wait_info = result.unwrap_err();
+        // First blocking tx encountered is tx1 (holds key1)
+        assert_eq!(wait_info.blocking_tx_id, 1);
+        // Only keys held by tx1 (the blocking tx) should be in conflicting_keys
+        assert!(wait_info.conflicting_keys.contains(&"key1".to_string()));
+        assert!(wait_info.conflicting_keys.contains(&"key2".to_string()));
+        // key3 is held by tx2, not tx1, so not in conflict list
+        assert!(!wait_info.conflicting_keys.contains(&"key3".to_string()));
+        // key4 is not locked at all
+        assert!(!wait_info.conflicting_keys.contains(&"key4".to_string()));
+    }
+
+    #[test]
+    fn test_try_lock_with_wait_tracking_atomicity() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let lock_manager = Arc::new(LockManager::new());
+        let wait_graph = Arc::new(crate::deadlock::WaitForGraph::new());
+
+        // tx1 locks key1
+        lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+
+        // Spawn a thread that will release tx1's lock
+        let lm_clone = Arc::clone(&lock_manager);
+        let release_handle = thread::spawn(move || {
+            // Small delay before release
+            thread::sleep(Duration::from_millis(5));
+            lm_clone.release(1);
+        });
+
+        // Try lock with wait tracking - should see the conflict atomically
+        // The key insight: even if the lock is released during our check,
+        // we should get consistent information (either all conflict info or success)
+        let result = lock_manager.try_lock_with_wait_tracking(
+            2,
+            &["key1".to_string()],
+            &wait_graph,
+            Some(5),
+        );
+
+        // The result should be consistent:
+        // - If we saw the conflict, we should have the right blocking_tx_id
+        // - If the lock was already released, we should succeed
+        match result {
+            Ok(_handle) => {
+                // Lock was released before our check - tx2 got the lock
+                assert!(lock_manager.is_locked("key1"));
+                assert_eq!(lock_manager.lock_holder("key1"), Some(2));
+            },
+            Err(wait_info) => {
+                // We saw the conflict - blocking tx should be tx1
+                assert_eq!(wait_info.blocking_tx_id, 1);
+                assert!(wait_info.conflicting_keys.contains(&"key1".to_string()));
+            },
+        }
+
+        release_handle.join().unwrap();
     }
 
     #[test]

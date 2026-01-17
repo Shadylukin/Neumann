@@ -108,6 +108,15 @@ pub enum ChainError {
         /// Selected victim transaction ID.
         victim: u64,
     },
+
+    /// Handler operation timed out.
+    #[error("handler timeout: {operation} exceeded {timeout_ms}ms")]
+    HandlerTimeout {
+        /// The operation that timed out.
+        operation: String,
+        /// The timeout in milliseconds.
+        timeout_ms: u64,
+    },
 }
 
 impl From<bincode::Error> for ChainError {
@@ -317,5 +326,17 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("deadlock detected"));
         assert!(msg.contains("victim tx 2"));
+    }
+
+    #[test]
+    fn test_handler_timeout() {
+        let err = ChainError::HandlerTimeout {
+            operation: "query execution".to_string(),
+            timeout_ms: 5000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("handler timeout"));
+        assert!(msg.contains("query execution"));
+        assert!(msg.contains("5000ms"));
     }
 }
