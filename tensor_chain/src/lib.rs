@@ -64,6 +64,7 @@ pub mod snapshot_streaming;
 pub mod state_machine;
 pub mod tcp;
 pub mod transaction;
+pub mod tx_id;
 pub mod tx_wal;
 pub mod validation;
 
@@ -144,14 +145,15 @@ pub use snapshot_streaming::{
 };
 pub use state_machine::TensorStateMachine;
 pub use tcp::{
-    Handshake, LengthDelimitedCodec, NodeIdVerification, ReconnectConfig, TcpError, TcpResult,
-    TcpTransport, TcpTransportConfig, TlsConfig, TransportStats,
+    Handshake, LengthDelimitedCodec, NodeIdVerification, ReconnectConfig, SecurityConfig,
+    SecurityMode, TcpError, TcpResult, TcpTransport, TcpTransportConfig, TlsConfig, TransportStats,
 };
 use tensor_store::TensorStore;
 use tokio::sync::broadcast;
 pub use transaction::{
     TransactionDelta, TransactionManager, TransactionState, TransactionWorkspace,
 };
+pub use tx_id::{extract_timestamp_hint, generate_tx_id, is_plausible_tx_id};
 pub use tx_wal::{
     PrepareVoteKind, RecoveredPreparedTx, TxOutcome, TxRecoveryState, TxWal, TxWalEntry,
 };

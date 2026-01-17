@@ -4,8 +4,105 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use super::{compression::CompressionConfig, rate_limit::RateLimitConfig};
+use super::{compression::CompressionConfig, error::TcpResult, rate_limit::RateLimitConfig};
 use crate::block::NodeId;
+
+/// Security mode for TLS configuration.
+///
+/// Controls the level of TLS enforcement:
+/// - `Strict`: Production-ready. Requires TLS, mTLS, and NodeId verification.
+/// - `Permissive`: TLS required but mTLS is optional.
+/// - `Development`: No TLS required (logs warning). For local testing only.
+/// - `Legacy`: Current behavior for migration (TLS optional).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum SecurityMode {
+    /// Production-ready: TLS + mTLS + NodeId verification required.
+    #[default]
+    Strict,
+    /// TLS required but mTLS optional.
+    Permissive,
+    /// No TLS required (logs warning). For local development only.
+    Development,
+    /// Backward-compatible mode. TLS is optional.
+    Legacy,
+}
+
+impl SecurityMode {
+    pub fn requires_tls(&self) -> bool {
+        matches!(self, Self::Strict | Self::Permissive)
+    }
+
+    pub fn requires_mtls(&self) -> bool {
+        matches!(self, Self::Strict)
+    }
+
+    pub fn requires_node_id_verification(&self) -> bool {
+        matches!(self, Self::Strict)
+    }
+
+    pub fn should_warn(&self) -> bool {
+        matches!(self, Self::Development | Self::Legacy)
+    }
+}
+
+/// Security configuration for TCP transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// Security mode controlling TLS enforcement level.
+    pub mode: SecurityMode,
+    /// Whether to log warnings for insecure configurations.
+    #[serde(default = "default_warn_on_insecure")]
+    pub warn_on_insecure: bool,
+}
+
+fn default_warn_on_insecure() -> bool {
+    true
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            mode: SecurityMode::default(),
+            warn_on_insecure: true,
+        }
+    }
+}
+
+impl SecurityConfig {
+    pub fn strict() -> Self {
+        Self {
+            mode: SecurityMode::Strict,
+            warn_on_insecure: true,
+        }
+    }
+
+    pub fn permissive() -> Self {
+        Self {
+            mode: SecurityMode::Permissive,
+            warn_on_insecure: true,
+        }
+    }
+
+    pub fn development() -> Self {
+        Self {
+            mode: SecurityMode::Development,
+            warn_on_insecure: true,
+        }
+    }
+
+    pub fn legacy() -> Self {
+        Self {
+            mode: SecurityMode::Legacy,
+            warn_on_insecure: true,
+        }
+    }
+
+    pub fn without_warnings(mut self) -> Self {
+        self.warn_on_insecure = false;
+        self
+    }
+}
 
 /// Configuration for TCP transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +165,10 @@ pub struct TcpTransportConfig {
     /// Per-peer rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+
+    /// Security configuration controlling TLS enforcement.
+    #[serde(default)]
+    pub security: SecurityConfig,
 }
 
 fn default_pool_size() -> usize {
@@ -113,6 +214,7 @@ impl Default for TcpTransportConfig {
             recv_buffer_size: default_recv_buffer(),
             compression: CompressionConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            security: SecurityConfig::default(),
         }
     }
 }
@@ -197,6 +299,76 @@ impl TcpTransportConfig {
     pub fn rate_limit_disabled(mut self) -> Self {
         self.rate_limit.enabled = false;
         self
+    }
+
+    pub fn with_security(mut self, config: SecurityConfig) -> Self {
+        self.security = config;
+        self
+    }
+
+    pub fn with_security_mode(mut self, mode: SecurityMode) -> Self {
+        self.security.mode = mode;
+        self
+    }
+
+    /// Validate security configuration against current TLS settings.
+    ///
+    /// Returns an error if the security mode requires TLS but TLS is not configured.
+    pub fn validate_security(&self) -> TcpResult<()> {
+        use super::error::TcpError;
+
+        let mode = self.security.mode;
+
+        // Log warnings for non-strict modes
+        if self.security.warn_on_insecure && mode.should_warn() {
+            tracing::warn!(
+                "TCP transport using insecure mode {:?}. This is not recommended for production.",
+                mode
+            );
+        }
+
+        // Check TLS requirements
+        if mode.requires_tls() && self.tls.is_none() {
+            return Err(TcpError::TlsRequired {
+                mode,
+                reason: "TLS configuration is required but not provided".to_string(),
+            });
+        }
+
+        // Check mTLS requirements
+        if mode.requires_mtls() {
+            if let Some(ref tls) = self.tls {
+                if !tls.require_client_auth {
+                    return Err(TcpError::MtlsRequired {
+                        mode,
+                        reason: "Mutual TLS (client auth) is required but not enabled".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Check NodeId verification requirements
+        if mode.requires_node_id_verification() {
+            if let Some(ref tls) = self.tls {
+                if tls.node_id_verification == NodeIdVerification::None {
+                    return Err(TcpError::NodeIdVerificationRequired {
+                        mode,
+                        reason: "NodeId verification is required but not configured".to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if the current configuration is secure for production use.
+    pub fn is_secure(&self) -> bool {
+        self.validate_security().is_ok()
+            && matches!(
+                self.security.mode,
+                SecurityMode::Strict | SecurityMode::Permissive
+            )
     }
 }
 
@@ -346,6 +518,27 @@ impl TlsConfig {
     pub fn with_node_id_verification(mut self, mode: NodeIdVerification) -> Self {
         self.node_id_verification = mode;
         self
+    }
+
+    /// Create a secure TLS configuration suitable for production.
+    ///
+    /// This constructor enforces:
+    /// - Mutual TLS (client certificate required)
+    /// - NodeId verification via Common Name
+    /// - Certificate verification (no insecure skip)
+    pub fn new_secure(
+        cert_path: impl Into<PathBuf>,
+        key_path: impl Into<PathBuf>,
+        ca_cert_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            cert_path: cert_path.into(),
+            key_path: key_path.into(),
+            ca_cert_path: Some(ca_cert_path.into()),
+            require_client_auth: true,
+            insecure_skip_verify: false,
+            node_id_verification: NodeIdVerification::CommonName,
+        }
     }
 
     /// Check if certificate verification should be performed.
@@ -734,5 +927,226 @@ mod tests {
         let serialized = bincode::serialize(&cn).unwrap();
         let deserialized: NodeIdVerification = bincode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, NodeIdVerification::CommonName);
+    }
+
+    #[test]
+    fn test_security_mode_strict_default() {
+        let mode = SecurityMode::default();
+        assert_eq!(mode, SecurityMode::Strict);
+    }
+
+    #[test]
+    fn test_security_mode_requires_tls() {
+        assert!(SecurityMode::Strict.requires_tls());
+        assert!(SecurityMode::Permissive.requires_tls());
+        assert!(!SecurityMode::Development.requires_tls());
+        assert!(!SecurityMode::Legacy.requires_tls());
+    }
+
+    #[test]
+    fn test_security_mode_requires_mtls() {
+        assert!(SecurityMode::Strict.requires_mtls());
+        assert!(!SecurityMode::Permissive.requires_mtls());
+        assert!(!SecurityMode::Development.requires_mtls());
+        assert!(!SecurityMode::Legacy.requires_mtls());
+    }
+
+    #[test]
+    fn test_security_mode_requires_node_id_verification() {
+        assert!(SecurityMode::Strict.requires_node_id_verification());
+        assert!(!SecurityMode::Permissive.requires_node_id_verification());
+        assert!(!SecurityMode::Development.requires_node_id_verification());
+        assert!(!SecurityMode::Legacy.requires_node_id_verification());
+    }
+
+    #[test]
+    fn test_security_mode_should_warn() {
+        assert!(!SecurityMode::Strict.should_warn());
+        assert!(!SecurityMode::Permissive.should_warn());
+        assert!(SecurityMode::Development.should_warn());
+        assert!(SecurityMode::Legacy.should_warn());
+    }
+
+    #[test]
+    fn test_security_config_default() {
+        let config = SecurityConfig::default();
+        assert_eq!(config.mode, SecurityMode::Strict);
+        assert!(config.warn_on_insecure);
+    }
+
+    #[test]
+    fn test_security_config_constructors() {
+        let strict = SecurityConfig::strict();
+        assert_eq!(strict.mode, SecurityMode::Strict);
+
+        let permissive = SecurityConfig::permissive();
+        assert_eq!(permissive.mode, SecurityMode::Permissive);
+
+        let development = SecurityConfig::development();
+        assert_eq!(development.mode, SecurityMode::Development);
+
+        let legacy = SecurityConfig::legacy();
+        assert_eq!(legacy.mode, SecurityMode::Legacy);
+    }
+
+    #[test]
+    fn test_security_config_without_warnings() {
+        let config = SecurityConfig::development().without_warnings();
+        assert!(!config.warn_on_insecure);
+    }
+
+    #[test]
+    fn test_tls_config_mtls_default() {
+        // Ensure default TlsConfig has require_client_auth = false
+        // (for backward compatibility with existing configs)
+        let tls = TlsConfig::new("/cert.pem", "/key.pem");
+        assert!(!tls.require_client_auth);
+    }
+
+    #[test]
+    fn test_tls_config_new_secure() {
+        let tls = TlsConfig::new_secure("/cert.pem", "/key.pem", "/ca.pem");
+
+        assert!(tls.require_client_auth);
+        assert!(tls.ca_cert_path.is_some());
+        assert_eq!(tls.node_id_verification, NodeIdVerification::CommonName);
+        assert!(!tls.insecure_skip_verify);
+    }
+
+    #[test]
+    fn test_validate_security_fails_without_tls() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Strict);
+        // No TLS configured but Strict mode requires it
+        let result = config.validate_security();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_security_fails_without_mtls() {
+        let tls = TlsConfig::new("/cert.pem", "/key.pem");
+        // TLS is configured but require_client_auth is false
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_security_mode(SecurityMode::Strict);
+
+        let result = config.validate_security();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_security_fails_without_node_id_verification() {
+        let tls = TlsConfig::new("/cert.pem", "/key.pem")
+            .with_ca_cert("/ca.pem")
+            .with_client_auth();
+        // TLS + mTLS configured but NodeIdVerification is None
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_security_mode(SecurityMode::Strict);
+
+        let result = config.validate_security();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_security_strict_mode_passes() {
+        let tls = TlsConfig::new_secure("/cert.pem", "/key.pem", "/ca.pem");
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_security_mode(SecurityMode::Strict);
+
+        let result = config.validate_security();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_security_permissive_mode() {
+        let tls = TlsConfig::new("/cert.pem", "/key.pem");
+        // Permissive only requires TLS, not mTLS
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_security_mode(SecurityMode::Permissive);
+
+        let result = config.validate_security();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_security_development_mode() {
+        // Development mode doesn't require TLS
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security(SecurityConfig::development().without_warnings());
+
+        let result = config.validate_security();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_security_legacy_mode_backward_compatible() {
+        // Legacy mode should allow no TLS for backward compatibility
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security(SecurityConfig::legacy().without_warnings());
+
+        let result = config.validate_security();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_with_security() {
+        let security = SecurityConfig::permissive();
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security(security);
+
+        assert_eq!(config.security.mode, SecurityMode::Permissive);
+    }
+
+    #[test]
+    fn test_config_with_security_mode() {
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Development);
+
+        assert_eq!(config.security.mode, SecurityMode::Development);
+    }
+
+    #[test]
+    fn test_config_is_secure() {
+        // Without TLS, is_secure returns false
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Strict);
+        assert!(!config.is_secure());
+
+        // With proper TLS config, is_secure returns true
+        let tls = TlsConfig::new_secure("/cert.pem", "/key.pem", "/ca.pem");
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_tls(tls)
+            .with_security_mode(SecurityMode::Strict);
+        assert!(config.is_secure());
+
+        // Development mode is never secure for production
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Development);
+        assert!(!config.is_secure());
+    }
+
+    #[test]
+    fn test_security_mode_serde() {
+        let mode = SecurityMode::Strict;
+        let serialized = bincode::serialize(&mode).unwrap();
+        let deserialized: SecurityMode = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized, SecurityMode::Strict);
+
+        let mode = SecurityMode::Development;
+        let serialized = bincode::serialize(&mode).unwrap();
+        let deserialized: SecurityMode = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized, SecurityMode::Development);
+    }
+
+    #[test]
+    fn test_security_config_serde() {
+        let config = SecurityConfig::permissive();
+        let serialized = bincode::serialize(&config).unwrap();
+        let deserialized: SecurityConfig = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.mode, SecurityMode::Permissive);
+        assert!(deserialized.warn_on_insecure);
     }
 }

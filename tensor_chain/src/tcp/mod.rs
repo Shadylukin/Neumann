@@ -56,7 +56,10 @@ pub mod transport;
 
 // Re-exports
 pub use compression::{CompressionConfig, CompressionMethod, COMPRESSION_CAPABILITY};
-pub use config::{NodeIdVerification, ReconnectConfig, TcpTransportConfig, TlsConfig};
+pub use config::{
+    NodeIdVerification, ReconnectConfig, SecurityConfig, SecurityMode, TcpTransportConfig,
+    TlsConfig,
+};
 pub use connection::{
     Connection, ConnectionManager, ConnectionPool, ConnectionState, ConnectionStats,
 };

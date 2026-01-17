@@ -10,10 +10,7 @@
 
 use std::{
     collections::HashSet,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,6 +23,7 @@ use crate::{
     consensus::DeltaVector,
     embedding::EmbeddingState,
     error::{ChainError, Result},
+    tx_id::generate_tx_id,
 };
 
 /// Default embedding dimension for state snapshots.
@@ -113,14 +111,6 @@ pub(crate) struct MergeCandidate {
     pub(crate) similarity: f32,
 }
 
-/// Monotonic transaction ID counter.
-static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Generate a new unique transaction ID.
-fn next_tx_id() -> u64 {
-    TX_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
 /// Transaction state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionState {
@@ -173,7 +163,7 @@ impl TransactionWorkspace {
             .as_millis() as u64;
 
         Ok(Self {
-            id: next_tx_id(),
+            id: generate_tx_id(),
             checkpoint_bytes,
             operations: RwLock::new(Vec::new()),
             affected_keys: RwLock::new(HashSet::new()),

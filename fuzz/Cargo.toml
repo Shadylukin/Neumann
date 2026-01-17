@@ -555,3 +555,19 @@ path = "fuzz_targets/chain_append.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 28: Security hardening targets
+
+[[bin]]
+name = "tls_config"
+path = "fuzz_targets/tls_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tx_id_generation"
+path = "fuzz_targets/tx_id_generation.rs"
+test = false
+doc = false
+bench = false

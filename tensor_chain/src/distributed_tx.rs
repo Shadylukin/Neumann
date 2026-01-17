@@ -35,6 +35,7 @@ use crate::{
     consensus::{ConsensusManager, DeltaVector},
     error::{ChainError, Result},
     network::{Message, Transport, TxAbortMsg},
+    tx_id::generate_tx_id,
     tx_wal::{TxOutcome, TxRecoveryState, TxWal, TxWalEntry},
 };
 
@@ -51,14 +52,6 @@ fn now_epoch_millis() -> EpochMillis {
 
 /// Shard identifier.
 pub type ShardId = usize;
-
-/// Distributed transaction ID counter.
-static DTX_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Generate a new unique distributed transaction ID.
-fn next_dtx_id() -> u64 {
-    DTX_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
 
 /// Phase of a distributed transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -110,7 +103,7 @@ impl DistributedTransaction {
             .as_millis() as u64;
 
         Self {
-            tx_id: next_dtx_id(),
+            tx_id: generate_tx_id(),
             coordinator,
             participants,
             phase: TxPhase::Preparing,

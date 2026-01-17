@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::error::ChainError;
+use crate::tcp::config::SecurityMode;
 
 /// Errors specific to TCP transport operations.
 #[derive(Debug)]
@@ -70,6 +71,21 @@ pub enum TcpError {
 
     /// Rate limited: peer is being sent messages too fast.
     RateLimited { peer: String, available: u32 },
+
+    /// TLS is required by security mode but not configured.
+    TlsRequired { mode: SecurityMode, reason: String },
+
+    /// Mutual TLS (client auth) is required by security mode.
+    MtlsRequired { mode: SecurityMode, reason: String },
+
+    /// NodeId verification is required by security mode.
+    NodeIdVerificationRequired { mode: SecurityMode, reason: String },
+
+    /// Connection rejected: plaintext connection when TLS is required.
+    PlaintextRejected { remote_addr: String },
+
+    /// Connection rejected: no client certificate when mTLS is required.
+    ClientCertMissing { remote_addr: String },
 }
 
 impl fmt::Display for TcpError {
@@ -133,6 +149,37 @@ impl fmt::Display for TcpError {
                     f,
                     "rate limited: peer {} (available tokens: {})",
                     peer, available
+                )
+            },
+            Self::TlsRequired { mode, reason } => {
+                write!(f, "TLS required by security mode {:?}: {}", mode, reason)
+            },
+            Self::MtlsRequired { mode, reason } => {
+                write!(
+                    f,
+                    "mutual TLS required by security mode {:?}: {}",
+                    mode, reason
+                )
+            },
+            Self::NodeIdVerificationRequired { mode, reason } => {
+                write!(
+                    f,
+                    "NodeId verification required by security mode {:?}: {}",
+                    mode, reason
+                )
+            },
+            Self::PlaintextRejected { remote_addr } => {
+                write!(
+                    f,
+                    "plaintext connection rejected from {}: TLS is required",
+                    remote_addr
+                )
+            },
+            Self::ClientCertMissing { remote_addr } => {
+                write!(
+                    f,
+                    "connection from {} rejected: client certificate required but not provided",
+                    remote_addr
                 )
             },
         }
@@ -363,5 +410,61 @@ mod tests {
         let err = TcpError::ClientCertificateRequired;
         let display = err.to_string();
         assert!(display.contains("client certificate required"));
+    }
+
+    #[test]
+    fn test_tls_required_display() {
+        let err = TcpError::TlsRequired {
+            mode: SecurityMode::Strict,
+            reason: "TLS configuration missing".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("TLS required"));
+        assert!(display.contains("Strict"));
+        assert!(display.contains("TLS configuration missing"));
+    }
+
+    #[test]
+    fn test_mtls_required_display() {
+        let err = TcpError::MtlsRequired {
+            mode: SecurityMode::Strict,
+            reason: "client auth not enabled".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("mutual TLS required"));
+        assert!(display.contains("Strict"));
+        assert!(display.contains("client auth not enabled"));
+    }
+
+    #[test]
+    fn test_node_id_verification_required_display() {
+        let err = TcpError::NodeIdVerificationRequired {
+            mode: SecurityMode::Strict,
+            reason: "verification mode not set".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("NodeId verification required"));
+        assert!(display.contains("Strict"));
+    }
+
+    #[test]
+    fn test_plaintext_rejected_display() {
+        let err = TcpError::PlaintextRejected {
+            remote_addr: "192.168.1.1:5000".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("plaintext connection rejected"));
+        assert!(display.contains("192.168.1.1:5000"));
+        assert!(display.contains("TLS is required"));
+    }
+
+    #[test]
+    fn test_client_cert_missing_display() {
+        let err = TcpError::ClientCertMissing {
+            remote_addr: "10.0.0.1:8080".to_string(),
+        };
+        let display = err.to_string();
+        assert!(display.contains("client certificate required but not provided"));
+        assert!(display.contains("10.0.0.1:8080"));
     }
 }
