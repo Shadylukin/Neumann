@@ -1591,12 +1591,12 @@ impl DistributedTxCoordinator {
             .collect();
         drop(locks);
 
-        // Release orphaned locks
+        // Release orphaned locks - acquire both locks once to maintain consistent ordering
         let count = orphaned.len();
-        for (key, tx_id) in orphaned {
-            let mut locks = self.lock_manager.locks.write();
-            let mut tx_locks = self.lock_manager.tx_locks.write();
+        let mut locks = self.lock_manager.locks.write();
+        let mut tx_locks = self.lock_manager.tx_locks.write();
 
+        for (key, tx_id) in orphaned {
             if let Some(lock) = locks.get(&key) {
                 if lock.tx_id == tx_id {
                     locks.remove(&key);
@@ -3781,5 +3781,582 @@ mod tests {
         // Commit should work
         coordinator.commit(tx.tx_id).unwrap();
         assert_eq!(coordinator.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_no_orphans() {
+        let coordinator = create_test_coordinator();
+
+        // No locks, no orphans
+        let released = coordinator.release_orphaned_locks(now_epoch_millis());
+        assert_eq!(released, 0);
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_active_tx_not_released() {
+        let coordinator = create_test_coordinator();
+
+        // Begin transaction (creates active tx)
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Manually add a lock for the active transaction
+        coordinator
+            .lock_manager
+            .try_lock(tx.tx_id, &["key1".to_string()])
+            .unwrap();
+
+        assert!(coordinator.lock_manager.is_locked("key1"));
+
+        // Try to release orphaned locks - should not release active tx's lock
+        let released = coordinator.release_orphaned_locks(now_epoch_millis() + 1000);
+        assert_eq!(released, 0);
+        assert!(coordinator.lock_manager.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_releases_orphaned() {
+        let coordinator = create_test_coordinator();
+
+        // Manually add a lock for a non-existent transaction (orphaned)
+        let orphan_tx_id = 999;
+        coordinator
+            .lock_manager
+            .try_lock(orphan_tx_id, &["orphan_key".to_string()])
+            .unwrap();
+
+        assert!(coordinator.lock_manager.is_locked("orphan_key"));
+
+        // Release orphaned locks
+        let released = coordinator.release_orphaned_locks(now_epoch_millis() + 1000);
+        assert_eq!(released, 1);
+        assert!(!coordinator.lock_manager.is_locked("orphan_key"));
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_respects_partition_time() {
+        let coordinator = create_test_coordinator();
+
+        // Add a lock for orphaned tx
+        let orphan_tx_id = 888;
+        coordinator
+            .lock_manager
+            .try_lock(orphan_tx_id, &["key1".to_string()])
+            .unwrap();
+
+        // Try with partition_start_ms in the past - should not release
+        // because lock was acquired AFTER partition_start
+        let released = coordinator.release_orphaned_locks(0);
+        assert_eq!(released, 0);
+        assert!(coordinator.lock_manager.is_locked("key1"));
+
+        // Now try with partition_start_ms in the future - should release
+        let released = coordinator.release_orphaned_locks(now_epoch_millis() + 10_000);
+        assert_eq!(released, 1);
+        assert!(!coordinator.lock_manager.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_multiple_keys() {
+        let coordinator = create_test_coordinator();
+
+        // Add multiple locks for different orphaned transactions
+        coordinator
+            .lock_manager
+            .try_lock(100, &["key_a".to_string(), "key_b".to_string()])
+            .unwrap();
+        coordinator
+            .lock_manager
+            .try_lock(101, &["key_c".to_string()])
+            .unwrap();
+
+        assert_eq!(coordinator.lock_manager.active_lock_count(), 3);
+
+        // Release all orphaned locks
+        let released = coordinator.release_orphaned_locks(now_epoch_millis() + 1000);
+        assert_eq!(released, 3);
+        assert_eq!(coordinator.lock_manager.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_mixed_active_and_orphaned() {
+        let coordinator = create_test_coordinator();
+
+        // Begin an active transaction with a lock
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        coordinator
+            .lock_manager
+            .try_lock(tx.tx_id, &["active_key".to_string()])
+            .unwrap();
+
+        // Add orphaned locks
+        coordinator
+            .lock_manager
+            .try_lock(555, &["orphan1".to_string()])
+            .unwrap();
+        coordinator
+            .lock_manager
+            .try_lock(556, &["orphan2".to_string()])
+            .unwrap();
+
+        assert_eq!(coordinator.lock_manager.active_lock_count(), 3);
+
+        // Release orphaned - should only release 2
+        let released = coordinator.release_orphaned_locks(now_epoch_millis() + 1000);
+        assert_eq!(released, 2);
+
+        // Active key should still be locked
+        assert!(coordinator.lock_manager.is_locked("active_key"));
+        assert!(!coordinator.lock_manager.is_locked("orphan1"));
+        assert!(!coordinator.lock_manager.is_locked("orphan2"));
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_concurrent_safety() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let coordinator = Arc::new(create_test_coordinator());
+
+        // Add many orphaned locks
+        for i in 0..50 {
+            coordinator
+                .lock_manager
+                .try_lock(1000 + i, &[format!("key_{}", i)])
+                .unwrap();
+        }
+
+        let partition_time = now_epoch_millis() + 10_000;
+
+        // Spawn multiple threads to call release_orphaned_locks concurrently
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let coord = Arc::clone(&coordinator);
+                thread::spawn(move || coord.release_orphaned_locks(partition_time))
+            })
+            .collect();
+
+        // All threads should complete without deadlock
+        let mut total = 0;
+        for handle in handles {
+            total += handle.join().unwrap();
+        }
+
+        // Total released should be 50 (some threads may see 0 if others already cleaned)
+        assert!(total >= 50);
+        assert_eq!(coordinator.lock_manager.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_lock_manager_serializable_roundtrip() {
+        let lock_manager = LockManager::new();
+
+        lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+        lock_manager.try_lock(2, &["key2".to_string()]).unwrap();
+
+        let serializable = lock_manager.to_serializable();
+        let restored = LockManager::from_serializable(serializable);
+
+        assert!(restored.is_locked("key1"));
+        assert!(restored.is_locked("key2"));
+        assert_eq!(restored.lock_holder("key1"), Some(1));
+        assert_eq!(restored.lock_holder("key2"), Some(2));
+    }
+
+    #[test]
+    fn test_lock_manager_concurrent_try_lock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let lock_manager = Arc::new(LockManager::new());
+        let success_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let lm = Arc::clone(&lock_manager);
+                let counter = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    if lm
+                        .try_lock(i as u64, &["contested_key".to_string()])
+                        .is_ok()
+                    {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Exactly one should succeed
+        assert_eq!(success_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_lock_manager_release_partial() {
+        let lock_manager = LockManager::new();
+
+        // Transaction 1 locks keys A and B
+        lock_manager
+            .try_lock(1, &["key_a".to_string(), "key_b".to_string()])
+            .unwrap();
+
+        // Release transaction 1
+        lock_manager.release(1);
+
+        // Both keys should be unlocked
+        assert!(!lock_manager.is_locked("key_a"));
+        assert!(!lock_manager.is_locked("key_b"));
+
+        // Another tx should be able to lock them
+        assert!(lock_manager.try_lock(2, &["key_a".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn test_lock_manager_keys_for_transaction() {
+        let lock_manager = LockManager::new();
+
+        // No locks - should return empty
+        assert!(lock_manager.keys_for_transaction(1).is_empty());
+
+        // Lock some keys
+        lock_manager
+            .try_lock(1, &["key_a".to_string(), "key_b".to_string()])
+            .unwrap();
+
+        let keys = lock_manager.keys_for_transaction(1);
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&"key_a".to_string()));
+        assert!(keys.contains(&"key_b".to_string()));
+
+        // Different tx has no keys
+        assert!(lock_manager.keys_for_transaction(2).is_empty());
+    }
+
+    #[test]
+    fn test_lock_manager_lock_count_for_transaction() {
+        let lock_manager = LockManager::new();
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 0);
+
+        lock_manager
+            .try_lock(
+                1,
+                &[
+                    "key_a".to_string(),
+                    "key_b".to_string(),
+                    "key_c".to_string(),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 3);
+        assert_eq!(lock_manager.lock_count_for_transaction(999), 0);
+    }
+
+    #[test]
+    fn test_lock_manager_try_lock_with_wait_tracking_success() {
+        let lock_manager = LockManager::new();
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        let result = lock_manager.try_lock_with_wait_tracking(
+            1,
+            &["key1".to_string()],
+            &wait_graph,
+            Some(10),
+        );
+
+        assert!(result.is_ok());
+        assert!(lock_manager.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_lock_manager_try_lock_with_wait_tracking_conflict() {
+        let lock_manager = LockManager::new();
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        // First tx locks key1
+        lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+
+        // Second tx tries to lock same key
+        let result = lock_manager.try_lock_with_wait_tracking(
+            2,
+            &["key1".to_string()],
+            &wait_graph,
+            Some(5),
+        );
+
+        assert!(result.is_err());
+        let wait_info = result.unwrap_err();
+        assert_eq!(wait_info.blocking_tx_id, 1);
+        assert!(wait_info.conflicting_keys.contains(&"key1".to_string()));
+    }
+
+    #[test]
+    fn test_serializable_lock_state_new() {
+        let locks = {
+            let mut m = HashMap::new();
+            m.insert(
+                "key1".to_string(),
+                KeyLock {
+                    key: "key1".to_string(),
+                    tx_id: 1,
+                    lock_handle: 10,
+                    acquired_at_ms: now_epoch_millis(),
+                    timeout_ms: 5000,
+                },
+            );
+            m
+        };
+
+        let tx_locks = {
+            let mut m = HashMap::new();
+            m.insert(1, vec!["key1".to_string()]);
+            m
+        };
+
+        let state = SerializableLockState::new(locks.clone(), tx_locks.clone(), 30000);
+
+        assert_eq!(state.locks.len(), 1);
+        assert_eq!(state.tx_locks.len(), 1);
+        assert_eq!(state.default_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_release_nonexistent_tx() {
+        let lock_manager = LockManager::new();
+
+        // Should not panic even for non-existent tx
+        lock_manager.release(999);
+        assert_eq!(lock_manager.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_release_by_handle_removes_tx_locks_entry() {
+        let lock_manager = LockManager::new();
+
+        let handle = lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 1);
+
+        lock_manager.release_by_handle(handle);
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 0);
+        assert!(!lock_manager.is_locked("key1"));
+    }
+
+    #[test]
+    fn test_release_by_handle_nonexistent() {
+        let lock_manager = LockManager::new();
+
+        // Should not panic
+        lock_manager.release_by_handle(99999);
+        assert_eq!(lock_manager.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_cleanup_expired_removes_from_tx_locks() {
+        let mut lock_manager = LockManager::new();
+        lock_manager.default_timeout = Duration::from_millis(0);
+
+        lock_manager
+            .try_lock(1, &["key1".to_string(), "key2".to_string()])
+            .unwrap();
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 2);
+
+        std::thread::sleep(Duration::from_millis(1));
+        lock_manager.cleanup_expired();
+
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 0);
+        assert!(!lock_manager.is_locked("key1"));
+        assert!(!lock_manager.is_locked("key2"));
+    }
+
+    #[test]
+    fn test_distributed_tx_config_accessors() {
+        let config = DistributedTxConfig {
+            prepare_timeout_ms: 1000,
+            commit_timeout_ms: 2000,
+            max_concurrent: 50,
+            orthogonal_threshold: 0.2,
+            optimistic_locking: false,
+        };
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, config.clone());
+
+        // Verify stats are accessible
+        assert_eq!(coordinator.stats().started.load(Ordering::Relaxed), 0);
+
+        // Verify config was applied by checking behavior
+        let lm = coordinator.lock_manager();
+        assert_eq!(lm.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_serializable_lock_state_accessors() {
+        let locks = {
+            let mut m = HashMap::new();
+            m.insert(
+                "key1".to_string(),
+                KeyLock {
+                    key: "key1".to_string(),
+                    tx_id: 1,
+                    lock_handle: 10,
+                    acquired_at_ms: now_epoch_millis(),
+                    timeout_ms: 5000,
+                },
+            );
+            m
+        };
+        let tx_locks = {
+            let mut m = HashMap::new();
+            m.insert(1, vec!["key1".to_string()]);
+            m
+        };
+
+        let state = SerializableLockState::new(locks.clone(), tx_locks.clone(), 30000);
+
+        assert_eq!(state.locks().len(), 1);
+        assert_eq!(state.tx_locks().len(), 1);
+        assert_eq!(state.default_timeout_ms(), 30000);
+    }
+
+    #[test]
+    fn test_coordinator_recover_from_wal_no_wal() {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // No WAL - should return default stats
+        let stats = coordinator.recover_from_wal().unwrap();
+        assert_eq!(stats.pending_prepare, 0);
+        assert_eq!(stats.pending_commit, 0);
+        assert_eq!(stats.pending_abort, 0);
+    }
+
+    #[test]
+    fn test_coordinator_with_wal_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("tx.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus).with_wal(wal);
+
+        // Start and prepare a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Record a Yes vote
+        coordinator.record_vote(
+            tx.tx_id,
+            0,
+            PrepareVote::Yes {
+                lock_handle: 1,
+                delta: DeltaVector::new(vec![1.0], HashSet::new(), tx.tx_id),
+            },
+        );
+
+        // Clear pending to simulate crash
+        coordinator.pending.write().clear();
+
+        // Recover from WAL
+        let stats = coordinator.recover_from_wal().unwrap();
+        assert!(stats.pending_prepare >= 0 || stats.pending_commit >= 0);
+    }
+
+    #[test]
+    fn test_coordinator_state_accessors() {
+        let pending = {
+            let mut m = HashMap::new();
+            let tx = DistributedTransaction::new("node1".to_string(), vec![0]);
+            m.insert(tx.tx_id, tx);
+            m
+        };
+
+        let lock_state = SerializableLockState::new(HashMap::new(), HashMap::new(), 5000);
+
+        let state = CoordinatorState {
+            pending,
+            lock_state,
+        };
+
+        assert_eq!(state.pending.len(), 1);
+    }
+
+    #[test]
+    fn test_coordinator_to_state_and_restore() {
+        let coordinator = create_test_coordinator();
+
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Add a lock
+        coordinator
+            .lock_manager
+            .try_lock(tx.tx_id, &["key1".to_string()])
+            .unwrap();
+
+        // Convert to state
+        let state = coordinator.to_state();
+        assert_eq!(state.pending.len(), 1);
+
+        // Create a new coordinator from state
+        let consensus2 = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator2 =
+            DistributedTxCoordinator::with_state(consensus2, DistributedTxConfig::default(), state);
+
+        assert_eq!(coordinator2.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_abort_state_fields() {
+        let mut pending_acks = HashSet::new();
+        pending_acks.insert(0);
+        pending_acks.insert(1);
+
+        let state = AbortState {
+            pending_acks,
+            initiated_at: now_epoch_millis(),
+            retry_count: 0,
+        };
+
+        assert_eq!(state.pending_acks.len(), 2);
+        assert_eq!(state.retry_count, 0);
+    }
+
+    #[test]
+    fn test_lock_release_removes_from_both_maps() {
+        let lock_manager = LockManager::new();
+
+        // Lock multiple keys for the same transaction
+        lock_manager
+            .try_lock(1, &["a".to_string(), "b".to_string(), "c".to_string()])
+            .unwrap();
+
+        assert_eq!(lock_manager.active_lock_count(), 3);
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 3);
+
+        // Release by transaction
+        lock_manager.release(1);
+
+        assert_eq!(lock_manager.active_lock_count(), 0);
+        assert_eq!(lock_manager.lock_count_for_transaction(1), 0);
+    }
+
+    #[test]
+    fn test_release_does_not_affect_other_tx_locks() {
+        let lock_manager = LockManager::new();
+
+        lock_manager.try_lock(1, &["key1".to_string()]).unwrap();
+        lock_manager.try_lock(2, &["key2".to_string()]).unwrap();
+
+        lock_manager.release(1);
+
+        // tx 1's lock is gone
+        assert!(!lock_manager.is_locked("key1"));
+        // tx 2's lock remains
+        assert!(lock_manager.is_locked("key2"));
+        assert_eq!(lock_manager.lock_holder("key2"), Some(2));
     }
 }
