@@ -585,10 +585,17 @@ pub struct TensorChain {
 
     /// Transition validator for semantic state validation.
     transition_validator: TransitionValidator,
+
+    /// Ed25519 identity for signing blocks.
+    identity: signing::Identity,
 }
 
 impl TensorChain {
     /// Create a new TensorChain with the given store.
+    ///
+    /// Generates a new Ed25519 identity for signing blocks. The node_id parameter
+    /// is used for chain configuration but the actual cryptographic identity is
+    /// derived from the generated key pair.
     pub fn new(store: TensorStore, node_id: impl Into<NodeId>) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
@@ -601,6 +608,9 @@ impl TensorChain {
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
+        // Generate a new Ed25519 identity for signing blocks
+        let identity = signing::Identity::generate();
+
         Self {
             chain,
             tx_manager: TransactionManager::new(),
@@ -608,11 +618,38 @@ impl TensorChain {
             config,
             codebook_manager,
             transition_validator,
+            identity,
         }
     }
 
     /// Create with custom configuration.
     pub fn with_config(store: TensorStore, config: ChainConfig) -> Self {
+        use crate::transaction::DEFAULT_EMBEDDING_DIM;
+
+        let graph = Arc::new(GraphEngine::with_store(store));
+        let chain = Chain::new(graph.clone(), config.node_id.clone());
+
+        // Initialize codebook with default dimension
+        let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
+        let codebook_manager = CodebookManager::with_global(global_codebook.clone());
+        let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
+
+        // Generate a new Ed25519 identity for signing blocks
+        let identity = signing::Identity::generate();
+
+        Self {
+            chain,
+            tx_manager: TransactionManager::new(),
+            graph,
+            config,
+            codebook_manager,
+            transition_validator,
+            identity,
+        }
+    }
+
+    /// Create with a specific Ed25519 identity for signing.
+    pub fn with_identity(store: TensorStore, config: ChainConfig, identity: signing::Identity) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
         let graph = Arc::new(GraphEngine::with_store(store));
@@ -630,6 +667,7 @@ impl TensorChain {
             config,
             codebook_manager,
             transition_validator,
+            identity,
         }
     }
 
@@ -648,6 +686,9 @@ impl TensorChain {
         let transition_validator =
             TransitionValidator::new(Arc::new(global_codebook), validation_config);
 
+        // Generate a new Ed25519 identity for signing blocks
+        let identity = signing::Identity::generate();
+
         Self {
             chain,
             tx_manager: TransactionManager::new(),
@@ -655,6 +696,7 @@ impl TensorChain {
             config,
             codebook_manager,
             transition_validator,
+            identity,
         }
     }
 
@@ -686,6 +728,16 @@ impl TensorChain {
     /// Get the transition validator.
     pub fn transition_validator(&self) -> &TransitionValidator {
         &self.transition_validator
+    }
+
+    /// Get the Ed25519 identity used for signing blocks.
+    pub fn identity(&self) -> &signing::Identity {
+        &self.identity
+    }
+
+    /// Get the public key bytes of the signing identity.
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.identity.public_key_bytes()
     }
 
     /// Get the geometric routing configuration.
@@ -760,16 +812,14 @@ impl TensorChain {
             Vec::new()
         };
 
-        // Build the block with merged operations, delta embedding, and quantized codes
-        // TODO(Part D): Replace placeholder signature with proper Ed25519 signing via Identity
+        // Build and sign the block with Ed25519 identity
         let block = self
             .chain
             .new_block()
             .add_transactions(merged_operations)
             .with_dense_embedding(&merged_delta)
             .with_codes(quantized_codes)
-            .with_signature(vec![0u8; 64])
-            .build();
+            .sign_and_build(&self.identity);
 
         // Append to chain
         match self.chain.append(block) {
@@ -1043,6 +1093,9 @@ impl TensorChain {
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
+        // Generate a new Ed25519 identity for signing blocks
+        let identity = signing::Identity::generate();
+
         Self {
             chain,
             tx_manager: TransactionManager::new(),
@@ -1050,6 +1103,7 @@ impl TensorChain {
             config,
             codebook_manager,
             transition_validator,
+            identity,
         }
     }
 
@@ -2059,11 +2113,104 @@ mod tests {
         let metrics = ChainMetrics::new();
 
         // Simulate some activity
-        metrics.dtx.started.fetch_add(5, std::sync::atomic::Ordering::Relaxed);
-        metrics.dtx.committed.fetch_add(3, std::sync::atomic::Ordering::Relaxed);
-        metrics.raft.heartbeat_successes.fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .started
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .dtx
+            .committed
+            .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        metrics
+            .raft
+            .heartbeat_successes
+            .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
 
         // This should emit logs (visible with --nocapture)
         metrics.emit_as_logs();
+    }
+
+    #[test]
+    fn test_block_ed25519_signing() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+        chain.initialize().unwrap();
+
+        // Commit a transaction - this creates a signed block
+        let tx = chain.begin().unwrap();
+        tx.add_operation(Transaction::Put {
+            key: "signed_data".to_string(),
+            data: vec![1, 2, 3, 4],
+        })
+        .unwrap();
+        chain.commit(tx).unwrap();
+
+        // Get the committed block
+        let block = chain.get_block(1).unwrap().unwrap();
+
+        // Verify the signature is present and non-empty
+        assert_eq!(block.header.signature.len(), 64, "Ed25519 signature should be 64 bytes");
+        assert_ne!(block.header.signature, vec![0u8; 64], "Signature should not be all zeros");
+
+        // Verify the signature manually using the identity's public key
+        let public_identity = chain.identity().verifying_key();
+        let signing_bytes = block.header.signing_bytes();
+        let result = public_identity.verify(&signing_bytes, &block.header.signature);
+        assert!(result.is_ok(), "Ed25519 signature should verify: {:?}", result);
+    }
+
+    #[test]
+    fn test_block_signature_verification_fails_with_wrong_key() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+        chain.initialize().unwrap();
+
+        // Commit a transaction
+        let tx = chain.begin().unwrap();
+        tx.add_operation(Transaction::Put {
+            key: "test".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        chain.commit(tx).unwrap();
+
+        // Get the block
+        let block = chain.get_block(1).unwrap().unwrap();
+
+        // Verify with a DIFFERENT identity's public key (should fail)
+        let wrong_identity = signing::Identity::generate();
+        let wrong_public = wrong_identity.verifying_key();
+        let signing_bytes = block.header.signing_bytes();
+        let result = wrong_public.verify(&signing_bytes, &block.header.signature);
+        assert!(result.is_err(), "Verification should fail with wrong key");
+    }
+
+    #[test]
+    fn test_chain_with_custom_identity() {
+        let store = TensorStore::new();
+        let identity = signing::Identity::generate();
+        let expected_node_id = identity.node_id();
+        let config = ChainConfig::new("test_node");
+        let chain = TensorChain::with_identity(store, config, identity);
+        chain.initialize().unwrap();
+
+        // Verify the identity is accessible
+        assert_eq!(chain.identity().node_id(), expected_node_id);
+
+        // Commit a transaction
+        let tx = chain.begin().unwrap();
+        tx.add_operation(Transaction::Put {
+            key: "test".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        chain.commit(tx).unwrap();
+
+        // Get the block and verify signature using the identity's public key
+        let block = chain.get_block(1).unwrap().unwrap();
+        let public_identity = chain.identity().verifying_key();
+        let signing_bytes = block.header.signing_bytes();
+        let result = public_identity.verify(&signing_bytes, &block.header.signature);
+        assert!(result.is_ok(), "Block signature should verify: {:?}", result);
     }
 }

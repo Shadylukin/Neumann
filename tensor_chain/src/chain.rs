@@ -19,6 +19,7 @@ use tensor_store::SparseVector;
 use crate::{
     block::{Block, BlockHash, BlockHeader, NodeId, Transaction},
     error::{ChainError, Result},
+    signing::Identity,
 };
 
 /// Edge type for chain links.
@@ -416,6 +417,37 @@ impl BlockBuilder {
 
         // Compute tx_root
         block.header.tx_root = block.compute_tx_root();
+
+        block
+    }
+
+    /// Build and sign the block with the given identity.
+    ///
+    /// This constructs the block header, computes the signing bytes, signs them
+    /// with the provided Ed25519 identity, and returns the signed block.
+    pub fn sign_and_build(self, identity: &Identity) -> Block {
+        // Build header without signature first to compute signing bytes
+        let header = BlockHeader::new(
+            self.height,
+            self.prev_hash,
+            [0u8; 32], // Will be computed
+            [0u8; 32], // State root
+            self.proposer,
+        )
+        .with_embedding(self.delta_embedding)
+        .with_codes(self.quantized_codes);
+
+        let mut block = Block::new(header, self.transactions);
+
+        // Compute tx_root
+        block.header.tx_root = block.compute_tx_root();
+
+        // Sign the header's canonical bytes
+        let signing_bytes = block.header.signing_bytes();
+        let signature = identity.sign(&signing_bytes);
+
+        // Attach the signature
+        block.header.signature = signature;
 
         block
     }
