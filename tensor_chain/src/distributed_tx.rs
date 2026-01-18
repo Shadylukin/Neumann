@@ -778,45 +778,51 @@ impl DistributedTxCoordinator {
         let mut stats = RecoveryStats::default();
         let mut pending = self.pending.write();
 
-        // Restore prepared transactions
-        for prepared in recovery_state.prepared_txs {
+        // Helper to restore a transaction from WAL data
+        let restore_tx = |prepared: &crate::tx_wal::RecoveredPreparedTx,
+                          phase: TxPhase|
+         -> DistributedTransaction {
             let mut tx = DistributedTransaction::new(
                 "recovered".to_string(), // Coordinator unknown during recovery
                 prepared.participants.clone(),
             );
             tx.tx_id = prepared.tx_id;
-            tx.phase = TxPhase::Prepared;
-            // Restore votes
-            for (shard, vote_kind) in prepared.votes {
+            tx.phase = phase;
+            // Restore votes with persisted lock handles
+            for (shard, vote_kind) in &prepared.votes {
                 let vote = match vote_kind {
-                    crate::tx_wal::PrepareVoteKind::Yes => PrepareVote::Yes {
-                        lock_handle: 0, // Lock handle lost during recovery
+                    crate::tx_wal::PrepareVoteKind::Yes { lock_handle } => PrepareVote::Yes {
+                        lock_handle: *lock_handle,
                         delta: DeltaVector::zero(0),
                     },
                     crate::tx_wal::PrepareVoteKind::No => PrepareVote::No {
                         reason: "recovered from WAL".to_string(),
                     },
                 };
-                tx.votes.insert(shard, vote);
+                tx.votes.insert(*shard, vote);
             }
+            tx
+        };
+
+        // Restore prepared transactions
+        for prepared in &recovery_state.prepared_txs {
+            let tx = restore_tx(prepared, TxPhase::Prepared);
             pending.insert(prepared.tx_id, tx);
             stats.pending_prepare += 1;
         }
 
-        // Re-drive committing transactions
-        for tx_id in recovery_state.committing_txs {
-            if let Some(tx) = pending.get_mut(&tx_id) {
-                tx.phase = TxPhase::Committing;
-                stats.pending_commit += 1;
-            }
+        // Restore committing transactions
+        for prepared in &recovery_state.committing_txs {
+            let tx = restore_tx(prepared, TxPhase::Committing);
+            pending.insert(prepared.tx_id, tx);
+            stats.pending_commit += 1;
         }
 
-        // Re-drive aborting transactions
-        for tx_id in recovery_state.aborting_txs {
-            if let Some(tx) = pending.get_mut(&tx_id) {
-                tx.phase = TxPhase::Aborting;
-                stats.pending_abort += 1;
-            }
+        // Restore aborting transactions
+        for prepared in &recovery_state.aborting_txs {
+            let tx = restore_tx(prepared, TxPhase::Aborting);
+            pending.insert(prepared.tx_id, tx);
+            stats.pending_abort += 1;
         }
 
         Ok(stats)
@@ -973,6 +979,24 @@ impl DistributedTxCoordinator {
     /// This prevents deadlocks with release_orphaned_locks by never holding
     /// pending lock while acquiring pending_aborts lock.
     pub fn record_vote(&self, tx_id: u64, shard: ShardId, vote: PrepareVote) -> Option<TxPhase> {
+        // Log vote to WAL BEFORE recording in memory to ensure durability
+        let vote_kind = match &vote {
+            PrepareVote::Yes { lock_handle, .. } => crate::tx_wal::PrepareVoteKind::Yes {
+                lock_handle: *lock_handle,
+            },
+            PrepareVote::No { .. } | PrepareVote::Conflict { .. } => {
+                crate::tx_wal::PrepareVoteKind::No
+            },
+        };
+        if let Err(e) = self.log_wal_entry(&TxWalEntry::PrepareVote {
+            tx_id,
+            shard,
+            vote: vote_kind,
+        }) {
+            tracing::error!(tx_id = tx_id, shard = shard, error = %e, "Failed to log vote to WAL");
+            return None;
+        }
+
         // Phase 1: Quick lookup and vote recording (brief lock)
         let (needs_conflict_check, tx_snapshot, abort_info) = {
             let mut pending = self.pending.write();
@@ -1082,6 +1106,16 @@ impl DistributedTxCoordinator {
             {
                 let mut pending = self.pending.write();
                 if let Some(tx) = pending.get_mut(&tx_id) {
+                    // Log phase transition to WAL BEFORE updating in-memory state
+                    if let Err(e) = self.log_wal_entry(&TxWalEntry::PhaseChange {
+                        tx_id,
+                        from: TxPhase::Preparing,
+                        to: TxPhase::Prepared,
+                    }) {
+                        tracing::error!(tx_id = tx_id, error = %e, "Failed to log phase change to WAL");
+                        return None;
+                    }
+
                     tracing::info!(
                         tx_id = tx_id,
                         phase = ?TxPhase::Prepared,
@@ -1126,19 +1160,19 @@ impl DistributedTxCoordinator {
 
         tx.phase = TxPhase::Committing;
 
-        // Release all locks
+        // CRITICAL: Log TxComplete BEFORE releasing locks to prevent double-release on recovery
+        self.log_wal_entry(&TxWalEntry::TxComplete {
+            tx_id,
+            outcome: TxOutcome::Committed,
+        })?;
+
+        // Release all locks AFTER TxComplete is logged
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
                 tracing::debug!(tx_id = tx_id, lock_handle = lock_handle, "Releasing lock");
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
-
-        // Log completion to WAL BEFORE applying state change
-        self.log_wal_entry(&TxWalEntry::TxComplete {
-            tx_id,
-            outcome: TxOutcome::Committed,
-        })?;
 
         tx.phase = TxPhase::Committed;
         self.stats.committed.fetch_add(1, Ordering::Relaxed);
@@ -1236,7 +1270,13 @@ impl DistributedTxCoordinator {
 
         tx.phase = TxPhase::Aborting;
 
-        // Release all locks
+        // CRITICAL: Log TxComplete BEFORE releasing locks to prevent double-release on recovery
+        self.log_wal_entry(&TxWalEntry::TxComplete {
+            tx_id,
+            outcome: TxOutcome::Aborted,
+        })?;
+
+        // Release all locks AFTER TxComplete is logged
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
                 tracing::debug!(
@@ -1247,12 +1287,6 @@ impl DistributedTxCoordinator {
                 self.lock_manager.release_by_handle(*lock_handle);
             }
         }
-
-        // Log completion to WAL BEFORE applying state change
-        self.log_wal_entry(&TxWalEntry::TxComplete {
-            tx_id,
-            outcome: TxOutcome::Aborted,
-        })?;
 
         tx.phase = TxPhase::Aborted;
         self.stats.aborted.fetch_add(1, Ordering::Relaxed);
@@ -3768,7 +3802,7 @@ mod tests {
             wal.append(&crate::tx_wal::TxWalEntry::PrepareVote {
                 tx_id: 100,
                 shard: 0,
-                vote: crate::tx_wal::PrepareVoteKind::Yes,
+                vote: crate::tx_wal::PrepareVoteKind::Yes { lock_handle: 200 },
             })
             .unwrap();
             wal.append(&crate::tx_wal::TxWalEntry::PhaseChange {

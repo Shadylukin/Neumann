@@ -105,8 +105,8 @@ fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
         .filter_map(|r| r.ok())
         .collect();
 
-    if !keys.is_empty() {
-        return Ok(PrivateKeyDer::Pkcs8(keys.into_iter().next().unwrap()));
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(PrivateKeyDer::Pkcs8(key));
     }
 
     // Reopen and try RSA
@@ -118,8 +118,8 @@ fn load_private_key(path: &Path) -> TcpResult<PrivateKeyDer<'static>> {
         .filter_map(|r| r.ok())
         .collect();
 
-    if !keys.is_empty() {
-        return Ok(PrivateKeyDer::Pkcs1(keys.into_iter().next().unwrap()));
+    if let Some(key) = keys.into_iter().next() {
+        return Ok(PrivateKeyDer::Pkcs1(key));
     }
 
     Err(TcpError::TlsError(format!(
@@ -929,5 +929,402 @@ mod tests {
             .with_node_id_verification(NodeIdVerification::CommonName);
 
         assert_eq!(config.node_id_verification, NodeIdVerification::CommonName);
+    }
+
+    #[test]
+    fn test_extract_cn_from_malformed_der() {
+        // Test with invalid DER data
+        let invalid_der = vec![0u8; 10];
+        let result = extract_cn_from_der(&invalid_der);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_san_from_malformed_der() {
+        // Test with invalid DER data
+        let invalid_der = vec![0u8; 10];
+        let result = extract_san_from_der(&invalid_der);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_cn_missing_in_cert() {
+        // Generate cert without CN (only SAN)
+        use rcgen::{CertificateParams, DistinguishedName, SanType};
+
+        let mut params = CertificateParams::default();
+        // Set empty distinguished name (no CN)
+        params.distinguished_name = DistinguishedName::new();
+        params.subject_alt_names = vec![SanType::DnsName("localhost".try_into().unwrap())];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = cert.der();
+
+        let result = extract_cn_from_der(cert_der);
+        // Should be None since we didn't set a CN
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_san_missing_in_cert() {
+        // Generate cert with CN but no SAN
+        use rcgen::{CertificateParams, DistinguishedName, DnType};
+
+        let mut params = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, "test-cn");
+        params.distinguished_name = dn;
+        params.subject_alt_names = vec![]; // No SANs
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = cert.der();
+
+        let result = extract_san_from_der(cert_der);
+        // Should be None since we didn't set any SANs
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_from_common_name_missing() {
+        // Test the error path when CN is missing
+        use rcgen::{CertificateParams, DistinguishedName, SanType};
+
+        let mut params = CertificateParams::default();
+        params.distinguished_name = DistinguishedName::new();
+        params.subject_alt_names = vec![SanType::DnsName("localhost".try_into().unwrap())];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+
+        let result = extract_from_common_name(&cert_der);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no Common Name found"));
+    }
+
+    #[test]
+    fn test_extract_from_san_missing() {
+        // Test the error path when SAN is missing
+        use rcgen::{CertificateParams, DistinguishedName, DnType};
+
+        let mut params = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, "test-cn");
+        params.distinguished_name = dn;
+        params.subject_alt_names = vec![];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+
+        let result = extract_from_san(&cert_der);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no Subject Alternative Name found"));
+    }
+
+    #[test]
+    fn test_verified_peer_identity_equality() {
+        let id1 = VerifiedPeerIdentity::from_common_name("node1");
+        let id2 = VerifiedPeerIdentity::from_common_name("node1");
+        let id3 = VerifiedPeerIdentity::from_san("node1");
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3); // Different source
+    }
+
+    #[test]
+    fn test_verified_peer_identity_clone() {
+        let original = VerifiedPeerIdentity::from_san("test-node");
+        let cloned = original.clone();
+
+        assert_eq!(original.node_id, cloned.node_id);
+        assert_eq!(original.source, cloned.source);
+    }
+
+    #[test]
+    fn test_node_id_source_debug() {
+        let cn = NodeIdSource::CommonName;
+        let san = NodeIdSource::SubjectAltName;
+
+        assert!(format!("{:?}", cn).contains("CommonName"));
+        assert!(format!("{:?}", san).contains("SubjectAltName"));
+    }
+
+    #[test]
+    fn test_node_id_source_copy() {
+        let source = NodeIdSource::CommonName;
+        let copied = source;
+        assert_eq!(source, copied);
+    }
+
+    #[tokio::test]
+    async fn test_wrap_server_with_identity_no_client_auth() {
+        use tokio::net::TcpListener;
+
+        let certs = generate_test_certs();
+        // No client auth - identity should be None
+        let config = TlsConfig::new(&certs.cert_path, &certs.key_path);
+        assert!(!config.require_client_auth);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn({
+            let config = config.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                wrap_server_with_identity(stream, &config).await
+            }
+        });
+
+        let client_task = tokio::spawn({
+            let config = make_insecure_config(&config);
+            async move {
+                let stream = TcpStream::connect(addr).await.unwrap();
+                wrap_client(stream, &config, "localhost").await
+            }
+        });
+
+        let (server_result, client_result) = tokio::join!(server_task, client_task);
+
+        let (_, peer_identity) = server_result.unwrap().unwrap();
+        // Without client auth, peer_identity should be None
+        assert!(peer_identity.is_none());
+        assert!(client_result.unwrap().is_ok());
+    }
+
+    #[test]
+    fn test_extract_cn_with_special_characters() {
+        use rcgen::{CertificateParams, DistinguishedName, DnType, SanType};
+
+        let mut params = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, "node-1.cluster.local");
+        params.distinguished_name = dn;
+        params.subject_alt_names = vec![SanType::DnsName("localhost".try_into().unwrap())];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = cert.der();
+
+        let result = extract_cn_from_der(cert_der);
+        assert_eq!(result, Some("node-1.cluster.local".to_string()));
+    }
+
+    #[test]
+    fn test_extract_san_with_multiple_entries() {
+        use rcgen::{CertificateParams, SanType};
+
+        let mut params = CertificateParams::default();
+        params.subject_alt_names = vec![
+            SanType::DnsName("first.example.com".try_into().unwrap()),
+            SanType::DnsName("second.example.com".try_into().unwrap()),
+        ];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = cert.der();
+
+        let result = extract_san_from_der(cert_der);
+        // Should return the first DNS SAN
+        assert_eq!(result, Some("first.example.com".to_string()));
+    }
+
+    fn generate_mtls_certs() -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, TempDir) {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+
+        // Generate CA
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = rcgen::CertificateParams::new(vec!["Test CA".into()]).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        // Generate server cert signed by CA
+        let server_key = rcgen::KeyPair::generate().unwrap();
+        let server_params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        let server_cert = server_params
+            .signed_by(&server_key, &ca_cert, &ca_key)
+            .unwrap();
+
+        // Generate client cert signed by CA
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let client_params = rcgen::CertificateParams::new(vec!["client-node".into()]).unwrap();
+        let client_cert = client_params
+            .signed_by(&client_key, &ca_cert, &ca_key)
+            .unwrap();
+
+        // Write files
+        let ca_path = temp_dir.path().join("ca.pem");
+        let server_cert_path = temp_dir.path().join("server.pem");
+        let server_key_path = temp_dir.path().join("server_key.pem");
+        let client_cert_path = temp_dir.path().join("client.pem");
+        let client_key_path = temp_dir.path().join("client_key.pem");
+
+        std::fs::write(&ca_path, ca_cert.pem()).unwrap();
+        std::fs::write(&server_cert_path, server_cert.pem()).unwrap();
+        std::fs::write(&server_key_path, server_key.serialize_pem()).unwrap();
+        std::fs::write(&client_cert_path, client_cert.pem()).unwrap();
+        std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
+
+        (
+            ca_path,
+            server_cert_path,
+            server_key_path,
+            client_cert_path,
+            client_key_path,
+            temp_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_mtls_with_client_auth() {
+        use tokio::net::TcpListener;
+
+        let (ca_path, server_cert, server_key, _client_cert, _client_key, _temp_dir) =
+            generate_mtls_certs();
+
+        // Server config with client auth
+        let server_config = TlsConfig::new(&server_cert, &server_key)
+            .with_ca_cert(&ca_path)
+            .with_client_auth()
+            .with_node_id_verification(NodeIdVerification::SubjectAltName);
+
+        assert!(server_config.require_client_auth);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server expects client cert, but we're just testing the server-side setup
+        let server_task = tokio::spawn({
+            let config = server_config.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                // This will fail handshake because client doesn't present cert,
+                // but it tests the mTLS server config path
+                wrap_server_with_identity(stream, &config).await
+            }
+        });
+
+        // Connect without client certificate - handshake will fail
+        let client_stream = TcpStream::connect(addr).await.unwrap();
+        drop(client_stream); // Close connection
+
+        let server_result = server_task.await.unwrap();
+        // Expected to fail because client didn't provide certificate
+        assert!(server_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wrap_server_missing_ca_for_client_auth() {
+        use tokio::net::TcpListener;
+
+        let certs = generate_test_certs();
+
+        // Client auth enabled but no CA cert path - should still work but
+        // verification will use empty root store
+        let config = TlsConfig::new(&certs.cert_path, &certs.key_path).with_client_auth();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn({
+            let config = config.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                wrap_server_with_identity(stream, &config).await
+            }
+        });
+
+        // Connect without cert
+        let _client = TcpStream::connect(addr).await.unwrap();
+
+        let server_result = server_task.await.unwrap();
+        // Will fail because no CA certs to verify client (root store is empty)
+        assert!(server_result.is_err());
+    }
+
+    #[test]
+    fn test_load_certs_multiple_certs_in_file() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Generate multiple certs
+        let cert1 = rcgen::generate_simple_self_signed(vec!["test1.com".into()]).unwrap();
+        let cert2 = rcgen::generate_simple_self_signed(vec!["test2.com".into()]).unwrap();
+
+        let multi_cert = format!("{}{}", cert1.cert.pem(), cert2.cert.pem());
+        let cert_path = temp_dir.path().join("multi.pem");
+        std::fs::write(&cert_path, multi_cert).unwrap();
+
+        let result = load_certs(&cert_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_wrap_client_without_ca_path() {
+        use tokio::net::TcpListener;
+
+        let certs = generate_test_certs();
+        // No CA cert path - will use empty root store
+        let config = TlsConfig::new(&certs.cert_path, &certs.key_path);
+        assert!(config.ca_cert_path.is_none());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_task = tokio::spawn({
+            let config = config.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                wrap_server(stream, &config).await
+            }
+        });
+
+        // Client without insecure mode will fail because no trusted roots
+        let client_task = tokio::spawn({
+            let config = config.clone();
+            async move {
+                let stream = TcpStream::connect(addr).await.unwrap();
+                wrap_client(stream, &config, "localhost").await
+            }
+        });
+
+        let (_, client_result) = tokio::join!(server_task, client_task);
+        // Client should fail certificate verification (no trusted roots)
+        assert!(client_result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_verified_peer_identity_into_string() {
+        let identity = VerifiedPeerIdentity::from_common_name(String::from("owned-string"));
+        assert_eq!(identity.node_id, "owned-string");
+    }
+
+    #[test]
+    fn test_extract_san_ip_address_skipped() {
+        // Test that IP addresses in SAN are skipped (we only extract DNS names)
+        use rcgen::{CertificateParams, SanType};
+
+        let mut params = CertificateParams::default();
+        // Only IP SAN, no DNS SAN
+        params.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+        ))];
+
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = cert.der();
+
+        let result = extract_san_from_der(cert_der);
+        // Should be None since we only extract DNS names
+        assert!(result.is_none());
     }
 }

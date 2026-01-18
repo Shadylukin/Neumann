@@ -31,7 +31,10 @@ fuzz_target!(|input: TtInput| {
     let floats: Vec<f32> = floats.into_iter().take(target_len).collect();
 
     // Create config for this dimension
-    let config = TTConfig::for_dim(floats.len());
+    let config = match TTConfig::for_dim(floats.len()) {
+        Ok(c) => c,
+        Err(_) => return, // Skip invalid dimensions
+    };
 
     // Attempt decomposition
     if let Ok(tt) = tt_decompose(&floats, &config) {

@@ -22,6 +22,7 @@ use crate::{
     block::NodeId,
     error::{ChainError, Result},
     geometric_membership::GeometricMembershipManager,
+    hlc::HybridLogicalClock,
     membership::{MembershipCallback, NodeHealth},
     network::{Message, Transport},
     signing::{Identity, SequenceTracker, SignedGossipMessage, ValidatorRegistry},
@@ -43,11 +44,21 @@ pub struct GossipNodeState {
 }
 
 impl GossipNodeState {
+    /// Create a new gossip node state.
+    ///
+    /// Uses the HLC to get a monotonic timestamp. If the HLC fails to initialize
+    /// (system time before epoch), falls back to the provided timestamp as the
+    /// wall clock time to ensure the state is still usable.
     pub fn new(node_id: NodeId, health: NodeHealth, timestamp: u64, incarnation: u64) -> Self {
-        let updated_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        // Try to get wall clock time via HLC for monotonic timestamps
+        let updated_at = match HybridLogicalClock::new(0) {
+            Ok(hlc) => hlc.estimated_wall_ms(),
+            Err(_) => {
+                // Fallback: use the Lamport timestamp as a proxy for ordering
+                // This maintains monotonicity within this node's view
+                timestamp
+            },
+        };
 
         Self {
             node_id,
@@ -56,6 +67,46 @@ impl GossipNodeState {
             updated_at,
             incarnation,
         }
+    }
+
+    /// Create a new gossip node state with explicit wall clock time.
+    ///
+    /// Use this when you have a known-good wall clock time from an HLC.
+    pub fn with_wall_time(
+        node_id: NodeId,
+        health: NodeHealth,
+        timestamp: u64,
+        incarnation: u64,
+        updated_at: u64,
+    ) -> Self {
+        Self {
+            node_id,
+            health,
+            timestamp,
+            updated_at,
+            incarnation,
+        }
+    }
+
+    /// Create a new gossip node state, returning an error if system time is unavailable.
+    ///
+    /// Prefer this in production code where timestamp accuracy is critical.
+    pub fn try_new(
+        node_id: NodeId,
+        health: NodeHealth,
+        timestamp: u64,
+        incarnation: u64,
+    ) -> Result<Self> {
+        let hlc = HybridLogicalClock::new(0)?;
+        let updated_at = hlc.estimated_wall_ms();
+
+        Ok(Self {
+            node_id,
+            health,
+            timestamp,
+            updated_at,
+            incarnation,
+        })
     }
 
     /// Check if this state supersedes another state for the same node.

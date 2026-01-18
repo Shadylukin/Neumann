@@ -52,6 +52,7 @@ pub mod embedding;
 pub mod error;
 pub mod geometric_membership;
 pub mod gossip;
+pub mod hlc;
 pub mod membership;
 pub mod message_validation;
 pub mod metrics;
@@ -108,6 +109,7 @@ pub use gossip::{
     GossipConfig, GossipMembershipManager, GossipMessage, GossipNodeState, LWWMembershipState,
 };
 use graph_engine::GraphEngine;
+pub use hlc::{HLCTimestamp, HybridLogicalClock};
 pub use membership::{
     ClusterConfig, ClusterView, HealthConfig, LocalNodeConfig, MembershipCallback,
     MembershipManager, MembershipStats, MembershipStatsSnapshot, NodeHealth, NodeStatus,

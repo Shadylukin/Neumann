@@ -61,6 +61,9 @@ impl Chain {
     }
 
     /// Initialize the chain, creating genesis block if needed.
+    ///
+    /// Idempotent: safe to call multiple times. If the chain already exists,
+    /// loads existing height and tip from storage without creating a new genesis.
     pub fn initialize(&self) -> Result<()> {
         // Check if chain already exists
         if let Some(height) = self.load_height() {

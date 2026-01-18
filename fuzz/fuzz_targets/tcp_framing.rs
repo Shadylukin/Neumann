@@ -4,6 +4,7 @@ use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use tensor_chain::tcp::{Handshake, LengthDelimitedCodec};
 use tensor_chain::{AppendEntries, Message, RequestVote, RequestVoteResponse};
+use tensor_store::SparseVector;
 
 #[derive(Arbitrary, Debug)]
 struct FramingInput {
@@ -74,7 +75,7 @@ fuzz_target!(|input: FramingInput| {
                 candidate_id: node_id,
                 last_log_index: log_index,
                 last_log_term: log_term,
-                state_embedding: embedding,
+                state_embedding: SparseVector::from_dense(&embedding),
             });
 
             test_roundtrip(&codec, &msg);
@@ -118,7 +119,7 @@ fuzz_target!(|input: FramingInput| {
                 block_embedding: if embedding.is_empty() {
                     None
                 } else {
-                    Some(embedding)
+                    Some(SparseVector::from_dense(&embedding))
                 },
             });
 

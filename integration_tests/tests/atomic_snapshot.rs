@@ -264,21 +264,21 @@ fn test_tx_wal_complete_lifecycle() {
     wal.append(&TxWalEntry::PrepareVote {
         tx_id: 1,
         shard: 0,
-        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes,
+        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes { lock_handle: 100 },
     })
     .unwrap();
 
     wal.append(&TxWalEntry::PrepareVote {
         tx_id: 1,
         shard: 1,
-        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes,
+        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes { lock_handle: 101 },
     })
     .unwrap();
 
     wal.append(&TxWalEntry::PrepareVote {
         tx_id: 1,
         shard: 2,
-        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes,
+        vote: tensor_chain::tx_wal::PrepareVoteKind::Yes { lock_handle: 102 },
     })
     .unwrap();
 

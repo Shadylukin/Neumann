@@ -622,3 +622,35 @@ path = "fuzz_targets/sequence_tracker_dos.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 33: 2PC WAL recovery targets
+
+[[bin]]
+name = "dtx_wal_recovery"
+path = "fuzz_targets/dtx_wal_recovery.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 34: Production panic fix targets
+
+[[bin]]
+name = "tls_key_parsing"
+path = "fuzz_targets/tls_key_parsing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hlc_operations"
+path = "fuzz_targets/hlc_operations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gossip_timestamp_order"
+path = "fuzz_targets/gossip_timestamp_order.rs"
+test = false
+doc = false
+bench = false

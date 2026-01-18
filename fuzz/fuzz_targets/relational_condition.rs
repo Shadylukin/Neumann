@@ -3,7 +3,6 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use relational_engine::{Condition, Row, Value};
-use std::collections::HashMap;
 use tensor_store::{ScalarValue, TensorData, TensorValue};
 
 #[derive(Arbitrary, Debug, Clone)]
@@ -90,18 +89,18 @@ fuzz_target!(|input: FuzzInput| {
     }
 
     // Build equivalent Row and TensorData
-    let mut row_values: HashMap<String, Value> = HashMap::new();
+    let mut row_values: Vec<(String, Value)> = Vec::new();
     let mut tensor = TensorData::new();
 
     // Add _id field
-    row_values.insert("_id".to_string(), Value::Int(input.id as i64));
+    row_values.push(("_id".to_string(), Value::Int(input.id as i64)));
     tensor.set(
         "_id".to_string(),
         TensorValue::Scalar(ScalarValue::Int(input.id as i64)),
     );
 
     for field in &fields {
-        row_values.insert(field.name.clone(), field.value.to_value());
+        row_values.push((field.name.clone(), field.value.to_value()));
         tensor.set(field.name.clone(), field.value.to_tensor_value());
     }
 

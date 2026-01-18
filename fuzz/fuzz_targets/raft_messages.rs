@@ -14,6 +14,7 @@ use tensor_chain::{
     network::{AppendEntries, AppendEntriesResponse, RequestVote, RequestVoteResponse},
     MemoryTransport, Message, RaftConfig, RaftNode,
 };
+use tensor_store::SparseVector;
 
 #[derive(Debug, Arbitrary)]
 struct FuzzInput {
@@ -55,8 +56,9 @@ fn make_node_id(bytes: &[u8]) -> String {
     }
 }
 
-fn make_embedding(bytes: &[u8]) -> Vec<f32> {
-    bytes.iter().take(128).map(|&b| b as f32 / 255.0).collect()
+fn make_embedding(bytes: &[u8]) -> SparseVector {
+    let dense: Vec<f32> = bytes.iter().take(128).map(|&b| b as f32 / 255.0).collect();
+    SparseVector::from_dense(&dense)
 }
 
 fuzz_target!(|input: FuzzInput| {

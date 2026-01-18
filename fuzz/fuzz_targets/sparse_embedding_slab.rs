@@ -2,7 +2,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tensor_store::{CompressedEmbedding, EmbeddingSlab, EntityId};
+use tensor_store::{EmbeddingSlab, EntityId};
 
 #[derive(Arbitrary, Debug)]
 struct SlabInput {
@@ -69,7 +69,7 @@ fuzz_target!(|input: SlabInput| {
     // Verify each embedding can be retrieved
     for i in 0..slab.len() {
         let entity = EntityId::new(i as u64);
-        if let (Ok(orig), Ok(rest)) = (slab.get(entity), restored.get(entity)) {
+        if let (Some(orig), Some(rest)) = (slab.get(entity), restored.get(entity)) {
             assert_eq!(orig.len(), rest.len());
             for (a, b) in orig.iter().zip(rest.iter()) {
                 if a.is_nan() || b.is_nan() {

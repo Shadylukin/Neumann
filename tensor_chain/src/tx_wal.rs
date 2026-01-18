@@ -59,8 +59,8 @@ pub enum TxWalEntry {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PrepareVoteKind {
-    /// Participant votes YES.
-    Yes,
+    /// Participant votes YES with the lock handle for recovery.
+    Yes { lock_handle: u64 },
     /// Participant votes NO.
     No,
 }
@@ -445,9 +445,9 @@ pub struct TxRecoveryState {
     /// Transactions that were in Prepared phase (need decision).
     pub prepared_txs: Vec<RecoveredPreparedTx>,
     /// Transactions that were in Committing phase (need completion).
-    pub committing_txs: Vec<u64>,
+    pub committing_txs: Vec<RecoveredPreparedTx>,
     /// Transactions that were in Aborting phase (need completion).
-    pub aborting_txs: Vec<u64>,
+    pub aborting_txs: Vec<RecoveredPreparedTx>,
 }
 
 /// A transaction in prepared state awaiting decision.
@@ -501,19 +501,21 @@ impl TxRecoveryState {
         let mut state = TxRecoveryState::default();
 
         for (tx_id, (participants, votes, phase)) in in_progress {
+            let recovered_tx = RecoveredPreparedTx {
+                tx_id,
+                participants,
+                votes,
+            };
+
             match phase {
                 TxPhase::Prepared => {
-                    state.prepared_txs.push(RecoveredPreparedTx {
-                        tx_id,
-                        participants,
-                        votes,
-                    });
+                    state.prepared_txs.push(recovered_tx);
                 },
                 TxPhase::Committing => {
-                    state.committing_txs.push(tx_id);
+                    state.committing_txs.push(recovered_tx);
                 },
                 TxPhase::Aborting => {
-                    state.aborting_txs.push(tx_id);
+                    state.aborting_txs.push(recovered_tx);
                 },
                 TxPhase::Preparing | TxPhase::Committed | TxPhase::Aborted => {
                     // Preparing: Transaction didn't reach decision, can be aborted
@@ -553,7 +555,7 @@ mod tests {
             wal.append(&TxWalEntry::PrepareVote {
                 tx_id: 1,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             })
             .unwrap();
             wal.append(&TxWalEntry::PhaseChange {
@@ -582,12 +584,12 @@ mod tests {
             TxWalEntry::PrepareVote {
                 tx_id: 1,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             },
             TxWalEntry::PrepareVote {
                 tx_id: 1,
                 shard: 1,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 101 },
             },
             TxWalEntry::PhaseChange {
                 tx_id: 1,
@@ -617,7 +619,8 @@ mod tests {
         ];
 
         let state = TxRecoveryState::from_entries(&entries);
-        assert_eq!(state.committing_txs, vec![42]);
+        assert_eq!(state.committing_txs.len(), 1);
+        assert_eq!(state.committing_txs[0].tx_id, 42);
     }
 
     #[test]
@@ -674,7 +677,7 @@ mod tests {
             TxWalEntry::PrepareVote {
                 tx_id: 1,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             },
             TxWalEntry::PrepareVote {
                 tx_id: 1,
@@ -979,7 +982,7 @@ mod tests {
             TxWalEntry::PrepareVote {
                 tx_id: 999,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             },
             TxWalEntry::PhaseChange {
                 tx_id: 999,
@@ -1012,12 +1015,12 @@ mod tests {
             TxWalEntry::PrepareVote {
                 tx_id: 1,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             },
             TxWalEntry::PrepareVote {
                 tx_id: 2,
                 shard: 2,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 101 },
             },
             TxWalEntry::PhaseChange {
                 tx_id: 1,
@@ -1040,9 +1043,9 @@ mod tests {
         assert_eq!(state.prepared_txs.len(), 1);
         assert_eq!(state.prepared_txs[0].tx_id, 1);
         assert_eq!(state.committing_txs.len(), 1);
-        assert_eq!(state.committing_txs[0], 2);
+        assert_eq!(state.committing_txs[0].tx_id, 2);
         assert_eq!(state.aborting_txs.len(), 1);
-        assert_eq!(state.aborting_txs[0], 3);
+        assert_eq!(state.aborting_txs[0].tx_id, 3);
     }
 
     // New tests for V2 features
@@ -1068,7 +1071,7 @@ mod tests {
             wal.append(&TxWalEntry::PrepareVote {
                 tx_id: 42,
                 shard: 0,
-                vote: PrepareVoteKind::Yes,
+                vote: PrepareVoteKind::Yes { lock_handle: 100 },
             })
             .unwrap();
         }

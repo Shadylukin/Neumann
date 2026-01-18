@@ -47,7 +47,6 @@ pub struct BlockHeader {
     /// Node ID of the block proposer.
     pub proposer: NodeId,
 
-    /// Blake2b HMAC signature of the header.
     pub signature: Vec<u8>,
 }
 
@@ -102,7 +101,7 @@ impl BlockHeader {
         hasher.update(self.tx_root);
         hasher.update(self.state_root);
 
-        // Hash embedding (serialize sparse vector for deterministic hashing)
+        // Embedding must be serialized for deterministic cross-platform hashing
         let embedding_bytes = match bincode::serialize(&self.delta_embedding) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -320,6 +319,10 @@ impl Block {
         self.header.hash()
     }
 
+    /// Compute the transaction root using a binary Merkle tree.
+    ///
+    /// Hashes each transaction to form leaves, then recursively combines pairs
+    /// with SHA-256. Odd leaves are duplicated for the final pair.
     pub fn compute_tx_root(&self) -> BlockHash {
         if self.transactions.is_empty() {
             return [0u8; 32];

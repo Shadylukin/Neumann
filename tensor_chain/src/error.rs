@@ -185,6 +185,10 @@ pub enum ChainError {
         /// Source node.
         source_node: String,
     },
+
+    /// Clock error (system time unavailable or invalid).
+    #[error("clock error: {0}")]
+    ClockError(String),
 }
 
 impl From<bincode::Error> for ChainError {
@@ -406,5 +410,13 @@ mod tests {
         assert!(msg.contains("handler timeout"));
         assert!(msg.contains("query execution"));
         assert!(msg.contains("5000ms"));
+    }
+
+    #[test]
+    fn test_clock_error() {
+        let err = ChainError::ClockError("system time before epoch".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("clock error"));
+        assert!(msg.contains("system time before epoch"));
     }
 }

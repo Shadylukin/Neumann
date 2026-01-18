@@ -152,6 +152,10 @@ pub struct TransactionWorkspace {
 }
 
 impl TransactionWorkspace {
+    /// Begin a new transaction with snapshot isolation.
+    ///
+    /// Captures the store's current state as a checkpoint. All reads within
+    /// this transaction see the snapshot, providing repeatable-read isolation.
     pub fn begin(store: &TensorStore) -> Result<Self> {
         let checkpoint_bytes = store
             .snapshot_bytes()
@@ -196,11 +200,11 @@ impl TransactionWorkspace {
             ));
         }
 
-        // Track affected key
+        // Keys are tracked for conflict detection during commit
         let key = op.affected_key().to_string();
         self.affected_keys.write().insert(key);
 
-        // Record operation
+        // Operations are recorded for replay into the committed block
         self.operations.write().push(op);
 
         Ok(())
