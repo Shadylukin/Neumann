@@ -310,8 +310,21 @@ impl TxWal {
     }
 
     /// Truncate the WAL (after checkpoint).
+    ///
+    /// Uses atomic file operations to ensure crash safety. The old file
+    /// is replaced atomically with an empty file.
     pub fn truncate(&mut self) -> io::Result<()> {
-        let file = File::create(&self.path)?;
+        // Flush any pending writes before truncation
+        self.file.flush()?;
+
+        // Atomically create an empty file at the WAL path
+        crate::atomic_io::atomic_truncate(&self.path)?;
+
+        // Reopen the file for append
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         self.file = BufWriter::new(file);
         self.entry_count = 0;
         self.current_size = 0;

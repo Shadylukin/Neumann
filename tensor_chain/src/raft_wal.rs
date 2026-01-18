@@ -351,9 +351,21 @@ impl RaftWal {
     }
 
     /// Truncate the WAL (after snapshot).
+    ///
+    /// Uses atomic file operations to ensure crash safety. The old file
+    /// is replaced atomically with an empty file.
     pub fn truncate(&mut self) -> io::Result<()> {
-        // Close and recreate
-        let file = File::create(&self.path)?;
+        // Flush any pending writes before truncation
+        self.file.flush()?;
+
+        // Atomically create an empty file at the WAL path
+        crate::atomic_io::atomic_truncate(&self.path)?;
+
+        // Reopen the file for append
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         self.file = BufWriter::new(file);
         self.entry_count = 0;
         self.current_size = 0;
@@ -524,16 +536,24 @@ impl RaftRecoveryState {
                     }
                 },
                 RaftWalEntry::VoteCast { term, candidate_id } => {
-                    if *term >= state.current_term {
+                    if *term > state.current_term {
                         state.current_term = *term;
                         state.voted_for = Some(candidate_id.clone());
+                    } else if *term == state.current_term && state.voted_for.is_none() {
+                        // Only accept first vote for same term
+                        state.voted_for = Some(candidate_id.clone());
                     }
+                    // Ignore duplicate votes for same term
                 },
                 RaftWalEntry::TermAndVote { term, voted_for } => {
-                    if *term >= state.current_term {
+                    if *term > state.current_term {
                         state.current_term = *term;
                         state.voted_for = voted_for.clone();
+                    } else if *term == state.current_term && state.voted_for.is_none() {
+                        // Only accept first vote for same term
+                        state.voted_for = voted_for.clone();
                     }
+                    // Ignore duplicate votes for same term
                 },
                 RaftWalEntry::SnapshotTaken {
                     last_included_index,
@@ -541,6 +561,11 @@ impl RaftRecoveryState {
                 } => {
                     state.last_snapshot_index = Some(*last_included_index);
                     state.last_snapshot_term = Some(*last_included_term);
+                    // Update current_term if snapshot has higher term
+                    if *last_included_term > state.current_term {
+                        state.current_term = *last_included_term;
+                        state.voted_for = None;
+                    }
                 },
                 RaftWalEntry::LogAppend { .. } | RaftWalEntry::LogTruncate { .. } => {
                     // Log entries handled separately
@@ -788,6 +813,7 @@ mod tests {
 
     #[test]
     fn test_recovery_state_multiple_votes_same_term() {
+        // Only the FIRST vote for a term should be accepted to prevent double voting
         let entries = vec![
             RaftWalEntry::VoteCast {
                 term: 1,
@@ -805,7 +831,8 @@ mod tests {
 
         let state = RaftRecoveryState::from_entries(&entries);
         assert_eq!(state.current_term, 1);
-        assert_eq!(state.voted_for, Some("node3".to_string()));
+        // First vote wins - subsequent votes in same term are ignored
+        assert_eq!(state.voted_for, Some("node1".to_string()));
     }
 
     #[test]
@@ -849,7 +876,8 @@ mod tests {
 
         let state = RaftRecoveryState::from_entries(&entries);
         assert_eq!(state.current_term, 3);
-        assert_eq!(state.voted_for, Some("node_c".to_string()));
+        // TermAndVote for term 3 already set vote to node_b, so VoteCast is ignored
+        assert_eq!(state.voted_for, Some("node_b".to_string()));
     }
 
     #[test]
@@ -1408,5 +1436,88 @@ mod tests {
         let wal = RaftWal::open_with_config(&wal_path, config).unwrap();
         let entries = wal.replay().unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_recovery_rejects_duplicate_vote_same_term() {
+        // Attempt to vote twice in the same term - second vote should be ignored
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 5,
+                voted_for: Some("node_a".to_string()),
+            },
+            RaftWalEntry::VoteCast {
+                term: 5,
+                candidate_id: "node_b".to_string(),
+            },
+            RaftWalEntry::TermAndVote {
+                term: 5,
+                voted_for: Some("node_c".to_string()),
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 5);
+        // First vote (node_a) should be preserved, duplicates ignored
+        assert_eq!(state.voted_for, Some("node_a".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_accepts_first_vote_for_term() {
+        // Start with no vote, then cast a vote - should be accepted
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 3,
+                voted_for: None,
+            },
+            RaftWalEntry::VoteCast {
+                term: 3,
+                candidate_id: "first_voter".to_string(),
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        assert_eq!(state.current_term, 3);
+        assert_eq!(state.voted_for, Some("first_voter".to_string()));
+    }
+
+    #[test]
+    fn test_recovery_snapshot_updates_current_term() {
+        // Snapshot with higher term should update current_term
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 2,
+                voted_for: Some("old_leader".to_string()),
+            },
+            RaftWalEntry::SnapshotTaken {
+                last_included_index: 100,
+                last_included_term: 5,
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        // Snapshot term (5) is higher than previous term (2)
+        assert_eq!(state.current_term, 5);
+        assert_eq!(state.last_snapshot_index, Some(100));
+        assert_eq!(state.last_snapshot_term, Some(5));
+    }
+
+    #[test]
+    fn test_recovery_snapshot_resets_voted_for() {
+        // Snapshot with higher term should reset voted_for
+        let entries = vec![
+            RaftWalEntry::TermAndVote {
+                term: 2,
+                voted_for: Some("old_leader".to_string()),
+            },
+            RaftWalEntry::SnapshotTaken {
+                last_included_index: 100,
+                last_included_term: 5,
+            },
+        ];
+
+        let state = RaftRecoveryState::from_entries(&entries);
+        // voted_for should be reset when term changes
+        assert_eq!(state.voted_for, None);
     }
 }

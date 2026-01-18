@@ -1342,9 +1342,10 @@ impl RaftNode {
 
     /// Calculate quorum size (majority of total nodes).
     fn quorum_size(&self) -> usize {
-        self.config
-            .quorum_size
-            .unwrap_or_else(|| (self.peers.read().len() + 1).div_ceil(2))
+        self.config.quorum_size.unwrap_or_else(|| {
+            let total_nodes = self.peers.read().len() + 1;
+            (total_nodes / 2) + 1
+        })
     }
 
     fn last_log_info(&self) -> (u64, u64) {
@@ -2645,6 +2646,17 @@ impl RaftNode {
         metadata: SnapshotMetadata,
         entries: Vec<LogEntry>,
     ) -> Result<()> {
+        // Check if we need to update term and persist BEFORE acquiring locks
+        let needs_term_update = {
+            let persistent = self.persistent.read();
+            metadata.last_included_term > persistent.current_term
+        };
+
+        if needs_term_update {
+            // CRITICAL: Persist term change to WAL BEFORE updating memory
+            self.persist_term_and_vote(metadata.last_included_term, None)?;
+        }
+
         // Install the snapshot
         {
             let mut persistent = self.persistent.write();
@@ -2654,7 +2666,7 @@ impl RaftNode {
             // Replace log with entries from snapshot
             persistent.log = entries;
 
-            // Update term if snapshot has higher term
+            // Update term if snapshot has higher term (re-check after WAL persist)
             if metadata.last_included_term > persistent.current_term {
                 persistent.current_term = metadata.last_included_term;
                 persistent.voted_for = None;
@@ -2908,7 +2920,17 @@ impl RaftNode {
         // Build the RequestVote message in a sync block (no await)
         let request = {
             let mut persistent = self.persistent.write();
-            persistent.current_term += 1;
+            let new_term = persistent.current_term + 1;
+
+            // CRITICAL: Persist BEFORE applying state change to prevent double voting
+            if let Err(e) = self.persist_term_and_vote(new_term, Some(&self.node_id)) {
+                return Err(ChainError::StorageError(format!(
+                    "WAL persist failed during async election: {}",
+                    e
+                )));
+            }
+
+            persistent.current_term = new_term;
             persistent.voted_for = Some(self.node_id.clone());
 
             self.leadership.write().role = RaftState::Candidate;
@@ -3420,6 +3442,57 @@ mod tests {
             ],
         );
         assert_eq!(node.quorum_size(), 3);
+    }
+
+    #[test]
+    fn test_quorum_size_4_node_cluster() {
+        // 4 nodes -> quorum = 3 (majority must be > half)
+        // Bug: div_ceil(4, 2) = 2, but 2/4 is not a majority!
+        // Fix: (4 / 2) + 1 = 3
+        let node = create_test_node(
+            "node1",
+            vec![
+                "node2".to_string(),
+                "node3".to_string(),
+                "node4".to_string(),
+            ],
+        );
+        assert_eq!(node.quorum_size(), 3);
+    }
+
+    #[test]
+    fn test_quorum_size_6_node_cluster() {
+        // 6 nodes -> quorum = 4 (majority must be > half)
+        let node = create_test_node(
+            "node1",
+            vec![
+                "node2".to_string(),
+                "node3".to_string(),
+                "node4".to_string(),
+                "node5".to_string(),
+                "node6".to_string(),
+            ],
+        );
+        assert_eq!(node.quorum_size(), 4);
+    }
+
+    #[test]
+    fn test_quorum_size_consistency_with_tracker() {
+        // Verify quorum_size matches QuorumTracker's calculation
+        let peers = vec![
+            "node2".to_string(),
+            "node3".to_string(),
+            "node4".to_string(),
+        ];
+        let node = create_test_node("node1", peers.clone());
+
+        let tracker = QuorumTracker::default_config();
+
+        // Both should calculate quorum as 3 for 4 nodes
+        assert_eq!(node.quorum_size(), 3);
+        // Tracker has_quorum needs 3 successes out of 4 total (3 peers + 1 self)
+        // With no reachable peers, only self is counted, so quorum not reached
+        assert!(!tracker.has_quorum(peers.len())); // 0 peer successes + 1 self = 1, need 3
     }
 
     #[test]
@@ -5418,7 +5491,7 @@ mod tests {
 
         // Simulate receiving chunks
         let data = vec![1u8; 100];
-        let chunk_size = 30;
+        let _chunk_size = 30;
 
         // First chunk
         let result = node.receive_snapshot_chunk(0, &data[0..30], 100, false);

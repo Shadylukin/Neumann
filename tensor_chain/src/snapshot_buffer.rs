@@ -206,6 +206,10 @@ impl SnapshotBuffer {
         // Copy new data
         mmap[existing_data.len()..total_size].copy_from_slice(additional_data);
 
+        // Ensure data is flushed and synced to disk for durability
+        mmap.flush()?;
+        file.sync_all()?;
+
         self.mode = BufferMode::File {
             file,
             mmap,
@@ -218,8 +222,9 @@ impl SnapshotBuffer {
 
     /// Finalize the buffer (must be called before reading).
     pub fn finalize(&mut self) -> Result<()> {
-        if let BufferMode::File { mmap, .. } = &self.mode {
+        if let BufferMode::File { mmap, file, .. } = &self.mode {
             mmap.flush()?;
+            file.sync_all()?;
         }
         self.finalized = true;
         Ok(())

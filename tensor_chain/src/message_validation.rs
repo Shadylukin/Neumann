@@ -821,4 +821,574 @@ mod tests {
             ChainError::InvalidEmbedding { .. }
         ));
     }
+
+    #[test]
+    fn test_validate_pre_vote_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::PreVote(crate::network::PreVote {
+            term: 1,
+            candidate_id: "node1".to_string(),
+            last_log_index: 1,
+            last_log_term: 1,
+            state_embedding: make_valid_sparse_vector(128, 10),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_pre_vote_response_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::PreVoteResponse(crate::network::PreVoteResponse {
+            term: 1,
+            vote_granted: true,
+            voter_id: "voter1".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_append_entries_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::AppendEntries(crate::network::AppendEntries {
+            term: 1,
+            leader_id: "leader1".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: Some(make_valid_sparse_vector(128, 10)),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_append_entries_no_embedding() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::AppendEntries(crate::network::AppendEntries {
+            term: 1,
+            leader_id: "leader1".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+            block_embedding: None,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_append_entries_response_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::AppendEntriesResponse(crate::network::AppendEntriesResponse {
+            term: 1,
+            success: true,
+            follower_id: "follower1".to_string(),
+            match_index: 0,
+            used_fast_path: false,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_prepare_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxPrepare(crate::network::TxPrepareMsg {
+            tx_id: 1,
+            coordinator: "coord1".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: make_valid_sparse_vector(128, 10),
+            timeout_ms: 5000,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_prepare_zero_tx_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxPrepare(crate::network::TxPrepareMsg {
+            tx_id: 0,
+            coordinator: "coord1".to_string(),
+            shard_id: 0,
+            operations: vec![],
+            delta_embedding: make_valid_sparse_vector(128, 10),
+            timeout_ms: 5000,
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_prepare_response_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxPrepareResponse(crate::network::TxPrepareResponseMsg {
+            tx_id: 1,
+            shard_id: 0,
+            vote: crate::network::TxVote::No {
+                reason: "test".to_string(),
+            },
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_prepare_response_zero_tx_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxPrepareResponse(crate::network::TxPrepareResponseMsg {
+            tx_id: 0,
+            shard_id: 0,
+            vote: crate::network::TxVote::No {
+                reason: "test".to_string(),
+            },
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_commit_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxCommit(crate::network::TxCommitMsg {
+            tx_id: 1,
+            shards: vec![0, 1, 2],
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_commit_zero_tx_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxCommit(crate::network::TxCommitMsg {
+            tx_id: 0,
+            shards: vec![0],
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_commit_invalid_shard() {
+        let config = MessageValidationConfig {
+            max_shard_id: 10,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxCommit(crate::network::TxCommitMsg {
+            tx_id: 1,
+            shards: vec![0, 100], // 100 exceeds max
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_abort_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxAbort(crate::network::TxAbortMsg {
+            tx_id: 1,
+            shards: vec![0, 1],
+            reason: "test abort".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_abort_zero_tx_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxAbort(crate::network::TxAbortMsg {
+            tx_id: 0,
+            shards: vec![0],
+            reason: "test".to_string(),
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_abort_invalid_shard() {
+        let config = MessageValidationConfig {
+            max_shard_id: 10,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxAbort(crate::network::TxAbortMsg {
+            tx_id: 1,
+            shards: vec![100], // exceeds max
+            reason: "test".to_string(),
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_tx_ack_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxAck(crate::network::TxAckMsg {
+            tx_id: 1,
+            shard_id: 0,
+            success: true,
+            error: None,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tx_ack_zero_tx_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TxAck(crate::network::TxAckMsg {
+            tx_id: 0,
+            shard_id: 0,
+            success: true,
+            error: None,
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_query_response_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::QueryResponse(crate::network::QueryResponse {
+            query_id: 1,
+            shard_id: 0,
+            result: vec![],
+            execution_time_us: 0,
+            success: true,
+            error: None,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_query_response_zero_id() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::QueryResponse(crate::network::QueryResponse {
+            query_id: 0,
+            shard_id: 0,
+            result: vec![],
+            execution_time_us: 0,
+            success: true,
+            error: None,
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_query_request_with_embedding() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::QueryRequest(crate::network::QueryRequest {
+            query_id: 1,
+            query: "SELECT 1".to_string(),
+            shard_id: 0,
+            embedding: Some(make_valid_sparse_vector(128, 10)),
+            timeout_ms: 5000,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_query_request_zero_timeout() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::QueryRequest(crate::network::QueryRequest {
+            query_id: 1,
+            query: "SELECT 1".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 0,
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_term_exceeds_max() {
+        let config = MessageValidationConfig {
+            max_term: 100,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::Ping { term: 200 };
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_timeout_now() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::TimeoutNow(crate::network::TimeoutNow {
+            term: 1,
+            leader_id: "leader1".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_request() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 0,
+            to_height: 10,
+            requester_id: "node1".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_response() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockResponse(crate::network::BlockResponse {
+            blocks: vec![],
+            current_height: 0,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_snapshot_request() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 0,
+            chunk_size: 1024,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_snapshot_response() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotResponse(crate::network::SnapshotResponse {
+            snapshot_height: 1,
+            snapshot_hash: [0u8; 32],
+            data: vec![],
+            offset: 0,
+            total_size: 0,
+            is_last: true,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_gossip() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::Gossip(crate::gossip::GossipMessage::Alive {
+            node_id: "node1".to_string(),
+            incarnation: 1,
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_signed_gossip_valid() {
+        use crate::signing::Identity;
+
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let identity = Identity::generate();
+        let gossip = crate::gossip::GossipMessage::Alive {
+            node_id: "node1".to_string(),
+            incarnation: 1,
+        };
+        let signed = SignedGossipMessage::new(&identity, &gossip, 1).unwrap();
+
+        let msg = Message::SignedGossip(signed);
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_signed_gossip_invalid_signature_length() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let signed = crate::signing::SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "node1".to_string(),
+                public_key: [0u8; 32],
+                payload: vec![],
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                sequence: 1,
+                signature: vec![0u8; 32], // Wrong length (should be 64)
+            },
+        };
+
+        let msg = Message::SignedGossip(signed);
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_signed_gossip_empty_sender() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let signed = crate::signing::SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "".to_string(), // Empty sender
+                public_key: [0u8; 32],
+                payload: vec![],
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                sequence: 1,
+                signature: vec![0u8; 64],
+            },
+        };
+
+        let msg = Message::SignedGossip(signed);
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_signed_gossip_future_timestamp() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let signed = crate::signing::SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "node1".to_string(),
+                public_key: [0u8; 32],
+                payload: vec![],
+                timestamp_ms: now_ms + 120_000, // 2 minutes in future
+                sequence: 1,
+                signature: vec![0u8; 64],
+            },
+        };
+
+        let msg = Message::SignedGossip(signed);
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_signed_gossip_old_timestamp() {
+        let config = MessageValidationConfig {
+            max_message_age_ms: 60_000, // 1 minute
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let signed = crate::signing::SignedGossipMessage {
+            envelope: crate::signing::SignedMessage {
+                sender: "node1".to_string(),
+                public_key: [0u8; 32],
+                payload: vec![],
+                timestamp_ms: now_ms - 120_000, // 2 minutes in past (exceeds max age)
+                sequence: 1,
+                signature: vec![0u8; 64],
+            },
+        };
+
+        let msg = Message::SignedGossip(signed);
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_position_out_of_bounds() {
+        let config = MessageValidationConfig::default();
+        let validator = EmbeddingValidator::new(
+            config.max_embedding_dimension,
+            config.max_embedding_magnitude,
+        );
+
+        // Position 10 is out of bounds for dimension 5
+        let embedding = SparseVector::from_parts(5, vec![10], vec![1.0]);
+        let result = validator.validate(&embedding, "test_field");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_embedding_valid_sorted() {
+        let config = MessageValidationConfig::default();
+        let validator = EmbeddingValidator::new(
+            config.max_embedding_dimension,
+            config.max_embedding_magnitude,
+        );
+
+        // Properly sorted positions
+        let embedding = SparseVector::from_parts(10, vec![1, 2, 5], vec![1.0, 2.0, 3.0]);
+        let result = validator.validate(&embedding, "test_field");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_debug_clone() {
+        let config = MessageValidationConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.enabled, cloned.enabled);
+        assert_eq!(config.max_term, cloned.max_term);
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("MessageValidationConfig"));
+    }
 }

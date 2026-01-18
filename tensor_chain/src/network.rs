@@ -2868,4 +2868,768 @@ mod tests {
         let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
         assert!(decoded.is_config_change());
     }
+
+    #[test]
+    fn test_message_type_name_all_variants() {
+        let messages = vec![
+            (
+                Message::RequestVote(RequestVote {
+                    term: 1,
+                    candidate_id: "c".to_string(),
+                    last_log_index: 0,
+                    last_log_term: 0,
+                    state_embedding: SparseVector::new(0),
+                }),
+                "RequestVote",
+            ),
+            (
+                Message::RequestVoteResponse(RequestVoteResponse {
+                    term: 1,
+                    vote_granted: true,
+                    voter_id: "v".to_string(),
+                }),
+                "RequestVoteResponse",
+            ),
+            (
+                Message::PreVote(PreVote {
+                    term: 1,
+                    candidate_id: "c".to_string(),
+                    last_log_index: 0,
+                    last_log_term: 0,
+                    state_embedding: SparseVector::new(0),
+                }),
+                "PreVote",
+            ),
+            (
+                Message::PreVoteResponse(PreVoteResponse {
+                    term: 1,
+                    vote_granted: true,
+                    voter_id: "v".to_string(),
+                }),
+                "PreVoteResponse",
+            ),
+            (
+                Message::TimeoutNow(TimeoutNow {
+                    term: 1,
+                    leader_id: "l".to_string(),
+                }),
+                "TimeoutNow",
+            ),
+            (
+                Message::AppendEntries(AppendEntries {
+                    term: 1,
+                    leader_id: "l".to_string(),
+                    prev_log_index: 0,
+                    prev_log_term: 0,
+                    entries: vec![],
+                    leader_commit: 0,
+                    block_embedding: None,
+                }),
+                "AppendEntries",
+            ),
+            (
+                Message::AppendEntriesResponse(AppendEntriesResponse {
+                    term: 1,
+                    success: true,
+                    follower_id: "f".to_string(),
+                    match_index: 0,
+                    used_fast_path: false,
+                }),
+                "AppendEntriesResponse",
+            ),
+            (
+                Message::BlockRequest(BlockRequest {
+                    from_height: 0,
+                    to_height: 1,
+                    requester_id: "r".to_string(),
+                }),
+                "BlockRequest",
+            ),
+            (
+                Message::BlockResponse(BlockResponse {
+                    blocks: vec![],
+                    current_height: 0,
+                }),
+                "BlockResponse",
+            ),
+            (
+                Message::SnapshotRequest(SnapshotRequest {
+                    requester_id: "r".to_string(),
+                    offset: 0,
+                    chunk_size: 1,
+                }),
+                "SnapshotRequest",
+            ),
+            (
+                Message::SnapshotResponse(SnapshotResponse {
+                    snapshot_height: 0,
+                    snapshot_hash: [0u8; 32],
+                    data: vec![],
+                    offset: 0,
+                    total_size: 0,
+                    is_last: true,
+                }),
+                "SnapshotResponse",
+            ),
+            (Message::Ping { term: 1 }, "Ping"),
+            (Message::Pong { term: 1 }, "Pong"),
+            (
+                Message::TxPrepare(TxPrepareMsg {
+                    tx_id: 1,
+                    coordinator: "c".to_string(),
+                    shard_id: 0,
+                    operations: vec![],
+                    delta_embedding: SparseVector::new(0),
+                    timeout_ms: 1000,
+                }),
+                "TxPrepare",
+            ),
+            (
+                Message::TxPrepareResponse(TxPrepareResponseMsg {
+                    tx_id: 1,
+                    shard_id: 0,
+                    vote: TxVote::No {
+                        reason: "n".to_string(),
+                    },
+                }),
+                "TxPrepareResponse",
+            ),
+            (
+                Message::TxCommit(TxCommitMsg {
+                    tx_id: 1,
+                    shards: vec![],
+                }),
+                "TxCommit",
+            ),
+            (
+                Message::TxAbort(TxAbortMsg {
+                    tx_id: 1,
+                    reason: "r".to_string(),
+                    shards: vec![],
+                }),
+                "TxAbort",
+            ),
+            (
+                Message::TxAck(TxAckMsg {
+                    tx_id: 1,
+                    shard_id: 0,
+                    success: true,
+                    error: None,
+                }),
+                "TxAck",
+            ),
+            (
+                Message::QueryRequest(QueryRequest {
+                    query_id: 1,
+                    query: "SELECT *".to_string(),
+                    shard_id: 0,
+                    embedding: None,
+                    timeout_ms: 1000,
+                }),
+                "QueryRequest",
+            ),
+            (
+                Message::QueryResponse(QueryResponse {
+                    query_id: 1,
+                    shard_id: 0,
+                    result: vec![],
+                    execution_time_us: 100,
+                    success: true,
+                    error: None,
+                }),
+                "QueryResponse",
+            ),
+        ];
+
+        for (msg, expected_name) in messages {
+            assert_eq!(msg.type_name(), expected_name);
+        }
+    }
+
+    #[test]
+    fn test_prevote_serialization() {
+        let msg = Message::PreVote(PreVote {
+            term: 5,
+            candidate_id: "candidate1".to_string(),
+            last_log_index: 10,
+            last_log_term: 4,
+            state_embedding: SparseVector::from_dense(&[0.1, 0.2]),
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::PreVote(pv) = decoded {
+            assert_eq!(pv.term, 5);
+            assert_eq!(pv.candidate_id, "candidate1");
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_prevote_response_serialization() {
+        let msg = Message::PreVoteResponse(PreVoteResponse {
+            term: 5,
+            vote_granted: true,
+            voter_id: "voter1".to_string(),
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::PreVoteResponse(pvr) = decoded {
+            assert_eq!(pvr.term, 5);
+            assert!(pvr.vote_granted);
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_timeout_now_serialization() {
+        let msg = Message::TimeoutNow(TimeoutNow {
+            term: 10,
+            leader_id: "leader1".to_string(),
+        });
+
+        let bytes = bincode::serialize(&msg).unwrap();
+        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+
+        if let Message::TimeoutNow(tn) = decoded {
+            assert_eq!(tn.term, 10);
+            assert_eq!(tn.leader_id, "leader1");
+        } else {
+            panic!("wrong message type");
+        }
+    }
+
+    #[test]
+    fn test_config_change_constructors() {
+        let add = ConfigChange::add_learner("node1".to_string());
+        assert!(matches!(add, ConfigChange::AddLearner { node_id } if node_id == "node1"));
+
+        let promote = ConfigChange::promote_learner("node2".to_string());
+        assert!(matches!(promote, ConfigChange::PromoteLearner { node_id } if node_id == "node2"));
+
+        let remove = ConfigChange::remove_node("node3".to_string());
+        assert!(matches!(remove, ConfigChange::RemoveNode { node_id } if node_id == "node3"));
+
+        let joint = ConfigChange::joint_change(
+            vec!["n1".to_string(), "n2".to_string()],
+            vec!["n3".to_string()],
+        );
+        if let ConfigChange::JointChange {
+            additions,
+            removals,
+        } = joint
+        {
+            assert_eq!(additions.len(), 2);
+            assert_eq!(removals.len(), 1);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn test_joint_config_has_joint_quorum() {
+        let config = JointConfig::new(
+            vec!["n1".to_string(), "n2".to_string(), "n3".to_string()],
+            vec!["n2".to_string(), "n3".to_string(), "n4".to_string()],
+        );
+
+        // Need majority in both old (2 of 3) and new (2 of 3)
+        let mut votes = HashSet::new();
+        votes.insert("n1".to_string());
+        votes.insert("n2".to_string());
+        // Old: n1, n2 = 2/3, New: n2 = 1/3, not enough
+        assert!(!config.has_joint_quorum(&votes));
+
+        votes.insert("n3".to_string());
+        // Old: n1, n2, n3 = 3/3, New: n2, n3 = 2/3, enough
+        assert!(config.has_joint_quorum(&votes));
+    }
+
+    #[test]
+    fn test_joint_config_all_voters_dedup() {
+        let config = JointConfig::new(
+            vec!["n1".to_string(), "n2".to_string()],
+            vec!["n2".to_string(), "n3".to_string()],
+        );
+
+        let all = config.all_voters();
+        assert_eq!(all.len(), 3); // n1, n2, n3 (n2 not duplicated)
+        assert!(all.contains(&"n1".to_string()));
+        assert!(all.contains(&"n2".to_string()));
+        assert!(all.contains(&"n3".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_remove_voter() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        assert!(config.remove_node(&"n1".to_string()));
+        assert!(!config.voters.contains(&"n1".to_string()));
+        assert!(config.voters.contains(&"n2".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_remove_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        config.add_learner("learner1".to_string());
+        assert!(config.remove_node(&"learner1".to_string()));
+        assert!(!config.learners.contains(&"learner1".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_remove_nonexistent() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        assert!(!config.remove_node(&"nonexistent".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_is_voter() {
+        let config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        assert!(config.is_voter(&"n1".to_string()));
+        assert!(!config.is_voter(&"n3".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_is_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        config.add_learner("learner1".to_string());
+        assert!(config.is_learner(&"learner1".to_string()));
+        assert!(!config.is_learner(&"n1".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_add_learner_already_voter() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        config.add_learner("n1".to_string()); // Already a voter
+        assert!(config.learners.is_empty()); // Should not be added
+    }
+
+    #[test]
+    fn test_raft_membership_config_add_learner_already_learner() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        config.add_learner("learner1".to_string());
+        config.add_learner("learner1".to_string()); // Already a learner
+        assert_eq!(config.learners.len(), 1); // Not duplicated
+    }
+
+    #[test]
+    fn test_raft_membership_config_promote_nonexistent() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        assert!(!config.promote_learner(&"nonexistent".to_string()));
+    }
+
+    #[test]
+    fn test_raft_membership_config_has_quorum_joint() {
+        let mut config = RaftMembershipConfig::new(vec!["n1".to_string(), "n2".to_string()]);
+        config.joint = Some(JointConfig::new(
+            vec!["n1".to_string(), "n2".to_string()],
+            vec!["n2".to_string(), "n3".to_string()],
+        ));
+
+        let mut votes = HashSet::new();
+        votes.insert("n2".to_string());
+        // Need majority in both: old (2 of 2), new (2 of 2)
+        assert!(!config.has_quorum(&votes)); // Only n2
+
+        votes.insert("n1".to_string());
+        votes.insert("n3".to_string());
+        assert!(config.has_quorum(&votes)); // n1, n2, n3
+    }
+
+    #[test]
+    fn test_log_entry_data_serialization() {
+        use crate::block::BlockHeader;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "p".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        let block_data = LogEntryData::Block(Box::new(block));
+        let bytes = bincode::serialize(&block_data).unwrap();
+        let decoded: LogEntryData = bincode::deserialize(&bytes).unwrap();
+        assert!(matches!(decoded, LogEntryData::Block(_)));
+
+        let config_data = LogEntryData::Config(ConfigChange::AddLearner {
+            node_id: "new".to_string(),
+        });
+        let bytes = bincode::serialize(&config_data).unwrap();
+        let decoded: LogEntryData = bincode::deserialize(&bytes).unwrap();
+        assert!(matches!(decoded, LogEntryData::Config(_)));
+    }
+
+    #[test]
+    fn test_query_request_serialization() {
+        let req = QueryRequest {
+            query_id: 123,
+            query: "SELECT * FROM users".to_string(),
+            shard_id: 2,
+            embedding: Some(SparseVector::from_dense(&[0.1, 0.2])),
+            timeout_ms: 30000,
+        };
+
+        let bytes = bincode::serialize(&req).unwrap();
+        let decoded: QueryRequest = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.query_id, 123);
+        assert_eq!(decoded.query, "SELECT * FROM users");
+        assert!(decoded.embedding.is_some());
+    }
+
+    #[test]
+    fn test_query_response_serialization() {
+        let resp = QueryResponse {
+            query_id: 123,
+            shard_id: 2,
+            result: vec![1, 2, 3, 4],
+            execution_time_us: 500,
+            success: true,
+            error: None,
+        };
+
+        let bytes = bincode::serialize(&resp).unwrap();
+        let decoded: QueryResponse = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.query_id, 123);
+        assert!(decoded.success);
+        assert!(decoded.error.is_none());
+    }
+
+    #[test]
+    fn test_query_response_with_error() {
+        let resp = QueryResponse {
+            query_id: 124,
+            shard_id: 0,
+            result: vec![],
+            execution_time_us: 10,
+            success: false,
+            error: Some("table not found".to_string()),
+        };
+
+        let bytes = bincode::serialize(&resp).unwrap();
+        let decoded: QueryResponse = bincode::deserialize(&bytes).unwrap();
+        assert!(!decoded.success);
+        assert_eq!(decoded.error, Some("table not found".to_string()));
+    }
+
+    #[test]
+    fn test_merge_delta_entry_serialization() {
+        let entry = MergeDeltaEntry {
+            key: "test_key".to_string(),
+            log_index: 100,
+            log_term: 5,
+            op_type: MergeOpType::Put,
+            data_hash: [42u8; 32],
+        };
+
+        let bytes = bincode::serialize(&entry).unwrap();
+        let decoded: MergeDeltaEntry = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.key, "test_key");
+        assert_eq!(decoded.log_index, 100);
+        assert_eq!(decoded.op_type, MergeOpType::Put);
+    }
+
+    #[test]
+    fn test_merge_op_type_variants() {
+        let put = MergeOpType::Put;
+        let delete = MergeOpType::Delete;
+        let update = MergeOpType::Update;
+
+        assert_ne!(put, delete);
+        assert_ne!(delete, update);
+        assert_eq!(put, MergeOpType::Put);
+
+        // Test serialization
+        for op in [put, delete, update] {
+            let bytes = bincode::serialize(&op).unwrap();
+            let decoded: MergeOpType = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(decoded, op);
+        }
+    }
+
+    #[test]
+    fn test_tx_vote_from_prepare_vote_yes() {
+        use crate::consensus::DeltaVector;
+        use crate::distributed_tx::PrepareVote;
+
+        let delta = DeltaVector::from_sparse(
+            SparseVector::from_dense(&[0.1, 0.2]),
+            vec!["key1".to_string()].into_iter().collect(),
+            1,
+        );
+
+        let vote = PrepareVote::Yes {
+            lock_handle: 42,
+            delta,
+        };
+
+        let tx_vote: TxVote = vote.into();
+        if let TxVote::Yes {
+            lock_handle,
+            affected_keys,
+            ..
+        } = tx_vote
+        {
+            assert_eq!(lock_handle, 42);
+            assert!(affected_keys.contains(&"key1".to_string()));
+        } else {
+            panic!("expected Yes variant");
+        }
+    }
+
+    #[test]
+    fn test_tx_vote_from_prepare_vote_no() {
+        use crate::distributed_tx::PrepareVote;
+
+        let vote = PrepareVote::No {
+            reason: "test reason".to_string(),
+        };
+
+        let tx_vote: TxVote = vote.into();
+        if let TxVote::No { reason } = tx_vote {
+            assert_eq!(reason, "test reason");
+        } else {
+            panic!("expected No variant");
+        }
+    }
+
+    #[test]
+    fn test_tx_vote_from_prepare_vote_conflict() {
+        use crate::distributed_tx::PrepareVote;
+
+        let vote = PrepareVote::Conflict {
+            similarity: 0.95,
+            conflicting_tx: 123,
+        };
+
+        let tx_vote: TxVote = vote.into();
+        if let TxVote::Conflict {
+            similarity,
+            conflicting_tx,
+        } = tx_vote
+        {
+            assert!((similarity - 0.95).abs() < 0.001);
+            assert_eq!(conflicting_tx, 123);
+        } else {
+            panic!("expected Conflict variant");
+        }
+    }
+
+    #[test]
+    fn test_prepare_vote_from_tx_vote_yes() {
+        use crate::distributed_tx::PrepareVote;
+
+        let tx_vote = TxVote::Yes {
+            lock_handle: 42,
+            delta: SparseVector::from_dense(&[0.1, 0.2]),
+            affected_keys: vec!["key1".to_string()],
+        };
+
+        let vote: PrepareVote = tx_vote.into();
+        if let PrepareVote::Yes { lock_handle, delta } = vote {
+            assert_eq!(lock_handle, 42);
+            assert!(delta.affected_keys.contains("key1"));
+        } else {
+            panic!("expected Yes variant");
+        }
+    }
+
+    #[test]
+    fn test_prepare_vote_from_tx_vote_no() {
+        use crate::distributed_tx::PrepareVote;
+
+        let tx_vote = TxVote::No {
+            reason: "test".to_string(),
+        };
+
+        let vote: PrepareVote = tx_vote.into();
+        if let PrepareVote::No { reason } = vote {
+            assert_eq!(reason, "test");
+        } else {
+            panic!("expected No variant");
+        }
+    }
+
+    #[test]
+    fn test_prepare_vote_from_tx_vote_conflict() {
+        use crate::distributed_tx::PrepareVote;
+
+        let tx_vote = TxVote::Conflict {
+            similarity: 0.8,
+            conflicting_tx: 999,
+        };
+
+        let vote: PrepareVote = tx_vote.into();
+        if let PrepareVote::Conflict {
+            similarity,
+            conflicting_tx,
+        } = vote
+        {
+            assert!((similarity - 0.8).abs() < 0.001);
+            assert_eq!(conflicting_tx, 999);
+        } else {
+            panic!("expected Conflict variant");
+        }
+    }
+
+    #[test]
+    fn test_prevote_debug_clone() {
+        let pv = PreVote {
+            term: 5,
+            candidate_id: "cand".to_string(),
+            last_log_index: 10,
+            last_log_term: 4,
+            state_embedding: SparseVector::from_dense(&[0.1]),
+        };
+        let cloned = pv.clone();
+        assert_eq!(pv.term, cloned.term);
+
+        let debug = format!("{:?}", pv);
+        assert!(debug.contains("PreVote"));
+    }
+
+    #[test]
+    fn test_prevote_response_debug_clone() {
+        let pvr = PreVoteResponse {
+            term: 5,
+            vote_granted: true,
+            voter_id: "voter".to_string(),
+        };
+        let cloned = pvr.clone();
+        assert_eq!(pvr.vote_granted, cloned.vote_granted);
+
+        let debug = format!("{:?}", pvr);
+        assert!(debug.contains("PreVoteResponse"));
+    }
+
+    #[test]
+    fn test_timeout_now_debug_clone() {
+        let tn = TimeoutNow {
+            term: 10,
+            leader_id: "leader".to_string(),
+        };
+        let cloned = tn.clone();
+        assert_eq!(tn.term, cloned.term);
+
+        let debug = format!("{:?}", tn);
+        assert!(debug.contains("TimeoutNow"));
+    }
+
+    #[test]
+    fn test_query_request_debug_clone() {
+        let qr = QueryRequest {
+            query_id: 1,
+            query: "SELECT".to_string(),
+            shard_id: 0,
+            embedding: None,
+            timeout_ms: 1000,
+        };
+        let cloned = qr.clone();
+        assert_eq!(qr.query_id, cloned.query_id);
+
+        let debug = format!("{:?}", qr);
+        assert!(debug.contains("QueryRequest"));
+    }
+
+    #[test]
+    fn test_query_response_debug_clone() {
+        let qr = QueryResponse {
+            query_id: 1,
+            shard_id: 0,
+            result: vec![],
+            execution_time_us: 100,
+            success: true,
+            error: None,
+        };
+        let cloned = qr.clone();
+        assert_eq!(qr.success, cloned.success);
+
+        let debug = format!("{:?}", qr);
+        assert!(debug.contains("QueryResponse"));
+    }
+
+    #[test]
+    fn test_config_change_debug_eq() {
+        let c1 = ConfigChange::AddLearner {
+            node_id: "n1".to_string(),
+        };
+        let c2 = ConfigChange::AddLearner {
+            node_id: "n1".to_string(),
+        };
+        let c3 = ConfigChange::RemoveNode {
+            node_id: "n1".to_string(),
+        };
+
+        assert_eq!(c1, c2);
+        assert_ne!(c1, c3);
+
+        let debug = format!("{:?}", c1);
+        assert!(debug.contains("AddLearner"));
+    }
+
+    #[test]
+    fn test_joint_config_debug_eq() {
+        let j1 = JointConfig::new(vec!["n1".to_string()], vec!["n2".to_string()]);
+        let j2 = JointConfig::new(vec!["n1".to_string()], vec!["n2".to_string()]);
+        let j3 = JointConfig::new(vec!["n1".to_string()], vec!["n3".to_string()]);
+
+        assert_eq!(j1, j2);
+        assert_ne!(j1, j3);
+
+        let debug = format!("{:?}", j1);
+        assert!(debug.contains("JointConfig"));
+    }
+
+    #[test]
+    fn test_raft_membership_config_debug_eq() {
+        let c1 = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        let c2 = RaftMembershipConfig::new(vec!["n1".to_string()]);
+        let c3 = RaftMembershipConfig::new(vec!["n2".to_string()]);
+
+        assert_eq!(c1, c2);
+        assert_ne!(c1, c3);
+
+        let debug = format!("{:?}", c1);
+        assert!(debug.contains("RaftMembershipConfig"));
+    }
+
+    #[test]
+    fn test_log_entry_data_debug_clone() {
+        let config_data = LogEntryData::Config(ConfigChange::RemoveNode {
+            node_id: "n1".to_string(),
+        });
+        let cloned = config_data.clone();
+
+        let debug = format!("{:?}", config_data);
+        assert!(debug.contains("Config"));
+
+        // Just verify clone compiles
+        drop(cloned);
+    }
+
+    #[test]
+    fn test_merge_delta_entry_debug_clone() {
+        let entry = MergeDeltaEntry {
+            key: "k".to_string(),
+            log_index: 1,
+            log_term: 1,
+            op_type: MergeOpType::Delete,
+            data_hash: [0u8; 32],
+        };
+        let cloned = entry.clone();
+        assert_eq!(entry.key, cloned.key);
+
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("MergeDeltaEntry"));
+    }
+
+    #[test]
+    fn test_merge_op_type_debug_copy() {
+        let op = MergeOpType::Update;
+        let copied = op; // Copy trait
+        assert_eq!(op, copied);
+
+        let debug = format!("{:?}", op);
+        assert!(debug.contains("Update"));
+    }
 }

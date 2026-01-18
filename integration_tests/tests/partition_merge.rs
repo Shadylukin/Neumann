@@ -190,7 +190,10 @@ fn test_pending_tx_reconciliation() {
 
     let reconciler = TransactionReconciler::default();
     let result = reconciler
-        .reconcile(&[local_tx1, local_tx2, local_tx3], &[remote_tx1, remote_tx2])
+        .reconcile(
+            &[local_tx1, local_tx2, local_tx3],
+            &[remote_tx1, remote_tx2],
+        )
         .unwrap();
 
     // Transaction 1: All YES -> commit

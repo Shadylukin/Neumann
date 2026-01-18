@@ -76,7 +76,11 @@ fn test_raft_wal_recovery_after_partial_write() {
     let node = create_test_node_with_wal("node1", vec!["node2".to_string()], &wal_path);
 
     // Should recover the valid entry
-    assert_eq!(node.current_term(), 5, "Should recover valid term before corruption");
+    assert_eq!(
+        node.current_term(),
+        5,
+        "Should recover valid term before corruption"
+    );
     assert_eq!(node.state(), RaftState::Follower);
 }
 
@@ -318,13 +322,7 @@ fn test_raft_commit_index_recovery() {
             auto_heartbeat: false,
             ..RaftConfig::default()
         };
-        let node = RaftNode::with_store(
-            "node1".to_string(),
-            vec![],
-            transport,
-            config,
-            &store,
-        );
+        let node = RaftNode::with_store("node1".to_string(), vec![], transport, config, &store);
 
         // Propose and commit a block (single node commits immediately)
         node.start_election();

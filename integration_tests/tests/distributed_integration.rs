@@ -21,11 +21,16 @@ fn create_raft_cluster(
 ) -> (
     Vec<Arc<RaftNode>>,
     Vec<Arc<MemoryTransport>>,
-    Arc<parking_lot::RwLock<std::collections::HashMap<String, Vec<(String, tensor_chain::Message)>>>>,
+    Arc<
+        parking_lot::RwLock<
+            std::collections::HashMap<String, Vec<(String, tensor_chain::Message)>>,
+        >,
+    >,
 ) {
-    let messages = Arc::new(parking_lot::RwLock::new(
-        std::collections::HashMap::<String, Vec<(String, tensor_chain::Message)>>::new(),
-    ));
+    let messages = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::<
+        String,
+        Vec<(String, tensor_chain::Message)>,
+    >::new()));
 
     let node_ids: Vec<String> = (0..node_count).map(|i| format!("node{}", i)).collect();
 
@@ -492,8 +497,12 @@ fn test_raft_leader_proposal() {
     assert_eq!(nodes[0].state(), RaftState::Leader);
 
     // Mark peers as reachable so quorum is available for writes
-    nodes[0].quorum_tracker().record_success(&"node1".to_string());
-    nodes[0].quorum_tracker().record_success(&"node2".to_string());
+    nodes[0]
+        .quorum_tracker()
+        .record_success(&"node1".to_string());
+    nodes[0]
+        .quorum_tracker()
+        .record_success(&"node2".to_string());
 
     // Create a block to propose
     let header = tensor_chain::BlockHeader::new(
@@ -552,7 +561,10 @@ fn test_transaction_timeout_detection() {
     // We can't easily test timeout without modifying the transaction directly
     // So we just verify the is_timed_out method exists and works at startup
     let tx_state = coordinator.get(tx.tx_id).unwrap();
-    assert!(!tx_state.is_timed_out(), "Transaction should not be timed out immediately");
+    assert!(
+        !tx_state.is_timed_out(),
+        "Transaction should not be timed out immediately"
+    );
 }
 
 #[test]

@@ -39,6 +39,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::must_use_candidate)]
 
+pub mod atomic_io;
 pub mod block;
 pub mod chain;
 pub mod cluster;
@@ -71,6 +72,7 @@ pub mod validation;
 // Re-exports
 use std::sync::Arc;
 
+pub use atomic_io::{atomic_truncate, atomic_write, AtomicIoError, AtomicWriter};
 pub use block::{Block, BlockHash, BlockHeader, NodeId, Transaction, ValidatorSignature};
 pub use chain::{BlockBuilder, Chain, ChainIterator};
 pub use cluster::{

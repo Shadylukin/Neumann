@@ -3,9 +3,9 @@
 //! Tests message validation, delta checksums, and TLS authentication.
 
 use tensor_chain::{
-    AppendEntries, CompositeValidator, DeltaBatch, DeltaReplicationConfig,
-    DeltaReplicationManager, DeltaUpdate, Message, MessageValidationConfig, MessageValidator,
-    QueryRequest, RequestVote, RequestVoteResponse, TxPrepareMsg,
+    AppendEntries, CompositeValidator, DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager,
+    DeltaUpdate, Message, MessageValidationConfig, MessageValidator, QueryRequest, RequestVote,
+    RequestVoteResponse, TxPrepareMsg,
 };
 use tensor_store::SparseVector;
 
@@ -36,6 +36,7 @@ fn default_validation_config() -> MessageValidationConfig {
         max_embedding_dimension: 65536,
         max_embedding_magnitude: 1e6,
         max_query_len: 1_048_576,
+        max_message_age_ms: 300_000,
     }
 }
 
@@ -57,7 +58,11 @@ fn test_message_validation_request_vote_valid() {
     });
 
     let result = validator.validate(&msg, &"node2".to_string());
-    assert!(result.is_ok(), "Valid RequestVote should pass: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Valid RequestVote should pass: {:?}",
+        result
+    );
 }
 
 #[test]

@@ -129,6 +129,8 @@ fn test_gossip_manager_peer_tracking() {
         geometric_routing: false,
         indirect_ping_count: 2,
         indirect_ping_timeout_ms: 200,
+        require_signatures: false,
+        max_message_age_ms: 300_000,
     };
 
     let manager = GossipMembershipManager::new("node1".to_string(), config, transport);

@@ -540,11 +540,7 @@ fn test_coordinator_state_bincode_roundtrip() {
 
     let state = CoordinatorState {
         pending,
-        lock_state: SerializableLockState::new(
-            HashMap::new(),
-            HashMap::new(),
-            30000,
-        ),
+        lock_state: SerializableLockState::new(HashMap::new(), HashMap::new(), 30000),
     };
 
     let bytes = bincode::serialize(&state).unwrap();
@@ -575,11 +571,7 @@ fn test_participant_state_bincode_roundtrip() {
 
     let state = ParticipantState {
         prepared,
-        lock_state: SerializableLockState::new(
-            HashMap::new(),
-            HashMap::new(),
-            30000,
-        ),
+        lock_state: SerializableLockState::new(HashMap::new(), HashMap::new(), 30000),
     };
 
     let bytes = bincode::serialize(&state).unwrap();
@@ -624,10 +616,7 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
         }
 
         // Transaction should be in Prepared state
-        assert_eq!(
-            coordinator.get(tx.tx_id).unwrap().phase,
-            TxPhase::Prepared
-        );
+        assert_eq!(coordinator.get(tx.tx_id).unwrap().phase, TxPhase::Prepared);
 
         // Get current state and modify it to Committing phase
         let mut state = coordinator.to_state();
@@ -661,7 +650,10 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
 
     // Verify transaction was restored in Committing phase
     let stats = restored.recover();
-    assert_eq!(stats.pending_commit, 1, "Should have 1 transaction pending commit");
+    assert_eq!(
+        stats.pending_commit, 1,
+        "Should have 1 transaction pending commit"
+    );
 
     // Get pending decisions
     let decisions = restored.get_pending_decisions();
@@ -779,7 +771,11 @@ fn test_participant_recovery_awaits_recent_transactions() {
     let awaiting = restored.recover(Duration::from_secs(60));
 
     // Recent transaction should be awaiting coordinator decision
-    assert_eq!(awaiting.len(), 1, "Recent transaction should await decision");
+    assert_eq!(
+        awaiting.len(),
+        1,
+        "Recent transaction should await decision"
+    );
     assert!(awaiting.contains(&600));
     assert_eq!(
         restored.prepared_count(),
@@ -896,8 +892,14 @@ fn test_lock_cleanup_partial_abort() {
     assert!(response.success);
 
     // tx1 lock should be released, tx2 lock should remain
-    assert!(!participant.locks.is_locked("tx1_key"), "tx1 lock should be released");
-    assert!(participant.locks.is_locked("tx2_key"), "tx2 lock should remain");
+    assert!(
+        !participant.locks.is_locked("tx1_key"),
+        "tx1 lock should be released"
+    );
+    assert!(
+        participant.locks.is_locked("tx2_key"),
+        "tx2 lock should remain"
+    );
     assert_eq!(participant.prepared_count(), 1);
 
     // Now abort tx2
