@@ -8,6 +8,9 @@
 // ZeroizeOnDrop derive macro generates code that triggers this warning
 #![allow(unused_assignments)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
 use blake2::{digest::consts::U16, digest::consts::U64, Blake2b, Digest};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
@@ -176,12 +179,56 @@ impl std::fmt::Debug for PublicIdentity {
 /// Default maximum age for messages (5 minutes).
 const DEFAULT_MAX_AGE_MS: u64 = 5 * 60 * 1000;
 
+/// Configuration for sequence tracker bounds and cleanup.
+#[derive(Debug, Clone)]
+pub struct SequenceTrackerConfig {
+    /// Maximum age for entries in milliseconds (default: 5 minutes).
+    pub max_age_ms: u64,
+    /// Maximum number of tracked senders (default: 10,000).
+    pub max_entries: usize,
+    /// Cleanup is triggered every N calls to check_and_record (default: 100).
+    pub cleanup_interval: usize,
+}
+
+impl Default for SequenceTrackerConfig {
+    fn default() -> Self {
+        Self {
+            max_age_ms: DEFAULT_MAX_AGE_MS,
+            max_entries: 10_000,
+            cleanup_interval: 100,
+        }
+    }
+}
+
+impl SequenceTrackerConfig {
+    pub fn with_max_age_ms(mut self, max_age_ms: u64) -> Self {
+        self.max_age_ms = max_age_ms;
+        self
+    }
+
+    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+        self.max_entries = max_entries;
+        self
+    }
+
+    pub fn with_cleanup_interval(mut self, cleanup_interval: usize) -> Self {
+        self.cleanup_interval = cleanup_interval;
+        self
+    }
+}
+
 /// Tracks sequence numbers per sender for replay attack detection.
+///
+/// Includes protection against unbounded memory growth:
+/// - Entries older than `max_age_ms` are periodically removed
+/// - Maximum number of tracked senders is bounded by `max_entries`
 pub struct SequenceTracker {
-    /// Last seen sequence number per sender.
-    sequences: dashmap::DashMap<NodeId, u64>,
-    /// Maximum message age in milliseconds.
-    max_age_ms: u64,
+    /// Last seen sequence number and timestamp per sender.
+    sequences: dashmap::DashMap<NodeId, (u64, Instant)>,
+    /// Configuration for bounds and cleanup.
+    config: SequenceTrackerConfig,
+    /// Counter for periodic cleanup triggering.
+    call_count: AtomicUsize,
 }
 
 impl Default for SequenceTracker {
@@ -191,18 +238,20 @@ impl Default for SequenceTracker {
 }
 
 impl SequenceTracker {
-    /// Create a new sequence tracker with default max age (5 minutes).
+    /// Create a new sequence tracker with default config (5 min max age, 10k max entries).
     pub fn new() -> Self {
-        Self {
-            sequences: dashmap::DashMap::new(),
-            max_age_ms: DEFAULT_MAX_AGE_MS,
-        }
+        Self::with_config(SequenceTrackerConfig::default())
     }
 
     pub fn with_max_age_ms(max_age_ms: u64) -> Self {
+        Self::with_config(SequenceTrackerConfig::default().with_max_age_ms(max_age_ms))
+    }
+
+    pub fn with_config(config: SequenceTrackerConfig) -> Self {
         Self {
             sequences: dashmap::DashMap::new(),
-            max_age_ms,
+            config,
+            call_count: AtomicUsize::new(0),
         }
     }
 
@@ -214,6 +263,12 @@ impl SequenceTracker {
         sequence: u64,
         timestamp_ms: u64,
     ) -> Result<()> {
+        // Periodic cleanup
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if count % self.config.cleanup_interval == 0 {
+            self.cleanup_stale_entries();
+        }
+
         // Check timestamp freshness
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -227,33 +282,63 @@ impl SequenceTracker {
             ));
         }
 
-        if now_ms > timestamp_ms + self.max_age_ms {
+        if now_ms > timestamp_ms + self.config.max_age_ms {
             return Err(ChainError::CryptoError(format!(
                 "message too old: {} ms",
                 now_ms - timestamp_ms
             )));
         }
 
+        // Check capacity before inserting new sender
+        if !self.sequences.contains_key(sender) && self.sequences.len() >= self.config.max_entries {
+            // Try cleanup first
+            self.cleanup_stale_entries();
+            // If still at capacity, reject
+            if self.sequences.len() >= self.config.max_entries {
+                return Err(ChainError::CryptoError(
+                    "sequence tracker at capacity".into(),
+                ));
+            }
+        }
+
         // Check and update sequence number
-        let mut entry = self.sequences.entry(sender.clone()).or_insert(0);
-        if sequence <= *entry {
+        let now = Instant::now();
+        let mut entry = self.sequences.entry(sender.clone()).or_insert((0, now));
+        if sequence <= entry.0 {
             return Err(ChainError::CryptoError(format!(
                 "replay detected: sequence {} <= last seen {}",
-                sequence, *entry
+                sequence, entry.0
             )));
         }
 
-        *entry = sequence;
+        *entry = (sequence, now);
         Ok(())
     }
 
+    /// Remove entries older than max_age_ms.
+    fn cleanup_stale_entries(&self) {
+        let cutoff = Instant::now() - Duration::from_millis(self.config.max_age_ms);
+        self.sequences
+            .retain(|_, (_, last_seen)| *last_seen > cutoff);
+    }
+
     pub fn last_sequence(&self, sender: &NodeId) -> Option<u64> {
-        self.sequences.get(sender).map(|v| *v)
+        self.sequences.get(sender).map(|v| v.0)
     }
 
     /// Clear all tracked sequences (for testing or resets).
     pub fn clear(&self) {
         self.sequences.clear();
+    }
+
+    /// Returns the number of tracked senders.
+    pub fn len(&self) -> usize {
+        self.sequences.len()
+    }
+
+    /// Returns true if no senders are tracked.
+    pub fn is_empty(&self) -> bool {
+        self.sequences.is_empty()
     }
 }
 
@@ -1009,5 +1094,111 @@ mod tests {
         assert_eq!(deserialized.sender(), signed.sender());
         assert_eq!(deserialized.sequence(), signed.sequence());
         assert_eq!(deserialized.timestamp_ms(), signed.timestamp_ms());
+    }
+
+    // === SequenceTrackerConfig tests ===
+
+    #[test]
+    fn test_sequence_tracker_config_default() {
+        let config = SequenceTrackerConfig::default();
+        assert_eq!(config.max_age_ms, 5 * 60 * 1000);
+        assert_eq!(config.max_entries, 10_000);
+        assert_eq!(config.cleanup_interval, 100);
+    }
+
+    #[test]
+    fn test_sequence_tracker_config_builder() {
+        let config = SequenceTrackerConfig::default()
+            .with_max_age_ms(60_000)
+            .with_max_entries(100)
+            .with_cleanup_interval(10);
+
+        assert_eq!(config.max_age_ms, 60_000);
+        assert_eq!(config.max_entries, 100);
+        assert_eq!(config.cleanup_interval, 10);
+    }
+
+    #[test]
+    fn test_sequence_tracker_max_entries_enforced() {
+        let config = SequenceTrackerConfig::default()
+            .with_max_entries(5)
+            .with_cleanup_interval(1000); // High interval to avoid auto-cleanup
+
+        let tracker = SequenceTracker::with_config(config);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Add 5 senders (should succeed)
+        for i in 0..5 {
+            let sender = format!("sender_{}", i);
+            tracker.check_and_record(&sender, 1, now_ms).unwrap();
+        }
+
+        assert_eq!(tracker.len(), 5);
+
+        // Adding 6th sender should fail (at capacity)
+        let result = tracker.check_and_record(&"sender_5".to_string(), 1, now_ms);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at capacity"));
+    }
+
+    #[test]
+    fn test_sequence_tracker_len_is_empty() {
+        let tracker = SequenceTracker::new();
+        assert!(tracker.is_empty());
+        assert_eq!(tracker.len(), 0);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        tracker
+            .check_and_record(&"sender".to_string(), 1, now_ms)
+            .unwrap();
+
+        assert!(!tracker.is_empty());
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn test_sequence_tracker_existing_sender_not_counted_against_capacity() {
+        let config = SequenceTrackerConfig::default()
+            .with_max_entries(2)
+            .with_cleanup_interval(1000);
+
+        let tracker = SequenceTracker::with_config(config);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Add 2 senders
+        tracker
+            .check_and_record(&"sender_a".to_string(), 1, now_ms)
+            .unwrap();
+        tracker
+            .check_and_record(&"sender_b".to_string(), 1, now_ms)
+            .unwrap();
+
+        // Updating existing sender should succeed (not at capacity for new senders)
+        tracker
+            .check_and_record(&"sender_a".to_string(), 2, now_ms)
+            .unwrap();
+        tracker
+            .check_and_record(&"sender_b".to_string(), 2, now_ms)
+            .unwrap();
+
+        assert_eq!(tracker.len(), 2);
+    }
+
+    #[test]
+    fn test_sequence_tracker_with_config() {
+        let config = SequenceTrackerConfig::default().with_max_age_ms(30_000);
+        let tracker = SequenceTracker::with_config(config);
+
+        assert!(tracker.is_empty());
     }
 }

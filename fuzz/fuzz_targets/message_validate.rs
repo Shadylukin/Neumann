@@ -96,6 +96,9 @@ fuzz_target!(|input: ValidationInput| {
         max_embedding_dimension: (input.config.max_embedding_dimension as usize).max(1),
         max_embedding_magnitude: 1e6,
         max_query_len: (input.config.max_query_len as usize).max(1),
+        max_message_age_ms: 5 * 60 * 1000,
+        max_blocks_per_request: 1000,
+        max_snapshot_chunk_size: 10 * 1024 * 1024,
     };
 
     let validator = CompositeValidator::new(config);

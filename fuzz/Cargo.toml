@@ -599,3 +599,26 @@ path = "fuzz_targets/distributed_tx_concurrency.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 32: Security vulnerability fix targets
+
+[[bin]]
+name = "block_request_validation"
+path = "fuzz_targets/block_request_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_request_validation"
+path = "fuzz_targets/snapshot_request_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sequence_tracker_dos"
+path = "fuzz_targets/sequence_tracker_dos.rs"
+test = false
+doc = false
+bench = false

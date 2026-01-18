@@ -15,11 +15,11 @@ use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "tls")]
-use tokio_rustls::rustls::server::ParsedCertificate;
-#[cfg(feature = "tls")]
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+#[cfg(feature = "tls")]
+use x509_parser::prelude::*;
 
 #[cfg(feature = "tls")]
 use super::config::{NodeIdVerification, TlsConfig};
@@ -146,22 +146,11 @@ pub fn extract_node_id_from_cert(
 
 #[cfg(feature = "tls")]
 fn extract_from_common_name(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
-    // Parse the certificate using rustls
-    let parsed = ParsedCertificate::try_from(cert)
-        .map_err(|e| TcpError::TlsError(format!("failed to parse certificate: {:?}", e)))?;
-
-    // Extract subject from the parsed certificate
-    // Note: rustls ParsedCertificate doesn't expose CN directly, so we use the DER
-    // For now, use a simple heuristic to extract CN from the certificate subject
     let cert_der = cert.as_ref();
 
-    // Simple DER parsing for CN extraction (OID 2.5.4.3)
-    // This is a simplified approach - production would use x509-parser
     if let Some(cn) = extract_cn_from_der(cert_der) {
         Ok(Some(VerifiedPeerIdentity::from_common_name(cn)))
     } else {
-        // Suppressing unused variable warning
-        let _ = parsed;
         Err(TcpError::TlsError(
             "no Common Name found in certificate".to_string(),
         ))
@@ -172,7 +161,6 @@ fn extract_from_common_name(cert: &CertificateDer<'_>) -> TcpResult<Option<Verif
 fn extract_from_san(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerIdentity>> {
     let cert_der = cert.as_ref();
 
-    // Simple DER parsing for SAN extraction (OID 2.5.29.17)
     if let Some(san) = extract_san_from_der(cert_der) {
         Ok(Some(VerifiedPeerIdentity::from_san(san)))
     } else {
@@ -182,55 +170,31 @@ fn extract_from_san(cert: &CertificateDer<'_>) -> TcpResult<Option<VerifiedPeerI
     }
 }
 
-/// Simple CN extraction from DER-encoded certificate.
-/// OID for commonName: 2.5.4.3 -> 55 04 03
+/// Extract Common Name from DER-encoded certificate using x509-parser.
 #[cfg(feature = "tls")]
 fn extract_cn_from_der(der: &[u8]) -> Option<String> {
-    // Look for OID 2.5.4.3 (commonName) pattern: 55 04 03
-    let cn_oid = [0x55, 0x04, 0x03];
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
 
-    for i in 0..der.len().saturating_sub(cn_oid.len()) {
-        if der[i..].starts_with(&cn_oid) {
-            // Skip OID and length bytes to get to the value
-            let offset = i + cn_oid.len();
-            if offset + 2 < der.len() {
-                let value_type = der[offset];
-                let value_len = der[offset + 1] as usize;
-
-                // Check for PrintableString (0x13) or UTF8String (0x0C)
-                if (value_type == 0x13 || value_type == 0x0C) && offset + 2 + value_len <= der.len()
-                {
-                    let value_bytes = &der[offset + 2..offset + 2 + value_len];
-                    if let Ok(s) = std::str::from_utf8(value_bytes) {
-                        return Some(s.to_string());
-                    }
-                }
+    for rdn in cert.subject().iter() {
+        for attr in rdn.iter() {
+            if attr.attr_type() == &oid_registry::OID_X509_COMMON_NAME {
+                return attr.as_str().ok().map(|s| s.to_string());
             }
         }
     }
     None
 }
 
-/// Simple SAN extraction from DER-encoded certificate.
-/// Looks for DNS entries in the SAN extension.
+/// Extract Subject Alternative Name (DNS) from DER-encoded certificate using x509-parser.
 #[cfg(feature = "tls")]
 fn extract_san_from_der(der: &[u8]) -> Option<String> {
-    // Look for SAN extension OID 2.5.29.17 -> 55 1D 11
-    let san_oid = [0x55, 0x1D, 0x11];
+    let (_, cert) = X509Certificate::from_der(der).ok()?;
 
-    for i in 0..der.len().saturating_sub(san_oid.len()) {
-        if der[i..].starts_with(&san_oid) {
-            // Found SAN extension, look for dNSName entries (context tag 2)
-            for j in i + san_oid.len()..der.len().saturating_sub(2) {
-                // dNSName is context tag [2] = 0x82
-                if der[j] == 0x82 {
-                    let len = der[j + 1] as usize;
-                    if j + 2 + len <= der.len() {
-                        let value_bytes = &der[j + 2..j + 2 + len];
-                        if let Ok(s) = std::str::from_utf8(value_bytes) {
-                            return Some(s.to_string());
-                        }
-                    }
+    for ext in cert.extensions() {
+        if let ParsedExtension::SubjectAlternativeName(san) = ext.parsed_extension() {
+            for name in &san.general_names {
+                if let GeneralName::DNSName(dns) = name {
+                    return Some(dns.to_string());
                 }
             }
         }

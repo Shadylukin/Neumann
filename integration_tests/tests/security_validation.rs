@@ -3,9 +3,9 @@
 //! Tests message validation, delta checksums, and TLS authentication.
 
 use tensor_chain::{
-    AppendEntries, CompositeValidator, DeltaBatch, DeltaReplicationConfig, DeltaReplicationManager,
-    DeltaUpdate, Message, MessageValidationConfig, MessageValidator, QueryRequest, RequestVote,
-    RequestVoteResponse, TxPrepareMsg,
+    AppendEntries, BlockRequest, CompositeValidator, DeltaBatch, DeltaReplicationConfig,
+    DeltaReplicationManager, DeltaUpdate, Message, MessageValidationConfig, MessageValidator,
+    QueryRequest, RequestVote, RequestVoteResponse, SnapshotRequest, TxPrepareMsg,
 };
 use tensor_store::SparseVector;
 
@@ -37,6 +37,8 @@ fn default_validation_config() -> MessageValidationConfig {
         max_embedding_magnitude: 1e6,
         max_query_len: 1_048_576,
         max_message_age_ms: 300_000,
+        max_blocks_per_request: 1000,
+        max_snapshot_chunk_size: 10 * 1024 * 1024, // 10 MB
     }
 }
 
@@ -553,4 +555,144 @@ fn test_high_throughput_checksums() {
     }
 
     assert!(batch.verify().is_ok());
+}
+
+// ============================================================================
+// BlockRequest and SnapshotRequest Validation (DoS Prevention)
+// ============================================================================
+
+#[test]
+fn test_block_request_billion_blocks_rejected() {
+    let config = MessageValidationConfig {
+        max_blocks_per_request: 1000,
+        ..default_validation_config()
+    };
+    let validator = CompositeValidator::new(config);
+
+    // Attacker requests a billion blocks
+    let msg = Message::BlockRequest(BlockRequest {
+        from_height: 0,
+        to_height: 1_000_000_000,
+        requester_id: "attacker".to_string(),
+    });
+
+    let result = validator.validate(&msg, &"attacker".to_string());
+    assert!(result.is_err(), "Billion block request should be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("block_count") || err_msg.contains("at most"),
+        "Error should mention block limit: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn test_block_request_inverted_range_rejected() {
+    let config = default_validation_config();
+    let validator = CompositeValidator::new(config);
+
+    // Invalid: to_height < from_height
+    let msg = Message::BlockRequest(BlockRequest {
+        from_height: 1000,
+        to_height: 500,
+        requester_id: "node1".to_string(),
+    });
+
+    let result = validator.validate(&msg, &"node1".to_string());
+    assert!(result.is_err(), "Inverted range should be rejected");
+    assert!(result.unwrap_err().to_string().contains("to_height"));
+}
+
+#[test]
+fn test_snapshot_request_huge_chunk_rejected() {
+    let config = MessageValidationConfig {
+        max_snapshot_chunk_size: 10 * 1024 * 1024, // 10 MB
+        ..default_validation_config()
+    };
+    let validator = CompositeValidator::new(config);
+
+    // Attacker requests 1 GB chunk
+    let msg = Message::SnapshotRequest(SnapshotRequest {
+        requester_id: "attacker".to_string(),
+        offset: 0,
+        chunk_size: 1024 * 1024 * 1024, // 1 GB
+    });
+
+    let result = validator.validate(&msg, &"attacker".to_string());
+    assert!(result.is_err(), "Huge chunk request should be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("chunk_size") || err_msg.contains("at most"),
+        "Error should mention chunk limit: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn test_snapshot_request_zero_chunk_rejected() {
+    let config = default_validation_config();
+    let validator = CompositeValidator::new(config);
+
+    // Invalid: zero chunk size
+    let msg = Message::SnapshotRequest(SnapshotRequest {
+        requester_id: "node1".to_string(),
+        offset: 0,
+        chunk_size: 0,
+    });
+
+    let result = validator.validate(&msg, &"node1".to_string());
+    assert!(result.is_err(), "Zero chunk size should be rejected");
+    assert!(result.unwrap_err().to_string().contains("chunk_size"));
+}
+
+#[test]
+fn test_block_request_empty_requester_rejected() {
+    let config = default_validation_config();
+    let validator = CompositeValidator::new(config);
+
+    let msg = Message::BlockRequest(BlockRequest {
+        from_height: 0,
+        to_height: 10,
+        requester_id: "".to_string(),
+    });
+
+    let result = validator.validate(&msg, &"sender".to_string());
+    assert!(result.is_err(), "Empty requester_id should be rejected");
+}
+
+#[test]
+fn test_valid_block_request_at_limit() {
+    let config = MessageValidationConfig {
+        max_blocks_per_request: 100,
+        ..default_validation_config()
+    };
+    let validator = CompositeValidator::new(config);
+
+    // Request exactly 100 blocks (0-99 inclusive)
+    let msg = Message::BlockRequest(BlockRequest {
+        from_height: 0,
+        to_height: 99,
+        requester_id: "node1".to_string(),
+    });
+
+    let result = validator.validate(&msg, &"node1".to_string());
+    assert!(result.is_ok(), "Request at exact limit should pass");
+}
+
+#[test]
+fn test_valid_snapshot_request_at_limit() {
+    let config = MessageValidationConfig {
+        max_snapshot_chunk_size: 1024 * 1024,
+        ..default_validation_config()
+    };
+    let validator = CompositeValidator::new(config);
+
+    let msg = Message::SnapshotRequest(SnapshotRequest {
+        requester_id: "node1".to_string(),
+        offset: 0,
+        chunk_size: 1024 * 1024, // Exactly at limit
+    });
+
+    let result = validator.validate(&msg, &"node1".to_string());
+    assert!(result.is_ok(), "Request at exact limit should pass");
 }

@@ -54,10 +54,11 @@ lz4_flex = "0.11"
 # Optional TLS support
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
+x509-parser = { version = "0.16", optional = true }
 
 [features]
 default = ["tls"]
-tls = ["tokio-rustls", "rustls-pemfile"]
+tls = ["tokio-rustls", "rustls-pemfile", "x509-parser"]
 
 [dev-dependencies]
 criterion = "0.5"

@@ -209,7 +209,7 @@ impl Default for TcpTransportConfig {
             keepalive_interval_secs: default_keepalive_interval(),
             reconnect: ReconnectConfig::default(),
             tls: None,
-            require_tls: false,
+            require_tls: true, // Default to true for security
             max_pending_messages: default_max_pending(),
             recv_buffer_size: default_recv_buffer(),
             compression: CompressionConfig::default(),
@@ -271,6 +271,11 @@ impl TcpTransportConfig {
     pub fn with_require_tls(mut self, require: bool) -> Self {
         self.require_tls = require;
         self
+    }
+
+    /// Returns true if TLS is required based on both explicit require_tls and security mode.
+    pub fn effective_require_tls(&self) -> bool {
+        self.security.mode.requires_tls() || self.require_tls
     }
 
     pub fn connect_timeout(&self) -> Duration {
@@ -571,7 +576,7 @@ mod tests {
         assert!(config.keepalive);
         assert_eq!(config.keepalive_interval_secs, 30);
         assert!(config.tls.is_none());
-        assert!(!config.require_tls); // Default is false for backwards compatibility
+        assert!(config.require_tls); // Default is true for security
     }
 
     #[test]
@@ -872,13 +877,13 @@ mod tests {
 
     #[test]
     fn test_config_require_tls() {
-        // Default should be false for backwards compatibility
+        // Default should be true for security
         let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
-        assert!(!config.require_tls);
-
-        // Can enable require_tls
-        let config = config.with_require_tls(true);
         assert!(config.require_tls);
+
+        // Can disable require_tls
+        let config = config.with_require_tls(false);
+        assert!(!config.require_tls);
 
         // With TLS config and require_tls
         let tls = TlsConfig::new("/cert.pem", "/key.pem");
@@ -887,6 +892,29 @@ mod tests {
             .with_require_tls(true);
         assert!(config.require_tls);
         assert!(config.tls.is_some());
+    }
+
+    #[test]
+    fn test_effective_require_tls() {
+        // Default config with Strict mode should require TLS
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap());
+        assert!(config.effective_require_tls());
+
+        // Even with require_tls=false, Strict mode should require TLS
+        let config = config.clone().with_require_tls(false);
+        assert!(config.effective_require_tls()); // Strict mode requires TLS
+
+        // With Development mode and require_tls=false, should not require TLS
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Development)
+            .with_require_tls(false);
+        assert!(!config.effective_require_tls());
+
+        // With Development mode but require_tls=true, should require TLS
+        let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
+            .with_security_mode(SecurityMode::Development)
+            .with_require_tls(true);
+        assert!(config.effective_require_tls());
     }
 
     #[test]

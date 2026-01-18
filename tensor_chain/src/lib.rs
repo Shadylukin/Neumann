@@ -118,13 +118,14 @@ pub use message_validation::{
 };
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, ConfigChange, DataMergeRequest, DataMergeResponse,
-    GeometricTransport, JointConfig, LogEntry, LogEntryData, MemoryTransport, MergeAck,
-    MergeDeltaEntry, MergeFinalize, MergeInit, MergeOpType, MergeViewExchange, Message,
-    MessageHandler, NetworkManager, PeerConfig, PreVote, PreVoteResponse, QueryExecutor,
-    QueryHandler, QueryRequest, QueryResponse, RaftMembershipConfig, RequestVote,
-    RequestVoteResponse, TimeoutNow, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler,
-    TxPrepareMsg, TxPrepareResponseMsg, TxReconcileRequest, TxReconcileResponse, TxVote,
+    AppendEntries, AppendEntriesResponse, BlockRequest, BlockResponse, ConfigChange,
+    DataMergeRequest, DataMergeResponse, GeometricTransport, JointConfig, LogEntry, LogEntryData,
+    MemoryTransport, MergeAck, MergeDeltaEntry, MergeFinalize, MergeInit, MergeOpType,
+    MergeViewExchange, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,
+    PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
+    RaftMembershipConfig, RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse,
+    TimeoutNow, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg,
+    TxPrepareResponseMsg, TxReconcileRequest, TxReconcileResponse, TxVote,
 };
 pub use partition_merge::{
     ConflictResolution, ConflictType, DataReconcileResult, DataReconciler, MembershipReconciler,
@@ -138,8 +139,8 @@ pub use raft::{
 };
 pub use raft_wal::{RaftRecoveryState, RaftWal, RaftWalEntry};
 pub use signing::{
-    Identity, PublicIdentity, SequenceTracker, SignedGossipMessage, SignedMessage,
-    ValidatorRegistry,
+    Identity, PublicIdentity, SequenceTracker, SequenceTrackerConfig, SignedGossipMessage,
+    SignedMessage, ValidatorRegistry,
 };
 pub use snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferError};
 pub use snapshot_streaming::{

@@ -36,6 +36,7 @@ fn test_cache_init_with_config() {
 fn test_cache_operations_after_init() {
     let mut router = create_shared_router();
     router.init_cache();
+    router.set_identity("test-user");
 
     // Cache operations should work
     let result = router.execute_parsed("CACHE STATS");
@@ -74,6 +75,7 @@ fn test_vault_init_with_key() {
 fn test_vault_operations_after_init() {
     let mut router = create_shared_router();
     router.init_vault(b"test-master-key-32bytes!!").unwrap();
+    router.set_identity("node:root");
 
     // Store a secret
     let result = router.execute_parsed("VAULT SET 'api/key' 'secret-value'");
@@ -147,6 +149,7 @@ fn test_cache_stats_after_use() {
     let mut config = CacheConfig::default();
     config.embedding_dim = 4;
     router.init_cache_with_config(config);
+    router.set_identity("test-user");
 
     // Store some cache entries via CACHE PUT (exact key-value cache)
     router.execute_parsed("CACHE PUT 'key1' 'value1'").unwrap();
@@ -196,6 +199,7 @@ fn test_engines_work_without_optional_modules() {
 fn test_cache_clear_after_init() {
     let mut router = create_shared_router();
     router.init_cache();
+    router.set_identity("test-user");
 
     // Put some entries
     router.execute_parsed("CACHE PUT 'a' 'b'").unwrap();
@@ -209,6 +213,7 @@ fn test_cache_clear_after_init() {
 fn test_vault_with_namespaces() {
     let mut router = create_shared_router();
     router.init_vault(b"test-master-key-32bytes!!").unwrap();
+    router.set_identity("node:root");
 
     // Store in namespace
     router
@@ -248,6 +253,7 @@ fn test_init_with_shared_store() {
 fn test_cache_evict_after_init() {
     let mut router = create_shared_router();
     router.init_cache();
+    router.set_identity("test-user");
 
     // Evict should work even if cache is empty
     let result = router.execute_parsed("CACHE EVICT");

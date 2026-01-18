@@ -35,6 +35,10 @@ pub struct MessageValidationConfig {
     pub max_query_len: usize,
     /// Maximum age for signed messages in milliseconds.
     pub max_message_age_ms: u64,
+    /// Maximum blocks per BlockRequest (default: 1000).
+    pub max_blocks_per_request: u64,
+    /// Maximum chunk size for SnapshotRequest in bytes (default: 10MB).
+    pub max_snapshot_chunk_size: u64,
 }
 
 impl Default for MessageValidationConfig {
@@ -50,6 +54,8 @@ impl Default for MessageValidationConfig {
             max_embedding_magnitude: 1e6,
             max_query_len: 1024 * 1024,        // 1 MB
             max_message_age_ms: 5 * 60 * 1000, // 5 minutes
+            max_blocks_per_request: 1000,
+            max_snapshot_chunk_size: 10 * 1024 * 1024, // 10 MB
         }
     }
 }
@@ -448,6 +454,60 @@ impl CompositeValidator {
 
         Ok(())
     }
+
+    fn validate_block_request(&self, msg: &crate::network::BlockRequest) -> Result<()> {
+        // Validate requester_id
+        self.validate_node_id(&msg.requester_id, "requester_id")?;
+
+        // Check height ordering
+        if msg.to_height < msg.from_height {
+            return Err(ChainError::MessageValidationFailed {
+                message_type: "BlockRequest",
+                reason: format!(
+                    "to_height {} < from_height {}",
+                    msg.to_height, msg.from_height
+                ),
+            });
+        }
+
+        // Check block count limit (prevent DoS via huge range requests)
+        let block_count = msg
+            .to_height
+            .saturating_sub(msg.from_height)
+            .saturating_add(1);
+        if block_count > self.config.max_blocks_per_request {
+            return Err(ChainError::NumericOutOfBounds {
+                field: "block_count".to_string(),
+                value: block_count.to_string(),
+                expected: format!("at most {}", self.config.max_blocks_per_request),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_request(&self, msg: &crate::network::SnapshotRequest) -> Result<()> {
+        // Validate requester_id
+        self.validate_node_id(&msg.requester_id, "requester_id")?;
+
+        // Zero chunk size is invalid
+        if msg.chunk_size == 0 {
+            return Err(ChainError::NumericOutOfBounds {
+                field: "chunk_size".to_string(),
+                value: "0".to_string(),
+                expected: "greater than 0".to_string(),
+            });
+        }
+
+        // Check chunk size limit (prevent DoS via huge memory allocation)
+        if msg.chunk_size > self.config.max_snapshot_chunk_size {
+            return Err(ChainError::NumericOutOfBounds {
+                field: "chunk_size".to_string(),
+                value: msg.chunk_size.to_string(),
+                expected: format!("at most {}", self.config.max_snapshot_chunk_size),
+            });
+        }
+        Ok(())
+    }
 }
 
 impl MessageValidator for CompositeValidator {
@@ -467,9 +527,9 @@ impl MessageValidator for CompositeValidator {
             Message::AppendEntries(m) => self.validate_append_entries(m),
             Message::AppendEntriesResponse(m) => self.validate_append_entries_response(m),
             Message::TimeoutNow(_) => Ok(()),
-            Message::BlockRequest(_) => Ok(()),
+            Message::BlockRequest(m) => self.validate_block_request(m),
             Message::BlockResponse(_) => Ok(()),
-            Message::SnapshotRequest(_) => Ok(()),
+            Message::SnapshotRequest(m) => self.validate_snapshot_request(m),
             Message::SnapshotResponse(_) => Ok(()),
             Message::Ping { term } => self.validate_ping_pong(*term, "Ping"),
             Message::Pong { term } => self.validate_ping_pong(*term, "Pong"),
@@ -1390,5 +1450,164 @@ mod tests {
 
         let debug = format!("{:?}", config);
         assert!(debug.contains("MessageValidationConfig"));
+    }
+
+    // === BlockRequest validation tests ===
+
+    #[test]
+    fn test_validate_block_request_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 0,
+            to_height: 999, // 1000 blocks, at limit
+            requester_id: "node1".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_request_inverted_range() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 100,
+            to_height: 50, // Invalid: to < from
+            requester_id: "node1".to_string(),
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("to_height"));
+    }
+
+    #[test]
+    fn test_validate_block_request_too_many_blocks() {
+        let config = MessageValidationConfig {
+            max_blocks_per_request: 100,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 0,
+            to_height: 100, // 101 blocks, exceeds limit
+            requester_id: "node1".to_string(),
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("block_count"));
+    }
+
+    #[test]
+    fn test_validate_block_request_empty_requester() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 0,
+            to_height: 10,
+            requester_id: "".to_string(), // Empty
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requester_id"));
+    }
+
+    // === SnapshotRequest validation tests ===
+
+    #[test]
+    fn test_validate_snapshot_request_valid() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 0,
+            chunk_size: 1024 * 1024, // 1 MB, well under limit
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_snapshot_request_zero_chunk() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 0,
+            chunk_size: 0, // Invalid
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("chunk_size"));
+    }
+
+    #[test]
+    fn test_validate_snapshot_request_excessive_chunk() {
+        let config = MessageValidationConfig {
+            max_snapshot_chunk_size: 1024 * 1024, // 1 MB
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 0,
+            chunk_size: 100 * 1024 * 1024, // 100 MB, exceeds limit
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("chunk_size"));
+    }
+
+    #[test]
+    fn test_validate_snapshot_request_empty_requester() {
+        let config = MessageValidationConfig::default();
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "".to_string(), // Empty
+            offset: 0,
+            chunk_size: 1024,
+        });
+        let result = validator.validate(&msg, &"sender".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requester_id"));
+    }
+
+    #[test]
+    fn test_validate_block_request_at_exact_limit() {
+        let config = MessageValidationConfig {
+            max_blocks_per_request: 100,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        // Exactly 100 blocks (0-99 inclusive)
+        let msg = Message::BlockRequest(crate::network::BlockRequest {
+            from_height: 0,
+            to_height: 99,
+            requester_id: "node1".to_string(),
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_snapshot_request_at_exact_limit() {
+        let config = MessageValidationConfig {
+            max_snapshot_chunk_size: 1024,
+            ..Default::default()
+        };
+        let validator = CompositeValidator::new(config);
+
+        let msg = Message::SnapshotRequest(crate::network::SnapshotRequest {
+            requester_id: "node1".to_string(),
+            offset: 0,
+            chunk_size: 1024, // Exactly at limit
+        });
+        assert!(validator.validate(&msg, &"sender".to_string()).is_ok());
     }
 }
