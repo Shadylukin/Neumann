@@ -38,7 +38,7 @@ pub fn create_router_with_cache_dim(dim: usize) -> QueryRouter {
         embedding_dim: dim,
         ..CacheConfig::default()
     };
-    router.init_cache_with_config(config);
+    let _ = router.init_cache_with_config(config);
     router
 }
 
@@ -53,7 +53,7 @@ pub fn create_router_with_blob() -> QueryRouter {
 pub fn create_router_with_all_features(master_key: &[u8]) -> QueryRouter {
     let mut router = create_shared_router();
     router.init_vault(master_key).expect("vault init failed");
-    router.init_cache_with_config(CacheConfig::default());
+    let _ = router.init_cache_with_config(CacheConfig::default());
     router.init_blob().expect("blob init failed");
     router
 }

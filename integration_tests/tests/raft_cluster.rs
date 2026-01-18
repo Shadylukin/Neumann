@@ -200,6 +200,9 @@ async fn test_raft_log_replication() {
     // Become leader
     node.become_leader();
 
+    // Mark peer as reachable for quorum tracking
+    node.quorum_tracker().record_success(&"node2".to_string());
+
     // Propose a block
     let block = create_test_block(1, "node1");
     let index = node.propose_async(block).await.unwrap();
@@ -301,6 +304,10 @@ async fn test_raft_append_entries_response() {
 
     // Node1 becomes leader
     node1.become_leader();
+
+    // Mark peers as reachable for quorum tracking
+    node1.quorum_tracker().record_success(&"node2".to_string());
+    node1.quorum_tracker().record_success(&"node3".to_string());
 
     // Propose a block to node1
     let block = create_test_block(1, "node1");
