@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+tempfile = "3"
 
 # Crates to fuzz
 neumann_parser = { path = "../neumann_parser" }
@@ -568,6 +569,33 @@ bench = false
 [[bin]]
 name = "tx_id_generation"
 path = "fuzz_targets/tx_id_generation.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 29: Atomic IO targets
+
+[[bin]]
+name = "atomic_io"
+path = "fuzz_targets/atomic_io.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 30: Raft consensus safety targets
+
+[[bin]]
+name = "raft_wal_recovery"
+path = "fuzz_targets/raft_wal_recovery.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 31: Distributed transaction concurrency targets
+
+[[bin]]
+name = "distributed_tx_concurrency"
+path = "fuzz_targets/distributed_tx_concurrency.rs"
 test = false
 doc = false
 bench = false

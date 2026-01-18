@@ -423,8 +423,8 @@ impl LockManager {
     /// On success, returns Ok(lock_handle).
     /// On conflict, updates the wait-for graph and returns Err(WaitInfo).
     ///
-    /// This method atomically checks for conflicts and collects conflicting keys
-    /// while holding the write lock to avoid TOCTOU race conditions.
+    /// This method atomically checks for conflicts, collects all blocking transactions,
+    /// and updates the wait-for graph WHILE holding the lock to prevent TOCTOU races.
     pub fn try_lock_with_wait_tracking(
         &self,
         tx_id: u64,
@@ -435,32 +435,38 @@ impl LockManager {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
 
-        // Check for conflicts and collect conflicting keys atomically
-        let mut blocking_tx_id: Option<u64> = None;
+        // Check for conflicts and collect ALL blocking transactions atomically
+        let mut blocking_tx_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut conflicting_keys = Vec::new();
 
         for key in keys {
             if let Some(existing) = locks.get(key) {
                 if !existing.is_expired() && existing.tx_id != tx_id {
-                    let blocker = blocking_tx_id.get_or_insert(existing.tx_id);
-                    if existing.tx_id == *blocker {
-                        conflicting_keys.push(key.clone());
-                    }
+                    blocking_tx_ids.insert(existing.tx_id);
+                    conflicting_keys.push(key.clone());
                 }
             }
         }
 
-        if let Some(blocker_id) = blocking_tx_id {
+        if !blocking_tx_ids.is_empty() {
+            // CRITICAL: Add ALL conflicts to wait-for graph WHILE holding locks
+            // This ensures atomicity between lock state and wait graph state
+            for blocker_id in &blocking_tx_ids {
+                wait_graph.add_wait(tx_id, *blocker_id, priority);
+            }
+
+            // Now safe to drop locks - wait graph is consistent with lock state
+            let blocking_tx_id = *blocking_tx_ids.iter().next().unwrap();
             drop(tx_locks);
             drop(locks);
-            wait_graph.add_wait(tx_id, blocker_id, priority);
+
             return Err(crate::deadlock::WaitInfo {
-                blocking_tx_id: blocker_id,
+                blocking_tx_id,
                 conflicting_keys,
             });
         }
 
-        // No conflicts - acquire all locks
+        // No conflicts - acquire all locks atomically
         let lock_handle = LOCK_COUNTER.fetch_add(1, Ordering::Relaxed);
         let now_ms = now_epoch_millis();
         let timeout_ms = self.default_timeout.as_millis() as u64;
@@ -482,9 +488,13 @@ impl LockManager {
             .entry(tx_id)
             .or_default()
             .extend(keys.iter().cloned());
+
+        // Remove from wait graph WHILE holding locks for consistency
+        wait_graph.remove_transaction(tx_id);
+
         drop(tx_locks);
         drop(locks);
-        wait_graph.remove_transaction(tx_id);
+
         Ok(lock_handle)
     }
 
@@ -826,27 +836,32 @@ impl DistributedTxCoordinator {
         coordinator: NodeId,
         participants: Vec<ShardId>,
     ) -> Result<DistributedTransaction> {
-        // Check concurrent transaction limit
-        if self.pending.read().len() >= self.config.max_concurrent {
-            tracing::warn!(
-                pending = self.pending.read().len(),
-                max = self.config.max_concurrent,
-                "Distributed transaction rejected: too many concurrent transactions"
-            );
-            return Err(ChainError::TransactionFailed(
-                "too many concurrent distributed transactions".to_string(),
-            ));
-        }
+        // Atomically check limit and insert in single critical section to prevent TOCTOU race
+        let tx = {
+            let mut pending = self.pending.write();
 
-        let tx = DistributedTransaction::new(coordinator.clone(), participants.clone());
+            if pending.len() >= self.config.max_concurrent {
+                tracing::warn!(
+                    pending = pending.len(),
+                    max = self.config.max_concurrent,
+                    "Distributed transaction rejected: too many concurrent transactions"
+                );
+                return Err(ChainError::TransactionFailed(
+                    "too many concurrent distributed transactions".to_string(),
+                ));
+            }
 
-        // Log to WAL BEFORE applying state change
+            let tx = DistributedTransaction::new(coordinator.clone(), participants.clone());
+            pending.insert(tx.tx_id, tx.clone());
+            tx
+        };
+
+        // Log to WAL AFTER successfully inserting to pending
         self.log_wal_entry(&TxWalEntry::TxBegin {
             tx_id: tx.tx_id,
             participants: participants.clone(),
         })?;
 
-        self.pending.write().insert(tx.tx_id, tx.clone());
         self.stats.started.fetch_add(1, Ordering::Relaxed);
 
         tracing::info!(
@@ -1648,36 +1663,36 @@ impl DistributedTxCoordinator {
     ///
     /// Returns the number of locks released.
     pub fn release_orphaned_locks(&self, partition_start_ms: u64) -> usize {
+        // Atomic single critical section: identify and clean together to prevent TOCTOU races
+        let mut locks = self.lock_manager.locks.write();
+        let mut tx_locks = self.lock_manager.tx_locks.write();
         let pending = self.pending.read();
+
+        // Snapshot active transactions while holding all locks
         let active_tx_ids: std::collections::HashSet<u64> = pending.keys().copied().collect();
         drop(pending);
 
-        // Get all locks and find orphaned ones
-        let locks = self.lock_manager.locks.read();
-        let orphaned: Vec<_> = locks
+        // Identify orphaned locks while holding write locks
+        let orphaned_keys: Vec<(String, u64)> = locks
             .iter()
-            .filter(|(_, lock)| {
-                // Lock is orphaned if:
-                // 1. The transaction is not in pending
-                // 2. The lock was acquired before partition started
-                !active_tx_ids.contains(&lock.tx_id) && lock.acquired_at_ms < partition_start_ms
+            .filter_map(|(key, lock)| {
+                if !active_tx_ids.contains(&lock.tx_id) && lock.acquired_at_ms < partition_start_ms
+                {
+                    Some((key.clone(), lock.tx_id))
+                } else {
+                    None
+                }
             })
-            .map(|(key, lock)| (key.clone(), lock.tx_id))
             .collect();
-        drop(locks);
 
-        // Release orphaned locks - acquire both locks once to maintain consistent ordering
-        let count = orphaned.len();
-        let mut locks = self.lock_manager.locks.write();
-        let mut tx_locks = self.lock_manager.tx_locks.write();
-
-        for (key, tx_id) in orphaned {
-            if let Some(lock) = locks.get(&key) {
-                if lock.tx_id == tx_id {
-                    locks.remove(&key);
-                    if let Some(tx_keys) = tx_locks.get_mut(&tx_id) {
-                        tx_keys.retain(|k| k != &key);
-                    }
+        // Release all orphaned locks atomically
+        let count = orphaned_keys.len();
+        for (key, tx_id) in orphaned_keys {
+            locks.remove(&key);
+            if let Some(tx_keys) = tx_locks.get_mut(&tx_id) {
+                tx_keys.retain(|k| k != &key);
+                if tx_keys.is_empty() {
+                    tx_locks.remove(&tx_id);
                 }
             }
         }
@@ -4182,7 +4197,7 @@ mod tests {
         lock_manager.try_lock(2, &["key3".to_string()]).unwrap();
 
         // tx3 tries to lock key1, key2, key3, key4
-        // Only key1 and key2 are blocked by tx1 (the first blocker)
+        // All conflicting keys from ALL blocking transactions are collected
         let result = lock_manager.try_lock_with_wait_tracking(
             3,
             &[
@@ -4197,15 +4212,18 @@ mod tests {
 
         assert!(result.is_err());
         let wait_info = result.unwrap_err();
-        // First blocking tx encountered is tx1 (holds key1)
-        assert_eq!(wait_info.blocking_tx_id, 1);
-        // Only keys held by tx1 (the blocking tx) should be in conflicting_keys
+        // blocking_tx_id is one of the blocking transactions
+        assert!(wait_info.blocking_tx_id == 1 || wait_info.blocking_tx_id == 2);
+        // ALL conflicting keys from ALL blockers should be in conflicting_keys
         assert!(wait_info.conflicting_keys.contains(&"key1".to_string()));
         assert!(wait_info.conflicting_keys.contains(&"key2".to_string()));
-        // key3 is held by tx2, not tx1, so not in conflict list
-        assert!(!wait_info.conflicting_keys.contains(&"key3".to_string()));
-        // key4 is not locked at all
+        // key3 is also conflicting (held by tx2)
+        assert!(wait_info.conflicting_keys.contains(&"key3".to_string()));
+        // key4 is not locked at all, so not in conflict list
         assert!(!wait_info.conflicting_keys.contains(&"key4".to_string()));
+        // Wait graph should have edges to both blockers
+        assert!(wait_graph.waiting_for(3).contains(&1));
+        assert!(wait_graph.waiting_for(3).contains(&2));
     }
 
     #[test]
@@ -4426,7 +4444,8 @@ mod tests {
 
         // Recover from WAL
         let stats = coordinator.recover_from_wal().unwrap();
-        assert!(stats.pending_prepare >= 0 || stats.pending_commit >= 0);
+        // Verify we got stats back (values are usize so always >= 0)
+        let _ = stats.pending_prepare + stats.pending_commit;
     }
 
     #[test]
@@ -4647,5 +4666,207 @@ mod tests {
         assert_eq!(aborts.len(), 1);
         assert_eq!(aborts[0].0, tx_id);
         assert_eq!(aborts[0].1, "participant voted no");
+    }
+
+    fn create_test_coordinator_with_config(
+        config: DistributedTxConfig,
+    ) -> DistributedTxCoordinator {
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        DistributedTxCoordinator::new(consensus, config)
+    }
+
+    #[test]
+    fn test_begin_max_concurrent_atomic() {
+        // Verify atomic check-and-insert prevents exceeding limit
+        let coordinator = create_test_coordinator_with_config(DistributedTxConfig {
+            max_concurrent: 2,
+            ..Default::default()
+        });
+
+        let _tx1 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let _tx2 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Third should fail
+        let result = coordinator.begin("node1".to_string(), vec![0]);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainError::TransactionFailed(_)
+        ));
+    }
+
+    #[test]
+    fn test_begin_max_concurrent_race_prevented() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        use std::thread;
+
+        let coordinator = Arc::new(create_test_coordinator_with_config(DistributedTxConfig {
+            max_concurrent: 5,
+            ..Default::default()
+        }));
+
+        let success_count = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..20)
+            .map(|_| {
+                let coord = Arc::clone(&coordinator);
+                let counter = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    if coord.begin("node1".to_string(), vec![0]).is_ok() {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Exactly max_concurrent should succeed
+        assert_eq!(success_count.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn test_try_lock_wait_graph_updated_atomically() {
+        let lock_manager = LockManager::new();
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        // TX1 holds lock on key_a
+        lock_manager.try_lock(1, &["key_a".to_string()]).unwrap();
+
+        // TX2 tries to acquire - should add wait edge while holding locks
+        let result =
+            lock_manager.try_lock_with_wait_tracking(2, &["key_a".to_string()], &wait_graph, None);
+
+        assert!(result.is_err());
+        // Wait graph should show TX2 waiting for TX1
+        assert!(wait_graph.waiting_for(2).contains(&1));
+    }
+
+    #[test]
+    fn test_try_lock_wait_graph_concurrent_safety() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        use std::thread;
+
+        let lock_manager = Arc::new(LockManager::new());
+        let wait_graph = Arc::new(crate::deadlock::WaitForGraph::new());
+
+        // TX1 holds lock on key_a
+        lock_manager.try_lock(1, &["key_a".to_string()]).unwrap();
+
+        let contention_count = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (2..12u64)
+            .map(|tx_id| {
+                let lm = Arc::clone(&lock_manager);
+                let wg = Arc::clone(&wait_graph);
+                let counter = Arc::clone(&contention_count);
+                thread::spawn(move || {
+                    if lm
+                        .try_lock_with_wait_tracking(tx_id, &["key_a".to_string()], &wg, None)
+                        .is_err()
+                    {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All 10 threads should see contention
+        assert_eq!(contention_count.load(Ordering::Relaxed), 10);
+        // All should be waiting for TX1
+        for tx_id in 2..12u64 {
+            assert!(wait_graph.waiting_for(tx_id).contains(&1));
+        }
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_atomic() {
+        let coordinator = create_test_coordinator();
+
+        // Create a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+
+        // Acquire locks directly
+        coordinator
+            .lock_manager
+            .try_lock(tx.tx_id, &["key_a".to_string(), "key_b".to_string()])
+            .unwrap();
+
+        // Remove from pending to simulate orphan
+        coordinator.pending.write().remove(&tx.tx_id);
+
+        // Release orphaned locks
+        let released = coordinator.release_orphaned_locks(u64::MAX);
+        assert_eq!(released, 2);
+
+        // Verify locks are gone
+        assert_eq!(coordinator.lock_manager.active_lock_count(), 0);
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_concurrent_transactions() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::thread;
+
+        let coordinator = Arc::new(create_test_coordinator());
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Thread 1: Continuously starts/ends transactions
+        let coord1 = Arc::clone(&coordinator);
+        let stop1 = Arc::clone(&stop);
+        let tx_thread = thread::spawn(move || {
+            let mut count = 0;
+            while !stop1.load(Ordering::Relaxed) && count < 100 {
+                if let Ok(tx) = coord1.begin("node1".to_string(), vec![0]) {
+                    coord1
+                        .lock_manager
+                        .try_lock(tx.tx_id, &[format!("key_{}", count)])
+                        .ok();
+                    coord1.pending.write().remove(&tx.tx_id);
+                    count += 1;
+                }
+                thread::yield_now();
+            }
+            count
+        });
+
+        // Thread 2: Continuously cleans orphaned locks
+        let coord2 = Arc::clone(&coordinator);
+        let stop2 = Arc::clone(&stop);
+        let cleanup_thread = thread::spawn(move || {
+            let mut cleaned = 0;
+            while !stop2.load(Ordering::Relaxed) {
+                cleaned += coord2.release_orphaned_locks(u64::MAX);
+                thread::yield_now();
+            }
+            cleaned
+        });
+
+        // Let them run
+        thread::sleep(Duration::from_millis(100));
+        stop.store(true, Ordering::Relaxed);
+
+        let created = tx_thread.join().unwrap();
+        let cleaned = cleanup_thread.join().unwrap();
+
+        // All created orphans should eventually be cleaned
+        assert!(
+            cleaned >= created / 2,
+            "Expected significant cleanup, got {}/{}",
+            cleaned,
+            created
+        );
+
+        // Final state should have no orphaned locks
+        let remaining = coordinator.lock_manager.active_lock_count();
+        let final_cleanup = coordinator.release_orphaned_locks(u64::MAX);
+        assert_eq!(remaining, final_cleanup, "All remaining should be orphaned");
     }
 }

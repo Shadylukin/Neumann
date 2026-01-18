@@ -1235,8 +1235,8 @@ mod tests {
 
         let result = manager.merge_all(&deltas);
         // After merging 0 and 1, the accumulated vector [1,1,0] conflicts with [0.95,0.1,0]
-        // depending on the exact similarity. Let's check
-        assert!(!result.success || result.success); // Either outcome is valid
+        // depending on the exact similarity. Either outcome is valid - just verify we get a result.
+        let _ = result.success;
     }
 
     #[test]
