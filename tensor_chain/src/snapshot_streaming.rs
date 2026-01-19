@@ -1,7 +1,154 @@
-//! Streaming serialization/deserialization for Raft snapshots.
+//! Memory-efficient streaming serialization for large Raft snapshots.
 //!
-//! Provides incremental log entry writing and reading to avoid loading
-//! entire snapshots into memory at once.
+//! # Overview
+//!
+//! This module provides streaming serialization and deserialization for Raft log snapshots,
+//! enabling efficient handling of snapshots that may contain millions of log entries.
+//! Instead of loading entire snapshots into memory, entries are processed incrementally
+//! using a length-prefixed wire format.
+//!
+//! Key features:
+//! - **Incremental writing**: Entries serialized one at a time via [`SnapshotWriter`]
+//! - **Lazy reading**: Entries deserialized on-demand via [`SnapshotReader`] iterator
+//! - **Memory bounded**: Uses [`SnapshotBuffer`] for automatic disk spill
+//! - **Backwards compatible**: Falls back to legacy format for old snapshots
+//!
+//! # Wire Format
+//!
+//! ```text
+//! +--------+--------+--------+--------+--------+...
+//! | Header (16 bytes)        | Entry 1         | Entry 2 | ...
+//! +--------+--------+--------+--------+--------+...
+//!
+//! Header:
+//! +0       +4       +8       +16
+//! | SNAP   | Version| Entry Count (u64)      |
+//! | (4B)   | (u32)  | (8B)                   |
+//!
+//! Entry:
+//! +0       +4       +N
+//! | Length | Bincode-serialized LogEntry |
+//! | (u32)  | (variable)                  |
+//! ```
+//!
+//! # Architecture
+//!
+//! ```text
+//! +------------------+     write_entry()    +------------------+
+//! | Raft State       | ------------------> | SnapshotWriter   |
+//! | Machine          |                     +------------------+
+//! +------------------+                     | - buffer         |
+//!                                          | - entry_count    |
+//!                                          | - last_index     |
+//!                                          +------------------+
+//!                                                  |
+//!                                                  | finish()
+//!                                                  v
+//!                                          +------------------+
+//!                                          | SnapshotBuffer   |
+//!                                          | (memory or file) |
+//!                                          +------------------+
+//!                                                  |
+//!                                          SnapshotReader::new()
+//!                                                  |
+//!                                                  v
+//! +------------------+     read_entry()    +------------------+
+//! | Follower Node    | <------------------ | SnapshotReader   |
+//! | (applying snap)  |                     | (implements      |
+//! +------------------+                     |  Iterator)       |
+//!                                          +------------------+
+//! ```
+//!
+//! # Usage
+//!
+//! ## Writing Snapshots
+//!
+//! ```rust
+//! use tensor_chain::snapshot_streaming::SnapshotWriter;
+//! use tensor_chain::snapshot_buffer::SnapshotBufferConfig;
+//! use tensor_chain::network::LogEntry;
+//! use tensor_chain::{Block, BlockHeader};
+//!
+//! // Create writer with custom config
+//! let config = SnapshotBufferConfig::default();
+//! let mut writer = SnapshotWriter::new(config).unwrap();
+//!
+//! // Write entries incrementally
+//! // for entry in log_entries {
+//! //     writer.write_entry(&entry)?;
+//! // }
+//!
+//! // Check progress
+//! println!("Entries: {}, Bytes: {}", writer.entry_count(), writer.bytes_written());
+//!
+//! // Finalize and get buffer for chunk serving
+//! let buffer = writer.finish().unwrap();
+//! ```
+//!
+//! ## Reading Snapshots
+//!
+//! ```rust
+//! use tensor_chain::snapshot_streaming::SnapshotReader;
+//! use tensor_chain::snapshot_buffer::SnapshotBuffer;
+//!
+//! // Given a SnapshotBuffer received from leader
+//! // let buffer: SnapshotBuffer = ...;
+//!
+//! // Create reader (validates header)
+//! // let reader = SnapshotReader::new(&buffer)?;
+//!
+//! // Read entries lazily via iterator
+//! // for result in reader {
+//! //     let entry = result?;
+//! //     state_machine.apply(entry);
+//! // }
+//!
+//! // Or read specific count
+//! // let mut reader = SnapshotReader::new(&buffer)?;
+//! // for _ in 0..reader.entry_count() {
+//! //     if let Some(entry) = reader.read_entry()? {
+//! //         // process entry
+//! //     }
+//! // }
+//! ```
+//!
+//! ## Legacy Format Compatibility
+//!
+//! ```rust
+//! use tensor_chain::snapshot_streaming::deserialize_entries;
+//!
+//! // Automatically handles both streaming and legacy formats
+//! // let data: &[u8] = ...;
+//! // let entries = deserialize_entries(data)?;
+//! ```
+//!
+//! # Error Handling
+//!
+//! Streaming operations can fail with:
+//!
+//! - [`StreamingError::Io`]: Underlying I/O error from buffer
+//! - [`StreamingError::Buffer`]: Buffer-specific error (e.g., out of bounds)
+//! - [`StreamingError::Serialization`]: Bincode serialization/deserialization error
+//! - [`StreamingError::InvalidFormat`]: Magic mismatch, unsupported version, entry too large
+//! - [`StreamingError::UnexpectedEof`]: Entry count mismatch or truncated data
+//!
+//! # Security Considerations
+//!
+//! - Entry size is limited to 100 MB to prevent memory exhaustion
+//! - Magic bytes and version are validated to reject corrupted data
+//! - Entry count in header is validated against actual entries
+//!
+//! # Performance
+//!
+//! - Zero-copy reads when buffer is in file mode (mmap)
+//! - Memory usage bounded by `SnapshotBufferConfig::max_memory_bytes`
+//! - Suitable for snapshots with millions of entries
+//!
+//! # See Also
+//!
+//! - [`crate::snapshot_buffer`]: Adaptive memory/disk buffer
+//! - [`crate::network::LogEntry`]: Log entry type being serialized
+//! - [`crate::raft`]: Raft consensus that uses snapshots
 
 use std::io;
 
@@ -11,39 +158,18 @@ use crate::{
 };
 
 /// Error type for snapshot streaming operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StreamingError {
-    Io(io::Error),
-    Buffer(SnapshotBufferError),
+    #[error("I/O error: {0}")]
+    Io(#[from] io::Error),
+    #[error("buffer error: {0}")]
+    Buffer(#[from] SnapshotBufferError),
+    #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("invalid format: {0}")]
     InvalidFormat(String),
+    #[error("unexpected end of data")]
     UnexpectedEof,
-}
-
-impl std::fmt::Display for StreamingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {}", e),
-            Self::Buffer(e) => write!(f, "buffer error: {}", e),
-            Self::Serialization(s) => write!(f, "serialization error: {}", s),
-            Self::InvalidFormat(s) => write!(f, "invalid format: {}", s),
-            Self::UnexpectedEof => write!(f, "unexpected end of data"),
-        }
-    }
-}
-
-impl std::error::Error for StreamingError {}
-
-impl From<io::Error> for StreamingError {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl From<SnapshotBufferError> for StreamingError {
-    fn from(e: SnapshotBufferError) -> Self {
-        Self::Buffer(e)
-    }
 }
 
 impl From<bincode::Error> for StreamingError {

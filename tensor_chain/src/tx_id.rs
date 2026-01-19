@@ -1,14 +1,121 @@
-//! Cryptographically secure transaction ID generation.
+//! Cryptographically secure transaction ID generation with time ordering.
 //!
-//! Transaction IDs are 64 bits with the following structure:
-//! - Bits 63-48 (16 bits): Milliseconds since custom epoch (mod 65536)
-//! - Bits 47-32 (16 bits): Microseconds + overflow counter
-//! - Bits 31-0 (32 bits): Cryptographically secure random (OsRng)
+//! # Overview
 //!
-//! This design provides:
-//! - Approximate time ordering (IDs generated close in time will be close in value)
-//! - Unpredictability (32 bits of CSPRNG randomness)
-//! - Uniqueness (microsecond precision + overflow counter + randomness)
+//! This module generates 64-bit transaction IDs that combine time-based ordering with
+//! cryptographic unpredictability. The design ensures:
+//!
+//! - **Approximate time ordering**: IDs generated close in time sort close together
+//! - **Unpredictability**: 32 bits of CSPRNG randomness prevents ID guessing
+//! - **Uniqueness**: Microsecond precision + overflow counter + randomness prevents collisions
+//! - **Compactness**: Fits in a single `u64` for efficient storage and transmission
+//!
+//! # ID Structure
+//!
+//! ```text
+//! 63      48 47      32 31                              0
+//! +----------+----------+--------------------------------+
+//! | ms (16b) | us+ovf   |       random (32 bits)         |
+//! +----------+----------+--------------------------------+
+//! ```
+//!
+//! | Bits | Field | Description |
+//! |------|-------|-------------|
+//! | 63-48 | Milliseconds | Time since custom epoch, mod 65536 (~65 seconds cycle) |
+//! | 47-32 | Microseconds + Overflow | Sub-millisecond precision + collision counter |
+//! | 31-0 | Random | CSPRNG output from OsRng |
+//!
+//! # Custom Epoch
+//!
+//! The module uses a custom epoch of 2024-01-01 00:00:00 UTC instead of the Unix epoch.
+//! This provides more bits of useful timestamp information within the 16-bit millisecond
+//! field, extending the practical range of time ordering.
+//!
+//! # Collision Handling
+//!
+//! When multiple IDs are generated within the same millisecond:
+//!
+//! 1. The overflow counter increments atomically
+//! 2. This is added to the microsecond field
+//! 3. Combined with 32 bits of randomness, collisions are essentially impossible
+//!
+//! With 32 bits of randomness, the birthday bound suggests ~65,000 IDs before a 50%
+//! collision probability in the random portion alone. Combined with the timestamp
+//! and overflow counter, practical collision probability is negligible.
+//!
+//! # Usage
+//!
+//! ## Generating IDs
+//!
+//! ```rust
+//! use tensor_chain::tx_id::generate_tx_id;
+//!
+//! // Generate unique transaction ID
+//! let tx_id = generate_tx_id();
+//!
+//! // IDs are sortable (approximately by time)
+//! let tx_id2 = generate_tx_id();
+//! // tx_id < tx_id2 with high probability if generated in sequence
+//! ```
+//!
+//! ## Extracting Timestamp Hints
+//!
+//! ```rust
+//! use tensor_chain::tx_id::{generate_tx_id, extract_timestamp_hint};
+//!
+//! let tx_id = generate_tx_id();
+//!
+//! // Get approximate creation time (milliseconds since Unix epoch)
+//! let hint = extract_timestamp_hint(tx_id);
+//! ```
+//!
+//! ## Validating Plausibility
+//!
+//! ```rust
+//! use tensor_chain::tx_id::{generate_tx_id, is_plausible_tx_id};
+//!
+//! let tx_id = generate_tx_id();
+//!
+//! // Check if ID was plausibly generated recently
+//! let window_ms = 10_000;  // 10 second window
+//! if is_plausible_tx_id(tx_id, window_ms) {
+//!     // ID timestamp is within acceptable range
+//! } else {
+//!     // ID may be invalid, stale, or replayed
+//! }
+//! ```
+//!
+//! # Security Properties
+//!
+//! ## Unpredictability
+//!
+//! With 32 bits of CSPRNG randomness, an attacker cannot predict future IDs even if
+//! they know the exact timestamp. This prevents:
+//! - Pre-computing valid transaction IDs
+//! - Guessing IDs for unauthorized access
+//! - Timing attacks based on sequential patterns
+//!
+//! ## Replay Detection
+//!
+//! The [`is_plausible_tx_id`] function enables detection of obviously replayed or
+//! forged IDs by checking if the timestamp component falls within an acceptable
+//! window of the current time.
+//!
+//! ## Thread Safety
+//!
+//! The overflow counter uses atomic operations, making [`generate_tx_id`] safe to
+//! call concurrently from multiple threads without locks.
+//!
+//! # Limitations
+//!
+//! - **Time ordering is approximate**: The 16-bit millisecond field wraps every ~65 seconds
+//! - **Timestamp extraction is imprecise**: Only 16 bits of millisecond precision
+//! - **Clock skew**: IDs from different machines may not be perfectly ordered
+//!
+//! # See Also
+//!
+//! - [`crate::distributed_tx`]: 2PC coordinator using transaction IDs
+//! - [`crate::hlc`]: Hybrid logical clocks for cross-node ordering
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,0 +1,42 @@
+[book]
+title = "Neumann"
+authors = ["Neumann Contributors"]
+description = "Unified tensor-based runtime for relational, graph, and vector data"
+language = "en"
+multilingual = false
+
+[build]
+build-dir = "../book-output"
+create-missing = true
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[preprocessor.toc]
+command = "mdbook-toc"
+marker = "<!-- toc -->"
+
+[preprocessor.admonish]
+command = "mdbook-admonish"
+assets_version = "3.0.2"
+
+[output.html]
+git-repository-url = "https://github.com/Shadylukin/Neumann"
+edit-url-template = "https://github.com/Shadylukin/Neumann/edit/main/docs/book/{path}"
+site-url = "/neumann/"
+default-theme = "rust"
+preferred-dark-theme = "coal"
+smart-punctuation = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+editable = true
+line-numbers = true
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-hierarchical-index = true

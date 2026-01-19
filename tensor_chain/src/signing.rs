@@ -1,9 +1,175 @@
-//! Cryptographic signing and identity binding for tensor-chain.
+//! Ed25519 identity management with geometric embedding derivation.
 //!
-//! Provides:
-//! - Ed25519 key pair management
-//! - NodeId derivation from public key (identity binding)
-//! - Stable embedding derivation from public key (geometric approach)
+//! # Overview
+//!
+//! This module provides cryptographic identity management for cluster nodes, combining
+//! Ed25519 digital signatures with geometric embedding derivation. Each node has an
+//! [`Identity`] containing its private key, from which its [`NodeId`] and stable
+//! embedding vector are deterministically derived.
+//!
+//! The key innovation is **identity binding**: a node's `NodeId` is cryptographically
+//! bound to its public key, preventing impersonation. When a message is signed, the
+//! receiver can verify both the signature and that the claimed sender matches the
+//! signing key.
+//!
+//! # Architecture
+//!
+//! ```text
+//! +------------------+
+//! |    Identity      |  Private key (zeroized on drop)
+//! +------------------+
+//!          |
+//!          | derives
+//!          v
+//! +------------------+     to_node_id()     +------------------+
+//! |  PublicIdentity  | ------------------> | NodeId (String)  |
+//! | (verifying key)  |     BLAKE2b-128     | 32 hex chars     |
+//! +------------------+                     +------------------+
+//!          |
+//!          | to_embedding()
+//!          | BLAKE2b-512
+//!          v
+//! +------------------+
+//! | SparseVector     |  16 dimensions, [-1, 1] normalized
+//! | (stable embedding)|
+//! +------------------+
+//! ```
+//!
+//! # Identity Binding
+//!
+//! The `NodeId` is derived from the public key using BLAKE2b-128:
+//!
+//! ```text
+//! NodeId = hex(BLAKE2b-128(domain_separator || public_key))
+//! ```
+//!
+//! Domain separation (`neumann_node_id_v1`) prevents cross-protocol attacks where
+//! a hash computed for one purpose could be misused in another context.
+//!
+//! # Geometric Embedding Derivation
+//!
+//! Each node's public key deterministically maps to a 16-dimensional embedding:
+//!
+//! 1. Compute `BLAKE2b-512(domain_separator || public_key)` (64 bytes)
+//! 2. Split into 16 groups of 4 bytes each
+//! 3. Interpret each group as a little-endian `u32`
+//! 4. Normalize to `[-1.0, 1.0]` range: `value = u32 / u32::MAX * 2.0 - 1.0`
+//!
+//! This provides stable embeddings for geometric routing and peer scoring
+//! without requiring external embedding models.
+//!
+//! # Signed Messages
+//!
+//! The [`SignedMessage`] envelope provides:
+//!
+//! - **Authentication**: Ed25519 signature over the payload
+//! - **Identity binding**: Sender's `NodeId` must match their public key
+//! - **Replay protection**: Monotonic sequence numbers per sender
+//! - **Freshness**: Timestamps checked against a configurable window
+//!
+//! ```text
+//! SignedMessage {
+//!     sender: NodeId,           // Claimed sender (verified against public_key)
+//!     public_key: [u8; 32],     // Sender's Ed25519 public key
+//!     payload: Vec<u8>,         // Arbitrary message data
+//!     signature: Vec<u8>,       // Ed25519 signature (64 bytes)
+//!     sequence: u64,            // Monotonic sequence number
+//!     timestamp_ms: u64,        // Wall clock time when signed
+//! }
+//! ```
+//!
+//! Signature is computed over: `sender || sequence || timestamp || payload`
+//!
+//! # Usage
+//!
+//! ## Creating and Using Identities
+//!
+//! ```rust
+//! use tensor_chain::signing::{Identity, PublicIdentity};
+//!
+//! // Generate a new identity
+//! let identity = Identity::generate();
+//!
+//! // Get the node ID (for cluster membership)
+//! let node_id = identity.node_id();
+//!
+//! // Get the stable embedding (for geometric routing)
+//! let embedding = identity.to_embedding();
+//! assert_eq!(embedding.dimension(), 16);
+//!
+//! // Sign a message
+//! let signature = identity.sign(b"important data");
+//!
+//! // Extract public identity for verification
+//! let public = identity.verifying_key();
+//! assert!(public.verify(b"important data", &signature).is_ok());
+//! ```
+//!
+//! ## Signed Message Envelopes
+//!
+//! ```rust
+//! use tensor_chain::signing::{Identity, SequenceTracker};
+//!
+//! let identity = Identity::generate();
+//! let tracker = SequenceTracker::new();
+//!
+//! // Create signed message with replay protection
+//! let msg = identity.sign_message(b"payload", /*sequence=*/1);
+//!
+//! // Verify signature and replay protection
+//! let payload = msg.verify_with_tracker(&tracker).unwrap();
+//! assert_eq!(payload, b"payload");
+//!
+//! // Replay attempt fails
+//! let msg_replay = identity.sign_message(b"payload", /*sequence=*/1);
+//! assert!(msg_replay.verify_with_tracker(&tracker).is_err());
+//! ```
+//!
+//! ## Validator Registry
+//!
+//! ```rust
+//! use tensor_chain::signing::{Identity, ValidatorRegistry};
+//!
+//! let registry = ValidatorRegistry::new();
+//!
+//! // Register validators
+//! let validator1 = Identity::generate();
+//! registry.register(&validator1);
+//!
+//! // Check if a node is a known validator
+//! assert!(registry.contains(&validator1.node_id()));
+//!
+//! // Retrieve public identity for verification
+//! let public = registry.get(&validator1.node_id()).unwrap();
+//! ```
+//!
+//! # Security Considerations
+//!
+//! ## Key Material Protection
+//!
+//! - [`Identity`] implements `ZeroizeOnDrop` to clear private key memory
+//! - The `Debug` impl redacts the private key to prevent accidental logging
+//! - ed25519_dalek handles internal zeroization of the signing key
+//!
+//! ## Replay Protection
+//!
+//! The [`SequenceTracker`] provides bounded-memory replay detection:
+//!
+//! - Entries older than `max_age_ms` are periodically removed
+//! - Maximum number of tracked senders is bounded by `max_entries`
+//! - Messages with old timestamps are rejected (configurable window)
+//!
+//! ## Timestamp Validation
+//!
+//! - Messages from the future (> 1 minute ahead) are rejected
+//! - Messages older than `max_age_ms` are rejected
+//! - This prevents replay of captured messages
+//!
+//! # See Also
+//!
+//! - [`crate::gossip`]: Gossip protocol using signed messages
+//! - [`crate::message_validation`]: Additional message validation
+//! - [`crate::geometric_membership`]: Peer scoring using node embeddings
 
 // ZeroizeOnDrop derive macro generates code that triggers this warning
 #![allow(unused_assignments)]
@@ -130,7 +296,8 @@ impl PublicIdentity {
         hex::encode(hash)
     }
 
-    /// Uses BLAKE2b-512 to generate 16 f32 coordinates in [-1, 1].
+    /// BLAKE2b-512 for speed + security. 64 bytes -> 16 f32 coordinates.
+    /// Domain separation prevents cross-protocol attacks. Normalization to [-1,1].
     pub fn to_embedding(&self) -> SparseVector {
         let mut hasher = Blake2b::<U64>::new();
         hasher.update(EMBEDDING_DOMAIN);

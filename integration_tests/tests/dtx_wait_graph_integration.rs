@@ -244,3 +244,150 @@ fn test_wait_graph_concurrent_updates() {
     // or no edges if last tx was first to acquire
     assert!(edge_count >= 0, "wait graph should be in valid state");
 }
+
+#[test]
+fn test_release_orphaned_locks_cleans_wait_graph_integration() {
+    let config = DistributedTxConfig::default();
+    let coordinator = create_coordinator_with_config(config);
+
+    // Acquire locks directly (simulating orphaned locks from a crashed transaction)
+    let orphan_tx_id = 12345u64;
+    coordinator
+        .lock_manager()
+        .try_lock(
+            orphan_tx_id,
+            &["orphan_key1".to_string(), "orphan_key2".to_string()],
+        )
+        .expect("lock should succeed");
+
+    // Add wait edges to simulate other transactions waiting
+    coordinator.wait_graph().add_wait(99999, orphan_tx_id, None);
+    assert!(
+        coordinator
+            .wait_graph()
+            .waiting_for(99999)
+            .contains(&orphan_tx_id),
+        "wait edge should exist"
+    );
+
+    // Get current time and release orphaned locks
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let released = coordinator.release_orphaned_locks(now_ms + 10000);
+    assert_eq!(released, 2, "should release 2 orphaned locks");
+
+    // Verify locks are released
+    assert!(
+        !coordinator.lock_manager().is_locked("orphan_key1"),
+        "key1 should be unlocked"
+    );
+    assert!(
+        !coordinator.lock_manager().is_locked("orphan_key2"),
+        "key2 should be unlocked"
+    );
+
+    // Verify wait graph is cleaned up
+    assert!(
+        !coordinator
+            .wait_graph()
+            .waiting_for(99999)
+            .contains(&orphan_tx_id),
+        "wait edge should be removed after orphan cleanup"
+    );
+}
+
+#[test]
+fn test_cleanup_expired_with_wait_cleanup_integration() {
+    let lock_manager = LockManager::with_default_timeout(Duration::from_millis(1));
+    let wait_graph = WaitForGraph::new();
+
+    // Acquire a lock that will expire quickly
+    let expired_tx_id = 555u64;
+    lock_manager
+        .try_lock(expired_tx_id, &["expiring_key".to_string()])
+        .expect("lock should succeed");
+
+    // Add wait edge
+    wait_graph.add_wait(666, expired_tx_id, None);
+    assert!(
+        wait_graph.waiting_for(666).contains(&expired_tx_id),
+        "wait edge should exist"
+    );
+
+    // Wait for the lock to expire
+    thread::sleep(Duration::from_millis(20));
+
+    // Cleanup expired locks
+    let cleaned = lock_manager.cleanup_expired_with_wait_cleanup(&wait_graph);
+    assert_eq!(cleaned, 1, "should clean 1 expired lock");
+
+    // Verify lock is released
+    assert!(
+        !lock_manager.is_locked("expiring_key"),
+        "key should be unlocked"
+    );
+
+    // Verify wait graph is cleaned up
+    assert!(
+        !wait_graph.waiting_for(666).contains(&expired_tx_id),
+        "wait edge should be removed after expired cleanup"
+    );
+}
+
+#[test]
+fn test_release_by_handle_no_toctou_race() {
+    let lock_manager = Arc::new(LockManager::new());
+    let wait_graph = Arc::new(WaitForGraph::new());
+
+    // Run multiple concurrent release and check operations
+    let mut handles = vec![];
+
+    for i in 0..20u64 {
+        let lm = Arc::clone(&lock_manager);
+        let wg = Arc::clone(&wait_graph);
+
+        handles.push(thread::spawn(move || {
+            // Acquire lock
+            let tx_id = 10000 + i;
+            let key = format!("concurrent_key_{}", i);
+            let handle = lm
+                .try_lock(tx_id, &[key.clone()])
+                .expect("lock should succeed");
+
+            // Add wait edge
+            wg.add_wait(20000 + i, tx_id, None);
+
+            // Small delay to increase chance of concurrent operations
+            thread::sleep(Duration::from_micros(100));
+
+            // Release with wait cleanup - should be atomic
+            lm.release_by_handle_with_wait_cleanup(handle, &wg);
+
+            // Verify both lock and wait graph are cleaned consistently
+            let is_locked = lm.is_locked(&key);
+            let has_waiters = !wg.waiting_on(tx_id).is_empty();
+
+            // Both should be cleaned, or neither (atomic operation)
+            assert!(!is_locked, "lock should be released for key {}", key);
+            assert!(
+                !has_waiters,
+                "wait graph should be cleaned for tx {}",
+                tx_id
+            );
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("thread should complete without panic");
+    }
+
+    // Final verification: no orphaned state
+    assert_eq!(
+        lock_manager.active_lock_count(),
+        0,
+        "all locks should be released"
+    );
+}

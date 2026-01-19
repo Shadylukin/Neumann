@@ -1,7 +1,151 @@
-//! Message validation layer for semantic validation of all message types.
+//! Defense-in-depth validation layer for all cluster messages.
 //!
-//! Provides bounds checking, format validation, and embedding validation
-//! for incoming cluster messages before they are processed.
+//! # Overview
+//!
+//! This module provides comprehensive semantic validation for incoming cluster messages
+//! before they are processed by the Raft consensus, 2PC coordinator, or gossip subsystems.
+//! It acts as a defense-in-depth layer, catching malformed or malicious messages that
+//! could cause:
+//!
+//! - Integer overflow attacks (unbounded terms, indices, or shard IDs)
+//! - Resource exhaustion (oversized embeddings, queries, or block requests)
+//! - Replay attacks (stale timestamps on signed messages)
+//! - Format violations (empty node IDs, malformed signatures)
+//!
+//! # Architecture
+//!
+//! ```text
+//! +------------------+     Message      +--------------------+
+//! | Network Layer    | ---------------> | CompositeValidator |
+//! | (Transport)      |                  +--------------------+
+//! +------------------+                  | - validate_term()  |
+//!                                       | - validate_node_id()|
+//!                                       | - validate_shard() |
+//!                                       | - validate_timeout()|
+//!                                       +--------------------+
+//!                                                |
+//!                                                | uses
+//!                                                v
+//!                                       +--------------------+
+//!                                       | EmbeddingValidator |
+//!                                       +--------------------+
+//!                                       | - dimension check  |
+//!                                       | - NaN/Inf check    |
+//!                                       | - magnitude check  |
+//!                                       | - position sorting |
+//!                                       +--------------------+
+//! ```
+//!
+//! # Validation Checks
+//!
+//! ## Numeric Bounds
+//!
+//! | Field | Constraint | Purpose |
+//! |-------|------------|---------|
+//! | `term` | > 0, < max_term | Prevent overflow in Raft term arithmetic |
+//! | `shard_id` | < max_shard_id | Prevent out-of-bounds shard access |
+//! | `timeout_ms` | > 0, < max_tx_timeout | Prevent infinite waits or resource exhaustion |
+//! | `tx_id` | > 0 | Distinguish valid transactions from uninitialized state |
+//! | `query_id` | > 0 | Distinguish valid queries from uninitialized state |
+//!
+//! ## Embedding Validation
+//!
+//! Sparse vector embeddings are validated for:
+//! - Non-zero dimension
+//! - Dimension within configured maximum
+//! - No NaN or Infinite values
+//! - Magnitude (L2 norm) within configured maximum
+//! - Positions sorted and within bounds
+//!
+//! ## Signed Message Validation
+//!
+//! Signed gossip messages are checked for:
+//! - Correct signature length (64 bytes for Ed25519)
+//! - Valid sender node ID
+//! - Timestamp not too far in the future (1 minute tolerance)
+//! - Timestamp not too old (configurable max age)
+//!
+//! # Configuration
+//!
+//! ```rust
+//! use tensor_chain::message_validation::MessageValidationConfig;
+//!
+//! let config = MessageValidationConfig {
+//!     enabled: true,
+//!     max_term: u64::MAX - 1,
+//!     max_shard_id: 65536,
+//!     max_tx_timeout_ms: 300_000,  // 5 minutes
+//!     max_node_id_len: 256,
+//!     max_key_len: 4096,
+//!     max_embedding_dimension: 65536,
+//!     max_embedding_magnitude: 1e6,
+//!     max_query_len: 1024 * 1024,  // 1 MB
+//!     max_message_age_ms: 5 * 60 * 1000,  // 5 minutes
+//!     max_blocks_per_request: 1000,
+//!     max_snapshot_chunk_size: 10 * 1024 * 1024,  // 10 MB
+//! };
+//! ```
+//!
+//! # Usage
+//!
+//! ```rust
+//! use tensor_chain::message_validation::{CompositeValidator, MessageValidationConfig, MessageValidator};
+//! use tensor_chain::network::Message;
+//!
+//! let config = MessageValidationConfig::default();
+//! let validator = CompositeValidator::new(config);
+//!
+//! // Validate incoming message
+//! let from_node = "node1".to_string();
+//! // let msg: Message = ...;
+//! // match validator.validate(&msg, &from_node) {
+//! //     Ok(()) => { /* process message */ }
+//! //     Err(e) => { /* reject message */ }
+//! // }
+//! ```
+//!
+//! # Trait: MessageValidator
+//!
+//! The [`MessageValidator`] trait enables pluggable validation strategies:
+//!
+//! ```rust
+//! use tensor_chain::message_validation::MessageValidator;
+//! use tensor_chain::network::Message;
+//! use tensor_chain::block::NodeId;
+//! use tensor_chain::error::Result;
+//!
+//! struct CustomValidator;
+//!
+//! impl MessageValidator for CustomValidator {
+//!     fn validate(&self, msg: &Message, from: &NodeId) -> Result<()> {
+//!         // Custom validation logic
+//!         Ok(())
+//!     }
+//! }
+//! ```
+//!
+//! # Security Considerations
+//!
+//! - Validation is enabled by default; disable only for testing
+//! - All limits are configurable to balance security vs. functionality
+//! - Embedding validation prevents floating-point exploits (NaN, Inf)
+//! - Timestamp checks prevent replay attacks on signed messages
+//! - Block request limits prevent DoS via huge range requests
+//!
+//! # Error Handling
+//!
+//! Validation failures return typed errors:
+//!
+//! - [`ChainError::NumericOutOfBounds`]: Term, shard ID, timeout, or ID out of range
+//! - [`ChainError::MessageValidationFailed`]: Node ID or query format invalid
+//! - [`ChainError::InvalidEmbedding`]: Embedding dimension, values, or structure invalid
+//! - [`ChainError::CryptoError`]: Signature length, timestamp, or age invalid
+//!
+//! # See Also
+//!
+//! - [`crate::network`]: Network transport and message types
+//! - [`crate::signing`]: Signed message creation and verification
+//! - [`crate::gossip`]: Gossip protocol that uses signed messages
 
 use tensor_store::SparseVector;
 

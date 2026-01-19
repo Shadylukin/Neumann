@@ -1,0 +1,167 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '**/src/**/*.rs'
+      - '**/Cargo.toml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '**/src/**/*.rs'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rustdoc:
+    name: Build API Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-docs
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build rustdoc
+        run: |
+          RUSTDOCFLAGS="--cfg docsrs -Dwarnings" cargo +nightly doc \
+            --workspace \
+            --no-deps \
+            --all-features \
+            -Zunstable-options \
+            -Zrustdoc-scrape-examples
+
+      - name: Upload rustdoc
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdoc
+          path: target/doc
+          retention-days: 7
+
+  mdbook:
+    name: Build Book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          mkdir -p ~/.local/bin
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
+          cargo install mdbook-mermaid mdbook-toc mdbook-admonish mdbook-linkcheck
+
+      - name: Build book
+        working-directory: docs/book
+        run: |
+          mdbook-mermaid install .
+          mdbook-admonish install .
+          mdbook build
+
+      - name: Check links
+        working-directory: docs/book
+        run: mdbook-linkcheck --standalone
+        continue-on-error: true
+
+      - name: Upload book
+        uses: actions/upload-artifact@v4
+        with:
+          name: book
+          path: docs/book-output
+          retention-days: 7
+
+  doc-coverage:
+    name: Documentation Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check doc coverage
+        run: |
+          cargo +nightly rustdoc -p tensor_chain -- -Z unstable-options --show-coverage 2>&1 | tee coverage.txt
+          # Report coverage but don't fail yet
+          grep -oP '\d+\.\d+%' coverage.txt | head -1 || echo "Coverage check complete"
+
+  benchmarks:
+    name: Generate Benchmark Docs
+    runs-on: ubuntu-latest
+    # Only run on main branch pushes to avoid long CI times on PRs
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Run benchmarks (quick mode)
+        run: |
+          cargo bench --workspace -- --noplot
+        timeout-minutes: 30
+
+      - name: Generate benchmark summary
+        run: |
+          chmod +x scripts/generate-bench-docs.sh
+          ./scripts/generate-bench-docs.sh
+
+      - name: Upload Criterion reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion
+          retention-days: 7
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [rustdoc, mdbook]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download book
+        uses: actions/download-artifact@v4
+        with:
+          name: book
+          path: public/
+
+      - name: Download rustdoc
+        uses: actions/download-artifact@v4
+        with:
+          name: rustdoc
+          path: public/api/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

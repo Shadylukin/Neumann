@@ -39,6 +39,8 @@ enum FuzzOp {
         waiter_mod: u8,
         holder_mod: u8,
     },
+    CleanupExpired,
+    CleanupExpiredWithWaitCleanup,
     CheckInvariants,
 }
 
@@ -69,12 +71,14 @@ fuzz_target!(|input: FuzzInput| {
                 let tx_id = (*tx_id_mod as u64) % 20 + 1;
                 let count = (*key_count as usize % 5).max(1);
                 let base = *key_base as usize;
-                let keys: Vec<String> = (0..count).map(|i| format!("key_{}", (base + i) % 50)).collect();
+                let keys: Vec<String> = (0..count)
+                    .map(|i| format!("key_{}", (base + i) % 50))
+                    .collect();
                 let prio = priority.map(|p| p as u32);
 
-                if let Ok(handle) = lock_manager.try_lock_with_wait_tracking(
-                    tx_id, &keys, &wait_graph, prio,
-                ) {
+                if let Ok(handle) =
+                    lock_manager.try_lock_with_wait_tracking(tx_id, &keys, &wait_graph, prio)
+                {
                     handles.push(handle);
                 }
             },
@@ -87,7 +91,9 @@ fuzz_target!(|input: FuzzInput| {
                 let tx_id = (*tx_id_mod as u64) % 20 + 1;
                 let count = (*key_count as usize % 5).max(1);
                 let base = *key_base as usize;
-                let keys: Vec<String> = (0..count).map(|i| format!("key_{}", (base + i) % 50)).collect();
+                let keys: Vec<String> = (0..count)
+                    .map(|i| format!("key_{}", (base + i) % 50))
+                    .collect();
 
                 if let Ok(handle) = lock_manager.try_lock(tx_id, &keys) {
                     handles.push(handle);
@@ -124,10 +130,21 @@ fuzz_target!(|input: FuzzInput| {
                 let _ = wait_graph.detect_cycles();
             },
 
-            FuzzOp::WouldCreateCycle { waiter_mod, holder_mod } => {
+            FuzzOp::WouldCreateCycle {
+                waiter_mod,
+                holder_mod,
+            } => {
                 let waiter = (*waiter_mod as u64) % 20 + 1;
                 let holder = (*holder_mod as u64) % 20 + 1;
                 let _ = wait_graph.would_create_cycle(waiter, holder);
+            },
+
+            FuzzOp::CleanupExpired => {
+                let _ = lock_manager.cleanup_expired();
+            },
+
+            FuzzOp::CleanupExpiredWithWaitCleanup => {
+                let _ = lock_manager.cleanup_expired_with_wait_cleanup(&wait_graph);
             },
 
             FuzzOp::CheckInvariants => {

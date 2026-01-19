@@ -1,7 +1,158 @@
-//! Memory-efficient snapshot buffering with file-backed overflow.
+//! Adaptive memory/disk buffer for snapshot assembly with bounded memory usage.
 //!
-//! Provides bounded memory usage for Raft snapshots by automatically
-//! spilling to disk when data exceeds a configurable threshold.
+//! # Overview
+//!
+//! This module provides a memory-efficient buffer for assembling and serving Raft snapshots.
+//! When snapshot data exceeds a configurable memory threshold, the buffer transparently
+//! spills to a temporary file using memory-mapped I/O, providing:
+//!
+//! - **Bounded memory**: Large snapshots don't exhaust heap memory
+//! - **Zero-copy serving**: Mmap slices enable efficient chunk serving
+//! - **Automatic cleanup**: Temp files removed on drop
+//! - **SHA-256 hashing**: Content hash computed incrementally during writes
+//!
+//! # Architecture
+//!
+//! ```text
+//! +-------------------+
+//! |  SnapshotBuffer   |
+//! +-------------------+
+//!          |
+//!          | write()
+//!          v
+//! +-------------------+          +-------------------+
+//! | BufferMode::Memory| -------> | BufferMode::File  |
+//! | (Vec<u8>)         |  spill   | (mmap + temp file)|
+//! +-------------------+  if >    +-------------------+
+//!                      threshold
+//!          |                              |
+//!          | as_slice() / read_chunk()    | as_slice() (zero-copy)
+//!          v                              v
+//! +-------------------+          +-------------------+
+//! | Snapshot Serving  |          | Snapshot Serving  |
+//! | (copy from Vec)   |          | (mmap reference)  |
+//! +-------------------+          +-------------------+
+//! ```
+//!
+//! # Usage
+//!
+//! ## Basic Write and Read
+//!
+//! ```rust
+//! use tensor_chain::snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig};
+//!
+//! let config = SnapshotBufferConfig::default()
+//!     .with_max_memory(256 * 1024 * 1024);  // 256 MB threshold
+//!
+//! let mut buffer = SnapshotBuffer::new(config).unwrap();
+//!
+//! // Write data (may trigger spill to file)
+//! buffer.write(b"snapshot data chunk 1").unwrap();
+//! buffer.write(b"snapshot data chunk 2").unwrap();
+//!
+//! // Finalize before reading
+//! buffer.finalize().unwrap();
+//!
+//! // Read entire buffer
+//! let all_data = buffer.as_bytes().unwrap();
+//!
+//! // Or read specific chunk (for network transfer)
+//! let chunk = buffer.as_slice(0, 1024).unwrap();
+//! ```
+//!
+//! ## Checking Buffer State
+//!
+//! ```rust
+//! use tensor_chain::snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig};
+//!
+//! let mut buffer = SnapshotBuffer::with_defaults().unwrap();
+//! buffer.write(b"data").unwrap();
+//! buffer.finalize().unwrap();
+//!
+//! // Check if using file backing
+//! if buffer.is_file_backed() {
+//!     println!("Spilled to: {:?}", buffer.temp_path());
+//! }
+//!
+//! // Get content hash (SHA-256)
+//! let hash = buffer.hash();
+//!
+//! // Get total size
+//! println!("Total bytes: {}", buffer.total_len());
+//! ```
+//!
+//! ## Using SnapshotBufferReader
+//!
+//! ```rust
+//! use tensor_chain::snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig, SnapshotBufferReader};
+//! use std::io::{Read, Seek, SeekFrom};
+//!
+//! let mut buffer = SnapshotBuffer::with_defaults().unwrap();
+//! buffer.write(b"0123456789").unwrap();
+//! buffer.finalize().unwrap();
+//!
+//! let mut reader = SnapshotBufferReader::new(&buffer);
+//!
+//! // Read in chunks
+//! let mut buf = [0u8; 5];
+//! reader.read(&mut buf).unwrap();
+//! assert_eq!(&buf, b"01234");
+//!
+//! // Seek to position
+//! reader.seek(SeekFrom::Start(3)).unwrap();
+//! reader.read(&mut buf).unwrap();
+//! assert_eq!(&buf, b"34567");
+//! ```
+//!
+//! # Configuration
+//!
+//! ```rust
+//! use tensor_chain::snapshot_buffer::SnapshotBufferConfig;
+//!
+//! let config = SnapshotBufferConfig {
+//!     // Spill to disk when exceeding this size
+//!     max_memory_bytes: 256 * 1024 * 1024,  // 256 MB
+//!
+//!     // Directory for temporary files
+//!     temp_dir: std::env::temp_dir().join("raft_snapshots"),
+//!
+//!     // Initial file size when spilling
+//!     initial_file_capacity: 64 * 1024 * 1024,  // 64 MB
+//! };
+//! ```
+//!
+//! # Error Handling
+//!
+//! Operations can fail with:
+//!
+//! - [`SnapshotBufferError::Io`]: Underlying I/O error (file creation, mmap, etc.)
+//! - [`SnapshotBufferError::OutOfBounds`]: Read offset/length exceeds buffer size
+//! - [`SnapshotBufferError::NotFinalized`]: Attempted read before finalize()
+//!
+//! # Security Considerations
+//!
+//! - Temp files are created with restrictive permissions
+//! - Files are cleaned up on drop (best-effort)
+//! - SHA-256 hash allows verification of content integrity
+//!
+//! # Performance Characteristics
+//!
+//! | Operation | Memory Mode | File Mode |
+//! |-----------|-------------|-----------|
+//! | write() | O(1) amortized | O(1) amortized + possible mmap resize |
+//! | as_slice() | O(1) | O(1) zero-copy via mmap |
+//! | read_chunk() | O(n) copy | O(n) copy |
+//! | finalize() | O(1) | O(1) + fsync |
+//!
+//! # Thread Safety
+//!
+//! `SnapshotBuffer` is NOT thread-safe for concurrent writes. However, after
+//! `finalize()`, the buffer can be shared via `Arc` for concurrent reads.
+//!
+//! # See Also
+//!
+//! - [`crate::snapshot_streaming`]: Higher-level streaming serialization
+//! - [`crate::network::SnapshotRequest`]: Network protocol for snapshot transfer
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -50,35 +201,14 @@ impl SnapshotBufferConfig {
 }
 
 /// Error type for snapshot buffer operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SnapshotBufferError {
-    Io(io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] io::Error),
+    #[error("out of bounds access: offset={offset}, len={len}, total={total}")]
     OutOfBounds { offset: u64, len: usize, total: u64 },
+    #[error("buffer not finalized")]
     NotFinalized,
-}
-
-impl std::fmt::Display for SnapshotBufferError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {}", e),
-            Self::OutOfBounds { offset, len, total } => {
-                write!(
-                    f,
-                    "out of bounds access: offset={}, len={}, total={}",
-                    offset, len, total
-                )
-            },
-            Self::NotFinalized => write!(f, "buffer not finalized"),
-        }
-    }
-}
-
-impl std::error::Error for SnapshotBufferError {}
-
-impl From<io::Error> for SnapshotBufferError {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, SnapshotBufferError>;

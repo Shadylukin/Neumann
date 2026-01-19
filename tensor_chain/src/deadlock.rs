@@ -1,7 +1,113 @@
-//! Deadlock detection for distributed transactions.
+//! Wait-for graph tracking with DFS-based cycle detection for distributed transactions.
 //!
-//! Provides wait-for graph tracking and cycle detection for 2PC transactions.
-//! Detects cross-shard deadlocks that timeout-based prevention cannot catch.
+//! # Overview
+//!
+//! This module implements deadlock detection for the 2PC (Two-Phase Commit) distributed
+//! transaction coordinator. It maintains a wait-for graph tracking which transactions
+//! are blocked waiting for other transactions to release locks, and uses depth-first
+//! search to detect cycles that indicate deadlocks.
+//!
+//! Timeout-based deadlock prevention alone is insufficient for distributed systems
+//! because it cannot distinguish between:
+//! - A transaction that is genuinely slow
+//! - A transaction that is permanently blocked by a circular dependency
+//!
+//! This module provides active cycle detection to resolve deadlocks immediately
+//! rather than waiting for arbitrary timeouts.
+//!
+//! # Architecture
+//!
+//! ```text
+//! +------------------+     add_wait()      +----------------+
+//! | LockManager      | ------------------> | WaitForGraph   |
+//! | (2PC Coordinator)|                     |                |
+//! +------------------+                     | edges: tx->txs |
+//! | acquire_locks()  | <-- wait_info --    | reverse_edges  |
+//! | on conflict:     |                     | wait_started   |
+//! |   add to graph   |                     | priorities     |
+//! +------------------+                     +----------------+
+//!                                                  |
+//!                                          detect_cycles()
+//!                                                  |
+//!                                                  v
+//!                                          +----------------+
+//!                                          | DeadlockInfo   |
+//!                                          | - cycle        |
+//!                                          | - victim_tx_id |
+//!                                          +----------------+
+//! ```
+//!
+//! # Wait-For Graph Optimization
+//!
+//! The graph maintains bidirectional edges for efficient operations:
+//! - `edges`: Maps `waiter_tx_id` -> set of `holder_tx_ids` (forward edges)
+//! - `reverse_edges`: Maps `holder_tx_id` -> set of `waiter_tx_ids` (backward edges)
+//!
+//! This allows O(1) transaction removal when a transaction commits or aborts,
+//! since we can efficiently find and remove all edges involving that transaction.
+//! Space overhead is acceptable because concurrent transactions are bounded by
+//! cluster capacity.
+//!
+//! # Victim Selection Policies
+//!
+//! When a deadlock is detected, one transaction must be aborted to break the cycle.
+//! The module supports multiple victim selection policies with different trade-offs:
+//!
+//! | Policy | Description | Trade-off |
+//! |--------|-------------|-----------|
+//! | `Youngest` | Abort most recent waiter | Minimizes wasted work, may starve long transactions |
+//! | `Oldest` | Abort earliest waiter | Prevents starvation, wastes more work |
+//! | `LowestPriority` | Abort lowest-priority tx | Business-rule prioritization |
+//! | `MostLocks` | Abort tx holding most locks | Maximizes freed resources |
+//!
+//! # Usage
+//!
+//! ```rust
+//! use tensor_chain::deadlock::{DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy};
+//!
+//! // Create detector with custom configuration
+//! let config = DeadlockDetectorConfig::default()
+//!     .with_interval(50)  // Check every 50ms
+//!     .with_policy(VictimSelectionPolicy::Youngest);
+//!
+//! let detector = DeadlockDetector::new(config);
+//!
+//! // Add wait-for edges when lock conflicts occur
+//! detector.graph().add_wait(/*waiter=*/1, /*holder=*/2, Some(/*priority=*/10));
+//! detector.graph().add_wait(/*waiter=*/2, /*holder=*/1, Some(/*priority=*/20));
+//!
+//! // Run detection cycle
+//! let deadlocks = detector.detect();
+//! for info in deadlocks {
+//!     println!("Deadlock detected: {:?}, victim: {}", info.cycle, info.victim_tx_id);
+//!     // Abort the victim transaction
+//! }
+//!
+//! // Remove transaction when it commits/aborts
+//! detector.graph().remove_transaction(1);
+//! ```
+//!
+//! # Cycle Detection Algorithm
+//!
+//! The cycle detection uses a variant of Tarjan's DFS algorithm:
+//!
+//! 1. Maintain a `visited` set of all nodes seen during traversal
+//! 2. Maintain a `rec_stack` (recursion stack) of nodes in current DFS path
+//! 3. When visiting a neighbor already in `rec_stack`, a cycle is found
+//! 4. Extract the cycle from the current path
+//!
+//! Time complexity: O(V + E) where V = transactions, E = wait edges
+//!
+//! # Security Considerations
+//!
+//! - The `max_cycle_length` configuration prevents DoS via artificially long cycles
+//! - Detection can be disabled for testing via `DeadlockDetectorConfig::disabled()`
+//! - Statistics track detection performance for monitoring
+//!
+//! # See Also
+//!
+//! - [`crate::distributed_tx`]: 2PC coordinator that uses this module
+//! - [`crate::distributed_tx::LockManager`]: Lock acquisition that populates the graph
 
 use std::{
     collections::{HashMap, HashSet},
@@ -332,7 +438,8 @@ impl WaitForGraph {
         cycles
     }
 
-    /// DFS helper for cycle detection.
+    /// Tarjan's DFS: cycle exists when we hit a node in rec_stack (back edge to ancestor).
+    /// Path tracked explicitly for victim selection.
     fn dfs_detect(
         &self,
         node: u64,
@@ -552,7 +659,11 @@ impl DeadlockDetector {
         deadlocks
     }
 
-    /// Select victim from a cycle based on policy.
+    /// Policy trade-offs:
+    /// - Youngest: minimize wasted work, may starve long transactions
+    /// - Oldest: prevent starvation, wastes more work
+    /// - LowestPriority: business-rule prioritization
+    /// - MostLocks: maximize freed resources
     pub fn select_victim(&self, cycle: &[u64]) -> u64 {
         if cycle.is_empty() {
             return 0;

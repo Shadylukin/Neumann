@@ -289,6 +289,14 @@ impl LockManager {
         }
     }
 
+    pub fn with_default_timeout(timeout: Duration) -> Self {
+        Self {
+            locks: RwLock::new(HashMap::new()),
+            tx_locks: RwLock::new(HashMap::new()),
+            default_timeout: timeout,
+        }
+    }
+
     /// Try to acquire locks for a set of keys.
     /// Returns a lock handle if successful, or the conflicting tx_id if not.
     pub fn try_lock(&self, tx_id: u64, keys: &[String]) -> std::result::Result<u64, u64> {
@@ -374,19 +382,29 @@ impl LockManager {
         lock_handle: u64,
         wait_graph: &crate::deadlock::WaitForGraph,
     ) {
-        // Extract tx_id before releasing (while we still have lock info)
+        // Single critical section: extract tx_id and release atomically to prevent TOCTOU
         let tx_id = {
-            let locks = self.locks.read();
-            locks
-                .values()
-                .find(|lock| lock.lock_handle == lock_handle)
-                .map(|lock| lock.tx_id)
+            let mut locks = self.locks.write();
+            let mut tx_locks = self.tx_locks.write();
+
+            let keys_to_remove: Vec<_> = locks
+                .iter()
+                .filter(|(_, lock)| lock.lock_handle == lock_handle)
+                .map(|(k, lock)| (k.clone(), lock.tx_id))
+                .collect();
+
+            let mut found_tx_id = None;
+            for (key, tx_id) in &keys_to_remove {
+                found_tx_id = Some(*tx_id);
+                locks.remove(key);
+                if let Some(tx_keys) = tx_locks.get_mut(tx_id) {
+                    tx_keys.retain(|k| k != key);
+                }
+            }
+            found_tx_id
         };
 
-        // Release the locks
-        self.release_by_handle(lock_handle);
-
-        // Clean up wait graph for this transaction
+        // Clean up wait graph for this transaction (outside lock scope)
         if let Some(tx_id) = tx_id {
             wait_graph.remove_transaction(tx_id);
         }
@@ -423,6 +441,40 @@ impl LockManager {
         }
 
         expired.len()
+    }
+
+    pub fn cleanup_expired_with_wait_cleanup(
+        &self,
+        wait_graph: &crate::deadlock::WaitForGraph,
+    ) -> usize {
+        let mut locks = self.locks.write();
+        let mut tx_locks = self.tx_locks.write();
+
+        let expired: Vec<_> = locks
+            .iter()
+            .filter(|(_, lock)| lock.is_expired())
+            .map(|(k, lock)| (k.clone(), lock.tx_id))
+            .collect();
+
+        let expired_tx_ids: std::collections::HashSet<u64> =
+            expired.iter().map(|(_, tx_id)| *tx_id).collect();
+
+        for (key, tx_id) in &expired {
+            locks.remove(key);
+            if let Some(tx_keys) = tx_locks.get_mut(tx_id) {
+                tx_keys.retain(|k| k != key);
+            }
+        }
+
+        let count = expired.len();
+        drop(tx_locks);
+        drop(locks);
+
+        for tx_id in expired_tx_ids {
+            wait_graph.remove_transaction(tx_id);
+        }
+
+        count
     }
 
     pub fn active_lock_count(&self) -> usize {
@@ -917,6 +969,9 @@ impl DistributedTxCoordinator {
         self.pending.read().get(&tx_id).cloned()
     }
 
+    /// Two-stage validation: (1) Lock acquisition with wait-for graph tracking,
+    /// (2) Semantic conflict detection via delta similarity. Returns Conflict early
+    /// on lock failure to avoid expensive embedding computation.
     pub fn handle_prepare(&self, request: PrepareRequest) -> PrepareVote {
         // Extract affected keys from operations
         let keys: Vec<String> = request
@@ -1386,7 +1441,9 @@ impl DistributedTxCoordinator {
         }
 
         // Also cleanup expired locks
-        let expired_locks = self.lock_manager.cleanup_expired();
+        let expired_locks = self
+            .lock_manager
+            .cleanup_expired_with_wait_cleanup(&self.wait_graph);
         if expired_locks > 0 {
             tracing::debug!(count = expired_locks, "Cleaned up expired locks");
         }
@@ -1660,7 +1717,8 @@ impl DistributedTxCoordinator {
         }
 
         // Also cleanup any expired locks
-        self.lock_manager.cleanup_expired();
+        self.lock_manager
+            .cleanup_expired_with_wait_cleanup(&self.wait_graph);
 
         stats
     }
@@ -1779,6 +1837,9 @@ impl DistributedTxCoordinator {
             })
             .collect();
 
+        // Collect unique tx_ids for wait graph cleanup
+        let orphaned_tx_ids: HashSet<u64> = orphaned_keys.iter().map(|(_, tx_id)| *tx_id).collect();
+
         // Release all orphaned locks atomically
         let count = orphaned_keys.len();
         for (key, tx_id) in orphaned_keys {
@@ -1789,6 +1850,15 @@ impl DistributedTxCoordinator {
                     tx_locks.remove(&tx_id);
                 }
             }
+        }
+
+        // Release lock manager locks before touching wait graph
+        drop(tx_locks);
+        drop(locks);
+
+        // Clean up wait graph for all orphaned transactions
+        for tx_id in orphaned_tx_ids {
+            self.wait_graph.remove_transaction(tx_id);
         }
 
         count
@@ -5392,5 +5462,132 @@ mod tests {
         // Try to force commit - should fail because there's a NO vote
         let result = coord.force_resolve(tx_id, true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_release_by_handle_with_wait_cleanup_atomic() {
+        let lock_manager = LockManager::new();
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        // Acquire locks for tx 1
+        let keys = vec!["key1".to_string(), "key2".to_string()];
+        let handle = lock_manager.try_lock(1, &keys).unwrap();
+        assert!(lock_manager.is_locked("key1"));
+        assert!(lock_manager.is_locked("key2"));
+
+        // Add wait edge: tx 2 waits for tx 1
+        wait_graph.add_wait(2, 1, None);
+        assert!(!wait_graph.waiting_for(2).is_empty());
+
+        // Release locks with wait cleanup
+        lock_manager.release_by_handle_with_wait_cleanup(handle, &wait_graph);
+
+        // Verify locks are released
+        assert!(!lock_manager.is_locked("key1"));
+        assert!(!lock_manager.is_locked("key2"));
+
+        // Verify wait graph is cleaned up for tx 1
+        // After remove_transaction(1), tx 2 should no longer wait for tx 1
+        assert!(wait_graph.waiting_for(2).is_empty());
+        assert!(wait_graph.waiting_on(1).is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_expired_with_wait_cleanup() {
+        let lock_manager = LockManager::with_default_timeout(Duration::from_millis(1));
+        let wait_graph = crate::deadlock::WaitForGraph::new();
+
+        // Acquire lock with short timeout
+        let keys = vec!["key1".to_string()];
+        lock_manager.try_lock(1, &keys).unwrap();
+
+        // Add wait edge: tx 2 waits for tx 1
+        wait_graph.add_wait(2, 1, None);
+        assert!(!wait_graph.waiting_for(2).is_empty());
+
+        // Wait for lock to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Cleanup expired locks with wait cleanup
+        let cleaned = lock_manager.cleanup_expired_with_wait_cleanup(&wait_graph);
+        assert_eq!(cleaned, 1);
+
+        // Verify lock is released
+        assert!(!lock_manager.is_locked("key1"));
+
+        // Verify wait graph is cleaned up for tx 1
+        assert!(wait_graph.waiting_for(2).is_empty());
+        assert!(wait_graph.waiting_on(1).is_empty());
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_cleans_wait_graph() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Acquire locks directly on lock manager (simulating orphaned locks)
+        let keys = vec!["orphan_key".to_string()];
+        coord.lock_manager.try_lock(999, &keys).unwrap();
+        assert!(coord.lock_manager.is_locked("orphan_key"));
+
+        // Add wait edge: tx 1000 waits for tx 999
+        coord.wait_graph.add_wait(1000, 999, None);
+        assert!(!coord.wait_graph.waiting_for(1000).is_empty());
+
+        // Release orphaned locks with partition_start in future
+        let now_ms = now_epoch_millis();
+        let released = coord.release_orphaned_locks(now_ms + 10000);
+        assert_eq!(released, 1);
+
+        // Verify lock is released
+        assert!(!coord.lock_manager.is_locked("orphan_key"));
+
+        // Verify wait graph is cleaned up for tx 999
+        assert!(coord.wait_graph.waiting_on(999).is_empty());
+        assert!(coord.wait_graph.waiting_for(1000).is_empty());
+    }
+
+    #[test]
+    fn test_release_orphaned_locks_cleans_multiple_tx_wait_edges() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Acquire locks for multiple orphaned transactions
+        coord
+            .lock_manager
+            .try_lock(100, &["key_a".to_string()])
+            .unwrap();
+        coord
+            .lock_manager
+            .try_lock(200, &["key_b".to_string()])
+            .unwrap();
+        coord
+            .lock_manager
+            .try_lock(300, &["key_c".to_string()])
+            .unwrap();
+
+        // Add wait edges
+        coord.wait_graph.add_wait(101, 100, None);
+        coord.wait_graph.add_wait(201, 200, None);
+        coord.wait_graph.add_wait(301, 300, None);
+
+        assert!(!coord.wait_graph.waiting_for(101).is_empty());
+        assert!(!coord.wait_graph.waiting_for(201).is_empty());
+        assert!(!coord.wait_graph.waiting_for(301).is_empty());
+
+        // Release all orphaned locks
+        let now_ms = now_epoch_millis();
+        let released = coord.release_orphaned_locks(now_ms + 10000);
+        assert_eq!(released, 3);
+
+        // Verify all wait graph entries are cleaned up
+        assert!(coord.wait_graph.waiting_on(100).is_empty());
+        assert!(coord.wait_graph.waiting_on(200).is_empty());
+        assert!(coord.wait_graph.waiting_on(300).is_empty());
+        assert!(coord.wait_graph.waiting_for(101).is_empty());
+        assert!(coord.wait_graph.waiting_for(201).is_empty());
+        assert!(coord.wait_graph.waiting_for(301).is_empty());
     }
 }

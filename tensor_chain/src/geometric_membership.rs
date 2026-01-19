@@ -1,9 +1,152 @@
-//! Geometric membership management with embedding-based peer scoring.
+//! Embedding-aware peer ranking for geometric routing in cluster membership.
 //!
-//! Extends MembershipManager with geometric routing capabilities:
-//! - Track peer embeddings from received messages
-//! - Score peers by geometric proximity + health
-//! - Find geometrically nearest healthy peers
+//! # Overview
+//!
+//! This module extends the basic [`MembershipManager`] with geometric routing capabilities
+//! by tracking peer embeddings and scoring peers based on a combination of health status
+//! and embedding similarity. This enables routing decisions that consider both availability
+//! and semantic proximity.
+//!
+//! Key features:
+//! - **Peer embedding cache**: Track embeddings received from cluster messages
+//! - **Composite scoring**: Rank peers by `(1 - weight) * health + weight * similarity`
+//! - **Nearby peer discovery**: Find peers geometrically close to a query embedding
+//! - **Stale pruning**: Remove embeddings for nodes no longer in the cluster
+//!
+//! # Architecture
+//!
+//! ```text
+//! +-----------------------------+
+//! | GeometricMembershipManager  |
+//! +-----------------------------+
+//!              |
+//!              | wraps
+//!              v
+//! +-----------------------------+
+//! |     MembershipManager       |  Health tracking, cluster view
+//! +-----------------------------+
+//!              |
+//!              | augments with
+//!              v
+//! +-----------------------------+
+//! |    peer_embeddings cache    |  NodeId -> SparseVector
+//! |    local_embedding          |  This node's state embedding
+//! +-----------------------------+
+//!              |
+//!              | ranked_peers(query)
+//!              v
+//! +-----------------------------+
+//! |       RankedPeer[]          |  Sorted by composite score
+//! +-----------------------------+
+//! ```
+//!
+//! # Scoring Formula
+//!
+//! Peers are ranked by a composite score that balances health and geometric proximity:
+//!
+//! ```text
+//! score = (1 - geometric_weight) * health_score + geometric_weight * similarity
+//! ```
+//!
+//! Where:
+//! - `health_score`: 1.0 (Healthy), 0.5 (Degraded), 0.0 (Failed/Unknown)
+//! - `similarity`: Cosine similarity between query embedding and peer embedding
+//! - `geometric_weight`: Configurable weight (default: 0.3)
+//!
+//! With default weights (30% geometric, 70% health):
+//! - A healthy peer with 0.5 similarity scores: 0.7 * 1.0 + 0.3 * 0.5 = 0.85
+//! - A degraded peer with 1.0 similarity scores: 0.7 * 0.5 + 0.3 * 1.0 = 0.65
+//!
+//! This ensures healthy peers are preferred, but geometric proximity influences selection
+//! among peers with similar health status.
+//!
+//! # Usage
+//!
+//! ## Creating and Configuring
+//!
+//! ```rust
+//! use std::sync::Arc;
+//! use tensor_chain::geometric_membership::{GeometricMembershipManager, GeometricMembershipConfig};
+//! use tensor_chain::membership::{MembershipManager, ClusterConfig, LocalNodeConfig};
+//! use tensor_chain::network::MemoryTransport;
+//!
+//! // Create underlying membership manager
+//! let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+//! let config = ClusterConfig::new(
+//!     "cluster",
+//!     LocalNodeConfig {
+//!         node_id: "node1".to_string(),
+//!         bind_address: "127.0.0.1:9100".parse().unwrap(),
+//!     },
+//! );
+//! let membership = Arc::new(MembershipManager::new(config, transport));
+//!
+//! // Wrap with geometric capabilities
+//! let geo_config = GeometricMembershipConfig {
+//!     nearby_threshold: 0.5,  // Min similarity for "nearby"
+//!     geometric_weight: 0.3,  // 30% geometric, 70% health
+//! };
+//! let geo_membership = GeometricMembershipManager::new(membership, geo_config);
+//! ```
+//!
+//! ## Recording Peer Embeddings
+//!
+//! ```rust
+//! use tensor_store::SparseVector;
+//! use tensor_chain::geometric_membership::GeometricMembershipManager;
+//!
+//! // When processing a message with an embedding
+//! // geo_membership.record_peer_embedding(&sender_id, sender_embedding);
+//!
+//! // Set local node's embedding
+//! // let local_embedding = compute_state_embedding();
+//! // geo_membership.update_local_embedding(local_embedding);
+//! ```
+//!
+//! ## Finding Peers for Routing
+//!
+//! ```rust
+//! use tensor_store::SparseVector;
+//!
+//! // Given a query embedding (e.g., from a transaction)
+//! // let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+//!
+//! // Get all peers ranked by composite score
+//! // let ranked = geo_membership.ranked_peers(&query);
+//!
+//! // Find the nearest healthy peer
+//! // if let Some(peer_id) = geo_membership.nearest_healthy_peer(&query) {
+//! //     route_to_peer(&peer_id);
+//! // }
+//!
+//! // Find all nearby healthy peers (for replication)
+//! // let nearby = geo_membership.nearby_healthy_peers(&query);
+//! ```
+//!
+//! ## Maintenance
+//!
+//! ```rust,ignore
+//! // Periodically remove embeddings for nodes no longer in cluster
+//! geo_membership.prune_stale_embeddings();
+//! ```
+//!
+//! # Configuration
+//!
+//! | Parameter | Default | Description |
+//! |-----------|---------|-------------|
+//! | `nearby_threshold` | 0.5 | Minimum cosine similarity to consider a peer "nearby" |
+//! | `geometric_weight` | 0.3 | Weight of similarity in composite score (0.0-1.0) |
+//!
+//! # Thread Safety
+//!
+//! The manager uses `RwLock` for embedding caches, allowing concurrent reads
+//! during peer ranking with exclusive access during updates.
+//!
+//! # See Also
+//!
+//! - [`crate::membership`]: Base membership management
+//! - [`crate::signing`]: Node embedding derivation from identity
+//! - [`crate::gossip`]: Peer selection for gossip dissemination
 
 use std::{collections::HashMap, sync::Arc};
 

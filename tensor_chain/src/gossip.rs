@@ -1,9 +1,153 @@
-//! SWIM-style gossip protocol for scalable membership management.
+//! SWIM gossip protocol for scalable cluster membership and failure detection.
 //!
-//! Replaces O(N) sequential pings with O(log N) propagation via:
-//! - Peer sampling with geometric routing awareness
-//! - LWW-CRDT-based membership state
-//! - SWIM suspicion/alive protocol for failure detection
+//! # Overview
+//!
+//! This module implements a SWIM (Scalable Weakly-consistent Infection-style Process
+//! Group Membership) protocol variant for cluster membership management. It replaces
+//! the traditional O(N) sequential pinging approach with O(log N) epidemic dissemination,
+//! enabling efficient scaling to large clusters.
+//!
+//! Key features:
+//! - **Epidemic dissemination**: Membership changes propagate in O(log N) rounds
+//! - **CRDT-based state**: Last-Writer-Wins semantics ensure eventual consistency
+//! - **Suspicion mechanism**: Indirect probes before marking nodes as failed
+//! - **Geometric routing**: Peer sampling weighted by embedding similarity
+//!
+//! # Architecture
+//!
+//! ```text
+//! +--------------------+
+//! |   GossipProtocol   |  Main protocol driver
+//! +--------------------+
+//!          |
+//!          | manages
+//!          v
+//! +--------------------+     merge()      +--------------------+
+//! | LWWMembershipState | <--------------> | LWWMembershipState |
+//! | (CRDT)             |                  | (from peer)        |
+//! +--------------------+                  +--------------------+
+//!          |
+//!          | sends
+//!          v
+//! +--------------------+
+//! |   GossipMessage    |
+//! +--------------------+
+//! | - Sync (states)    |
+//! | - Suspect (node)   |
+//! | - Alive (refute)   |
+//! | - PingReq (indirect)|
+//! | - PingAck (response)|
+//! +--------------------+
+//! ```
+//!
+//! # SWIM Protocol Overview
+//!
+//! The protocol operates in rounds, where each round:
+//!
+//! 1. **Probe Phase**: Select a random peer and send a Sync message
+//! 2. **Suspicion Phase**: If no response, send indirect probes via other peers
+//! 3. **Failure Phase**: If all probes fail, mark node as suspected/failed
+//! 4. **Dissemination**: Piggyback membership changes on all outgoing messages
+//!
+//! ```text
+//! Node A              Node B              Node C
+//!   |                   |                   |
+//!   |-- Sync ---------->|                   |  (direct probe)
+//!   |<-- Sync ----------|                   |  (response with B's state)
+//!   |                   |                   |
+//!   |-- PingReq(B) -------------------->|  (indirect probe)
+//!   |                   |<-- Sync ---------|  (C probes B)
+//!   |                   |-- Sync --------->|  (B responds to C)
+//!   |<-- PingAck(B,ok) --------------------|  (C reports B alive)
+//! ```
+//!
+//! # LWW-CRDT Membership State
+//!
+//! Membership state uses a Last-Writer-Wins CRDT with the following ordering:
+//!
+//! 1. **Incarnation number**: Higher incarnation always wins (for same node)
+//! 2. **Lamport timestamp**: Tiebreaker when incarnations are equal
+//!
+//! This ensures:
+//! - A node rejoining the cluster supersedes its old state
+//! - Concurrent updates from different observers converge
+//! - No coordination required between nodes
+//!
+//! ```rust
+//! use tensor_chain::gossip::{GossipNodeState, LWWMembershipState};
+//! use tensor_chain::membership::NodeHealth;
+//!
+//! let mut state = LWWMembershipState::new();
+//!
+//! // Update local node
+//! state.update_local("node1".to_string(), NodeHealth::Healthy, /*incarnation=*/1);
+//!
+//! // Merge incoming state from peer
+//! let incoming = vec![
+//!     GossipNodeState::new("node2".to_string(), NodeHealth::Healthy, 5, 1),
+//! ];
+//! let changed = state.merge(&incoming);
+//! ```
+//!
+//! # Suspicion and Failure Detection
+//!
+//! Nodes are not immediately marked as failed when they don't respond:
+//!
+//! 1. **Direct Probe**: Send Sync, wait for response
+//! 2. **Indirect Probe**: If no response, ask K other nodes to probe
+//! 3. **Suspect**: If all probes fail, mark as Degraded (suspected)
+//! 4. **Refute**: If suspected node responds, it increments incarnation
+//! 5. **Fail**: After suspicion timeout, mark as Failed
+//!
+//! This prevents false positives from temporary network issues.
+//!
+//! # Message Types
+//!
+//! | Message | Purpose |
+//! |---------|---------|
+//! | `Sync` | Exchange membership state (primary dissemination) |
+//! | `Suspect` | Report a node as potentially failed |
+//! | `Alive` | Refute suspicion (with incremented incarnation) |
+//! | `PingReq` | Request indirect probe of a target node |
+//! | `PingAck` | Report result of indirect probe |
+//!
+//! # Configuration
+//!
+//! ```rust
+//! use tensor_chain::gossip::GossipConfig;
+//!
+//! let config = GossipConfig {
+//!     // Gossip interval
+//!     gossip_interval_ms: 1000,  // 1 second between rounds
+//!
+//!     // Failure detection
+//!     suspicion_timeout_ms: 5000,  // 5 seconds before marking failed
+//!
+//!     // Indirect probing
+//!     ping_req_fanout: 3,  // Ask 3 peers for indirect probes
+//!
+//!     // State dissemination
+//!     max_piggyback_states: 10,  // Max states per message
+//!
+//!     // Other settings...
+//!     ..Default::default()
+//! };
+//! ```
+//!
+//! # Security
+//!
+//! Messages can be signed using [`SignedGossipMessage`]
+//! to provide:
+//! - Authentication (Ed25519 signatures)
+//! - Identity binding (NodeId derived from public key)
+//! - Replay protection (sequence numbers + timestamps)
+//!
+//! # See Also
+//!
+//! - [`crate::membership`]: Cluster membership and health tracking
+//! - [`crate::signing`]: Signed gossip message creation
+//! - [`crate::geometric_membership`]: Embedding-aware peer selection
+//! - [`crate::hlc`]: Hybrid logical clocks for timestamp generation
 
 use std::{
     collections::HashMap,
@@ -614,27 +758,22 @@ impl GossipMembershipManager {
         self.callbacks.write().push(callback);
     }
 
-    /// Get current node state.
     pub fn node_state(&self, node_id: &NodeId) -> Option<GossipNodeState> {
         self.state.read().get(node_id).cloned()
     }
 
-    /// Get all node states.
     pub fn all_states(&self) -> Vec<GossipNodeState> {
         self.state.read().all_states().cloned().collect()
     }
 
-    /// Get number of known nodes.
     pub fn node_count(&self) -> usize {
         self.state.read().len()
     }
 
-    /// Get health counts (healthy, degraded, failed).
     pub fn health_counts(&self) -> (usize, usize, usize) {
         self.state.read().count_by_health()
     }
 
-    /// Get gossip round counter.
     pub fn round_count(&self) -> u64 {
         self.round_counter.load(Ordering::Relaxed)
     }
@@ -1190,7 +1329,6 @@ impl GossipMembershipManager {
         }
     }
 
-    /// Get all nodes currently being tracked for heal progress.
     pub fn healing_nodes(&self) -> Vec<(NodeId, u32)> {
         self.heal_progress
             .read()
@@ -1199,12 +1337,10 @@ impl GossipMembershipManager {
             .collect()
     }
 
-    /// Get the current Lamport time from the CRDT state.
     pub fn lamport_time(&self) -> u64 {
         self.state.read().lamport_time()
     }
 
-    /// Get all node states for membership view exchange.
     pub fn membership_view(&self) -> Vec<GossipNodeState> {
         self.state.read().all_states().cloned().collect()
     }
