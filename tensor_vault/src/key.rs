@@ -30,7 +30,7 @@ impl MasterKey {
             Some(salt) => {
                 let key = Self::derive_with_salt(input, &salt, config)?;
                 Ok((key, salt))
-            }
+            },
             None => Self::derive_with_random_salt(input, config),
         }
     }

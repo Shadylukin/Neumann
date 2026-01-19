@@ -1928,6 +1928,2168 @@ Fast-path is only used when:
 3. Not a periodic full-validation block (every 10th)
 4. No anomalies detected in recent history
 
+## Crash Safety
+
+The `atomic_io` module provides crash-safe file operations that guarantee all-or-nothing semantics for writes. After a crash, files will either contain the old content or the new content, never a partial or corrupted state.
+
+### Strategy
+
+1. Write to a temporary file in the same directory
+2. Call `sync_all()` on the temporary file to flush to disk
+3. Atomically rename to the final path
+4. Fsync the parent directory (Unix only) to ensure rename durability
+
+### API Reference
+
+#### `atomic_write()`
+
+Atomically write data to a file. Creates parent directories if needed.
+
+```rust
+use tensor_chain::atomic_io::atomic_write;
+
+// Write data atomically
+atomic_write("/data/chain/block_42.dat", &serialized_block)?;
+
+// If file exists, it will be replaced atomically
+atomic_write("/data/chain/block_42.dat", &updated_block)?;
+```
+
+**Signature:**
+```rust
+pub fn atomic_write(path: impl AsRef<Path>, data: &[u8]) -> Result<()>
+```
+
+**Guarantees:**
+- All-or-nothing: partial writes are impossible
+- Power-loss safe: durability via fsync
+- Existing file preserved on failure
+
+#### `atomic_truncate()`
+
+Atomically truncate a file to zero bytes by creating an empty temporary file and renaming it.
+
+```rust
+use tensor_chain::atomic_io::atomic_truncate;
+
+// Atomically clear a file
+atomic_truncate("/data/chain/pending.log")?;
+```
+
+**Signature:**
+```rust
+pub fn atomic_truncate(path: impl AsRef<Path>) -> Result<()>
+```
+
+#### `AtomicWriter`
+
+A streaming writer with commit/abort semantics. Data is written to a temporary file until `commit()` is called.
+
+```rust
+use tensor_chain::atomic_io::AtomicWriter;
+use std::io::Write;
+
+// Create writer
+let mut writer = AtomicWriter::new("/data/chain/snapshot.dat")?;
+
+// Stream data
+writer.write_all(&header)?;
+writer.write_all(&body)?;
+writer.write_all(&footer)?;
+
+// Commit makes the file visible atomically
+writer.commit()?;
+```
+
+**Signature:**
+```rust
+impl AtomicWriter {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self>;
+    pub fn commit(self) -> Result<()>;
+    pub fn abort(self);
+}
+
+impl Write for AtomicWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize>;
+    fn flush(&mut self) -> io::Result<()>;
+}
+```
+
+**Behavior:**
+
+| Scenario | Result |
+|----------|--------|
+| `commit()` called | Temp file renamed to final path |
+| `abort()` called | Temp file deleted, no changes |
+| Dropped without `commit()` | Temp file deleted automatically |
+| Crash during write | Temp file orphaned, final path unchanged |
+
+### Error Handling
+
+```rust
+use tensor_chain::atomic_io::{AtomicIoError, Result};
+
+match atomic_write("/readonly/file.dat", b"data") {
+    Ok(()) => println!("Success"),
+    Err(AtomicIoError::Io(e)) => eprintln!("I/O error: {}", e),
+    Err(AtomicIoError::NoParentDir(path)) => {
+        eprintln!("Path has no parent directory: {:?}", path)
+    }
+}
+```
+
+**Error Types:**
+
+| Error | Cause |
+|-------|-------|
+| `AtomicIoError::Io(e)` | Underlying I/O operation failed |
+| `AtomicIoError::NoParentDir(path)` | Path has no parent directory (e.g., root path) |
+
+### Temporary File Naming
+
+Temporary files use the format `.{filename}.tmp.{uuid}` in the same directory as the target file. This ensures:
+- Files are hidden (dot prefix on Unix)
+- Uniqueness via UUID prevents collisions
+- Same-filesystem rename is atomic
+
+### Platform Notes
+
+| Platform | Directory Fsync |
+|----------|-----------------|
+| Unix/Linux | Yes - ensures rename durability |
+| macOS | Yes - ensures rename durability |
+| Windows | Skipped - not needed/available |
+
+---
+
+## Message Validation
+
+The message validation layer provides comprehensive bounds checking, format validation, and embedding validation for all incoming cluster messages. This prevents DoS attacks, invalid data from causing panics, and ensures semantic correctness.
+
+### DoS Prevention Checks
+
+| Check | Default Limit | Purpose |
+|-------|---------------|---------|
+| Max term | `u64::MAX - 1` | Prevent overflow attacks |
+| Max shard ID | 65,536 | Bound shard addressing |
+| Max transaction timeout | 300,000 ms (5 min) | Prevent resource exhaustion |
+| Max node ID length | 256 bytes | Bound memory allocation |
+| Max key length | 4,096 bytes | Bound memory allocation |
+| Max embedding dimension | 65,536 | Prevent huge allocations |
+| Max embedding magnitude | 1,000,000 | Detect invalid values |
+| Max query length | 1 MB | Prevent huge queries |
+| Max message age | 300,000 ms (5 min) | Reject stale/replayed messages |
+| Max blocks per request | 1,000 | Prevent huge range requests |
+| Max snapshot chunk size | 10 MB | Prevent memory exhaustion |
+
+### API Reference
+
+#### `MessageValidationConfig`
+
+Configuration for validation limits:
+
+```rust
+use tensor_chain::message_validation::MessageValidationConfig;
+
+// Use defaults (production-ready)
+let config = MessageValidationConfig::default();
+
+// Custom configuration
+let config = MessageValidationConfig {
+    enabled: true,
+    max_term: u64::MAX - 1,
+    max_shard_id: 65536,
+    max_tx_timeout_ms: 300_000,
+    max_node_id_len: 256,
+    max_key_len: 4096,
+    max_embedding_dimension: 65536,
+    max_embedding_magnitude: 1e6,
+    max_query_len: 1024 * 1024,
+    max_message_age_ms: 5 * 60 * 1000,
+    max_blocks_per_request: 1000,
+    max_snapshot_chunk_size: 10 * 1024 * 1024,
+};
+
+// Disable validation for testing
+let config = MessageValidationConfig::disabled();
+```
+
+#### `CompositeValidator`
+
+Validates all message types against the configuration:
+
+```rust
+use tensor_chain::message_validation::{CompositeValidator, MessageValidator};
+use tensor_chain::network::Message;
+
+let validator = CompositeValidator::new(MessageValidationConfig::default());
+
+// Validate incoming message
+match validator.validate(&message, &sender_node_id) {
+    Ok(()) => { /* Process message */ }
+    Err(e) => eprintln!("Invalid message from {}: {}", sender_node_id, e),
+}
+```
+
+**Signature:**
+```rust
+pub trait MessageValidator: Send + Sync {
+    fn validate(&self, msg: &Message, from: &NodeId) -> Result<()>;
+}
+
+impl CompositeValidator {
+    pub fn new(config: MessageValidationConfig) -> Self;
+}
+
+impl MessageValidator for CompositeValidator { ... }
+```
+
+#### `EmbeddingValidator`
+
+Validates sparse vector embeddings for correctness:
+
+```rust
+use tensor_chain::message_validation::EmbeddingValidator;
+
+let validator = EmbeddingValidator::new(
+    65536,  // max_dimension
+    1e6,    // max_magnitude
+);
+
+match validator.validate(&embedding, "state_embedding") {
+    Ok(()) => { /* Valid embedding */ }
+    Err(e) => eprintln!("Invalid embedding: {}", e),
+}
+```
+
+**Validation Checks:**
+
+| Check | Error Condition |
+|-------|-----------------|
+| Dimension zero | `dimension == 0` |
+| Dimension too large | `dimension > max_dimension` |
+| NaN values | Any `value.is_nan()` |
+| Infinite values | Any `value.is_infinite()` |
+| Magnitude too large | `magnitude() > max_magnitude` |
+| Position out of bounds | `position >= dimension` |
+| Positions not sorted | `positions[i] >= positions[i+1]` |
+
+### Message-Specific Validation
+
+#### `validate_block_request()`
+
+Validates block range requests to prevent DoS via huge range queries:
+
+```rust
+// Valid request: 1000 blocks (at limit)
+let msg = BlockRequest {
+    from_height: 0,
+    to_height: 999,
+    requester_id: "node1".to_string(),
+};
+
+// Invalid: inverted range
+let msg = BlockRequest {
+    from_height: 100,
+    to_height: 50,  // Error: to_height < from_height
+    requester_id: "node1".to_string(),
+};
+
+// Invalid: too many blocks
+let msg = BlockRequest {
+    from_height: 0,
+    to_height: 10000,  // Error: 10001 blocks exceeds limit
+    requester_id: "node1".to_string(),
+};
+```
+
+**Checks:**
+- `to_height >= from_height` (valid range ordering)
+- `(to_height - from_height + 1) <= max_blocks_per_request`
+- `requester_id` is non-empty and within length limit
+
+#### `validate_snapshot_request()`
+
+Validates snapshot chunk requests to prevent memory exhaustion:
+
+```rust
+// Valid request
+let msg = SnapshotRequest {
+    requester_id: "node1".to_string(),
+    offset: 0,
+    chunk_size: 1024 * 1024,  // 1 MB
+};
+
+// Invalid: zero chunk size
+let msg = SnapshotRequest {
+    requester_id: "node1".to_string(),
+    offset: 0,
+    chunk_size: 0,  // Error: must be > 0
+};
+
+// Invalid: excessive chunk size
+let msg = SnapshotRequest {
+    requester_id: "node1".to_string(),
+    offset: 0,
+    chunk_size: 100 * 1024 * 1024,  // Error: 100 MB exceeds limit
+};
+```
+
+**Checks:**
+- `chunk_size > 0`
+- `chunk_size <= max_snapshot_chunk_size`
+- `requester_id` is non-empty and within length limit
+
+### Signed Message Validation
+
+For signed gossip messages, additional checks are performed:
+
+```rust
+// Signature length (Ed25519 = 64 bytes)
+if msg.envelope.signature.len() != 64 {
+    return Err(ChainError::MessageValidationFailed { ... });
+}
+
+// Timestamp not in future (max 60 seconds clock skew)
+if msg.envelope.timestamp_ms > now_ms + 60_000 {
+    return Err(ChainError::CryptoError("message timestamp in future"));
+}
+
+// Timestamp not too old
+if now_ms - msg.envelope.timestamp_ms > max_message_age_ms {
+    return Err(ChainError::CryptoError("message too old"));
+}
+```
+
+### Usage Example
+
+```rust
+use tensor_chain::message_validation::{
+    CompositeValidator, MessageValidationConfig, MessageValidator
+};
+use tensor_chain::network::Message;
+
+// Production setup
+let config = MessageValidationConfig::default();
+let validator = CompositeValidator::new(config);
+
+// Message handler
+fn handle_message(
+    validator: &CompositeValidator,
+    msg: Message,
+    from: &str,
+) -> Result<(), ChainError> {
+    // Validate before processing
+    validator.validate(&msg, &from.to_string())?;
+
+    // Safe to process - all bounds checked
+    match msg {
+        Message::RequestVote(rv) => handle_vote(rv),
+        Message::AppendEntries(ae) => handle_append(ae),
+        Message::BlockRequest(br) => handle_block_request(br),
+        // ...
+    }
+}
+```
+
+### Error Types
+
+| Error | Cause |
+|-------|-------|
+| `ChainError::NumericOutOfBounds` | Term, shard ID, timeout, or tx_id out of bounds |
+| `ChainError::MessageValidationFailed` | Node ID, query, or format validation failed |
+| `ChainError::InvalidEmbedding` | Embedding dimension, NaN, Inf, or magnitude error |
+| `ChainError::CryptoError` | Signature length or timestamp validation failed |
+
+---
+
+## Gossip Protocol
+
+SWIM-style gossip protocol for scalable membership management with O(log N) propagation.
+
+### Overview
+
+The gossip protocol replaces O(N) sequential health checks with epidemic-style message dissemination. It provides:
+
+- **Peer sampling** with geometric routing awareness for intelligent target selection
+- **LWW-CRDT** (Last-Writer-Wins Conflict-free Replicated Data Type) for membership state
+- **SWIM suspicion/alive protocol** for accurate failure detection with refutation
+- **Ed25519 signing support** for authenticated gossip messages
+
+### Core Types
+
+#### GossipNodeState
+
+Per-node state tracked by the gossip protocol:
+
+```rust
+pub struct GossipNodeState {
+    pub node_id: NodeId,
+    pub health: NodeHealth,      // Healthy, Degraded, Failed, Unknown
+    pub timestamp: u64,          // Lamport timestamp for ordering
+    pub updated_at: u64,         // Wall clock time (ms since epoch)
+    pub incarnation: u64,        // Monotonically increasing per node
+}
+```
+
+The `supersedes()` method determines state precedence:
+1. Higher incarnation always wins
+2. If incarnations are equal, higher timestamp wins
+
+#### GossipMessage
+
+| Message Type | Purpose | Fields |
+|-------------|---------|--------|
+| `Sync` | Piggy-backed state exchange | sender, states[], sender_time |
+| `Suspect` | Report suspected node failure | reporter, suspect, incarnation |
+| `Alive` | Refute suspicion (prove aliveness) | node_id, incarnation |
+| `PingReq` | Indirect ping request | origin, target, sequence |
+| `PingAck` | Indirect ping response | origin, target, sequence, success |
+
+### LWW-CRDT Membership State
+
+The `LWWMembershipState` provides conflict-free state merging:
+
+```rust
+pub struct LWWMembershipState {
+    states: HashMap<NodeId, GossipNodeState>,
+    lamport_time: u64,
+}
+
+impl LWWMembershipState {
+    pub fn merge(&mut self, incoming: &[GossipNodeState]) -> Vec<NodeId>;
+    pub fn suspect(&mut self, node_id: &NodeId, incarnation: u64) -> bool;
+    pub fn fail(&mut self, node_id: &NodeId) -> bool;
+    pub fn refute(&mut self, node_id: &NodeId, new_incarnation: u64) -> bool;
+    pub fn mark_healthy(&mut self, node_id: &NodeId) -> bool;
+}
+```
+
+Merge rules:
+- New nodes are always added
+- For existing nodes: higher incarnation wins, then higher timestamp as tiebreaker
+- Lamport time is updated to max(local, incoming) + 1
+
+### Failure Detection Algorithm
+
+```
+1. DIRECT PING
+   Node A pings Node B directly
+
+   If success:
+     Mark B as Healthy
+     Clear any suspicion
+
+   If failure:
+     Go to step 2
+
+2. INDIRECT PROBE (PingReq)
+   Node A selects k intermediaries (default: 3)
+   Send PingReq { origin: A, target: B } to each
+
+   Intermediaries attempt direct ping to B
+   Return PingAck with success/failure
+
+3. SUSPICION
+   If all indirect pings fail:
+     Start suspicion timer (default: 5000ms)
+     Mark B as Degraded
+     Broadcast Suspect { reporter: A, suspect: B, incarnation }
+
+4. REFUTATION (if B receives Suspect about itself)
+   B increments incarnation
+   B broadcasts Alive { node_id: B, incarnation: new }
+   All nodes update B's state with new incarnation
+
+5. FAILURE
+   If suspicion timer expires without refutation:
+     Mark B as Failed
+     Notify callbacks
+```
+
+### Configuration
+
+```rust
+pub struct GossipConfig {
+    pub fanout: usize,                    // Peers per round (default: 3)
+    pub gossip_interval_ms: u64,          // Interval between rounds (default: 200)
+    pub suspicion_timeout_ms: u64,        // Time before failure (default: 5000)
+    pub max_states_per_message: usize,    // State limit per message (default: 20)
+    pub geometric_routing: bool,          // Use embedding-based selection (default: true)
+    pub indirect_ping_count: usize,       // Intermediaries for PingReq (default: 3)
+    pub indirect_ping_timeout_ms: u64,    // Timeout for indirect pings (default: 500)
+    pub require_signatures: bool,         // Require Ed25519 signatures (default: false)
+    pub max_message_age_ms: u64,          // Message freshness window (default: 300000)
+}
+```
+
+### Usage
+
+```rust
+use tensor_chain::{GossipMembershipManager, GossipConfig, GossipMessage};
+use std::sync::Arc;
+
+// Create gossip manager
+let config = GossipConfig::default();
+let manager = GossipMembershipManager::new(
+    "node1".to_string(),
+    config,
+    transport,
+);
+
+// Add known peers
+manager.add_peer("node2".to_string());
+manager.add_peer("node3".to_string());
+
+// Register callback for health changes
+manager.register_callback(Arc::new(MyCallback));
+
+// Run gossip loop (async)
+tokio::spawn(async move {
+    manager.run().await.unwrap();
+});
+
+// Or run single gossip round manually
+manager.gossip_round().await?;
+
+// Query state
+let state = manager.node_state(&"node2".to_string());
+let (healthy, degraded, failed) = manager.health_counts();
+let round = manager.round_count();
+
+// Initiate suspicion manually
+manager.suspect_node(&"node2".to_string()).await?;
+
+// Shutdown
+manager.shutdown();
+```
+
+### Geometric Routing Integration
+
+When `geometric_routing` is enabled, peer selection uses embedding similarity:
+
+```rust
+let manager = GossipMembershipManager::with_geometric(
+    local_node,
+    config,
+    transport,
+    geometric_membership_manager,
+);
+
+// Peers are selected by embedding similarity to local node
+// Falls back to random selection if geometric manager unavailable
+```
+
+### Signed Gossip Messages
+
+For authenticated gossip with replay protection:
+
+```rust
+use tensor_chain::signing::{Identity, ValidatorRegistry, SequenceTracker};
+
+let identity = Arc::new(Identity::generate()?);
+let registry = Arc::new(ValidatorRegistry::new());
+let tracker = Arc::new(SequenceTracker::new());
+
+let manager = GossipMembershipManager::with_signing(
+    "node1".to_string(),
+    GossipConfig { require_signatures: true, ..Default::default() },
+    transport,
+    identity,
+    registry,
+    tracker,
+);
+
+// All outgoing messages are signed
+// Incoming messages without valid signatures are rejected
+```
+
+### Heal Progress Tracking
+
+The gossip manager tracks recovery progress for partition healing:
+
+```rust
+// Record successful communication with previously failed node
+manager.record_heal_progress(&node_id, Some(partition_start_time));
+
+// Check if heal is confirmed (threshold consecutive successes)
+if let Some(partition_duration_ms) = manager.is_heal_confirmed(&node_id, 3) {
+    // Node has recovered, initiate partition merge
+    manager.clear_heal_progress(&node_id);
+}
+
+// Get all nodes currently being tracked for heal
+let healing: Vec<(NodeId, u32)> = manager.healing_nodes();
+```
+
+### API Reference
+
+```rust
+impl GossipMembershipManager {
+    // Construction
+    pub fn new(local_node: NodeId, config: GossipConfig, transport: Arc<dyn Transport>) -> Self;
+    pub fn with_geometric(..., geometric: Arc<GeometricMembershipManager>) -> Self;
+    pub fn with_signing(..., identity: Arc<Identity>, registry: Arc<ValidatorRegistry>, tracker: Arc<SequenceTracker>) -> Self;
+
+    // Peer management
+    pub fn add_peer(&self, peer: NodeId);
+    pub fn register_callback(&self, callback: Arc<dyn MembershipCallback>);
+
+    // State queries
+    pub fn node_state(&self, node_id: &NodeId) -> Option<GossipNodeState>;
+    pub fn all_states(&self) -> Vec<GossipNodeState>;
+    pub fn node_count(&self) -> usize;
+    pub fn health_counts(&self) -> (usize, usize, usize);
+    pub fn round_count(&self) -> u64;
+    pub fn lamport_time(&self) -> u64;
+    pub fn membership_view(&self) -> Vec<GossipNodeState>;
+
+    // Protocol operations
+    pub async fn gossip_round(&self) -> Result<()>;
+    pub async fn suspect_node(&self, node_id: &NodeId) -> Result<()>;
+    pub fn handle_gossip(&self, msg: GossipMessage);
+    pub fn handle_signed_gossip(&self, signed: SignedGossipMessage) -> Result<()>;
+
+    // Heal tracking
+    pub fn record_heal_progress(&self, node: &NodeId, partition_start: Option<Instant>);
+    pub fn is_heal_confirmed(&self, node: &NodeId, threshold: u32) -> Option<u64>;
+    pub fn clear_heal_progress(&self, node: &NodeId);
+    pub fn reset_heal_progress(&self, node: &NodeId);
+    pub fn healing_nodes(&self) -> Vec<(NodeId, u32)>;
+
+    // Lifecycle
+    pub async fn run(&self) -> Result<()>;
+    pub fn shutdown(&self);
+}
+```
+
+---
+
+## Partition Healing
+
+Automatic state reconciliation after network partitions heal, using a 6-phase merge protocol.
+
+### Overview
+
+When a network partition heals, nodes on different sides may have diverged state. The partition merge protocol automatically:
+
+1. Detects when connectivity is restored
+2. Exchanges state summaries
+3. Reconciles membership, data, and transaction state
+4. Commits the merged state atomically
+
+### Merge Protocol Phases
+
+```
++------------------+     +------------------+     +---------------------------+
+|  HealDetection   | --> |  ViewExchange    | --> | MembershipReconciliation  |
+| Verify bidir     |     | Exchange         |     | LWW-CRDT merge with       |
+| connectivity     |     | membership       |     | conflict logging          |
++------------------+     | summaries        |     +---------------------------+
+                         +------------------+               |
+                                                            v
++------------------+     +------------------+     +---------------------------+
+|  Finalization    | <-- | TransactionRec.  | <-- |   DataReconciliation      |
+| Commit merged    |     | Resolve pending  |     | Semantic merge using      |
+| state            |     | 2PC transactions |     | DeltaVector               |
++------------------+     +------------------+     +---------------------------+
+         |
+         v
++------------------+
+|    Completed     |
++------------------+
+```
+
+### Phase Details
+
+#### Phase 1: HealDetection
+
+Verify bidirectional connectivity before attempting merge.
+
+- Initiator sends `MergeInit` to healed nodes
+- Recipients verify they can also reach initiator
+- Requires `heal_confirmation_threshold` consecutive successes (default: 3)
+
+#### Phase 2: ViewExchange
+
+Exchange membership view summaries to understand divergence.
+
+```rust
+pub struct MembershipViewSummary {
+    pub node_id: NodeId,
+    pub lamport_time: u64,
+    pub node_states: Vec<GossipNodeState>,
+    pub state_hash: [u8; 32],
+    pub generation: u64,
+}
+```
+
+Each side sends its current membership view. The Lamport time helps determine recency.
+
+#### Phase 3: MembershipReconciliation
+
+Merge membership states using LWW-CRDT semantics.
+
+```rust
+let (merged, conflicts) = MembershipReconciler::merge(&local_view, &remote_view)?;
+```
+
+Merge rules:
+1. Higher incarnation wins
+2. If incarnations equal: higher timestamp wins
+3. Nodes unique to one side are added to merged set
+4. Conflicts are logged but resolved automatically via LWW
+
+#### Phase 4: DataReconciliation
+
+Reconcile partition state using semantic similarity.
+
+```rust
+pub struct DataReconciler {
+    pub orthogonal_threshold: f32,  // Default: 0.1
+    pub identical_threshold: f32,   // Default: 0.99
+}
+```
+
+| Similarity | Classification | Action |
+|------------|---------------|--------|
+| < orthogonal_threshold | Orthogonal | Merge via vector addition |
+| > identical_threshold | Identical | Deduplicate (keep local) |
+| < -identical_threshold | Opposite | Cancel out (zero vector) |
+| Otherwise | Conflicting | Manual resolution required |
+
+#### Phase 5: TransactionReconciliation
+
+Resolve pending 2PC transactions from both partitions.
+
+```rust
+pub struct TransactionReconciler {
+    pub tx_timeout_ms: u64,  // Default: 30000 (30 seconds)
+}
+```
+
+Decision rules:
+| Condition | Action |
+|-----------|--------|
+| Both sides have tx, all votes YES | COMMIT |
+| Any vote is NO | ABORT |
+| One side committed | Propagate COMMIT |
+| One side aborted | Propagate ABORT |
+| Timed out | ABORT |
+| Incomplete votes | ABORT (conservative) |
+
+#### Phase 6: Finalization
+
+Commit merged state and notify all participants.
+
+- Send `MergeFinalize` to all participants
+- Each participant applies reconciled state
+- Session completed and statistics recorded
+
+### Configuration
+
+```rust
+pub struct PartitionMergeConfig {
+    pub heal_confirmation_threshold: u32,   // Pings before heal (default: 3)
+    pub phase_timeout_ms: u64,              // Phase timeout (default: 5000)
+    pub max_concurrent_merges: usize,       // Concurrent limit (default: 1)
+    pub auto_merge_on_heal: bool,           // Auto-start merge (default: true)
+    pub merge_cooldown_ms: u64,             // Cooldown between attempts (default: 10000)
+    pub max_retries: u32,                   // Retries per phase (default: 3)
+}
+
+// Presets
+let aggressive = PartitionMergeConfig::aggressive();   // threshold=2, timeout=3000
+let conservative = PartitionMergeConfig::conservative(); // threshold=5, timeout=10000
+```
+
+### Usage
+
+```rust
+use tensor_chain::{
+    PartitionMergeManager, PartitionMergeConfig,
+    PartitionStateSummary, MembershipViewSummary,
+};
+
+// Create manager
+let config = PartitionMergeConfig::default();
+let manager = PartitionMergeManager::new("node1".to_string(), config);
+
+// Start merge when heal detected
+let healed_nodes = vec!["node2".to_string(), "node3".to_string()];
+if let Some(session_id) = manager.start_merge(healed_nodes) {
+    println!("Merge session {} started", session_id);
+}
+
+// Set local state summary
+let summary = PartitionStateSummary::new("node1".to_string())
+    .with_log_position(1000, 5)
+    .with_embedding(state_embedding)
+    .with_hash(state_hash);
+manager.set_local_summary(session_id, summary);
+
+// Handle incoming merge messages
+manager.handle_merge_ack(ack_msg);
+manager.handle_view_exchange(view_msg);
+let response = manager.handle_data_merge_request(data_req);
+let tx_response = manager.handle_tx_reconcile_request(tx_req, &local_pending)?;
+
+// Process timeouts
+let timed_out = manager.process_timeouts();
+
+// Check statistics
+let stats = manager.stats_snapshot();
+println!("Success rate: {:.1}%", stats.success_rate());
+println!("Auto-resolve rate: {:.1}%", stats.auto_resolve_rate());
+```
+
+### Conflict Types
+
+```rust
+pub enum ConflictType {
+    DataConflict,         // Same key modified differently
+    MembershipConflict,   // Membership state disagrees
+    TransactionConflict,  // Transaction state disagrees
+    DeltaConflict,        // Conflicting deltas (opposite directions)
+}
+
+pub enum ConflictResolution {
+    KeepLocal,      // Local value kept
+    KeepRemote,     // Remote value kept
+    Merged,         // Values merged
+    Manual,         // Requires manual resolution
+    LastWriterWins, // Resolved by timestamp
+}
+```
+
+### API Reference
+
+```rust
+impl PartitionMergeManager {
+    // Construction
+    pub fn new(local_node: NodeId, config: PartitionMergeConfig) -> Self;
+    pub fn with_reconcilers(..., data: DataReconciler, tx: TransactionReconciler) -> Self;
+
+    // Session management
+    pub fn start_merge(&self, healed_nodes: Vec<NodeId>) -> Option<u64>;
+    pub fn get_session(&self, session_id: u64) -> Option<MergeSession>;
+    pub fn session_phase(&self, session_id: u64) -> Option<MergePhase>;
+    pub fn advance_session(&self, session_id: u64) -> Option<MergePhase>;
+    pub fn fail_session(&self, session_id: u64, error: impl Into<String>);
+    pub fn complete_session(&self, session_id: u64);
+    pub fn active_session_count(&self) -> usize;
+    pub fn active_sessions(&self) -> Vec<u64>;
+
+    // State management
+    pub fn set_local_summary(&self, session_id: u64, summary: PartitionStateSummary);
+    pub fn set_local_view(&self, session_id: u64, view: MembershipViewSummary);
+    pub fn add_remote_summary(&self, session_id: u64, node: NodeId, summary: PartitionStateSummary);
+    pub fn add_conflict(&self, session_id: u64, conflict: MergeConflict);
+
+    // Message handlers
+    pub fn handle_merge_init(&self, msg: MergeInit) -> Option<MergeAck>;
+    pub fn handle_merge_ack(&self, msg: MergeAck) -> bool;
+    pub fn handle_view_exchange(&self, msg: MergeViewExchange);
+    pub fn handle_data_merge_request(&self, msg: DataMergeRequest) -> Option<DataMergeResponse>;
+    pub fn handle_tx_reconcile_request(&self, msg: TxReconcileRequest, local_pending: &[PendingTxState]) -> Result<TxReconcileResponse>;
+    pub fn handle_merge_finalize(&self, msg: MergeFinalize) -> bool;
+
+    // Timeout processing
+    pub fn process_timeouts(&self) -> Vec<u64>;
+    pub fn can_merge_with(&self, node: &NodeId) -> bool;
+
+    // Statistics
+    pub fn stats_snapshot(&self) -> PartitionMergeStatsSnapshot;
+}
+```
+
+### Statistics
+
+```rust
+pub struct PartitionMergeStatsSnapshot {
+    pub sessions_started: u64,
+    pub sessions_completed: u64,
+    pub sessions_failed: u64,
+    pub conflicts_encountered: u64,
+    pub conflicts_auto_resolved: u64,
+    pub conflicts_manual: u64,
+    pub total_merge_duration_ms: u64,
+}
+
+impl PartitionMergeStatsSnapshot {
+    pub fn success_rate(&self) -> f64;        // % completed / started
+    pub fn auto_resolve_rate(&self) -> f64;   // % auto-resolved / total conflicts
+    pub fn avg_merge_duration_ms(&self) -> f64;
+}
+```
+
+### Error Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Cooldown active | Merge blocked, returns None |
+| Concurrent limit reached | Merge blocked, returns None |
+| Phase timeout | Retry up to max_retries, then fail |
+| Merge rejected by peer | Session marked as failed |
+| Network error during phase | Retry with timeout handling |
+| Conflicting data | Log conflict, may require manual resolution |
+
+---
+
+## Deadlock Detection
+
+Deadlock detection for distributed transactions using wait-for graph analysis. Detects cross-shard deadlocks that timeout-based prevention cannot catch.
+
+### Overview
+
+The deadlock detection system tracks transaction dependencies in a directed graph and uses depth-first search to find cycles. When a deadlock is detected, a victim is selected based on configurable policies to break the cycle.
+
+### Algorithm
+
+The wait-for graph approach works as follows:
+
+1. **Edge Recording**: When transaction A blocks waiting for transaction B to release locks, an edge A -> B is added to the graph
+2. **Cycle Detection**: Periodically, DFS traverses the graph looking for back-edges that indicate cycles
+3. **Victim Selection**: When a cycle is found, one transaction is selected for abort based on the configured policy
+4. **Cleanup**: When transactions commit or abort, their edges are removed from the graph
+
+### Types
+
+#### VictimSelectionPolicy
+
+```rust
+pub enum VictimSelectionPolicy {
+    /// Abort the youngest transaction (most recent wait start). Default.
+    Youngest,
+    /// Abort the oldest transaction (earliest wait start).
+    Oldest,
+    /// Abort the transaction with lowest priority (highest priority value).
+    LowestPriority,
+    /// Abort the transaction holding the most locks.
+    MostLocks,
+}
+```
+
+#### DeadlockDetectorConfig
+
+```rust
+pub struct DeadlockDetectorConfig {
+    /// Whether deadlock detection is enabled.
+    pub enabled: bool,
+    /// Detection interval in milliseconds (default: 100).
+    pub detection_interval_ms: u64,
+    /// Victim selection policy (default: Youngest).
+    pub victim_policy: VictimSelectionPolicy,
+    /// Maximum cycle length to detect (default: 100).
+    pub max_cycle_length: usize,
+    /// Whether to automatically abort victim transactions (default: true).
+    pub auto_abort_victim: bool,
+}
+```
+
+#### DeadlockInfo
+
+```rust
+pub struct DeadlockInfo {
+    /// Transaction IDs involved in the cycle.
+    pub cycle: Vec<u64>,
+    /// Selected victim transaction ID.
+    pub victim_tx_id: u64,
+    /// When the deadlock was detected (epoch milliseconds).
+    pub detected_at: EpochMillis,
+    /// Policy used for victim selection.
+    pub victim_policy: VictimSelectionPolicy,
+}
+```
+
+### API Reference
+
+#### WaitForGraph
+
+Directed graph tracking which transactions are waiting for others to release locks.
+
+```rust
+impl WaitForGraph {
+    /// Create a new empty wait-for graph.
+    pub fn new() -> Self;
+
+    /// Add a wait-for edge: waiter is waiting for holder.
+    pub fn add_wait(&self, waiter_tx_id: u64, holder_tx_id: u64, priority: Option<u32>);
+
+    /// Remove all wait edges for a transaction (when it commits/aborts).
+    pub fn remove_transaction(&self, tx_id: u64);
+
+    /// Remove a specific wait edge.
+    pub fn remove_wait(&self, waiter_tx_id: u64, holder_tx_id: u64);
+
+    /// Detect cycles in the wait-for graph using DFS.
+    pub fn detect_cycles(&self) -> Vec<Vec<u64>>;
+
+    /// Check if adding an edge would create a cycle.
+    pub fn would_create_cycle(&self, waiter_tx_id: u64, holder_tx_id: u64) -> bool;
+
+    /// Get all transactions a given transaction is waiting for.
+    pub fn waiting_for(&self, tx_id: u64) -> HashSet<u64>;
+
+    /// Get all transactions waiting for a given transaction.
+    pub fn waiting_on(&self, tx_id: u64) -> HashSet<u64>;
+
+    /// Get the number of edges in the graph.
+    pub fn edge_count(&self) -> usize;
+
+    /// Get the number of transactions in the graph.
+    pub fn transaction_count(&self) -> usize;
+
+    /// Clear the entire graph.
+    pub fn clear(&self);
+}
+```
+
+#### DeadlockDetector
+
+High-level deadlock detector with configurable victim selection.
+
+```rust
+impl DeadlockDetector {
+    /// Create a new deadlock detector with the given configuration.
+    pub fn new(config: DeadlockDetectorConfig) -> Self;
+
+    /// Create with default configuration.
+    pub fn with_defaults() -> Self;
+
+    /// Set the lock count function for MostLocks victim selection.
+    pub fn set_lock_count_fn<F>(&mut self, f: F)
+    where
+        F: Fn(u64) -> usize + Send + Sync + 'static;
+
+    /// Get the wait-for graph.
+    pub fn graph(&self) -> &WaitForGraph;
+
+    /// Get the configuration.
+    pub fn config(&self) -> &DeadlockDetectorConfig;
+
+    /// Get statistics.
+    pub fn stats(&self) -> &DeadlockStats;
+
+    /// Run one detection cycle, returns detected deadlocks.
+    pub fn detect(&self) -> Vec<DeadlockInfo>;
+
+    /// Select victim from a cycle based on policy.
+    pub fn select_victim(&self, cycle: &[u64]) -> u64;
+}
+```
+
+### Usage Examples
+
+#### Basic Deadlock Detection
+
+```rust
+use tensor_chain::{DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy};
+
+// Create detector with default config
+let detector = DeadlockDetector::with_defaults();
+
+// Record wait relationships
+detector.graph().add_wait(tx_1, tx_2, None);  // tx_1 waiting for tx_2
+detector.graph().add_wait(tx_2, tx_3, None);  // tx_2 waiting for tx_3
+detector.graph().add_wait(tx_3, tx_1, None);  // tx_3 waiting for tx_1 -> CYCLE!
+
+// Detect deadlocks
+let deadlocks = detector.detect();
+for dl in deadlocks {
+    println!("Deadlock detected! Cycle: {:?}", dl.cycle);
+    println!("Selected victim: {}", dl.victim_tx_id);
+    // Abort the victim transaction
+    coordinator.abort(dl.victim_tx_id);
+}
+```
+
+#### Deadlock Prevention
+
+```rust
+use tensor_chain::WaitForGraph;
+
+let graph = WaitForGraph::new();
+
+// Before acquiring a lock, check if it would cause deadlock
+if graph.would_create_cycle(waiter_tx_id, holder_tx_id) {
+    // Reject lock acquisition to prevent deadlock
+    return Err(ChainError::WouldDeadlock);
+}
+
+// Safe to add wait edge
+graph.add_wait(waiter_tx_id, holder_tx_id, Some(priority));
+```
+
+### Victim Selection Strategies
+
+| Policy | Selection Criteria | Use Case |
+|--------|-------------------|----------|
+| `Youngest` | Most recent wait start time | Minimize wasted work (default) |
+| `Oldest` | Earliest wait start time | Prevent starvation |
+| `LowestPriority` | Highest priority value | Protect high-priority transactions |
+| `MostLocks` | Maximum locks held | Minimize cascade aborts |
+
+### Performance
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| `add_wait` | 325-329ns | Single edge insertion |
+| `detect_cycles` (no cycle) | 313-328ns | DFS traversal |
+| `detect` (full cycle) | 349-350ns | Detection + victim selection |
+
+---
+
+## Identity Management
+
+Cryptographic signing and identity binding for tensor-chain nodes using Ed25519 digital signatures.
+
+### Overview
+
+The identity system provides:
+- Ed25519 key pair generation and management
+- NodeId derivation from public key (identity binding)
+- Stable embedding derivation from public key (geometric approach)
+- Message signing with replay protection
+- Validator registry for cluster membership
+
+### Cryptographic Algorithms
+
+| Component | Algorithm | Parameters |
+|-----------|-----------|------------|
+| Signing | Ed25519 | 256-bit private key, 32-byte signature |
+| NodeId derivation | BLAKE2b-128 | 16-byte output (32 hex chars) |
+| Embedding derivation | BLAKE2b-512 | 64 bytes -> 16 f32 coordinates |
+| Key storage | Zeroize on drop | Private key cleared from memory |
+
+### Types
+
+#### Identity
+
+Private identity with Ed25519 signing key. The private key is automatically zeroized when dropped.
+
+```rust
+pub struct Identity {
+    signing_key: SigningKey,  // Ed25519 private key
+}
+```
+
+#### PublicIdentity
+
+Public identity containing only the verifying key.
+
+```rust
+pub struct PublicIdentity {
+    verifying_key: VerifyingKey,  // Ed25519 public key
+}
+```
+
+#### SignedMessage
+
+Signed message envelope with identity binding and replay protection.
+
+```rust
+pub struct SignedMessage {
+    /// Sender's NodeId (derived from public key).
+    pub sender: NodeId,
+    /// Sender's public key.
+    pub public_key: [u8; 32],
+    /// The message payload.
+    pub payload: Vec<u8>,
+    /// Ed25519 signature over the payload.
+    pub signature: Vec<u8>,
+    /// Monotonically increasing sequence number for replay protection.
+    pub sequence: u64,
+    /// Unix timestamp in milliseconds when the message was created.
+    pub timestamp_ms: u64,
+}
+```
+
+### API Reference
+
+#### Identity
+
+```rust
+impl Identity {
+    /// Generate a new random identity using OS entropy.
+    pub fn generate() -> Self;
+
+    /// Restore identity from 32-byte private key.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self>;
+
+    /// Get the public key bytes.
+    pub fn public_key_bytes(&self) -> [u8; 32];
+
+    /// Get the public identity (verifying key only).
+    pub fn verifying_key(&self) -> PublicIdentity;
+
+    /// Get the NodeId derived from the public key.
+    pub fn node_id(&self) -> NodeId;
+
+    /// Get a 16-dimensional embedding derived from the public key.
+    pub fn to_embedding(&self) -> SparseVector;
+
+    /// Sign a raw message, returns signature bytes.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8>;
+
+    /// Sign a message and return a SignedMessage envelope with replay protection.
+    pub fn sign_message(&self, payload: &[u8], sequence: u64) -> SignedMessage;
+}
+```
+
+#### PublicIdentity
+
+```rust
+impl PublicIdentity {
+    /// Restore public identity from 32-byte public key.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self>;
+
+    /// Get the public key bytes.
+    pub fn to_bytes(&self) -> [u8; 32];
+
+    /// Derive NodeId using BLAKE2b-128.
+    pub fn to_node_id(&self) -> NodeId;
+
+    /// Derive a 16-dimensional embedding using BLAKE2b-512.
+    pub fn to_embedding(&self) -> SparseVector;
+
+    /// Verify a signature against a message.
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<()>;
+}
+```
+
+#### SequenceTracker
+
+```rust
+impl SequenceTracker {
+    /// Create with default config (5 min max age, 10k max entries).
+    pub fn new() -> Self;
+
+    /// Create with custom max age.
+    pub fn with_max_age_ms(max_age_ms: u64) -> Self;
+
+    /// Check if a message is valid (not a replay) and record its sequence.
+    pub fn check_and_record(
+        &self,
+        sender: &NodeId,
+        sequence: u64,
+        timestamp_ms: u64,
+    ) -> Result<()>;
+
+    /// Get last recorded sequence for a sender.
+    pub fn last_sequence(&self, sender: &NodeId) -> Option<u64>;
+
+    /// Clear all tracked sequences.
+    pub fn clear(&self);
+}
+```
+
+#### ValidatorRegistry
+
+```rust
+impl ValidatorRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self;
+
+    /// Register a validator by their full identity.
+    pub fn register(&self, identity: &Identity);
+
+    /// Register a validator by their public key only.
+    pub fn register_public_key(&self, public_key: &[u8; 32]) -> Result<NodeId>;
+
+    /// Get a validator's public identity.
+    pub fn get(&self, node_id: &str) -> Option<PublicIdentity>;
+
+    /// Check if a validator is registered.
+    pub fn contains(&self, node_id: &str) -> bool;
+
+    /// Remove a validator from the registry.
+    pub fn remove(&self, node_id: &str) -> Option<PublicIdentity>;
+
+    /// Get the number of registered validators.
+    pub fn len(&self) -> usize;
+
+    /// Get all registered NodeIds.
+    pub fn node_ids(&self) -> Vec<NodeId>;
+}
+```
+
+### Usage Examples
+
+#### Key Generation and NodeId
+
+```rust
+use tensor_chain::signing::{Identity, PublicIdentity};
+
+// Generate a new identity
+let identity = Identity::generate();
+
+// NodeId is deterministically derived from public key
+let node_id = identity.node_id();
+println!("NodeId: {}", node_id);  // 32 hex characters
+
+// NodeId is stable
+assert_eq!(identity.node_id(), identity.node_id());
+```
+
+#### Signing and Verification
+
+```rust
+// Sign a message
+let message = b"important transaction data";
+let signature = identity.sign(message);
+
+// Verify with public key
+let public = identity.verifying_key();
+public.verify(message, &signature)?;
+
+// Wrong message fails
+let wrong = b"tampered data";
+assert!(public.verify(wrong, &signature).is_err());
+```
+
+#### Signed Messages with Replay Protection
+
+```rust
+use tensor_chain::signing::{Identity, SignedMessage, SequenceTracker};
+
+let identity = Identity::generate();
+let tracker = SequenceTracker::new();
+
+// Create signed message with sequence number
+let msg1 = identity.sign_message(b"data", 1);
+
+// Verify signature and identity binding
+msg1.verify()?;
+
+// Verify with replay protection
+msg1.verify_with_tracker(&tracker)?;
+
+// Second message must have higher sequence
+let msg2 = identity.sign_message(b"more data", 2);
+msg2.verify_with_tracker(&tracker)?;
+
+// Replay of msg1 fails
+assert!(msg1.verify_with_tracker(&tracker).is_err());
+```
+
+### Security Considerations
+
+#### Private Key Protection
+
+- Private keys are zeroized automatically when `Identity` is dropped
+- Debug output for `Identity` only shows NodeId, never the private key
+- Use `Identity::from_bytes()` carefully - ensure source bytes are also zeroized
+
+#### Replay Protection
+
+The `SequenceTracker` provides defense-in-depth:
+1. **Sequence numbers**: Must be strictly increasing per sender
+2. **Timestamps**: Messages older than `max_age_ms` are rejected
+3. **Future rejection**: Messages with timestamps > 1 minute in future are rejected
+4. **Memory bounds**: `max_entries` prevents unbounded growth from malicious senders
+5. **Periodic cleanup**: Stale entries are removed automatically
+
+---
+
+## Raft Write-Ahead Log (WAL)
+
+Durable persistence for Raft state transitions. Ensures correctness after crashes by persisting term, vote, and log changes before applying them in memory.
+
+### Critical Invariants
+
+1. Term and voted_for MUST be persisted before any state change
+2. All writes MUST be fsynced before returning
+3. Recovery MUST restore the exact state from the WAL
+
+### Entry Format
+
+The WAL supports two format versions with automatic detection during replay:
+
+| Version | Format | Description |
+|---------|--------|-------------|
+| V1 (legacy) | `[4-byte length][bincode payload]` | Original format, no integrity check |
+| V2 (current) | `[4-byte length][4-byte CRC32][bincode payload]` | Checksum-protected entries |
+
+### Entry Types
+
+| Entry | Fields | Purpose |
+|-------|--------|---------|
+| `TermChange` | `new_term: u64` | Election started or higher term seen |
+| `VoteCast` | `term: u64, candidate_id: String` | Vote cast in a term |
+| `TermAndVote` | `term: u64, voted_for: Option<String>` | Combined term and vote update (most common) |
+| `LogAppend` | `index: u64, term: u64, command_hash: [u8; 32]` | Log entry appended |
+| `LogTruncate` | `from_index: u64` | Log truncated from index |
+| `SnapshotTaken` | `last_included_index: u64, last_included_term: u64` | Snapshot taken (WAL can be truncated) |
+
+### Configuration
+
+```rust
+use tensor_chain::raft_wal::{WalConfig, RaftWal};
+
+let config = WalConfig {
+    enable_checksums: true,           // CRC32 for new entries (default: true)
+    verify_on_replay: true,           // Verify checksums on replay (default: true)
+    max_size_bytes: 1024 * 1024 * 1024, // 1GB before rotation (default)
+    min_free_space_bytes: 100 * 1024 * 1024, // 100MB minimum free space
+    max_rotated_files: 3,             // Keep 3 rotated files
+    auto_rotate: true,                // Auto-rotate at size limit
+    pre_check_space: true,            // Check disk space before writes
+};
+```
+
+### API Reference
+
+```rust
+pub struct RaftWal {
+    // ...
+}
+
+impl RaftWal {
+    /// Open or create a WAL file with default configuration.
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self>;
+
+    /// Open or create a WAL file with custom configuration.
+    pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self>;
+
+    /// Append an entry to the WAL with fsync.
+    pub fn append(&mut self, entry: &RaftWalEntry) -> io::Result<()>;
+
+    /// Truncate the WAL (after snapshot). Uses atomic file operations.
+    pub fn truncate(&mut self) -> io::Result<()>;
+
+    /// Rotate the WAL file. Old file becomes .1, existing .N files shift.
+    pub fn rotate(&mut self) -> Result<(), WalError>;
+
+    /// Replay all entries from the WAL with configured checksum verification.
+    pub fn replay(&self) -> io::Result<Vec<RaftWalEntry>>;
+
+    /// Replay all entries with explicit checksum verification setting.
+    pub fn replay_with_validation(&self, verify_checksums: bool) -> io::Result<Vec<RaftWalEntry>>;
+
+    /// Get the number of entries in the WAL.
+    pub fn entry_count(&self) -> u64;
+
+    /// Get the path to the WAL file.
+    pub fn path(&self) -> &Path;
+
+    /// Get the current size of the WAL in bytes.
+    pub fn current_size(&self) -> u64;
+}
+```
+
+### Recovery State
+
+```rust
+pub struct RaftRecoveryState {
+    pub current_term: u64,
+    pub voted_for: Option<String>,
+    pub last_snapshot_index: Option<u64>,
+    pub last_snapshot_term: Option<u64>,
+}
+
+impl RaftRecoveryState {
+    /// Reconstruct state from WAL entries.
+    pub fn from_entries(entries: &[RaftWalEntry]) -> Self;
+
+    /// Reconstruct state directly from a WAL.
+    pub fn from_wal(wal: &RaftWal) -> io::Result<Self>;
+}
+```
+
+### Usage Examples
+
+#### Basic WAL Operations
+
+```rust
+use tensor_chain::raft_wal::{RaftWal, RaftWalEntry, RaftRecoveryState};
+
+// Open WAL
+let mut wal = RaftWal::open("/var/lib/neumann/raft.wal")?;
+
+// Persist term change before updating in-memory state
+wal.append(&RaftWalEntry::TermChange { new_term: 5 })?;
+
+// Persist vote before responding to RequestVote
+wal.append(&RaftWalEntry::VoteCast {
+    term: 5,
+    candidate_id: "node2".to_string(),
+})?;
+
+// Combined term and vote (common during elections)
+wal.append(&RaftWalEntry::TermAndVote {
+    term: 6,
+    voted_for: Some("node1".to_string()),
+})?;
+
+// Log append with command hash
+wal.append(&RaftWalEntry::LogAppend {
+    index: 100,
+    term: 6,
+    command_hash: sha256(&command),
+})?;
+
+// After snapshot, truncate WAL
+wal.append(&RaftWalEntry::SnapshotTaken {
+    last_included_index: 100,
+    last_included_term: 6,
+})?;
+wal.truncate()?;
+```
+
+#### Recovery on Startup
+
+```rust
+use tensor_chain::raft_wal::{RaftWal, RaftRecoveryState};
+
+// Open existing WAL
+let wal = RaftWal::open("/var/lib/neumann/raft.wal")?;
+
+// Recover state
+let state = RaftRecoveryState::from_wal(&wal)?;
+println!("Recovered: term={}, voted_for={:?}",
+         state.current_term, state.voted_for);
+
+// Initialize Raft node with recovered state
+let mut raft = RaftNode::with_state(
+    node_id,
+    peers,
+    transport,
+    config,
+    state.current_term,
+    state.voted_for,
+);
+```
+
+### Recovery Scenarios
+
+#### 1. Leader Crash During Replication
+
+```
+Timeline:
+  1. Leader appends LogAppend entry to WAL
+  2. Leader sends AppendEntries to followers
+  3. CRASH before receiving majority acks
+
+Recovery:
+  - Leader restarts, replays WAL
+  - LogAppend entry is recovered
+  - Leader resumes replication from recovered log
+  - Uncommitted entries may be truncated if new leader elected
+```
+
+#### 2. Follower Crash During Apply
+
+```
+Timeline:
+  1. Follower receives AppendEntries
+  2. Follower appends LogAppend to WAL
+  3. CRASH before applying to state machine
+
+Recovery:
+  - Follower restarts, replays WAL
+  - LogAppend entry is recovered
+  - Follower waits for commit index from leader
+  - Applies entries in order up to commit index
+```
+
+#### 3. Partial Write Recovery
+
+```
+Timeline:
+  1. wal.append() starts writing
+  2. CRASH during write (incomplete entry)
+
+Recovery:
+  - WAL contains: [valid entry 1][valid entry 2][partial bytes]
+  - replay() stops at first unparseable entry
+  - Partial bytes are discarded (transaction not committed)
+  - Valid entries 1 and 2 are recovered
+```
+
+### Durability Guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| Atomic append | Single fsync after write |
+| Crash recovery | Replay stops at corruption |
+| No double-voting | Vote persisted before response |
+| Term monotonicity | Term checked during recovery |
+| Checksum integrity | CRC32 verification on replay |
+
+---
+
+## 2PC Write-Ahead Log (WAL)
+
+Durable persistence for Two-Phase Commit (2PC) distributed transaction state. Enables recovery of in-flight transactions after coordinator or participant crashes.
+
+### Critical Invariants
+
+1. Phase transitions MUST be persisted before being applied
+2. All writes MUST be fsynced before returning
+3. Recovery MUST complete any prepared transactions
+
+### Entry Types
+
+| Entry | Fields | Purpose |
+|-------|--------|---------|
+| `TxBegin` | `tx_id: u64, participants: Vec<usize>` | Transaction start with participant list |
+| `PrepareVote` | `tx_id: u64, shard: usize, vote: PrepareVoteKind` | Vote from a participant |
+| `PhaseChange` | `tx_id: u64, from: TxPhase, to: TxPhase` | Phase transition |
+| `TxComplete` | `tx_id: u64, outcome: TxOutcome` | Transaction completed |
+
+### Vote Types
+
+```rust
+pub enum PrepareVoteKind {
+    /// Participant votes YES with lock handle for recovery.
+    Yes { lock_handle: u64 },
+    /// Participant votes NO.
+    No,
+}
+```
+
+### Phase States
+
+| Phase | Description |
+|-------|-------------|
+| `Preparing` | Collecting votes from participants |
+| `Prepared` | All votes received, awaiting decision |
+| `Committing` | Commit decision made, broadcasting to participants |
+| `Aborting` | Abort decision made, broadcasting to participants |
+| `Committed` | Transaction successfully committed |
+| `Aborted` | Transaction aborted |
+
+### API Reference
+
+```rust
+pub struct TxWal {
+    // ...
+}
+
+impl TxWal {
+    /// Open or create a WAL file with default configuration.
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self>;
+
+    /// Open or create a WAL file with custom configuration.
+    pub fn open_with_config(path: impl AsRef<Path>, config: WalConfig) -> io::Result<Self>;
+
+    /// Append an entry to the WAL with fsync.
+    pub fn append(&mut self, entry: &TxWalEntry) -> io::Result<()>;
+
+    /// Truncate the WAL (after checkpoint).
+    pub fn truncate(&mut self) -> io::Result<()>;
+
+    /// Rotate the WAL file.
+    pub fn rotate(&mut self) -> Result<(), WalError>;
+
+    /// Replay all entries from the WAL.
+    pub fn replay(&self) -> io::Result<Vec<TxWalEntry>>;
+
+    /// Get the number of entries in the WAL.
+    pub fn entry_count(&self) -> u64;
+
+    /// Get the path to the WAL file.
+    pub fn path(&self) -> &Path;
+}
+```
+
+### Recovery State
+
+```rust
+pub struct TxRecoveryState {
+    /// Transactions in Prepared phase (need commit/abort decision).
+    pub prepared_txs: Vec<RecoveredPreparedTx>,
+    /// Transactions in Committing phase (need commit completion).
+    pub committing_txs: Vec<RecoveredPreparedTx>,
+    /// Transactions in Aborting phase (need abort completion).
+    pub aborting_txs: Vec<RecoveredPreparedTx>,
+}
+
+pub struct RecoveredPreparedTx {
+    pub tx_id: u64,
+    pub participants: Vec<usize>,
+    pub votes: Vec<(usize, PrepareVoteKind)>,
+}
+
+impl TxRecoveryState {
+    /// Reconstruct state from WAL entries.
+    pub fn from_entries(entries: &[TxWalEntry]) -> Self;
+
+    /// Reconstruct state directly from a WAL.
+    pub fn from_wal(wal: &TxWal) -> io::Result<Self>;
+}
+```
+
+### Usage Examples
+
+#### Coordinator WAL Operations
+
+```rust
+use tensor_chain::tx_wal::{TxWal, TxWalEntry, PrepareVoteKind, TxOutcome};
+use tensor_chain::distributed_tx::TxPhase;
+
+let mut wal = TxWal::open("/var/lib/neumann/2pc.wal")?;
+
+// Begin distributed transaction
+wal.append(&TxWalEntry::TxBegin {
+    tx_id: 42,
+    participants: vec![0, 1, 2],  // Shards 0, 1, 2
+})?;
+
+// Record votes as they arrive
+wal.append(&TxWalEntry::PrepareVote {
+    tx_id: 42,
+    shard: 0,
+    vote: PrepareVoteKind::Yes { lock_handle: 100 },
+})?;
+wal.append(&TxWalEntry::PrepareVote {
+    tx_id: 42,
+    shard: 1,
+    vote: PrepareVoteKind::Yes { lock_handle: 101 },
+})?;
+wal.append(&TxWalEntry::PrepareVote {
+    tx_id: 42,
+    shard: 2,
+    vote: PrepareVoteKind::Yes { lock_handle: 102 },
+})?;
+
+// All voted YES - transition to Prepared
+wal.append(&TxWalEntry::PhaseChange {
+    tx_id: 42,
+    from: TxPhase::Preparing,
+    to: TxPhase::Prepared,
+})?;
+
+// Decision: Commit
+wal.append(&TxWalEntry::PhaseChange {
+    tx_id: 42,
+    from: TxPhase::Prepared,
+    to: TxPhase::Committing,
+})?;
+
+// After all participants ack commit
+wal.append(&TxWalEntry::TxComplete {
+    tx_id: 42,
+    outcome: TxOutcome::Committed,
+})?;
+```
+
+#### Recovery on Coordinator Startup
+
+```rust
+use tensor_chain::tx_wal::{TxWal, TxRecoveryState};
+
+let wal = TxWal::open("/var/lib/neumann/2pc.wal")?;
+let state = TxRecoveryState::from_wal(&wal)?;
+
+// Resume prepared transactions - need to make decision
+for tx in state.prepared_txs {
+    println!("Tx {} awaiting decision, votes: {:?}", tx.tx_id, tx.votes);
+    // Check if all votes are Yes -> commit, otherwise abort
+    let all_yes = tx.votes.iter().all(|(_, v)| matches!(v, PrepareVoteKind::Yes { .. }));
+    if all_yes {
+        coordinator.commit(tx.tx_id)?;
+    } else {
+        coordinator.abort(tx.tx_id)?;
+    }
+}
+
+// Resume committing transactions - need to complete commit
+for tx in state.committing_txs {
+    println!("Tx {} needs commit completion", tx.tx_id);
+    coordinator.resume_commit(tx.tx_id, &tx.participants)?;
+}
+
+// Resume aborting transactions - need to complete abort
+for tx in state.aborting_txs {
+    println!("Tx {} needs abort completion", tx.tx_id);
+    coordinator.resume_abort(tx.tx_id, &tx.participants)?;
+}
+```
+
+### Durability Guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| Atomic phase transition | fsync before state change |
+| No lost decisions | Decision logged before broadcast |
+| Participant consistency | Participants can query coordinator for decision |
+| Lock recovery | Lock handles stored in votes for cleanup |
+
+---
+
+## Hybrid Logical Clock (HLC)
+
+Monotonically increasing timestamps combining wall clock time with logical counters for distributed ordering.
+
+### Design
+
+HLC timestamps provide:
+- **Total ordering**: Every timestamp is comparable
+- **Monotonicity**: Timestamps always increase locally
+- **Causality preservation**: receive() ensures happened-before ordering
+- **Bounded drift**: Logical counter limits divergence from wall clock
+
+### Timestamp Structure
+
+```rust
+pub struct HLCTimestamp {
+    /// Wall clock time in milliseconds since UNIX epoch.
+    wall_ms: u64,
+    /// Logical counter for ordering within the same millisecond.
+    logical: u64,
+    /// Hash of the node ID for tie-breaking.
+    node_id_hash: u32,
+}
+```
+
+Ordering is lexicographic: `(wall_ms, logical, node_id_hash)`.
+
+### Packed Representation
+
+For compact storage, timestamps can be packed into 64 bits:
+
+```
++--------------------+------------------+
+| wall_ms (48 bits)  | logical (16 bits)|
++--------------------+------------------+
+```
+
+Note: Packed form loses `node_id_hash`. Use full struct when tie-breaking is needed.
+
+### API Reference
+
+```rust
+pub struct HybridLogicalClock {
+    // Uses monotonic clock anchored to initial wall clock reading
+}
+
+impl HybridLogicalClock {
+    /// Create a new HLC for the given node ID.
+    pub fn new(node_id: u64) -> Result<Self, ChainError>;
+
+    /// Create an HLC from a string node ID (hashed).
+    pub fn from_node_id(node_id: &str) -> Result<Self, ChainError>;
+
+    /// Get the current timestamp.
+    pub fn now(&self) -> Result<HLCTimestamp, ChainError>;
+
+    /// Update clock based on received timestamp.
+    pub fn receive(&self, received: &HLCTimestamp) -> Result<HLCTimestamp, ChainError>;
+
+    /// Get the node ID hash.
+    pub fn node_id_hash(&self) -> u32;
+
+    /// Get the current wall time estimate in milliseconds.
+    pub fn estimated_wall_ms(&self) -> u64;
+}
+```
+
+```rust
+impl HLCTimestamp {
+    /// Create a new HLC timestamp.
+    pub fn new(wall_ms: u64, logical: u64, node_id_hash: u32) -> Self;
+
+    /// Create from packed u64 (upper 48 bits = wall_ms, lower 16 = logical).
+    pub fn from_u64(value: u64) -> Self;
+
+    /// Convert to packed u64 representation (loses node_id_hash).
+    pub fn as_u64(&self) -> u64;
+
+    /// Get the wall clock component in milliseconds.
+    pub fn wall_ms(&self) -> u64;
+
+    /// Get the logical counter component.
+    pub fn logical(&self) -> u64;
+
+    /// Get the node ID hash component.
+    pub fn node_id_hash(&self) -> u32;
+
+    /// Check if this timestamp is strictly before another.
+    pub fn is_before(&self, other: &Self) -> bool;
+
+    /// Check if this timestamp is strictly after another.
+    pub fn is_after(&self, other: &Self) -> bool;
+}
+```
+
+### HLC Algorithm
+
+#### now() - Generate Local Timestamp
+
+```
+Algorithm:
+  1. Get current wall time using monotonic clock + anchor
+  2. If wall_time > last_wall_time:
+     - Reset logical counter to 0
+     - Return (wall_time, 0, node_id_hash)
+  3. Else (wall time unchanged or went backwards):
+     - Increment logical counter
+     - Return (last_wall_time, logical+1, node_id_hash)
+```
+
+This ensures:
+- Timestamps always increase (monotonicity)
+- Wall clock regression doesn't break ordering
+- Rapid calls produce distinct timestamps via logical counter
+
+#### receive() - Update from Remote Timestamp
+
+```
+Algorithm:
+  1. Get current wall time
+  2. max_wall = max(current_wall, last_wall, received.wall_ms)
+  3. If max_wall > last_wall:
+     - Update last_wall to max_wall
+  4. Calculate new logical:
+     - If all three wall times equal: max(local_logical, received.logical) + 1
+     - If max_wall == last_wall: local_logical + 1
+     - If max_wall == received.wall_ms: received.logical + 1
+     - Otherwise (current wall is ahead): 0
+  5. Return (max_wall, new_logical, node_id_hash)
+```
+
+This ensures:
+- Result is after both local time and received timestamp
+- Causality is preserved (if B receives from A, B's timestamp > A's)
+
+### Usage Examples
+
+#### Basic Usage
+
+```rust
+use tensor_chain::hlc::{HybridLogicalClock, HLCTimestamp};
+
+// Create clock for this node
+let clock = HybridLogicalClock::from_node_id("node1")?;
+
+// Generate timestamps
+let ts1 = clock.now()?;
+let ts2 = clock.now()?;
+let ts3 = clock.now()?;
+
+// Monotonicity guaranteed
+assert!(ts1 < ts2);
+assert!(ts2 < ts3);
+
+// Access components
+println!("Timestamp: wall_ms={}, logical={}, node={}",
+         ts1.wall_ms(), ts1.logical(), ts1.node_id_hash());
+```
+
+#### Distributed Ordering
+
+```rust
+// Node A sends message with timestamp
+let ts_a = clock_a.now()?;
+send_message(ts_a, data);
+
+// Node B receives and updates clock
+let ts_b = clock_b.receive(&ts_a)?;
+// ts_b is guaranteed to be > ts_a
+assert!(ts_b > ts_a);
+
+// Events on B are now causally ordered after events on A
+```
+
+#### Packed Storage
+
+```rust
+// Store timestamp compactly
+let ts = clock.now()?;
+let packed: u64 = ts.as_u64();
+
+// Later: restore timestamp
+let restored = HLCTimestamp::from_u64(packed);
+assert_eq!(ts.wall_ms(), restored.wall_ms());
+assert_eq!(ts.logical(), restored.logical());
+// Note: node_id_hash is lost in packed form
+```
+
+### Clock Drift Handling
+
+| Scenario | Handling |
+|----------|----------|
+| System time goes backwards | Uses monotonic clock anchored to startup time |
+| System time unavailable | Error at construction, infallible after |
+| Rapid consecutive calls | Logical counter ensures distinct timestamps |
+| Received timestamp from future | Advances local clock to match |
+| Very large logical counter | Uses saturating_add to prevent overflow |
+
+### Timestamp Ordering Guarantees
+
+| Property | Guarantee |
+|----------|-----------|
+| Total order | All timestamps comparable via Ord trait |
+| Local monotonicity | `now()` always returns increasing timestamps |
+| Causal ordering | `receive(ts)` returns timestamp > ts |
+| No duplicates | (wall_ms, logical, node_id_hash) is unique per node |
+| Serializable | Implements Serialize/Deserialize for persistence |
+| Hashable | Implements Hash for use in collections |
+
+---
+
+## Error Reference
+
+| Error | Cause | Action |
+|-------|-------|--------|
+| `ValidationFailed(String)` | Block validation failed due to invalid structure, missing fields, or constraint violations | Inspect block structure, verify all required fields are present, check transaction integrity |
+| `InvalidHash { expected, actual }` | Block hash mismatch between computed and stored values | Investigate chain corruption, verify data integrity, consider chain replay from last valid block |
+| `BlockNotFound(u64)` | Requested block at specified height does not exist in the chain | Verify requested height is within chain bounds, check if chain was properly initialized |
+| `TransactionFailed(String)` | Transaction execution or commit failed | Review transaction operations, check for resource constraints or permission issues |
+| `WorkspaceError(String)` | Workspace isolation violated or workspace operation failed | Ensure proper workspace boundaries, check for concurrent modification conflicts |
+| `CheckpointError(String)` | Checkpoint creation, loading, or verification failed | Verify disk space availability, check file permissions, inspect checkpoint data integrity |
+| `CodebookError(String)` | Codebook validation or quantization failed | Review codebook dimensions, verify centroid validity, check embedding compatibility |
+| `InvalidTransition(String)` | State machine transition not allowed from current state | Review state machine rules, ensure proper operation ordering |
+| `ConflictDetected { similarity }` | Semantic conflict between concurrent transactions exceeds threshold | Abort one transaction and retry, or use manual conflict resolution |
+| `MergeFailed(String)` | Auto-merge of delta vectors failed due to non-orthogonal changes | Resolve conflicts manually, ensure transactions modify disjoint key sets |
+| `ConsensusError(String)` | Raft consensus operation failed or quorum unavailable | Check node health, verify network connectivity, ensure majority of nodes are online |
+| `NetworkError(String)` | Network communication failure between nodes | Verify network connectivity, check firewall rules, inspect transport layer |
+| `SerializationError(String)` | Binary serialization or deserialization failed | Verify data format version compatibility, check for corruption |
+| `StorageError(String)` | Disk I/O or storage operation failed | Check disk space, verify file permissions, inspect storage health |
+| `GraphError(String)` | Graph engine operation failed | Verify node/edge existence, check graph integrity |
+| `CryptoError(String)` | Cryptographic operation failed (signing, verification, encryption) | Verify key validity, check algorithm support, review crypto parameters |
+| `GossipSignatureInvalid { reason }` | Gossip message signature verification failed | Verify sender's public key, check for key rotation, investigate tampering |
+| `GossipReplayDetected { sender, sequence }` | Duplicate gossip message sequence number detected | Investigate replay attack, verify sender identity, check network conditions |
+| `UnknownGossipSender(String)` | Gossip message from node not in validator registry | Add node to registry or reject message, verify cluster membership |
+| `EmptyChain` | Operation requires non-empty chain but chain has no blocks | Initialize chain with genesis block before performing operations |
+| `InvalidState(String)` | Chain is in an invalid or corrupted state | Restore from checkpoint, verify chain integrity, consider chain rebuild |
+| `QueueFull { pending_count }` | Replication queue exceeded capacity (backpressure) | Reduce write rate, increase queue capacity, check replication lag |
+| `SnapshotError(String)` | Snapshot creation, transfer, or application failed | Verify disk space, check snapshot integrity, retry snapshot operation |
+| `NotLeader` | Operation requires leader role but node is not current leader | Forward request to leader, wait for election, retry after leader is elected |
+| `MembershipChangeInProgress(u64)` | Cannot start new membership change while one is pending | Wait for current membership change to complete at specified index |
+| `NodeNotFound(String)` | Referenced node does not exist in cluster membership | Verify node ID, check if node was removed, update cluster configuration |
+| `DeadlockDetected { cycle, victim }` | Circular wait dependency detected in distributed transactions | Selected victim transaction will be aborted, retry aborted transaction |
+| `HandlerTimeout { operation, timeout_ms }` | Handler operation exceeded timeout threshold | Increase timeout, optimize operation, check for resource contention |
+| `MessageValidationFailed { message_type, reason }` | Incoming message failed validation checks | Verify message format, check sender compatibility, inspect payload |
+| `InvalidEmbedding { dimension, reason }` | Embedding vector has invalid dimension or values | Verify embedding model compatibility, check for NaN/Inf values |
+| `NumericOutOfBounds { field, value, expected }` | Numeric field exceeds valid range | Verify input values, check for overflow, clamp to valid range |
+| `UpdateIntegrityFailed { key, index }` | Delta update checksum or integrity verification failed | Retry update, verify source data, check for transmission errors |
+| `BatchIntegrityFailed { sequence, source_node }` | Delta batch from remote node failed integrity check | Request batch retransmission, verify source node health |
+| `ClockError(String)` | System clock operation failed or returned invalid value | Check system time synchronization, verify NTP configuration |
+
+---
+
+## Metrics Interpretation
+
+| Metric | Healthy | Warning | Critical |
+|--------|---------|---------|----------|
+| `raft_term` | Stable (no changes) | >3 changes/min | Continuous flapping |
+| `raft_state` | Leader elected | No leader >5s | No leader >30s |
+| `tx_latency_p99` | <100ms | <500ms | >1s |
+| `tx_commit_rate` | >100 tx/s | <50 tx/s | <10 tx/s |
+| `quorum_available` | true | false (brief <10s) | false (>30s) |
+| `gossip_suspect_count` | 0 | 1-2 | >3 |
+| `gossip_failed_count` | 0 | >0 brief | Increasing |
+| `replication_queue_depth` | <100 | <500 | Full (error) |
+| `lock_manager_contention` | <10% | <30% | >50% |
+| `deadlock_detections` | 0 | 1-2/min | >5/min |
+| `snapshot_age_seconds` | <3600 | <7200 | >14400 |
+| `wal_size_bytes` | <100MB | <500MB | >1GB |
+| `conflict_detection_rate` | <5% | <15% | >25% |
+| `heartbeat_miss_rate` | 0% | <5% | >10% |
+| `membership_healthy_nodes` | All nodes | Missing 1 | Missing >1 |
+| `partition_status` | QuorumReachable | Stalemate | QuorumLost |
+| `delta_batch_failures` | 0 | <5/min | >10/min |
+| `clock_drift_ms` | <50ms | <200ms | >500ms |
+
+### Benchmark Reference Data
+
+```
+Membership Operations:
+  manager_create:        551-563ns
+  view:                  149-153ns
+  partition_status:      19-19ns
+  node_status:           52-54ns
+  stats_snapshot:        2.3-2.4ns
+  peer_ids:              63-64ns
+
+Raft Operations:
+  node_create:           ~1us
+  become_leader:         ~100ns
+  stats_snapshot:        ~50ns
+  log_length:            ~10ns
+
+2PC Operations:
+  lock_acquire:          ~200ns
+  lock_release:          ~150ns
+  coordinator_create:    ~500ns
+  coordinator_stats:     ~30ns
+
+Gossip Operations:
+  lww_state_create:      ~50ns
+  lww_state_merge:       ~300ns
+  message_serialize:     ~500ns
+  message_deserialize:   ~400ns
+
+Deadlock Detection:
+  wait_graph_add_edge:   325-329ns
+  detect_no_cycle:       313-328ns
+  detect_with_cycle:     349-350ns
+
+Consensus Validation (128d):
+  conflict_detection:    ~2us
+  cosine_similarity:     ~500ns
+  merge_pair:            ~1us
+  merge_all_10:          ~10us
+```
+
+---
+
+## Test Inventory
+
+### Integration Tests
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| Raft Consensus | 8 | Leader election, log replication, term safety, WAL recovery, snapshot persistence/transfer/streaming, dynamic membership, log compaction, heartbeat, leadership transfer, consensus safety |
+| Two-Phase Commit | 3 | Abort broadcast, participant coordination, WAL recovery for 2PC |
+| Gossip Protocol | 3 | LWW CRDT merge, message propagation, suspicion/failure detection, timestamp ordering, signed messages |
+| Network Partition | 3 | Leader isolation, split-brain prevention, partition healing, partition merge |
+| Distributed Transactions | 4 | Cross-shard 2PC, delta conflict detection, concurrency, crash recovery |
+| Deadlock Detection | 1 | Wait-for graph, cycle detection, victim selection |
+| Security | 4 | TLS security, TLS error handling, transaction ID security, security validation |
+| Cluster Management | 2 | Cluster startup, membership health |
+| Chain Operations | 2 | Concurrent append, tensor chain basics |
+| TCP/Network | 3 | Rate limiting, IO timeout, network latency |
+| Crash Recovery | 2 | Raft crash recovery, DTX crash recovery |
+
+**Total Integration Tests: 35 test files covering tensor_chain functionality**
+
+### Fuzz Targets
+
+| Category | Targets | Focus |
+|----------|---------|-------|
+| Raft | 9 | `raft_messages`, `raft_wal_roundtrip`, `raft_wal_recovery`, `raft_snapshot`, `raft_membership`, `raft_prevote`, `raft_heartbeat`, `quorum_tracker`, `snapshot_buffer` |
+| 2PC/Distributed TX | 7 | `distributed_tx_serialize`, `distributed_tx_coordinator`, `distributed_tx_concurrency`, `dtx_persistence`, `dtx_wal_recovery`, `tx_wal_recovery`, `tx_abort_msg` |
+| Gossip | 5 | `gossip_message`, `gossip_merge`, `gossip_signed`, `gossip_timestamp_order`, `membership` |
+| Validation | 5 | `block_validate`, `block_request_validation`, `snapshot_request_validation`, `message_validate`, `sequence_tracker_dos` |
+| Chain/Consensus | 5 | `chain_append`, `chain_metrics`, `consensus_merge`, `codebook_quantize`, `partition_merge` |
+| Network/TCP | 5 | `tcp_framing`, `tcp_compression`, `tcp_rate_limit`, `tls_config`, `tls_key_parsing` |
+| Delta/Replication | 5 | `delta_quantize`, `delta_batch_apply`, `delta_checksum`, `delta_apply`, `partition_status` |
+| Security | 3 | `tx_id_generation`, `wait_for_graph`, `lock_manager` |
+| Snapshot | 3 | `snapshot_hash`, `snapshot_roundtrip`, `snapshot_request_validation` |
+| Misc | 2 | `atomic_io`, `hlc_operations` |
+
+**Total Fuzz Targets: 79 targets (49 tensor_chain specific)**
+
+### Coverage Summary
+
+| Module | Coverage | Notes |
+|--------|----------|-------|
+| atomic_io.rs | 97.32% | Crash safety |
+| message_validation.rs | 97.54% | DoS prevention |
+| gossip.rs | 90.15% | Membership |
+| partition_merge.rs | 89.05% | Network healing |
+| deadlock.rs | 95.83% | Lock detection |
+| signing.rs | 95.71% | Identity |
+| raft_wal.rs | 94.09% | Raft recovery |
+| tx_wal.rs | 94.33% | 2PC recovery |
+| hlc.rs | 94.40% | Timestamps |
+
+---
+
 ## Security Considerations
 
 1. **Block Signatures**: Blake2b HMAC on block headers

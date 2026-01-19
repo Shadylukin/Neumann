@@ -35,7 +35,11 @@ fn test_tls_config_with_empty_cert_file() {
 #[test]
 fn test_tls_config_with_invalid_pem_content() {
     let temp_dir = setup_temp_dir();
-    let cert_path = write_temp_file(&temp_dir, "invalid.pem", "not a valid PEM file\n-----garbage-----\n");
+    let cert_path = write_temp_file(
+        &temp_dir,
+        "invalid.pem",
+        "not a valid PEM file\n-----garbage-----\n",
+    );
     let key_path = write_temp_file(&temp_dir, "invalid_key.pem", "also invalid\n");
 
     let config = tensor_chain::TlsConfig::new(&cert_path, &key_path);
@@ -51,7 +55,11 @@ fn test_tls_config_with_partial_pem() {
     // Partial/truncated PEM header
     let partial_pem = "-----BEGIN CERTIFICATE-----\nMIIB";
     let cert_path = write_temp_file(&temp_dir, "partial.pem", partial_pem);
-    let key_path = write_temp_file(&temp_dir, "partial_key.pem", "-----BEGIN PRIVATE KEY-----\n");
+    let key_path = write_temp_file(
+        &temp_dir,
+        "partial_key.pem",
+        "-----BEGIN PRIVATE KEY-----\n",
+    );
 
     let config = tensor_chain::TlsConfig::new(&cert_path, &key_path);
 

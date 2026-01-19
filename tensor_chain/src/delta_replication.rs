@@ -1688,4 +1688,81 @@ mod tests {
         assert_eq!(batch.checksum, decoded.checksum);
         assert!(decoded.verify().is_ok());
     }
+
+    #[test]
+    fn test_stats_record_auto_drain() {
+        let stats = ReplicationStats::new();
+        assert_eq!(stats.auto_drains.load(Ordering::Relaxed), 0);
+
+        stats.record_auto_drain();
+        assert_eq!(stats.auto_drains.load(Ordering::Relaxed), 1);
+
+        stats.record_auto_drain();
+        assert_eq!(stats.auto_drains.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_stats_set_queue_depth() {
+        let stats = ReplicationStats::new();
+
+        stats.set_queue_depth(10);
+        assert_eq!(stats.queue_depth(), 10);
+        assert_eq!(stats.peak_queue_depth.load(Ordering::Relaxed), 10);
+
+        stats.set_queue_depth(5);
+        assert_eq!(stats.queue_depth(), 5);
+        // Peak should remain at 10
+        assert_eq!(stats.peak_queue_depth.load(Ordering::Relaxed), 10);
+
+        stats.set_queue_depth(15);
+        assert_eq!(stats.queue_depth(), 15);
+        // Peak should update to 15
+        assert_eq!(stats.peak_queue_depth.load(Ordering::Relaxed), 15);
+    }
+
+    #[test]
+    fn test_stats_increment_decrement_queue_depth() {
+        let stats = ReplicationStats::new();
+
+        let new_depth = stats.increment_queue_depth();
+        assert_eq!(new_depth, 1);
+        assert_eq!(stats.queue_depth(), 1);
+
+        stats.increment_queue_depth();
+        assert_eq!(stats.queue_depth(), 2);
+
+        stats.decrement_queue_depth();
+        assert_eq!(stats.queue_depth(), 1);
+    }
+
+    #[test]
+    fn test_delta_batch_is_empty() {
+        let batch = DeltaBatch::new("node1".to_string(), 1);
+        assert!(batch.is_empty());
+        assert_eq!(batch.len(), 0);
+
+        let mut batch2 = DeltaBatch::new("node1".to_string(), 1);
+        batch2.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
+        assert!(!batch2.is_empty());
+        assert_eq!(batch2.len(), 1);
+    }
+
+    #[test]
+    fn test_delta_update_is_full_update() {
+        let full = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1);
+        assert!(full.is_full_update());
+        assert_eq!(full.nnz(), 2);
+        assert!(full.memory_bytes() > 0);
+    }
+
+    #[test]
+    fn test_delta_update_checksum() {
+        let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1);
+        assert!(update.checksum.is_none());
+        assert!(update.verify_checksum()); // None means legacy accepted
+
+        let with_checksum = update.with_checksum();
+        assert!(with_checksum.checksum.is_some());
+        assert!(with_checksum.verify_checksum());
+    }
 }

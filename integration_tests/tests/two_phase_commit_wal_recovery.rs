@@ -5,14 +5,14 @@
 //! - Issue 2: Lock handles persisted in PrepareVoteKind::Yes
 //! - Issue 3: Votes logged to WAL in record_vote()
 
+use tempfile::tempdir;
 use tensor_chain::{
     block::Transaction,
     consensus::{ConsensusConfig, ConsensusManager},
-    DistributedTxConfig, DistributedTxCoordinator, PrepareRequest, PrepareVote, TxPhase,
-    TxWal, TxWalEntry, PrepareVoteKind,
+    DistributedTxConfig, DistributedTxCoordinator, PrepareRequest, PrepareVote, PrepareVoteKind,
+    TxPhase, TxWal, TxWalEntry,
 };
 use tensor_store::SparseVector;
-use tempfile::tempdir;
 
 fn create_coordinator_with_wal(wal: TxWal) -> DistributedTxCoordinator {
     let consensus = ConsensusManager::new(ConsensusConfig::default());
@@ -83,9 +83,19 @@ fn test_coordinator_crash_after_txcomplete_logged_releases_locks_once() {
 
     // Transaction should be removed (TxComplete was logged)
     // Recovery should NOT try to release locks again
-    assert_eq!(stats.pending_commit, 0, "Transaction should be completed, not pending");
-    assert_eq!(stats.pending_prepare, 0, "No transactions should be pending");
-    assert_eq!(coordinator.pending_count(), 0, "No pending transactions after recovery");
+    assert_eq!(
+        stats.pending_commit, 0,
+        "Transaction should be completed, not pending"
+    );
+    assert_eq!(
+        stats.pending_prepare, 0,
+        "No transactions should be pending"
+    );
+    assert_eq!(
+        coordinator.pending_count(),
+        0,
+        "No pending transactions after recovery"
+    );
 }
 
 #[test]
@@ -133,12 +143,19 @@ fn test_coordinator_crash_before_txcomplete_retries_commit() {
     let stats = coordinator.recover_from_wal().unwrap();
 
     // Transaction should be marked for commit retry
-    assert_eq!(stats.pending_commit, 1, "Transaction should need commit completion");
+    assert_eq!(
+        stats.pending_commit, 1,
+        "Transaction should need commit completion"
+    );
     assert_eq!(coordinator.pending_count(), 1, "One pending transaction");
 
     // Complete the commit
     coordinator.complete_commit(42).unwrap();
-    assert_eq!(coordinator.pending_count(), 0, "No pending transactions after completion");
+    assert_eq!(
+        coordinator.pending_count(),
+        0,
+        "No pending transactions after completion"
+    );
 }
 
 // ============= Issue 2: Lock handles persisted in PrepareVoteKind::Yes =============
@@ -328,7 +345,10 @@ fn test_record_vote_logs_to_wal() {
         .filter(|e| matches!(e, TxWalEntry::PrepareVote { .. }))
         .collect();
 
-    assert!(!vote_entries.is_empty(), "WAL should contain PrepareVote entry");
+    assert!(
+        !vote_entries.is_empty(),
+        "WAL should contain PrepareVote entry"
+    );
 
     if let TxWalEntry::PrepareVote {
         tx_id: logged_tx_id,
@@ -336,7 +356,10 @@ fn test_record_vote_logs_to_wal() {
         vote,
     } = &vote_entries[0]
     {
-        assert_eq!(*logged_tx_id, tx_id, "Vote should be for correct transaction");
+        assert_eq!(
+            *logged_tx_id, tx_id,
+            "Vote should be for correct transaction"
+        );
         assert_eq!(*shard, 0, "Vote should be for shard 0");
         assert!(
             matches!(vote, PrepareVoteKind::Yes { lock_handle } if *lock_handle > 0),
@@ -514,7 +537,10 @@ fn test_concurrent_crash_recovery_no_deadlock() {
 
     // Transaction 4 should not appear (it has TxComplete)
     assert_eq!(coordinator.pending_count(), 3, "3 transactions pending");
-    assert!(coordinator.get(4).is_none(), "Completed transaction should not be pending");
+    assert!(
+        coordinator.get(4).is_none(),
+        "Completed transaction should not be pending"
+    );
 
     // Complete all pending transactions without deadlock
     coordinator.complete_commit(2).unwrap();
@@ -606,7 +632,19 @@ fn test_mixed_vote_types_recovery() {
     assert_eq!(tx.votes.len(), 3, "Should have 3 votes recovered");
 
     // Verify vote types
-    assert!(matches!(tx.votes.get(&0), Some(PrepareVote::Yes { lock_handle: 111, .. })));
+    assert!(matches!(
+        tx.votes.get(&0),
+        Some(PrepareVote::Yes {
+            lock_handle: 111,
+            ..
+        })
+    ));
     assert!(matches!(tx.votes.get(&1), Some(PrepareVote::No { .. })));
-    assert!(matches!(tx.votes.get(&2), Some(PrepareVote::Yes { lock_handle: 333, .. })));
+    assert!(matches!(
+        tx.votes.get(&2),
+        Some(PrepareVote::Yes {
+            lock_handle: 333,
+            ..
+        })
+    ));
 }

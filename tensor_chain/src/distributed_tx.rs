@@ -5245,4 +5245,116 @@ mod tests {
             "edge 200->100 should be removed when 100 is cleaned"
         );
     }
+
+    #[test]
+    fn test_get_pending_transactions() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Begin a transaction
+        let tx = coord.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Get pending transactions
+        let pending = coord.get_pending_transactions();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].tx_id, tx_id);
+        assert_eq!(pending[0].coordinator, "node1");
+    }
+
+    #[test]
+    fn test_force_resolve_commit() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Begin a transaction
+        let tx = coord.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record a YES vote with lock
+        let request = PrepareRequest {
+            tx_id,
+            coordinator: "node1".to_string(),
+            operations: vec![],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let vote = coord.handle_prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        // Record the vote
+        coord.record_vote(tx_id, 0, vote);
+
+        // Force commit
+        let result = coord.force_resolve(tx_id, true);
+        assert!(result.is_ok());
+
+        // Transaction should be removed
+        let pending = coord.get_pending_transactions();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_force_resolve_abort() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Begin a transaction
+        let tx = coord.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record a YES vote with lock
+        let request = PrepareRequest {
+            tx_id,
+            coordinator: "node1".to_string(),
+            operations: vec![],
+            delta_embedding: SparseVector::default(),
+            timeout_ms: 5000,
+        };
+        let vote = coord.handle_prepare(request);
+        coord.record_vote(tx_id, 0, vote);
+
+        // Force abort
+        let result = coord.force_resolve(tx_id, false);
+        assert!(result.is_ok());
+
+        // Transaction should be removed
+        let pending = coord.get_pending_transactions();
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_force_resolve_not_found() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Try to force resolve non-existent transaction
+        let result = coord.force_resolve(99999, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_force_resolve_commit_with_no_vote() {
+        let config = DistributedTxConfig::default();
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coord = DistributedTxCoordinator::new(consensus, config);
+
+        // Begin a transaction
+        let tx = coord.begin("node1".to_string(), vec![0, 1]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Record a NO vote for one shard
+        let no_vote = PrepareVote::No {
+            reason: "test rejection".to_string(),
+        };
+        coord.record_vote(tx_id, 0, no_vote);
+
+        // Try to force commit - should fail because there's a NO vote
+        let result = coord.force_resolve(tx_id, true);
+        assert!(result.is_err());
+    }
 }

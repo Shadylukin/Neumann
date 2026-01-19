@@ -19,3 +19,7 @@ Thumbs.db
 *.so
 *.dylib
 *.dll
+
+# Private/experimental crates (not for public release)
+experiments/
+seed_model/

@@ -1201,4 +1201,49 @@ mod tests {
 
         assert!(tracker.is_empty());
     }
+
+    #[test]
+    fn test_identity_debug() {
+        let identity = Identity::generate();
+        let debug_str = format!("{:?}", identity);
+        assert!(debug_str.contains("Identity"));
+        assert!(debug_str.contains("node_id"));
+    }
+
+    #[test]
+    fn test_public_identity_to_bytes() {
+        let identity = Identity::generate();
+        let public = identity.verifying_key();
+        let bytes = public.to_bytes();
+        assert_eq!(bytes.len(), 32);
+
+        // Should roundtrip correctly
+        let restored = PublicIdentity::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.to_node_id(), public.to_node_id());
+    }
+
+    #[test]
+    fn test_identity_sign_verify_roundtrip() {
+        let identity = Identity::generate();
+        let message = b"test message for signing";
+
+        let signature = identity.sign(message);
+        let public = identity.verifying_key();
+
+        assert!(public.verify(message, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_public_identity_to_node_id() {
+        let identity = Identity::generate();
+        let public = identity.verifying_key();
+
+        // Both should have the same node ID
+        assert_eq!(identity.node_id(), public.to_node_id());
+
+        // Node ID should be consistent
+        let id1 = public.to_node_id();
+        let id2 = public.to_node_id();
+        assert_eq!(id1, id2);
+    }
 }

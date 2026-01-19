@@ -1294,4 +1294,65 @@ mod tests {
     fn test_handshake_min_protocol_version() {
         assert_eq!(Handshake::MIN_PROTOCOL_VERSION, 1);
     }
+
+    #[test]
+    fn test_codec_encode_message_too_large() {
+        // Create a codec with very small max frame size
+        let codec = LengthDelimitedCodec::new(10);
+
+        // Create a message that will exceed the max frame size after serialization
+        let large_message = Message::Gossip(crate::gossip::GossipMessage::Sync {
+            sender: "node1".to_string(),
+            states: vec![crate::gossip::GossipNodeState::with_wall_time(
+                "node1".to_string(),
+                crate::membership::NodeHealth::Healthy,
+                100,
+                1,
+                200,
+            )],
+            sender_time: 100,
+        });
+
+        let result = codec.encode(&large_message);
+        assert!(result.is_err());
+        if let Err(TcpError::MessageTooLarge { size, max_size }) = result {
+            assert!(size > max_size);
+        } else {
+            panic!("Expected MessageTooLarge error");
+        }
+    }
+
+    #[test]
+    fn test_codec_compression_disabled_encodes_normally() {
+        use super::compression::{CompressionConfig, CompressionMethod};
+
+        let config = CompressionConfig::default().with_method(CompressionMethod::Lz4);
+        let codec = LengthDelimitedCodec::with_compression(65535, config);
+
+        // Compression should be disabled by default (needs negotiation)
+        assert!(!codec.compression_enabled());
+
+        // Encoding should work without compression
+        let msg = Message::Gossip(crate::gossip::GossipMessage::Sync {
+            sender: "test".to_string(),
+            states: vec![],
+            sender_time: 0,
+        });
+
+        let result = codec.encode(&msg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_handshake_supports_compression_method() {
+        let handshake = Handshake::new("node1");
+        // Default should not support any compression
+        assert!(!handshake.supports_compression());
+    }
+
+    #[test]
+    fn test_handshake_with_compression_support() {
+        let handshake = Handshake::new("node1").with_compression();
+        assert!(handshake.supports_compression());
+    }
 }

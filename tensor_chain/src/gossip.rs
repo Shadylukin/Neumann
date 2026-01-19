@@ -2643,4 +2643,108 @@ mod tests {
         let all: Vec<_> = state.all_states().collect();
         assert_eq!(all.len(), 2);
     }
+
+    #[test]
+    fn test_gossip_node_state_with_wall_time() {
+        let state =
+            GossipNodeState::with_wall_time("node1".to_string(), NodeHealth::Healthy, 100, 1, 200);
+
+        assert_eq!(state.node_id, "node1");
+        assert_eq!(state.health, NodeHealth::Healthy);
+        assert_eq!(state.timestamp, 100);
+        assert_eq!(state.incarnation, 1);
+        assert_eq!(state.updated_at, 200);
+    }
+
+    #[test]
+    fn test_gossip_node_state_try_new() {
+        let result = GossipNodeState::try_new("node1".to_string(), NodeHealth::Healthy, 100, 1);
+
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert_eq!(state.node_id, "node1");
+        assert_eq!(state.health, NodeHealth::Healthy);
+        assert_eq!(state.timestamp, 100);
+        assert_eq!(state.incarnation, 1);
+    }
+
+    #[test]
+    fn test_gossip_node_state_supersedes_higher_incarnation() {
+        let older =
+            GossipNodeState::with_wall_time("node1".to_string(), NodeHealth::Healthy, 100, 1, 100);
+        let newer_incarnation = GossipNodeState::with_wall_time(
+            "node1".to_string(),
+            NodeHealth::Failed,
+            50, // older timestamp but higher incarnation
+            2,
+            50,
+        );
+
+        assert!(newer_incarnation.supersedes(&older));
+        assert!(!older.supersedes(&newer_incarnation));
+    }
+
+    #[test]
+    fn test_gossip_node_state_supersedes_newer_timestamp() {
+        let older =
+            GossipNodeState::with_wall_time("node1".to_string(), NodeHealth::Healthy, 100, 1, 100);
+        let newer_timestamp = GossipNodeState::with_wall_time(
+            "node1".to_string(),
+            NodeHealth::Failed,
+            200,
+            1, // same incarnation
+            200,
+        );
+
+        assert!(newer_timestamp.supersedes(&older));
+        assert!(!older.supersedes(&newer_timestamp));
+    }
+
+    #[test]
+    fn test_lww_membership_state_get() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Healthy, 0);
+        state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+
+        assert_eq!(state.all_states().count(), 2);
+
+        let node1 = state.get(&"node1".to_string());
+        assert!(node1.is_some());
+        assert_eq!(node1.unwrap().health, NodeHealth::Healthy);
+    }
+
+    #[test]
+    fn test_gossip_message_suspect_debug() {
+        let msg = GossipMessage::Suspect {
+            reporter: "node1".to_string(),
+            suspect: "node2".to_string(),
+            incarnation: 1,
+        };
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Suspect"));
+    }
+
+    #[test]
+    fn test_gossip_message_alive_debug() {
+        let msg = GossipMessage::Alive {
+            node_id: "node1".to_string(),
+            incarnation: 1,
+        };
+
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Alive"));
+    }
+
+    #[test]
+    fn test_lww_membership_state_states_for_gossip() {
+        let mut state = LWWMembershipState::new();
+        state.update_local("node1".to_string(), NodeHealth::Healthy, 0);
+        state.update_local("node2".to_string(), NodeHealth::Degraded, 0);
+        state.update_local("node3".to_string(), NodeHealth::Failed, 0);
+
+        // Request max 2 states
+        let gossip_states = state.states_for_gossip(2);
+        assert_eq!(gossip_states.len(), 2);
+    }
 }

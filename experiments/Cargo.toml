@@ -8,3 +8,5 @@ publish = false
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
+tensor_chain = { path = "../tensor_chain" }
+rand = "0.8"

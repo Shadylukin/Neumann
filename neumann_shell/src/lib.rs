@@ -558,10 +558,7 @@ impl Shell {
         } else {
             return CommandResult::Output(format!(
                 "Current identity: {}",
-                self.router
-                    .read()
-                    .current_identity()
-                    .unwrap_or("<none>")
+                self.router.read().current_identity().unwrap_or("<none>")
             ));
         };
 

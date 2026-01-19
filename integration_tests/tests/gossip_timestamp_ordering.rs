@@ -3,21 +3,15 @@
 //! Tests the HLC-based timestamp ordering to ensure monotonicity
 //! and correct ordering across gossip state updates.
 
-use tensor_chain::{
-    membership::NodeHealth, GossipNodeState, HLCTimestamp, HybridLogicalClock,
-};
+use tensor_chain::{membership::NodeHealth, GossipNodeState, HLCTimestamp, HybridLogicalClock};
 
 #[test]
 fn test_gossip_state_timestamps_are_monotonic() {
     // Create multiple gossip states in sequence
     let mut states = Vec::new();
     for i in 0..100 {
-        let state = GossipNodeState::new(
-            format!("node-{}", i % 5),
-            NodeHealth::Healthy,
-            i as u64,
-            0,
-        );
+        let state =
+            GossipNodeState::new(format!("node-{}", i % 5), NodeHealth::Healthy, i as u64, 0);
         states.push(state);
     }
 

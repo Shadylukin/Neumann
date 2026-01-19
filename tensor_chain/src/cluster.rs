@@ -2221,4 +2221,45 @@ mod tests {
 
         orchestrator.shutdown().await.unwrap();
     }
+
+    #[test]
+    fn test_handler_timeout_config_new() {
+        let config = HandlerTimeoutConfig::new(1000, 2000, 3000);
+        assert_eq!(config.query_timeout_ms, 1000);
+        assert_eq!(config.prepare_timeout_ms, 2000);
+        assert_eq!(config.commit_abort_timeout_ms, 3000);
+    }
+
+    #[test]
+    fn test_local_node_config_defaults() {
+        let config = LocalNodeConfig::new("node1", "127.0.0.1:8080".parse().unwrap());
+        assert_eq!(config.node_id, "node1");
+        assert_eq!(config.bind_address.to_string(), "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_peer_config_construction() {
+        let config = PeerConfig {
+            node_id: "peer1".to_string(),
+            address: "127.0.0.1:8081".parse().unwrap(),
+        };
+        assert_eq!(config.node_id, "peer1");
+    }
+
+    #[test]
+    fn test_orchestrator_config_with_peers() {
+        let local = LocalNodeConfig::new("node1", "127.0.0.1:8080".parse().unwrap());
+        let peers = vec![
+            PeerConfig {
+                node_id: "peer1".to_string(),
+                address: "127.0.0.1:8081".parse().unwrap(),
+            },
+            PeerConfig {
+                node_id: "peer2".to_string(),
+                address: "127.0.0.1:8082".parse().unwrap(),
+            },
+        ];
+        let config = OrchestratorConfig::new(local, peers);
+        assert_eq!(config.peers.len(), 2);
+    }
 }

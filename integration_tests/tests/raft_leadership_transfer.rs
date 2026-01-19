@@ -243,12 +243,8 @@ async fn test_prevote_with_stale_log() {
     node1.become_leader();
 
     // Mark peers as reachable so propose() can succeed (quorum check)
-    node1
-        .quorum_tracker()
-        .record_success(&"node2".to_string());
-    node1
-        .quorum_tracker()
-        .record_success(&"node3".to_string());
+    node1.quorum_tracker().record_success(&"node2".to_string());
+    node1.quorum_tracker().record_success(&"node3".to_string());
 
     let block = create_test_block(1, "node1");
     node1.propose(block).unwrap();

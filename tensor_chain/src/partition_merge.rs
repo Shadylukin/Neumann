@@ -2457,4 +2457,373 @@ mod tests {
         config.max_retries = 5;
         assert_eq!(config.max_retries, 5);
     }
+
+    #[test]
+    fn test_membership_view_summary_with_hash() {
+        let hash = [42u8; 32];
+        let view = MembershipViewSummary::new("node1".to_string(), 100, 5).with_hash(hash);
+
+        assert_eq!(view.state_hash, hash);
+    }
+
+    #[test]
+    fn test_membership_reconciler_local_incarnation_higher() {
+        use crate::gossip::GossipNodeState;
+        use crate::membership::NodeHealth;
+
+        let local = MembershipViewSummary::new("local".to_string(), 100, 1).with_states(vec![
+            GossipNodeState {
+                node_id: "node1".to_string(),
+                health: NodeHealth::Healthy,
+                timestamp: 100,
+                updated_at: 100,
+                incarnation: 10, // Local has higher incarnation
+            },
+        ]);
+
+        let remote = MembershipViewSummary::new("remote".to_string(), 110, 1).with_states(vec![
+            GossipNodeState {
+                node_id: "node1".to_string(),
+                health: NodeHealth::Failed,
+                timestamp: 200,
+                updated_at: 200,
+                incarnation: 5, // Lower incarnation - local wins
+            },
+        ]);
+
+        let (merged, conflicts) = MembershipReconciler::merge(&local, &remote).unwrap();
+
+        let node1 = merged
+            .node_states
+            .iter()
+            .find(|s| s.node_id == "node1")
+            .unwrap();
+        assert_eq!(node1.incarnation, 10);
+        assert_eq!(node1.health, NodeHealth::Healthy);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_data_reconciler_nearly_identical() {
+        // Create two embeddings with high similarity (> identical_threshold)
+        let mut local_emb = SparseVector::new(100);
+        local_emb.set(0, 1.0);
+        local_emb.set(1, 0.5);
+
+        let mut remote_emb = SparseVector::new(100);
+        remote_emb.set(0, 1.0);
+        remote_emb.set(1, 0.5);
+
+        // Different hashes to avoid state_matches short-circuit
+        let local = PartitionStateSummary::new("local".to_string())
+            .with_embedding(local_emb)
+            .with_hash([1u8; 32]);
+        let remote = PartitionStateSummary::new("remote".to_string())
+            .with_embedding(remote_emb)
+            .with_hash([2u8; 32]);
+
+        // Use low identical threshold to trigger the "identical" branch
+        let reconciler = DataReconciler::new(0.1, 0.9);
+        let result = reconciler.reconcile(&local, &remote);
+
+        assert!(result.success);
+        assert!(!result.requires_manual);
+        // Identical case keeps local
+        assert!(result.merged_data.is_some());
+    }
+
+    #[test]
+    fn test_data_reconciler_opposite_vectors() {
+        // Create two embeddings that are opposite (similarity < -identical_threshold)
+        let mut local_emb = SparseVector::new(100);
+        local_emb.set(0, 1.0);
+
+        let mut remote_emb = SparseVector::new(100);
+        remote_emb.set(0, -1.0);
+
+        let local = PartitionStateSummary::new("local".to_string())
+            .with_embedding(local_emb)
+            .with_hash([1u8; 32]);
+        let remote = PartitionStateSummary::new("remote".to_string())
+            .with_embedding(remote_emb)
+            .with_hash([2u8; 32]);
+
+        // Use moderate thresholds
+        let reconciler = DataReconciler::new(0.1, 0.9);
+        let result = reconciler.reconcile(&local, &remote);
+
+        assert!(result.success);
+        assert!(!result.requires_manual);
+        // Opposite vectors result in zero vector
+        assert!(result.merged_data.is_some());
+    }
+
+    #[test]
+    fn test_tx_reconciler_timeout_aborts() {
+        let mut tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        tx.votes.insert(0, true);
+        tx.started_at = 0; // Very old timestamp - will timeout
+
+        let reconciler = TransactionReconciler { tx_timeout_ms: 1 }; // 1ms timeout
+        let result = reconciler.reconcile(&[tx.clone()], &[tx]).unwrap();
+
+        assert!(result.to_abort.contains(&1));
+        assert!(result.to_commit.is_empty());
+    }
+
+    fn test_now_millis() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    #[test]
+    fn test_tx_reconciler_incomplete_votes_conflict() {
+        // Both sides have the tx but with incomplete/conflicting votes
+        let mut local_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        local_tx.votes.insert(0, true);
+        local_tx.started_at = test_now_millis(); // Not timed out
+
+        let mut remote_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Committing);
+        remote_tx.votes.insert(1, true);
+        remote_tx.started_at = test_now_millis();
+
+        let reconciler = TransactionReconciler {
+            tx_timeout_ms: 60000,
+        };
+        let result = reconciler.reconcile(&[local_tx], &[remote_tx]).unwrap();
+
+        // With merged votes all YES, should commit
+        // But phases are different which may cause conflict
+        assert!(!result.to_commit.is_empty() || !result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_remote_has_tx_all_yes() {
+        let mut remote_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        remote_tx.votes.insert(0, true);
+        remote_tx.votes.insert(1, true);
+        remote_tx.started_at = test_now_millis();
+
+        let reconciler = TransactionReconciler {
+            tx_timeout_ms: 60000,
+        };
+        let result = reconciler.reconcile(&[], &[remote_tx]).unwrap();
+
+        assert!(result.to_commit.contains(&1));
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_remote_has_tx_with_no() {
+        let mut remote_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        remote_tx.votes.insert(0, true);
+        remote_tx.votes.insert(1, false);
+        remote_tx.started_at = test_now_millis();
+
+        let reconciler = TransactionReconciler {
+            tx_timeout_ms: 60000,
+        };
+        let result = reconciler.reconcile(&[], &[remote_tx]).unwrap();
+
+        assert!(result.to_abort.contains(&1));
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_remote_incomplete() {
+        let mut remote_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        // No votes - incomplete
+        remote_tx.started_at = test_now_millis();
+
+        let reconciler = TransactionReconciler {
+            tx_timeout_ms: 60000,
+        };
+        let result = reconciler.reconcile(&[], &[remote_tx]).unwrap();
+
+        // Incomplete transactions from partition should abort
+        assert!(result.to_abort.contains(&1));
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_local_incomplete() {
+        let mut local_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        // No votes - incomplete
+        local_tx.started_at = test_now_millis();
+
+        let reconciler = TransactionReconciler {
+            tx_timeout_ms: 60000,
+        };
+        let result = reconciler.reconcile(&[local_tx], &[]).unwrap();
+
+        // Incomplete transactions from partition should abort
+        assert!(result.to_abort.contains(&1));
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_local_timed_out() {
+        let mut local_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        local_tx.votes.insert(0, true);
+        local_tx.started_at = 0; // Very old - timed out
+
+        let reconciler = TransactionReconciler { tx_timeout_ms: 1 }; // 1ms timeout
+        let result = reconciler.reconcile(&[local_tx], &[]).unwrap();
+
+        assert!(result.to_abort.contains(&1));
+    }
+
+    #[test]
+    fn test_tx_reconciler_only_remote_timed_out() {
+        let mut remote_tx = PendingTxState::new(1, "coord".to_string(), TxPhase::Preparing);
+        remote_tx.votes.insert(0, true);
+        remote_tx.started_at = 0; // Very old - timed out
+
+        let reconciler = TransactionReconciler { tx_timeout_ms: 1 }; // 1ms timeout
+        let result = reconciler.reconcile(&[], &[remote_tx]).unwrap();
+
+        assert!(result.to_abort.contains(&1));
+    }
+
+    #[test]
+    fn test_manager_with_reconcilers() {
+        let config = PartitionMergeConfig::default();
+        let data_reconciler = DataReconciler::new(0.5, 0.95);
+        let tx_reconciler = TransactionReconciler {
+            tx_timeout_ms: 30000,
+        };
+
+        let manager = PartitionMergeManager::with_reconcilers(
+            "local".to_string(),
+            config,
+            data_reconciler,
+            tx_reconciler,
+        );
+
+        // Verify manager was created and can start sessions
+        let session_id = manager.start_merge(vec!["node1".to_string()]);
+        assert!(session_id.is_some());
+    }
+
+    #[test]
+    fn test_can_merge_with_cooldown_blocking() {
+        let mut config = PartitionMergeConfig::default();
+        config.merge_cooldown_ms = 10000; // 10 second cooldown
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+
+        // Start first merge to trigger cooldown
+        let _session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Should not be able to merge with same node due to cooldown
+        assert!(!manager.can_merge_with(&"node1".to_string()));
+    }
+
+    #[test]
+    fn test_start_merge_blocked_by_max_concurrent() {
+        let mut config = PartitionMergeConfig::default();
+        config.max_concurrent_merges = 1;
+        config.merge_cooldown_ms = 0; // No cooldown
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+
+        // First merge should succeed
+        let session1 = manager.start_merge(vec!["node1".to_string()]);
+        assert!(session1.is_some());
+
+        // Second merge should fail due to max concurrent limit
+        let session2 = manager.start_merge(vec!["node2".to_string()]);
+        assert!(session2.is_none());
+    }
+
+    #[test]
+    fn test_start_merge_blocked_by_all_cooldowns() {
+        let mut config = PartitionMergeConfig::default();
+        config.merge_cooldown_ms = 10000;
+        config.max_concurrent_merges = 10;
+
+        let manager = PartitionMergeManager::new("local".to_string(), config);
+
+        // Start merge to trigger cooldown
+        let _session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        // Try to merge with same node again - should fail due to cooldown
+        let session2 = manager.start_merge(vec!["node1".to_string()]);
+        assert!(session2.is_none());
+    }
+
+    #[test]
+    fn test_pending_tx_state_accessors() {
+        let mut tx = PendingTxState::new(42, "coordinator".to_string(), TxPhase::Committing);
+        tx.votes.insert(0, true);
+        tx.votes.insert(1, false);
+        tx.delta = Some(SparseVector::from_dense(&[1.0, 0.0, 0.5]));
+        tx.participants = vec![0, 1, 2];
+
+        assert_eq!(tx.tx_id, 42);
+        assert_eq!(tx.coordinator, "coordinator");
+        assert_eq!(tx.phase, TxPhase::Committing);
+        assert_eq!(tx.votes.len(), 2);
+        assert!(tx.delta.is_some());
+        assert_eq!(tx.participants.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_session_advance_phases() {
+        let mut session = MergeSession::new(1, vec!["node1".to_string()]);
+
+        assert_eq!(session.phase, MergePhase::HealDetection);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::ViewExchange);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::MembershipReconciliation);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::DataReconciliation);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::TransactionReconciliation);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::Finalization);
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::Completed);
+        // Advancing from completed should stay completed
+        session.advance_phase();
+        assert_eq!(session.phase, MergePhase::Completed);
+    }
+
+    #[test]
+    fn test_merge_session_fail_phase_transition() {
+        let manager =
+            PartitionMergeManager::new("local".to_string(), PartitionMergeConfig::default());
+        let session_id = manager.start_merge(vec!["node1".to_string()]).unwrap();
+
+        manager.fail_session(session_id, "test error");
+        let session = manager.get_session(session_id).unwrap();
+        assert_eq!(session.phase, MergePhase::Failed);
+    }
+
+    #[test]
+    fn test_partition_state_summary_with_log_position() {
+        let summary = PartitionStateSummary::new("node1".to_string()).with_log_position(100, 5);
+
+        assert_eq!(summary.last_committed_index, 100);
+        assert_eq!(summary.last_committed_term, 5);
+    }
+
+    #[test]
+    fn test_partition_merge_stats_record_session_start() {
+        let stats = PartitionMergeStats::new();
+
+        assert_eq!(
+            stats
+                .sessions_started
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        stats.record_session_start();
+        assert_eq!(
+            stats
+                .sessions_started
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
 }

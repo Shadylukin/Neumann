@@ -7408,4 +7408,188 @@ mod tests {
         assert!(!node.is_leader());
         assert_eq!(node.current_term(), 2);
     }
+
+    #[test]
+    fn test_snapshot_metadata_with_membership() {
+        use crate::network::RaftMembershipConfig;
+
+        let membership = RaftMembershipConfig {
+            voters: vec!["node1".to_string(), "node2".to_string()],
+            learners: vec!["node3".to_string()],
+            joint: None,
+            config_index: 0,
+        };
+
+        let meta = SnapshotMetadata::with_membership(100, 5, [42u8; 32], membership.clone(), 1024);
+
+        assert_eq!(meta.last_included_index, 100);
+        assert_eq!(meta.last_included_term, 5);
+        assert_eq!(meta.snapshot_hash, [42u8; 32]);
+        assert_eq!(meta.config, membership.voters);
+        assert_eq!(meta.membership.voters, membership.voters);
+        assert_eq!(meta.membership.learners, membership.learners);
+        assert_eq!(meta.size, 1024);
+        assert!(meta.created_at > 0);
+    }
+
+    #[test]
+    fn test_create_snapshot_no_finalized() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add some entries but don't finalize any
+        {
+            let mut persistent = node.persistent.write();
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+
+        // Try to create snapshot - should fail
+        let result = node.create_snapshot();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_snapshot_finalized_exceeds_log() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add a few entries
+        {
+            let mut persistent = node.persistent.write();
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+
+        // Set finalized height beyond log length
+        node.finalized_height.store(100, Ordering::SeqCst);
+
+        // Try to create snapshot - should fail
+        let result = node.create_snapshot();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_snapshot_streaming_no_finalized() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add some entries but don't finalize any
+        {
+            let mut persistent = node.persistent.write();
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+
+        // Try to create streaming snapshot - should fail
+        let result = node.create_snapshot_streaming();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_snapshot_streaming_finalized_exceeds_log() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Add a few entries
+        {
+            let mut persistent = node.persistent.write();
+            persistent
+                .log
+                .push(LogEntry::new(1, 1, create_test_block(1)));
+        }
+
+        // Set finalized height beyond log length
+        node.finalized_height.store(100, Ordering::SeqCst);
+
+        // Try to create streaming snapshot - should fail
+        let result = node.create_snapshot_streaming();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_raft_node_with_wal() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("raft.wal");
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig::default();
+
+        let node = RaftNode::with_wal(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+            &wal_path,
+        );
+
+        assert!(node.is_ok());
+        let node = node.unwrap();
+        assert_eq!(node.node_id, "node1");
+        assert!(node.wal.is_some());
+    }
+
+    #[test]
+    fn test_raft_node_persist_term_and_vote_no_wal() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+
+        // Without WAL, this should be a no-op
+        let result = node.persist_term_and_vote(5, Some("node2"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_raft_node_persist_term_and_vote_with_wal() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("raft.wal");
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let config = RaftConfig::default();
+
+        let node = RaftNode::with_wal(
+            "node1".to_string(),
+            vec!["node2".to_string()],
+            transport,
+            config,
+            &wal_path,
+        )
+        .unwrap();
+
+        // With WAL, this should persist
+        let result = node.persist_term_and_vote(5, Some("node2"));
+        assert!(result.is_ok());
+
+        // Test without voted_for
+        let result = node.persist_term_and_vote(6, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_raft_config_fields() {
+        let mut config = RaftConfig::default();
+        config.snapshot_threshold = 500;
+        config.heartbeat_interval = 250;
+        config.election_timeout = (2000, 4000);
+
+        assert_eq!(config.election_timeout, (2000, 4000));
+        assert_eq!(config.heartbeat_interval, 250);
+        assert_eq!(config.snapshot_threshold, 500);
+    }
+
+    #[test]
+    fn test_log_entry_index_field() {
+        let entry = LogEntry::new(5, 42, create_test_block(42));
+        assert_eq!(entry.index, 42);
+        assert_eq!(entry.term, 5);
+    }
+
+    #[test]
+    fn test_snapshot_metadata_new_sets_created_at() {
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
+        assert!(meta.created_at > 0);
+        assert_eq!(meta.size, 100);
+    }
 }

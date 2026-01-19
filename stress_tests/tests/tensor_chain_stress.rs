@@ -161,7 +161,10 @@ fn stress_chain_append_10k_blocks() {
         );
     }
 
-    println!("PASSED: {} blocks appended at {:.0} blocks/sec", block_count, throughput);
+    println!(
+        "PASSED: {} blocks appended at {:.0} blocks/sec",
+        block_count, throughput
+    );
 }
 
 // ============= Stress Test 2: Concurrent Transactions 10k =============
@@ -212,7 +215,7 @@ fn stress_concurrent_transactions_10k() {
                     Err(_) => {
                         local_aborted += 1;
                         continue;
-                    }
+                    },
                 };
 
                 // Prepare
@@ -223,7 +226,10 @@ fn stress_concurrent_transactions_10k() {
                         key: key.clone(),
                         data: vec![t as u8, (i % 256) as u8],
                     }],
-                    delta_embedding: SparseVector::from_dense(&[(t as f32) / 10.0, (i as f32) / 1000.0]),
+                    delta_embedding: SparseVector::from_dense(&[
+                        (t as f32) / 10.0,
+                        (i as f32) / 1000.0,
+                    ]),
                     timeout_ms: 5000,
                 };
 
@@ -235,11 +241,11 @@ fn stress_concurrent_transactions_10k() {
                     Ok(_) => {
                         local_committed += 1;
                         committed.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                     Err(_) => {
                         local_aborted += 1;
                         aborted.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                 }
 
                 latencies.record(op_start.elapsed());
@@ -401,7 +407,10 @@ fn stress_hnsw_search_during_insert_10k() {
     let insert_snapshot = insert_handle.join().unwrap();
 
     // Wait for searches
-    let search_results: Vec<_> = search_handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let search_results: Vec<_> = search_handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .collect();
 
     let total_inserts = insert_count.load(Ordering::Relaxed);
     let total_searches = search_count_done.load(Ordering::Relaxed);
@@ -415,7 +424,10 @@ fn stress_hnsw_search_during_insert_10k() {
         successful_searches,
         (successful_searches as f64 / total_searches as f64) * 100.0
     );
-    println!("Insert p50={:?}, p99={:?}", insert_snapshot.p50, insert_snapshot.p99);
+    println!(
+        "Insert p50={:?}, p99={:?}",
+        insert_snapshot.p50, insert_snapshot.p99
+    );
 
     for (i, (snapshot, success)) in search_results.iter().enumerate() {
         println!(
@@ -425,10 +437,7 @@ fn stress_hnsw_search_during_insert_10k() {
     }
 
     // Verify
-    assert_eq!(
-        total_inserts, entity_count,
-        "All inserts should complete"
-    );
+    assert_eq!(total_inserts, entity_count, "All inserts should complete");
     assert!(
         successful_searches > search_count * 80 / 100,
         "Most searches should succeed: {} out of {}",
@@ -506,11 +515,11 @@ fn stress_lock_manager_high_contention() {
 
                         // Release lock
                         lock_manager.release_by_handle(handle);
-                    }
+                    },
                     Err(_) => {
                         local_failed += 1;
                         failed.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                 }
 
                 latencies.record(op_start.elapsed());
@@ -531,7 +540,10 @@ fn stress_lock_manager_high_contention() {
     println!("Duration: {:?}", elapsed);
     println!("Locks acquired: {}", total_acquired);
     println!("Locks failed: {}", total_failed);
-    println!("Contention rate: {:.1}%", (total_failed as f64 / op_count as f64) * 100.0);
+    println!(
+        "Contention rate: {:.1}%",
+        (total_failed as f64 / op_count as f64) * 100.0
+    );
     println!("Throughput: {:.0} ops/sec", throughput);
 
     for (i, (snapshot, acquired, failed)) in results.iter().enumerate() {
