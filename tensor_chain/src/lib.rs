@@ -167,6 +167,23 @@ pub use validation::{
     ValidationConfig, ValidationMode,
 };
 
+/// Calculate quorum size for a cluster of N nodes.
+///
+/// Quorum requires a strict majority: (N / 2) + 1 nodes.
+/// This ensures no two disjoint groups can both have quorum.
+///
+/// Examples:
+/// - 1 node: quorum = 1
+/// - 2 nodes: quorum = 2
+/// - 3 nodes: quorum = 2
+/// - 4 nodes: quorum = 3
+/// - 5 nodes: quorum = 3
+/// - 6 nodes: quorum = 4
+#[inline]
+pub fn quorum_size(total_nodes: usize) -> usize {
+    (total_nodes / 2) + 1
+}
+
 /// Aggregated metrics from all tensor_chain components.
 ///
 /// Provides a unified interface to collect and snapshot metrics from:
@@ -2195,5 +2212,64 @@ mod tests {
             "Block signature should verify: {:?}",
             result
         );
+    }
+
+    // quorum_size() tests
+
+    #[test]
+    fn test_quorum_size_single_node() {
+        assert_eq!(quorum_size(1), 1);
+    }
+
+    #[test]
+    fn test_quorum_size_two_nodes() {
+        assert_eq!(quorum_size(2), 2);
+    }
+
+    #[test]
+    fn test_quorum_size_three_nodes() {
+        assert_eq!(quorum_size(3), 2);
+    }
+
+    #[test]
+    fn test_quorum_size_four_nodes() {
+        // 4 nodes: quorum = 3 (not 2, since 2/4 is not a majority)
+        assert_eq!(quorum_size(4), 3);
+    }
+
+    #[test]
+    fn test_quorum_size_five_nodes() {
+        assert_eq!(quorum_size(5), 3);
+    }
+
+    #[test]
+    fn test_quorum_size_six_nodes() {
+        assert_eq!(quorum_size(6), 4);
+    }
+
+    #[test]
+    fn test_quorum_size_seven_nodes() {
+        assert_eq!(quorum_size(7), 4);
+    }
+
+    #[test]
+    fn test_quorum_always_majority() {
+        // For any N, quorum must be > N/2
+        for n in 1..=100 {
+            let q = quorum_size(n);
+            assert!(q > n / 2, "quorum {} not majority of {}", q, n);
+            assert!(q <= n, "quorum {} exceeds cluster size {}", q, n);
+        }
+    }
+
+    #[test]
+    fn test_quorum_no_split_brain() {
+        // Two disjoint groups cannot both have quorum
+        for n in 1..=100 {
+            let q = quorum_size(n);
+            // If one group has q nodes, the other has at most n-q
+            // n-q must be < q for safety
+            assert!(n - q < q, "split brain possible with n={}, q={}", n, q);
+        }
     }
 }

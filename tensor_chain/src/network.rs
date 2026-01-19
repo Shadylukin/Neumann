@@ -556,8 +556,8 @@ impl JointConfig {
 
     /// Check if we have a joint quorum (majority in BOTH old and new configs).
     pub fn has_joint_quorum(&self, votes: &HashSet<NodeId>) -> bool {
-        let old_quorum = (self.old_voters.len() / 2) + 1;
-        let new_quorum = (self.new_voters.len() / 2) + 1;
+        let old_quorum = crate::quorum_size(self.old_voters.len());
+        let new_quorum = crate::quorum_size(self.new_voters.len());
 
         let old_votes = self
             .old_voters
@@ -614,7 +614,7 @@ impl RaftMembershipConfig {
         if let Some(ref joint) = self.joint {
             joint.has_joint_quorum(votes)
         } else {
-            let quorum = (self.voters.len() / 2) + 1;
+            let quorum = crate::quorum_size(self.voters.len());
             self.voters.iter().filter(|n| votes.contains(*n)).count() >= quorum
         }
     }

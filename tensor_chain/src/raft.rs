@@ -395,9 +395,9 @@ impl QuorumTracker {
     pub fn has_quorum(&self, total_peers: usize) -> bool {
         // Total nodes = peers + self
         let total_nodes = total_peers + 1;
-        let quorum_size = (total_nodes / 2) + 1;
+        let quorum = crate::quorum_size(total_nodes);
         // Reachable = peers responding + self (always reachable)
-        self.reachable_count() + 1 >= quorum_size
+        self.reachable_count() + 1 >= quorum
     }
 
     pub fn reset(&self) {
@@ -1344,7 +1344,7 @@ impl RaftNode {
     fn quorum_size(&self) -> usize {
         self.config.quorum_size.unwrap_or_else(|| {
             let total_nodes = self.peers.read().len() + 1;
-            (total_nodes / 2) + 1
+            crate::quorum_size(total_nodes)
         })
     }
 
@@ -2074,18 +2074,15 @@ impl RaftNode {
         let state_embedding = self.state_embedding.read().clone();
         drop(persistent);
 
-        // Request votes from all peers
-        let request = Message::RequestVote(RequestVote {
+        // Build RequestVote message (discarded in sync version)
+        // Use start_election_async() for actual broadcast via transport
+        let _request = Message::RequestVote(RequestVote {
             term,
             candidate_id: self.node_id.clone(),
             last_log_index,
             last_log_term,
             state_embedding,
         });
-
-        // Note: In real implementation, this would be async
-        // For now, we'll send synchronously in the test
-        let _ = request; // TODO: broadcast
     }
 
     /// Become leader after winning election.
@@ -2247,8 +2244,7 @@ impl RaftNode {
             self.stats
                 .quorum_lost_events
                 .fetch_add(1, Ordering::Relaxed);
-            // Quorum size = majority = (total_nodes / 2) + 1
-            let quorum_needed = (peer_count + 2).div_ceil(2);
+            let quorum_needed = crate::quorum_size(peer_count + 1);
             tracing::warn!(
                 "Stepping down: lost quorum contact (reachable: {}, needed: {})",
                 self.quorum_tracker.reachable_count(),

@@ -684,3 +684,21 @@ path = "fuzz_targets/dtx_state_cleanup.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 36: Error hierarchy targets
+
+[[bin]]
+name = "error_hierarchy"
+path = "fuzz_targets/error_hierarchy.rs"
+test = false
+doc = false
+bench = false
+
+# Tier 37: Quorum formula targets
+
+[[bin]]
+name = "quorum_formula"
+path = "fuzz_targets/quorum_formula.rs"
+test = false
+doc = false
+bench = false
