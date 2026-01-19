@@ -654,3 +654,26 @@ path = "fuzz_targets/gossip_timestamp_order.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 35: 2PC wait graph and deadlock integration targets
+
+[[bin]]
+name = "dtx_wait_graph_lock_integration"
+path = "fuzz_targets/dtx_wait_graph_lock_integration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dtx_deadlock_2pc_flow"
+path = "fuzz_targets/dtx_deadlock_2pc_flow.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dtx_toctou_stress"
+path = "fuzz_targets/dtx_toctou_stress.rs"
+test = false
+doc = false
+bench = false

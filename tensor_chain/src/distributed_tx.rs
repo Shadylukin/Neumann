@@ -365,6 +365,33 @@ impl LockManager {
         }
     }
 
+    /// Release locks by handle and clean up the wait-for graph.
+    ///
+    /// This ensures that when locks are released, any wait edges involving
+    /// the releasing transaction are removed to prevent orphaned edges.
+    pub fn release_by_handle_with_wait_cleanup(
+        &self,
+        lock_handle: u64,
+        wait_graph: &crate::deadlock::WaitForGraph,
+    ) {
+        // Extract tx_id before releasing (while we still have lock info)
+        let tx_id = {
+            let locks = self.locks.read();
+            locks
+                .values()
+                .find(|lock| lock.lock_handle == lock_handle)
+                .map(|lock| lock.tx_id)
+        };
+
+        // Release the locks
+        self.release_by_handle(lock_handle);
+
+        // Clean up wait graph for this transaction
+        if let Some(tx_id) = tx_id {
+            wait_graph.remove_transaction(tx_id);
+        }
+    }
+
     pub fn is_locked(&self, key: &str) -> bool {
         let locks = self.locks.read();
         locks.get(key).is_some_and(|lock| !lock.is_expired())
@@ -716,6 +743,8 @@ pub struct DistributedTxCoordinator {
     consensus: ConsensusManager,
     /// Lock manager.
     lock_manager: LockManager,
+    /// Wait-for graph for deadlock detection.
+    wait_graph: crate::deadlock::WaitForGraph,
     /// Configuration.
     config: DistributedTxConfig,
     /// Statistics.
@@ -734,6 +763,7 @@ impl DistributedTxCoordinator {
             pending: RwLock::new(HashMap::new()),
             consensus,
             lock_manager: LockManager::new(),
+            wait_graph: crate::deadlock::WaitForGraph::new(),
             config,
             stats: DistributedTxStats::new(),
             abort_states: RwLock::new(HashMap::new()),
@@ -842,7 +872,8 @@ impl DistributedTxCoordinator {
         coordinator: NodeId,
         participants: Vec<ShardId>,
     ) -> Result<DistributedTransaction> {
-        // Atomically check limit and insert in single critical section to prevent TOCTOU race
+        // Atomically check limit, write WAL, and insert - all in single critical section
+        // to prevent TOCTOU race on max_concurrent and ensure WAL/pending consistency
         let tx = {
             let mut pending = self.pending.write();
 
@@ -858,15 +889,17 @@ impl DistributedTxCoordinator {
             }
 
             let tx = DistributedTransaction::new(coordinator.clone(), participants.clone());
+
+            // Write WAL INSIDE critical section - if this fails, tx is NOT in pending
+            // This ensures WAL and pending state are always consistent
+            self.log_wal_entry(&TxWalEntry::TxBegin {
+                tx_id: tx.tx_id,
+                participants: participants.clone(),
+            })?;
+
             pending.insert(tx.tx_id, tx.clone());
             tx
         };
-
-        // Log to WAL AFTER successfully inserting to pending
-        self.log_wal_entry(&TxWalEntry::TxBegin {
-            tx_id: tx.tx_id,
-            participants: participants.clone(),
-        })?;
 
         self.stats.started.fetch_add(1, Ordering::Relaxed);
 
@@ -898,8 +931,13 @@ impl DistributedTxCoordinator {
             "Processing prepare request"
         );
 
-        // Try to acquire locks
-        let lock_handle = match self.lock_manager.try_lock(request.tx_id, &keys) {
+        // Try to acquire locks with wait-for graph tracking for deadlock detection
+        let lock_handle = match self.lock_manager.try_lock_with_wait_tracking(
+            request.tx_id,
+            &keys,
+            &self.wait_graph,
+            None, // No priority for now
+        ) {
             Ok(handle) => {
                 tracing::debug!(
                     tx_id = request.tx_id,
@@ -908,15 +946,16 @@ impl DistributedTxCoordinator {
                 );
                 handle
             },
-            Err(conflicting_tx) => {
+            Err(wait_info) => {
                 tracing::warn!(
                     tx_id = request.tx_id,
-                    conflicting_tx = conflicting_tx,
+                    conflicting_tx = wait_info.blocking_tx_id,
+                    conflicting_keys = ?wait_info.conflicting_keys,
                     "Lock conflict detected"
                 );
                 return PrepareVote::Conflict {
                     similarity: 1.0, // Same keys = maximum conflict
-                    conflicting_tx,
+                    conflicting_tx: wait_info.blocking_tx_id,
                 };
             },
         };
@@ -1170,7 +1209,8 @@ impl DistributedTxCoordinator {
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
                 tracing::debug!(tx_id = tx_id, lock_handle = lock_handle, "Releasing lock");
-                self.lock_manager.release_by_handle(*lock_handle);
+                self.lock_manager
+                    .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
             }
         }
 
@@ -1203,7 +1243,8 @@ impl DistributedTxCoordinator {
         // Release any remaining locks
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
-                self.lock_manager.release_by_handle(*lock_handle);
+                self.lock_manager
+                    .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
             }
         }
 
@@ -1233,7 +1274,8 @@ impl DistributedTxCoordinator {
         // Release any remaining locks
         for vote in tx.votes.values() {
             if let PrepareVote::Yes { lock_handle, .. } = vote {
-                self.lock_manager.release_by_handle(*lock_handle);
+                self.lock_manager
+                    .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
             }
         }
 
@@ -1284,7 +1326,8 @@ impl DistributedTxCoordinator {
                     lock_handle = lock_handle,
                     "Releasing lock on abort"
                 );
-                self.lock_manager.release_by_handle(*lock_handle);
+                self.lock_manager
+                    .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
             }
         }
 
@@ -1334,7 +1377,8 @@ impl DistributedTxCoordinator {
                 // Release locks
                 for vote in tx.votes.values() {
                     if let PrepareVote::Yes { lock_handle, .. } = vote {
-                        self.lock_manager.release_by_handle(*lock_handle);
+                        self.lock_manager
+                            .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
                     }
                 }
                 self.stats.timed_out.fetch_add(1, Ordering::Relaxed);
@@ -1356,6 +1400,10 @@ impl DistributedTxCoordinator {
 
     pub fn lock_manager(&self) -> &LockManager {
         &self.lock_manager
+    }
+
+    pub fn wait_graph(&self) -> &crate::deadlock::WaitForGraph {
+        &self.wait_graph
     }
 
     pub fn stats(&self) -> &DistributedTxStats {
@@ -1519,6 +1567,7 @@ impl DistributedTxCoordinator {
             pending: RwLock::new(state.pending),
             consensus,
             lock_manager: LockManager::from_serializable(state.lock_state),
+            wait_graph: crate::deadlock::WaitForGraph::new(),
             config,
             stats: DistributedTxStats::new(),
             abort_states: RwLock::new(HashMap::new()),
@@ -1595,7 +1644,8 @@ impl DistributedTxCoordinator {
             if let Some(tx) = pending.remove(&tx_id) {
                 for vote in tx.votes.values() {
                     if let PrepareVote::Yes { lock_handle, .. } = vote {
-                        self.lock_manager.release_by_handle(*lock_handle);
+                        self.lock_manager
+                            .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
                     }
                 }
             }
@@ -1661,7 +1711,8 @@ impl DistributedTxCoordinator {
                 // Release locks
                 for vote in tx.votes.values() {
                     if let PrepareVote::Yes { lock_handle, .. } = vote {
-                        self.lock_manager.release_by_handle(*lock_handle);
+                        self.lock_manager
+                            .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
                     }
                 }
                 tx.phase = TxPhase::Committed;
@@ -1678,7 +1729,8 @@ impl DistributedTxCoordinator {
             tx.phase = TxPhase::Aborting;
             for vote in tx.votes.values() {
                 if let PrepareVote::Yes { lock_handle, .. } = vote {
-                    self.lock_manager.release_by_handle(*lock_handle);
+                    self.lock_manager
+                        .release_by_handle_with_wait_cleanup(*lock_handle, &self.wait_graph);
                 }
             }
             tx.phase = TxPhase::Aborted;
@@ -4902,5 +4954,295 @@ mod tests {
         let remaining = coordinator.lock_manager.active_lock_count();
         let final_cleanup = coordinator.release_orphaned_locks(u64::MAX);
         assert_eq!(remaining, final_cleanup, "All remaining should be orphaned");
+    }
+
+    #[test]
+    fn test_handle_prepare_populates_wait_graph() {
+        use tensor_store::SparseVector;
+
+        let coordinator = create_test_coordinator();
+
+        // First transaction acquires locks
+        let keys = vec!["key1".to_string(), "key2".to_string()];
+        let _handle1 = coordinator.lock_manager.try_lock(100, &keys).unwrap();
+
+        // Second transaction tries to prepare - should fail and populate wait graph
+        let request = PrepareRequest {
+            tx_id: 200,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1],
+            }],
+            delta_embedding: SparseVector::from_dense(&[1.0, 0.0, 0.0]),
+            timeout_ms: 5000,
+        };
+
+        let vote = coordinator.handle_prepare(request);
+
+        // Should be a conflict vote
+        assert!(matches!(vote, PrepareVote::Conflict { .. }));
+
+        // Wait graph should have edge: 200 -> 100
+        let waiting_for = coordinator.wait_graph().waiting_for(200);
+        assert!(
+            waiting_for.contains(&100),
+            "tx 200 should be waiting for tx 100"
+        );
+    }
+
+    #[test]
+    fn test_commit_cleans_wait_graph() {
+        use crate::consensus::{ConsensusConfig, DeltaVector};
+        use tensor_store::SparseVector;
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // Start a transaction and record a YES vote
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Manually add to wait graph to simulate prior conflict
+        coordinator.wait_graph().add_wait(tx_id, 999, None);
+        assert!(!coordinator.wait_graph().is_empty());
+
+        // Prepare the transaction (creates lock)
+        let keys = vec!["key1".to_string()];
+        let handle = coordinator.lock_manager.try_lock(tx_id, &keys).unwrap();
+
+        // Record YES vote
+        let vote = PrepareVote::Yes {
+            lock_handle: handle,
+            delta: DeltaVector::from_sparse(
+                SparseVector::from_dense(&[1.0, 0.0, 0.0]),
+                keys.into_iter().collect(),
+                tx_id,
+            ),
+        };
+        coordinator.record_vote(tx_id, 0, vote);
+
+        // Commit should clean wait graph
+        coordinator.commit(tx_id).unwrap();
+
+        // Wait graph should be empty (tx removed)
+        assert!(
+            coordinator.wait_graph().waiting_for(tx_id).is_empty(),
+            "wait graph should be cleaned after commit"
+        );
+    }
+
+    #[test]
+    fn test_abort_cleans_wait_graph() {
+        use crate::consensus::{ConsensusConfig, DeltaVector};
+        use tensor_store::SparseVector;
+
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::with_consensus(consensus);
+
+        // Start a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Add to wait graph
+        coordinator.wait_graph().add_wait(tx_id, 999, None);
+        assert!(!coordinator.wait_graph().is_empty());
+
+        // Prepare the transaction
+        let keys = vec!["key1".to_string()];
+        let handle = coordinator.lock_manager.try_lock(tx_id, &keys).unwrap();
+
+        // Record YES vote
+        let vote = PrepareVote::Yes {
+            lock_handle: handle,
+            delta: DeltaVector::from_sparse(
+                SparseVector::from_dense(&[1.0, 0.0, 0.0]),
+                keys.into_iter().collect(),
+                tx_id,
+            ),
+        };
+        coordinator.record_vote(tx_id, 0, vote);
+
+        // Abort should clean wait graph
+        coordinator.abort(tx_id, "test abort").unwrap();
+
+        // Wait graph should be empty
+        assert!(
+            coordinator.wait_graph().waiting_for(tx_id).is_empty(),
+            "wait graph should be cleaned after abort"
+        );
+    }
+
+    #[test]
+    fn test_timeout_cleanup_cleans_wait_graph() {
+        use crate::consensus::{ConsensusConfig, DeltaVector};
+        use tensor_store::SparseVector;
+
+        // Create a coordinator with very short timeouts
+        let config = DistributedTxConfig {
+            max_concurrent: 100,
+            prepare_timeout_ms: 1, // Very short timeout
+            commit_timeout_ms: 1,
+            ..Default::default()
+        };
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, config);
+
+        // Start a transaction
+        let tx = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx_id = tx.tx_id;
+
+        // Manually set a very short timeout on the transaction
+        {
+            let mut pending = coordinator.pending.write();
+            if let Some(tx) = pending.get_mut(&tx_id) {
+                tx.timeout_ms = 1; // 1ms timeout
+            }
+        }
+
+        // Prepare the transaction
+        let keys = vec!["key1".to_string()];
+        let handle = coordinator.lock_manager.try_lock(tx_id, &keys).unwrap();
+
+        // Add to wait graph
+        coordinator.wait_graph().add_wait(tx_id, 999, None);
+
+        // Record YES vote (so we have a lock to release)
+        let vote = PrepareVote::Yes {
+            lock_handle: handle,
+            delta: DeltaVector::from_sparse(
+                SparseVector::from_dense(&[1.0, 0.0, 0.0]),
+                keys.into_iter().collect(),
+                tx_id,
+            ),
+        };
+        coordinator.record_vote(tx_id, 0, vote);
+
+        // Wait for timeout
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Cleanup should remove from wait graph
+        let timed_out = coordinator.cleanup_timeouts();
+        assert!(timed_out.contains(&tx_id));
+
+        // Wait graph should be cleaned
+        assert!(
+            coordinator.wait_graph().waiting_for(tx_id).is_empty(),
+            "wait graph should be cleaned after timeout"
+        );
+    }
+
+    #[test]
+    fn test_release_by_handle_with_wait_cleanup() {
+        use crate::deadlock::WaitForGraph;
+
+        let lock_manager = LockManager::new();
+        let wait_graph = WaitForGraph::new();
+
+        // Transaction 1 acquires lock
+        let keys = vec!["key1".to_string()];
+        let handle = lock_manager.try_lock(100, &keys).unwrap();
+
+        // Transaction 2 is waiting for transaction 1
+        wait_graph.add_wait(200, 100, None);
+        assert!(wait_graph.waiting_for(200).contains(&100));
+
+        // Release with wait cleanup
+        lock_manager.release_by_handle_with_wait_cleanup(handle, &wait_graph);
+
+        // Lock should be released
+        assert!(!lock_manager.is_locked("key1"));
+
+        // Transaction 100 should be removed from wait graph
+        // (both as holder and any edges involving it)
+        assert!(
+            wait_graph.waiting_on(100).is_empty(),
+            "tx 100 should be removed from wait graph"
+        );
+    }
+
+    #[test]
+    fn test_begin_wal_atomic_with_pending() {
+        use crate::consensus::ConsensusConfig;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let wal = crate::tx_wal::TxWal::open(&wal_path).unwrap();
+
+        let config = DistributedTxConfig {
+            max_concurrent: 2,
+            ..Default::default()
+        };
+        let consensus = ConsensusManager::new(ConsensusConfig::default());
+        let coordinator = DistributedTxCoordinator::new(consensus, config).with_wal(wal);
+
+        // Begin two transactions (at limit)
+        let tx1 = coordinator.begin("node1".to_string(), vec![0]).unwrap();
+        let tx2 = coordinator.begin("node1".to_string(), vec![1]).unwrap();
+
+        // Third should fail
+        let result = coordinator.begin("node1".to_string(), vec![2]);
+        assert!(result.is_err());
+
+        // Both successful transactions should be in pending
+        assert!(coordinator.get(tx1.tx_id).is_some());
+        assert!(coordinator.get(tx2.tx_id).is_some());
+        assert_eq!(coordinator.pending_count(), 2);
+    }
+
+    #[test]
+    fn test_wait_graph_multiple_blockers_tracked() {
+        use crate::deadlock::WaitForGraph;
+
+        let lock_manager = LockManager::new();
+        let wait_graph = WaitForGraph::new();
+
+        // Transaction 1 locks key1
+        lock_manager.try_lock(100, &["key1".to_string()]).unwrap();
+
+        // Transaction 2 locks key2
+        lock_manager.try_lock(200, &["key2".to_string()]).unwrap();
+
+        // Transaction 3 tries to lock both keys - should track both blockers
+        let keys = vec!["key1".to_string(), "key2".to_string()];
+        let result = lock_manager.try_lock_with_wait_tracking(300, &keys, &wait_graph, None);
+
+        assert!(result.is_err());
+        let _wait_info = result.unwrap_err();
+
+        // Wait graph should have edges to both blockers
+        let waiting_for = wait_graph.waiting_for(300);
+        assert!(
+            waiting_for.contains(&100) && waiting_for.contains(&200),
+            "tx 300 should be waiting for both tx 100 and tx 200"
+        );
+    }
+
+    #[test]
+    fn test_wait_graph_no_orphaned_edges_after_release() {
+        use crate::deadlock::WaitForGraph;
+
+        let lock_manager = LockManager::new();
+        let wait_graph = WaitForGraph::new();
+
+        // Create a conflict scenario
+        let handle1 = lock_manager.try_lock(100, &["key1".to_string()]).unwrap();
+
+        // Transaction 200 tries and fails, creating wait edge
+        let _ =
+            lock_manager.try_lock_with_wait_tracking(200, &["key1".to_string()], &wait_graph, None);
+
+        assert!(wait_graph.waiting_for(200).contains(&100));
+
+        // Release tx 100's lock with cleanup
+        lock_manager.release_by_handle_with_wait_cleanup(handle1, &wait_graph);
+
+        // Now tx 200's wait edge to 100 should be cleaned
+        // (because 100 is removed from the graph)
+        assert!(
+            !wait_graph.waiting_for(200).contains(&100),
+            "edge 200->100 should be removed when 100 is cleaned"
+        );
     }
 }
