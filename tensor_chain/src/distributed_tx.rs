@@ -1576,8 +1576,16 @@ impl DistributedTxCoordinator {
         }
     }
 
-    pub fn clear_persisted_state(node_id: &str, store: &TensorStore) {
-        let _ = store.delete(&Self::persistence_key(node_id));
+    pub fn clear_persisted_state(node_id: &str, store: &TensorStore) -> Result<()> {
+        // Idempotent: if key doesn't exist, that's fine (state is already cleared)
+        match store.delete(&Self::persistence_key(node_id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().contains("not found") => Ok(()),
+            Err(e) => Err(ChainError::StorageError(format!(
+                "failed to clear coordinator state for {}: {}",
+                node_id, e
+            ))),
+        }
     }
 
     /// Recover from crash by processing pending transactions.
@@ -2000,8 +2008,20 @@ impl TxParticipant {
         }
     }
 
-    pub fn clear_persisted_state(node_id: &str, shard_id: ShardId, store: &TensorStore) {
-        let _ = store.delete(&Self::persistence_key(node_id, shard_id));
+    pub fn clear_persisted_state(
+        node_id: &str,
+        shard_id: ShardId,
+        store: &TensorStore,
+    ) -> Result<()> {
+        // Idempotent: if key doesn't exist, that's fine (state is already cleared)
+        match store.delete(&Self::persistence_key(node_id, shard_id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.to_string().contains("not found") => Ok(()),
+            Err(e) => Err(ChainError::StorageError(format!(
+                "failed to clear participant state for {}:{}: {}",
+                node_id, shard_id, e
+            ))),
+        }
     }
 
     /// Recover from crash by checking prepared transactions.
@@ -3291,7 +3311,7 @@ mod tests {
         coordinator.save_to_store("node1", &store).unwrap();
 
         // Clear
-        DistributedTxCoordinator::clear_persisted_state("node1", &store);
+        DistributedTxCoordinator::clear_persisted_state("node1", &store).unwrap();
 
         // Load should create fresh coordinator
         let consensus2 = ConsensusManager::new(ConsensusConfig::default());
@@ -3304,6 +3324,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(restored.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_coordinator_clear_persisted_state_returns_result() {
+        let store = TensorStore::new();
+        // Fresh store with no state - should succeed (no-op delete)
+        let result = DistributedTxCoordinator::clear_persisted_state("node1", &store);
+        assert!(result.is_ok());
     }
 
     // ========== Participant Persistence Tests ==========
@@ -3398,10 +3426,18 @@ mod tests {
         participant.prepare(request);
         participant.save_to_store("node1", 0, &store).unwrap();
 
-        TxParticipant::clear_persisted_state("node1", 0, &store);
+        TxParticipant::clear_persisted_state("node1", 0, &store).unwrap();
 
         let restored = TxParticipant::load_from_store("node1", 0, &store);
         assert_eq!(restored.prepared_count(), 0);
+    }
+
+    #[test]
+    fn test_participant_clear_persisted_state_returns_result() {
+        let store = TensorStore::new();
+        // Fresh store with no state - should succeed (no-op delete)
+        let result = TxParticipant::clear_persisted_state("node1", 0, &store);
+        assert!(result.is_ok());
     }
 
     // ========== Recovery Tests ==========

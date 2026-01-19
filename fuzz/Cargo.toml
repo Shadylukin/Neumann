@@ -677,3 +677,10 @@ path = "fuzz_targets/dtx_toctou_stress.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dtx_state_cleanup"
+path = "fuzz_targets/dtx_state_cleanup.rs"
+test = false
+doc = false
+bench = false
