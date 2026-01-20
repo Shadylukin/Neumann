@@ -89,7 +89,7 @@ Install the Rust plugin. Enable clippy in settings.
 
 ## Project Structure
 
-```
+```text
 Neumann/
 ├── tensor_store/       # Core storage layer
 ├── relational_engine/  # SQL-like tables

@@ -2,9 +2,10 @@
 
 ## System Overview
 
-Neumann is a unified runtime that stores relational data, graph relationships, and vector embeddings in a single tensor structure.
+Neumann is a unified runtime that stores relational data, graph relationships,
+and vector embeddings in a single tensor structure.
 
-```
+```text
 +--------------------------------------------------+
 |                 Shell (CLI) [DONE]                |
 |   - Interactive REPL                             |
@@ -133,6 +134,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Hold data. Know nothing about queries. Provide persistence.
 
 **Interface**:
+
 - `put(key, tensor) -> Result<()>`
 - `get(key) -> Result<TensorData>`
 - `delete(key) -> Result<()>`
@@ -146,9 +148,11 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `save_snapshot_compressed(path, config) -> Result<(), SnapshotError>`
 - `load_snapshot_compressed(path) -> Result<TensorStore, SnapshotError>`
 
-**Serialization**: All core types (`TensorData`, `TensorValue`, `ScalarValue`) implement `serde::Serialize` and `serde::Deserialize`.
+**Serialization**: All core types (`TensorData`, `TensorValue`, `ScalarValue`)
+implement `serde::Serialize` and `serde::Deserialize`.
 
 **Does Not**:
+
 - Parse queries
 - Validate schemas
 - Enforce relationships
@@ -159,6 +163,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: SQL-like table operations on Tensor Store.
 
 **Interface**:
+
 - `create_table(name, schema) -> Result<()>`
 - `insert(table, values) -> Result<row_id>`
 - `select(table, condition) -> Result<Vec<Row>>`
@@ -167,6 +172,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `join(table_a, table_b, on_a, on_b) -> Result<Vec<(Row, Row)>>`
 
 **Does Not**:
+
 - Store data directly (uses Tensor Store)
 - Implement indexes (full table scans)
 - Support transactions
@@ -176,6 +182,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Graph traversals and path queries.
 
 **Interface**:
+
 - `create_node(label, properties) -> Result<node_id>`
 - `create_edge(from, to, type, properties, directed) -> Result<edge_id>`
 - `traverse(start, direction, depth, edge_type) -> Result<Vec<Node>>`
@@ -183,6 +190,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `neighbors(node_id, edge_type, direction) -> Result<Vec<Node>>`
 
 **Does Not**:
+
 - Store data directly (uses Tensor Store)
 - Implement weighted paths (Dijkstra)
 - Support pattern matching (Cypher-style)
@@ -192,22 +200,26 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Similarity search on embeddings.
 
 **Interface**:
+
 - `store_embedding(key, vector) -> Result<()>`
 - `get_embedding(key) -> Result<Vec<f64>>`
 - `delete_embedding(key) -> Result<()>`
 - `search_similar(query, top_k) -> Result<Vec<SearchResult>>`
-- `search_similar_with_metric(query, top_k, metric) -> Result<Vec<SearchResult>>`
+- `search_similar_with_metric(query, top_k, metric) ->
+  Result<Vec<SearchResult>>`
 - `compute_similarity(a, b) -> Result<f64>`
 - `exists(key) -> bool`
 - `count() -> usize`
 - `list_keys() -> Vec<String>`
 
 **Distance Metrics**:
+
 - `DistanceMetric::Cosine` - Cosine similarity (default)
 - `DistanceMetric::Euclidean` - Euclidean distance (L2)
 - `DistanceMetric::DotProduct` - Raw dot product
 
 **Does Not**:
+
 - Store data directly (uses Tensor Store)
 - Support metadata filtering
 - HNSW with non-cosine metrics (falls back to brute-force)
@@ -217,18 +229,21 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Unified query execution across all engines.
 
 **Interface**:
+
 - `execute(command) -> Result<QueryResult>` - String-based execution
 - `execute_parsed(command) -> Result<QueryResult>` - AST-based execution
 - `execute_async(command) -> Result<QueryResult>` - Async string-based
 - `execute_parsed_async(command) -> Result<QueryResult>` - Async AST-based
 
 **Supports**:
+
 - Relational: SELECT, INSERT, UPDATE, DELETE, CREATE TABLE
 - Graph: NODE, EDGE, PATH, NEIGHBORS, FIND
 - Vector: EMBED, SIMILAR (with COSINE, EUCLIDEAN, DOT_PRODUCT metrics)
 - Unified: ENTITY CREATE, ENTITY CONNECT, SIMILAR...CONNECTED TO
 
 **Does Not**:
+
 - Parse queries directly (delegates to Neumann Parser)
 - Implement cross-engine SQL joins
 
@@ -237,17 +252,20 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Cross-engine operations and unified entity management.
 
 **Interface**:
+
 - `create_entity(key, fields, embedding) -> Result<()>`
 - `connect_entities(from, to, edge_type) -> Result<String>`
 - `find_similar_connected(query, connected_to, k) -> Result<Vec<UnifiedItem>>`
 - `find_neighbors_by_similarity(entity, query, k) -> Result<Vec<UnifiedItem>>`
 
 **Features**:
+
 - Entities with relational fields, graph connections, and embeddings
 - Cross-engine queries combining vector similarity with graph connectivity
 - Async-first design for concurrent operations
 
 **Does Not**:
+
 - Store data directly (delegates to individual engines)
 - Implement transactions across engines
 
@@ -256,16 +274,19 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Parse unified query language into AST.
 
 **Interface**:
+
 - `parse(input) -> Result<Statement>` - Parse full statement
 - `tokenize(input) -> Result<Vec<Token>>` - Tokenize only
 
 **Features**:
+
 - Hand-written recursive descent parser
 - Pratt parsing for expression precedence
 - Span tracking for error messages
 - Zero external dependencies
 
 **Supported Syntax**:
+
 - SQL: SELECT, INSERT, UPDATE, DELETE, CREATE TABLE
 - Graph: NODE, EDGE, PATH, NEIGHBORS, FIND NODE/EDGE
 - Vector: EMBED STORE/GET/DELETE, SIMILAR
@@ -275,18 +296,21 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Interactive command-line interface.
 
 **Interface**:
+
 - `Shell::new()` - Create shell with default config
 - `Shell::with_config(config)` - Create with custom config
 - `shell.execute(command)` - Execute single command
 - `shell.run()` - Start interactive REPL loop
 
 **Features**:
+
 - Readline support (history, arrow keys, Ctrl+C)
 - ASCII table output formatting
 - Built-in commands (help, exit, tables, clear)
 - Persistent command history
 
 **Does Not**:
+
 - Parse queries directly (delegates to Query Router)
 - Implement syntax highlighting
 - Support multi-line queries
@@ -296,6 +320,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Compression algorithms for tensor data.
 
 **Interface**:
+
 - `quantize_int8(vector) -> QuantizedInt8` - Compress f32 to int8 (4x)
 - `dequantize_int8(quantized) -> Vec<f32>` - Restore from int8
 - `quantize_binary(vector) -> QuantizedBinary` - Compress to binary (32x)
@@ -306,24 +331,30 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `rle_decode(encoded) -> Vec<T>` - Restore from RLE
 
 **Features**:
+
 - Vector quantization with ~1% error bound (int8)
 - Lossless delta encoding for sorted sequences
 - Lossless RLE for repeated values
 - Snapshot format v2 with magic bytes "NEUM"
 
 **Does Not**:
+
 - Handle persistence directly (used by TensorStore)
 - Implement product quantization (future)
 - Support streaming compression (future)
 
 ### Sparse/Delta Vectors (Complete)
 
-**Responsibility**: Memory-efficient vector storage that exploits sparsity and clustering.
+**Responsibility**: Memory-efficient vector storage that exploits sparsity and
+clustering.
 
 **Interface** (SparseVector):
+
 - `from_dense(vector) -> SparseVector` - Convert dense to sparse
-- `from_dense_with_threshold(vector, threshold) -> SparseVector` - Sparsify with threshold
-- `from_diff(before, after, threshold) -> SparseVector` - Compute sparse delta directly
+- `from_dense_with_threshold(vector, threshold) -> SparseVector` - Sparsify with
+  threshold
+- `from_diff(before, after, threshold) -> SparseVector` - Compute sparse delta
+  directly
 - `to_dense() -> Vec<f32>` - Reconstruct dense
 - `dot(other) -> f32` - Sparse-sparse dot product O(nnz)
 - `dot_dense(other) -> f32` - Sparse-dense dot product O(nnz)
@@ -333,6 +364,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `project_orthogonal(direction) -> SparseVector` - Orthogonal projection
 
 **Geometric Distance Metrics**:
+
 - `angular_distance(other) -> f32` - Angle-based distance
 - `geodesic_distance(other) -> f32` - Distance on unit sphere
 - `jaccard_index(other) -> f32` - Structural overlap (shared non-zero positions)
@@ -341,6 +373,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `euclidean_distance(other) -> f32` - L2 distance
 
 **DistanceMetric Enum**:
+
 - `Cosine` - Angular similarity (default)
 - `Angular` - Angular distance
 - `Geodesic` - Spherical distance
@@ -350,51 +383,71 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `Composite(GeometricConfig)` - Weighted combination of metrics
 
 **Interface** (DeltaVector - Consensus):
-- `new(delta: SparseVector, keys, tx_id) -> DeltaVector` - Create from sparse delta
-- `from_sparse(delta: SparseVector, keys, tx_id) -> DeltaVector` - Explicit sparse constructor
-- `from_dense(delta: Vec<f32>, keys, tx_id) -> DeltaVector` - Convert dense to sparse
+
+- `new(delta: SparseVector, keys, tx_id) -> DeltaVector` - Create from sparse
+  delta
+- `from_sparse(delta: SparseVector, keys, tx_id) -> DeltaVector` - Explicit
+  sparse constructor
+- `from_dense(delta: Vec<f32>, keys, tx_id) -> DeltaVector` - Convert dense to
+  sparse
 - `magnitude() -> f32` - Delta magnitude
 - `cosine_similarity(other) -> f32` - Similarity between deltas
 - `add(other) -> DeltaVector` - Orthogonal merge via vector addition
 - `weighted_average(other, w1, w2) -> DeltaVector` - Low-conflict merge
-- `project_non_conflicting(direction) -> DeltaVector` - Remove conflicting component
+- `project_non_conflicting(direction) -> DeltaVector` - Remove conflicting
+  component
 - `structural_similarity(other) -> f32` - Jaccard index of affected positions
 
 **Interface** (DeltaVector - Storage):
-- `from_dense_with_reference(vector, archetype, id, threshold) -> DeltaVector` - Delta encode
+
+- `from_dense_with_reference(vector, archetype, id, threshold) -> DeltaVector` -
+  Delta encode
 - `to_dense(archetype) -> Vec<f32>` - Reconstruct via archetype + delta
-- `dot_dense_with_precomputed(query, arch_dot_query) -> f32` - O(nnz) with precomputed
+- `dot_dense_with_precomputed(query, arch_dot_query) -> f32` - O(nnz) with
+  precomputed
 
 **EmbeddingState** (Type-safe embedding lifecycle):
-- `Initial { before: SparseVector }` - Transaction started, before-state captured
-- `Computed { before, after, delta: SparseVector }` - Ready to commit, delta computed
+
+- `Initial { before: SparseVector }` - Transaction started, before-state
+  captured
+- `Computed { before, after, delta: SparseVector }` - Ready to commit, delta
+  computed
 - `new(before) -> Initial` - Create initial state
 - `from_dense(before) -> Initial` - Create from dense vector
 - `compute(after) -> Result<Computed>` - Transition to computed state
-- `compute_with_threshold(after, threshold) -> Result<Computed>` - Sparse delta computation
+- `compute_with_threshold(after, threshold) -> Result<Computed>` - Sparse delta
+  computation
 - `before() -> &SparseVector` - Always available
 - `delta() -> Option<&SparseVector>` - Only in Computed state
 - `is_computed() -> bool` - Check state
 
 **Interface** (ArchetypeRegistry + K-means):
+
 - `discover_archetypes(vectors, k, config) -> usize` - K-means clustering
-- `encode_batch(vectors, threshold) -> Vec<(DeltaVector, ratio)>` - Bulk encoding
+- `encode_batch(vectors, threshold) -> Vec<(DeltaVector, ratio)>` - Bulk
+  encoding
 - `analyze_coverage(vectors, threshold) -> CoverageStats` - Quality metrics
 
 **Features**:
+
 - SparseVector: 2.8-33x memory reduction at 90-99% sparsity
 - SparseVector: 10-152x dot product speedup at 99% sparsity
 - DeltaVector: Stores only differences from reference archetypes
 - K-means: Automatic archetype discovery with k-means++ initialization
 - HNSW: Unified index supporting Dense, Sparse, and Delta storage
 
-**Philosophy**: Replace explicit zeros with geometric structure. Instead of storing thousands of zero values, we store only the non-zero positions (sparse) or the delta from a learned centroid (delta). This is not just compression - it's recognizing that zeros carry no information and discarding them.
+**Philosophy**: Replace explicit zeros with geometric structure. Instead of
+storing thousands of zero values, we store only the non-zero positions (sparse)
+or the delta from a learned centroid (delta). This is not just compression -
+it's recognizing that zeros carry no information and discarding them.
 
 ### Tiered Memory Storage (Complete)
 
-**Responsibility**: Enable datasets larger than RAM by automatically tiering data between hot (in-memory) and cold (mmap) storage based on access patterns.
+**Responsibility**: Enable datasets larger than RAM by automatically tiering
+data between hot (in-memory) and cold (mmap) storage based on access patterns.
 
 **Interface** (TieredStore):
+
 - `put(key, tensor)` - Insert into hot tier
 - `get(key) -> Result<TensorData>` - Get from hot or cold (promotes if cold)
 - `exists(key) -> bool` - Check either tier
@@ -406,6 +459,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `stats() -> TieredStats` - Hot/cold counts, lookups, migrations
 
 **Interface** (MmapStore):
+
 - `MmapStoreBuilder::create(path)` - Create new mmap file
 - `MmapStore::open(path)` - Open read-only mmap
 - `MmapStoreMut::create(path, capacity)` - Create mutable mmap
@@ -413,6 +467,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `compact(output_path) -> Result<u64>` - Remove garbage, reclaim space
 
 **Features**:
+
 - Hot tier: DashMap with ~16 shards for concurrent access
 - Cold tier: Memory-mapped files with bincode serialization
 - Access instrumentation: Per-shard read/write tracking with sampling
@@ -421,6 +476,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Compaction: Remove old versions of updated keys
 
 **Performance** (128-dim embeddings, 10K entries):
+
 - Hot put: 1.4-1.5 M ops/sec
 - Hot get: 2.9-3.4 M ops/sec
 - Cold migration: 1.0-1.4 M entries/sec
@@ -428,6 +484,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Write overhead vs pure in-memory: 5-7%
 
 **Use Cases**:
+
 - Datasets exceeding available RAM (e.g., 52GB+ vector indices)
 - Working sets smaller than total data (hot 10%, cold 90%)
 - Development machines with limited memory
@@ -435,9 +492,11 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 
 ### Module 9: Tensor Vault (Complete)
 
-**Responsibility**: Encrypted secret storage with graph-based access control for multi-agent environments.
+**Responsibility**: Encrypted secret storage with graph-based access control for
+multi-agent environments.
 
 **Interface**:
+
 - `set(requester, key, value) -> Result<()>`
 - `get(requester, key) -> Result<String>`
 - `delete(requester, key) -> Result<()>`
@@ -455,6 +514,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `namespace(namespace, identity) -> NamespacedVault`
 
 **Features**:
+
 - AES-256-GCM encryption for secrets
 - Argon2id key derivation with configurable parameters
 - Graph-based access control via edges
@@ -467,6 +527,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Secure key zeroization on drop
 
 **Does Not**:
+
 - Persist audit logs to disk (in-memory only)
 - Implement distributed rate limiting (single-node)
 
@@ -475,15 +536,19 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Semantic caching for LLM responses.
 
 **Interface**:
+
 - `get(prompt, embedding) -> Option<CacheHit>` - Look up cached response
-- `put(prompt, embedding, response, model, params) -> Result<()>` - Store response
+- `put(prompt, embedding, response, model, params) -> Result<()>` - Store
+  response
 - `get_embedding(source, content) -> Option<Vec<f32>>` - Get cached embedding
-- `put_embedding(source, content, embedding, model) -> Result<()>` - Store embedding
+- `put_embedding(source, content, embedding, model) -> Result<()>` - Store
+  embedding
 - `invalidate(prompt, model, params) -> bool` - Remove entry
 - `evict(count) -> usize` - Manually evict entries
 - `stats() -> &CacheStats` - Get statistics
 
 **Features**:
+
 - Three-layer caching: Exact O(1), Semantic O(log n), Embedding O(1)
 - Token counting via tiktoken (cl100k_base encoding)
 - Cost tracking and savings estimation
@@ -491,15 +556,18 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - TTL-based expiration with min-heap tracking
 
 **Does Not**:
+
 - Persist cache to disk (in-memory only)
 - Implement distributed caching (single-node)
 - Support cache warming (manual only)
 
 ### Module 11: Tensor Blob (Complete)
 
-**Responsibility**: S3-style object storage for large artifacts using content-addressable chunked storage.
+**Responsibility**: S3-style object storage for large artifacts using
+content-addressable chunked storage.
 
 **Interface**:
+
 - `put(filename, data, options) -> Result<artifact_id>` - Store artifact
 - `get(artifact_id) -> Result<Vec<u8>>` - Retrieve artifact
 - `delete(artifact_id) -> Result<()>` - Delete artifact
@@ -515,6 +583,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `repair() -> RepairStats` - Repair broken references
 
 **Features**:
+
 - Content-addressable chunking with SHA-256 hashes
 - Automatic deduplication via reference counting
 - Streaming API for large files (never fully in memory)
@@ -526,6 +595,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Integrity verification and repair
 
 **Does Not**:
+
 - Implement S3-compatible HTTP API (future)
 - Support multi-part uploads (single stream only)
 - Implement versioning (future)
@@ -535,14 +605,18 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 **Responsibility**: Checkpoint and rollback system for database state recovery.
 
 **Interface**:
+
 - `create(name, store) -> Result<checkpoint_id>` - Create named checkpoint
-- `create_auto(command, op, preview, store) -> Result<checkpoint_id>` - Auto-checkpoint before destructive op
+- `create_auto(command, op, preview, store) -> Result<checkpoint_id>` -
+  Auto-checkpoint before destructive op
 - `rollback(id_or_name, store) -> Result<()>` - Restore to checkpoint
 - `list(limit) -> Result<Vec<CheckpointInfo>>` - List checkpoints
 - `delete(id_or_name) -> Result<()>` - Delete checkpoint
-- `generate_preview(op, sample_data) -> OperationPreview` - Generate destructive op preview
+- `generate_preview(op, sample_data) -> OperationPreview` - Generate destructive
+  op preview
 
 **Features**:
+
 - Manual checkpoints via CHECKPOINT command
 - Auto-checkpoints before destructive operations (DELETE, DROP, etc.)
 - Rollback to any checkpoint by ID or name
@@ -552,12 +626,15 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - Bincode-serialized TensorStore snapshots
 
 **Configuration** (CheckpointConfig):
+
 - `max_checkpoints: usize` - Maximum checkpoints to retain (default: 10)
 - `auto_checkpoint: bool` - Enable auto-checkpoints (default: true)
-- `interactive_confirm: bool` - Require confirmation for destructive ops (default: true)
+- `interactive_confirm: bool` - Require confirmation for destructive ops
+  (default: true)
 - `preview_sample_size: usize` - Sample rows to show in preview (default: 5)
 
 **Destructive Operations** (DestructiveOp):
+
 - `Delete` - DELETE FROM table
 - `DropTable` - DROP TABLE
 - `DropIndex` - DROP INDEX
@@ -568,15 +645,18 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `CacheClear` - CACHE CLEAR
 
 **Does Not**:
+
 - Implement incremental checkpoints (full snapshots only)
 - Support distributed checkpoints (single-node)
 - Auto-checkpoint on every write (only destructive ops)
 
 ### Module 14: Tensor Chain (Complete)
 
-**Responsibility**: Tensor-native blockchain with semantic conflict detection, hierarchical codebook validation, and distributed consensus.
+**Responsibility**: Tensor-native blockchain with semantic conflict detection,
+hierarchical codebook validation, and distributed consensus.
 
 **Interface**:
+
 - `new(store, node_id) -> TensorChain` - Create chain
 - `begin() -> Result<TransactionWorkspace>` - Start transaction
 - `commit(workspace) -> Result<BlockHash>` - Commit transaction to block
@@ -587,6 +667,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - `verify() -> Result<()>` - Verify chain integrity
 
 **Features**:
+
 - Semantic transactions with delta embedding tracking
 - Hierarchical codebooks (Global static + Local EMA-adaptive)
 - Cosine similarity-based conflict detection with configurable metrics
@@ -600,9 +681,11 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 - EmbeddingState machine for type-safe transaction embedding lifecycle
 - Sparse network messages (8-10x bandwidth reduction for typical deltas)
 
-**Test Coverage**: >95% across all modules (validation.rs: 100%, block.rs: 99.44%, codebook.rs: 99.36%, etc.)
+**Test Coverage**: >95% across all modules (validation.rs: 100%, block.rs:
+99.44%, codebook.rs: 99.36%, etc.)
 
 **Does Not**:
+
 - Implement dynamic cluster membership (static config only)
 - Support sharding (single chain, future work)
 - Persist audit logs (in-memory only)
@@ -611,7 +694,7 @@ Neumann is a unified runtime that stores relational data, graph relationships, a
 
 ### Write Path
 
-```
+```text
 User Command
     |
     v
@@ -635,7 +718,7 @@ Lock released, Ok(()) returned
 
 ### Read Path
 
-```
+```text
 User Query
     |
     v
@@ -664,7 +747,8 @@ Shell formats output
 
 ### 1. In-Memory First with Snapshot Persistence
 
-The system is designed for in-memory operation with snapshot persistence and WAL:
+The system is designed for in-memory operation with snapshot persistence and
+WAL:
 
 - **Primary storage**: DashMap in memory for fast concurrent access
 - **Persistence**: Snapshot-based save/load using bincode serialization
@@ -675,6 +759,7 @@ The system is designed for in-memory operation with snapshot persistence and WAL
 ### 2. Clone on Read
 
 `get()` returns cloned data rather than references. This:
+
 - Prevents holding locks during processing
 - Enables concurrent reads
 - Trades memory for parallelism
@@ -684,6 +769,7 @@ For future optimization, consider copy-on-write or arena allocation.
 ### 3. String Keys
 
 Keys are strings with convention `type:id`. This:
+
 - Enables prefix scanning
 - Is human-readable
 - Avoids complex key encoding
@@ -691,12 +777,14 @@ Keys are strings with convention `type:id`. This:
 ### 4. Thread Safety via DashMap
 
 Uses DashMap (sharded concurrent HashMap) for thread safety:
+
 - Reads are lock-free
 - Writes only block other writes to the same shard (~16 shards)
 - No lock poisoning (unlike RwLock)
 - Simple API without manual lock handling
 
-This provides significantly better concurrent write throughput compared to a single RwLock.
+This provides significantly better concurrent write throughput compared to a
+single RwLock.
 
 ### 5. No Schema Enforcement
 
@@ -706,7 +794,7 @@ Tensor Store accepts any `TensorData`. Schema validation belongs in Query Layer.
 
 Neumann uses geometric structure to eliminate zero storage overhead:
 
-```
+```text
 Dense Vector (768d):        3,072 bytes (768 x 4 bytes)
   [0.1, 0.0, 0.0, ..., 0.2, 0.0, ...]
 
@@ -721,6 +809,7 @@ Delta Vector (5% diff):     ~120 bytes (archetype_id + sparse delta)
 ```
 
 The philosophy:
+
 1. **Zeros carry no information** - don't store what doesn't exist
 2. **Similarity implies shared structure** - clustered vectors share archetypes
 3. **Geometry replaces data** - k-means centroids capture cluster structure
@@ -730,7 +819,7 @@ This yields 10-150x speedups and 3-33x memory savings depending on sparsity.
 
 ## File Structure
 
-```
+```text
 Neumann/
   README.md                  # Project overview
   CLAUDE.md                  # AI coding guidelines
@@ -893,15 +982,18 @@ Neumann/
 ### Pre-commit Hook
 
 Runs before every commit for all crates:
+
 1. `cargo fmt --check` - Code formatting
 2. `cargo clippy -- -D warnings` - Lints
 3. `cargo test --quiet` - Unit tests
 4. `cargo doc --no-deps --quiet` - Documentation
-5. `cargo llvm-cov` - Coverage check (95% minimum, per-crate thresholds: shell 88%, parser 91%, blob 91%, router 92%, chain 95%)
+5. `cargo llvm-cov` - Coverage check (95% minimum, per-crate thresholds: shell
+   88%, parser 91%, blob 91%, router 92%, chain 95%)
 
 ### CI Pipeline
 
 Runs on every PR:
+
 1. Check - Compilation verification
 2. Format check - Code style
 3. Clippy lints - Static analysis
@@ -917,7 +1009,7 @@ Runs on every PR:
 ### Complete Infrastructure (>95% tested)
 
 | Component | Status | Test Coverage |
-|-----------|--------|---------------|
+| --- | --- | --- |
 | Raft consensus | Complete | 98.47% |
 | 2PC distributed transactions | Complete | 98.78% |
 | TCP transport | Complete | 94.89% |
@@ -933,7 +1025,7 @@ Runs on every PR:
 ### Integration Points (Wired but not battle-tested)
 
 | Component | Status | Notes |
-|-----------|--------|-------|
+| --- | --- | --- |
 | QueryPlanner with SemanticPartitioner | Wired | Routes by embedding similarity |
 | ClusterOrchestrator startup | Implemented | Ties all components together |
 | TensorStateMachine | Implemented | Applies Raft entries to chain |
@@ -941,7 +1033,7 @@ Runs on every PR:
 ### Recently Completed (Production Infrastructure)
 
 | Component | Status | Notes |
-|-----------|--------|-------|
+| --- | --- | --- |
 | Dynamic cluster membership | Complete | Joint consensus via Raft, learner promotion |
 | Gossip protocol | Complete | SWIM-style with LWW CRDT, failure detection |
 | Partition detection and merge | Complete | 6-phase protocol with semantic reconciliation |
@@ -954,7 +1046,7 @@ Runs on every PR:
 ### Remaining for Production Deployment
 
 | Component | Status | Priority |
-|-----------|--------|----------|
+| --- | --- | --- |
 | Multi-machine validation | Tests use MemoryTransport | High |
 | Cross-shard query execution | Infrastructure only | Medium |
 | Chaos engineering | Not started | High |
@@ -962,22 +1054,30 @@ Runs on every PR:
 
 ### Honest Assessment
 
-Neumann has **production-ready distributed infrastructure** with all critical gaps addressed:
+Neumann has **production-ready distributed infrastructure** with all critical
+gaps addressed:
 
-- **Raft consensus**: Pre-vote, log compaction, snapshot persistence, WAL durability, leadership transfer, automatic heartbeat
-- **2PC transactions**: Coordinator/participant, abort broadcast with retry, deadlock detection
-- **Membership**: Gossip protocol, dynamic membership, partition detection and merge
+- **Raft consensus**: Pre-vote, log compaction, snapshot persistence, WAL
+  durability, leadership transfer, automatic heartbeat
+- **2PC transactions**: Coordinator/participant, abort broadcast with retry,
+  deadlock detection
+- **Membership**: Gossip protocol, dynamic membership, partition detection and
+  merge
 - **Network**: TCP with TLS, LZ4 compression, rate limiting, I/O timeouts
 
 However, it is **not yet battle-tested in production** for these reasons:
 
-1. **All tests use MemoryTransport**: TCP transport is complete but hasn't been stress-tested across physical machines.
+1. **All tests use MemoryTransport**: TCP transport is complete but hasn't been
+   stress-tested across physical machines.
 
-2. **Query execution is single-node**: The QueryPlanner and SemanticPartitioner exist, but queries don't actually scatter to remote nodes and merge results.
+2. **Query execution is single-node**: The QueryPlanner and SemanticPartitioner
+   exist, but queries don't actually scatter to remote nodes and merge results.
 
-3. **No chaos engineering**: Network partition injection, node crash scenarios not yet validated.
+3. **No chaos engineering**: Network partition injection, node crash scenarios
+   not yet validated.
 
 To become production-ready, Neumann needs:
+
 - Multi-machine integration tests with real TCP
 - Chaos engineering (network failures, node crashes, partition scenarios)
 - Query scatter-gather wired end-to-end
@@ -986,6 +1086,7 @@ To become production-ready, Neumann needs:
 ## Versioning Strategy
 
 Not yet implemented. Future considerations:
+
 - Semantic versioning for crate
 - API stability guarantees
 - Migration paths for data format changes

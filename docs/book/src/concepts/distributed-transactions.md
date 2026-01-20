@@ -1,6 +1,7 @@
 # Distributed Transactions
 
-tensor_chain implements distributed transactions using Two-Phase Commit (2PC) with semantic conflict detection.
+tensor_chain implements distributed transactions using Two-Phase Commit (2PC)
+with semantic conflict detection.
 
 ## Transaction Lifecycle
 
@@ -37,7 +38,7 @@ stateDiagram-v2
 ## Message Types
 
 | Message | Direction | Purpose |
-|---------|-----------|---------|
+| --- | --- | --- |
 | `TxPrepareMsg` | Coordinator -> Participant | Start prepare phase |
 | `TxVote` | Participant -> Coordinator | Vote yes/no |
 | `TxCommitMsg` | Coordinator -> Participant | Commit decision |
@@ -49,7 +50,7 @@ stateDiagram-v2
 ### Lock Types
 
 | Lock | Compatibility | Use |
-|------|---------------|-----|
+| --- | --- | --- |
 | Shared (S) | S-S compatible | Read operations |
 | Exclusive (X) | Incompatible with all | Write operations |
 
@@ -83,7 +84,7 @@ wait_graph.add_wait(my_tx, blocking_tx);
 ### Victim Selection
 
 | Policy | Behavior |
-|--------|----------|
+| --- | --- |
 | Youngest | Abort most recent transaction |
 | Oldest | Abort longest-running |
 | LowestPriority | Abort lowest priority |
@@ -138,6 +139,7 @@ pub struct DistributedTxConfig {
 ## Best Practices
 
 1. **Keep transactions short**: Long transactions increase conflict probability
-2. **Order lock acquisition**: Acquire locks in consistent order to prevent deadlocks
+2. **Order lock acquisition**: Acquire locks in consistent order to prevent
+   deadlocks
 3. **Use appropriate isolation**: Not all operations need serializable isolation
 4. **Monitor deadlock rate**: High rates indicate contention issues

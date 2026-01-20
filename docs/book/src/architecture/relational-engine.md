@@ -1,8 +1,14 @@
 # Relational Engine
 
-The Relational Engine (Module 2) provides SQL-like table operations on top of the Tensor Store. It implements schema enforcement, composable condition predicates, SIMD-accelerated columnar filtering, and both hash and B-tree indexes for query acceleration.
+The Relational Engine (Module 2) provides SQL-like table operations on top of
+the Tensor Store. It implements schema enforcement, composable condition
+predicates, SIMD-accelerated columnar filtering, and both hash and B-tree
+indexes for query acceleration.
 
-Tables, rows, and indexes are stored as tensor data in the underlying Tensor Store, inheriting its thread safety from DashMap. The engine supports all standard CRUD operations, six SQL join types, aggregate functions, and batch operations for bulk inserts.
+Tables, rows, and indexes are stored as tensor data in the underlying Tensor
+Store, inheriting its thread safety from DashMap. The engine supports all
+standard CRUD operations, six SQL join types, aggregate functions, and batch
+operations for bulk inserts.
 
 ## Architecture
 
@@ -62,7 +68,7 @@ flowchart TD
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `RelationalEngine` | Main engine struct with TensorStore backend |
 | `Schema` | Table schema with column definitions |
 | `Column` | Column name, type, and nullability |
@@ -78,7 +84,7 @@ flowchart TD
 ### Column Types
 
 | Type | Rust Type | Storage Format | Description |
-|------|-----------|----------------|-------------|
+| --- | --- | --- | --- |
 | `Int` | `i64` | 8-byte little-endian | 64-bit signed integer |
 | `Float` | `f64` | 8-byte IEEE 754 | 64-bit floating point |
 | `String` | `String` | Dictionary-encoded | UTF-8 string with deduplication |
@@ -87,7 +93,7 @@ flowchart TD
 ### Conditions
 
 | Condition | Description | Index Support |
-|-----------|-------------|---------------|
+| --- | --- | --- |
 | `Condition::True` | Matches all rows | N/A |
 | `Condition::Eq(col, val)` | Column equals value | Hash Index |
 | `Condition::Ne(col, val)` | Column not equals value | None |
@@ -115,7 +121,7 @@ The special column `_id` filters by row ID and can be indexed.
 ### Error Types
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `TableNotFound` | Table does not exist |
 | `TableAlreadyExists` | Creating duplicate table |
 | `ColumnNotFound` | Update references unknown column |
@@ -130,7 +136,7 @@ The special column `_id` filters by row ID and can be indexed.
 Tables, rows, and indexes are stored in Tensor Store with specific key patterns:
 
 | Key Pattern | Content |
-|-------------|---------|
+| --- | --- |
 | `_meta:table:{name}` | Schema metadata |
 | `{table}:{row_id}` | Row data |
 | `_idx:{table}:{column}` | Hash index metadata |
@@ -143,6 +149,7 @@ Tables, rows, and indexes are stored in Tensor Store with specific key patterns:
 | `_col:{table}:{column}:meta` | Columnar metadata |
 
 Schema metadata encodes:
+
 - `_columns`: Comma-separated column names
 - `_col:{name}`: Type and nullability for each column
 
@@ -311,7 +318,7 @@ graph LR
 The hash index uses value-specific hashing:
 
 | Value Type | Hash Format | Example |
-|------------|-------------|---------|
+| --- | --- | --- |
 | `Null` | `"null"` | `"null"` |
 | `Int(i)` | `"i:{value}"` | `"i:42"` |
 | `Float(f)` | `"f:{bits}"` | `"f:4614253070214989087"` |
@@ -321,13 +328,14 @@ The hash index uses value-specific hashing:
 Hash index performance:
 
 | Query Type | Without Index | With Index | Speedup |
-|------------|---------------|------------|---------|
+| --- | --- | --- | --- |
 | Equality (2% match on 5K rows) | 5.96ms | 126us | 47x |
 | Single row by _id (5K rows) | 5.59ms | 3.5us | 1,597x |
 
 ### B-Tree Indexes
 
-B-tree indexes accelerate range queries (`Lt`, `Le`, `Gt`, `Ge`) with O(log n + m) complexity:
+B-tree indexes accelerate range queries (`Lt`, `Le`, `Gt`, `Ge`) with O(log n +
+m) complexity:
 
 ```rust
 // Create B-tree index
@@ -349,6 +357,7 @@ engine.select("users", Condition::Ge("age".into(), Value::Int(18)))?;
 **B-Tree Index Implementation Details:**
 
 The B-tree index uses a dual-storage approach:
+
 1. **In-memory BTreeMap**: For O(log n) range operations
 2. **Persistent TensorStore**: For durability and recovery
 
@@ -379,14 +388,15 @@ pub enum OrderedKey {
 For persistent storage, values are encoded to maintain lexicographic ordering:
 
 | Type | Encoding | Example |
-|------|----------|---------|
+| --- | --- | --- |
 | `Null` | `"0"` | `"0"` |
 | `Int(i)` | `"i{hex(i + 2^63)}"` | `"i8000000000000000"` for 0 |
 | `Float(f)` | `"f{sortable_bits}"` | IEEE 754 with sign handling |
 | `String(s)` | `"s{s}"` | `"sAlice"` |
 | `Bool(b)` | `"b0"` or `"b1"` | `"b1"` for true |
 
-Integer encoding shifts the range from `[-2^63, 2^63-1]` to `[0, 2^64-1]` for correct lexicographic ordering of negative numbers.
+Integer encoding shifts the range from `[-2^63, 2^63-1]` to `[0, 2^64-1]` for
+correct lexicographic ordering of negative numbers.
 
 **B-Tree Range Operations:**
 
@@ -441,13 +451,15 @@ graph TD
 ```
 
 **Null Bitmap Selection:**
+
 - `None`: When column has no null values
 - `Sparse`: When nulls are < 10% of rows (stores positions)
 - `Dense`: When nulls are >= 10% of rows (stores bitmap)
 
 ### SIMD Filtering
 
-Column data is stored in contiguous arrays enabling 4-wide SIMD vectorized comparisons using the `wide` crate:
+Column data is stored in contiguous arrays enabling 4-wide SIMD vectorized
+comparisons using the `wide` crate:
 
 ```rust
 // SIMD filter implementation using wide::i64x4
@@ -487,7 +499,7 @@ pub fn filter_lt_i64(values: &[i64], threshold: i64, result: &mut [u64]) {
 **Available SIMD Filter Functions:**
 
 | Function | Operation | Types |
-|----------|-----------|-------|
+| --- | --- | --- |
 | `filter_lt_i64` | Less than | i64 |
 | `filter_le_i64` | Less than or equal | i64 |
 | `filter_gt_i64` | Greater than | i64 |
@@ -575,7 +587,7 @@ engine.drop_columnar_data("users", "age")?;
 Two evaluation methods are available:
 
 | Method | Input | Performance | Use Case |
-|--------|-------|-------------|----------|
+| --- | --- | --- | --- |
 | `evaluate(&row)` | Row struct | Legacy, creates intermediate objects | Row-by-row filtering |
 | `evaluate_tensor(&tensor)` | TensorData | 31% faster, no intermediate allocation | Direct tensor filtering |
 
@@ -658,7 +670,8 @@ pub fn join(&self, table_a: &str, table_b: &str,
 
 **Parallel Join Optimization:**
 
-When left table exceeds `PARALLEL_THRESHOLD` (1000 rows), joins use Rayon for parallel probing:
+When left table exceeds `PARALLEL_THRESHOLD` (1000 rows), joins use Rayon for
+parallel probing:
 
 ```rust
 if rows_a.len() >= Self::PARALLEL_THRESHOLD {
@@ -698,7 +711,8 @@ pub fn natural_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row
 
 ### Parallel Aggregation
 
-For tables exceeding `PARALLEL_THRESHOLD` (1000 rows), aggregates use parallel reduction:
+For tables exceeding `PARALLEL_THRESHOLD` (1000 rows), aggregates use parallel
+reduction:
 
 ```rust
 pub fn avg(&self, table: &str, column: &str, condition: Condition) -> Result<Option<f64>> {
@@ -744,7 +758,7 @@ pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Opt
 ## Performance Characteristics
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | `insert` | O(1) + O(k) | Schema validation + store put + k index updates |
 | `batch_insert` | O(n) + O(n*k) | Single schema lookup, 59x faster than n inserts |
 | `select` (no index) | O(n) | Full table scan with SIMD filter |
@@ -758,11 +772,13 @@ pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Opt
 | `create_index` | O(n) | Scan all rows to build index |
 | `materialize_columns` | O(n) | Extract column to contiguous array |
 
-Where k = number of indexes on the table, n = rows in left table, m = rows in right table.
+Where k = number of indexes on the table, n = rows in left table, m = rows in
+right table.
 
 ### Parallel Threshold
 
-Operations automatically switch to parallel execution when row count exceeds `PARALLEL_THRESHOLD`:
+Operations automatically switch to parallel execution when row count exceeds
+`PARALLEL_THRESHOLD`:
 
 ```rust
 impl RelationalEngine {
@@ -771,16 +787,18 @@ impl RelationalEngine {
 ```
 
 **Parallel Operations:**
+
 - `delete_rows` (parallel deletion via Rayon)
 - `join` (parallel probe phase)
 - `sum`, `avg`, `min`, `max` (parallel reduction)
 
 ## Configuration
 
-The Relational Engine uses the underlying TensorStore configuration. Key internal constants:
+The Relational Engine uses the underlying TensorStore configuration. Key
+internal constants:
 
 | Constant | Value | Description |
-|----------|-------|-------------|
+| --- | --- | --- |
 | `PARALLEL_THRESHOLD` | 1000 | Minimum rows for parallel operations |
 | Null bitmap sparse threshold | 10% | Use sparse bitmap when nulls < 10% |
 | SIMD vector width | 4 | i64x4/f64x4 operations |
@@ -790,18 +808,21 @@ The Relational Engine uses the underlying TensorStore configuration. Key interna
 ### NULL Handling
 
 1. **NULL in conditions**: Comparisons with NULL columns return `false`:
+
    ```rust
    // If email is NULL, this returns false (not true!)
    Condition::Lt("email".into(), Value::String("z".into()))
-   ```
+
+```text
 
 2. **NULL in joins**: NULL values never match in join conditions:
+
    ```rust
    // Post with user_id = NULL will not join with any user
    engine.join("users", "posts", "_id", "user_id")
    ```
 
-3. **COUNT vs COUNT(column)**:
+1. **COUNT vs COUNT(column)**:
    - `count()` counts all rows
    - `count_column()` counts non-null values only
 
@@ -840,14 +861,15 @@ engine.batch_insert("users", rows);
 
 ### B-Tree Index Recovery
 
-B-tree indexes maintain both in-memory and persistent state. The in-memory BTreeMap is rebuilt lazily on first access after restart.
+B-tree indexes maintain both in-memory and persistent state. The in-memory
+BTreeMap is rebuilt lazily on first access after restart.
 
 ## Best Practices
 
 ### Index Selection
 
 | Query Pattern | Recommended Index |
-|--------------|-------------------|
+| --- | --- |
 | `WHERE col = value` | Hash Index |
 | `WHERE col > value` | B-Tree Index |
 | `WHERE col BETWEEN a AND b` | B-Tree Index |
@@ -857,6 +879,7 @@ B-tree indexes maintain both in-memory and persistent state. The in-memory BTree
 ### Columnar Materialization
 
 Materialize columns when:
+
 - Performing many range scans on large tables
 - Query selectivity is low (scanning most rows)
 - Column data fits in memory
@@ -888,7 +911,8 @@ engine.batch_insert("table", rows)?;  // 1 schema lookup, 59x faster
 
 ## SQL Features via Query Router
 
-When using the relational engine through `query_router`, additional SQL features are available:
+When using the relational engine through `query_router`, additional SQL features
+are available:
 
 ### ORDER BY and OFFSET
 
@@ -913,7 +937,7 @@ HAVING SUM(quantity) > 100;
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | `tensor_store` | Storage backend for tables, rows, and indexes |
 | `query_router` | Executes SQL queries using RelationalEngine |
 | `neumann_parser` | Parses SQL statements into AST |
@@ -924,7 +948,7 @@ HAVING SUM(quantity) > 100;
 ### Implemented
 
 | Feature | Description |
-|---------|-------------|
+| --- | --- |
 | Hash indexes | O(1) equality lookups |
 | B-tree indexes | O(log n) range query acceleration |
 | All 6 JOIN types | INNER, LEFT, RIGHT, FULL, CROSS, NATURAL |
@@ -940,7 +964,7 @@ HAVING SUM(quantity) > 100;
 ### Future Considerations
 
 | Feature | Status |
-|---------|--------|
+| --- | --- |
 | Query Optimization | Not implemented |
 | Transactions | Not implemented |
 | Foreign Keys | Not implemented |

@@ -141,6 +141,7 @@ open target/llvm-cov/html/index.html
 ```
 
 Target coverage thresholds:
+
 - shell: 88%
 - parser: 91%
 - blob: 91%

@@ -7,6 +7,7 @@ tensor_chain uses Raft consensus with SWIM gossip for membership management.
 ### Overview
 
 Raft provides:
+
 - Leader election
 - Log replication
 - Safety (never returns incorrect results)
@@ -28,7 +29,7 @@ stateDiagram-v2
 
 Time divided into terms with at most one leader:
 
-```
+```text
 Term 1: [Leader A] -----> [Follower timeout]
 Term 2: [Election] -> [Leader B] -----> ...
 ```
@@ -57,7 +58,7 @@ sequenceDiagram
 ### Configuration
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `election_timeout_min` | 150ms | Min election timeout |
 | `election_timeout_max` | 300ms | Max election timeout |
 | `heartbeat_interval` | 50ms | Leader heartbeat frequency |
@@ -68,6 +69,7 @@ sequenceDiagram
 ### Overview
 
 Scalable Weakly-consistent Infection-style Membership:
+
 - O(log N) failure detection
 - Distributed membership view
 - No single point of failure
@@ -96,8 +98,8 @@ sequenceDiagram
 ### Node States
 
 | State | Description | Transition |
-|-------|-------------|------------|
-| Healthy | Responding normally | - |
+| --- | --- | --- |
+| Healthy | Responding normally | --- |
 | Suspect | Failed direct ping | After timeout |
 | Failed | Confirmed down | After indirect ping failure |
 
@@ -124,7 +126,7 @@ fn merge(&mut self, other: &Self) {
 ### Configuration
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `ping_interval` | 1s | Direct ping frequency |
 | `ping_timeout` | 500ms | Time to wait for response |
 | `suspect_timeout` | 3s | Time before marking failed |

@@ -1,13 +1,17 @@
 # Query Router
 
-Query Router is the unified query execution layer for Neumann. It parses shell commands, routes them to appropriate engines, and combines results. All query types (relational, graph, vector, unified) flow through the router, which provides a single entry point for the entire system.
+Query Router is the unified query execution layer for Neumann. It parses shell
+commands, routes them to appropriate engines, and combines results. All query
+types (relational, graph, vector, unified) flow through the router, which
+provides a single entry point for the entire system.
 
-The router supports both synchronous and asynchronous execution, optional result caching, and distributed query execution when cluster mode is enabled.
+The router supports both synchronous and asynchronous execution, optional result
+caching, and distributed query execution when cluster mode is enabled.
 
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `QueryRouter` | Main router orchestrating queries across all engines |
 | `QueryResult` | Unified result enum for all query types |
 | `RouterError` | Error types for query routing failures |
@@ -25,7 +29,7 @@ The router supports both synchronous and asynchronous execution, optional result
 ### QueryResult Variants
 
 | Variant | Description | Typical Source |
-|---------|-------------|----------------|
+| --- | --- | --- |
 | `Empty` | No result (CREATE, INSERT) | DDL, writes |
 | `Value(String)` | Single value result | Scalar queries, DESCRIBE |
 | `Count(usize)` | Count of affected rows/nodes/edges | UPDATE, DELETE |
@@ -47,7 +51,7 @@ The router supports both synchronous and asynchronous execution, optional result
 ### RouterError Types
 
 | Error | Cause | Recovery |
-|-------|-------|----------|
+| --- | --- | --- |
 | `ParseError` | Invalid query syntax | Fix query syntax |
 | `UnknownCommand` | Unknown command or keyword | Check command spelling |
 | `RelationalError` | Error from relational engine | Check table/column names |
@@ -200,14 +204,15 @@ let router = QueryRouter::with_shared_store(store);
 ### Constructor Comparison
 
 | Constructor | UnifiedEngine | Use Case |
-|-------------|---------------|----------|
+| --- | --- | --- |
 | `new()` | No | Simple single-engine queries |
 | `with_engines(...)` | No | Custom engine configuration |
 | `with_shared_store(...)` | Yes | Cross-engine unified queries |
 
 ### Shared Store Benefits
 
-When using `with_shared_store()`, all engines share the same underlying `TensorStore`:
+When using `with_shared_store()`, all engines share the same underlying
+`TensorStore`:
 
 ```rust
 pub fn with_shared_store(store: TensorStore) -> Self {
@@ -225,6 +230,7 @@ pub fn with_shared_store(store: TensorStore) -> Self {
 ```
 
 This enables:
+
 - Cross-engine queries via `UnifiedEngine`
 - Entity-level operations spanning all modalities
 - Consistent view of data across engines
@@ -234,7 +240,7 @@ This enables:
 ### Execution Methods
 
 | Method | Parser | Async | Distributed | Cache |
-|--------|--------|-------|-------------|-------|
+| --- | --- | --- | --- | --- |
 | `execute(command)` | Regex (legacy) | No | No | No |
 | `execute_parsed(command)` | AST | No | Yes | Yes |
 | `execute_parsed_async(command)` | AST | Yes | No | Yes |
@@ -275,12 +281,15 @@ flowchart TD
 
 ### Detailed Execution Steps
 
-1. **Distributed Check**: If cluster is active, `try_execute_distributed` plans query execution
+1. **Distributed Check**: If cluster is active, `try_execute_distributed` plans
+   query execution
 2. **Parse**: Convert command string to AST via `neumann_parser`
-3. **Cache Check**: For cacheable queries (`SELECT`, `SIMILAR`, `NEIGHBORS`, `PATH`), check cache first
+3. **Cache Check**: For cacheable queries (`SELECT`, `SIMILAR`, `NEIGHBORS`,
+   `PATH`), check cache first
 4. **Execute**: Dispatch to appropriate engine based on `StatementKind`
 5. **Cache Update**: Store result for cacheable queries (as JSON via serde)
-6. **Invalidate**: Clear entire cache on write operations (INSERT, UPDATE, DELETE, DDL)
+6. **Invalidate**: Clear entire cache on write operations (INSERT, UPDATE,
+   DELETE, DDL)
 
 ```rust
 // Synchronous execution
@@ -333,7 +342,7 @@ flowchart LR
 ### Complete Statement Routing Table
 
 | Statement Type | Engine | Handler Method | Operations |
-|----------------|--------|----------------|------------|
+| --- | --- | --- | --- |
 | `Select` | Relational | `exec_select` | Table queries with WHERE, JOIN, GROUP BY, ORDER BY |
 | `Insert` | Relational | `exec_insert` | Single/multi-row insert, INSERT...SELECT |
 | `Update` | Relational | `exec_update` | Row updates with conditions |
@@ -363,7 +372,7 @@ flowchart LR
 | `Checkpoints` | Checkpoint | `exec_checkpoints` | List snapshots |
 | `Chain` | TensorChain | `exec_chain` | Blockchain operations |
 | `Cluster` | Orchestrator | `exec_cluster` | Cluster management |
-| `Empty` | - | inline | No-op |
+| `Empty` | --- | inline | No-op |
 
 ### Statement Handler Pattern
 
@@ -424,7 +433,7 @@ SELECT * FROM a NATURAL JOIN b
 ### Aggregate Functions
 
 | Function | Description | Null Handling |
-|----------|-------------|---------------|
+| --- | --- | --- |
 | `COUNT(*)` | Count all rows | Counts nulls |
 | `COUNT(col)` | Count non-null values | Excludes nulls |
 | `SUM(col)` | Sum numeric values | Skips nulls |
@@ -477,8 +486,8 @@ COUNT EMBEDDINGS
 ### Distance Metrics
 
 | Metric | Description | Use Case | Formula |
-|--------|-------------|----------|---------|
-| `COSINE` | Cosine similarity (default) | Semantic similarity | 1 - (a . b) / (|a| * |b|) |
+| --- | --- | --- | --- |
+| `COSINE` | Cosine similarity (default) | Semantic similarity | `1 - (a.b) / (‖a‖ * ‖b‖)` |
 | `EUCLIDEAN` | Euclidean distance (L2) | Spatial distance | sqrt(sum((a[i] - b[i])^2)) |
 | `DOT_PRODUCT` | Dot product | Magnitude-aware similarity | sum(a[i] * b[i]) |
 
@@ -523,7 +532,7 @@ let results = router.find_similar_connected("user:1", "user:2", 5)?;
 ### Cross-Engine Methods
 
 | Method | Description | Complexity |
-|--------|-------------|------------|
+| --- | --- | --- |
 | `build_vector_index()` | Build HNSW index for O(log n) search | O(n log n) |
 | `connect_entities(from, to, type)` | Add graph edge between entities | O(1) |
 | `find_neighbors_by_similarity(key, query, k)` | Neighbors sorted by vector similarity | O(k * log n) with HNSW |
@@ -733,6 +742,7 @@ fn protect_destructive_op(
 ```
 
 Protected operations include:
+
 - `DELETE` (relational rows)
 - `DROP TABLE`
 - `DROP INDEX`
@@ -784,6 +794,7 @@ router.shutdown_cluster()?;
 ```
 
 Cluster initialization creates:
+
 1. `ClusterOrchestrator` for Raft consensus
 2. `ConsistentHashPartitioner` for key-based routing
 3. `QueryPlanner` for distributed execution
@@ -855,7 +866,7 @@ fn classify_query(&self, query: &str) -> QueryType {
 ### Query Plans
 
 | Plan | When Used | Example | Shards Contacted |
-|------|-----------|---------|------------------|
+| --- | --- | --- | --- |
 | `Local` | Point lookups on local shard | `GET user:1` (local key) | 1 |
 | `Remote` | Point lookups on remote shard | `GET user:2` (remote key) | 1 |
 | `ScatterGather` | Full scans, aggregates, similarity | `SELECT *`, `SIMILAR`, `COUNT` | All |
@@ -863,7 +874,7 @@ fn classify_query(&self, query: &str) -> QueryType {
 ### Merge Strategies
 
 | Strategy | Description | Use Case | Algorithm |
-|----------|-------------|----------|-----------|
+| --- | --- | --- | --- |
 | `Union` | Combine all results | SELECT, NODE queries | Concatenate rows/nodes/edges |
 | `TopK(k)` | Keep top K by score | SIMILAR queries | Sort by score desc, truncate |
 | `Aggregate(func)` | SUM, COUNT, AVG, MAX, MIN | Aggregate queries | Combine partial aggregates |
@@ -958,7 +969,7 @@ pub fn plan_with_embedding(&self, query: &str, embedding: &[f32]) -> QueryPlan {
 ## Performance Characteristics
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | Parse | O(n) | n = query length |
 | SELECT | O(m) | m = rows in table |
 | SELECT with index | O(log m + k) | k = matching rows |
@@ -976,13 +987,13 @@ pub fn plan_with_embedding(&self, query: &str, embedding: &[f32]) -> QueryPlan {
 ### HNSW Index Performance
 
 | Entities | Brute-force | With HNSW | Speedup |
-|----------|-------------|-----------|---------|
+| --- | --- | --- | --- |
 | 200 | 4.17s | 9.3us | 448,000x |
 
 ### Distributed Query Overhead
 
 | Operation | Overhead |
-|-----------|----------|
+| --- | --- |
 | Query planning | ~1-5 us |
 | Network round-trip | ~1-10 ms (depends on network) |
 | Result serialization | ~10-100 us (depends on result size) |
@@ -1037,10 +1048,13 @@ router.execute_parsed("INSERT INTO users VALUES (2, 'Bob')")?;
 
 ### Cache Gotchas
 
-1. **Full cache invalidation**: Any write operation clears the entire cache. No table-level tracking.
-2. **Case sensitivity**: Cache keys are lowercased, so `SELECT` and `select` hit the same entry.
+1. **Full cache invalidation**: Any write operation clears the entire cache. No
+   table-level tracking.
+2. **Case sensitivity**: Cache keys are lowercased, so `SELECT` and `select` hit
+   the same entry.
 3. **Whitespace normalization**: Queries are trimmed but not fully normalized.
-4. **No TTL**: Cached entries persist until invalidated by writes or explicit `CACHE CLEAR`.
+4. **No TTL**: Cached entries persist until invalidated by writes or explicit
+   `CACHE CLEAR`.
 
 ## Best Practices
 
@@ -1135,7 +1149,7 @@ let results = router.execute_parsed("SIMILAR 'query' LIMIT 10")?;
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | [Tensor Store](tensor-store.md) | Underlying storage layer |
 | [Relational Engine](relational-engine.md) | Table operations |
 | [Graph Engine](graph-engine.md) | Node/edge operations |

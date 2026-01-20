@@ -45,7 +45,7 @@ docker run -it neumann/neumann
 ## Platform Support
 
 | Platform | Status |
-|----------|--------|
+| --- | --- |
 | Linux x86_64 | Supported |
 | macOS x86_64 | Supported |
 | macOS ARM64 | Supported |

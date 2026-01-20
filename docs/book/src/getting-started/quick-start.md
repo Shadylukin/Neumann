@@ -8,7 +8,7 @@ neumann
 
 You'll see the interactive prompt:
 
-```
+```text
 Neumann v0.1.0
 Type 'help' for available commands.
 neumann>

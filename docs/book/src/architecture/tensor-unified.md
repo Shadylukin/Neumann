@@ -1,18 +1,22 @@
 # Tensor Unified
 
-Cross-engine operations and unified entity management for Neumann. Provides a single interface for queries that span relational, graph, and vector engines with async-first design and thread safety inherited from TensorStore.
+Cross-engine operations and unified entity management for Neumann. Provides a
+single interface for queries that span relational, graph, and vector engines
+with async-first design and thread safety inherited from TensorStore.
 
 ## Design Principles
 
-1. **Cross-Engine Abstraction**: Single interface for operations spanning multiple engines
-2. **Unified Entities**: Entities can have relational fields, graph connections, and embeddings
+1. **Cross-Engine Abstraction**: Single interface for operations spanning
+   multiple engines
+2. **Unified Entities**: Entities can have relational fields, graph connections,
+   and embeddings
 3. **Composable Queries**: Combine vector similarity with graph connectivity
 4. **Async-First**: All cross-engine operations support async execution
 5. **Thread Safety**: Inherits from underlying engines via TensorStore
 
 ## Architecture
 
-```
+```text
                     +------------------+
                     | UnifiedEngine    |
                     +------------------+
@@ -32,7 +36,8 @@ Cross-engine operations and unified entity management for Neumann. Provides a si
                     +-------------+
 ```
 
-All engines share the same TensorStore instance, enabling cross-engine queries without data duplication.
+All engines share the same TensorStore instance, enabling cross-engine queries
+without data duplication.
 
 ### Internal Engine Coordination
 
@@ -56,7 +61,7 @@ sequenceDiagram
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `UnifiedEngine` | Main entry point for cross-engine operations |
 | `UnifiedResult` | Query result containing description and items |
 | `UnifiedItem` | Single item with source, id, data, embedding, and score |
@@ -79,16 +84,19 @@ pub struct UnifiedItem {
 ```
 
 The `source` field indicates which engine(s) produced the result:
+
 - `"graph"` - Result from graph operations (nodes, edges)
 - `"vector"` - Result from vector similarity search
 - `"unified"` - Result from cross-engine entity retrieval
-- `"vector+graph"` - Result from `find_similar_connected` (similarity + connectivity)
-- `"graph+vector"` - Result from `find_neighbors_by_similarity` (connectivity + similarity)
+- `"vector+graph"` - Result from `find_similar_connected` (similarity +
+  connectivity)
+- `"graph+vector"` - Result from `find_neighbors_by_similarity` (connectivity +
+  similarity)
 
 ### UnifiedError
 
 | Variant | Cause |
-|---------|-------|
+| --- | --- |
 | `RelationalError` | Error from relational engine |
 | `GraphError` | Error from graph engine |
 | `VectorError` | Error from vector engine |
@@ -119,10 +127,11 @@ impl From<relational_engine::RelationalError> for UnifiedError {
 
 ## Entity Storage Format
 
-Unified entities use reserved field prefixes in `TensorData` to store cross-engine data within a single key-value entry:
+Unified entities use reserved field prefixes in `TensorData` to store
+cross-engine data within a single key-value entry:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_out` | `Pointers(Vec<String>)` | Outgoing edge keys |
 | `_in` | `Pointers(Vec<String>)` | Incoming edge keys |
 | `_embedding` | `Vector(Vec<f32>)` or `Sparse(SparseVector)` | Embedding vector |
@@ -137,7 +146,7 @@ Unified entities use reserved field prefixes in `TensorData` to store cross-engi
 
 ### Entity Storage Example
 
-```
+```text
 Key: "user:alice"
 TensorData:
   _embedding: Vector([0.1, 0.2, 0.3, 0.4])
@@ -157,7 +166,8 @@ TensorData:
 
 ### Sparse Vector Auto-Detection
 
-Embeddings are automatically stored in sparse format when >50% of values are zero:
+Embeddings are automatically stored in sparse format when >50% of values are
+zero:
 
 ```rust
 fn should_use_sparse(vector: &[f32]) -> bool {
@@ -199,6 +209,7 @@ pub struct UnifiedEngine {
 ```
 
 The `Arc` wrappers enable:
+
 - Thread-safe sharing across async tasks
 - Zero-copy cloning of the engine
 - Independent engine access when needed
@@ -244,6 +255,7 @@ let edge_id = engine.connect_entities("user:1", "user:2", "follows").await?;
 ```
 
 Edge creation updates three TensorData entries:
+
 1. Creates new edge entry with `_from`, `_to`, `_edge_type`, `_directed`
 2. Adds edge key to source entity's `_out` field
 3. Adds edge key to target entity's `_in` field
@@ -257,7 +269,8 @@ println!("Fields: {:?}", item.data);
 println!("Embedding: {:?}", item.embedding);
 ```
 
-**Gotcha:** Returns `UnifiedError::NotFound` if the entity has neither fields nor embedding.
+**Gotcha:** Returns `UnifiedError::NotFound` if the entity has neither fields
+nor embedding.
 
 ## Cross-Engine Queries
 
@@ -285,6 +298,7 @@ let results = engine.find_similar_connected(
 ```
 
 **Algorithm details:**
+
 1. Retrieves embedding from `query_key` via `VectorEngine::get_entity_embedding`
 2. Searches for top `k*2` similar entities (over-fetches for filtering)
 3. Gets neighbors of `connected_to` via `GraphEngine::get_entity_neighbors`
@@ -321,6 +335,7 @@ let results = engine.find_neighbors_by_similarity(
 ```
 
 **Algorithm details:**
+
 1. Gets all neighbors (both directions) via `GraphEngine::get_entity_neighbors`
 2. For each neighbor:
    - Attempts to get embedding via `VectorEngine::get_entity_embedding`
@@ -348,7 +363,8 @@ let result = engine.find(&pattern, Some(10)).await?;
 
 ## Find Pattern Matching Implementation
 
-The `find_nodes` and `find_edges` methods scan the TensorStore for matching entities:
+The `find_nodes` and `find_edges` methods scan the TensorStore for matching
+entities:
 
 ### Node Scanning Algorithm
 
@@ -377,7 +393,7 @@ fn scan_nodes(&self, label_filter: Option<&str>) -> Result<Vec<Node>> {
 Conditions are evaluated against node/edge properties:
 
 | Condition | Node Fields | Edge Fields |
-|-----------|-------------|-------------|
+| --- | --- | --- |
 | `Eq("id", ...)` | Matches `node.id` | Matches `edge.id` |
 | `Eq("label", ...)` | Matches `node.label` | N/A |
 | `Eq("type", ...)` | N/A | Matches `edge.edge_type` |
@@ -389,7 +405,8 @@ Conditions are evaluated against node/edge properties:
 | `Or(a, b)` | Either must match | Either must match |
 | Other conditions | Returns `true` (pass-through) | Returns `true` (pass-through) |
 
-**Gotcha:** Conditions other than `Eq`, `And`, `Or` return `true` (not yet implemented for graph entities).
+**Gotcha:** Conditions other than `Eq`, `And`, `Or` return `true` (not yet
+implemented for graph entities).
 
 ## Batch Operations
 
@@ -409,7 +426,8 @@ let entities: Vec<EntityInput> = vec![
 let count = engine.create_entities_batch(entities).await?;
 ```
 
-**Note:** Batch operations process sequentially (not parallel). Failed individual operations are counted as failures but don't abort the batch.
+**Note:** Batch operations process sequentially (not parallel). Failed
+individual operations are counted as failures but don't abort the batch.
 
 ## Unified Trait
 
@@ -424,6 +442,7 @@ pub trait Unified {
 ```
 
 Implemented for:
+
 - `graph_engine::Node` - Converts label and properties to data fields
 - `graph_engine::Edge` - Converts from, to, type, and properties to data fields
 - `vector_engine::SearchResult` - Converts key and score
@@ -484,7 +503,9 @@ NEIGHBORS 'entity:key' BY SIMILAR [0.1, 0.2, 0.3] LIMIT 10
 
 ## QueryRouter Integration
 
-QueryRouter integrates with UnifiedEngine for cross-engine operations. When created with `with_shared_store()`, the router automatically initializes an internal UnifiedEngine:
+QueryRouter integrates with UnifiedEngine for cross-engine operations. When
+created with `with_shared_store()`, the router automatically initializes an
+internal UnifiedEngine:
 
 ```mermaid
 classDiagram
@@ -539,7 +560,8 @@ router.execute_parsed("SIMILAR 'query:doc' CONNECTED TO 'user:1' LIMIT 5")?;
 
 ### HNSW Optimization Path
 
-When QueryRouter has an HNSW index, `find_similar_connected` uses it instead of brute-force search:
+When QueryRouter has an HNSW index, `find_similar_connected` uses it instead of
+brute-force search:
 
 ```rust
 // Use HNSW index if available, otherwise fall back to brute-force
@@ -553,7 +575,7 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 ## Performance
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | `create_entity` | O(1) | Single store put + optional embedding |
 | `connect_entities` | O(1) | Three store operations (edge + 2 entity updates) |
 | `get_entity` | O(1) | Single store get + optional embedding lookup |
@@ -566,6 +588,7 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 | `create_entities_batch` | O(b) | Sequential entity creation |
 
 Where:
+
 - n = number of entities with embeddings
 - d = average degree (number of neighbors)
 - k = top-k results requested
@@ -577,16 +600,17 @@ Where:
 From `tensor_unified_bench.rs`:
 
 | Operation | 10 items | 100 items | 1000 items |
-|-----------|----------|-----------|------------|
+| --- | --- | --- | --- |
 | `create_entity` | ~50us | ~500us | ~5ms |
 | `embed_batch` | ~30us | ~300us | ~3ms |
 | `find_nodes` | ~10us | ~100us | ~1ms |
-| `UnifiedItem::new` | ~50ns | - | - |
-| `UnifiedItem::with_data` | ~200ns | - | - |
+| `UnifiedItem::new` | ~50ns | --- | --- |
+| `UnifiedItem::with_data` | ~200ns | --- | --- |
 
 ## Thread Safety
 
 UnifiedEngine is thread-safe via:
+
 - `Arc<VectorEngine>`, `Arc<GraphEngine>`, `Arc<RelationalEngine>`
 - All underlying engines share thread-safe TensorStore (DashMap)
 - No lock poisoning (parking_lot semantics)
@@ -605,15 +629,18 @@ impl Clone for UnifiedEngine {
 ```
 
 **Safe concurrent patterns:**
+
 - Multiple readers on same entity
 - Multiple writers on different entities
 - Mixed reads/writes (DashMap shard locking)
 
-**Gotcha:** Concurrent writes to the same entity may interleave fields. Use transactions for atomicity.
+**Gotcha:** Concurrent writes to the same entity may interleave fields. Use
+transactions for atomicity.
 
 ## Configuration
 
 UnifiedEngine uses the configuration of its underlying engines:
+
 - `TensorStore`: Storage configuration
 - `VectorEngine`: HNSW index parameters, similarity metrics
 - `GraphEngine`: Graph traversal settings
@@ -624,6 +651,7 @@ UnifiedEngine uses the configuration of its underlying engines:
 ### Entity Key Naming
 
 Use prefixed keys to distinguish entity types:
+
 ```rust
 "user:123"      // User entities
 "doc:456"       // Document entities
@@ -634,6 +662,7 @@ Use prefixed keys to distinguish entity types:
 ### Embedding Dimensions
 
 Ensure consistent embedding dimensions across entities:
+
 ```rust
 // Good: All entities use 384-dimensional embeddings
 engine.create_entity("doc:1", fields, Some(vec![0.0; 384])).await?;
@@ -647,19 +676,23 @@ engine.create_entity("doc:2", fields, Some(vec![0.0; 768])).await?;  // Differen
 ### Cross-Engine Query Optimization
 
 For `find_similar_connected`:
+
 1. Build HNSW index for large vector sets (>5000 entities)
-2. Ensure `connected_to` entity has edges (empty neighbors returns empty results)
+2. Ensure `connected_to` entity has edges (empty neighbors returns empty
+   results)
 3. Request `top_k * 2` internally to account for filtering
 
 For `find_neighbors_by_similarity`:
+
 1. Ensure neighbors have embeddings (no embedding = skipped)
 2. Use same dimension for query vector as stored embeddings
-3. Consider degree distribution (high-degree nodes = more similarity computations)
+3. Consider degree distribution (high-degree nodes = more similarity
+   computations)
 
 ## Related Modules
 
 | Module | Relationship |
-|--------|-------------|
+| --- | --- |
 | `tensor_store` | Shared storage backend, provides `TensorData` and `fields` constants |
 | `relational_engine` | Relational data, conditions for filtering |
 | `graph_engine` | Graph connectivity, entity edges, neighbor queries |

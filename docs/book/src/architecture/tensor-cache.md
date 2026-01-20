@@ -1,13 +1,18 @@
 # Tensor Cache Architecture
 
-Semantic caching for LLM responses with cost tracking and background eviction. Module 10 of Neumann.
+Semantic caching for LLM responses with cost tracking and background eviction.
+Module 10 of Neumann.
 
-The tensor_cache module provides multi-layer caching optimized for LLM workloads. It combines O(1) exact hash lookups with O(log n) semantic similarity search via HNSW indices. All cache entries are stored as `TensorData` in a shared `TensorStore`, following the tensor-native paradigm used by `tensor_vault` and `tensor_blob`.
+The tensor_cache module provides multi-layer caching optimized for LLM
+workloads. It combines O(1) exact hash lookups with O(log n) semantic similarity
+search via HNSW indices. All cache entries are stored as `TensorData` in a
+shared `TensorStore`, following the tensor-native paradigm used by
+`tensor_vault` and `tensor_blob`.
 
 ## Design Principles
 
 | Principle | Description |
-|-----------|-------------|
+| --- | --- |
 | Multi-Layer Caching | Exact O(1), Semantic O(log n), Embedding O(1) lookups |
 | Cost-Aware | Tracks tokens and estimates savings using tiktoken |
 | Background Eviction | Async eviction with configurable strategies |
@@ -21,7 +26,7 @@ The tensor_cache module provides multi-layer caching optimized for LLM workloads
 ### Core Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `Cache` | Main API - multi-layer LLM response cache |
 | `CacheConfig` | Configuration (capacity, TTL, eviction, metrics) |
 | `CacheHit` | Successful cache lookup result |
@@ -33,7 +38,7 @@ The tensor_cache module provides multi-layer caching optimized for LLM workloads
 ### Configuration Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `EvictionStrategy` | `LRU`, `LFU`, `CostBased`, `Hybrid` |
 | `EvictionManager` | Background eviction task controller |
 | `EvictionScorer` | Calculates eviction priority scores |
@@ -43,20 +48,20 @@ The tensor_cache module provides multi-layer caching optimized for LLM workloads
 ### Token Counting
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `TokenCounter` | GPT-4 compatible token counting via tiktoken |
 | `ModelPricing` | Predefined pricing for GPT-4, Claude 3, etc. |
 
 ### Index Types (Internal)
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `CacheIndex` | HNSW wrapper with key-to-node mapping |
 | `IndexSearchResult` | Semantic search result with similarity score |
 
 ## Architecture Diagram
 
-```
+```text
 +--------------------------------------------------+
 |                  Cache (Public API)               |
 |   - get(prompt, embedding) -> CacheHit           |
@@ -87,7 +92,9 @@ The tensor_cache module provides multi-layer caching optimized for LLM workloads
 
 ## Multi-Layer Cache Lookup Algorithm
 
-The cache lookup algorithm is designed to maximize hit rates while minimizing latency. It follows a hierarchical approach, checking faster layers first before falling back to more expensive operations.
+The cache lookup algorithm is designed to maximize hit rates while minimizing
+latency. It follows a hierarchical approach, checking faster layers first before
+falling back to more expensive operations.
 
 ### Lookup Flow Diagram
 
@@ -128,6 +135,7 @@ fn exact_key(prompt: &str) -> String {
 ```
 
 The lookup sequence:
+
 1. Generate hash key from prompt
 2. Query `TensorStore` with key
 3. Check expiration timestamp
@@ -135,7 +143,8 @@ The lookup sequence:
 
 ### Semantic Cache Lookup (O(log n))
 
-The semantic cache uses HNSW (Hierarchical Navigable Small World) graphs for approximate nearest neighbor search:
+The semantic cache uses HNSW (Hierarchical Navigable Small World) graphs for
+approximate nearest neighbor search:
 
 ```mermaid
 flowchart LR
@@ -149,7 +158,9 @@ flowchart LR
     H --> I[Return Best Match]
 ```
 
-**Re-scoring Strategy**: The HNSW index retrieves candidates using cosine similarity, then re-scores them with the requested metric. This allows using different metrics without rebuilding the index:
+**Re-scoring Strategy**: The HNSW index retrieves candidates using cosine
+similarity, then re-scores them with the requested metric. This allows using
+different metrics without rebuilding the index:
 
 ```rust
 // Retrieve more candidates than needed for re-scoring
@@ -173,7 +184,8 @@ let similarity = match &embedding {
 
 ### Automatic Metric Selection
 
-When `auto_select_metric` is enabled, the cache automatically selects the optimal distance metric based on embedding sparsity:
+When `auto_select_metric` is enabled, the cache automatically selects the
+optimal distance metric based on embedding sparsity:
 
 ```rust
 fn select_metric(&self, embedding: &[f32]) -> DistanceMetric {
@@ -194,28 +206,35 @@ fn select_metric(&self, embedding: &[f32]) -> DistanceMetric {
 
 ### Exact Cache (O(1))
 
-Hash-based lookup for identical queries. Keys are generated from prompt text using `DefaultHasher`. Stored with prefix `_cache:exact:`.
+Hash-based lookup for identical queries. Keys are generated from prompt text
+using `DefaultHasher`. Stored with prefix `_cache:exact:`.
 
-**When to use**: Repetitive queries with exact same prompts (e.g., FAQ systems, chatbots with canned responses).
+**When to use**: Repetitive queries with exact same prompts (e.g., FAQ systems,
+chatbots with canned responses).
 
 ### Semantic Cache (O(log n))
 
-HNSW-based similarity search for semantically similar queries. Uses configurable distance metrics (Cosine, Jaccard, Euclidean, Angular). Stored with prefix `_cache:sem:`.
+HNSW-based similarity search for semantically similar queries. Uses configurable
+distance metrics (Cosine, Jaccard, Euclidean, Angular). Stored with prefix
+`_cache:sem:`.
 
-**When to use**: Natural language queries with variations (e.g., "What's the weather?" vs "How's the weather today?").
+**When to use**: Natural language queries with variations (e.g., "What's the
+weather?" vs "How's the weather today?").
 
 ### Embedding Cache (O(1))
 
-Stores precomputed embeddings to avoid redundant embedding API calls. Keys combine source and content hash. Stored with prefix `_cache:emb:`.
+Stores precomputed embeddings to avoid redundant embedding API calls. Keys
+combine source and content hash. Stored with prefix `_cache:emb:`.
 
-**When to use**: When embedding computation is expensive and the same content is embedded multiple times.
+**When to use**: When embedding computation is expensive and the same content is
+embedded multiple times.
 
 ## Storage Format
 
 Cache entries are stored as `TensorData` with standardized fields:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_response` | String | Cached response text |
 | `_embedding` | Vector/Sparse | Embedding (semantic/embedding layers) |
 | `_embedding_dim` | Int | Embedding dimension |
@@ -233,7 +252,8 @@ Cache entries are stored as `TensorData` with standardized fields:
 
 ### Sparse Storage Optimization
 
-Embeddings with high sparsity (>50% zeros) are automatically stored in sparse format to reduce memory usage:
+Embeddings with high sparsity (>50% zeros) are automatically stored in sparse
+format to reduce memory usage:
 
 ```rust
 fn should_use_sparse(vector: &[f32]) -> bool {
@@ -251,21 +271,23 @@ fn should_use_sparse(vector: &[f32]) -> bool {
 Configurable distance metrics for semantic similarity:
 
 | Metric | Best For | Range | Formula |
-|--------|----------|-------|---------|
-| Cosine | Dense embeddings (default) | [-1, 1] | `dot(a,b) / (|a| * |b|)` |
+| --- | --- | --- | --- |
+| Cosine | Dense embeddings (default) | [-1, 1] | `dot(a,b) / (‖a‖ * ‖b‖)` |
 | Angular | Linear angle relationships | [0, PI] | `acos(cosine_sim)` |
-| Jaccard | Sparse/binary embeddings | [0, 1] | `|A intersect B| / |A union B|` |
+| Jaccard | Sparse/binary embeddings | [0, 1] | `‖A ∩ B‖ / ‖A ∪ B‖` |
 | Euclidean | Absolute distances | [0, inf) | `sqrt(sum((a-b)^2))` |
 | WeightedJaccard | Sparse with magnitudes | [0, 1] | Weighted set similarity |
 
-**Auto-selection**: When `auto_select_metric` is true, the cache automatically selects Jaccard for sparse embeddings (sparsity >= threshold, default 70%) and the configured metric otherwise.
+**Auto-selection**: When `auto_select_metric` is true, the cache automatically
+selects Jaccard for sparse embeddings (sparsity >= threshold, default 70%) and
+the configured metric otherwise.
 
 ## Eviction Strategies
 
 ### Strategy Comparison
 
 | Strategy | Description | Score Formula | Best For |
-|----------|-------------|---------------|----------|
+| --- | --- | --- | --- |
 | LRU | Evicts entries that haven't been accessed recently | `-last_access_secs` | General purpose |
 | LFU | Evicts entries with lowest access count | `access_count` | Stable workloads |
 | CostBased | Evicts entries with lowest cost savings per byte | `cost_per_hit / size_bytes` | Cost optimization |
@@ -308,8 +330,11 @@ pub fn score(
 ```
 
 **Lower scores are evicted first**. The hybrid formula:
-- `recency_score`: Decays as `1/(1 + age_in_minutes)` - newer entries score higher
-- `frequency_score`: Grows logarithmically with access count - frequently accessed entries score higher
+
+- `recency_score`: Decays as `1/(1 + age_in_minutes)` - newer entries score
+  higher
+- `frequency_score`: Grows logarithmically with access count - frequently
+  accessed entries score higher
 - `cost_score`: Direct cost per hit - higher cost savings score higher
 
 ### Background Eviction Flow
@@ -370,7 +395,7 @@ CacheConfig {
 ### Configuration Presets
 
 | Preset | Use Case | Exact Capacity | Semantic Capacity | Embedding Capacity | Eviction Batch |
-|--------|----------|----------------|-------------------|-------------------|----------------|
+| --- | --- | --- | --- | --- | --- |
 | `default()` | General purpose | 10,000 | 5,000 | 50,000 | 100 |
 | `high_throughput()` | High-traffic server | 50,000 | 20,000 | 100,000 | 500 |
 | `low_memory()` | Memory-constrained | 1,000 | 500 | 5,000 | 50 |
@@ -516,7 +541,8 @@ let vault = Vault::with_store(store.clone(), VaultConfig::default())?;
 
 ## Token Counting Implementation
 
-The `TokenCounter` uses tiktoken's `cl100k_base` encoding, which is compatible with GPT-4, GPT-3.5-turbo, and text-embedding-ada-002.
+The `TokenCounter` uses tiktoken's `cl100k_base` encoding, which is compatible
+with GPT-4, GPT-3.5-turbo, and text-embedding-ada-002.
 
 ### Lazy Encoder Initialization
 
@@ -534,7 +560,8 @@ impl TokenCounter {
 
 ### Fallback Estimation
 
-If tiktoken is unavailable, falls back to character-based estimation (~4 chars per token for English text):
+If tiktoken is unavailable, falls back to character-based estimation (~4 chars
+per token for English text):
 
 ```rust
 const fn estimate_tokens(text: &str) -> usize {
@@ -591,7 +618,7 @@ pub fn estimate_cost_microdollars(...) -> u64 {
 ## Model Pricing
 
 | Model | Input/1K | Output/1K | Notes |
-|-------|----------|-----------|-------|
+| --- | --- | --- | --- |
 | GPT-4o | $0.005 | $0.015 | Best for complex tasks |
 | GPT-4o mini | $0.00015 | $0.0006 | Cost-effective |
 | GPT-4 Turbo | $0.01 | $0.03 | High capability |
@@ -661,7 +688,8 @@ pub fn insert_auto(
 
 ### Key Orphaning on Re-insert
 
-When a key is re-inserted, the old HNSW node is orphaned (not deleted) because HNSW doesn't support efficient deletion:
+When a key is re-inserted, the old HNSW node is orphaned (not deleted) because
+HNSW doesn't support efficient deletion:
 
 ```rust
 let is_new = !self.key_to_node.contains_key(key);
@@ -683,7 +711,7 @@ pub fn memory_stats(&self) -> Option<HNSWMemoryStats> {
 ## Error Types
 
 | Error | Description | Recovery |
-|-------|-------------|----------|
+| --- | --- | --- |
 | `NotFound` | Cache entry not found | Check key exists |
 | `DimensionMismatch` | Embedding dimension does not match config | Verify embedding size |
 | `StorageError` | Underlying tensor store error | Check store health |
@@ -715,7 +743,7 @@ impl From<bincode::Error> for CacheError {
 ### Benchmarks (10,000 entries, 128-dim embeddings)
 
 | Operation | Time | Notes |
-|-----------|------|-------|
+| --- | --- | --- |
 | Exact lookup (hit) | ~50ns | Hash lookup + TensorStore get |
 | Exact lookup (miss) | ~30ns | Hash lookup only |
 | Semantic lookup | ~5us | HNSW search + re-scoring |
@@ -726,7 +754,7 @@ impl From<bincode::Error> for CacheError {
 ### Distance Metric Performance (128-dim, 1000 entries)
 
 | Metric | Search Time | Notes |
-|--------|-------------|-------|
+| --- | --- | --- |
 | Cosine | 21 us | Default, best for dense |
 | Jaccard | 18 us | Best for sparse |
 | Angular | 23 us | +acos overhead |
@@ -735,14 +763,14 @@ impl From<bincode::Error> for CacheError {
 ### Auto-Selection Overhead
 
 | Operation | Time |
-|-----------|------|
+| --- | --- |
 | Sparsity check | ~50 ns |
 | Metric selection | ~10 ns |
 
 ### Memory Efficiency
 
 | Storage Type | Memory per Entry | Best For |
-|--------------|------------------|----------|
+| --- | --- | --- |
 | Dense Vector | 4 * dim bytes | Low sparsity (<50% zeros) |
 | Sparse Vector | 8 * nnz bytes | High sparsity (>50% zeros) |
 
@@ -809,7 +837,7 @@ impl From<bincode::Error> for CacheError {
 
 ## Shell Commands
 
-```
+```text
 CACHE INIT     Initialize semantic cache
 CACHE STATS    Show cache statistics
 CACHE CLEAR    Clear all cache entries
@@ -820,7 +848,7 @@ CACHE CLEAR    Clear all cache entries
 ### Cache Methods
 
 | Method | Description |
-|--------|-------------|
+| --- | --- |
 | `new()` | Create with default config |
 | `with_config(config)` | Create with custom config |
 | `with_store(store, config)` | Create with shared TensorStore |
@@ -847,7 +875,7 @@ CACHE CLEAR    Clear all cache entries
 ### CacheHit Fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `response` | `String` | Cached response text |
 | `layer` | `CacheLayer` | Which layer matched |
 | `similarity` | `Option<f32>` | Similarity score (semantic only) |
@@ -859,7 +887,7 @@ CACHE CLEAR    Clear all cache entries
 ### StatsSnapshot Fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `exact_hits` | `u64` | Exact cache hits |
 | `exact_misses` | `u64` | Exact cache misses |
 | `semantic_hits` | `u64` | Semantic cache hits |
@@ -879,7 +907,7 @@ CACHE CLEAR    Clear all cache entries
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `tensor_store` | HNSW index implementation, TensorStore |
 | `tiktoken-rs` | GPT-compatible token counting |
 | `dashmap` | Concurrent hash maps |

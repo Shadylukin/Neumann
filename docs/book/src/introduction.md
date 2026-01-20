@@ -1,10 +1,13 @@
 # Introduction
 
-Neumann is a unified tensor-based runtime that stores relational data, graph relationships, and vector embeddings in a single mathematical structure.
+Neumann is a unified tensor-based runtime that stores relational data, graph
+relationships, and vector embeddings in a single mathematical structure.
 
 ## Why Neumann?
 
-Traditional databases force you to choose: SQL for structured data, graph databases for relationships, or vector stores for embeddings. Neumann unifies all three into a single system built on sparse tensor mathematics.
+Traditional databases force you to choose: SQL for structured data, graph
+databases for relationships, or vector stores for embeddings. Neumann unifies
+all three into a single system built on sparse tensor mathematics.
 
 ### Key Benefits
 
@@ -16,7 +19,7 @@ Traditional databases force you to choose: SQL for structured data, graph databa
 
 ## Architecture Overview
 
-```
+```text
 +-------------------+
 |   neumann_shell   |  <- Interactive CLI
 +-------------------+
@@ -58,9 +61,11 @@ WHERE SIMILAR(embedding, [0.15, 0.18, ...], 0.9);
 
 ## Getting Started
 
-- [Installation](getting-started/installation.md) - Set up Neumann on your system
+- [Installation](getting-started/installation.md) - Set up Neumann on your
+  system
 - [Quick Start](getting-started/quick-start.md) - Your first queries in minutes
-- [Building from Source](getting-started/building-from-source.md) - Compile from source
+- [Building from Source](getting-started/building-from-source.md) - Compile from
+  source
 
 ## Documentation Structure
 

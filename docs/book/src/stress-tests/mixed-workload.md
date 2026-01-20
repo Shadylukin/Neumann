@@ -1,18 +1,19 @@
 # Mixed Workload Stress Tests
 
-Stress tests that exercise all Neumann engines simultaneously with realistic workload patterns.
+Stress tests that exercise all Neumann engines simultaneously with realistic
+workload patterns.
 
 ## Test Suite
 
 | Test | Scale | Description |
-|------|-------|-------------|
+| --- | --- | --- |
 | `stress_all_engines_concurrent` | 25K ops/thread, 12 threads | All engines under concurrent load |
 | `stress_realistic_workload` | 30s duration | Mixed OLTP + search + traversal |
 
 ## Results
 
 | Test | Key Metric | Result |
-|------|------------|--------|
+| --- | --- | --- |
 | All engines | Combined throughput | **841 ops/sec** |
 | All engines | Relational p50 | 12ms |
 | All engines | Graph p50 | 5us |
@@ -34,20 +35,24 @@ cargo test --release -p stress_tests stress_all_engines_concurrent -- --ignored 
 
 ## All Engines Concurrent
 
-Tests all engines (relational, graph, vector) under simultaneous heavy load from 12 threads.
+Tests all engines (relational, graph, vector) under simultaneous heavy load from
+12 threads.
 
 **What it validates:**
+
 - Cross-engine concurrency safety
 - Shared TensorStore contention handling
 - No deadlocks or livelocks
 - Correct results under maximum stress
 
 **Workload distribution per thread:**
+
 - Relational: INSERT, SELECT, UPDATE
 - Graph: NODE, EDGE, NEIGHBORS
 - Vector: EMBED, SIMILAR
 
 **Expected behavior:**
+
 - No panics or assertion failures
 - All operations complete (no hangs)
 - Data consistency verified post-test
@@ -57,16 +62,19 @@ Tests all engines (relational, graph, vector) under simultaneous heavy load from
 Simulates a production-like mixed workload over 30 seconds.
 
 **What it validates:**
+
 - Sustained throughput over time
 - Memory stability (no leaks)
 - Latency consistency
 
 **Workload pattern:**
+
 - 40% Reads (SELECT, GET, NEIGHBORS)
 - 30% Writes (INSERT, UPDATE, NODE)
 - 30% Searches (SIMILAR, PATH)
 
 **Expected behavior:**
+
 - Throughput variance < 20%
 - Memory usage stable
 - No degradation over time
@@ -74,7 +82,7 @@ Simulates a production-like mixed workload over 30 seconds.
 ## Engine Latency Breakdown
 
 | Engine | Operation | Typical p50 | Notes |
-|--------|-----------|-------------|-------|
+| --- | --- | --- | --- |
 | Relational | SELECT | 1-10ms | Schema lookup overhead |
 | Relational | INSERT | 3-15ms | Index maintenance |
 | Graph | NEIGHBORS | 5-50us | Adjacency list lookup |
@@ -94,7 +102,7 @@ When mixed workload throughput is lower than expected:
 ## Scaling Considerations
 
 | Bottleneck | Solution |
-|------------|----------|
+| --- | --- |
 | CPU-bound | Add more cores, enable rayon parallelism |
 | Memory-bound | Enable tiered storage, use sparse vectors |
 | I/O-bound | Use NVMe storage, increase buffer sizes |

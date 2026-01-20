@@ -41,6 +41,7 @@ done
 **Diagnosis**: Nodes can't reach each other
 
 **Solution**:
+
 - Check firewall rules for port 7878 (Raft) and 7879 (gossip)
 - Verify network routes between nodes
 - Check for packet loss: `ping -c 100 peer_node`
@@ -50,6 +51,7 @@ done
 **Diagnosis**: Election timeouts inconsistent across nodes
 
 **Solution**:
+
 - Ensure NTP is running: `timedatectl status`
 - Max recommended skew: 500ms
 - Sync clocks: `chronyc makestep`
@@ -59,6 +61,7 @@ done
 **Diagnosis**: Fewer than `(n/2)+1` nodes available
 
 **Solution**:
+
 - For 3-node cluster: need 2 nodes
 - For 5-node cluster: need 3 nodes
 - Bring failed nodes back online or add new nodes
@@ -68,6 +71,7 @@ done
 **Diagnosis**: Frequent elections even with healthy network
 
 **Solution**:
+
 ```toml
 [raft]
 election_timeout_min_ms = 300   # Increase from default 150

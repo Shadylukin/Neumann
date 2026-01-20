@@ -78,7 +78,8 @@ pub struct MyType { ... }
 
 ### Method Documentation
 
-Self-explanatory methods (`get`, `set`, `new`, `len`) don't need docs. Complex methods should explain:
+Self-explanatory methods (`get`, `set`, `new`, `len`) don't need docs. Complex
+methods should explain:
 
 - What the method does
 - Parameters and return values

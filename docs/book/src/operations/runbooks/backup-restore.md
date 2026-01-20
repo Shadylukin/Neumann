@@ -3,7 +3,7 @@
 ## Backup Strategy
 
 | Type | Frequency | Retention | RPO | RTO |
-|------|-----------|-----------|-----|-----|
+| --- | --- | --- | --- | --- |
 | Snapshots | Every 10k entries | 7 days | Minutes | Minutes |
 | Full backup | Daily | 30 days | 24 hours | Hours |
 | Off-site | Weekly | 1 year | 1 week | Hours |

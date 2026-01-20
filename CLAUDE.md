@@ -4,26 +4,90 @@ This file provides guidance for Claude Code when working on this project.
 
 ## Project Overview
 
-Neumann is a unified tensor-based runtime that stores relational data, graph relationships, and vector embeddings in a single mathematical structure.
+Neumann is a unified tensor-based runtime that stores relational data, graph
+relationships, and vector embeddings in a single mathematical structure.
 
-## Modules
+## Quality Standards
 
-| Module | Purpose | Depends On |
-|--------|---------|------------|
-| `tensor_store` | Key-value storage layer | tensor_compress |
-| `relational_engine` | SQL-like tables with indexes | tensor_store |
-| `graph_engine` | Graph nodes and edges | tensor_store |
-| `vector_engine` | Embeddings and similarity search | tensor_store |
-| `tensor_compress` | Compression algorithms | - |
-| `tensor_vault` | Encrypted secret storage | tensor_store, graph_engine |
-| `tensor_cache` | Semantic LLM response caching | tensor_store |
-| `tensor_blob` | S3-style chunked blob storage | tensor_store |
-| `tensor_checkpoint` | Atomic snapshot/restore | tensor_store |
-| `tensor_unified` | Multi-engine unified storage | all engines |
-| `tensor_chain` | Tensor-native blockchain | tensor_store, graph_engine, tensor_checkpoint |
-| `neumann_parser` | Query tokenization and parsing | - |
-| `query_router` | Unified query execution | all engines, parser, vault, cache, blob, chain |
-| `neumann_shell` | Interactive CLI interface | query_router |
+This project maintains **production-grade code quality**. All code must pass:
+
+```bash
+cargo fmt --check                              # Formatting
+cargo clippy -- -D warnings                    # Lints as errors
+cargo clippy -- -W clippy::pedantic            # Pedantic lints (advisory)
+cargo test                                     # All tests pass
+cargo doc --no-deps                            # Documentation builds
+```
+
+**Coverage requirements** (enforced per-crate):
+
+- Default: 95% minimum line coverage
+- neumann_shell: 88%
+- neumann_parser: 91%
+- tensor_blob: 91%
+- query_router: 92%
+- tensor_chain: 95%
+
+**Code expectations:**
+
+- Clean, idiomatic Rust with no hacks or workarounds
+- Proper error handling using `Result` and `?` propagation
+- Thread-safe designs using sharded data structures (DashMap, parking_lot)
+- Comprehensive tests including unit, integration, concurrency, and fuzz tests
+- No `unsafe` code unless absolutely necessary and well-justified
+
+## Workspace Structure
+
+The project consists of 19 crates organized in dependency tiers:
+
+### Foundation Layer (no workspace dependencies)
+
+| Crate | Purpose |
+| ----- | ------- |
+| `tensor_store` | Core key-value storage with HNSW, sparse vectors, tiered storage |
+| `tensor_compress` | Tensor Train decomposition, delta encoding, RLE compression |
+| `neumann_parser` | Hand-written recursive descent parser for query language |
+
+### Engine Layer (depends on tensor_store)
+
+| Crate | Purpose |
+| ----- | ------- |
+| `relational_engine` | SQL-like tables with SIMD filtering, indexes, columnar scans |
+| `graph_engine` | Directed graphs with BFS traversal, shortest path, properties |
+| `vector_engine` | k-NN similarity search via HNSW with multiple distance metrics |
+
+### Specialized Storage Layer
+
+| Crate | Purpose | Dependencies |
+| ----- | ------- | ------------ |
+| `tensor_vault` | AES-256-GCM encrypted secrets with graph-based access control | tensor_store, graph_engine |
+| `tensor_cache` | Multi-layer LLM response cache (exact + semantic + embedding) | tensor_store |
+| `tensor_blob` | S3-style content-addressable blob storage with streaming | tensor_store |
+| `tensor_checkpoint` | Atomic snapshot/restore with retention and confirmation | tensor_store, tensor_blob |
+| `tensor_unified` | Cross-engine unified entity operations | all engines |
+
+### Distributed Layer
+
+| Crate | Purpose | Dependencies |
+| ----- | ------- | ------------ |
+| `tensor_chain` | Tensor-native blockchain with Raft consensus and 2PC | tensor_store, tensor_compress, graph_engine |
+
+### Query Execution Layer
+
+| Crate | Purpose | Dependencies |
+| ----- | ------- | ------------ |
+| `query_router` | Unified query routing across all engines | all crates |
+| `neumann_shell` | Interactive CLI with readline, WAL, snapshots | query_router |
+| `neumann_server` | gRPC server exposing QueryRouter | query_router, tensor_blob |
+
+### Testing and Utilities
+
+| Crate | Purpose |
+| ----- | ------- |
+| `integration_tests` | Cross-crate integration tests (267+ tests) |
+| `stress_tests` | Performance and concurrency stress tests |
+| `experiments` | Research and experimental features |
+| `seed_model` | Geometric intelligence model implementation |
 
 ## Code Style
 
@@ -37,16 +101,19 @@ Neumann is a unified tensor-based runtime that stores relational data, graph rel
 Doc comments (`///`) are for rustdoc generation. Use them sparingly:
 
 **DO document:**
+
 - Types (structs, enums) - explain purpose and invariants
 - Non-obvious behavior - when a method does something unexpected
 - Complex algorithms - when the "why" isn't clear from code
 
 **DO NOT document:**
+
 - Methods with self-explanatory names (`get`, `set`, `new`, `len`, `is_empty`)
 - Trivial implementations
 - Anything where the doc would just repeat the function name
 
 **Examples:**
+
 ```rust
 // BAD - restates the obvious
 /// Get a field value
@@ -61,15 +128,6 @@ pub fn get(&self, key: &str) -> Result<TensorData>
 ```
 
 Inline comments (`//`) should explain "why", never "what".
-
-## Quality Standards
-
-All code must pass before commit:
-- `cargo fmt --check` - formatting
-- `cargo clippy -- -D warnings` - lints as errors
-- `cargo test` - all tests pass
-- `cargo doc --no-deps` - documentation builds
-- 95% minimum line coverage (per-crate thresholds: shell 88%, parser 91%, blob 91%, router 92%, chain 95%)
 
 ## Testing Philosophy
 
@@ -87,7 +145,7 @@ The project uses cargo-fuzz (libFuzzer-based) for coverage-guided fuzzing.
 ### Fuzz Targets
 
 | Target | Module | What it tests |
-|--------|--------|---------------|
+| ------ | ------ | ------------- |
 | `parser_parse` | neumann_parser | Statement parsing |
 | `parser_parse_all` | neumann_parser | Multi-statement parsing |
 | `parser_parse_expr` | neumann_parser | Expression parsing |
@@ -102,12 +160,14 @@ The project uses cargo-fuzz (libFuzzer-based) for coverage-guided fuzzing.
 | `consistent_hash` | tensor_store | Consistent hash partitioner |
 | `tcp_framing` | tensor_chain | TCP wire protocol codec |
 | `membership` | tensor_chain | Cluster config serialization |
-| `relational_condition` | relational_engine | Condition evaluate() vs evaluate_tensor() |
+| `relational_condition` | relational_engine | Condition evaluation |
 | `relational_engine_ops` | relational_engine | Engine CRUD operations |
 | `cache_eviction_scorer` | tensor_cache | Eviction strategy scoring |
-| `cache_semantic_search` | tensor_cache | Semantic search with distance metrics |
-| `cache_metric_roundtrip` | tensor_cache | Metric consistency and normalization |
-| `archetype_registry` | tensor_store | ArchetypeRegistry bincode roundtrip |
+| `cache_semantic_search` | tensor_cache | Semantic search with metrics |
+| `cache_metric_roundtrip` | tensor_cache | Metric consistency |
+| `archetype_registry` | tensor_store | ArchetypeRegistry bincode |
+| `dtx_state_cleanup` | tensor_chain | Distributed tx cleanup |
+| `error_hierarchy` | integration_tests | Error type hierarchy |
 
 ### Running Locally
 
@@ -139,195 +199,304 @@ cargo +nightly fuzz run parser_parse artifacts/parser_parse/crash-xxx
 
 See `docs/architecture.md` for full system design.
 
+### tensor_store (23,625 lines, 22 modules)
+
+Core storage layer with specialized slabs and partitioning.
+
+```text
+src/lib.rs              # TensorStore, TensorData, TensorValue, BloomFilter, EntityStore
+src/slab_router.rs      # BTreeMap-based multi-slab routing (~3.2M PUT, ~5M GET ops/sec)
+src/hnsw.rs             # HNSW index (Dense/Sparse/Delta/TensorTrain support)
+src/sparse_vector.rs    # Memory-efficient sparse vectors with 15+ distance metrics
+src/delta_vector.rs     # Delta encoding, ArchetypeRegistry, k-means clustering
+src/relational_slab.rs  # Column-oriented table storage with indexing
+src/graph_tensor.rs     # Graph nodes/edges with BFS and shortest path
+src/embedding_slab.rs   # Entity-to-embedding mapping with compression
+src/entity_index.rs     # Bidirectional String <-> EntityId mapping
+src/metadata_slab.rs    # Arbitrary key-value metadata storage
+src/blob_log.rs         # Content-addressable chunk storage with GC
+src/cache_ring.rs       # LRU/LFU/Cost/Hybrid eviction cache
+src/tiered.rs           # Two-tier hot/cold storage with auto-migration
+src/mmap.rs             # Memory-mapped cold storage (builder + mutable)
+src/instrumentation.rs  # Shard access tracking for hot/cold detection
+src/consistent_hash.rs  # Consistent hashing with virtual nodes
+src/voronoi.rs          # Voronoi diagram-based vector partitioning
+src/semantic_partitioner.rs  # K-means semantic partitioning
+src/partitioned.rs      # Partition-aware store wrapper
+src/partitioner.rs      # Pluggable partitioning trait
+src/distance.rs         # DistanceMetric enum + GeometricConfig
+src/snapshot.rs         # V2/V3 format detection and migration
 ```
-tensor_store/           # Module 1: Storage layer
-  src/lib.rs            # Core types, TensorStore, SparseVector, BloomFilter
-  src/hnsw.rs           # HNSW index (Dense/Sparse/Delta support)
-  src/delta_vector.rs   # Delta encoding, ArchetypeRegistry, k-means
-  src/instrumentation.rs # Shard access tracking for hot/cold detection
-  src/mmap.rs           # Memory-mapped cold storage
-  src/tiered.rs         # Two-tier hot/cold TieredStore
-relational_engine/      # Module 2: Relational operations
-  src/lib.rs            # Tables, schemas, conditions, indexes
-graph_engine/           # Module 3: Graph operations
-  src/lib.rs            # Nodes, edges, traversals
-vector_engine/          # Module 4: Vector operations
-  src/lib.rs            # Embeddings, similarity search
-tensor_compress/        # Module 8: Compression algorithms
-  src/lib.rs            # Public API
-  src/quantize.rs       # Int8/binary vector quantization
-  src/delta.rs          # Delta + varint encoding
-  src/rle.rs            # Run-length encoding
-  src/format.rs         # Snapshot format v2
-tensor_vault/           # Module 9: Secret storage
-  src/lib.rs            # Vault API, versioning, namespaces
-  src/encryption.rs     # AES-256-GCM encryption
-  src/key.rs            # Argon2id key derivation
-  src/access.rs         # Graph-based access control with permissions
-  src/audit.rs          # Audit logging
-  src/rate_limit.rs     # Per-entity rate limiting
-  src/ttl.rs            # Grant TTL tracking
-  src/obfuscation.rs    # Key obfuscation via HMAC
-tensor_cache/           # Module 10: LLM response cache
-  src/lib.rs            # Cache API, multi-layer lookup
-  src/config.rs         # Configuration and presets
-  src/error.rs          # Error types
-  src/stats.rs          # Statistics tracking
-  src/exact.rs          # O(1) hash-based cache
-  src/semantic.rs       # O(log n) HNSW-based cache
-  src/embedding.rs      # Embedding cache
-  src/index.rs          # HNSW index wrapper
-  src/eviction.rs       # Background eviction
-  src/ttl.rs            # TTL tracking
-  src/tokenizer.rs      # tiktoken token counting
-tensor_blob/            # Module 11: Blob storage
-  src/lib.rs            # BlobStore API
-  src/config.rs         # Configuration
-  src/error.rs          # Error types
-  src/metadata.rs       # Artifact metadata
-  src/chunker.rs        # SHA-256 content-addressable chunking
-  src/streaming.rs      # BlobWriter, BlobReader
-  src/gc.rs             # Background garbage collection
-  src/integrity.rs      # Checksum verification, repair
-tensor_chain/           # Module 12: Tensor blockchain
-  src/lib.rs            # TensorChain API, ChainConfig
-  src/block.rs          # Block, BlockHeader, Transaction
-  src/chain.rs          # Chain linked via graph edges
-  src/transaction.rs    # Workspace isolation, delta tracking
-  src/embedding.rs      # EmbeddingState machine (Initial, Computed)
-  src/codebook.rs       # GlobalCodebook, LocalCodebook, CodebookManager
-  src/validation.rs     # TransitionValidator
-  src/consensus.rs      # Semantic conflict detection, auto-merge (sparse DeltaVector)
-  src/raft.rs           # Tensor-Raft consensus
-  src/network.rs        # Transport trait, MemoryTransport (sparse messages)
-  src/distributed_tx.rs # 2PC coordinator, LockManager
-  src/membership.rs     # Cluster membership and health checking
-  src/delta_replication.rs # Delta-compressed state replication
-  src/error.rs          # ChainError types
-neumann_parser/         # Module 5: Query parsing
-  src/lib.rs            # Public API
-  src/lexer.rs          # Tokenization
-  src/token.rs          # Token definitions
-  src/ast.rs            # AST node types
-  src/parser.rs         # Statement parsing
-  src/expr.rs           # Expression parsing (Pratt)
-  src/span.rs           # Source locations
-  src/error.rs          # Error types
-query_router/           # Module 6: Query execution
-  src/lib.rs            # Unified query routing
-neumann_shell/          # Module 7: CLI interface
-  src/lib.rs            # Shell implementation, WAL
-  src/main.rs           # Binary entry point
-docs/
-  architecture.md       # System architecture overview
-  tensor-store.md       # Module 1 API documentation
-  relational-engine.md  # Module 2 API documentation
-  graph-engine.md       # Module 3 API documentation
-  vector-engine.md      # Module 4 API documentation
-  query-router.md       # Module 5 API documentation
-  neumann-parser.md     # Module 6 API documentation
-  neumann-shell.md      # Module 7 API documentation
-  tensor-compress.md    # Module 8 API documentation
-  tensor-vault.md       # Module 9 API documentation
-  tensor-cache.md       # Module 10 API documentation
-  tensor-blob.md        # Module 11 API documentation
-  tensor-chain.md       # Module 12 API documentation
-  benchmarks.md         # Performance benchmarks
+
+### tensor_compress
+
+```text
+src/lib.rs        # TTVector, TTConfig, CompressionConfig
+src/tt.rs         # Tensor Train decomposition (10-20x compression)
+src/delta.rs      # Delta + varint encoding for sorted IDs
+src/rle.rs        # Run-length encoding
+src/format.rs     # Snapshot format versioning
+```
+
+### relational_engine
+
+```text
+src/lib.rs        # RelationalEngine, Schema, Column, Condition
+src/simd.rs       # SIMD-accelerated filtering (wide crate)
+```
+
+### graph_engine
+
+```text
+src/lib.rs        # GraphEngine, Node, Edge, Path, Direction
+```
+
+### vector_engine
+
+```text
+src/lib.rs        # VectorEngine, SearchResult, DistanceMetric
+```
+
+### tensor_vault
+
+```text
+src/lib.rs          # Vault API with versioning and namespaces
+src/encryption.rs   # AES-256-GCM authenticated encryption
+src/key.rs          # Argon2id key derivation (GPU/ASIC resistant)
+src/access.rs       # Graph-based access control with permissions
+src/audit.rs        # Audit logging
+src/rate_limit.rs   # Per-entity rate limiting
+src/ttl.rs          # Grant TTL tracking
+src/obfuscation.rs  # Key obfuscation via HMAC
+```
+
+### tensor_cache
+
+```text
+src/lib.rs        # Cache API with multi-layer lookup
+src/config.rs     # Configuration and presets
+src/exact.rs      # O(1) hash-based exact cache
+src/semantic.rs   # O(log n) HNSW-based semantic cache
+src/embedding.rs  # Embedding cache with content hashing
+src/eviction.rs   # Background eviction (LRU/LFU/Cost/Hybrid)
+src/ttl.rs        # TTL tracking
+src/tokenizer.rs  # tiktoken token counting
+src/stats.rs      # Hit rates and cost tracking
+```
+
+### tensor_blob
+
+```text
+src/lib.rs        # BlobStore API (async-first)
+src/chunker.rs    # SHA-256 content-addressable chunking
+src/streaming.rs  # BlobWriter, BlobReader for streaming I/O
+src/metadata.rs   # ArtifactMetadata with tags and links
+src/gc.rs         # Background garbage collection
+src/integrity.rs  # Checksum verification and repair
+```
+
+### tensor_checkpoint
+
+```text
+src/lib.rs        # CheckpointManager with confirmation workflow
+src/storage.rs    # Checkpoint storage via BlobStore
+src/retention.rs  # Automatic old checkpoint cleanup
+src/preview.rs    # Operation preview generation
+```
+
+### tensor_unified
+
+```text
+src/lib.rs        # UnifiedEngine for cross-engine operations
+```
+
+### tensor_chain (51,977 lines, 42 modules)
+
+Production-ready distributed consensus with semantic transactions.
+
+```text
+src/lib.rs              # TensorChain, ChainConfig, ChainMetrics
+src/raft.rs             # Tensor-Raft consensus (7,684 lines)
+src/distributed_tx.rs   # 2PC coordinator with deadlock detection
+src/network.rs          # Transport trait, message types (9 categories)
+src/tcp/                # TCP transport with TLS, compression, rate limiting
+src/membership.rs       # Health checking, cluster config, partition detection
+src/gossip.rs           # SWIM-based gossip protocol with signed messages
+src/consensus.rs        # Semantic conflict detection (6-way classification)
+src/codebook.rs         # Global/local codebooks, hierarchical quantization
+src/validation.rs       # State transition validation
+src/delta_replication.rs  # Delta-compressed replication (4-6x compression)
+src/partition_merge.rs  # Partition healing and reconciliation
+src/raft_wal.rs         # Persistent Raft state
+src/tx_wal.rs           # Persistent 2PC state
+src/snapshot_streaming.rs  # Chunked snapshot transfer
+src/signing.rs          # Ed25519 signatures, validator registry
+src/deadlock.rs         # Wait-for graph deadlock detection
+src/hlc.rs              # Hybrid logical clocks
+```
+
+### neumann_parser
+
+```text
+src/lib.rs        # Public API (parse, parse_all, parse_expr, tokenize)
+src/lexer.rs      # Tokenization
+src/token.rs      # Token definitions
+src/ast.rs        # AST node types (Statement, Expr)
+src/parser.rs     # Statement parsing
+src/expr.rs       # Expression parsing (Pratt precedence)
+src/span.rs       # Source locations
+src/error.rs      # Parse errors
+```
+
+### query_router
+
+```text
+src/lib.rs        # QueryRouter, QueryResult, distributed query support
+```
+
+### neumann_shell
+
+```text
+src/lib.rs        # Shell, ShellConfig, CommandResult
+src/main.rs       # Binary entry point
+src/wal.rs        # Write-ahead log for crash recovery
+```
+
+### neumann_server
+
+```text
+src/lib.rs        # gRPC server via tonic
+src/main.rs       # Server binary
+proto/            # Protocol buffer definitions
 ```
 
 ## Key Types
 
 ### Tensor Store
-- `TensorValue`: Scalar, Vector, Pointer, or Pointers
-- `TensorData`: A map of field names to TensorValues
-- `ScalarValue`: Int, Float, String, Bool, Bytes, Null
-- `TensorStore`: Thread-safe key-value store using DashMap
-- `BloomFilter`: Probabilistic set for fast negative lookups
-- `SparseVector`: Memory-efficient sparse embedding with geometric operations
-  - Arithmetic: `sub`, `weighted_average`, `project_orthogonal`, `from_diff`
-  - Metrics: `cosine_similarity`, `jaccard_index`, `euclidean_distance`, `angular_distance`
+
+- `TensorValue`: Scalar | Vector | Sparse | Pointer | Pointers
+- `TensorData`: HashMap-based entity with field accessors
+- `ScalarValue`: Null | Bool | Int | Float | String | Bytes
+- `TensorStore`: Thread-safe key-value store with SlabRouter
+- `EntityStore`: High-level entity abstraction with type-aware scanning
+- `BloomFilter`: Thread-safe probabilistic set with configurable FPR
+- `SparseVector`: Memory-efficient sparse embedding (15+ distance metrics)
+- `DeltaVector`: Archetype-based delta encoding with k-means
+- `HNSWIndex`: Hierarchical navigable small world graph (Dense/Sparse/Delta/TT)
 - `DistanceMetric`: Cosine, Angular, Geodesic, Jaccard, Overlap, Euclidean, Composite
-- `HNSWIndex`: Hierarchical navigable small world graph
 - `TieredStore`: Hot/cold storage with mmap backing
+- `CacheRing`: Multi-strategy eviction cache (LRU/LFU/Cost/Hybrid)
+- `ConsistentHashPartitioner`: Consistent hashing with virtual nodes
+- `VoronoiPartitioner`: Vector-based Voronoi region partitioning
+- `SemanticPartitioner`: K-means semantic partitioning with routing
 
 ### Relational Engine
-- `Schema`, `Column`, `ColumnType`: Table structure
-- `Value`: Typed values (Int, Float, String, Bool, Null)
-- `Condition`: Composable predicates for filtering
-- `RelationalEngine`: Table operations with index support
+
+- `Schema`, `Column`, `ColumnType`: Table structure (Int, Float, String, Bool,
+  Bytes, Json)
+- `Value`: Typed values for queries
+- `Condition`, `RangeOp`: Composable predicates for filtering
+- `RelationalEngine`: Table CRUD with SIMD-accelerated scans
 
 ### Graph Engine
-- `Node`, `Edge`: Graph elements with id, label/type, properties
-- `Direction`: Edge traversal direction (Outgoing, Incoming, Both)
+
+- `Node`, `Edge`: Graph elements with properties
+- `Direction`: Outgoing, Incoming, Both
 - `Path`: Sequence of nodes and edges
-- `GraphEngine`: Node/edge CRUD and traversals
+- `GraphEngine`: Node/edge CRUD, BFS, shortest path
 
 ### Vector Engine
-- `SearchResult`: Key and similarity score
-- `VectorEngine`: Embedding storage and k-NN search
 
-### Neumann Shell
-- `Shell`: Interactive REPL with query execution
-- `ShellConfig`: Configuration (history, prompt)
-- `CommandResult`: Output, Exit, Help, Empty, Error
+- `SearchResult`: Key and similarity score
+- `DistanceMetric`: Cosine, Euclidean, DotProduct
+- `VectorEngine`: Embedding storage and k-NN search via HNSW
 
 ### Tensor Vault
+
 - `Vault`: Encrypted secret storage with graph-based access
-- `VaultConfig`: Argon2id parameters for key derivation
-- `VaultError`: Access denied, not found, crypto errors
-- `Permission`: Access levels (Read, Write, Admin)
-- `Cipher`: AES-256-GCM encryption wrapper
+- `VaultConfig`: Argon2id parameters, rate limits, max versions
+- `Permission`: Read, Write, Admin
+- `Cipher`: AES-256-GCM wrapper
 - `MasterKey`: Derived key with zeroize on drop
+- `Obfuscator`: HMAC-based key obfuscation
 
 ### Tensor Cache
+
 - `Cache`: Multi-layer LLM response cache
-- `CacheConfig`: Configuration and presets
-- `CacheHit`: Successful cache lookup result
+- `CacheConfig`: Embedding dimension, capacity, TTL, eviction strategy
+- `CacheHit`: Successful lookup (layer, response, tokens, cost)
 - `CacheStats`: Hit rates, token counts, cost savings
 - `EvictionStrategy`: LRU, LFU, Cost, Hybrid
 
 ### Tensor Blob
-- `BlobStore`: Content-addressable artifact storage
+
+- `BlobStore`: Content-addressable artifact storage (async)
 - `BlobConfig`: Chunk size, GC settings
 - `ArtifactMetadata`: Filename, size, checksum, links, tags
-- `PutOptions`: Upload options (links, tags, metadata)
 - `BlobWriter`, `BlobReader`: Streaming upload/download
+- `GarbageCollector`: Background cleanup
+
+### Tensor Checkpoint
+
+- `CheckpointManager`: Snapshot/restore coordinator
+- `CheckpointConfig`: Max checkpoints, auto-checkpoint, interactive confirm
+- `DestructiveOp`: Delete, Update operations requiring confirmation
+- `OperationPreview`: Preview of affected data
+- `ConfirmationHandler`: Trait for custom confirmation logic
+
+### Tensor Unified
+
+- `UnifiedEngine`: Cross-engine query execution
+- `UnifiedResult`: Combined results from multiple engines
+- `UnifiedItem`: Entity with source, data, embedding, score
+- `FindPattern`: Nodes(label) | Edges(type)
 
 ### Neumann Parser
-- `Statement`: Top-level parsed statement
-- `StatementKind`: Select, Insert, Node, Edge, Blob, Vault, Cache, etc.
+
+- `Statement`, `StatementKind`: Top-level parsed statements
 - `Expr`, `ExprKind`: Expression AST nodes
 - `Token`, `TokenKind`: Lexer tokens
 - `ParseError`: Error with span information
 
 ### Query Router
+
 - `QueryRouter`: Unified query execution across all engines
-- `QueryResult`: Result variants (Rows, Nodes, Edges, Count, etc.)
-- `RouterError`: Query execution errors
+- `QueryResult`: Result variants (Rows, Nodes, Edges, Similar, Chain, etc.)
+- `QueryPlanner`: Distributed query optimization
+- `ResultMerger`: Combine results from multiple shards
 
 ### Tensor Chain
-- `TensorChain`: Tensor-native blockchain with semantic transactions
-- `Block`, `BlockHeader`: Block structure with delta embeddings
+
+- `TensorChain`: Tensor-native blockchain API
+- `Chain`, `Block`, `BlockHeader`: Block structure with Ed25519 signatures
 - `Transaction`: Put, Delete, Update operations
-- `GlobalCodebook`: Static codebook for consensus validation
-- `LocalCodebook`: EMA-adaptive codebook per domain
-- `ConsensusManager`: Semantic conflict detection and auto-merge
-- `DeltaVector`: Sparse delta for conflict detection (uses SparseVector internally)
-- `EmbeddingState`: Type-safe embedding lifecycle (Initial, Computed)
-- `WorkspaceEmbedding`: Transaction embedding tracking via EmbeddingState
 - `RaftNode`: Tensor-Raft consensus state machine
-- `ChainError`: Chain operation errors
-- Network messages (RequestVote, AppendEntries, TxPrepareMsg, TxVote): Use SparseVector
+- `RaftConfig`: Election timeout, heartbeat, similarity threshold, fast-path
+- `DistributedTxCoordinator`: 2PC with lock manager
+- `LockManager`: Key-level locking with deadlock detection
+- `ConsensusManager`: Semantic conflict detection (6-way classification)
+- `DeltaVector`: Sparse delta for conflict detection
+- `GlobalCodebook`, `LocalCodebook`: Quantization codebooks
+- `MembershipManager`: Health checking, partition detection
+- `DeltaReplicationManager`: Delta-compressed state sync
+
+### Neumann Shell
+
+- `Shell`: Interactive REPL with query execution
+- `ShellConfig`: History file, size, prompt
+- `CommandResult`: Output, Exit, Help, Empty, Error
+- `Wal`: Write-ahead log for crash recovery
 
 ## Concurrency Design
 
-All engines inherit thread safety from TensorStore's DashMap:
+All engines inherit thread safety from TensorStore's SlabRouter:
 
 - **Why**: Better concurrent write performance, no lock poisoning
-- **How**: DashMap uses ~16 shards, writes only block same-shard writes
-- **Trade-off**: Adds dashmap dependency, but eliminates failure modes
+- **How**: SlabRouter uses sharded BTreeMaps, writes only block same-shard writes
+- **Trade-off**: Adds dashmap/parking_lot dependencies, but eliminates failure modes
 
 When adding new concurrent data structures:
+
 1. Prefer sharded/partitioned designs over single locks
 2. Avoid lock poisoning by using parking_lot or dashmap
 3. Always add concurrent tests (`store_concurrent_*`)

@@ -1,11 +1,12 @@
 # Runbooks
 
-Operational runbooks for managing Neumann clusters, focusing on tensor_chain distributed operations.
+Operational runbooks for managing Neumann clusters, focusing on tensor_chain
+distributed operations.
 
 ## Available Runbooks
 
 | Runbook | Scenario | Severity |
-|---------|----------|----------|
+| --- | --- | --- |
 | [Leader Election](leader-election.md) | Cluster has no leader | Critical |
 | [Split-Brain Recovery](split-brain.md) | Network partition healed | Critical |
 | [Node Recovery](node-recovery.md) | Node crash or disk failure | High |
@@ -23,7 +24,8 @@ Operational runbooks for managing Neumann clusters, focusing on tensor_chain dis
 
 ## Alerting Rules
 
-Each runbook includes Prometheus alerting rules. Deploy them to your monitoring stack:
+Each runbook includes Prometheus alerting rules. Deploy them to your monitoring
+stack:
 
 ```bash
 # Copy alerting rules

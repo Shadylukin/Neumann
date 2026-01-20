@@ -1,6 +1,7 @@
 # Code Style
 
-This guide covers the coding standards for Neumann. All contributions must follow these guidelines.
+This guide covers the coding standards for Neumann. All contributions must
+follow these guidelines.
 
 ## Rust Idioms
 

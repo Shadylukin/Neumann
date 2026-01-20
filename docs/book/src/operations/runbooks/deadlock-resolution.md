@@ -2,11 +2,14 @@
 
 ## Overview
 
-tensor_chain automatically detects and resolves deadlocks in distributed transactions using wait-for graph analysis. This runbook covers monitoring, tuning, and manual intervention.
+tensor_chain automatically detects and resolves deadlocks in distributed
+transactions using wait-for graph analysis. This runbook covers monitoring,
+tuning, and manual intervention.
 
 ## Automatic Detection
 
-Deadlocks are detected within `detection_interval_ms` (default: 100ms) and resolved by aborting a victim transaction based on configured policy.
+Deadlocks are detected within `detection_interval_ms` (default: 100ms) and
+resolved by aborting a victim transaction based on configured policy.
 
 ## Monitoring
 
@@ -43,6 +46,7 @@ detection_interval_ms = 100  # Lower = faster detection, higher CPU
 ```
 
 Trade-off:
+
 - Lower interval: Faster detection, but more CPU overhead
 - Higher interval: Less overhead, but longer deadlock duration
 
@@ -54,7 +58,7 @@ victim_policy = "youngest"  # Options: youngest, oldest, lowest_priority, most_l
 ```
 
 | Policy | Use Case |
-|--------|----------|
+| --- | --- |
 | `youngest` | Minimize wasted work (default) |
 | `oldest` | Prevent starvation of long transactions |
 | `lowest_priority` | Business-critical transactions survive |
@@ -90,6 +94,7 @@ auto_abort_victim = false  # Require manual intervention
 ```
 
 Then manually resolve:
+
 ```bash
 # List detected deadlocks
 neumann-admin deadlock list
@@ -138,6 +143,7 @@ tx.lock("users/456")?;
 **Cause**: Hot keys with many concurrent transactions
 
 **Solution**:
+
 1. Identify hot keys: `neumann-admin lock-stats --top 10`
 2. Consider sharding hot keys
 3. Batch operations to reduce lock duration
@@ -147,6 +153,7 @@ tx.lock("users/456")?;
 **Cause**: Large wait-for graph from many concurrent transactions
 
 **Solution**:
+
 1. Increase `max_concurrent_transactions`
 2. Reduce transaction duration
 3. Consider optimistic concurrency for read-heavy workloads
@@ -156,6 +163,7 @@ tx.lock("users/456")?;
 **Cause**: Network delays causing timeout-based false waits
 
 **Solution**:
+
 1. Increase `lock_wait_threshold_ms`
 2. Verify network latency between nodes
 3. Check for GC pauses

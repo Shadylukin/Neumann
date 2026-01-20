@@ -1,12 +1,20 @@
 # Tensor Checkpoint
 
-Tensor Checkpoint provides point-in-time snapshots of the database state for recovery operations. It enables users to create manual checkpoints before important operations, automatically checkpoint before destructive operations, and rollback to any previous checkpoint. Checkpoints are stored as blob artifacts in tensor_blob for content-addressable storage with automatic deduplication.
+Tensor Checkpoint provides point-in-time snapshots of the database state for
+recovery operations. It enables users to create manual checkpoints before
+important operations, automatically checkpoint before destructive operations,
+and rollback to any previous checkpoint. Checkpoints are stored as blob
+artifacts in tensor_blob for content-addressable storage with automatic
+deduplication.
 
-The module integrates with the query router to provide SQL-like commands (`CHECKPOINT`, `CHECKPOINTS`, `ROLLBACK TO`) and supports interactive confirmation prompts for destructive operations with configurable retention policies.
+The module integrates with the query router to provide SQL-like commands
+(`CHECKPOINT`, `CHECKPOINTS`, `ROLLBACK TO`) and supports interactive
+confirmation prompts for destructive operations with configurable retention
+policies.
 
 ## Module Structure
 
-```
+```text
 tensor_checkpoint/
   src/
     lib.rs          # CheckpointManager, CheckpointConfig
@@ -22,7 +30,7 @@ tensor_checkpoint/
 ### Core Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `CheckpointManager` | Main API for checkpoint operations |
 | `CheckpointConfig` | Configuration (retention, auto-checkpoint, interactive mode) |
 | `CheckpointState` | Full checkpoint data with snapshot and metadata |
@@ -32,7 +40,7 @@ tensor_checkpoint/
 ### State Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `DestructiveOp` | Enum of destructive operations that trigger auto-checkpoints |
 | `OperationPreview` | Summary and sample data for confirmation prompts |
 | `CheckpointMetadata` | Statistics for validation (tables, nodes, embeddings) |
@@ -43,7 +51,7 @@ tensor_checkpoint/
 ### Error Types
 
 | Variant | Description | Common Cause |
-|---------|-------------|--------------|
+| --- | --- | --- |
 | `NotFound` | Checkpoint not found by ID or name | Typo in checkpoint name or ID was pruned by retention |
 | `Storage` | Blob storage error | Disk full, permissions issue |
 | `Serialization` | Bincode serialization error | Corrupt in-memory state |
@@ -164,7 +172,7 @@ sequenceDiagram
 Checkpoints are stored as blob artifacts using content-addressable storage:
 
 | Property | Value |
-|----------|-------|
+| --- | --- |
 | Tag | `_system:checkpoint` |
 | Content-Type | `application/x-neumann-checkpoint` |
 | Format | bincode-serialized `CheckpointState` |
@@ -212,7 +220,7 @@ pub struct SlabRouterSnapshot {
 Custom metadata stored with each artifact:
 
 | Key | Type | Description |
-|-----|------|-------------|
+| --- | --- | --- |
 | `checkpoint_id` | String | UUID identifier |
 | `checkpoint_name` | String | User-provided or auto-generated name |
 | `created_at` | String | Unix timestamp (parsed to u64) |
@@ -257,7 +265,7 @@ fn collect_metadata(&self, store: &TensorStore) -> CheckpointMetadata {
 ### CheckpointConfig
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `max_checkpoints` | `usize` | 10 | Maximum checkpoints before pruning |
 | `auto_checkpoint` | `bool` | true | Enable auto-checkpoints before destructive ops |
 | `interactive_confirm` | `bool` | true | Require confirmation for destructive ops |
@@ -276,7 +284,7 @@ let config = CheckpointConfig::default()
 ### Configuration Presets
 
 | Preset | max_checkpoints | auto_checkpoint | interactive_confirm | Use Case |
-|--------|-----------------|-----------------|---------------------|----------|
+| --- | --- | --- | --- | --- |
 | Default | 10 | true | true | Interactive CLI usage |
 | Automated | 20 | true | false | Batch processing scripts |
 | Minimal | 3 | false | false | Memory-constrained environments |
@@ -287,7 +295,7 @@ let config = CheckpointConfig::default()
 Operations that trigger auto-checkpoints when `auto_checkpoint` is enabled:
 
 | Operation | Variant | Fields | Affected Count |
-|-----------|---------|--------|----------------|
+| --- | --- | --- | --- |
 | DELETE | `Delete` | `table`, `row_count` | `row_count` |
 | DROP TABLE | `DropTable` | `table`, `row_count` | `row_count` |
 | DROP INDEX | `DropIndex` | `table`, `column` | 1 |
@@ -452,7 +460,7 @@ pub trait ConfirmationHandler: Send + Sync {
 Built-in implementations:
 
 | Type | Behavior | Use Case |
-|------|----------|----------|
+| --- | --- | --- |
 | `AutoConfirm` | Always returns true | Automated scripts, testing |
 | `AutoReject` | Always returns false | Testing cancellation paths |
 
@@ -614,12 +622,13 @@ Retention is enforced after every checkpoint creation:
 3. Call `retention.enforce()`
 4. Return checkpoint ID
 
-This ensures the checkpoint count never exceeds `max_checkpoints + 1` at any point.
+This ensures the checkpoint count never exceeds `max_checkpoints + 1` at any
+point.
 
 ### Retention Edge Cases
 
 | Scenario | Behavior |
-|----------|----------|
+| --- | --- |
 | Creation fails | Retention not called, count unchanged |
 | Retention delete fails | Logged but not fatal, continues deleting |
 | max_checkpoints = 0 | All checkpoints deleted after creation |
@@ -629,7 +638,7 @@ This ensures the checkpoint count never exceeds `max_checkpoints + 1` at any poi
 
 When `interactive_confirm` is enabled, destructive operations display a preview:
 
-```
+```sql
 WARNING: About to delete 5 row(s) from table 'users'
 Will delete 5 row(s) from table 'users'
 
@@ -668,7 +677,7 @@ fn format_summary(&self, op: &DestructiveOp) -> String {
 Blob sizes are formatted for readability:
 
 | Bytes | Display |
-|-------|---------|
+| --- | --- |
 | < 1024 | "N bytes" |
 | >= 1 KB | "N.NN KB" |
 | >= 1 MB | "N.NN MB" |
@@ -719,7 +728,7 @@ pub fn restore_from_bytes(&self, bytes: &[u8]) -> SnapshotResult<()> {
 ### Rollback Characteristics
 
 | Aspect | Behavior |
-|--------|----------|
+| --- | --- |
 | Atomicity | Not atomic - partial restore possible on failure |
 | Isolation | No locking - concurrent operations may see partial state |
 | Duration | O(n) where n = number of entries |
@@ -746,7 +755,8 @@ async fn find_by_id_or_name(id_or_name: &str, blob: &BlobStore) -> Result<String
 }
 ```
 
-**Gotcha**: If a checkpoint is named with a valid UUID format, it may conflict with ID lookup.
+**Gotcha**: If a checkpoint is named with a valid UUID format, it may conflict
+with ID lookup.
 
 ### Auto-Generated Names
 
@@ -767,7 +777,7 @@ Auto-checkpoint names follow the pattern: `auto-before-{operation-name}`
 ### Timestamp Edge Cases
 
 | Scenario | Behavior |
-|----------|----------|
+| --- | --- |
 | System time before epoch | Timestamp becomes 0 |
 | Rapid checkpoint creation | May have same second timestamp |
 | Clock drift | Checkpoints may be out of order |
@@ -799,7 +809,7 @@ pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Resul
 ### Checkpoint Creation Performance
 
 | Factor | Impact | Recommendation |
-|--------|--------|----------------|
+| --- | --- | --- |
 | Store size | O(n) serialization | Keep hot data separate |
 | Retention limit | More deletions on creation | Set appropriate `max_checkpoints` |
 | Blob storage | Network latency for remote | Use local storage for fast checkpoints |
@@ -827,7 +837,7 @@ pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Resul
 ### Benchmarks
 
 | Store Size | Checkpoint Time | Rollback Time | Memory |
-|------------|-----------------|---------------|--------|
+| --- | --- | --- | --- |
 | 1K entries | ~5ms | ~3ms | ~100KB |
 | 10K entries | ~50ms | ~30ms | ~1MB |
 | 100K entries | ~500ms | ~300ms | ~10MB |
@@ -836,7 +846,7 @@ pub fn init_checkpoint_with_config(&mut self, config: CheckpointConfig) -> Resul
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | `tensor_blob` | Storage backend for checkpoint data |
 | `tensor_store` | Source of snapshots and restore target |
 | `query_router` | SQL command integration |

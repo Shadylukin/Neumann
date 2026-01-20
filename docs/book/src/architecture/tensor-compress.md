@@ -1,13 +1,19 @@
 # Tensor Compress
 
-Module 8 of Neumann. Provides tensor-native compression exploiting the mathematical structure of high-dimensional embeddings.
+Module 8 of Neumann. Provides tensor-native compression exploiting the
+mathematical structure of high-dimensional embeddings.
 
-The primary compression method is Tensor Train (TT) decomposition, which decomposes vectors reshaped as tensors into a chain of smaller 3D cores using successive SVD truncations. This achieves 10-40x compression for 1024+ dimension vectors while enabling similarity computations directly in compressed space.
+The primary compression method is Tensor Train (TT) decomposition, which
+decomposes vectors reshaped as tensors into a chain of smaller 3D cores using
+successive SVD truncations. This achieves 10-40x compression for 1024+ dimension
+vectors while enabling similarity computations directly in compressed space.
 
 ## Design Principles
 
-1. **Tensor Mathematics**: Uses Tensor Train decomposition to exploit low-rank structure
-2. **Higher Dimensions Are Lower**: Decomposes vectors into products of smaller tensors
+1. **Tensor Mathematics**: Uses Tensor Train decomposition to exploit low-rank
+   structure
+2. **Higher Dimensions Are Lower**: Decomposes vectors into products of smaller
+   tensors
 3. **Streaming I/O**: Process large snapshots without loading entire dataset
 4. **Incremental Updates**: Delta snapshots for efficient replication
 5. **Pure Rust**: No external LAPACK/BLAS dependencies - fully portable
@@ -15,7 +21,7 @@ The primary compression method is Tensor Train (TT) decomposition, which decompo
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `TTVector` | Complete TT-decomposition of a vector with cores, shape, and ranks |
 | `TTCore` | Single 3D tensor core (left_rank x mode_size x right_rank) |
 | `TTConfig` | Configuration for TT decomposition (shape, max_rank, tolerance) |
@@ -36,7 +42,7 @@ The primary compression method is Tensor Train (TT) decomposition, which decompo
 ## Error Types
 
 | Error | Description |
-|-------|-------------|
+| --- | --- |
 | `TTError::ShapeMismatch` | Vector dimension doesn't match reshape target |
 | `TTError::EmptyVector` | Cannot decompose empty vector |
 | `TTError::InvalidRank` | TT-rank must be >= 1 |
@@ -87,7 +93,7 @@ The TT-SVD algorithm (Oseledets 2011) decomposes a vector by:
 1. **Reshape**: Convert 1D vector to multi-dimensional tensor
 2. **Left-to-right sweep**: For each mode k from 1 to n-1:
    - Left-unfold the current tensor into a matrix
-   - Compute truncated SVD: A = U * S * Vt
+   - Compute truncated SVD: A = U *S* Vt
    - Store U as the k-th core
    - Multiply S * Vt to get the remainder for next iteration
 3. **Final core**: The last remainder becomes the final core
@@ -113,7 +119,7 @@ graph LR
 
 For a 4096-dim embedding reshaped to (8, 8, 8, 8):
 
-```
+```text
 Original: 4096 floats = 16 KB
 TT-cores: 1x8x8 + 8x8x8 + 8x8x8 + 8x8x1 = 64 + 512 + 512 + 64 = 1152 floats
 With max_rank=8: 1x8x4 + 4x8x4 + 4x8x4 + 4x8x1 = 32 + 128 + 128 + 32 = 320 floats = 1.25 KB
@@ -124,7 +130,7 @@ Compression: 12.8x
 
 The module implements two SVD algorithms:
 
-**1. Power Iteration with Deflation (small matrices)**
+#### 1. Power Iteration with Deflation (small matrices)
 
 Used when matrix dimensions are <= 32 or rank is close to matrix size:
 
@@ -153,9 +159,10 @@ fn power_iteration(a: &Matrix, max_iter: usize, tol: f32) -> (sigma, u, v) {
 }
 ```
 
-After finding each singular triplet, the algorithm deflates: A = A - sigma * u * vT
+After finding each singular triplet, the algorithm deflates: A = A - sigma *u*
+vT
 
-**2. Randomized SVD (large matrices)**
+#### 2. Randomized SVD (large matrices)
 
 Uses the Halko-Martinsson-Tropp 2011 algorithm for matrices > 32 dimensions:
 
@@ -173,7 +180,8 @@ graph TD
 
 Key implementation details:
 
-- **Gaussian matrix generation**: Uses a Linear Congruential Generator (LCG) with Box-Muller transform for deterministic, portable random numbers
+- **Gaussian matrix generation**: Uses a Linear Congruential Generator (LCG)
+  with Box-Muller transform for deterministic, portable random numbers
 - **QR orthonormalization**: Modified Gram-Schmidt for numerical stability
 - **Oversampling**: Adds 5 extra columns to improve accuracy
 - **Convergence**: 20 iterations max (sufficient for embedding vectors)
@@ -199,7 +207,7 @@ fn box_muller(u1: f32, u2: f32) -> (f32, f32) {
 The module includes hardcoded optimal shapes for common embedding dimensions:
 
 | Dimension | Shape | Why |
-|-----------|-------|-----|
+| --- | --- | --- |
 | 64 | [4, 4, 4] | 3 balanced factors |
 | 128 | [4, 4, 8] | Near-balanced |
 | 256 | [4, 8, 8] | Near-balanced |
@@ -213,7 +221,8 @@ The module includes hardcoded optimal shapes for common embedding dimensions:
 | 4096 | [8, 8, 8, 8] | 4D balanced |
 | 8192 | [8, 8, 8, 16] | Extra large |
 
-For non-standard dimensions, `factorize_balanced` finds factors close to the nth root:
+For non-standard dimensions, `factorize_balanced` finds factors close to the nth
+root:
 
 ```rust
 fn factorize_balanced(n: usize) -> Vec<usize> {
@@ -229,17 +238,17 @@ fn factorize_balanced(n: usize) -> Vec<usize> {
 ### TT Operations
 
 | Function | Description | Complexity |
-|----------|-------------|------------|
-| `tt_decompose` | Decompose vector to TT format | O(n * d * r^2) |
-| `tt_decompose_batch` | Parallel batch decomposition (4+ vectors) | O(batch * n * d * r^2 / threads) |
+| --- | --- | --- |
+| `tt_decompose` | Decompose vector to TT format | O(n *d* r^2) |
+| `tt_decompose_batch` | Parallel batch decomposition (4+ vectors) | O(batch *n* d * r^2 / threads) |
 | `tt_reconstruct` | Reconstruct vector from TT | O(d^n * r^2) |
-| `tt_dot_product` | Dot product in TT space | O(n * d * r^4) |
+| `tt_dot_product` | Dot product in TT space | O(n *d* r^4) |
 | `tt_dot_product_batch` | Batch dot products | Parallel when >= 4 targets |
-| `tt_cosine_similarity` | Cosine similarity in TT space | O(n * d * r^4) |
+| `tt_cosine_similarity` | Cosine similarity in TT space | O(n *d* r^4) |
 | `tt_cosine_similarity_batch` | Batch cosine similarities | Parallel when >= 4 targets |
-| `tt_euclidean_distance` | Euclidean distance in TT space | O(n * d * r^4) |
+| `tt_euclidean_distance` | Euclidean distance in TT space | O(n *d* r^4) |
 | `tt_euclidean_distance_batch` | Batch Euclidean distances | Parallel when >= 4 targets |
-| `tt_norm` | L2 norm of TT vector | O(n * d * r^4) |
+| `tt_norm` | L2 norm of TT vector | O(n *d* r^4) |
 | `tt_scale` | Scale TT vector by constant | O(cores[0].size) |
 
 Where: n = number of modes, d = mode size, r = TT-rank
@@ -336,7 +345,7 @@ const PARALLEL_THRESHOLD: usize = 4;
 ### TTConfig Presets
 
 | Preset | max_rank | tolerance | Use Case |
-|--------|----------|-----------|----------|
+| --- | --- | --- | --- |
 | `for_dim(d)` | 8 | 1e-4 | Balanced compression/accuracy |
 | `high_compression(d)` | 4 | 1e-2 | Maximize compression (2-3x more) |
 | `high_accuracy(d)` | 16 | 1e-6 | Maximize accuracy (<0.1% error) |
@@ -381,7 +390,7 @@ CompressionConfig::high_accuracy(dim)  // max_rank=16, all encodings enabled
 ### Dimension Presets
 
 | Constant | Value | Model |
-|----------|-------|-------|
+| --- | --- | --- |
 | `SMALL` | 64 | MiniLM and small models |
 | `MEDIUM` | 384 | all-MiniLM-L6-v2 |
 | `STANDARD` | 768 | BERT, sentence-transformers |
@@ -422,7 +431,7 @@ stateDiagram-v2
 
 Uses a trailer-based header so entry count is known at the end:
 
-```
+```text
 +------------------------+
 | Magic (NEUS/NEUT)  4B  |  Identifies streaming snapshot/TT
 +------------------------+
@@ -443,6 +452,7 @@ Uses a trailer-based header so entry count is known at the end:
 ```
 
 **Security limits:**
+
 - Maximum trailer size: 1 MB (`MAX_TRAILER_SIZE`)
 - Maximum entry size: 100 MB (`MAX_ENTRY_SIZE`)
 
@@ -469,7 +479,7 @@ for entry in reader {
 ### Streaming TT Operations
 
 | Function | Description |
-|----------|-------------|
+| --- | --- |
 | `StreamingTTWriter::new` | Create TT streaming writer |
 | `StreamingTTWriter::write_vector` | Decompose and write vector |
 | `StreamingTTWriter::write_tt` | Write pre-decomposed TT |
@@ -586,7 +596,7 @@ let merged = merge_deltas(&[delta1, delta2, delta3])?;
 ### Delta Operations
 
 | Function | Description |
-|----------|-------------|
+| --- | --- |
 | `DeltaBuilder::new` | Create delta builder with base ID and start sequence |
 | `DeltaBuilder::put` | Record a put (add/update) change |
 | `DeltaBuilder::delete` | Record a delete change |
@@ -600,7 +610,7 @@ let merged = merge_deltas(&[delta1, delta2, delta3])?;
 
 ### Delta Format
 
-```
+```text
 +------------------------+
 | Magic (NEUD)       4B  |
 +------------------------+
@@ -679,7 +689,7 @@ assert_eq!(ids, restored);
 **Varint byte sizes:**
 
 | Value Range | Bytes |
-|-------------|-------|
+| --- | --- |
 | 0 - 127 | 1 |
 | 128 - 16,383 | 2 |
 | 16,384 - 2,097,151 | 3 |
@@ -712,7 +722,7 @@ pub struct RleEncoded<T: Eq> {
 **Compression scenarios:**
 
 | Data Pattern | Runs | Compression |
-|--------------|------|-------------|
+| --- | --- | --- |
 | [5, 5, 5, 5, 5] (1000x) | 1 | 500x |
 | [1, 2, 3, 4, 5] (all different) | 5 | 0.8x (overhead) |
 | [1, 1, 2, 2, 2, 3, 1, 1, 1, 1] | 4 | 2.5x |
@@ -753,7 +763,7 @@ if should_use_sparse(dimension, non_zero_count) {
 ```
 
 | Dimension | Max NNZ for Sparse | Sparsity Threshold |
-|-----------|-------------------|-------------------|
+| --- | --- | --- |
 | 100 | 64 | 64% |
 | 1000 | 664 | 66.4% |
 | 4096 | 2728 | 66.6% |
@@ -805,7 +815,7 @@ pub fn compress_vector(vector: &[f32], key: &str, field_name: &str,
 Benchmarks on Apple M4 (aarch64, MacBook Air 24GB), release build:
 
 | Dimension | Decompose | Reconstruct | Similarity | Compression |
-|-----------|-----------|-------------|------------|-------------|
+| --- | --- | --- | --- | --- |
 | 64 | 6.2 us | 29.5 us | 1.1 us | 2.0x |
 | 256 | 13.4 us | 113.0 us | 1.5 us | 4.6x |
 | 768 | 26.9 us | 431.7 us | 2.4 us | 10.7x |
@@ -815,7 +825,7 @@ Benchmarks on Apple M4 (aarch64, MacBook Air 24GB), release build:
 Batch operations (768-dim, 1000 vectors):
 
 | Operation | Time | Per-vector |
-|-----------|------|------------|
+| --- | --- | --- |
 | `tt_decompose_batch` | 21 ms | 21.0 us |
 | `tt_cosine_similarity_batch` | 11.3 ms | 11.4 us |
 
@@ -824,7 +834,7 @@ Throughput: **39,318 vectors/sec** (768-dim decomposition)
 ### Industry Comparison
 
 | Method | Compression | Recall | Notes |
-|--------|-------------|--------|-------|
+| --- | --- | --- | --- |
 | **Tensor Train (this)** | 10-42x | ~99% | Similarity in compressed space |
 | Scalar Quantization | 4x | 99%+ | Industry default |
 | Product Quantization | 16-64x | 56-90% | Requires training |
@@ -835,7 +845,7 @@ Throughput: **39,318 vectors/sec** (768-dim decomposition)
 ### Vector Content Patterns
 
 | Pattern | Compression | Reconstruction | Notes |
-|---------|-------------|----------------|-------|
+| --- | --- | --- | --- |
 | Constant (all same) | Excellent (>5x) | Accurate | Rank-1 structure |
 | All zeros | Good | Accurate | Degenerate case |
 | Single spike | Poor | Moderate | No low-rank structure |
@@ -862,19 +872,26 @@ let prime_127: Vec<f32> = (0..127).map(|i| (i as f32 * 0.1).sin()).collect();
 
 ### Streaming Gotchas
 
-1. **Incomplete files**: Magic bytes are written first, but entry count is in trailer. If writer crashes before `finish()`, the file is corrupt.
+1. **Incomplete files**: Magic bytes are written first, but entry count is in
+   trailer. If writer crashes before `finish()`, the file is corrupt.
 
-2. **Memory limits**: `MAX_ENTRY_SIZE = 100MB` and `MAX_TRAILER_SIZE = 1MB` prevent allocation attacks. Exceeding these returns an error.
+2. **Memory limits**: `MAX_ENTRY_SIZE = 100MB` and `MAX_TRAILER_SIZE = 1MB`
+   prevent allocation attacks. Exceeding these returns an error.
 
-3. **Seek requirement**: `StreamingReader::open` requires `Seek` to read the trailer. For non-seekable streams, use `read_streaming_to_snapshot` which buffers.
+3. **Seek requirement**: `StreamingReader::open` requires `Seek` to read the
+   trailer. For non-seekable streams, use `read_streaming_to_snapshot` which
+   buffers.
 
 ### Delta Chain Gotchas
 
-1. **Chain length**: Default `max_chain_len = 100`. After this, `push()` returns `ChainTooLong` error. Call `compact()` periodically.
+1. **Chain length**: Default `max_chain_len = 100`. After this, `push()` returns
+   `ChainTooLong` error. Call `compact()` periodically.
 
-2. **Sequence gaps**: Deltas should have contiguous sequences. The `merge_deltas` function only keeps the latest state per key.
+2. **Sequence gaps**: Deltas should have contiguous sequences. The
+   `merge_deltas` function only keeps the latest state per key.
 
-3. **Base reference**: Deltas store a `base_id` string but don't validate it exists. Your application must track base snapshots.
+3. **Base reference**: Deltas store a `base_id` string but don't validate it
+   exists. Your application must track base snapshots.
 
 ## Performance Tips and Best Practices
 
@@ -941,7 +958,7 @@ No external LAPACK/BLAS - pure Rust SVD implementation.
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | [tensor_store](tensor-store.md) | Uses compression for snapshot I/O |
 | [tensor_chain](tensor-chain.md) | Delta compression for state replication |
 | [tensor_checkpoint](tensor-checkpoint.md) | Snapshot format integration |

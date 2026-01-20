@@ -1,6 +1,7 @@
 # Benchmarks
 
-This section provides performance benchmarks for all Neumann crates, measured using Criterion.rs.
+This section provides performance benchmarks for all Neumann crates, measured
+using Criterion.rs.
 
 ## Running Benchmarks
 
@@ -27,7 +28,7 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 ## Performance Summary
 
 | Component | Key Metric | Performance |
-|-----------|------------|-------------|
+| --- | --- | --- |
 | [tensor_store](tensor-store.md) | Concurrent writes | 7.5M/sec @ 1M entities |
 | [relational_engine](relational-engine.md) | Indexed lookup | 2.9us (1,604x vs scan) |
 | [graph_engine](graph-engine.md) | BFS traversal | 3us/node |
@@ -42,10 +43,12 @@ Benchmark reports are generated in `target/criterion/` with HTML visualizations.
 ## Hardware Notes
 
 Benchmarks run on:
+
 - Apple M-series (ARM64) or Intel x86_64
 - Results may vary based on CPU cache sizes, memory bandwidth, and core count
 
 For consistent benchmarking:
+
 ```bash
 # Disable CPU frequency scaling (Linux)
 sudo cpupower frequency-set --governor performance
@@ -57,22 +60,30 @@ cargo bench -- --noplot  # Skip HTML report generation for faster runs
 ## Benchmark Categories
 
 ### Storage Layer
-- [tensor_store](tensor-store.md) - DashMap concurrent storage, Bloom filters, snapshots
+
+- [tensor_store](tensor-store.md) - DashMap concurrent storage, Bloom filters,
+  snapshots
 - [tensor_compress](tensor-compress.md) - Tensor Train, delta encoding, RLE
 
 ### Engines
-- [relational_engine](relational-engine.md) - SQL operations, indexes, JOINs, aggregates
-- [graph_engine](graph-engine.md) - Node/edge operations, traversals, path finding
+
+- [relational_engine](relational-engine.md) - SQL operations, indexes, JOINs,
+  aggregates
+- [graph_engine](graph-engine.md) - Node/edge operations, traversals, path
+  finding
 - [vector_engine](vector-engine.md) - Embeddings, SIMD similarity, HNSW index
 
 ### Extended Modules
+
 - [tensor_vault](tensor-vault.md) - Encrypted storage, access control
 - [tensor_cache](tensor-cache.md) - LLM response caching, semantic search
 - [tensor_blob](tensor-blob.md) - Blob storage operations
 
 ### Distributed Systems
+
 - [tensor_chain](tensor-chain.md) - Consensus, 2PC, gossip, sparse vectors
 
 ### Query Layer
+
 - [neumann_parser](neumann-parser.md) - Tokenization, parsing, expressions
 - [query_router](query-router.md) - Cross-engine query routing

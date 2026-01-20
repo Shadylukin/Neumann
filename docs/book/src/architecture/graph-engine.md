@@ -1,11 +1,15 @@
 # Graph Engine
 
-The Graph Engine provides graph operations on top of the Tensor Store. It implements a labeled property graph model with support for both directed and undirected edges, BFS traversals, and shortest path finding. The engine inherits thread safety from TensorStore and supports cross-engine unified entity connections.
+The Graph Engine provides graph operations on top of the Tensor Store. It
+implements a labeled property graph model with support for both directed and
+undirected edges, BFS traversals, and shortest path finding. The engine
+inherits thread safety from TensorStore and supports cross-engine unified
+entity connections.
 
 ## Design Principles
 
 | Principle | Description |
-|-----------|-------------|
+| --- | --- |
 | Layered Architecture | Depends only on Tensor Store for persistence |
 | Direction-Aware | Supports both directed and undirected edges |
 | BFS Traversal | Breadth-first search for shortest paths |
@@ -20,7 +24,7 @@ The Graph Engine provides graph operations on top of the Tensor Store. It implem
 ### Core Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `GraphEngine` | Main entry point for graph operations |
 | `Node` | Graph node with id, label, and properties |
 | `Edge` | Graph edge with from/to nodes, type, properties, and direction flag |
@@ -32,8 +36,8 @@ The Graph Engine provides graph operations on top of the Tensor Store. It implem
 ### PropertyValue Variants
 
 | Variant | Rust Type | Description |
-|---------|-----------|-------------|
-| `Null` | - | NULL value |
+| --- | --- | --- |
+| `Null` | --- | NULL value |
 | `Int` | `i64` | 64-bit signed integer |
 | `Float` | `f64` | 64-bit floating point |
 | `String` | `String` | UTF-8 string |
@@ -42,7 +46,7 @@ The Graph Engine provides graph operations on top of the Tensor Store. It implem
 ### Error Types
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `NodeNotFound(u64)` | Node with given ID does not exist |
 | `EdgeNotFound(u64)` | Edge with given ID does not exist |
 | `PathNotFound` | No path exists between the specified nodes |
@@ -103,6 +107,7 @@ pub struct GraphEngine {
 ```
 
 The engine uses atomic counters (SeqCst ordering) to generate unique IDs:
+
 - Node IDs start at 1 and increment monotonically
 - Edge IDs are separate from node IDs
 - Both counters support concurrent ID allocation
@@ -121,7 +126,7 @@ fn incoming_edges_key(node_id: u64) -> String { format!("node:{}:in", node_id) }
 Nodes and edges are stored in Tensor Store using the following key patterns:
 
 | Key Pattern | Content | TensorData Fields |
-|-------------|---------|-------------------|
+| --- | --- | --- |
 | `node:{id}` | Node data | `_id`, `_type="node"`, `_label`, user properties |
 | `node:{id}:out` | List of outgoing edge IDs | `e{edge_id}` fields |
 | `node:{id}:in` | List of incoming edge IDs | `e{edge_id}` fields |
@@ -130,13 +135,16 @@ Nodes and edges are stored in Tensor Store using the following key patterns:
 ### Edge List Storage Format
 
 Edge lists are stored as TensorData with dynamically named fields:
+
 ```rust
 // Each edge ID stored as: "e{edge_id}" -> edge_id
 tensor.set("e1", TensorValue::Scalar(ScalarValue::Int(1)));
 tensor.set("e5", TensorValue::Scalar(ScalarValue::Int(5)));
 ```
 
-This format allows O(1) edge addition but O(n) edge listing. The edge retrieval scans all keys starting with 'e':
+This format allows O(1) edge addition but O(n) edge listing. The edge
+retrieval scans all keys starting with 'e':
+
 ```rust
 fn get_edge_list(&self, key: &str) -> Result<Vec<u64>> {
     let tensor = self.store.get(key)?;
@@ -205,7 +213,8 @@ let edge = engine.get_edge(edge_id)?;
 
 #### Undirected Edge Implementation
 
-When an undirected edge is created, it is added to **four** edge lists to enable bidirectional traversal:
+When an undirected edge is created, it is added to **four** edge lists to
+enable bidirectional traversal:
 
 ```rust
 if !directed {
@@ -215,7 +224,8 @@ if !directed {
 }
 ```
 
-This enables undirected edges to be traversed from either endpoint regardless of direction filter.
+This enables undirected edges to be traversed from either endpoint regardless
+of direction filter.
 
 ### Traversal Operations
 
@@ -239,14 +249,15 @@ let path = engine.find_path(from_id, to_id)?;
 ### Direction Enum
 
 | Direction | Behavior |
-|-----------|----------|
+| --- | --- |
 | `Outgoing` | Follow edges away from the node |
 | `Incoming` | Follow edges toward the node |
 | `Both` | Follow edges in either direction |
 
 ## BFS Traversal Algorithm
 
-The `traverse` method implements breadth-first search with depth limiting and cycle detection:
+The `traverse` method implements breadth-first search with depth limiting and
+cycle detection:
 
 ```mermaid
 flowchart TD
@@ -317,7 +328,8 @@ pub fn traverse(
 
 ## Shortest Path Algorithm
 
-The `find_path` method uses BFS to find the shortest (minimum hop) path between two nodes:
+The `find_path` method uses BFS to find the shortest (minimum hop) path
+between two nodes:
 
 ```mermaid
 flowchart TD
@@ -403,7 +415,8 @@ pub fn find_path(&self, from: u64, to: u64) -> Result<Path> {
 
 ### Path Reconstruction
 
-The path is reconstructed by following parent pointers backwards from the target to the source:
+The path is reconstructed by following parent pointers backwards from the
+target to the source:
 
 ```rust
 fn reconstruct_path(&self, from: u64, to: u64, parent: &HashMap<u64, (u64, u64)>) -> Path {
@@ -471,13 +484,16 @@ pub fn delete_node(&self, id: u64) -> Result<()> {
 ### Performance Characteristics
 
 | Edge Count | Deletion Strategy | Benefit |
-|------------|-------------------|---------|
+| --- | --- | --- |
 | < 100 | Sequential | Lower overhead for small nodes |
 | >= 100 | Parallel (rayon) | ~2-4x speedup on multi-core systems |
 
 ## Unified Entity API
 
-The Unified Entity API connects any shared entities (not just graph nodes) for cross-engine queries. Entity edges use the `_out` and `_in` reserved fields in TensorData, enabling the same entity key to have relational fields, graph connections, and a vector embedding.
+The Unified Entity API connects any shared entities (not just graph nodes) for
+cross-engine queries. Entity edges use the `_out` and `_in` reserved fields
+in TensorData, enabling the same entity key to have relational fields, graph
+connections, and a vector embedding.
 
 ```mermaid
 graph LR
@@ -503,7 +519,7 @@ graph LR
 ### Reserved Fields
 
 | Field | Type | Purpose |
-|-------|------|---------|
+| --- | --- | --- |
 | `_out` | `Vec<String>` | Outgoing edge keys |
 | `_in` | `Vec<String>` | Incoming edge keys |
 | `_embedding` | `Vec<f32>` | Vector embedding |
@@ -514,7 +530,8 @@ graph LR
 ### Entity Edge Key Format
 
 Entity edges use a different key format from node-based edges:
-```
+
+```text
 edge:{edge_type}:{edge_id}
 ```
 
@@ -557,7 +574,8 @@ let entities = engine.scan_entities_with_edges();
 
 ### Undirected Entity Edges
 
-For undirected entity edges, both entities receive the edge in both `_out` and `_in`:
+For undirected entity edges, both entities receive the edge in both `_out` and
+`_in`:
 
 ```rust
 pub fn add_entity_edge_undirected(
@@ -585,7 +603,8 @@ pub fn add_entity_edge_undirected(
 
 ### Query Router Integration
 
-The Query Router provides unified queries combining graph traversal with vector similarity:
+The Query Router provides unified queries combining graph traversal with
+vector similarity:
 
 ```rust
 // Find entities similar to query that are connected to a specific entity
@@ -620,12 +639,13 @@ pub struct Chain {
 }
 ```
 
-Blocks are stored with `chain:block:{height}` keys and linked via graph edges with type `chain_next`.
+Blocks are stored with `chain:block:{height}` keys and linked via graph edges
+with type `chain_next`.
 
 ## Performance Characteristics
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | `create_node` | O(1) | Store put |
 | `create_edge` | O(1) | Store put + edge list updates |
 | `get_node` | O(1) | Store get |
@@ -640,7 +660,7 @@ Blocks are stored with `chain:block:{height}` keys and linked via graph edges wi
 ### Memory Characteristics
 
 | Data | Storage |
-|------|---------|
+| --- | --- |
 | Node | ~50-200 bytes + properties |
 | Edge | ~50-150 bytes + properties |
 | Edge list entry | ~10 bytes per edge |
@@ -649,7 +669,8 @@ Blocks are stored with `chain:block:{height}` keys and linked via graph edges wi
 
 ### Self-Loop Edges
 
-Self-loops (edges from a node to itself) are valid but filtered from neighbor results:
+Self-loops (edges from a node to itself) are valid but filtered from neighbor
+results:
 
 ```rust
 #[test]
@@ -676,11 +697,14 @@ assert!(path.edges.is_empty());
 
 ### Deleted Edge Orphans
 
-When deleting a node, connected edges are deleted from storage but may remain in other nodes' edge lists. This is a known limitation - the edge retrieval gracefully handles missing edges.
+When deleting a node, connected edges are deleted from storage but may remain
+in other nodes' edge lists. This is a known limitation - the edge retrieval
+gracefully handles missing edges.
 
 ### Bytes Property Conversion
 
-`ScalarValue::Bytes` converts to `PropertyValue::Null` since PropertyValue doesn't support binary data:
+`ScalarValue::Bytes` converts to `PropertyValue::Null` since PropertyValue
+doesn't support binary data:
 
 ```rust
 let bytes = ScalarValue::Bytes(vec![1, 2, 3]);
@@ -689,7 +713,8 @@ assert_eq!(PropertyValue::from_scalar(&bytes), PropertyValue::Null);
 
 ### Node Count Calculation
 
-The `node_count` method uses a formula based on scan counts to account for edge lists:
+The `node_count` method uses a formula based on scan counts to account for
+edge lists:
 
 ```rust
 pub fn node_count(&self) -> usize {
@@ -715,7 +740,8 @@ let vector = VectorEngine::with_store(store.clone());
 
 ### Prefer Entity API for Cross-Engine Data
 
-Use the Unified Entity API when entities need to combine relational, graph, and vector data:
+Use the Unified Entity API when entities need to combine relational, graph,
+and vector data:
 
 ```rust
 // Good: Entity API preserves all fields
@@ -727,7 +753,8 @@ engine.create_node("User", props)?;
 
 ### Batch Edge Creation
 
-When creating many edges, avoid creating them one at a time if possible. Consider the overhead of multiple store operations.
+When creating many edges, avoid creating them one at a time if possible.
+Consider the overhead of multiple store operations.
 
 ### Choose Direction Wisely
 
@@ -737,7 +764,8 @@ When creating many edges, avoid creating them one at a time if possible. Conside
 
 ### Set Appropriate Traversal Depth
 
-BFS traversal can be expensive on dense graphs. Set `max_depth` based on expected graph diameter:
+BFS traversal can be expensive on dense graphs. Set `max_depth` based on
+expected graph diameter:
 
 ```rust
 // For typical social networks, 3-6 hops is usually sufficient
@@ -820,17 +848,18 @@ engine.delete_node(hub)?;
 
 ## Configuration
 
-The Graph Engine has minimal configuration as it inherits behavior from TensorStore:
+The Graph Engine has minimal configuration as it inherits behavior from
+TensorStore:
 
 | Setting | Value | Description |
-|---------|-------|-------------|
+| --- | --- | --- |
 | Parallel threshold | 100 | Edge count triggering parallel deletion |
 | ID ordering | SeqCst | Atomic ordering for ID generation |
 
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `tensor_store` | Underlying key-value storage |
 | `rayon` | Parallel iteration for high-degree node deletion |
 | `serde` | Serialization of graph types |
@@ -838,7 +867,7 @@ The Graph Engine has minimal configuration as it inherits behavior from TensorSt
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | [Tensor Store](tensor-store.md) | Storage backend |
 | [Tensor Vault](tensor-vault.md) | Uses graph for access control |
 | [Tensor Chain](tensor-chain.md) | Uses graph for block linking |

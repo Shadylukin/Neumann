@@ -12,7 +12,7 @@ Neumann documentation consists of:
 
 ### File Location
 
-```
+```text
 docs/book/src/
 ├── SUMMARY.md          # Table of contents
 ├── introduction.md     # Landing page
@@ -70,7 +70,8 @@ This is a warning.
 ```admonish danger
 This is dangerous.
 ```
-```
+
+```bash
 
 ## Writing Rustdoc
 
@@ -110,11 +111,13 @@ pub struct MyType { ... }
 ### When to Document
 
 Document:
+
 - All public types
 - Non-obvious behavior
 - Complex algorithms
 
 Don't document:
+
 - Self-explanatory methods (`get`, `set`, `new`)
 - Trivial implementations
 
@@ -157,6 +160,7 @@ mdbook-linkcheck --standalone
 ## Adding Mermaid Diagrams
 
 Supported diagram types:
+
 - `flowchart` - Flow diagrams
 - `sequenceDiagram` - Sequence diagrams
 - `stateDiagram-v2` - State machines

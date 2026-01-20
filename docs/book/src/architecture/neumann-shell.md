@@ -1,13 +1,20 @@
 # Neumann Shell Architecture
 
-The Neumann Shell (`neumann_shell`) provides an interactive CLI interface for the Neumann database. It is a thin layer that delegates query execution to the Query Router while providing readline-based input handling, command history, output formatting, and crash recovery via write-ahead logging.
+The Neumann Shell (`neumann_shell`) provides an interactive CLI interface for
+the Neumann database. It is a thin layer that delegates query execution to the
+Query Router while providing readline-based input handling, command history,
+output formatting, and crash recovery via write-ahead logging.
 
-The shell follows four design principles: human-first interface (readable prompts, formatted output, command history), thin layer (minimal logic, delegates to Query Router), graceful handling (Ctrl+C does not exit, errors displayed cleanly), and zero configuration (works out of the box with sensible defaults).
+The shell follows four design principles: human-first interface (readable
+prompts, formatted output, command history), thin layer (minimal logic,
+delegates to Query Router), graceful handling (Ctrl+C does not exit, errors
+displayed cleanly), and zero configuration (works out of the box with sensible
+defaults).
 
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `Shell` | Main shell struct holding router, config, and WAL state |
 | `ShellConfig` | Configuration for history file, history size, and prompt |
 | `CommandResult` | Result enum: `Output`, `Exit`, `Help`, `Empty`, `Error` |
@@ -20,12 +27,13 @@ The shell follows four design principles: human-first interface (readable prompt
 ## Shell Configuration
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `history_file` | `Option<PathBuf>` | `~/.neumann_history` | Path for persistent history |
 | `history_size` | `usize` | `1000` | Maximum history entries |
 | `prompt` | `String` | `"> "` | Input prompt string |
 
-The default history file location is determined by reading the `HOME` environment variable:
+The default history file location is determined by reading the `HOME`
+environment variable:
 
 ```rust
 fn dirs_home() -> Option<PathBuf> {
@@ -36,7 +44,7 @@ fn dirs_home() -> Option<PathBuf> {
 ## Command Result Types
 
 | Variant | Description | REPL Behavior |
-|---------|-------------|---------------|
+| --- | --- | --- |
 | `Output(String)` | Query executed successfully with output | Print to stdout, continue loop |
 | `Exit` | Shell should exit | Print "Goodbye!", break loop |
 | `Help(String)` | Help text to display | Print to stdout, continue loop |
@@ -45,7 +53,8 @@ fn dirs_home() -> Option<PathBuf> {
 
 ## REPL Loop Implementation
 
-The shell implements a Read-Eval-Print Loop (REPL) using the `rustyline` crate for readline functionality. Here is the complete control flow:
+The shell implements a Read-Eval-Print Loop (REPL) using the `rustyline` crate
+for readline functionality. Here is the complete control flow:
 
 ```mermaid
 flowchart TD
@@ -240,25 +249,26 @@ let router_arc = shell.router_arc();
 ## Built-in Commands
 
 | Command | Aliases | Description |
-|---------|---------|-------------|
+| --- | --- | --- |
 | `help` | `\h`, `\?` | Show help message |
 | `exit` | `quit`, `\q` | Exit the shell |
 | `tables` | `\dt` | List all tables |
 | `clear` | `\c` | Clear the screen (ANSI escape: `\x1B[2J\x1B[H`) |
-| `save 'path'` | - | Save database snapshot to file |
-| `save compressed 'path'` | - | Save compressed snapshot (int8 quantization) |
-| `load 'path'` | - | Load database snapshot from file (auto-detects format) |
-| `wal status` | - | Show write-ahead log status |
-| `wal truncate` | - | Clear the write-ahead log |
-| `vault init` | - | Initialize vault from `NEUMANN_VAULT_KEY` environment variable |
-| `vault identity 'name'` | - | Set current identity for vault access control |
-| `cache init` | - | Initialize semantic cache with default configuration |
-| `cluster connect` | - | Connect to cluster with specified node addresses |
-| `cluster disconnect` | - | Disconnect from cluster |
+| `save 'path'` | --- | Save database snapshot to file |
+| `save compressed 'path'` | --- | Save compressed snapshot (int8 quantization) |
+| `load 'path'` | --- | Load database snapshot from file (auto-detects format) |
+| `wal status` | --- | Show write-ahead log status |
+| `wal truncate` | --- | Clear the write-ahead log |
+| `vault init` | --- | Initialize vault from `NEUMANN_VAULT_KEY` environment variable |
+| `vault identity 'name'` | --- | Set current identity for vault access control |
+| `cache init` | --- | Initialize semantic cache with default configuration |
+| `cluster connect` | --- | Connect to cluster with specified node addresses |
+| `cluster disconnect` | --- | Disconnect from cluster |
 
 ### Command Parsing Details
 
-All built-in commands are case-insensitive. The shell first converts input to lowercase before matching:
+All built-in commands are case-insensitive. The shell first converts input to
+lowercase before matching:
 
 ```rust
 let lower = trimmed.to_lowercase();
@@ -300,6 +310,7 @@ fn extract_path(input: &str, command: &str) -> Option<String> {
 ```
 
 **Examples:**
+
 - `save 'foo.bin'` -> `Some("foo.bin")`
 - `LOAD "bar.bin"` -> `Some("bar.bin")`
 - `save /path/to/file.bin` -> `Some("/path/to/file.bin")`
@@ -401,7 +412,8 @@ ROLLBACK TO 'name-or-id'
 
 ## Write-Ahead Log (WAL)
 
-The shell includes a write-ahead log for crash recovery. When enabled, all write commands are logged to a file that can be replayed after loading a snapshot.
+The shell includes a write-ahead log for crash recovery. When enabled, all write
+commands are logged to a file that can be replayed after loading a snapshot.
 
 ### WAL Data Structure
 
@@ -422,15 +434,17 @@ impl Wal {
 
 ### WAL File Format
 
-The WAL is a simple text file with one command per line. Each command is written verbatim followed by a newline and an immediate flush:
+The WAL is a simple text file with one command per line. Each command is written
+verbatim followed by a newline and an immediate flush:
 
-```
+```sql
 INSERT INTO users VALUES (1, 'Alice')
 NODE CREATE person {name: 'Bob'}
 EMBED STORE 'doc1' [0.1, 0.2, 0.3]
 ```
 
 **Format details:**
+
 - Line-delimited plain text
 - UTF-8 encoded
 - Each line is the exact command string
@@ -453,7 +467,8 @@ stateDiagram-v2
 
 ### Write Command Detection
 
-The `is_write_command` function determines which commands should be logged to the WAL:
+The `is_write_command` function determines which commands should be logged to
+the WAL:
 
 ```rust
 fn is_write_command(cmd: &str) -> bool {
@@ -492,7 +507,7 @@ fn is_write_command(cmd: &str) -> bool {
 **Write commands logged to WAL:**
 
 | Category | Commands |
-|----------|----------|
+| --- | --- |
 | Relational | `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP` |
 | Graph | `NODE CREATE`, `NODE DELETE`, `EDGE CREATE`, `EDGE DELETE` |
 | Vector | `EMBED STORE`, `EMBED DELETE` |
@@ -558,6 +573,7 @@ WAL enabled
 ```
 
 **WAL Behavior Summary:**
+
 - WAL is activated after `LOAD` (stored as `<snapshot>.log`)
 - All write commands (INSERT, UPDATE, DELETE, NODE CREATE, etc.) are logged
 - On subsequent `LOAD`, the snapshot is loaded first, then WAL is replayed
@@ -587,7 +603,8 @@ Loaded snapshot from: backup.bin
 
 ### Auto-Detection of Embedding Dimension
 
-For compressed snapshots, the shell auto-detects the embedding dimension by sampling stored vectors:
+For compressed snapshots, the shell auto-detects the embedding dimension by
+sampling stored vectors:
 
 ```rust
 fn detect_embedding_dimension(store: &TensorStore) -> usize {
@@ -611,13 +628,16 @@ fn detect_embedding_dimension(store: &TensorStore) -> usize {
 ```
 
 **Compression Options:**
+
 - `SAVE`: Uncompressed bincode format
-- `SAVE COMPRESSED`: Uses int8 quantization (4x smaller), delta encoding, and RLE
+- `SAVE COMPRESSED`: Uses int8 quantization (4x smaller), delta encoding, and
+  RLE
 - `LOAD`: Auto-detects format (works with both compressed and uncompressed)
 
 ## Output Formatting
 
-The shell converts `QueryResult` variants into human-readable strings through the `format_result` function:
+The shell converts `QueryResult` variants into human-readable strings through
+the `format_result` function:
 
 ```rust
 fn format_result(result: &QueryResult) -> String {
@@ -714,7 +734,8 @@ fn format_rows(rows: &[Row]) -> String {
 ```
 
 **Output example:**
-```
+
+```text
 name  | age | email
 ------+-----+------------------
 Alice | 30  | alice@example.com
@@ -750,7 +771,8 @@ fn format_nodes(nodes: &[NodeResult]) -> String {
 ```
 
 **Output example:**
-```
+
+```text
 Nodes:
   [1] person {name: Alice, age: 30}
   [2] person {name: Bob, age: 25}
@@ -759,7 +781,7 @@ Nodes:
 
 ### Edge Formatting
 
-```
+```text
 Edges:
   [1] 1 -> 2 : knows
 (1 edges)
@@ -767,13 +789,13 @@ Edges:
 
 ### Path Formatting
 
-```
+```text
 Path: 1 -> 3 -> 5 -> 7
 ```
 
 ### Similar Embeddings Formatting
 
-```
+```text
 Similar:
   1. doc1 (similarity: 0.9800)
   2. doc2 (similarity: 0.9500)
@@ -833,7 +855,8 @@ fn format_timestamp(unix_secs: u64) -> String {
 
 ## Destructive Operation Confirmation
 
-The shell integrates with the checkpoint system to provide interactive confirmation for destructive operations:
+The shell integrates with the checkpoint system to provide interactive
+confirmation for destructive operations:
 
 ```rust
 struct ShellConfirmationHandler {
@@ -859,7 +882,7 @@ impl ConfirmationHandler for ShellConfirmationHandler {
 **Supported destructive operations:**
 
 | Operation | Warning Message |
-|-----------|----------------|
+| --- | --- |
 | `Delete` | `WARNING: About to delete N row(s) from table 'name'` |
 | `DropTable` | `WARNING: About to drop table 'name' with N row(s)` |
 | `DropIndex` | `WARNING: About to drop index on 'column' in table 'name'` |
@@ -874,7 +897,7 @@ impl ConfirmationHandler for ShellConfirmationHandler {
 Provided by rustyline:
 
 | Shortcut | Action |
-|----------|--------|
+| --- | --- |
 | Up/Down | Navigate history |
 | Ctrl+C | Cancel current input (prints `^C`, continues loop) |
 | Ctrl+D | Exit shell (EOF) |
@@ -887,14 +910,15 @@ Provided by rustyline:
 ## Error Handling
 
 | Error Type | Example | Output Stream |
-|------------|---------|---------------|
+| --- | --- | --- |
 | Parse error | `Error: unexpected token 'FORM' at position 12` | stderr |
 | Table not found | `Error: table 'users' not found` | stderr |
 | Invalid query | `Error: unsupported operation` | stderr |
 | WAL write failure | `Command succeeded but WAL write failed: ...` | Returned as Error |
 | WAL replay failure | `WAL replay failed at line N: ...` | Returned as Error |
 
-Errors are printed to stderr and do not exit the shell. The `process_result` function routes output appropriately:
+Errors are printed to stderr and do not exit the shell. The `process_result`
+function routes output appropriately:
 
 ```rust
 pub fn process_result(result: &CommandResult) -> LoopAction {
@@ -920,11 +944,12 @@ pub fn process_result(result: &CommandResult) -> LoopAction {
 
 ### Connect Command Syntax
 
-```
+```text
 CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]
 ```
 
 **Example:**
+
 ```sql
 > CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'
 Cluster initialized: node1 @ 127.0.0.1:8001 with 1 peer(s)
@@ -966,7 +991,7 @@ impl QueryExecutor for RouterExecutor {
 ## Performance Characteristics
 
 | Operation | Time |
-|-----------|------|
+| --- | --- |
 | Empty input | 2.3 ns |
 | Help command | 43 ns |
 | SELECT (100 rows) | 17.8 us |
@@ -978,44 +1003,59 @@ The shell adds negligible overhead to query execution.
 
 1. **Empty quoted paths**: `save ''` returns an error, not an empty path.
 
-2. **WAL not active by default**: The WAL only becomes active after `LOAD`. New shells have no WAL.
+2. **WAL not active by default**: The WAL only becomes active after `LOAD`. New
+   shells have no WAL.
 
-3. **Case sensitivity**: Built-in commands are case-insensitive, but query strings preserve case for data.
+3. **Case sensitivity**: Built-in commands are case-insensitive, but query
+   strings preserve case for data.
 
-4. **History persistence**: History is only saved when the shell exits normally (not on crash).
+4. **History persistence**: History is only saved when the shell exits normally
+   (not on crash).
 
-5. **ANSI codes**: The `clear` command outputs ANSI escape sequences (`\x1B[2J\x1B[H`), which may not work on all terminals.
+5. **ANSI codes**: The `clear` command outputs ANSI escape sequences
+   (`\x1B[2J\x1B[H`), which may not work on all terminals.
 
-6. **Confirmation handler**: Only active if checkpoint module is available when shell starts.
+6. **Confirmation handler**: Only active if checkpoint module is available when
+   shell starts.
 
-7. **WAL replay stops on first error**: If any command fails during replay, the entire replay stops.
+7. **WAL replay stops on first error**: If any command fails during replay, the
+   entire replay stops.
 
-8. **Missing columns**: When formatting rows with inconsistent columns, missing values show as empty strings.
+8. **Missing columns**: When formatting rows with inconsistent columns, missing
+   values show as empty strings.
 
-9. **Binary blob display**: Blobs over 256 bytes or with control characters show as `<binary data: N bytes>`.
+9. **Binary blob display**: Blobs over 256 bytes or with control characters show
+   as `<binary data: N bytes>`.
 
-10. **Timestamp overflow**: Very old timestamps (before 1970) or 0 display as "unknown".
+10. **Timestamp overflow**: Very old timestamps (before 1970) or 0 display as
+    "unknown".
 
 ## User Experience Tips
 
-1. **Use compressed snapshots for large datasets**: `SAVE COMPRESSED` reduces file size by ~4x with minimal precision loss.
+1. **Use compressed snapshots for large datasets**: `SAVE COMPRESSED` reduces
+   file size by ~4x with minimal precision loss.
 
-2. **Check WAL status before critical operations**: Run `WAL STATUS` to verify recovery capability.
+2. **Check WAL status before critical operations**: Run `WAL STATUS` to verify
+   recovery capability.
 
-3. **Use tab completion**: Rustyline provides filename completion in some contexts.
+3. **Use tab completion**: Rustyline provides filename completion in some
+   contexts.
 
 4. **Ctrl+C is safe**: It only cancels the current line, not the entire session.
 
-5. **History survives sessions**: Previous commands are available across shell restarts.
+5. **History survives sessions**: Previous commands are available across shell
+   restarts.
 
-6. **For scripts, use programmatic API**: `shell.execute()` returns structured results for automation.
+6. **For scripts, use programmatic API**: `shell.execute()` returns structured
+   results for automation.
 
-7. **Cluster connect before distributed operations**: Ensure `CLUSTER CONNECT` succeeds before running distributed transactions.
+7. **Cluster connect before distributed operations**: Ensure `CLUSTER CONNECT`
+   succeeds before running distributed transactions.
 
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `query_router` | Query execution |
 | `relational_engine` | Row type for formatting |
 | `tensor_store` | Snapshot persistence (save/load) |
@@ -1028,8 +1068,13 @@ The shell adds negligible overhead to query execution.
 
 ## Related Modules
 
-- **query_router**: The Query Router executes all queries. The shell delegates all query parsing and execution to this module.
-- **tensor_store**: Provides the underlying storage layer and snapshot functionality.
-- **tensor_compress**: Handles compressed snapshot format with int8 quantization.
-- **tensor_checkpoint**: Provides checkpoint/rollback functionality with confirmation prompts.
-- **tensor_chain**: Provides cluster connectivity and distributed transaction support.
+- **query_router**: The Query Router executes all queries. The shell delegates
+  all query parsing and execution to this module.
+- **tensor_store**: Provides the underlying storage layer and snapshot
+  functionality.
+- **tensor_compress**: Handles compressed snapshot format with int8
+  quantization.
+- **tensor_checkpoint**: Provides checkpoint/rollback functionality with
+  confirmation prompts.
+- **tensor_chain**: Provides cluster connectivity and distributed transaction
+  support.

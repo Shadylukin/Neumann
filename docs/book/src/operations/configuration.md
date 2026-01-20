@@ -59,11 +59,11 @@ bind_address = "0.0.0.0:9090"
 ## Environment Variables
 
 | Variable | Config Path | Example |
-|----------|-------------|---------|
+| --- | --- | --- |
 | `NEUMANN_NODE_ID` | `node.id` | `node1` |
 | `NEUMANN_DATA_DIR` | `node.data_dir` | `/var/lib/neumann` |
 | `NEUMANN_PEERS` | `cluster.peers` | `node2:7878,node3:7878` |
-| `NEUMANN_LOG_LEVEL` | - | `info` |
+| `NEUMANN_LOG_LEVEL` | --- | `info` |
 
 ## Command-Line Flags
 
@@ -82,7 +82,7 @@ neumann \
 ### Raft Tuning
 
 | Parameter | Default | Tuning |
-|-----------|---------|--------|
+| --- | --- | --- |
 | `election_timeout_min_ms` | 150 | Increase for high-latency networks |
 | `election_timeout_max_ms` | 300 | Should be 2x min |
 | `heartbeat_interval_ms` | 50 | Lower for faster failure detection |
@@ -91,7 +91,7 @@ neumann \
 ### Transaction Tuning
 
 | Parameter | Default | Tuning |
-|-----------|---------|--------|
+| --- | --- | --- |
 | `prepare_timeout_ms` | 5000 | Increase for slow networks |
 | `lock_timeout_ms` | 5000 | Lower to fail fast on contention |
 | `max_concurrent_tx` | 1000 | Based on memory and CPU |
@@ -99,7 +99,7 @@ neumann \
 ### Storage Tuning
 
 | Parameter | Default | Tuning |
-|-----------|---------|--------|
+| --- | --- | --- |
 | `max_memory_mb` | 1024 | Based on available RAM |
 | `wal_sync_mode` | `fsync` | `none` for speed (data loss risk) |
 | `compression` | `lz4` | `none` for speed, `zstd` for ratio |

@@ -1,11 +1,12 @@
 # Sparse Vectors
 
-Sparse vectors are a memory-efficient representation for high-dimensional data where most values are zero.
+Sparse vectors are a memory-efficient representation for high-dimensional data
+where most values are zero.
 
 ## When to Use Sparse Vectors
 
 | Use Case | Dense | Sparse |
-|----------|-------|--------|
+| --- | --- | --- |
 | Low dimensions (<100) | Preferred | Overhead |
 | High dimensions (>1000) | Memory intensive | Preferred |
 | Most values non-zero | Preferred | Overhead |
@@ -26,7 +27,7 @@ pub struct SparseVector {
 For a 10,000-dimensional vector with 100 non-zero values:
 
 | Representation | Memory |
-|----------------|--------|
+| --- | --- |
 | Dense `Vec<f32>` | 40,000 bytes |
 | Sparse | ~800 bytes |
 | Savings | 98% |
@@ -64,10 +65,10 @@ let residual = vec.project_orthogonal(&basis);
 ### Similarity Metrics
 
 | Metric | Formula | Range |
-|--------|---------|-------|
-| Cosine | `a . b / (|a| * |b|)` | [-1, 1] |
+| --- | --- | --- |
+| Cosine | `a.b / (‖a‖ * ‖b‖)` | [-1, 1] |
 | Euclidean | `sqrt(sum((a-b)^2))` | [0, inf) |
-| Jaccard | `|A ∩ B| / |A ∪ B|` | [0, 1] |
+| Jaccard | `‖A ∩ B‖ / ‖A ∪ B‖` | [0, 1] |
 | Angular | `acos(cosine) / pi` | [0, 1] |
 
 ```rust
@@ -94,7 +95,7 @@ let results = index.search(&query_vec, 10); // top 10
 ### Configuration
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `m` | 16 | Max connections per layer |
 | `ef_construction` | 200 | Build-time search width |
 | `ef_search` | 50 | Query-time search width |
@@ -121,7 +122,7 @@ if delta_a.is_orthogonal(&delta_b) {
 Sparse vectors compress well:
 
 | Method | Ratio | Speed |
-|--------|-------|-------|
+| --- | --- | --- |
 | Varint indices | 2-4x | Fast |
 | Quantization (int8) | 4x | Fast |
 | Binary quantization | 32x | Very fast |

@@ -1,6 +1,7 @@
 # Semantic Operations
 
-Semantic operations in Neumann leverage vector embeddings to perform meaning-aware computations.
+Semantic operations in Neumann leverage vector embeddings to perform
+meaning-aware computations.
 
 ## Core Concepts
 
@@ -8,7 +9,7 @@ Semantic operations in Neumann leverage vector embeddings to perform meaning-awa
 
 Embeddings map data to vector space where similar items are close:
 
-```
+```text
 "cat" -> [0.2, 0.8, 0.1, ...]
 "dog" -> [0.3, 0.7, 0.2, ...]  (close to cat)
 "car" -> [0.9, 0.1, 0.5, ...]  (far from cat)
@@ -57,7 +58,7 @@ flowchart LR
 When changes overlap:
 
 | Scenario | Detection | Resolution |
-|----------|-----------|------------|
+| --- | --- | --- |
 | Orthogonal | `similarity < 0.1` | Auto-merge |
 | Partial overlap | `0.1 <= similarity < 0.5` | Manual review |
 | Direct conflict | `similarity >= 0.5` | Reject newer |
@@ -87,7 +88,7 @@ codebook.update(&new_embeddings, 0.1); // EMA update
 ## Distance Metrics
 
 | Metric | Use Case | Properties |
-|--------|----------|------------|
+| --- | --- | --- |
 | Cosine | Text similarity | Scale-invariant |
 | Euclidean | Spatial data | Absolute distance |
 | Angular | Normalized comparison | [0, 1] range |

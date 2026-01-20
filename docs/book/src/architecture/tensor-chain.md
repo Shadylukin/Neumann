@@ -1,21 +1,36 @@
 # Tensor Chain Architecture
 
-Tensor-native blockchain with semantic conflict detection, hierarchical codebook-based validation, and Tensor-Raft distributed consensus. This is the most complex module in Neumann, providing distributed transaction coordination across a cluster of nodes.
+Tensor-native blockchain with semantic conflict detection, hierarchical
+codebook-based validation, and Tensor-Raft distributed consensus. This is the
+most complex module in Neumann, providing distributed transaction coordination
+across a cluster of nodes.
 
-Tensor Chain treats transactions as geometric objects in embedding space. Changes are represented as delta vectors, enabling similarity-based conflict detection and automatic merging of orthogonal transactions. The module integrates Raft consensus for leader election, two-phase commit (2PC) for cross-shard transactions, SWIM gossip for failure detection, and wait-for graph analysis for deadlock detection.
+Tensor Chain treats transactions as geometric objects in embedding space.
+Changes are represented as delta vectors, enabling similarity-based conflict
+detection and automatic merging of orthogonal transactions. The module
+integrates Raft consensus for leader election, two-phase commit (2PC) for
+cross-shard transactions, SWIM gossip for failure detection, and wait-for graph
+analysis for deadlock detection.
 
 ## Key Concepts
 
 ### Raft Consensus
 
-Tensor-Raft extends the standard Raft consensus protocol with tensor-native optimizations:
+Tensor-Raft extends the standard Raft consensus protocol with tensor-native
+optimizations:
 
-- **Similarity Fast-Path**: Followers can skip full validation when block embeddings are similar (>0.95 cosine) to recent blocks from the same leader
-- **Geometric Tie-Breaking**: During elections with equal logs, candidates with similar state embeddings to the cluster centroid are preferred
-- **Pre-Vote Phase**: Prevents disruptive elections by requiring majority agreement before incrementing term
-- **Automatic Heartbeat**: Background task spawned on leader election maintains quorum
+- **Similarity Fast-Path**: Followers can skip full validation when block
+  embeddings are similar (>0.95 cosine) to recent blocks from the same leader
+- **Geometric Tie-Breaking**: During elections with equal logs, candidates with
+  similar state embeddings to the cluster centroid are preferred
+- **Pre-Vote Phase**: Prevents disruptive elections by requiring majority
+  agreement before incrementing term
+- **Automatic Heartbeat**: Background task spawned on leader election maintains
+  quorum
 
-The leader replicates log entries containing blocks to followers. Entries are committed when a quorum (majority) acknowledges them. Committed entries are applied to the chain state machine.
+The leader replicates log entries containing blocks to followers. Entries are
+committed when a quorum (majority) acknowledges them. Committed entries are
+applied to the chain state machine.
 
 #### Raft State Machine
 
@@ -58,7 +73,7 @@ stateDiagram-v2
 
 Pre-vote prevents disruptive elections from partitioned nodes:
 
-```
+```text
 Node A (partitioned, stale)              Healthy Cluster
     |                                         |
     |-- PreVote(term=5) --------------------->|
@@ -70,6 +85,7 @@ Node A (partitioned, stale)              Healthy Cluster
 ```
 
 A pre-vote is granted only if:
+
 1. Candidate's term >= our term
 2. Election timeout has elapsed (no recent leader heartbeat)
 3. Candidate's log is at least as up-to-date as ours
@@ -141,13 +157,19 @@ pub struct FastPathValidator {
 
 ### Two-Phase Commit (2PC)
 
-Cross-shard distributed transactions use 2PC with delta-based conflict detection:
+Cross-shard distributed transactions use 2PC with delta-based conflict
+detection:
 
-**Phase 1 - PREPARE**: Coordinator sends `TxPrepareMsg` to each participant shard. Participants acquire locks, compute delta embeddings, and vote `Yes`, `No`, or `Conflict`.
+**Phase 1 - PREPARE**: Coordinator sends `TxPrepareMsg` to each participant
+shard. Participants acquire locks, compute delta embeddings, and vote `Yes`,
+`No`, or `Conflict`.
 
-**Phase 2 - COMMIT/ABORT**: If all votes are `Yes` and cross-shard deltas are orthogonal (cosine < 0.1), coordinator sends `TxCommitMsg`. Otherwise, sends `TxAbortMsg` with retry.
+**Phase 2 - COMMIT/ABORT**: If all votes are `Yes` and cross-shard deltas are
+orthogonal (cosine < 0.1), coordinator sends `TxCommitMsg`. Otherwise, sends
+`TxAbortMsg` with retry.
 
-Orthogonal transactions (operating on independent data dimensions) can commit in parallel without coordination, reducing contention.
+Orthogonal transactions (operating on independent data dimensions) can commit in
+parallel without coordination, reducing contention.
 
 #### 2PC Coordinator State Machine
 
@@ -205,7 +227,7 @@ stateDiagram-v2
 
 The coordinator follows strict lock ordering to prevent internal deadlocks:
 
-```
+```text
 Lock acquisition order:
 1. pending           - Transaction state map
 2. lock_manager.locks     - Key-level locks
@@ -250,11 +272,16 @@ match tx.phase {
 
 ### SWIM Gossip Protocol
 
-Scalable membership management replaces O(N) sequential pings with O(log N) epidemic propagation:
+Scalable membership management replaces O(N) sequential pings with O(log N)
+epidemic propagation:
 
-- **Peer Sampling**: Select k peers per round (default: 3) using geometric routing
-- **LWW-CRDT State**: Last-Writer-Wins conflict resolution with Lamport timestamps
-- **Suspicion Protocol**: Direct ping failure triggers indirect probes via intermediaries. Suspicion timer (5s default) allows refutation before marking node as failed
+- **Peer Sampling**: Select k peers per round (default: 3) using geometric
+  routing
+- **LWW-CRDT State**: Last-Writer-Wins conflict resolution with Lamport
+  timestamps
+- **Suspicion Protocol**: Direct ping failure triggers indirect probes via
+  intermediaries. Suspicion timer (5s default) allows refutation before marking
+  node as failed
 
 #### Gossip Message Types
 
@@ -381,7 +408,7 @@ sequenceDiagram
 
 #### Incarnation Number Protocol
 
-```
+```text
 Scenario: Node B receives Suspect about itself
 
 B's current incarnation: 5
@@ -402,7 +429,8 @@ Wait-for graph tracks transaction dependencies for cycle detection:
 
 1. Edge `A -> B` added when transaction A blocks waiting for B to release locks
 2. Periodic DFS traversal detects cycles (deadlocks)
-3. Victim selected based on policy (youngest, oldest, lowest priority, or most locks)
+3. Victim selected based on policy (youngest, oldest, lowest priority, or most
+   locks)
 4. Victim transaction aborted to break the cycle
 
 #### Wait-For Graph Structure
@@ -461,7 +489,7 @@ fn dfs_detect(
 #### Victim Selection Policies
 
 | Policy | Selection Criteria | Trade-off |
-|--------|-------------------|-----------|
+| --- | --- | --- |
 | `Youngest` | Most recent wait start (highest timestamp) | Minimizes wasted work, may starve long transactions |
 | `Oldest` | Earliest wait start (lowest timestamp) | Prevents starvation, wastes more completed work |
 | `LowestPriority` | Highest priority value | Business-rule based, requires priority assignment |
@@ -469,7 +497,8 @@ fn dfs_detect(
 
 ### Ed25519 Signing and Identity
 
-Cryptographic identity binding ensures message authenticity and enables geometric routing:
+Cryptographic identity binding ensures message authenticity and enables
+geometric routing:
 
 #### Identity Generation and NodeId Derivation
 
@@ -663,7 +692,8 @@ impl EmbeddingValidator {
 
 ### Semantic Conflict Detection
 
-The consensus manager uses hybrid detection combining angular and structural similarity:
+The consensus manager uses hybrid detection combining angular and structural
+similarity:
 
 #### Conflict Classification Algorithm
 
@@ -747,7 +777,7 @@ impl DeltaVector {
 ### Core Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `TensorChain` | `lib.rs` | Main API for chain operations, transaction management |
 | `Block` | `block.rs` | Block structure with header, transactions, signatures |
 | `BlockHeader` | `block.rs` | Height, prev_hash, delta_embedding, quantized_codes |
@@ -759,7 +789,7 @@ impl DeltaVector {
 ### Consensus Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `RaftNode` | `raft.rs` | Raft state machine with leader election, log replication |
 | `RaftState` | `raft.rs` | Follower, Candidate, or Leader |
 | `RaftConfig` | `raft.rs` | Election timeout, heartbeat interval, fast-path settings |
@@ -778,7 +808,7 @@ impl DeltaVector {
 ### Distributed Transaction Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `DistributedTxCoordinator` | `distributed_tx.rs` | 2PC coordinator with timeout and retry |
 | `DistributedTransaction` | `distributed_tx.rs` | Transaction spanning multiple shards |
 | `TxPhase` | `distributed_tx.rs` | Preparing, Prepared, Committing, Committed, Aborting, Aborted |
@@ -797,7 +827,7 @@ impl DeltaVector {
 ### Gossip Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `GossipMembershipManager` | `gossip.rs` | SWIM-style gossip with signing support |
 | `GossipConfig` | `gossip.rs` | Fanout, interval, suspicion timeout, signature requirements |
 | `GossipMessage` | `gossip.rs` | Sync, Suspect, Alive, PingReq, PingAck |
@@ -810,7 +840,7 @@ impl DeltaVector {
 ### Deadlock Detection Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `DeadlockDetector` | `deadlock.rs` | Cycle detection with configurable victim selection |
 | `WaitForGraph` | `deadlock.rs` | Directed graph of transaction dependencies |
 | `DeadlockInfo` | `deadlock.rs` | Detected cycle with selected victim |
@@ -821,7 +851,7 @@ impl DeltaVector {
 ### Identity and Signing Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `Identity` | `signing.rs` | Ed25519 private key (zeroized on drop) |
 | `PublicIdentity` | `signing.rs` | Ed25519 public key for verification |
 | `SignedMessage` | `signing.rs` | Message envelope with signature and replay protection |
@@ -832,7 +862,7 @@ impl DeltaVector {
 ### Message Validation Types
 
 | Type | Module | Description |
-|------|--------|-------------|
+| --- | --- | --- |
 | `MessageValidationConfig` | `message_validation.rs` | Bounds for DoS prevention |
 | `CompositeValidator` | `message_validation.rs` | Validates all message types |
 | `EmbeddingValidator` | `message_validation.rs` | Checks dimension, magnitude, NaN/Inf |
@@ -915,12 +945,14 @@ flowchart TB
 The Raft consensus implementation provides strong consistency guarantees:
 
 **State Machine**:
+
 - `Follower`: Receives AppendEntries from leader, grants votes
 - `Candidate`: Requests votes after election timeout
 - `Leader`: Proposes blocks, sends heartbeats, handles client requests
 
 **Log Replication**:
-```
+
+```sql
 Leader:  propose(block) -> AppendEntries to followers
                         -> Wait for quorum acknowledgment
                         -> Update commit_index
@@ -928,17 +960,23 @@ Leader:  propose(block) -> AppendEntries to followers
 ```
 
 **Fast-Path Validation**:
-When enabled and block embedding similarity exceeds threshold (default 0.95), followers skip full validation. This optimization assumes semantically similar blocks from the same leader are likely valid.
+When enabled and block embedding similarity exceeds threshold (default 0.95),
+followers skip full validation. This optimization assumes semantically similar
+blocks from the same leader are likely valid.
 
 **Log Compaction**:
-After `snapshot_threshold` entries (default 10,000), a snapshot captures the state machine at the commit point. Entries before the snapshot can be truncated, keeping only `snapshot_trailing_logs` entries for followers catching up.
+After `snapshot_threshold` entries (default 10,000), a snapshot captures the
+state machine at the commit point. Entries before the snapshot can be truncated,
+keeping only `snapshot_trailing_logs` entries for followers catching up.
 
 ### Distributed Transactions Subsystem
 
-Cross-shard coordination uses two-phase commit with tensor-native conflict detection:
+Cross-shard coordination uses two-phase commit with tensor-native conflict
+detection:
 
 **Phase 1 - Prepare**:
-```
+
+```text
 Coordinator                    Participant (per shard)
     |                                  |
     |--- TxPrepareMsg --------------->|
@@ -951,7 +989,8 @@ Coordinator                    Participant (per shard)
 ```
 
 **Phase 2 - Commit or Abort**:
-```
+
+```text
 If all Yes AND deltas orthogonal:
     |--- TxCommitMsg ---------------->| -- release locks, apply ops
     |<--- TxAckMsg -------------------|
@@ -962,10 +1001,11 @@ Otherwise:
 ```
 
 **Conflict Detection**:
-Uses hybrid detection combining cosine similarity (angular conflict) and Jaccard index (structural conflict):
+Uses hybrid detection combining cosine similarity (angular conflict) and Jaccard
+index (structural conflict):
 
 | Cosine | Jaccard | Classification | Action |
-|--------|---------|----------------|--------|
+| --- | --- | --- | --- |
 | < 0.1 | < 0.5 | Orthogonal | Auto-merge (vector add) |
 | 0.1-0.7 | < 0.5 | LowConflict | Weighted merge |
 | >= 0.7 | any | Conflicting | Reject |
@@ -978,7 +1018,8 @@ Uses hybrid detection combining cosine similarity (angular conflict) and Jaccard
 SWIM-style failure detection with LWW-CRDT state:
 
 **Gossip Round**:
-```
+
+```sql
 1. Select k peers (fanout=3) using geometric routing
 2. Send Sync message with piggybacked node states
 3. Merge received states (higher incarnation wins)
@@ -986,7 +1027,8 @@ SWIM-style failure detection with LWW-CRDT state:
 ```
 
 **Failure Detection**:
-```
+
+```text
 Direct ping failed
     |
     v
@@ -1004,20 +1046,23 @@ All indirect pings failed?
 ```
 
 **Incarnation Numbers**:
-When a node receives a Suspect about itself, it increments its incarnation and broadcasts Alive to refute the suspicion.
+When a node receives a Suspect about itself, it increments its incarnation and
+broadcasts Alive to refute the suspicion.
 
 ### Deadlock Detection Subsystem
 
 Wait-for graph analysis for cycle detection:
 
 **Graph Structure**:
-```
+
+```text
 Edge: waiter_tx -> holder_tx
 Meaning: waiter is blocked waiting for holder to release locks
 ```
 
 **Detection Algorithm** (Tarjan's DFS):
-```
+
+```sql
 1. For each unvisited node, start DFS
 2. Track recursion stack for back-edge detection
 3. Back-edge to ancestor = cycle found
@@ -1025,6 +1070,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ```
 
 **Victim Selection Policies**:
+
 - `Youngest`: Abort most recent transaction (minimize wasted work)
 - `Oldest`: Abort earliest transaction (prevent starvation)
 - `LowestPriority`: Abort transaction with highest priority value
@@ -1035,7 +1081,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ### RaftConfig
 
 | Field | Default | Description |
-|-------|---------|-------------|
+| --- | --- | --- |
 | `election_timeout` | (150, 300) | Random timeout range in ms |
 | `heartbeat_interval` | 50 | Heartbeat interval in ms |
 | `similarity_threshold` | 0.95 | Fast-path similarity threshold |
@@ -1056,7 +1102,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ### DistributedTxConfig
 
 | Field | Default | Description |
-|-------|---------|-------------|
+| --- | --- | --- |
 | `max_concurrent` | 100 | Maximum concurrent transactions |
 | `prepare_timeout_ms` | 5,000 | Prepare phase timeout |
 | `commit_timeout_ms` | 10,000 | Commit phase timeout |
@@ -1066,7 +1112,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ### GossipConfig
 
 | Field | Default | Description |
-|-------|---------|-------------|
+| --- | --- | --- |
 | `fanout` | 3 | Peers per gossip round |
 | `gossip_interval_ms` | 200 | Interval between rounds |
 | `suspicion_timeout_ms` | 5,000 | Time before failure declaration |
@@ -1080,7 +1126,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ### DeadlockDetectorConfig
 
 | Field | Default | Description |
-|-------|---------|-------------|
+| --- | --- | --- |
 | `enabled` | true | Enable deadlock detection |
 | `detection_interval_ms` | 100 | Detection cycle interval |
 | `victim_policy` | Youngest | Victim selection policy |
@@ -1090,7 +1136,7 @@ Meaning: waiter is blocked waiting for holder to release locks
 ### MessageValidationConfig
 
 | Field | Default | Description |
-|-------|---------|-------------|
+| --- | --- | --- |
 | `enabled` | true | Enable validation |
 | `max_term` | u64::MAX - 1 | Prevent overflow attacks |
 | `max_shard_id` | 65,536 | Bound shard addressing |
@@ -1108,45 +1154,63 @@ Meaning: waiter is blocked waiting for holder to release locks
 
 ### Raft Edge Cases
 
-1. **Split Vote**: When multiple candidates split the vote evenly, election timeout triggers new election. Randomized timeouts (150-300ms) reduce collision probability.
+1. **Split Vote**: When multiple candidates split the vote evenly, election
+   timeout triggers new election. Randomized timeouts (150-300ms) reduce
+   collision probability.
 
-2. **Network Partition**: During partition, minority side cannot commit (lacks quorum). Pre-vote prevents term inflation when partition heals.
+2. **Network Partition**: During partition, minority side cannot commit (lacks
+   quorum). Pre-vote prevents term inflation when partition heals.
 
-3. **Stale Leader**: A partitioned leader may not know it lost leadership. Quorum tracker detects heartbeat failures and steps down.
+3. **Stale Leader**: A partitioned leader may not know it lost leadership.
+   Quorum tracker detects heartbeat failures and steps down.
 
-4. **Log Divergence**: Followers with divergent logs are overwritten by leader's log (consistency > availability).
+4. **Log Divergence**: Followers with divergent logs are overwritten by leader's
+   log (consistency > availability).
 
-5. **Snapshot During Election**: Snapshot transfer continues even if leadership changes. New leader may need to resend snapshot.
+5. **Snapshot During Election**: Snapshot transfer continues even if leadership
+   changes. New leader may need to resend snapshot.
 
 ### 2PC Edge Cases
 
-1. **Coordinator Failure After Prepare**: Participants holding locks may timeout. WAL recovery allows new coordinator to resume.
+1. **Coordinator Failure After Prepare**: Participants holding locks may
+   timeout. WAL recovery allows new coordinator to resume.
 
-2. **Participant Failure**: Coordinator times out waiting for vote. Transaction aborts, participant recovers from WAL on restart.
+2. **Participant Failure**: Coordinator times out waiting for vote. Transaction
+   aborts, participant recovers from WAL on restart.
 
-3. **Network Partition Between Phases**: Commit messages may not reach all participants. Retry loop ensures eventual delivery.
+3. **Network Partition Between Phases**: Commit messages may not reach all
+   participants. Retry loop ensures eventual delivery.
 
-4. **Lock Timeout vs Transaction Timeout**: Lock timeout (30s) should exceed transaction timeout (5s) to prevent premature lock release.
+4. **Lock Timeout vs Transaction Timeout**: Lock timeout (30s) should exceed
+   transaction timeout (5s) to prevent premature lock release.
 
-5. **Orphaned Locks**: Locks from crashed transactions are cleaned up by periodic `cleanup_expired()` or WAL recovery.
+5. **Orphaned Locks**: Locks from crashed transactions are cleaned up by
+   periodic `cleanup_expired()` or WAL recovery.
 
 ### Gossip Edge Cases
 
-1. **Incarnation Overflow**: Theoretically possible with u64, but requires 2^64 restarts. Practically impossible.
+1. **Incarnation Overflow**: Theoretically possible with u64, but requires 2^64
+   restarts. Practically impossible.
 
-2. **Clock Skew**: Lamport timestamps are logical, not wall-clock. Sync messages update local Lamport time to `max(local, remote) + 1`.
+2. **Clock Skew**: Lamport timestamps are logical, not wall-clock. Sync messages
+   update local Lamport time to `max(local, remote) + 1`.
 
-3. **Signature Replay**: Sequence numbers and timestamp freshness checks prevent replaying old signed messages.
+3. **Signature Replay**: Sequence numbers and timestamp freshness checks prevent
+   replaying old signed messages.
 
-4. **Rapid Restart**: Node restarting rapidly may have lower incarnation than suspected state. New incarnation on restart resolves this.
+4. **Rapid Restart**: Node restarting rapidly may have lower incarnation than
+   suspected state. New incarnation on restart resolves this.
 
 ### Conflict Detection Edge Cases
 
-1. **Zero Vector**: Empty deltas (no changes) have undefined cosine similarity. Treated as orthogonal.
+1. **Zero Vector**: Empty deltas (no changes) have undefined cosine similarity.
+   Treated as orthogonal.
 
-2. **Nearly Identical**: Transactions with 0.99 < similarity < 1.0 may conflict. Use structural overlap (Jaccard) as secondary check.
+2. **Nearly Identical**: Transactions with 0.99 < similarity < 1.0 may conflict.
+   Use structural overlap (Jaccard) as secondary check.
 
-3. **Large Dimension Mismatch**: Deltas with different dimensions cannot be directly compared. Pad smaller to match larger.
+3. **Large Dimension Mismatch**: Deltas with different dimensions cannot be
+   directly compared. Pad smaller to match larger.
 
 ## Recovery Procedures
 
@@ -1259,7 +1323,7 @@ RaftConfig {
 Key metrics to monitor:
 
 | Metric | Warning Threshold | Critical Threshold |
-|--------|-------------------|-------------------|
+| --- | --- | --- |
 | `heartbeat_success_rate` | < 0.95 | < 0.80 |
 | `fast_path_rate` | < 0.50 | < 0.20 |
 | `commit_rate` | < 0.80 | < 0.50 |
@@ -1277,7 +1341,7 @@ Key metrics to monitor:
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | `tensor_store` | Provides `TensorStore` for persistence, `SparseVector` for embeddings, `ArchetypeRegistry` for delta compression |
 | `graph_engine` | Blocks linked via graph edges, chain structure built on graph |
 | `tensor_compress` | Int8 quantization for delta embeddings (4x compression) |
@@ -1286,7 +1350,7 @@ Key metrics to monitor:
 ## Performance Characteristics
 
 | Operation | Time | Notes |
-|-----------|------|-------|
+| --- | --- | --- |
 | Transaction commit | ~50us | Single transaction block |
 | Conflict detection | ~1us | Cosine + Jaccard calculation |
 | Deadlock detection | ~350ns | DFS cycle detection |

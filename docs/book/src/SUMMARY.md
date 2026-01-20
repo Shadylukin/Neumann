@@ -25,6 +25,9 @@
 - [Neumann Parser](architecture/neumann-parser.md)
 - [Query Router](architecture/query-router.md)
 - [Neumann Shell](architecture/neumann-shell.md)
+- [TCP Transport](architecture/tcp-transport.md)
+- [Snapshot Streaming](architecture/snapshot-streaming.md)
+- [Transaction Workspace](architecture/transaction-workspace.md)
 
 # Concepts
 
@@ -33,6 +36,12 @@
 - [Semantic Operations](concepts/semantic-operations.md)
 - [Distributed Transactions](concepts/distributed-transactions.md)
 - [Consensus Protocols](concepts/consensus-protocols.md)
+- [Embedding State Machine](concepts/embedding-state.md)
+- [Codebook Manager](concepts/codebook-manager.md)
+
+# Tutorials
+
+- [Worked Examples](tutorials/worked-examples.md)
 
 # Operations
 
@@ -40,7 +49,10 @@
 - [Configuration](operations/configuration.md)
 - [Monitoring](operations/monitoring.md)
 - [Troubleshooting](operations/troubleshooting.md)
+- [Example Configurations](operations/example-configurations.md)
 - [Runbooks](operations/runbooks/index.md)
+  - [Node Management](operations/runbooks/node-management.md)
+  - [Cluster Upgrade](operations/runbooks/cluster-upgrade.md)
   - [Leader Election](operations/runbooks/leader-election.md)
   - [Split-Brain Recovery](operations/runbooks/split-brain.md)
   - [Node Recovery](operations/runbooks/node-recovery.md)

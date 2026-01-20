@@ -1,8 +1,14 @@
 # Tensor Store Architecture
 
-The tensor_store crate is the foundational storage layer for Neumann. It provides a unified tensor-based key-value store that holds all data - relational, graph, and vector - in a single mathematical structure. The store knows nothing about queries; it purely stores and retrieves tensors by key.
+The tensor_store crate is the foundational storage layer for Neumann. It
+provides a unified tensor-based key-value store that holds all data -
+relational, graph, and vector - in a single mathematical structure. The store
+knows nothing about queries; it purely stores and retrieves tensors by key.
 
-The architecture uses SlabRouter internally, which routes operations to specialized slabs based on key prefixes. This design eliminates hash table resize stalls by using BTreeMap-based storage, providing predictable O(log n) performance without the throughput cliffs caused by hash map resizing.
+The architecture uses SlabRouter internally, which routes operations to
+specialized slabs based on key prefixes. This design eliminates hash table
+resize stalls by using BTreeMap-based storage, providing predictable O(log n)
+performance without the throughput cliffs caused by hash map resizing.
 
 ## Core Types
 
@@ -11,14 +17,15 @@ The architecture uses SlabRouter internally, which routes operations to speciali
 Represents different types of values a tensor can hold.
 
 | Variant | Rust Type | Use Case |
-|---------|-----------|----------|
+| --- | --- | --- |
 | `Scalar(ScalarValue)` | enum | Properties (name, age, active) |
 | `Vector(Vec<f32>)` | dense array | Embeddings for similarity search |
 | `Sparse(SparseVector)` | compressed | Sparse embeddings (>70% zeros) |
 | `Pointer(String)` | single ref | Single relationship to another tensor |
 | `Pointers(Vec<String>)` | multi ref | Multiple relationships |
 
-**Automatic Sparsification**: Use `TensorValue::from_embedding_auto(dense)` to automatically choose between dense and sparse representation based on sparsity:
+**Automatic Sparsification**: Use `TensorValue::from_embedding_auto(dense)` to
+automatically choose between dense and sparse representation based on sparsity:
 
 ```rust
 // Automatically uses Sparse if sparsity >= 70%
@@ -41,8 +48,8 @@ let sim = tensor_a.cosine_similarity(&tensor_b);
 ### ScalarValue
 
 | Variant | Rust Type | Example |
-|---------|-----------|---------|
-| `Null` | - | Missing/undefined value |
+| --- | --- | --- |
+| `Null` | --- | Missing/undefined value |
 | `Bool` | `bool` | `true`, `false` |
 | `Int` | `i64` | `42`, `-1` |
 | `Float` | `f64` | `3.14159` |
@@ -51,12 +58,13 @@ let sim = tensor_a.cosine_similarity(&tensor_b);
 
 ### TensorData
 
-An entity that holds scalar properties, vector embeddings, and pointers to other tensors via a `HashMap<String, TensorValue>` internally.
+An entity that holds scalar properties, vector embeddings, and pointers to other
+tensors via a `HashMap<String, TensorValue>` internally.
 
 ### Reserved Field Names
 
 | Field | Purpose | Used By |
-|-------|---------|---------|
+| --- | --- | --- |
 | `_out` | Outgoing graph edge pointers | GraphEngine |
 | `_in` | Incoming graph edge pointers | GraphEngine |
 | `_embedding` | Vector embedding | VectorEngine |
@@ -71,7 +79,7 @@ An entity that holds scalar properties, vector embeddings, and pointers to other
 
 ## Architecture Diagram
 
-```
+```text
 TensorStore
   |
   +-- Arc<SlabRouter>
@@ -87,7 +95,8 @@ TensorStore
 
 ## SlabRouter Internals
 
-SlabRouter is the core routing layer that directs operations to specialized storage backends based on key prefixes.
+SlabRouter is the core routing layer that directs operations to specialized
+storage backends based on key prefixes.
 
 ### Key Routing Algorithm
 
@@ -104,7 +113,7 @@ flowchart TD
 ### Key Classification
 
 | Prefix | KeyClass | Slab | Purpose |
-|--------|----------|------|---------|
+| --- | --- | --- | --- |
 | `emb:*` | Embedding | EmbeddingSlab + EntityIndex | Embedding vectors with stable ID assignment |
 | `node:*`, `edge:*` | Graph | MetadataSlab | Graph nodes and edges |
 | `table:*` | Table | MetadataSlab | Relational rows |
@@ -115,6 +124,7 @@ flowchart TD
 ### SlabRouter Operation Flow
 
 **PUT Operation**:
+
 ```rust
 fn put(&self, key: &str, value: TensorData) {
     match classify_key(key) {
@@ -138,6 +148,7 @@ fn put(&self, key: &str, value: TensorData) {
 ```
 
 **GET Operation**:
+
 ```rust
 fn get(&self, key: &str) -> Result<TensorData> {
     match classify_key(key) {
@@ -161,7 +172,7 @@ fn get(&self, key: &str) -> Result<TensorData> {
 ### Specialized Slabs
 
 | Slab | Data Structure | Purpose |
-|------|----------------|---------|
+| --- | --- | --- |
 | `MetadataSlab` | `RwLock<BTreeMap<String, TensorData>>` | General key-value storage |
 | `EntityIndex` | Sorted vocabulary + hash index | Stable ID assignment |
 | `EmbeddingSlab` | Dense f32 arrays + BTreeMap | Embedding vectors |
@@ -175,7 +186,7 @@ fn get(&self, key: &str) -> Result<TensorData> {
 ### Operation Complexity
 
 | Operation | Time Complexity | Notes |
-|-----------|-----------------|-------|
+| --- | --- | --- |
 | `put` | O(log n) | BTreeMap insert |
 | `get` | O(log n) + clone | Clone prevents reference issues |
 | `delete` | O(log n) | BTreeMap remove |
@@ -189,7 +200,7 @@ fn get(&self, key: &str) -> Result<TensorData> {
 ### Throughput Comparison
 
 | Metric | SlabRouter | Previous (DashMap) |
-|--------|------------|-------------------|
+| --- | --- | --- |
 | PUT throughput | 3.1+ M ops/sec | 2.5 M ops/sec |
 | GET throughput | 4.9+ M ops/sec | 4.5 M ops/sec |
 | Throughput variance (CV) | 12% steady-state | 222% during resize |
@@ -197,7 +208,8 @@ fn get(&self, key: &str) -> Result<TensorData> {
 
 ### Optimized Scan Performance
 
-Use `scan_filter_map` for selective queries to avoid cloning non-matching entries:
+Use `scan_filter_map` for selective queries to avoid cloning non-matching
+entries:
 
 ```rust
 // Old path: 5000 clones for 5000 rows, ~2.6ms
@@ -219,26 +231,31 @@ let matches = store.scan_filter_map("users:", |key, data| {
 
 ## Concurrency Model
 
-TensorStore uses tensor-based structures instead of hash maps for predictable performance:
+TensorStore uses tensor-based structures instead of hash maps for predictable
+performance:
 
 - **No Resize Stalls**: BTreeMap and sorted arrays grow incrementally
 - **Lock-free Reads**: RwLock allows many concurrent readers
 - **Predictable Writes**: O(log n) inserts, no amortized O(n) resizing
 - **Clone on Read**: `get()` returns cloned data to avoid holding references
-- **Shareable Storage**: TensorStore clones share the same underlying data via Arc
+- **Shareable Storage**: TensorStore clones share the same underlying data via
+  Arc
 
 ## BloomFilter
 
-The BloomFilter provides O(1) probabilistic rejection of non-existent keys, useful for sparse key spaces where most lookups are misses.
+The BloomFilter provides O(1) probabilistic rejection of non-existent keys,
+useful for sparse key spaces where most lookups are misses.
 
 ### Mathematical Foundation
 
 The Bloom filter uses optimal parameters calculated as:
 
 **Bit array size**: `m = -n * ln(p) / (ln(2)^2)`
+
 - Where n = expected items, p = false positive rate
 
 **Number of hash functions**: `k = (m/n) * ln(2)`
+
 - Clamped to range [1, 16]
 
 ### Implementation Details
@@ -252,6 +269,7 @@ pub struct BloomFilter {
 ```
 
 **Hash Function**: Uses SipHash with different seeds for each hash function:
+
 ```rust
 fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
     let mut hasher = SipHasher::new_with_seed(seed as u64);
@@ -263,13 +281,14 @@ fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
 ### Parameter Tuning Guide
 
 | Expected Items | FP Rate | Bits | Hash Functions | Memory |
-|----------------|---------|------|----------------|--------|
+| --- | --- | --- | --- | --- |
 | 10,000 | 1% | 95,851 | 7 | ~12 KB |
 | 10,000 | 0.1% | 143,776 | 10 | ~18 KB |
 | 100,000 | 1% | 958,506 | 7 | ~117 KB |
 | 1,000,000 | 1% | 9,585,059 | 7 | ~1.2 MB |
 
 **Gotchas**:
+
 - Bloom filter state is **not persisted** in snapshots; rebuild after load
 - Thread-safe via AtomicU64 with Relaxed ordering (eventual consistency)
 - Cannot remove items (use counting bloom filter for that case)
@@ -277,7 +296,8 @@ fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
 
 ## HNSW Index
 
-Hierarchical Navigable Small World index for approximate nearest neighbor search with O(log n) complexity.
+Hierarchical Navigable Small World index for approximate nearest neighbor search
+with O(log n) complexity.
 
 ### Algorithm Overview
 
@@ -299,6 +319,7 @@ flowchart TD
 ### Layer Selection
 
 New nodes are assigned layers using exponential distribution:
+
 ```rust
 fn random_level(&self) -> usize {
     let f = random_float_0_1();
@@ -312,7 +333,7 @@ Where `ml = 1 / ln(m)` and m = connections per layer.
 ### HNSWConfig Parameters
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `m` | 16 | Max connections per node per layer |
 | `m0` | 32 | Max connections at layer 0 (2*m) |
 | `ef_construction` | 200 | Candidates during construction |
@@ -402,7 +423,7 @@ flowchart LR
 ```
 
 | Storage Type | Memory | Use Case | Distance Computation |
-|--------------|--------|----------|---------------------|
+| --- | --- | --- | --- |
 | Dense | 4 bytes/dim | General purpose | SIMD dot product |
 | Sparse | 6 bytes/nnz | >50% zeros | Sparse-sparse O(nnz) |
 | Delta | 6 bytes/diff | Clustered embeddings | Via archetype |
@@ -410,17 +431,23 @@ flowchart LR
 
 ### Edge Cases and Gotchas
 
-1. **Delta vectors cannot be inserted directly** - they require archetype registry for distance computation. Convert to Dense first.
+1. **Delta vectors cannot be inserted directly** - they require archetype
+   registry for distance computation. Convert to Dense first.
 
-2. **TensorTrain storage** - While stored in TT format, HNSW reconstructs to dense for fast distance computation during search (native TT distance is O(r^4) per comparison).
+2. **TensorTrain storage** - While stored in TT format, HNSW reconstructs to
+   dense for fast distance computation during search (native TT distance is
+   O(r^4) per comparison).
 
-3. **Capacity limits** - Default max_nodes=10M prevents memory exhaustion from fuzzing/adversarial input. Use `try_insert` for graceful handling.
+3. **Capacity limits** - Default max_nodes=10M prevents memory exhaustion from
+   fuzzing/adversarial input. Use `try_insert` for graceful handling.
 
-4. **Empty index** - Entry point is `usize::MAX` when empty; search returns empty results.
+4. **Empty index** - Entry point is `usize::MAX` when empty; search returns
+   empty results.
 
 ## SparseVector
 
-Memory-efficient storage for vectors with many zeros, based on the philosophy that "zero represents absence of information, not a stored value."
+Memory-efficient storage for vectors with many zeros, based on the philosophy
+that "zero represents absence of information, not a stored value."
 
 ### Internal Structure
 
@@ -435,7 +462,7 @@ pub struct SparseVector {
 ### Operation Complexity
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | `from_dense` | O(n) | Filters zeros |
 | `to_dense` | O(n) | Reconstructs full vector |
 | `get(index)` | O(log nnz) | Binary search |
@@ -464,7 +491,7 @@ let orthogonal = v.project_orthogonal(&conflict_direction);
 ### Distance Metrics
 
 | Metric | Range | Use Case |
-|--------|-------|----------|
+| --- | --- | --- |
 | `cosine_similarity` | [-1, 1] | Directional similarity |
 | `angular_distance` | [0, PI] | Linear for small angles |
 | `geodesic_distance` | [0, PI] | Arc length on unit sphere |
@@ -504,13 +531,15 @@ sparse.compression_ratio()  // Dense / Sparse ratio
 ```
 
 For a 1000-dim vector with 90% zeros:
+
 - Dense: 4000 bytes
-- Sparse: ~800 bytes (100 positions * 4 bytes + 100 values * 4 bytes)
+- Sparse: ~800 bytes (100 positions *4 bytes + 100 values* 4 bytes)
 - Compression ratio: 5x
 
 ## Delta Vectors and Archetype Registry
 
-Delta encoding stores vectors as differences from reference "archetype" vectors, providing significant compression for clustered embeddings.
+Delta encoding stores vectors as differences from reference "archetype" vectors,
+providing significant compression for clustered embeddings.
 
 ### Concept
 
@@ -523,6 +552,7 @@ flowchart LR
 ```
 
 When many embeddings cluster around common patterns:
+
 - Identify archetype vectors (cluster centroids via k-means)
 - Store each embedding as: `archetype_id + sparse_delta`
 - Reconstruct on demand: `archetype + delta = original`
@@ -586,7 +616,8 @@ let registry = ArchetypeRegistry::load_from_store(&store, 16)?;
 
 ## Tiered Storage
 
-Two-tier storage with hot (in-memory) and cold (mmap) layers for memory-efficient storage of large datasets.
+Two-tier storage with hot (in-memory) and cold (mmap) layers for
+memory-efficient storage of large datasets.
 
 ### Architecture
 
@@ -614,7 +645,7 @@ flowchart TD
 ### TieredConfig
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `cold_dir` | `PathBuf` | `/tmp/tensor_cold` | Directory for cold storage files |
 | `cold_capacity` | `usize` | 64MB | Initial cold file size |
 | `sample_rate` | `u32` | 100 | Access tracking sampling (100 = 1%) |
@@ -739,7 +770,7 @@ stats.searches_per_second()   // Throughput
 ### SlabRouterConfig
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `embedding_dim` | `usize` | 384 | Embedding dimension for EmbeddingSlab |
 | `cache_capacity` | `usize` | 10,000 | Cache capacity for CacheRing |
 | `cache_strategy` | `EvictionStrategy` | Default | Eviction strategy (LRU/LFU) |
@@ -902,20 +933,20 @@ for (delta, compression_ratio) in results {
 ### TensorStoreError
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `NotFound(key)` | `get` or `delete` on nonexistent key |
 
 ### SnapshotError
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `IoError(std::io::Error)` | File not found, permission denied, disk full |
 | `SerializationError(String)` | Corrupted file, incompatible format |
 
 ### TieredError
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `Store(TensorStoreError)` | Underlying store error |
 | `Mmap(MmapError)` | Memory-mapped file error |
 | `Io(std::io::Error)` | I/O error |
@@ -924,7 +955,7 @@ for (delta, compression_ratio) in results {
 ### EmbeddingStorageError
 
 | Error | Cause |
-|-------|-------|
+| --- | --- |
 | `DeltaRequiresRegistry` | Delta storage used without archetype registry |
 | `ArchetypeNotFound(id)` | Referenced archetype not in registry |
 | `CapacityExceeded { limit, current }` | HNSW index at max_nodes limit |
@@ -933,7 +964,7 @@ for (delta, compression_ratio) in results {
 ## Related Modules
 
 | Module | Relationship |
-|--------|-------------|
+| --- | --- |
 | `relational_engine` | Uses TensorStore for table row storage |
 | `graph_engine` | Uses TensorStore for node/edge storage |
 | `vector_engine` | Uses TensorStore + HNSWIndex for embeddings |
@@ -944,7 +975,7 @@ for (delta, compression_ratio) in results {
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `serde` | Serialization |
 | `bincode` | Binary snapshot format |
 | `tensor_compress` | Compression algorithms |

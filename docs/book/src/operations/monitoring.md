@@ -9,7 +9,7 @@ Prometheus metrics are exposed at `http://node:9090/metrics`.
 ### Raft Consensus
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| --- | --- | --- |
 | `tensor_chain_raft_state` | Gauge | Current state (follower=0, candidate=1, leader=2) |
 | `tensor_chain_term` | Gauge | Current Raft term |
 | `tensor_chain_commit_index` | Gauge | Highest committed log index |
@@ -20,7 +20,7 @@ Prometheus metrics are exposed at `http://node:9090/metrics`.
 ### Transactions
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| --- | --- | --- |
 | `tensor_chain_tx_active` | Gauge | Currently active transactions |
 | `tensor_chain_tx_commits_total` | Counter | Total committed transactions |
 | `tensor_chain_tx_aborts_total` | Counter | Total aborted transactions |
@@ -29,7 +29,7 @@ Prometheus metrics are exposed at `http://node:9090/metrics`.
 ### Deadlock Detection
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| --- | --- | --- |
 | `tensor_chain_deadlocks_total` | Counter | Total deadlocks detected |
 | `tensor_chain_deadlock_victims_total` | Counter | Transactions aborted as victims |
 | `tensor_chain_wait_graph_size` | Gauge | Current wait-for graph size |
@@ -37,7 +37,7 @@ Prometheus metrics are exposed at `http://node:9090/metrics`.
 ### Gossip
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| --- | --- | --- |
 | `tensor_chain_gossip_members` | Gauge | Known cluster members |
 | `tensor_chain_gossip_healthy` | Gauge | Healthy members |
 | `tensor_chain_gossip_suspect` | Gauge | Suspect members |
@@ -46,7 +46,7 @@ Prometheus metrics are exposed at `http://node:9090/metrics`.
 ### Storage
 
 | Metric | Type | Description |
-|--------|------|-------------|
+| --- | --- | --- |
 | `tensor_chain_entries_total` | Gauge | Total stored entries |
 | `tensor_chain_memory_bytes` | Gauge | Memory usage |
 | `tensor_chain_disk_bytes` | Gauge | Disk usage |
@@ -69,6 +69,7 @@ scrape_configs:
 Import the dashboard from `deploy/grafana/neumann-dashboard.json`.
 
 Panels include:
+
 - Cluster overview (leader, term, members)
 - Transaction throughput and latency
 - Replication lag
@@ -109,6 +110,7 @@ curl http://node:9090/health
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy",

@@ -1,15 +1,20 @@
 # Tensor Blob Architecture
 
-S3-style object storage for large artifacts using content-addressable chunked storage with tensor-native metadata. Artifacts are split into SHA-256 hashed chunks for automatic deduplication, with metadata stored in the tensor store for integration with graph, relational, and vector queries.
+S3-style object storage for large artifacts using content-addressable chunked
+storage with tensor-native metadata. Artifacts are split into SHA-256 hashed
+chunks for automatic deduplication, with metadata stored in the tensor store for
+integration with graph, relational, and vector queries.
 
-All I/O operations are async via Tokio. Large files are streamed through `BlobWriter` and `BlobReader` without loading entirely into memory. Background garbage collection removes orphaned chunks automatically.
+All I/O operations are async via Tokio. Large files are streamed through
+`BlobWriter` and `BlobReader` without loading entirely into memory. Background
+garbage collection removes orphaned chunks automatically.
 
 ## Key Types
 
 ### Core Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `BlobStore` | Main API for storing, retrieving, and managing artifacts |
 | `BlobConfig` | Configuration for chunk size, GC intervals, and limits |
 | `BlobWriter` | Streaming upload with incremental chunking and hash computation |
@@ -22,7 +27,7 @@ All I/O operations are async via Tokio. Large files are streamed through `BlobWr
 ### Metadata Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `ArtifactMetadata` | Full metadata including filename, size, checksum, links, tags |
 | `PutOptions` | Upload options: content type, creator, links, tags, custom metadata, embedding |
 | `MetadataUpdates` | Partial updates for filename, content type, custom fields |
@@ -32,7 +37,7 @@ All I/O operations are async via Tokio. Large files are streamed through `BlobWr
 ### Statistics Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `BlobStats` | Storage statistics: artifact count, chunk count, dedup ratio, orphaned chunks |
 | `GcStats` | GC results: chunks deleted, bytes freed |
 | `RepairStats` | Repair results: artifacts checked, chunks verified, refs fixed, orphans deleted |
@@ -40,7 +45,7 @@ All I/O operations are async via Tokio. Large files are streamed through `BlobWr
 ### Error Types
 
 | Error | Description |
-|-------|-------------|
+| --- | --- |
 | `NotFound` | Artifact does not exist |
 | `ChunkMissing` | Referenced chunk not found in storage |
 | `ChecksumMismatch` | Data corruption detected during verification |
@@ -57,7 +62,7 @@ All I/O operations are async via Tokio. Large files are streamed through `BlobWr
 
 ## Architecture Diagram
 
-```
+```sql
 +--------------------------------------------------+
 |                BlobStore (Public API)            |
 |   - put, get, delete, exists                     |
@@ -94,7 +99,7 @@ All I/O operations are async via Tokio. Large files are streamed through `BlobWr
 Stored at `_blob:meta:{artifact_id}`:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_type` | String | Always `"blob_artifact"` |
 | `_id` | String | Unique artifact identifier (UUID v4) |
 | `_filename` | String | Original filename |
@@ -118,7 +123,7 @@ Stored at `_blob:meta:{artifact_id}`:
 Stored at `_blob:chunk:sha256:{hex}`:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_type` | String | Always `"blob_chunk"` |
 | `_data` | Bytes | Raw chunk data |
 | `_size` | Int | Chunk size in bytes |
@@ -176,12 +181,13 @@ impl Chunker {
 
 Chunk keys follow a deterministic format for content addressing:
 
-```
+```text
 _blob:chunk:sha256:{64_hex_chars}
 ```
 
 Example:
-```
+
+```text
 _blob:chunk:sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
 ```
 
@@ -235,7 +241,8 @@ pub fn compute_hash_streaming<'a>(segments: impl Iterator<Item = &'a [u8]>) -> S
 
 Chunks are keyed by SHA-256 hash, enabling automatic deduplication:
 
-1. When writing data, the chunker splits it into fixed-size segments (default 1MB)
+1. When writing data, the chunker splits it into fixed-size segments (default
+   1MB)
 2. Each chunk is hashed with SHA-256 to produce a unique key
 3. If the chunk already exists, only the reference count is incremented
 4. Identical data across different artifacts shares the same physical chunks
@@ -748,7 +755,7 @@ let similar = blob.similar(&artifact_id, 10).await?;
 ## Configuration Options
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| --- | --- | --- |
 | `chunk_size` | 1 MB (1,048,576 bytes) | Size of each chunk in bytes |
 | `max_artifact_size` | None (unlimited) | Maximum artifact size limit |
 | `max_artifacts` | None (unlimited) | Maximum number of artifacts |
@@ -786,7 +793,7 @@ pub fn validate(&self) -> Result<()> {
 Two GC modes are available:
 
 | Method | Description | Age Requirement | Reference Source |
-|--------|-------------|-----------------|------------------|
+| --- | --- | --- | --- |
 | `gc()` | Incremental GC: processes `batch_size` chunks per cycle | Respects `min_age` | Uses stored `_refs` field |
 | `full_gc()` | Full GC: recounts all references from artifacts | Ignores age | Rebuilds from artifact metadata |
 
@@ -801,7 +808,7 @@ blob.shutdown().await?;  // Graceful shutdown (waits for current cycle)
 ## BlobStore API
 
 | Method | Description |
-|--------|-------------|
+| --- | --- |
 | `new(store, config)` | Create with configuration (validates config) |
 | `start()` | Start background GC task |
 | `shutdown()` | Graceful shutdown (sends signal and awaits task) |
@@ -838,7 +845,7 @@ blob.shutdown().await?;  // Graceful shutdown (waits for current cycle)
 ## BlobWriter API
 
 | Method | Description |
-|--------|-------------|
+| --- | --- |
 | `write(data)` | Write chunk of data (buffers until chunk_size reached) |
 | `finish()` | Finalize, flush buffer, store metadata, return artifact ID |
 | `bytes_written()` | Total bytes written so far |
@@ -847,7 +854,7 @@ blob.shutdown().await?;  // Graceful shutdown (waits for current cycle)
 ## BlobReader API
 
 | Method | Description |
-|--------|-------------|
+| --- | --- |
 | `next_chunk()` | Read next chunk, returns `None` when done |
 | `read_all()` | Read all remaining data into buffer |
 | `read(buf)` | Read into buffer, returns bytes read (for streaming) |
@@ -859,7 +866,7 @@ blob.shutdown().await?;  // Graceful shutdown (waits for current cycle)
 
 ## Shell Commands
 
-```
+```text
 BLOB PUT 'filename' 'data'              Store inline data
 BLOB PUT 'filename' FROM 'path'         Store from file path
 BLOB GET 'artifact_id'                  Retrieve data
@@ -911,19 +918,25 @@ let result = blob.put("large.bin", &vec![0u8; 2048], PutOptions::default()).awai
 
 ### Concurrent Deduplication
 
-The reference counting is not fully atomic. If two writers simultaneously store the same chunk:
+The reference counting is not fully atomic. If two writers simultaneously store
+the same chunk:
+
 - Both may check `exists()` and find it missing
 - Both may store the chunk with `refs = 1`
 - One write will overwrite the other
 - Result: ref count may be 1 instead of 2
 
-**Mitigation**: For high-concurrency scenarios, use `full_gc()` periodically to rebuild accurate reference counts.
+**Mitigation**: For high-concurrency scenarios, use `full_gc()` periodically to
+rebuild accurate reference counts.
 
 ### GC Timing
 
-- Incremental GC respects `min_age` to avoid deleting chunks from in-progress uploads
-- A writer that takes longer than `min_age` to complete may have chunks collected
-- **Recommendation**: Set `gc_min_age` longer than your maximum expected upload time
+- Incremental GC respects `min_age` to avoid deleting chunks from in-progress
+  uploads
+- A writer that takes longer than `min_age` to complete may have chunks
+  collected
+- **Recommendation**: Set `gc_min_age` longer than your maximum expected upload
+  time
 
 ### Checksum vs Chunk Hash
 
@@ -947,7 +960,7 @@ pub(crate) fn should_use_sparse(vector: &[f32]) -> bool {
 ### Chunk Size Selection
 
 | Chunk Size | Best For | Trade-offs |
-|------------|----------|------------|
+| --- | --- | --- |
 | 256 KB | Many small files, high dedup potential | More metadata overhead |
 | 1 MB (default) | General purpose | Good balance |
 | 4 MB | Large media files, sequential access | Less dedup, fewer chunks |
@@ -1029,7 +1042,7 @@ for artifact_id in blob.list(None).await? {
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | `tensor_store` | Underlying key-value storage for chunks and metadata |
 | `query_router` | Executes BLOB commands from parsed queries |
 | `neumann_shell` | Interactive CLI for blob operations |
@@ -1039,7 +1052,7 @@ for artifact_id in blob.list(None).await? {
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `tensor_store` | Key-value storage layer |
 | `tokio` | Async runtime for streaming and background GC |
 | `sha2` | SHA-256 hashing for content addressing |

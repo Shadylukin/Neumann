@@ -1,13 +1,17 @@
 # Neumann Parser
 
-The `neumann_parser` crate provides a hand-written recursive descent parser for the Neumann unified query language. It converts source text into an Abstract Syntax Tree (AST) that can be executed by the query router.
+The `neumann_parser` crate provides a hand-written recursive descent parser for
+the Neumann unified query language. It converts source text into an Abstract
+Syntax Tree (AST) that can be executed by the query router.
 
-The parser is designed with zero external dependencies, full span tracking for error reporting, and support for SQL, graph, vector, and domain-specific operations in a single unified syntax.
+The parser is designed with zero external dependencies, full span tracking for
+error reporting, and support for SQL, graph, vector, and domain-specific
+operations in a single unified syntax.
 
 ## Key Concepts
 
 | Concept | Description |
-|---------|-------------|
+| --- | --- |
 | Recursive Descent | Top-down parsing where each grammar rule becomes a function |
 | Pratt Parsing | Operator precedence parsing for expressions with correct associativity |
 | Span Tracking | Every AST node carries source location for error messages |
@@ -72,7 +76,7 @@ sequenceDiagram
 ## Source Files
 
 | File | Purpose | Key Functions |
-|------|---------|---------------|
+| --- | --- | --- |
 | `lib.rs` | Public API exports | `parse()`, `parse_all()`, `parse_expr()`, `tokenize()` |
 | `lexer.rs` | Tokenization (source to tokens) | `Lexer::next_token()`, `scan_ident()`, `scan_number()`, `scan_string()` |
 | `token.rs` | Token definitions and keyword lookup | `TokenKind`, `keyword_from_str()` |
@@ -122,7 +126,7 @@ classDiagram
 ```
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `Token` | A token with its kind and span |
 | `TokenKind` | Enum of all token variants (130+ variants including keywords, literals, operators) |
 | `Lexer` | Stateful tokenizer that produces tokens from source |
@@ -169,7 +173,7 @@ classDiagram
 ```
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `Statement` | Top-level parsed statement with span |
 | `StatementKind` | Enum of all statement variants (30+ variants) |
 | `Expr` | Expression node with span |
@@ -182,7 +186,7 @@ classDiagram
 ### Span Types
 
 | Type | Description | Example |
-|------|-------------|---------|
+| --- | --- | --- |
 | `BytePos` | A byte offset into source text (u32) | `BytePos(7)` |
 | `Span` | A range of bytes (start, end) | `Span { start: 0, end: 6 }` |
 | `Spanned<T>` | A value paired with its source location | `Spanned::new(42, span)` |
@@ -204,7 +208,7 @@ let (line, col) = line_col(source, BytePos(7));  // (1, 8)
 ### Error Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `ParseError` | Error with kind, span, and optional help message |
 | `ParseErrorKind` | Enum of error variants (10 kinds) |
 | `ParseResult<T>` | `Result<T, ParseError>` |
@@ -230,7 +234,8 @@ pub enum ParseErrorKind {
 
 ### State Machine
 
-The lexer is implemented as an iterator-based state machine with single-character lookahead:
+The lexer is implemented as an iterator-based state machine with
+single-character lookahead:
 
 ```mermaid
 stateDiagram-v2
@@ -271,7 +276,7 @@ pub struct Lexer<'a> {
 ### Character Classification
 
 | Category | Characters | Handling |
-|----------|------------|----------|
+| --- | --- | --- |
 | Whitespace | space, tab, newline | Skipped |
 | Line comment | `--` to newline | Skipped |
 | Block comment | `/* */` (nestable) | Skipped, supports nesting |
@@ -283,7 +288,7 @@ pub struct Lexer<'a> {
 ### String Escape Sequences
 
 | Escape | Result |
-|--------|--------|
+| --- | --- |
 | `\n` | Newline |
 | `\r` | Carriage return |
 | `\t` | Tab |
@@ -326,7 +331,9 @@ match c {
 
 ### Algorithm Overview
 
-The Pratt parser handles operator precedence through "binding power" - each operator has a left and right binding power that determines associativity and precedence.
+The Pratt parser handles operator precedence through "binding power" - each
+operator has a left and right binding power that determines associativity and
+precedence.
 
 ```mermaid
 flowchart TD
@@ -349,15 +356,15 @@ flowchart TD
 Each operator has left and right binding powers `(l_bp, r_bp)`:
 
 | Precedence | Operators | Binding Power (l, r) | Associativity |
-|------------|-----------|----------------------|---------------|
+| --- | --- | --- | --- |
 | 1 (lowest) | OR | (1, 2) | Left |
 | 2 | AND | (3, 4) | Left |
 | 3 | =, !=, <, <=, >, >= | (5, 6) | Left |
-| 4 | \| (bitwise OR) | (7, 8) | Left |
+| 4 | `\|` (bitwise OR) | (7, 8) | Left |
 | 5 | ^ (bitwise XOR) | (9, 10) | Left |
 | 6 | & (bitwise AND) | (11, 12) | Left |
 | 7 | <<, >> | (13, 14) | Left |
-| 8 | +, -, \|\| (concat) | (15, 16) | Left |
+| 8 | +, -, `\|\|` (concat) | (15, 16) | Left |
 | 9 | *, /, % | (17, 18) | Left |
 | 10 (highest) | NOT, -, ~ (unary) | 19 (prefix) | Right |
 
@@ -496,7 +503,7 @@ fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
 ### SQL Statements
 
 | Statement | Example | AST Type |
-|-----------|---------|----------|
+| --- | --- | --- |
 | `Select` | `SELECT * FROM users WHERE id = 1` | `SelectStmt` |
 | `Insert` | `INSERT INTO users (name) VALUES ('Alice')` | `InsertStmt` |
 | `Update` | `UPDATE users SET name = 'Bob' WHERE id = 1` | `UpdateStmt` |
@@ -511,7 +518,7 @@ fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
 ### Graph Statements
 
 | Statement | Example | AST Type |
-|-----------|---------|----------|
+| --- | --- | --- |
 | `Node` | `NODE CREATE person {name: 'Alice'}` | `NodeStmt` |
 | `Edge` | `EDGE CREATE 1 -> 2 : FOLLOWS {since: 2023}` | `EdgeStmt` |
 | `Neighbors` | `NEIGHBORS 'entity' OUTGOING follows` | `NeighborsStmt` |
@@ -521,14 +528,14 @@ fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
 ### Vector Statements
 
 | Statement | Example | AST Type |
-|-----------|---------|----------|
+| --- | --- | --- |
 | `Embed` | `EMBED STORE 'key' [0.1, 0.2, 0.3]` | `EmbedStmt` |
 | `Similar` | `SIMILAR 'query' LIMIT 10 COSINE` | `SimilarStmt` |
 
 ### Domain Statements
 
 | Statement | Example | AST Type |
-|-----------|---------|----------|
+| --- | --- | --- |
 | `Vault` | `VAULT SET 'secret' 'value'` | `VaultStmt` |
 | `Cache` | `CACHE STATS` | `CacheStmt` |
 | `Blob` | `BLOB PUT 'file.txt' 'data'` | `BlobStmt` |
@@ -541,7 +548,7 @@ fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
 ## Expression Kinds
 
 | Kind | Example | Notes |
-|------|---------|-------|
+| --- | --- | --- |
 | `Literal` | `42`, `3.14`, `'hello'`, `TRUE`, `NULL` | Five literal types |
 | `Ident` | `column_name` | Simple identifier |
 | `Qualified` | `table.column` | Dot notation |
@@ -677,7 +684,7 @@ pub fn format_with_source(&self, source: &str) -> String {
 
 ### Example Error Output
 
-```
+```sql
 error: unexpected FROM, expected expression or '*' after SELECT
   --> line 1:8
    |
@@ -798,7 +805,7 @@ if let Err(e) = result {
 
 ### SELECT Statement
 
-```
+```sql
 SELECT [DISTINCT | ALL] columns
 FROM table [alias]
 [JOIN table ON condition | USING (cols)]...
@@ -812,7 +819,7 @@ FROM table [alias]
 
 ### CREATE TABLE Statement
 
-```
+```sql
 CREATE TABLE [IF NOT EXISTS] name (
     column type [NULL|NOT NULL] [PRIMARY KEY] [UNIQUE]
                 [DEFAULT expr] [CHECK(expr)]
@@ -827,7 +834,7 @@ CREATE TABLE [IF NOT EXISTS] name (
 
 ### Graph Operations
 
-```
+```sql
 NODE CREATE label {properties}
 NODE GET id
 NODE DELETE id
@@ -846,7 +853,7 @@ PATH [SHORTEST|ALL] from TO to [MAX depth]
 
 ### Vector Operations
 
-```
+```sql
 EMBED STORE key [vector]
 EMBED GET key
 EMBED DELETE key
@@ -859,7 +866,7 @@ SIMILAR key|[vector] [LIMIT k] [COSINE|EUCLIDEAN|DOT_PRODUCT]
 
 ### Chain Operations
 
-```
+```text
 BEGIN CHAIN TRANSACTION
 COMMIT CHAIN
 ROLLBACK CHAIN TO height
@@ -881,23 +888,37 @@ ANALYZE CODEBOOK TRANSITIONS
 
 Keywords are case-insensitive. The lexer converts to uppercase for matching.
 
-**SQL (70+ keywords)**: SELECT, DISTINCT, ALL, FROM, WHERE, INSERT, INTO, VALUES, UPDATE, SET, DELETE, CREATE, DROP, TABLE, INDEX, AND, OR, NOT, NULL, IS, IN, LIKE, BETWEEN, ORDER, BY, ASC, DESC, NULLS, FIRST, LAST, LIMIT, OFFSET, GROUP, HAVING, JOIN, INNER, LEFT, RIGHT, FULL, OUTER, CROSS, NATURAL, ON, USING, AS, PRIMARY, KEY, UNIQUE, REFERENCES, FOREIGN, CHECK, DEFAULT, CASCADE, RESTRICT, IF, EXISTS, SHOW, TABLES, UNION, INTERSECT, EXCEPT, CASE, WHEN, THEN, ELSE, END, CAST, ANY
+**SQL (70+ keywords)**: SELECT, DISTINCT, ALL, FROM, WHERE, INSERT, INTO,
+VALUES, UPDATE, SET, DELETE, CREATE, DROP, TABLE, INDEX, AND, OR, NOT, NULL, IS,
+IN, LIKE, BETWEEN, ORDER, BY, ASC, DESC, NULLS, FIRST, LAST, LIMIT, OFFSET,
+GROUP, HAVING, JOIN, INNER, LEFT, RIGHT, FULL, OUTER, CROSS, NATURAL, ON, USING,
+AS, PRIMARY, KEY, UNIQUE, REFERENCES, FOREIGN, CHECK, DEFAULT, CASCADE,
+RESTRICT, IF, EXISTS, SHOW, TABLES, UNION, INTERSECT, EXCEPT, CASE, WHEN, THEN,
+ELSE, END, CAST, ANY
 
-**Types (16 keywords)**: INT, INTEGER, BIGINT, SMALLINT, FLOAT, DOUBLE, REAL, DECIMAL, NUMERIC, VARCHAR, CHAR, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP
+**Types (16 keywords)**: INT, INTEGER, BIGINT, SMALLINT, FLOAT, DOUBLE, REAL,
+DECIMAL, NUMERIC, VARCHAR, CHAR, TEXT, BOOLEAN, DATE, TIME, TIMESTAMP
 
 **Aggregates (5 keywords)**: COUNT, SUM, AVG, MIN, MAX
 
-**Graph (16 keywords)**: NODE, EDGE, NEIGHBORS, PATH, GET, LIST, STORE, OUTGOING, INCOMING, BOTH, SHORTEST, PROPERTIES, LABEL, VERTEX, VERTICES, EDGES
+**Graph (16 keywords)**: NODE, EDGE, NEIGHBORS, PATH, GET, LIST, STORE,
+OUTGOING, INCOMING, BOTH, SHORTEST, PROPERTIES, LABEL, VERTEX, VERTICES, EDGES
 
-**Vector (10 keywords)**: EMBED, SIMILAR, VECTOR, EMBEDDING, DIMENSION, DISTANCE, COSINE, EUCLIDEAN, DOT_PRODUCT, BUILD
+**Vector (10 keywords)**: EMBED, SIMILAR, VECTOR, EMBEDDING, DIMENSION,
+DISTANCE, COSINE, EUCLIDEAN, DOT_PRODUCT, BUILD
 
 **Unified (6 keywords)**: FIND, WITH, RETURN, MATCH, ENTITY, CONNECTED
 
-**Domain (30+ keywords)**: VAULT, GRANT, REVOKE, ROTATE, CACHE, INIT, STATS, CLEAR, EVICT, PUT, SEMANTIC, THRESHOLD, CHECKPOINT, ROLLBACK, CHAIN, BEGIN, COMMIT, TRANSACTION, HISTORY, DRIFT, CODEBOOK, GLOBAL, LOCAL, ANALYZE, HEIGHT, TIP, BLOCK, CLUSTER, CONNECT, DISCONNECT, STATUS, NODES, LEADER, BLOB, BLOBS, INFO, LINK, TAG, VERIFY, GC, REPAIR
+**Domain (30+ keywords)**: VAULT, GRANT, REVOKE, ROTATE, CACHE, INIT, STATS,
+CLEAR, EVICT, PUT, SEMANTIC, THRESHOLD, CHECKPOINT, ROLLBACK, CHAIN, BEGIN,
+COMMIT, TRANSACTION, HISTORY, DRIFT, CODEBOOK, GLOBAL, LOCAL, ANALYZE, HEIGHT,
+TIP, BLOCK, CLUSTER, CONNECT, DISCONNECT, STATUS, NODES, LEADER, BLOB, BLOBS,
+INFO, LINK, TAG, VERIFY, GC, REPAIR
 
 ### Contextual Keywords
 
-These keywords can be used as identifiers in expression contexts (column names, etc.):
+These keywords can be used as identifiers in expression contexts (column names,
+etc.):
 
 ```rust
 pub fn is_contextual_keyword(&self) -> bool {
@@ -917,7 +938,8 @@ pub fn is_contextual_keyword(&self) -> bool {
 1. **Minus vs Arrow**: `-` vs `->` distinguished by lookahead
 2. **Less-than variants**: `<` vs `<=` vs `<>` vs `<<`
 3. **Pipe variants**: `|` (bitwise) vs `||` (concat)
-4. **Keyword as identifier**: `SELECT status FROM orders` - `status` is contextual keyword
+4. **Keyword as identifier**: `SELECT status FROM orders` - `status` is
+   contextual keyword
 
 ### Number Parsing Edge Cases
 
@@ -962,7 +984,8 @@ parse_expr(&expr) // Err(ParseErrorKind::TooDeep)
 
 ### BETWEEN Precedence
 
-The `AND` in `BETWEEN low AND high` is part of the BETWEEN syntax, not a logical operator:
+The `AND` in `BETWEEN low AND high` is part of the BETWEEN syntax, not a logical
+operator:
 
 ```rust
 // "x BETWEEN 1 AND 10 AND y = 5" parses as:
@@ -983,7 +1006,7 @@ parse_expr("(1 + 2).*") // Err("qualified wildcard requires identifier")
 ## Performance
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | Tokenize | O(n) | Single pass, no backtracking |
 | Parse | O(n) | Single pass, constant stack per token |
 | Total | O(n) | Where n = input length |
@@ -1005,7 +1028,7 @@ parse_expr("(1 + 2).*") // Err("qualified wildcard requires identifier")
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | `query_router` | Consumes AST and executes queries against engines |
 | `neumann_shell` | Uses parser for interactive REPL commands |
 | `tensor_chain` | Chain statements (BEGIN, COMMIT, HISTORY) parsed here |
@@ -1019,8 +1042,10 @@ The parser has comprehensive test coverage including:
 
 - **Unit tests in each module**: Token, span, lexer, parser, expression tests
 - **Integration tests**: Complex SQL queries, multi-statement parsing
-- **Edge case tests**: Unterminated strings, deeply nested expressions, ambiguous operators
-- **Fuzz targets**: `parser_parse`, `parser_parse_all`, `parser_parse_expr`, `parser_tokenize`
+- **Edge case tests**: Unterminated strings, deeply nested expressions,
+  ambiguous operators
+- **Fuzz targets**: `parser_parse`, `parser_parse_all`, `parser_parse_expr`,
+  `parser_tokenize`
 
 ```bash
 # Run parser tests

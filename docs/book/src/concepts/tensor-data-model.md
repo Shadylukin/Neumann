@@ -1,6 +1,7 @@
 # Tensor Data Model
 
-Neumann uses a unified tensor-based data model that represents all data types as mathematical tensors.
+Neumann uses a unified tensor-based data model that represents all data types as
+mathematical tensors.
 
 ## Core Types
 
@@ -9,7 +10,7 @@ Neumann uses a unified tensor-based data model that represents all data types as
 The fundamental value type:
 
 | Variant | Description | Example |
-|---------|-------------|---------|
+| --- | --- | --- |
 | `Scalar(ScalarValue)` | Single value | `42`, `"hello"`, `true` |
 | `Vector(Vec<f32>)` | Dense embedding | `[0.1, 0.2, 0.3]` |
 | `Pointer(String)` | Reference to entity | `"user_123"` |
@@ -20,7 +21,7 @@ The fundamental value type:
 Primitive values:
 
 | Variant | Rust Type | Example |
-|---------|-----------|---------|
+| --- | --- | --- |
 | `Int(i64)` | 64-bit integer | `42` |
 | `Float(f64)` | 64-bit float | `3.14` |
 | `String(String)` | UTF-8 string | `"hello"` |
@@ -55,7 +56,7 @@ let sparse = SparseVector::new(1000)  // 1000 dimensions
 ### Operations
 
 | Operation | Description |
-|-----------|-------------|
+| --- | --- |
 | `cosine_similarity` | Cosine distance between vectors |
 | `euclidean_distance` | L2 distance |
 | `dot_product` | Inner product |
@@ -67,7 +68,7 @@ let sparse = SparseVector::new(1000)  // 1000 dimensions
 ### Relational Engine
 
 | SQL Type | TensorValue |
-|----------|-------------|
+| --- | --- |
 | `INT` | `Scalar(Int)` |
 | `FLOAT` | `Scalar(Float)` |
 | `STRING` | `Scalar(String)` |
@@ -77,7 +78,7 @@ let sparse = SparseVector::new(1000)  // 1000 dimensions
 ### Graph Engine
 
 | Graph Element | TensorValue |
-|---------------|-------------|
+| --- | --- |
 | Node ID | `Scalar(String)` |
 | Edge target | `Pointer` |
 | Properties | `TensorData` |
@@ -85,7 +86,7 @@ let sparse = SparseVector::new(1000)  // 1000 dimensions
 ### Vector Engine
 
 | Vector Type | TensorValue |
-|-------------|-------------|
+| --- | --- |
 | Dense | `Vector` |
 | Sparse | `SparseVector` (internal) |
 
@@ -93,7 +94,7 @@ let sparse = SparseVector::new(1000)  // 1000 dimensions
 
 Data is stored in TensorStore as key-value pairs:
 
-```
+```text
 Key: "users/1"
 Value: TensorData {
     "id": Scalar(Int(1)),

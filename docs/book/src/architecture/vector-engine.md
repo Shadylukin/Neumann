@@ -1,13 +1,16 @@
 # Vector Engine
 
-Module 4 of Neumann. Provides embeddings storage and similarity search with SIMD-accelerated distance computations.
+Module 4 of Neumann. Provides embeddings storage and similarity search with
+SIMD-accelerated distance computations.
 
-The Vector Engine builds on `tensor_store` to provide k-NN search capabilities. It supports both brute-force O(n) search and HNSW O(log n) approximate search, with automatic sparse vector optimization for memory efficiency.
+The Vector Engine builds on `tensor_store` to provide k-NN search capabilities.
+It supports both brute-force O(n) search and HNSW O(log n) approximate search,
+with automatic sparse vector optimization for memory efficiency.
 
 ## Design Principles
 
 | Principle | Description |
-|-----------|-------------|
+| --- | --- |
 | Layered Architecture | Depends only on Tensor Store for persistence |
 | Multiple Distance Metrics | Cosine, Euclidean, and Dot Product similarity |
 | SIMD Acceleration | 8-wide SIMD for dot products and magnitudes |
@@ -54,7 +57,7 @@ graph TB
 ## Key Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `VectorEngine` | Main engine for storing and searching embeddings |
 | `SearchResult` | Result with key and similarity score |
 | `DistanceMetric` | Enum: `Cosine`, `Euclidean`, `DotProduct` |
@@ -67,7 +70,7 @@ graph TB
 ### VectorError Variants
 
 | Variant | Description | When Triggered |
-|---------|-------------|----------------|
+| --- | --- | --- |
 | `NotFound` | Embedding key doesn't exist | `get_embedding`, `delete_embedding` |
 | `DimensionMismatch` | Vectors have different dimensions | `compute_similarity` with mismatched inputs |
 | `EmptyVector` | Empty vector provided | Any operation with `vec![]` |
@@ -77,12 +80,13 @@ graph TB
 ## Distance Metrics
 
 | Metric | Formula | Score Range | Use Case | HNSW Support |
-|--------|---------|-------------|----------|--------------|
-| Cosine | `a . b / (\|a\| * \|b\|)` | -1.0 to 1.0 | Semantic similarity | Yes |
+| --- | --- | --- | --- | --- |
+| Cosine | `a.b / (‖a‖ * ‖b‖)` | -1.0 to 1.0 | Semantic similarity | Yes |
 | Euclidean | `1 / (1 + sqrt(sum((a-b)^2)))` | 0.0 to 1.0 | Spatial distance | No (brute-force) |
 | DotProduct | `sum(a * b)` | unbounded | Magnitude-aware | No (brute-force) |
 
-All metrics return higher scores for better matches. Euclidean distance is transformed to similarity score.
+All metrics return higher scores for better matches. Euclidean distance is
+transformed to similarity score.
 
 ### Distance Metric Implementation Details
 
@@ -127,10 +131,11 @@ VectorEngine::compute_similarity(&a, &b)?; // Returns 0.0
 
 #### Euclidean Distance Transformation
 
-The engine transforms Euclidean distance to similarity score using `1 / (1 + distance)`:
+The engine transforms Euclidean distance to similarity score using `1 / (1 +
+distance)`:
 
 | Distance | Similarity Score |
-|----------|------------------|
+| --- | --- |
 | 0.0 | 1.0 (identical) |
 | 1.0 | 0.5 |
 | 2.0 | 0.333 |
@@ -139,7 +144,8 @@ The engine transforms Euclidean distance to similarity score using `1 / (1 + dis
 
 ## SIMD Implementation
 
-The Vector Engine uses 8-wide SIMD operations via the `wide` crate for accelerated distance computations.
+The Vector Engine uses 8-wide SIMD operations via the `wide` crate for
+accelerated distance computations.
 
 ### SIMD Dot Product Algorithm
 
@@ -176,7 +182,7 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 ### SIMD Performance Characteristics
 
 | Dimension | SIMD Speedup | Notes |
-|-----------|--------------|-------|
+| --- | --- | --- |
 | 8 | 1x | Baseline (single SIMD operation) |
 | 64 | 4-6x | Full pipeline utilization |
 | 384 | 6-8x | Sentence Transformers size |
@@ -350,12 +356,13 @@ let entity_keys = engine.scan_entities_with_embeddings();
 let count = engine.count_entities_with_embeddings();
 ```
 
-Unified entity embeddings are stored in the `_embedding` field of the entity's TensorData.
+Unified entity embeddings are stored in the `_embedding` field of the entity's
+TensorData.
 
 ## Storage Model
 
 | Key Pattern | Content | Use Case |
-|-------------|---------|----------|
+| --- | --- | --- |
 | `emb:{key}` | TensorData with "vector" field | Standalone embeddings |
 | `{entity_key}` | TensorData with "_embedding" field | Unified entities |
 
@@ -386,11 +393,12 @@ let dense = engine.get_embedding("sparse_doc")?;
 ### Storage Format Comparison
 
 | Format | Memory per Element | Best For |
-|--------|-------------------|----------|
+| --- | --- | --- |
 | Dense | 4 bytes | Sparsity < 50% |
 | Sparse | 8 bytes per non-zero (4 pos + 4 val) | Sparsity > 50% |
 
 Example: 1000-dim vector with 100 non-zeros:
+
 - Dense: 4000 bytes
 - Sparse: 800 bytes (5x compression)
 
@@ -398,7 +406,7 @@ Example: 1000-dim vector with 100 non-zeros:
 
 ### Memory Layout
 
-```
+```text
 SparseVector {
     dimension: usize,        // Total vector dimension
     positions: Vec<u32>,     // Sorted indices of non-zeros
@@ -445,7 +453,7 @@ pub fn dot_dense(&self, dense: &[f32]) -> f32 {
 ### Sparse Distance Metrics
 
 | Metric | Complexity | Description |
-|--------|------------|-------------|
+| --- | --- | --- |
 | `dot` | O(min(nnz_a, nnz_b)) | Sparse-sparse dot product |
 | `dot_dense` | O(nnz) | Sparse-dense dot product |
 | `cosine_similarity` | O(min(nnz_a, nnz_b)) | Angle-based similarity |
@@ -459,7 +467,7 @@ pub fn dot_dense(&self, dense: &[f32]) -> f32 {
 ### Configuration Parameters
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `m` | 16 | Max connections per node per layer |
 | `m0` | 32 | Max connections at layer 0 (2*m) |
 | `ef_construction` | 200 | Candidates during index building |
@@ -471,7 +479,7 @@ pub fn dot_dense(&self, dense: &[f32]) -> f32 {
 ### Presets
 
 | Preset | m | m0 | ef_construction | ef_search | Use Case |
-|--------|---|----|-----------------|-----------|----------|
+| --- | --- | --- | --- | --- | --- |
 | `default()` | 16 | 32 | 200 | 50 | Balanced |
 | `high_recall()` | 32 | 64 | 400 | 200 | Accuracy over speed |
 | `high_speed()` | 8 | 16 | 100 | 20 | Speed over accuracy |
@@ -506,7 +514,7 @@ graph TD
 #### Workload-Specific Tuning
 
 | Workload | Recommended Config | Rationale |
-|----------|-------------------|-----------|
+| --- | --- | --- |
 | RAG/Semantic Search | `high_recall()` | Accuracy critical |
 | Real-time recommendations | `high_speed()` | Latency critical |
 | Batch processing | `default()` | Balanced |
@@ -516,7 +524,7 @@ graph TD
 #### Memory vs Recall Tradeoff
 
 | Config | Memory/Node | Recall@10 | Search Time |
-|--------|-------------|-----------|-------------|
+| --- | --- | --- | --- |
 | high_speed | ~128 bytes | ~85% | 0.1ms |
 | default | ~256 bytes | ~95% | 0.3ms |
 | high_recall | ~512 bytes | ~99% | 1.0ms |
@@ -524,13 +532,13 @@ graph TD
 ## Performance Characteristics
 
 | Operation | Complexity | Notes |
-|-----------|------------|-------|
+| --- | --- | --- |
 | `store_embedding` | O(1) | Single store put |
 | `get_embedding` | O(1) | Single store get |
 | `delete_embedding` | O(1) | Single store delete |
 | `search_similar` | O(n*d) | Brute-force, n=count, d=dimension |
-| `search_with_hnsw` | O(log n * ef * m) | Approximate nearest neighbor |
-| `build_hnsw_index` | O(n * log n * ef_construction * m) | Index construction |
+| `search_with_hnsw` | O(log n *ef* m) | Approximate nearest neighbor |
+| `build_hnsw_index` | O(n *log n* ef_construction * m) | Index construction |
 | `count` | O(n) | Scans all embeddings |
 | `list_keys` | O(n) | Scans all embeddings |
 
@@ -553,7 +561,7 @@ if keys.len() >= PARALLEL_THRESHOLD {
 ### Benchmark Results
 
 | Dataset Size | Brute-Force | With HNSW | Speedup |
-|--------------|-------------|-----------|---------|
+| --- | --- | --- | --- |
 | 200 vectors | 4.17s | 9.3us | 448,000x |
 | 1,000 vectors | ~5ms | ~20us | 250x |
 | 10,000 vectors | ~50ms | ~50us | 1000x |
@@ -562,7 +570,7 @@ if keys.len() >= PARALLEL_THRESHOLD {
 ## Supported Embedding Dimensions
 
 | Model | Dimensions | Recommended Config |
-|-------|------------|-------------------|
+| --- | --- | --- |
 | OpenAI text-embedding-ada-002 | 1536 | default |
 | OpenAI text-embedding-3-small | 1536 | default |
 | OpenAI text-embedding-3-large | 3072 | high_recall |
@@ -576,7 +584,7 @@ if keys.len() >= PARALLEL_THRESHOLD {
 ### Zero-Magnitude Vectors
 
 | Metric | Behavior | Rationale |
-|--------|----------|-----------|
+| --- | --- | --- |
 | Cosine | Returns empty results | Division by zero undefined |
 | DotProduct | Returns empty results | Undefined direction |
 | Euclidean | Works correctly | Finds vectors closest to origin |
@@ -596,7 +604,7 @@ assert_eq!(results.len(), 1);  // Only "2d" matched
 ### HNSW Limitations
 
 | Limitation | Details | Workaround |
-|------------|---------|------------|
+| --- | --- | --- |
 | Only cosine similarity | HNSW uses cosine distance internally | Use brute-force for other metrics |
 | No deletion | Cannot remove vectors | Rebuild index |
 | Static after build | Index doesn't update with new vectors | Rebuild periodically |
@@ -646,14 +654,15 @@ println!("Dense: {}, Sparse: {}, Total bytes: {}",
 
 ### Unified Entity Best Practices
 
-1. **Use for cross-engine queries**: When embeddings relate to graph/relational data
+1. **Use for cross-engine queries**: When embeddings relate to graph/relational
+   data
 2. **Entity key conventions**: Use prefixes like `user:`, `doc:`, `item:`
 3. **Separate embedding namespace**: Use `store_embedding` for isolated vectors
 
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `tensor_store` | Persistence, SparseVector, HNSWIndex, SIMD |
 | `rayon` | Parallel iteration for large datasets |
 | `serde` | Serialization of types |

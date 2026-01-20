@@ -1,13 +1,19 @@
 # Tensor Vault
 
-Tensor Vault provides secure secret storage with AES-256-GCM encryption and graph-based access control. Designed for multi-agent environments, it implements a zero-trust architecture where access is determined by graph topology rather than traditional ACLs.
+Tensor Vault provides secure secret storage with AES-256-GCM encryption and
+graph-based access control. Designed for multi-agent environments, it implements
+a zero-trust architecture where access is determined by graph topology rather
+than traditional ACLs.
 
-All secrets are encrypted at rest with authenticated encryption. The vault maintains a permanent audit trail of all operations and supports features like rate limiting, TTL-based grants, and namespace isolation for multi-tenant deployments.
+All secrets are encrypted at rest with authenticated encryption. The vault
+maintains a permanent audit trail of all operations and supports features like
+rate limiting, TTL-based grants, and namespace isolation for multi-tenant
+deployments.
 
 ## Design Principles
 
 | Principle | Description |
-|-----------|-------------|
+| --- | --- |
 | Encryption at Rest | All secrets encrypted with AES-256-GCM |
 | Topological Access Control | Access determined by graph path, not ACLs |
 | Zero Trust | No bypass mode; `node:root` is the only universal accessor |
@@ -21,7 +27,7 @@ All secrets are encrypted at rest with authenticated encryption. The vault maint
 ### Core Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `Vault` | Main API for encrypted secret storage with graph-based access control |
 | `VaultConfig` | Configuration for key derivation, rate limiting, and versioning |
 | `VaultError` | Error types (AccessDenied, NotFound, CryptoError, etc.) |
@@ -33,7 +39,7 @@ All secrets are encrypted at rest with authenticated encryption. The vault maint
 ### Cryptographic Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `MasterKey` | Derived encryption key with zeroize-on-drop (32 bytes) |
 | `Cipher` | AES-256-GCM encryption wrapper |
 | `Obfuscator` | HMAC-based key obfuscation and AEAD metadata encryption |
@@ -42,7 +48,7 @@ All secrets are encrypted at rest with authenticated encryption. The vault maint
 ### Access Control Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `AccessController` | BFS-based graph path verification |
 | `GrantTTLTracker` | Min-heap tracking grant expirations with persistence |
 | `RateLimiter` | Sliding window rate limiting per entity |
@@ -51,7 +57,7 @@ All secrets are encrypted at rest with authenticated encryption. The vault maint
 ### Audit Types
 
 | Type | Description |
-|------|-------------|
+| --- | --- |
 | `AuditLog` | Query interface for audit entries |
 | `AuditEntry` | Single operation record (entity, key, operation, timestamp) |
 | `AuditOperation` | Operation types: Get, Set, Delete, Rotate, Grant, Revoke, List |
@@ -93,9 +99,12 @@ graph TB
 
 ### Data Flow
 
-1. **Set Operation**: Plaintext is padded, encrypted with random nonce, metadata obfuscated, stored via TensorStore
-2. **Get Operation**: Rate limit check, access path verified via BFS, ciphertext decrypted, padding removed, audit logged
-3. **Grant Operation**: Permission edge created in GraphEngine, TTL tracked if specified
+1. **Set Operation**: Plaintext is padded, encrypted with random nonce, metadata
+   obfuscated, stored via TensorStore
+2. **Get Operation**: Rate limit check, access path verified via BFS, ciphertext
+   decrypted, padding removed, audit logged
+3. **Grant Operation**: Permission edge created in GraphEngine, TTL tracked if
+   specified
 4. **Revoke Operation**: Permission edge deleted, expired grants cleaned up
 
 ### Set Operation Flow
@@ -155,7 +164,7 @@ sequenceDiagram
 
 Access is determined by graph topology using BFS traversal:
 
-```
+```text
 node:root ──VAULT_ACCESS_ADMIN──> vault_secret:api_key
                                           ^
 user:alice ──VAULT_ACCESS_READ───────────┘
@@ -166,7 +175,7 @@ user:bob ──MEMBER───────────────────�
 ```
 
 | Requester | Path | Access |
-|-----------|------|--------|
+| --- | --- | --- |
 | `node:root` | Always | Granted (Admin) |
 | `user:alice` | Direct edge | Granted (Read only) |
 | `team:devs` | Direct edge | Granted (Write) |
@@ -176,25 +185,30 @@ user:bob ──MEMBER───────────────────�
 ### Permission Levels
 
 | Level | Capabilities |
-|-------|-------------|
+| --- | --- |
 | Read | `get()`, `list()`, `get_version()`, `list_versions()` |
 | Write | Read + `set()` (update), `rotate()`, `rollback()` |
 | Admin | Write + `delete()`, `grant()`, `revoke()` |
 
-Permission propagation follows graph paths. The effective permission is determined by the `VAULT_ACCESS_*` edge type at the end of the path.
+Permission propagation follows graph paths. The effective permission is
+determined by the `VAULT_ACCESS_*` edge type at the end of the path.
 
 ### Allowed Traversal Edges
 
 Only these edge types can grant transitive access:
-- `VAULT_ACCESS` - Legacy edge type (treated as Admin for backward compatibility)
+
+- `VAULT_ACCESS` - Legacy edge type (treated as Admin for backward
+  compatibility)
 - `VAULT_ACCESS_READ` - Read-only access
 - `VAULT_ACCESS_WRITE` - Read + Write access
 - `VAULT_ACCESS_ADMIN` - Full access including grant/revoke
-- `MEMBER` - Allows group membership traversal but does NOT grant permission directly
+- `MEMBER` - Allows group membership traversal but does NOT grant permission
+  directly
 
 ### Access Control Algorithm
 
-The `AccessController` uses BFS to find the best permission level along any path:
+The `AccessController` uses BFS to find the best permission level along any
+path:
 
 ```rust
 // Simplified algorithm from access.rs
@@ -238,7 +252,9 @@ pub fn get_permission_level(graph: &GraphEngine, source: &str, target: &str) -> 
 }
 ```
 
-**Security Note**: `MEMBER` edges enable traversal through groups but do not grant permissions. Only `VAULT_ACCESS_*` edges grant actual permissions. This prevents privilege escalation via group membership.
+**Security Note**: `MEMBER` edges enable traversal through groups but do not
+grant permissions. Only `VAULT_ACCESS_*` edges grant actual permissions. This
+prevents privilege escalation via group membership.
 
 ### Access Control Flow
 
@@ -286,7 +302,7 @@ Secrets use a two-tier storage model for security:
 Storage key: `_vk:{HMAC(key)}` (key name obfuscated via HMAC-BLAKE2b)
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_blob` | Pointer | Reference to current version ciphertext blob |
 | `_nonce` | Bytes | 12-byte encryption nonce for current version |
 | `_versions` | Pointers | List of all version blob keys (oldest first) |
@@ -302,14 +318,14 @@ Storage key: `_vk:{HMAC(key)}` (key name obfuscated via HMAC-BLAKE2b)
 Storage key: `_vs:{HMAC(key, nonce)}` (random-looking storage ID)
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `_data` | Bytes | Padded + encrypted secret |
 | `_nonce` | Bytes | 12-byte encryption nonce |
 | `_ts` | Int | Unix timestamp (seconds) when version was created |
 
 ### Storage Key Structure
 
-```
+```text
 _vault:salt          - Persisted 16-byte salt for key derivation
 _vk:<32-hex-chars>   - Metadata tensor (HMAC of secret key)
 _vs:<24-hex-chars>   - Ciphertext blob (HMAC of key + nonce)
@@ -347,6 +363,7 @@ argon2.hash_password_into(input, salt, &mut key)?;
 ```
 
 **Argon2id Security Properties**:
+
 - Hybrid algorithm: Argon2i (side-channel resistant) + Argon2d (GPU resistant)
 - Memory-hard: Requires 64 MiB by default, defeating GPU/ASIC attacks
 - Time-hard: 3 iterations increase computation time
@@ -381,7 +398,8 @@ impl MasterKey {
 ```
 
 **Key Hierarchy**:
-```
+
+```text
 Master Password + Salt
         │
         ▼ Argon2id
@@ -459,6 +477,7 @@ impl Cipher {
 ```
 
 **AES-256-GCM Security Properties**:
+
 - Authenticated encryption: Detects tampering via 128-bit authentication tag
 - Nonce requirement: Each encryption MUST use a unique nonce
 - Ciphertext expansion: 16 bytes larger than plaintext (auth tag)
@@ -466,7 +485,7 @@ impl Cipher {
 ### Obfuscation Layers
 
 | Layer | Purpose | Implementation |
-|-------|---------|----------------|
+| --- | --- | --- |
 | Key Obfuscation | Hide secret names | HMAC-BLAKE2b hash of key name |
 | Pointer Indirection | Hide storage patterns | Ciphertext in separate blob with random-looking key |
 | Length Padding | Hide plaintext size | Pad to fixed bucket sizes |
@@ -502,7 +521,7 @@ pub fn for_length(len: usize) -> Option<Self> {
 
 ### Padding Format
 
-```
+```text
 +----------------+-------------------+------------------+
 | Length (4B LE) | Plaintext (N B)   | Random Padding   |
 +----------------+-------------------+------------------+
@@ -632,7 +651,7 @@ impl RateLimiter {
 
 ### Sliding Window Visualization
 
-```
+```text
 Window: 60 seconds
 Limit: 5 requests
 
@@ -876,14 +895,15 @@ pub fn record(&self, entity: &str, secret_key: &str, operation: &AuditOperation)
 ### Audit Query Methods
 
 | Method | Description | Time Complexity |
-|--------|-------------|-----------------|
+| --- | --- | --- |
 | `by_secret(key)` | All entries for a secret | O(n) scan + filter |
 | `by_entity(entity)` | All entries by requester | O(n) scan + filter |
 | `since(timestamp)` | Entries since timestamp | O(n) scan + filter |
 | `between(start, end)` | Entries in time range | O(n) scan + filter |
 | `recent(limit)` | Last N entries | O(n log n) sort + truncate |
 
-**Note**: Secret keys are obfuscated in audit logs to prevent leaking plaintext names.
+**Note**: Secret keys are obfuscated in audit logs to prevent leaking plaintext
+names.
 
 ## Usage Examples
 
@@ -1035,7 +1055,7 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 ### VaultConfig
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `salt` | `Option<[u8; 16]>` | None | Salt for key derivation (random if not provided, persisted) |
 | `argon2_memory_cost` | `u32` | 65536 | Memory cost in KiB (64MB) |
 | `argon2_time_cost` | `u32` | 3 | Iteration count |
@@ -1046,7 +1066,7 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 ### RateLimitConfig
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `max_gets` | `u32` | 60 | Maximum get() calls per window |
 | `max_lists` | `u32` | 10 | Maximum list() calls per window |
 | `max_sets` | `u32` | 30 | Maximum set() calls per window |
@@ -1056,12 +1076,12 @@ alice.list("*")?;       // Same as vault.list("user:alice", "*")
 ### Environment Variables
 
 | Variable | Description |
-|----------|-------------|
+| --- | --- |
 | `NEUMANN_VAULT_KEY` | Base64-encoded 32-byte master key |
 
 ## Shell Commands
 
-```
+```text
 VAULT INIT                              Initialize vault from NEUMANN_VAULT_KEY
 VAULT IDENTITY 'node:alice'             Set current identity
 VAULT NAMESPACE 'team:backend'          Set current namespace
@@ -1101,7 +1121,7 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 ### Edge Cases and Gotchas
 
 | Scenario | Behavior |
-|----------|----------|
+| --- | --- |
 | Grant to non-existent entity | Succeeds (edge created, entity may exist later) |
 | Revoke non-existent grant | Succeeds silently (idempotent) |
 | Get non-existent secret | Returns `NotFound` error |
@@ -1116,7 +1136,7 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 ### Threat Model
 
 | Threat | Mitigation |
-|--------|------------|
+| --- | --- |
 | Password brute-force | Argon2id memory-hard KDF (64MB, 3 iterations) |
 | Offline dictionary attack | Random 128-bit salt, stored in TensorStore |
 | Ciphertext tampering | AES-GCM authentication tag (128-bit) |
@@ -1130,12 +1150,12 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 ## Performance
 
 | Operation | Time | Notes |
-|-----------|------|-------|
+| --- | --- | --- |
 | Key derivation (Argon2id) | ~80ms | 64MB memory cost |
 | set (1KB) | ~29us | Includes encryption + versioning |
 | get (1KB) | ~24us | Includes decryption + audit |
 | set (10KB) | ~93us | Scales with data size |
-| get (10KB) | ~91us | |
+| get (10KB) | ~91us | Scales with data size |
 | Access check (shallow) | ~6us | Direct edge |
 | Access check (deep, 10 hops) | ~17us | BFS traversal |
 | grant | ~18us | Creates graph edge |
@@ -1146,7 +1166,7 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 ## Related Modules
 
 | Module | Relationship |
-|--------|--------------|
+| --- | --- |
 | [Tensor Store](tensor-store.md) | Underlying key-value storage for encrypted secrets |
 | [Graph Engine](graph-engine.md) | Access control edges and audit trail |
 | [Query Router](query-router.md) | VAULT command execution |
@@ -1155,7 +1175,7 @@ VAULT AUDIT RECENT 10                   View last 10 operations
 ## Dependencies
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `aes-gcm` | AES-256-GCM encryption |
 | `argon2` | Key derivation |
 | `hkdf` | Subkey derivation |

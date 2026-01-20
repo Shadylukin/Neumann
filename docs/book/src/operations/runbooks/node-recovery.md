@@ -3,7 +3,7 @@
 ## Recovery Scenarios
 
 | Scenario | Recovery Method | Data Loss Risk |
-|----------|-----------------|----------------|
+| --- | --- | --- |
 | Process crash | WAL replay | None |
 | Node reboot | WAL replay | None |
 | Disk failure | Snapshot + log from leader | Possible (uncommitted) |
@@ -94,11 +94,13 @@ watch -n5 'curl -s localhost:9090/metrics | grep tensor_chain_applied_index'
 **Symptom**: Node not catching up, applied_index not increasing
 
 **Causes**:
+
 1. Network issue to leader
 2. Leader overloaded
 3. Snapshot transfer failing
 
 **Solution**:
+
 ```bash
 # Check leader connectivity
 curl -v http://leader:7878/health
@@ -115,11 +117,13 @@ curl -X POST http://leader:9090/admin/snapshot
 **Symptom**: Node crashes while replaying WAL
 
 **Causes**:
+
 1. Corrupted WAL entry
 2. Out of memory during replay
 3. Incompatible schema
 
 **Solution**:
+
 ```bash
 # Skip corrupted entries (data loss!)
 neumann-admin wal-repair --skip-corrupted

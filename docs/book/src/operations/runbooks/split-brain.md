@@ -2,7 +2,8 @@
 
 ## What is Split-Brain?
 
-A network partition where multiple nodes believe they are the leader, potentially accepting conflicting writes.
+A network partition where multiple nodes believe they are the leader,
+potentially accepting conflicting writes.
 
 ## Symptoms
 
@@ -14,38 +15,46 @@ A network partition where multiple nodes believe they are the leader, potentiall
 ## How tensor_chain Prevents Split-Brain
 
 Raft consensus requires majority quorum:
+
 - 3 nodes: 2 required (only 1 partition can have leader)
 - 5 nodes: 3 required
 
-Split-brain can only occur with **symmetric partition** where old leader is isolated but doesn't realize it.
+Split-brain can only occur with **symmetric partition** where old leader is
+isolated but doesn't realize it.
 
 ## Automatic Recovery (Partition Merge Protocol)
 
 When partitions heal, tensor_chain automatically reconciles:
 
 ### Phase 1: Detection
+
 - Gossip detects new reachable nodes
 - Compare Raft terms and log lengths
 
 ### Phase 2: Leader Resolution
+
 - Higher term wins
 - If same term, longer log wins
 - Losing leader steps down
 
 ### Phase 3: State Reconciliation
+
 - Semantic conflict detection on divergent entries
 - Orthogonal changes: vector-add merge
 - Conflicting changes: reject newer (requires manual resolution)
 
 ### Phase 4: Log Synchronization
+
 - Follower truncates divergent suffix
 - Leader replicates correct entries
 
 ### Phase 5: Membership Merge
+
 - Gossip merges LWW membership states
 - Higher incarnation wins for each node
 
 ### Phase 6: Checkpoint
+
 - Create snapshot post-merge for fast recovery
 
 ## Manual Intervention (When Automatic Fails)

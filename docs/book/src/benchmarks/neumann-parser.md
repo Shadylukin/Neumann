@@ -1,11 +1,12 @@
 # neumann_parser Benchmarks
 
-The parser is a hand-written recursive descent parser with Pratt expression parsing for operator precedence.
+The parser is a hand-written recursive descent parser with Pratt expression
+parsing for operator precedence.
 
 ## Tokenization
 
 | Query Type | Time | Throughput |
-|------------|------|------------|
+| --- | --- | --- |
 | simple_select | 182 ns | 99 MiB/s |
 | select_where | 640 ns | 88 MiB/s |
 | complex_select | 986 ns | 95 MiB/s |
@@ -20,7 +21,7 @@ The parser is a hand-written recursive descent parser with Pratt expression pars
 ## Parsing (tokenize + parse)
 
 | Query Type | Time | Throughput |
-|------------|------|------------|
+| --- | --- | --- |
 | simple_select | 235 ns | 77 MiB/s |
 | select_where | 1.19 us | 47 MiB/s |
 | complex_select | 1.89 us | 50 MiB/s |
@@ -38,7 +39,7 @@ The parser is a hand-written recursive descent parser with Pratt expression pars
 ## Expression Complexity
 
 | Expression Type | Time |
-|-----------------|------|
+| --- | --- |
 | simple (a = 1) | 350 ns |
 | binary_and | 580 ns |
 | binary_or | 570 ns |
@@ -50,7 +51,7 @@ The parser is a hand-written recursive descent parser with Pratt expression pars
 ## Batch Parsing Throughput
 
 | Batch Size | Time | Queries/s |
-|------------|------|-----------|
+| --- | --- | --- |
 | 10 | 5.2 us | 1.9M/s |
 | 100 | 52 us | 1.9M/s |
 | 1,000 | 520 us | 1.9M/s |
@@ -58,7 +59,7 @@ The parser is a hand-written recursive descent parser with Pratt expression pars
 ## Large Query Parsing
 
 | Query Type | Time |
-|------------|------|
+| --- | --- |
 | INSERT 100 rows | 45 us |
 | EMBED 768-dim vector | 38 us |
 | WHERE 20 conditions | 8.5 us |
@@ -74,7 +75,7 @@ The parser is a hand-written recursive descent parser with Pratt expression pars
 ## Complexity
 
 | Operation | Time Complexity | Notes |
-|-----------|-----------------|-------|
+| --- | --- | --- |
 | Tokenization | O(n) | Linear scan of input |
 | Parsing | O(n) | Single pass, no backtracking |
 | Expression parsing | O(n * d) | n = tokens, d = nesting depth |

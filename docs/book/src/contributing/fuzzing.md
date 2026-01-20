@@ -28,7 +28,7 @@ cargo +nightly fuzz run parser_parse artifacts/parser_parse/crash-xxx
 ## Available Targets
 
 | Target | Module | What it tests |
-|--------|--------|---------------|
+| --- | --- | --- |
 | `parser_parse` | neumann_parser | Statement parsing |
 | `parser_parse_all` | neumann_parser | Multi-statement parsing |
 | `parser_parse_expr` | neumann_parser | Expression parsing |
@@ -61,7 +61,7 @@ fuzz_target!(|data: &[u8]| {
 });
 ```
 
-2. Add entry to `fuzz/Cargo.toml`:
+1. Add entry to `fuzz/Cargo.toml`:
 
 ```toml
 [[bin]]
@@ -72,7 +72,7 @@ doc = false
 bench = false
 ```
 
-3. Add seed corpus files to `fuzz/corpus/<name>/`:
+1. Add seed corpus files to `fuzz/corpus/<name>/`:
 
 ```bash
 mkdir -p fuzz/corpus/my_target
@@ -80,7 +80,7 @@ echo "valid input 1" > fuzz/corpus/my_target/seed1
 echo "valid input 2" > fuzz/corpus/my_target/seed2
 ```
 
-4. Update CI matrix in `.github/workflows/fuzz.yml`
+1. Update CI matrix in `.github/workflows/fuzz.yml`
 
 ## Structured Fuzzing
 
@@ -115,7 +115,8 @@ cargo +nightly fuzz run my_target artifacts/my_target/crash-xxx -- -verbosity=2
 
 ## CI Integration
 
-Fuzz tests run in CI for 60 seconds per target. See `.github/workflows/fuzz.yml`.
+Fuzz tests run in CI for 60 seconds per target. See
+`.github/workflows/fuzz.yml`.
 
 ## Best Practices
 
