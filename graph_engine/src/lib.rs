@@ -571,13 +571,14 @@ impl GraphEngine {
         let all_edges: Vec<u64> = out_edges.into_iter().chain(in_edges).collect();
 
         // Parallel deletion for high-degree nodes
+        // Edge may not exist - delete is idempotent
         if all_edges.len() >= Self::PARALLEL_THRESHOLD {
             all_edges.par_iter().for_each(|edge_id| {
-                let _ = self.store.delete(&Self::edge_key(*edge_id));
+                self.store.delete(&Self::edge_key(*edge_id)).ok();
             });
         } else {
             for edge_id in all_edges {
-                let _ = self.store.delete(&Self::edge_key(edge_id));
+                self.store.delete(&Self::edge_key(edge_id)).ok();
             }
         }
 

@@ -3221,7 +3221,8 @@ impl RaftNode {
     pub fn stop_heartbeat_task(&self) {
         let mut task = self.heartbeat_task.write();
         if let Some(tx) = task.shutdown_tx.take() {
-            let _ = tx.send(()); // Signal shutdown
+            // Receiver may already be dropped during shutdown
+            tx.send(()).ok();
         }
         if let Some(handle) = task.handle.take() {
             handle.abort(); // Force stop if not responding

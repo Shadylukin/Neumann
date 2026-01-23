@@ -245,8 +245,8 @@ impl GrantTTLTracker {
         };
 
         if grants.is_empty() {
-            // Remove the storage key if no grants
-            let _ = store.delete(TTL_STORAGE_KEY);
+            // Remove the storage key if no grants - may not exist, delete is idempotent
+            store.delete(TTL_STORAGE_KEY).ok();
             return Ok(());
         }
 

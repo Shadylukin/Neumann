@@ -21,7 +21,8 @@ pub struct EvictionHandle {
 
 impl EvictionHandle {
     pub async fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(()).await;
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).await.ok();
     }
 
     #[must_use]

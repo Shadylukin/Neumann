@@ -483,13 +483,14 @@ impl TcpTransport {
             return; // Already stopped
         }
 
-        // Send shutdown signal
-        let _ = self.shutdown_tx.send(());
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).ok();
 
         // Wait for tasks to complete (with timeout)
         let tasks: Vec<_> = self.tasks.write().drain(..).collect();
         for task in tasks {
-            let _ = timeout(Duration::from_secs(5), task).await;
+            // Task may complete or timeout - either is acceptable during shutdown
+            timeout(Duration::from_secs(5), task).await.ok();
         }
     }
 
@@ -637,8 +638,8 @@ impl Transport for TcpTransport {
 
 impl Drop for TcpTransport {
     fn drop(&mut self) {
-        // Signal shutdown
-        let _ = self.shutdown_tx.send(());
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).ok();
     }
 }
 

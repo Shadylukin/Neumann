@@ -632,15 +632,15 @@ impl Cache {
     }
 
     pub fn clear(&self) {
-        // Delete all cache entries
+        // Delete all cache entries - entries may not exist, delete is idempotent
         for key in self.store.scan(prefixes::EXACT) {
-            let _ = self.store.delete(&key);
+            self.store.delete(&key).ok();
         }
         for key in self.store.scan(prefixes::SEMANTIC) {
-            let _ = self.store.delete(&key);
+            self.store.delete(&key).ok();
         }
         for key in self.store.scan(prefixes::EMBEDDING) {
-            let _ = self.store.delete(&key);
+            self.store.delete(&key).ok();
         }
 
         // Clear HNSW index

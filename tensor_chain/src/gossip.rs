@@ -1231,7 +1231,8 @@ impl GossipMembershipManager {
 
     /// Shutdown the gossip manager.
     pub fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(());
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).ok();
     }
 
     /// Record successful communication with a previously failed node.

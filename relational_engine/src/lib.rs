@@ -4,6 +4,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -960,7 +961,7 @@ type BTreeIndexKey = (String, String);
 
 pub struct RelationalEngine {
     store: TensorStore,
-    row_counters: RwLock<HashMap<String, AtomicU64>>,
+    row_counters: DashMap<String, AtomicU64>,
     /// In-memory B-tree indexes for O(log n) range queries.
     /// Maps (table, column) to a BTreeMap of value -> row_ids.
     btree_indexes: RwLock<HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>>>,
@@ -1027,7 +1028,7 @@ impl RelationalEngine {
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
-            row_counters: RwLock::new(HashMap::new()),
+            row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
         }
     }
@@ -1035,7 +1036,7 @@ impl RelationalEngine {
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             store,
-            row_counters: RwLock::new(HashMap::new()),
+            row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
         }
     }
@@ -1126,8 +1127,8 @@ impl RelationalEngine {
 
         self.store.put(meta_key, meta)?;
 
-        let mut counters = self.row_counters.write();
-        counters.insert(name.to_string(), AtomicU64::new(0));
+        self.row_counters
+            .insert(name.to_string(), AtomicU64::new(0));
 
         Ok(())
     }
@@ -1182,17 +1183,11 @@ impl RelationalEngine {
     }
 
     fn next_row_id(&self, table: &str) -> u64 {
-        let counters = self.row_counters.read();
-        if let Some(counter) = counters.get(table) {
-            counter.fetch_add(1, Ordering::Relaxed) + 1
-        } else {
-            drop(counters);
-            let mut counters = self.row_counters.write();
-            let counter = counters
-                .entry(table.to_string())
-                .or_insert_with(|| AtomicU64::new(0));
-            counter.fetch_add(1, Ordering::Relaxed) + 1
-        }
+        self.row_counters
+            .entry(table.to_string())
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed)
+            + 1
     }
 
     pub fn insert(&self, table: &str, values: HashMap<String, Value>) -> Result<u64> {
@@ -2022,8 +2017,7 @@ impl RelationalEngine {
 
         self.store.delete(&meta_key)?;
 
-        let mut counters = self.row_counters.write();
-        counters.remove(table);
+        self.row_counters.remove(table);
 
         Ok(())
     }
@@ -2819,10 +2813,17 @@ impl RelationalEngine {
     }
 
     pub fn drop_columnar_data(&self, table: &str, column: &str) -> Result<()> {
-        let _ = self.store.delete(&Self::column_data_key(table, column));
-        let _ = self.store.delete(&Self::column_ids_key(table, column));
-        let _ = self.store.delete(&Self::column_nulls_key(table, column));
-        let _ = self.store.delete(&Self::column_meta_key(table, column));
+        // Column data may not exist - delete is idempotent
+        self.store
+            .delete(&Self::column_data_key(table, column))
+            .ok();
+        self.store.delete(&Self::column_ids_key(table, column)).ok();
+        self.store
+            .delete(&Self::column_nulls_key(table, column))
+            .ok();
+        self.store
+            .delete(&Self::column_meta_key(table, column))
+            .ok();
         Ok(())
     }
 

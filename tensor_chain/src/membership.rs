@@ -742,7 +742,8 @@ impl MembershipManager {
             "Membership manager shutting down"
         );
         *self.running.write() = false;
-        let _ = self.shutdown_tx.send(());
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).ok();
     }
 
     pub fn is_running(&self) -> bool {

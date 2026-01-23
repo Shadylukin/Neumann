@@ -12,6 +12,7 @@ rayon = "1.10"
 wide = "0.7"
 serde = { version = "1", features = ["derive"] }
 parking_lot = "0.12"
+dashmap = "5"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

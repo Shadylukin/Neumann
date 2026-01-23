@@ -394,7 +394,8 @@ impl RaftHandle {
     }
 
     pub fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(());
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).ok();
     }
 
     pub fn is_finished(&self) -> bool {

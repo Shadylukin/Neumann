@@ -564,7 +564,8 @@ pub struct DrainHandle {
 
 impl DrainHandle {
     pub async fn shutdown(&self) {
-        let _ = self.shutdown_tx.send(()).await;
+        // Receiver may already be dropped during shutdown
+        self.shutdown_tx.send(()).await.ok();
     }
 
     pub fn is_running(&self) -> bool {

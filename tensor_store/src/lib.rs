@@ -1170,7 +1170,8 @@ impl TensorStore {
                 tensor.set(&field_name, tensor_value);
             }
 
-            let _ = store.router.put(&entry.key, tensor);
+            // Best-effort restore - continue even if individual entries fail
+            store.router.put(&entry.key, tensor).ok();
         }
 
         Ok(store)
@@ -1201,7 +1202,8 @@ impl TensorStore {
         self.router.clear();
         for key in new_router.scan("") {
             if let Ok(value) = new_router.get(&key) {
-                let _ = self.router.put(&key, value);
+                // Best-effort restore - continue even if individual entries fail
+                self.router.put(&key, value).ok();
             }
         }
 

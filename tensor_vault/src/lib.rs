@@ -451,7 +451,8 @@ impl Vault {
         // Prune old versions if exceeding max
         while versions.len() > self.max_versions {
             if let Some(old_blob) = versions.first() {
-                let _ = self.store.delete(old_blob);
+                // Old blob may not exist - delete is idempotent
+                self.store.delete(old_blob).ok();
             }
             versions.remove(0);
         }
@@ -802,10 +803,10 @@ impl Vault {
 
         let vault_storage_key = self.vault_key(key);
 
-        // Delete all version blobs
+        // Delete all version blobs - blobs may not exist, delete is idempotent
         if let Ok(tensor) = self.store.get(&vault_storage_key) {
             for blob_key in Self::get_version_blobs(&tensor) {
-                let _ = self.store.delete(&blob_key);
+                self.store.delete(&blob_key).ok();
             }
         }
 
@@ -813,9 +814,9 @@ impl Vault {
             .delete(&vault_storage_key)
             .map_err(|_| VaultError::NotFound(key.to_string()))?;
 
-        // Also clean up the secret node
+        // Also clean up the secret node - may not exist, delete is idempotent
         let secret_node = self.secret_node_key(key);
-        let _ = self.store.delete(&secret_node);
+        self.store.delete(&secret_node).ok();
 
         // Log audit
         self.log_operation(requester, key, &AuditOperation::Delete);
@@ -866,7 +867,8 @@ impl Vault {
         // Prune old versions if exceeding max
         while versions.len() > self.max_versions {
             if let Some(old_blob) = versions.first() {
-                let _ = self.store.delete(old_blob);
+                // Old blob may not exist - delete is idempotent
+                self.store.delete(old_blob).ok();
             }
             versions.remove(0);
         }

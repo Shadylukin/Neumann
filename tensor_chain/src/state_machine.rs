@@ -220,8 +220,8 @@ impl TensorStateMachine {
                     .map_err(|e| ChainError::StorageError(e.to_string()))?;
             },
             Transaction::Delete { key } => {
-                // Ignore errors on delete (key may not exist)
-                let _ = self.store.delete(key);
+                // Delete is idempotent - missing key means desired state achieved
+                self.store.delete(key).ok();
             },
 
             // Embedding operations → emb: prefix (VectorEngine pattern)
@@ -253,7 +253,8 @@ impl TensorStateMachine {
             },
             Transaction::NodeDelete { key } => {
                 let storage_key = format!("node:{}", key);
-                let _ = self.store.delete(&storage_key);
+                // Delete is idempotent - missing key means desired state achieved
+                self.store.delete(&storage_key).ok();
             },
 
             // Graph edge operations → edge: prefix
@@ -315,7 +316,8 @@ impl TensorStateMachine {
             },
             Transaction::TableDelete { table, row_id } => {
                 let row_key = format!("table:{}:row:{}", table, row_id);
-                let _ = self.store.delete(&row_key);
+                // Delete is idempotent - missing key means desired state achieved
+                self.store.delete(&row_key).ok();
             },
         }
         Ok(())
