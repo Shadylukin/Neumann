@@ -1,14 +1,14 @@
 //! Fixed-size cache ring with configurable eviction strategies.
 //!
-//! CacheRing provides a fixed-capacity cache that never resizes, eliminating
+//! `CacheRing` provides a fixed-capacity cache that never resizes, eliminating
 //! resize stalls. Eviction is handled via LRU, LFU, or Hybrid scoring.
 //!
 //! # Design Philosophy
 //!
 //! - Fixed size: capacity is set at creation and never changes
 //! - No resize stalls: all operations are O(1) amortized
-//! - Pluggable eviction: LRU, LFU, CostBased, or Hybrid strategies
-//! - Thread-safe: uses parking_lot for low-contention access
+//! - Pluggable eviction: LRU, LFU, `CostBased`, or Hybrid strategies
+//! - Thread-safe: uses `parking_lot` for low-contention access
 
 use std::{
     collections::BTreeMap,
@@ -40,7 +40,7 @@ pub enum EvictionStrategy {
 
 impl Default for EvictionStrategy {
     fn default() -> Self {
-        EvictionStrategy::Hybrid {
+        Self::Hybrid {
             lru_weight: 40,
             lfu_weight: 30,
             cost_weight: 30,
@@ -66,11 +66,14 @@ pub struct EvictionScorer {
 }
 
 impl EvictionScorer {
-    pub fn new(strategy: EvictionStrategy) -> Self {
+    #[must_use]
+    pub const fn new(strategy: EvictionStrategy) -> Self {
         Self { strategy }
     }
 
     /// Calculate eviction score. Lower scores are evicted first.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn score(
         &self,
         last_access_secs: f64,
@@ -93,17 +96,20 @@ impl EvictionScorer {
                 lfu_weight,
                 cost_weight,
             } => {
-                let total = (lru_weight + lfu_weight + cost_weight) as f64;
-                let recency_w = lru_weight as f64 / total;
-                let frequency_w = lfu_weight as f64 / total;
-                let cost_w = cost_weight as f64 / total;
+                let total = f64::from(lru_weight) + f64::from(lfu_weight) + f64::from(cost_weight);
+                let recency_w = f64::from(lru_weight) / total;
+                let frequency_w = f64::from(lfu_weight) / total;
+                let cost_w = f64::from(cost_weight) / total;
 
                 let age_minutes = last_access_secs / 60.0;
                 let recency_score = 1.0 / (1.0 + age_minutes);
                 let frequency_score = (1.0 + access_count as f64).log2();
                 let cost_score = cost;
 
-                recency_score * recency_w + frequency_score * frequency_w + cost_score * cost_w
+                cost_score.mul_add(
+                    cost_w,
+                    recency_score.mul_add(recency_w, frequency_score * frequency_w),
+                )
             },
         }
     }
@@ -126,6 +132,7 @@ pub struct CacheRing<V> {
 
 impl<V: Clone> CacheRing<V> {
     /// Create a new cache ring with the specified capacity and eviction strategy.
+    #[must_use]
     pub fn new(capacity: usize, strategy: EvictionStrategy) -> Self {
         let slots: Vec<Option<CacheEntry<V>>> = (0..capacity).map(|_| None).collect();
 
@@ -141,6 +148,7 @@ impl<V: Clone> CacheRing<V> {
     }
 
     /// Create with default LRU strategy.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::new(capacity, EvictionStrategy::LRU)
     }
@@ -178,12 +186,10 @@ impl<V: Clone> CacheRing<V> {
     pub fn put(&self, key: &str, value: V, cost: f64, size_bytes: usize) {
         let key_hash = Self::hash_key(key);
 
-        // Check if key already exists
+        // Check if key already exists and update in place
         {
-            let index = self.index.read();
-            if let Some(&slot_idx) = index.get(&key_hash) {
-                drop(index);
-
+            let existing_slot = self.index.read().get(&key_hash).copied();
+            if let Some(slot_idx) = existing_slot {
                 let mut slots = self.slots.write();
                 if let Some(ref mut entry) = slots[slot_idx] {
                     if entry.key == key {
@@ -223,6 +229,8 @@ impl<V: Clone> CacheRing<V> {
         });
 
         index.insert(key_hash, slot_idx);
+        drop(index);
+        drop(slots);
     }
 
     fn find_slot_for_insert(&self) -> usize {
@@ -235,7 +243,10 @@ impl<V: Clone> CacheRing<V> {
 
         for (idx, slot) in slots.iter().enumerate() {
             match slot {
-                None => return idx, // Empty slot, use immediately
+                None => {
+                    drop(slots);
+                    return idx; // Empty slot, use immediately
+                },
                 Some(entry) => {
                     let age_secs = now.duration_since(entry.last_access).as_secs_f64();
                     let score =
@@ -247,6 +258,7 @@ impl<V: Clone> CacheRing<V> {
                 },
             }
         }
+        drop(slots);
 
         best_slot
     }
@@ -255,17 +267,20 @@ impl<V: Clone> CacheRing<V> {
     pub fn delete(&self, key: &str) -> bool {
         let key_hash = Self::hash_key(key);
 
-        let mut index = self.index.write();
-        if let Some(slot_idx) = index.remove(&key_hash) {
-            let mut slots = self.slots.write();
-            if let Some(ref entry) = slots[slot_idx] {
-                if entry.key == key {
-                    slots[slot_idx] = None;
-                    self.count.fetch_sub(1, Ordering::Relaxed);
-                    return true;
-                }
+        let Some(slot_idx) = self.index.write().remove(&key_hash) else {
+            return false;
+        };
+
+        let mut slots = self.slots.write();
+        if let Some(ref entry) = slots[slot_idx] {
+            if entry.key == key {
+                slots[slot_idx] = None;
+                drop(slots);
+                self.count.fetch_sub(1, Ordering::Relaxed);
+                return true;
             }
         }
+        drop(slots);
 
         false
     }
@@ -273,19 +288,22 @@ impl<V: Clone> CacheRing<V> {
     /// Check if a key exists in the cache.
     pub fn contains(&self, key: &str) -> bool {
         let key_hash = Self::hash_key(key);
-        let index = self.index.read();
 
-        if let Some(&slot_idx) = index.get(&key_hash) {
-            let slots = self.slots.read();
-            if let Some(ref entry) = slots[slot_idx] {
-                return entry.key == key;
-            }
-        }
+        let Some(&slot_idx) = self.index.read().get(&key_hash) else {
+            return false;
+        };
 
-        false
+        let slots = self.slots.read();
+        let result = slots[slot_idx]
+            .as_ref()
+            .is_some_and(|entry| entry.key == key);
+        drop(slots);
+
+        result
     }
 
     /// Get the number of entries in the cache.
+    #[allow(clippy::cast_possible_truncation)] // Count bounded by capacity (usize)
     pub fn len(&self) -> usize {
         self.count.load(Ordering::Relaxed) as usize
     }
@@ -296,7 +314,7 @@ impl<V: Clone> CacheRing<V> {
     }
 
     /// Get the cache capacity.
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.capacity
     }
 
@@ -309,6 +327,8 @@ impl<V: Clone> CacheRing<V> {
             *slot = None;
         }
         index.clear();
+        drop(slots);
+        drop(index);
         self.count.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
@@ -361,6 +381,8 @@ impl<V: Clone> CacheRing<V> {
                 evicted += 1;
             }
         }
+        drop(slots);
+        drop(index);
 
         evicted
     }
@@ -377,6 +399,7 @@ impl<V: Clone> CacheRing<V> {
     }
 
     /// Get cache statistics.
+    #[allow(clippy::cast_precision_loss)] // Acceptable for statistics
     pub fn stats(&self) -> CacheStats {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
@@ -410,6 +433,7 @@ impl<V: Clone> CacheRing<V> {
                 })
             })
             .collect();
+        drop(slots);
 
         CacheRingSnapshot {
             entries,
@@ -419,6 +443,7 @@ impl<V: Clone> CacheRing<V> {
     }
 
     /// Restore cache from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: CacheRingSnapshot<V>) -> Self {
         let cache = Self::new(snapshot.capacity, snapshot.strategy);
 
@@ -815,5 +840,91 @@ mod tests {
         let cache: CacheRing<i32> = CacheRing::with_capacity(10);
         assert!(cache.get("nonexistent").is_none());
         assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_evict_explicit_lru() {
+        let cache: CacheRing<i32> = CacheRing::new(10, EvictionStrategy::LRU);
+        for i in 0..5 {
+            cache.put(&format!("key{i}"), i, 1.0, 8);
+            thread::sleep(Duration::from_millis(5));
+        }
+        let evicted = cache.evict(2);
+        assert_eq!(evicted, 2);
+        assert_eq!(cache.len(), 3);
+        // Oldest keys should be evicted
+        assert!(!cache.contains("key0"));
+        assert!(!cache.contains("key1"));
+    }
+
+    #[test]
+    fn test_evict_explicit_lfu() {
+        let cache: CacheRing<i32> = CacheRing::new(10, EvictionStrategy::LFU);
+        cache.put("frequent", 1, 1.0, 8);
+        cache.put("rare", 2, 1.0, 8);
+        // Access frequent multiple times
+        for _ in 0..5 {
+            let _ = cache.get("frequent");
+        }
+        let evicted = cache.evict(1);
+        assert_eq!(evicted, 1);
+        assert!(cache.contains("frequent"));
+        assert!(!cache.contains("rare"));
+    }
+
+    #[test]
+    fn test_evict_explicit_cost_based() {
+        let cache: CacheRing<i32> = CacheRing::new(10, EvictionStrategy::CostBased);
+        cache.put("high_cost", 1, 100.0, 8);
+        cache.put("low_cost", 2, 1.0, 8);
+        let evicted = cache.evict(1);
+        assert_eq!(evicted, 1);
+        assert!(cache.contains("high_cost")); // High cost kept
+    }
+
+    #[test]
+    fn test_evict_zero_count() {
+        let cache: CacheRing<i32> = CacheRing::new(10, EvictionStrategy::LRU);
+        cache.put("key", 1, 1.0, 8);
+        let evicted = cache.evict(0);
+        assert_eq!(evicted, 0);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_stats_zero_requests() {
+        let cache: CacheRing<i32> = CacheRing::new(10, EvictionStrategy::LRU);
+        let stats = cache.stats();
+        assert_eq!(stats.hit_rate, 0.0);
+    }
+
+    #[test]
+    fn test_scan_prefix() {
+        let cache: CacheRing<i32> = CacheRing::with_capacity(20);
+        cache.put("user:1", 1, 1.0, 8);
+        cache.put("user:2", 2, 1.0, 8);
+        cache.put("item:1", 10, 1.0, 8);
+        cache.put("user:3", 3, 1.0, 8);
+
+        let user_keys = cache.scan_prefix("user:");
+        assert_eq!(user_keys.len(), 3);
+        assert!(user_keys.iter().all(|k| k.starts_with("user:")));
+
+        let item_keys = cache.scan_prefix("item:");
+        assert_eq!(item_keys.len(), 1);
+    }
+
+    #[test]
+    fn test_put_update_existing() {
+        let cache: CacheRing<i32> = CacheRing::with_capacity(10);
+        cache.put("key", 1, 1.0, 8);
+        assert_eq!(cache.get("key"), Some(1));
+
+        // Update the same key with new value
+        cache.put("key", 2, 2.0, 16);
+        assert_eq!(cache.get("key"), Some(2));
+
+        // Should still have only one entry
+        assert_eq!(cache.len(), 1);
     }
 }

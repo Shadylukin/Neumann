@@ -242,7 +242,8 @@ fn test_wait_graph_concurrent_updates() {
     let edge_count = coordinator.wait_graph().edge_count();
     // At least some edges should exist (first tx succeeded, others wait)
     // or no edges if last tx was first to acquire
-    assert!(edge_count >= 0, "wait graph should be in valid state");
+    // Wait graph should be in valid state (edge_count always >= 0 for usize)
+    let _ = edge_count;
 }
 
 #[test]

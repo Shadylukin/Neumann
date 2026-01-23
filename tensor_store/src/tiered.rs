@@ -26,10 +26,10 @@ pub enum TieredError {
 impl std::fmt::Display for TieredError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TieredError::Store(e) => write!(f, "Store error: {}", e),
-            TieredError::Mmap(e) => write!(f, "Mmap error: {}", e),
-            TieredError::Io(e) => write!(f, "I/O error: {}", e),
-            TieredError::NotConfigured => write!(f, "Cold storage not configured"),
+            Self::Store(e) => write!(f, "Store error: {e}"),
+            Self::Mmap(e) => write!(f, "Mmap error: {e}"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::NotConfigured => write!(f, "Cold storage not configured"),
         }
     }
 }
@@ -38,19 +38,19 @@ impl std::error::Error for TieredError {}
 
 impl From<TensorStoreError> for TieredError {
     fn from(e: TensorStoreError) -> Self {
-        TieredError::Store(e)
+        Self::Store(e)
     }
 }
 
 impl From<MmapError> for TieredError {
     fn from(e: MmapError) -> Self {
-        TieredError::Mmap(e)
+        Self::Mmap(e)
     }
 }
 
 impl From<std::io::Error> for TieredError {
     fn from(e: std::io::Error) -> Self {
-        TieredError::Io(e)
+        Self::Io(e)
     }
 }
 
@@ -95,7 +95,7 @@ const SHARD_COUNT: usize = 16;
 ///
 /// Data starts in the hot tier and can be migrated to cold based on access patterns.
 /// When cold data is accessed, it's promoted back to hot.
-/// Uses pure tensor storage (MetadataSlab) for zero resize stalls.
+/// Uses pure tensor storage (`MetadataSlab`) for zero resize stalls.
 pub struct TieredStore {
     /// Hot tier: in-memory tensor storage with access tracking.
     hot: Arc<MetadataSlab>,
@@ -118,6 +118,7 @@ pub struct TieredStore {
 
 impl TieredStore {
     /// Compute shard index for a key (for instrumentation).
+    #[allow(clippy::cast_possible_truncation)] // Truncation is fine for hash-based shard selection
     fn shard_for_key(key: &str) -> usize {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
@@ -125,6 +126,10 @@ impl TieredStore {
     }
 
     /// Create a new tiered store with the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cold storage directory cannot be created or opened.
     pub fn new(config: TieredConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.cold_dir)?;
 
@@ -158,11 +163,16 @@ impl TieredStore {
     }
 
     /// Create with default configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cold storage directory cannot be created or opened.
     pub fn with_defaults() -> Result<Self> {
         Self::new(TieredConfig::default())
     }
 
     /// Create without cold storage (hot-only mode).
+    #[must_use]
     pub fn hot_only(sample_rate: u32) -> Self {
         Self {
             hot: Arc::new(MetadataSlab::new()),
@@ -189,6 +199,14 @@ impl TieredStore {
     /// Get data, checking hot tier first, then cold.
     ///
     /// If found in cold tier, promotes to hot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found in either tier or if cold storage read fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn get(&mut self, key: &str) -> Result<TensorData> {
         // Try hot tier first
         self.hot_lookups.fetch_add(1, Ordering::Relaxed);
@@ -224,11 +242,19 @@ impl TieredStore {
     }
 
     /// Check if key exists in either tier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn exists(&self, key: &str) -> bool {
         self.hot.contains(key) || self.cold_keys.read().unwrap().contains(key)
     }
 
     /// Delete from both tiers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn delete(&mut self, key: &str) -> bool {
         let hot_removed = self.hot.delete(key).is_some();
         let cold_removed = self.cold_keys.write().unwrap().remove(key);
@@ -236,6 +262,10 @@ impl TieredStore {
     }
 
     /// Get statistics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn stats(&self) -> TieredStats {
         TieredStats {
             hot_count: self.hot.len(),
@@ -252,6 +282,14 @@ impl TieredStore {
     ///
     /// Keys in shards that haven't been accessed within `threshold_ms` are moved to cold.
     /// Returns the number of keys migrated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cold storage is not configured or if write/flush fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn migrate_cold(&mut self, threshold_ms: u64) -> Result<usize> {
         let cold = self.cold.as_mut().ok_or(TieredError::NotConfigured)?;
 
@@ -291,6 +329,14 @@ impl TieredStore {
     }
 
     /// Preload specific keys from cold to hot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cold storage is not configured.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn preload(&mut self, keys: &[&str]) -> Result<usize> {
         let cold = self.cold.as_ref().ok_or(TieredError::NotConfigured)?;
 
@@ -321,21 +367,37 @@ impl TieredStore {
     }
 
     /// Get the number of entries in cold tier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn cold_len(&self) -> usize {
         self.cold_keys.read().unwrap().len()
     }
 
     /// Total entries across both tiers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn len(&self) -> usize {
         self.hot.len() + self.cold_keys.read().unwrap().len()
     }
 
     /// Check if empty.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn is_empty(&self) -> bool {
         self.hot.is_empty() && self.cold_keys.read().unwrap().is_empty()
     }
 
     /// Flush cold storage to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush operation fails.
     pub fn flush(&self) -> Result<()> {
         if let Some(ref cold) = self.cold {
             cold.flush()?;
@@ -353,7 +415,15 @@ impl TieredStore {
         self.instrumentation.cold_shards(threshold_ms)
     }
 
-    /// Convert to a standard TensorStore (loads all cold data to hot).
+    /// Convert to a standard `TensorStore` (loads all cold data to hot).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading from cold storage fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn into_tensor_store(self) -> Result<TensorStore> {
         // Load all cold data into hot
         if let Some(ref cold) = self.cold {
@@ -960,5 +1030,22 @@ mod tests {
         assert_eq!(loaded, 0);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tiered_with_defaults_method() {
+        // Clean up any existing default directory first
+        let default_cold_dir = PathBuf::from("/tmp/tensor_cold");
+        let _ = fs::remove_dir_all(&default_cold_dir);
+
+        let result = TieredStore::with_defaults();
+        assert!(result.is_ok());
+
+        let store = result.unwrap();
+        assert!(store.cold.is_some());
+        assert!(store.is_empty());
+
+        // Clean up
+        let _ = fs::remove_dir_all(default_cold_dir);
     }
 }

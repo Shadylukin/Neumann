@@ -1,0 +1,414 @@
+syntax = "proto3";
+package neumann.v1;
+
+// Query service for executing Neumann queries.
+service QueryService {
+  // Execute a single query.
+  rpc Execute(QueryRequest) returns (QueryResponse);
+  // Execute a query with streaming results (for large result sets).
+  rpc ExecuteStream(QueryRequest) returns (stream QueryResponseChunk);
+  // Execute multiple queries in a batch.
+  rpc ExecuteBatch(BatchQueryRequest) returns (BatchQueryResponse);
+}
+
+// Blob service for artifact storage.
+service BlobService {
+  // Upload a blob with streaming chunks.
+  rpc Upload(stream BlobUploadRequest) returns (BlobUploadResponse);
+  // Download a blob with streaming chunks.
+  rpc Download(BlobDownloadRequest) returns (stream BlobDownloadChunk);
+  // Delete a blob.
+  rpc Delete(BlobDeleteRequest) returns (BlobDeleteResponse);
+  // Get artifact metadata.
+  rpc GetMetadata(BlobMetadataRequest) returns (ArtifactInfo);
+}
+
+// Health check service.
+service Health {
+  // Check server health.
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// === Query Messages ===
+
+message QueryRequest {
+  string query = 1;
+  // Optional identity for vault access control.
+  optional string identity = 2;
+}
+
+message QueryResponse {
+  oneof result {
+    EmptyResult empty = 1;
+    StringValue value = 2;
+    CountResult count = 3;
+    IdsResult ids = 4;
+    RowsResult rows = 5;
+    NodesResult nodes = 6;
+    EdgesResult edges = 7;
+    PathResult path = 8;
+    SimilarResult similar = 9;
+    UnifiedQueryResult unified = 10;
+    TableListResult table_list = 11;
+    BlobResult blob = 12;
+    ArtifactInfo artifact_info = 13;
+    ArtifactListResult artifact_list = 14;
+    BlobStatsResult blob_stats = 15;
+    CheckpointListResult checkpoint_list = 16;
+    ChainQueryResult chain = 17;
+  }
+  optional ErrorInfo error = 20;
+}
+
+message QueryResponseChunk {
+  oneof chunk {
+    RowChunk row = 1;
+    NodeChunk node = 2;
+    EdgeChunk edge = 3;
+    SimilarChunk similar_item = 4;
+    bytes blob_data = 5;
+    ErrorInfo error = 10;
+  }
+  bool is_final = 15;
+}
+
+message BatchQueryRequest {
+  repeated QueryRequest queries = 1;
+}
+
+message BatchQueryResponse {
+  repeated QueryResponse results = 1;
+}
+
+// === Result Types ===
+
+message EmptyResult {}
+
+message StringValue {
+  string value = 1;
+}
+
+message CountResult {
+  uint64 count = 1;
+}
+
+message IdsResult {
+  repeated uint64 ids = 1;
+}
+
+message RowsResult {
+  repeated Row rows = 1;
+}
+
+message Row {
+  uint64 id = 1;
+  repeated ColumnValue values = 2;
+}
+
+message ColumnValue {
+  string name = 1;
+  Value value = 2;
+}
+
+message Value {
+  oneof kind {
+    bool null = 1;
+    int64 int_value = 2;
+    double float_value = 3;
+    string string_value = 4;
+    bool bool_value = 5;
+  }
+}
+
+message NodesResult {
+  repeated Node nodes = 1;
+}
+
+message Node {
+  uint64 id = 1;
+  string label = 2;
+  map<string, string> properties = 3;
+}
+
+message NodeChunk {
+  Node node = 1;
+}
+
+message EdgesResult {
+  repeated Edge edges = 1;
+}
+
+message Edge {
+  uint64 id = 1;
+  uint64 from = 2;
+  uint64 to = 3;
+  string label = 4;
+}
+
+message EdgeChunk {
+  Edge edge = 1;
+}
+
+message PathResult {
+  repeated uint64 node_ids = 1;
+}
+
+message SimilarResult {
+  repeated SimilarItem items = 1;
+}
+
+message SimilarItem {
+  string key = 1;
+  float score = 2;
+}
+
+message SimilarChunk {
+  SimilarItem item = 1;
+}
+
+message RowChunk {
+  Row row = 1;
+}
+
+message UnifiedQueryResult {
+  string description = 1;
+  repeated UnifiedItem items = 2;
+}
+
+message UnifiedItem {
+  string entity_type = 1;
+  string key = 2;
+  map<string, string> fields = 3;
+  optional float score = 4;
+}
+
+message TableListResult {
+  repeated string tables = 1;
+}
+
+message BlobResult {
+  bytes data = 1;
+}
+
+message ArtifactInfo {
+  string id = 1;
+  string filename = 2;
+  string content_type = 3;
+  uint64 size = 4;
+  string checksum = 5;
+  uint64 chunk_count = 6;
+  uint64 created = 7;
+  uint64 modified = 8;
+  string created_by = 9;
+  repeated string tags = 10;
+  repeated string linked_to = 11;
+  map<string, string> custom = 12;
+}
+
+message ArtifactListResult {
+  repeated string artifact_ids = 1;
+}
+
+message BlobStatsResult {
+  uint64 artifact_count = 1;
+  uint64 chunk_count = 2;
+  uint64 total_bytes = 3;
+  uint64 unique_bytes = 4;
+  double dedup_ratio = 5;
+  uint64 orphaned_chunks = 6;
+}
+
+message CheckpointListResult {
+  repeated CheckpointInfo checkpoints = 1;
+}
+
+message CheckpointInfo {
+  string id = 1;
+  string name = 2;
+  uint64 created_at = 3;
+  bool is_auto = 4;
+}
+
+// === Chain Result Types ===
+
+message ChainQueryResult {
+  oneof result {
+    ChainTransactionBegun transaction_begun = 1;
+    ChainCommitted committed = 2;
+    ChainRolledBack rolled_back = 3;
+    ChainHistory history = 4;
+    ChainSimilar similar = 5;
+    ChainDrift drift = 6;
+    ChainHeight height = 7;
+    ChainTip tip = 8;
+    ChainBlockInfo block = 9;
+    ChainCodebookInfo codebook = 10;
+    ChainTransitionAnalysis transition_analysis = 11;
+    ChainConflictResolution conflict_resolution = 12;
+    ChainMergeResult merge = 13;
+  }
+}
+
+message ChainTransactionBegun {
+  string tx_id = 1;
+}
+
+message ChainCommitted {
+  string block_hash = 1;
+  uint64 height = 2;
+}
+
+message ChainRolledBack {
+  uint64 to_height = 1;
+}
+
+message ChainHistory {
+  repeated ChainHistoryEntry entries = 1;
+}
+
+message ChainHistoryEntry {
+  uint64 height = 1;
+  string transaction_type = 2;
+  optional bytes data = 3;
+}
+
+message ChainSimilar {
+  repeated ChainSimilarItem items = 1;
+}
+
+message ChainSimilarItem {
+  string block_hash = 1;
+  uint64 height = 2;
+  float similarity = 3;
+}
+
+message ChainDrift {
+  uint64 from_height = 1;
+  uint64 to_height = 2;
+  float total_drift = 3;
+  float avg_drift_per_block = 4;
+  float max_drift = 5;
+}
+
+message ChainHeight {
+  uint64 height = 1;
+}
+
+message ChainTip {
+  string hash = 1;
+  uint64 height = 2;
+}
+
+message ChainBlockInfo {
+  uint64 height = 1;
+  string hash = 2;
+  string prev_hash = 3;
+  uint64 timestamp = 4;
+  uint64 transaction_count = 5;
+  string proposer = 6;
+}
+
+message ChainCodebookInfo {
+  string scope = 1;
+  uint64 entry_count = 2;
+  uint64 dimension = 3;
+  optional string domain = 4;
+}
+
+message ChainTransitionAnalysis {
+  uint64 total_transitions = 1;
+  uint64 valid_transitions = 2;
+  uint64 invalid_transitions = 3;
+  float avg_validity_score = 4;
+}
+
+message ChainConflictResolution {
+  string strategy = 1;
+  uint64 conflicts_resolved = 2;
+}
+
+message ChainMergeResult {
+  bool success = 1;
+  uint64 merged_count = 2;
+}
+
+// === Error Types ===
+
+message ErrorInfo {
+  ErrorCode code = 1;
+  string message = 2;
+  optional string details = 3;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_QUERY = 1;
+  ERROR_CODE_NOT_FOUND = 2;
+  ERROR_CODE_PERMISSION_DENIED = 3;
+  ERROR_CODE_ALREADY_EXISTS = 4;
+  ERROR_CODE_INTERNAL = 5;
+  ERROR_CODE_UNAVAILABLE = 6;
+  ERROR_CODE_INVALID_ARGUMENT = 7;
+  ERROR_CODE_UNAUTHENTICATED = 8;
+}
+
+// === Blob Messages ===
+
+message BlobUploadRequest {
+  oneof request {
+    BlobUploadMetadata metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message BlobUploadMetadata {
+  string filename = 1;
+  optional string content_type = 2;
+  optional string created_by = 3;
+  repeated string tags = 4;
+  repeated string linked_to = 5;
+  map<string, string> custom = 6;
+}
+
+message BlobUploadResponse {
+  string artifact_id = 1;
+  uint64 size = 2;
+  string checksum = 3;
+}
+
+message BlobDownloadRequest {
+  string artifact_id = 1;
+}
+
+message BlobDownloadChunk {
+  bytes data = 1;
+  bool is_final = 2;
+}
+
+message BlobDeleteRequest {
+  string artifact_id = 1;
+}
+
+message BlobDeleteResponse {
+  bool success = 1;
+}
+
+message BlobMetadataRequest {
+  string artifact_id = 1;
+}
+
+// === Health Messages ===
+
+message HealthCheckRequest {
+  optional string service = 1;
+}
+
+message HealthCheckResponse {
+  ServingStatus status = 1;
+}
+
+enum ServingStatus {
+  SERVING_STATUS_UNSPECIFIED = 0;
+  SERVING_STATUS_SERVING = 1;
+  SERVING_STATUS_NOT_SERVING = 2;
+}

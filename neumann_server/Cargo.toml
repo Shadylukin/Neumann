@@ -1,0 +1,50 @@
+[package]
+name = "neumann_server"
+description = "gRPC server exposing Neumann database via QueryRouter"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["database", "grpc", "tensor", "server"]
+categories = ["database", "network-programming"]
+rust-version.workspace = true
+
+[dependencies]
+query_router = { path = "../query_router" }
+tensor_blob = { path = "../tensor_blob" }
+tensor_store = { path = "../tensor_store" }
+relational_engine = { path = "../relational_engine" }
+tonic = { version = "0.12", features = ["gzip", "tls"] }
+tonic-web = "0.12"
+tonic-reflection = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros"] }
+tokio-stream = "0.1"
+parking_lot = "0.12"
+tracing = "0.1"
+thiserror = "2"
+bytes = "1"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+tensor_unified = { path = "../tensor_unified" }
+query_router = { path = "../query_router" }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

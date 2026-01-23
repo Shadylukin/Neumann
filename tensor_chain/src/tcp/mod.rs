@@ -27,11 +27,36 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use tensor_chain::tcp::{TcpTransport, TcpTransportConfig};
+//! ```rust
+//! use tensor_chain::tcp::{TcpTransport, TcpTransportConfig, SecurityMode};
+//! use tensor_chain::network::Transport;
+//! use std::net::SocketAddr;
 //!
-//! let config = TcpTransportConfig::new("node1", "0.0.0.0:9100".parse()?);
-//! let transport = TcpTransport::new(config).await?;
+//! // Configure transport (sync construction)
+//! let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+//! let config = TcpTransportConfig::new("node1", addr)
+//!     .with_security_mode(SecurityMode::Development);
+//!
+//! // Create transport (not yet listening)
+//! let transport = TcpTransport::new(config);
+//!
+//! assert_eq!(transport.local_id(), "node1");
+//! assert!(!transport.is_running());
+//! ```
+//!
+//! For async operations (connecting, sending), use within a Tokio runtime:
+//!
+//! ```rust,no_run
+//! use tensor_chain::tcp::{TcpTransport, TcpTransportConfig, SecurityMode};
+//! use tensor_chain::network::{Message, PeerConfig, Transport};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let config = TcpTransportConfig::new("node1", "0.0.0.0:9100".parse()?)
+//!     .with_security_mode(SecurityMode::Development);
+//! let transport = TcpTransport::new(config);
+//!
+//! // Start listening
+//! transport.start().await?;
 //!
 //! // Connect to a peer
 //! transport.connect(&PeerConfig {
@@ -41,6 +66,8 @@
 //!
 //! // Send a message
 //! transport.send(&"node2".to_string(), Message::Ping { term: 1 }).await?;
+//! # Ok(())
+//! # }
 //! ```
 
 pub mod compression;

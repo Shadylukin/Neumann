@@ -9,8 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use tensor_chain::{
-    consensus::{ConsensusConfig, ConsensusManager, DeltaVector},
-    distributed_tx::{DistributedTxConfig, DistributedTxCoordinator, PrepareRequest, PrepareVote},
+    consensus::{ConsensusConfig, ConsensusManager},
+    distributed_tx::{DistributedTxCoordinator, PrepareRequest, PrepareVote},
     DeadlockDetector, DeadlockDetectorConfig, VictimSelectionPolicy, WaitForGraph,
 };
 use tensor_store::SparseVector;

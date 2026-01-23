@@ -92,40 +92,95 @@
 //! ## Recording Peer Embeddings
 //!
 //! ```rust
+//! use std::sync::Arc;
 //! use tensor_store::SparseVector;
-//! use tensor_chain::geometric_membership::GeometricMembershipManager;
+//! use tensor_chain::geometric_membership::{GeometricMembershipManager, GeometricMembershipConfig};
+//! use tensor_chain::membership::{MembershipManager, ClusterConfig, LocalNodeConfig};
+//! use tensor_chain::network::MemoryTransport;
 //!
-//! // When processing a message with an embedding
-//! // geo_membership.record_peer_embedding(&sender_id, sender_embedding);
+//! let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+//! let config = ClusterConfig::new(
+//!     "cluster",
+//!     LocalNodeConfig {
+//!         node_id: "node1".to_string(),
+//!         bind_address: "127.0.0.1:9100".parse().unwrap(),
+//!     },
+//! );
+//! let membership = Arc::new(MembershipManager::new(config, transport));
+//! let geo_membership = GeometricMembershipManager::new(
+//!     membership,
+//!     GeometricMembershipConfig::default(),
+//! );
 //!
-//! // Set local node's embedding
-//! // let local_embedding = compute_state_embedding();
-//! // geo_membership.update_local_embedding(local_embedding);
+//! // Record a peer's embedding (e.g., from a received message)
+//! let sender_embedding = SparseVector::from_dense(&[1.0, 0.5, 0.0]);
+//! geo_membership.record_peer_embedding(&"node2".to_string(), sender_embedding);
+//!
+//! // Set local node's state embedding
+//! let local_embedding = SparseVector::from_dense(&[0.8, 0.6, 0.1]);
+//! geo_membership.update_local_embedding(local_embedding);
 //! ```
 //!
 //! ## Finding Peers for Routing
 //!
 //! ```rust
+//! use std::sync::Arc;
 //! use tensor_store::SparseVector;
+//! use tensor_chain::geometric_membership::{GeometricMembershipManager, GeometricMembershipConfig};
+//! use tensor_chain::membership::{MembershipManager, ClusterConfig, LocalNodeConfig};
+//! use tensor_chain::network::MemoryTransport;
 //!
-//! // Given a query embedding (e.g., from a transaction)
-//! // let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+//! let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+//! let config = ClusterConfig::new(
+//!     "cluster",
+//!     LocalNodeConfig {
+//!         node_id: "node1".to_string(),
+//!         bind_address: "127.0.0.1:9100".parse().unwrap(),
+//!     },
+//! );
+//! let membership = Arc::new(MembershipManager::new(config, transport));
+//! let geo_membership = GeometricMembershipManager::new(
+//!     membership,
+//!     GeometricMembershipConfig::default(),
+//! );
+//!
+//! // Query embedding (e.g., from a transaction)
+//! let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
 //!
 //! // Get all peers ranked by composite score
-//! // let ranked = geo_membership.ranked_peers(&query);
+//! let ranked = geo_membership.ranked_peers(&query);
 //!
 //! // Find the nearest healthy peer
-//! // if let Some(peer_id) = geo_membership.nearest_healthy_peer(&query) {
-//! //     route_to_peer(&peer_id);
-//! // }
+//! if let Some(peer_id) = geo_membership.nearest_healthy_peer(&query) {
+//!     println!("Route to: {}", peer_id);
+//! }
 //!
 //! // Find all nearby healthy peers (for replication)
-//! // let nearby = geo_membership.nearby_healthy_peers(&query);
+//! let nearby = geo_membership.nearby_healthy_peers(&query);
 //! ```
 //!
 //! ## Maintenance
 //!
-//! ```rust,ignore
+//! ```rust
+//! use std::sync::Arc;
+//! use tensor_chain::geometric_membership::{GeometricMembershipManager, GeometricMembershipConfig};
+//! use tensor_chain::membership::{MembershipManager, ClusterConfig, LocalNodeConfig};
+//! use tensor_chain::network::MemoryTransport;
+//!
+//! let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+//! let config = ClusterConfig::new(
+//!     "cluster",
+//!     LocalNodeConfig {
+//!         node_id: "node1".to_string(),
+//!         bind_address: "127.0.0.1:9100".parse().unwrap(),
+//!     },
+//! );
+//! let membership = Arc::new(MembershipManager::new(config, transport));
+//! let geo_membership = GeometricMembershipManager::new(
+//!     membership,
+//!     GeometricMembershipConfig::default(),
+//! );
+//!
 //! // Periodically remove embeddings for nodes no longer in cluster
 //! geo_membership.prune_stale_embeddings();
 //! ```

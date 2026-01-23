@@ -48,17 +48,20 @@ impl SemanticPartitionerConfig {
         }
     }
 
-    pub fn with_similarity_threshold(mut self, threshold: f32) -> Self {
+    #[must_use]
+    pub const fn with_similarity_threshold(mut self, threshold: f32) -> Self {
         self.similarity_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 
-    pub fn with_virtual_nodes(mut self, count: usize) -> Self {
+    #[must_use]
+    pub const fn with_virtual_nodes(mut self, count: usize) -> Self {
         self.virtual_nodes = count;
         self
     }
 
-    pub fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
+    #[must_use]
+    pub const fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
         self.kmeans_config = config;
         self
     }
@@ -99,7 +102,8 @@ pub struct SemanticPartitionResult {
 
 impl SemanticPartitionResult {
     /// Create a semantic routing result.
-    pub fn semantic(result: PartitionResult, similarity: f32) -> Self {
+    #[must_use]
+    pub const fn semantic(result: PartitionResult, similarity: f32) -> Self {
         Self {
             result,
             method: RoutingMethod::Semantic,
@@ -108,7 +112,8 @@ impl SemanticPartitionResult {
     }
 
     /// Create a consistent hash routing result.
-    pub fn consistent_hash(result: PartitionResult) -> Self {
+    #[must_use]
+    pub const fn consistent_hash(result: PartitionResult) -> Self {
         Self {
             result,
             method: RoutingMethod::ConsistentHash,
@@ -138,6 +143,7 @@ pub struct SemanticPartitioner {
 
 impl SemanticPartitioner {
     /// Create a new semantic partitioner.
+    #[must_use]
     pub fn new(config: SemanticPartitionerConfig) -> Self {
         let hash_config = ConsistentHashConfig::new(config.local_node.clone())
             .with_virtual_nodes(config.virtual_nodes);
@@ -152,6 +158,7 @@ impl SemanticPartitioner {
     }
 
     /// Create with initial nodes.
+    #[must_use]
     pub fn with_nodes(config: SemanticPartitionerConfig, nodes: Vec<PhysicalNodeId>) -> Self {
         let mut partitioner = Self::new(config);
         for node in nodes {
@@ -164,6 +171,11 @@ impl SemanticPartitioner {
     ///
     /// Routes to the shard with the most similar centroid if similarity
     /// exceeds the threshold. Falls back to consistent hashing otherwise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal locks are poisoned.
+    #[allow(clippy::significant_drop_tightening)] // Locks held during iteration over centroids
     pub fn partition_with_embedding(
         &self,
         key: &str,
@@ -220,6 +232,11 @@ impl SemanticPartitioner {
     /// Initialize centroids from sample embeddings using k-means.
     ///
     /// Returns the number of centroids created.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal locks are poisoned.
+    #[allow(clippy::significant_drop_tightening)] // Locks updated atomically
     pub fn initialize_centroids(&self, samples: &[Vec<f32>]) -> usize {
         if samples.is_empty() {
             return 0;
@@ -254,6 +271,11 @@ impl SemanticPartitioner {
     }
 
     /// Set centroids directly (useful for cluster-wide synchronization).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal locks are poisoned.
+    #[allow(clippy::significant_drop_tightening)] // Locks updated atomically
     pub fn set_centroids(&self, new_centroids: Vec<Vec<f32>>) {
         let new_magnitudes: Vec<f32> = new_centroids.iter().map(|c| simd::magnitude(c)).collect();
 
@@ -263,19 +285,25 @@ impl SemanticPartitioner {
         *magnitudes = new_magnitudes;
     }
 
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn centroids(&self) -> Vec<Vec<f32>> {
         self.centroids.read().unwrap().clone()
     }
 
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn num_centroids(&self) -> usize {
         self.centroids.read().unwrap().len()
     }
 
-    pub fn embedding_dim(&self) -> usize {
+    pub const fn embedding_dim(&self) -> usize {
         self.config.embedding_dim
     }
 
-    pub fn similarity_threshold(&self) -> f32 {
+    pub const fn similarity_threshold(&self) -> f32 {
         self.config.similarity_threshold
     }
 
@@ -283,6 +311,11 @@ impl SemanticPartitioner {
     ///
     /// Returns shards with centroid similarity above the threshold,
     /// sorted by similarity (highest first).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal locks are poisoned.
+    #[allow(clippy::significant_drop_tightening)] // Locks held during iteration over centroids
     pub fn shards_for_embedding(&self, embedding: &[f32]) -> Vec<(usize, f32)> {
         let centroids = self.centroids.read().unwrap();
 
@@ -322,11 +355,17 @@ impl SemanticPartitioner {
         relevant
     }
 
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn all_shards(&self) -> Vec<usize> {
         let shard_nodes = self.shard_nodes.read().unwrap();
         (0..shard_nodes.len()).collect()
     }
 
+    /// # Panics
+    ///
+    /// Panics if the internal locks are poisoned.
     pub fn stats(&self) -> SemanticPartitionerStats {
         let centroids = self.centroids.read().unwrap();
         let shard_nodes = self.shard_nodes.read().unwrap();
@@ -434,6 +473,7 @@ pub struct EncodedEmbedding {
 
 impl EncodedEmbedding {
     /// Decode back to dense embedding using archetype registry.
+    #[must_use]
     pub fn decode(&self, registry: &ArchetypeRegistry) -> Option<Vec<f32>> {
         let archetype = registry.get(self.archetype_id)?;
         let mut result = archetype.to_vec();
@@ -449,17 +489,22 @@ impl EncodedEmbedding {
     }
 
     /// Memory bytes used by this encoded embedding.
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.sparse_delta.memory_bytes()
     }
 
     /// Compression ratio compared to dense embedding.
+    #[must_use]
     pub fn compression_ratio(&self) -> f32 {
         let dense_bytes = self.original_dimension * std::mem::size_of::<f32>();
         if dense_bytes == 0 {
             return 1.0;
         }
-        dense_bytes as f32 / self.memory_bytes() as f32
+        #[allow(clippy::cast_precision_loss)]
+        // Compression ratio calculation accepts precision loss
+        let ratio = dense_bytes as f32 / self.memory_bytes() as f32;
+        ratio
     }
 }
 

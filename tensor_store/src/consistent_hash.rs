@@ -21,6 +21,7 @@ pub struct ConsistentHashConfig {
 
 impl ConsistentHashConfig {
     /// Create a new config with the given local node ID.
+    #[must_use]
     pub fn new(local_node: impl Into<PhysicalNodeId>) -> Self {
         Self {
             virtual_nodes: 256,
@@ -29,7 +30,8 @@ impl ConsistentHashConfig {
     }
 
     /// Set the number of virtual nodes.
-    pub fn with_virtual_nodes(mut self, count: usize) -> Self {
+    #[must_use]
+    pub const fn with_virtual_nodes(mut self, count: usize) -> Self {
         self.virtual_nodes = count;
         self
     }
@@ -69,6 +71,7 @@ pub struct ConsistentHashPartitioner {
 
 impl ConsistentHashPartitioner {
     /// Create a new partitioner with the given configuration.
+    #[must_use]
     pub fn new(config: ConsistentHashConfig) -> Self {
         Self {
             ring: Vec::new(),
@@ -78,6 +81,7 @@ impl ConsistentHashPartitioner {
     }
 
     /// Create a partitioner with a list of initial nodes.
+    #[must_use]
     pub fn with_nodes(config: ConsistentHashConfig, nodes: Vec<PhysicalNodeId>) -> Self {
         let mut partitioner = Self::new(config);
         for node in nodes {
@@ -126,6 +130,7 @@ impl ConsistentHashPartitioner {
     }
 
     /// Get ring statistics.
+    #[must_use]
     pub fn stats(&self) -> ConsistentHashStats {
         ConsistentHashStats {
             total_vnodes: self.ring.len(),
@@ -137,17 +142,19 @@ impl ConsistentHashPartitioner {
 
 impl Partitioner for ConsistentHashPartitioner {
     fn partition(&self, key: &str) -> PartitionResult {
-        match self.find_vnode(key) {
-            Some(vnode) => PartitionResult::new(
-                vnode.physical_node.clone(),
-                vnode.position,
-                vnode.physical_node == self.config.local_node,
-            ),
-            None => {
+        self.find_vnode(key).map_or_else(
+            || {
                 // No nodes in ring - return local with partition 0
                 PartitionResult::local(self.config.local_node.clone(), 0)
             },
-        }
+            |vnode| {
+                PartitionResult::new(
+                    vnode.physical_node.clone(),
+                    vnode.position,
+                    vnode.physical_node == self.config.local_node,
+                )
+            },
+        )
     }
 
     fn partitions_for_node(&self, node: &PhysicalNodeId) -> Vec<PartitionId> {

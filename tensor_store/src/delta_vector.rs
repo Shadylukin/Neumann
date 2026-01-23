@@ -9,7 +9,7 @@
 //! If many embeddings are variations of a few archetypes, storing the full vector
 //! for each is wasteful. Instead:
 //! - Identify archetype vectors (cluster centroids)
-//! - Store each embedding as: archetype_id + sparse delta
+//! - Store each embedding as: `archetype_id` + sparse delta
 //! - Reconstruct on demand: archetype + delta = original
 //!
 //! # Example
@@ -36,8 +36,8 @@ use crate::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
 /// A vector stored as a delta from a reference archetype.
 ///
-/// Memory layout: 8 (archetype_id) + 8 (dimension) + 8 (cached_magnitude) +
-///                positions.len() * 2 + deltas.len() * 4 bytes
+/// Memory layout: `8 (archetype_id) + 8 (dimension) + 8 (cached_magnitude) +
+///                positions.len() * 2 + deltas.len() * 4` bytes
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeltaVector {
     /// ID of the reference archetype in the archetype registry.
@@ -56,6 +56,8 @@ impl DeltaVector {
     /// Create a delta vector from a dense vector and its reference archetype.
     ///
     /// Only stores positions where |original - archetype| > threshold.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position index limited to u16::MAX dimensions
     pub fn from_dense_with_reference(
         dense: &[f32],
         archetype: &[f32],
@@ -85,6 +87,7 @@ impl DeltaVector {
     }
 
     /// Create a delta vector with pre-computed magnitude.
+    #[must_use]
     pub fn from_dense_with_reference_and_magnitude(
         dense: &[f32],
         archetype: &[f32],
@@ -98,6 +101,7 @@ impl DeltaVector {
     }
 
     /// Create from explicit components (for deserialization or testing).
+    #[must_use]
     pub fn from_parts(
         archetype_id: usize,
         dimension: usize,
@@ -115,6 +119,7 @@ impl DeltaVector {
     }
 
     /// Reconstruct the full dense vector: archetype + delta.
+    #[must_use]
     pub fn to_dense(&self, archetype: &[f32]) -> Vec<f32> {
         debug_assert_eq!(archetype.len(), self.dimension);
 
@@ -126,27 +131,33 @@ impl DeltaVector {
     }
 
     /// Convert delta to a sparse vector (the delta itself, not the full vector).
+    #[must_use]
     pub fn to_sparse_delta(&self) -> SparseVector {
         SparseVector::from_parts(
             self.dimension,
-            self.positions.iter().map(|&p| p as u32).collect(),
+            self.positions.iter().map(|&p| u32::from(p)).collect(),
             self.deltas.clone(),
         )
     }
 
-    pub fn archetype_id(&self) -> usize {
+    #[must_use]
+    pub const fn archetype_id(&self) -> usize {
         self.archetype_id
     }
 
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
-    pub fn nnz(&self) -> usize {
+    #[must_use]
+    pub const fn nnz(&self) -> usize {
         self.positions.len()
     }
 
     /// Calculate sparsity of the delta (fraction of zero deltas).
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio
     pub fn delta_sparsity(&self) -> f32 {
         if self.dimension == 0 {
             return 1.0;
@@ -155,6 +166,8 @@ impl DeltaVector {
     }
 
     /// Get the cached magnitude, computing it if necessary.
+    #[allow(clippy::missing_const_for_fn)] // Cannot be const due to conditional computation
+    #[must_use]
     pub fn magnitude(&self, archetype: &[f32]) -> f32 {
         if let Some(mag) = self.cached_magnitude {
             return mag;
@@ -164,18 +177,19 @@ impl DeltaVector {
         dense.iter().map(|x| x * x).sum::<f32>().sqrt()
     }
 
-    pub fn set_cached_magnitude(&mut self, magnitude: f32) {
+    pub const fn set_cached_magnitude(&mut self, magnitude: f32) {
         self.cached_magnitude = Some(magnitude);
     }
 
     /// Memory usage in bytes (approximate).
-    pub fn memory_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.positions.len() * std::mem::size_of::<u16>()
             + self.deltas.len() * std::mem::size_of::<f32>()
     }
 
-    /// Iterate over (position, delta) pairs.
+    /// Iterate over `(position, delta)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (u16, f32)> + '_ {
         self.positions
             .iter()
@@ -187,7 +201,8 @@ impl DeltaVector {
     ///
     /// dot(archetype + delta, query) = dot(archetype, query) + dot(delta, query)
     ///
-    /// If archetype_dot_query is precomputed, this is O(nnz) instead of O(dimension).
+    /// If `archetype_dot_query` is precomputed, this is O(nnz) instead of O(dimension).
+    #[must_use]
     pub fn dot_dense_with_precomputed(&self, query: &[f32], archetype_dot_query: f32) -> f32 {
         let delta_dot: f32 = self
             .positions
@@ -200,6 +215,7 @@ impl DeltaVector {
     }
 
     /// Dot product with a dense query (requires archetype for full computation).
+    #[must_use]
     pub fn dot_dense(&self, query: &[f32], archetype: &[f32]) -> f32 {
         let archetype_dot: f32 = archetype.iter().zip(query.iter()).map(|(a, q)| a * q).sum();
         self.dot_dense_with_precomputed(query, archetype_dot)
@@ -207,13 +223,14 @@ impl DeltaVector {
 
     /// Dot product between two delta vectors from the SAME archetype.
     ///
-    /// If A = R + delta_a and B = R + delta_b, then:
-    /// dot(A, B) = dot(R, R) + dot(R, delta_b) + dot(delta_a, R) + dot(delta_a, delta_b)
+    /// If `A = R + delta_a` and `B = R + delta_b`, then:
+    /// `dot(A, B) = dot(R, R) + dot(R, delta_b) + dot(delta_a, R) + dot(delta_a, delta_b)`
     ///
-    /// With precomputed values, this is O(nnz_a + nnz_b) instead of O(dimension).
+    /// With precomputed values, this is `O(nnz_a + nnz_b)` instead of `O(dimension)`.
+    #[must_use]
     pub fn dot_same_archetype(
         &self,
-        other: &DeltaVector,
+        other: &Self,
         archetype: &[f32],
         archetype_magnitude_sq: f32, // dot(R, R)
     ) -> f32 {
@@ -242,7 +259,7 @@ impl DeltaVector {
     }
 
     /// Sparse dot product between two delta vectors (just the deltas).
-    fn sparse_delta_dot(&self, other: &DeltaVector) -> f32 {
+    fn sparse_delta_dot(&self, other: &Self) -> f32 {
         let mut result = 0.0;
         let mut i = 0;
         let mut j = 0;
@@ -263,6 +280,7 @@ impl DeltaVector {
     }
 
     /// Cosine similarity with a dense query.
+    #[must_use]
     pub fn cosine_similarity_dense(
         &self,
         query: &[f32],
@@ -280,6 +298,7 @@ impl DeltaVector {
     }
 
     /// Cosine similarity with precomputed archetype dot product.
+    #[must_use]
     pub fn cosine_similarity_dense_precomputed(
         &self,
         query: &[f32],
@@ -296,6 +315,8 @@ impl DeltaVector {
     }
 
     /// Compression ratio compared to storing the full dense vector.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio
     pub fn compression_ratio(&self) -> f32 {
         let dense_bytes = self.dimension * std::mem::size_of::<f32>();
         if dense_bytes == 0 {
@@ -318,7 +339,8 @@ pub struct ArchetypeRegistry {
 
 impl ArchetypeRegistry {
     /// Create a new archetype registry.
-    pub fn new(max_archetypes: usize) -> Self {
+    #[must_use]
+    pub const fn new(max_archetypes: usize) -> Self {
         Self {
             archetypes: Vec::new(),
             magnitude_sq: Vec::new(),
@@ -340,26 +362,31 @@ impl ArchetypeRegistry {
     }
 
     /// Get an archetype by ID.
+    #[must_use]
     pub fn get(&self, id: usize) -> Option<&[f32]> {
-        self.archetypes.get(id).map(|v| v.as_slice())
+        self.archetypes.get(id).map(Vec::as_slice)
     }
 
     /// Get the precomputed magnitude squared for an archetype.
+    #[must_use]
     pub fn magnitude_sq(&self, id: usize) -> Option<f32> {
         self.magnitude_sq.get(id).copied()
     }
 
     /// Number of registered archetypes.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.archetypes.len()
     }
 
     /// Check if registry is empty.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.archetypes.is_empty()
     }
 
     /// Find the best archetype for a given vector (highest cosine similarity).
+    #[must_use]
     pub fn find_best_archetype(&self, vector: &[f32]) -> Option<(usize, f32)> {
         if self.archetypes.is_empty() {
             return None;
@@ -396,6 +423,7 @@ impl ArchetypeRegistry {
     }
 
     /// Create a delta vector using the best matching archetype.
+    #[must_use]
     pub fn encode(&self, vector: &[f32], threshold: f32) -> Option<DeltaVector> {
         let (archetype_id, _) = self.find_best_archetype(vector)?;
         let archetype = self.get(archetype_id)?;
@@ -408,18 +436,21 @@ impl ArchetypeRegistry {
     }
 
     /// Decode a delta vector back to dense.
+    #[must_use]
     pub fn decode(&self, delta: &DeltaVector) -> Option<Vec<f32>> {
         let archetype = self.get(delta.archetype_id())?;
         Some(delta.to_dense(archetype))
     }
 
-    /// Compute dot product between a delta and dense query efficiently.
+    /// Compute dot product between a `DeltaVector` and dense query efficiently.
+    #[must_use]
     pub fn dot_delta_dense(&self, delta: &DeltaVector, query: &[f32]) -> Option<f32> {
         let archetype = self.get(delta.archetype_id())?;
         Some(delta.dot_dense(query, archetype))
     }
 
     /// Compute dot product between two deltas from same archetype efficiently.
+    #[must_use]
     pub fn dot_deltas_same_archetype(&self, a: &DeltaVector, b: &DeltaVector) -> Option<f32> {
         if a.archetype_id() != b.archetype_id() {
             return None;
@@ -431,6 +462,7 @@ impl ArchetypeRegistry {
     }
 
     /// Memory usage in bytes.
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.archetypes.iter().map(|a| a.len() * 4).sum::<usize>()
@@ -440,7 +472,7 @@ impl ArchetypeRegistry {
     /// Discover archetypes from a set of vectors using k-means clustering.
     ///
     /// Returns the number of archetypes discovered (may be less than k if
-    /// there aren't enough distinct vectors or max_archetypes is reached).
+    /// there aren't enough distinct vectors or `max_archetypes` is reached).
     pub fn discover_archetypes(
         &mut self,
         vectors: &[Vec<f32>],
@@ -471,7 +503,8 @@ impl ArchetypeRegistry {
 
     /// Encode multiple vectors using discovered archetypes.
     ///
-    /// Returns a vector of (DeltaVector, compression_ratio) pairs.
+    /// Returns a vector of `(DeltaVector, compression_ratio)` pairs.
+    #[must_use]
     pub fn encode_batch(&self, vectors: &[Vec<f32>], threshold: f32) -> Vec<(DeltaVector, f32)> {
         vectors
             .iter()
@@ -485,7 +518,9 @@ impl ArchetypeRegistry {
 
     /// Analyze how well the current archetypes cover a set of vectors.
     ///
-    /// Returns (avg_similarity, avg_compression_ratio, coverage_stats).
+    /// Returns `(avg_similarity, avg_compression_ratio, coverage_stats)`.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for statistics
     pub fn analyze_coverage(&self, vectors: &[Vec<f32>], threshold: f32) -> CoverageStats {
         if vectors.is_empty() || self.is_empty() {
             return CoverageStats::default();
@@ -517,9 +552,13 @@ impl ArchetypeRegistry {
         }
     }
 
-    /// Persist the registry to TensorStore.
+    /// Persist the registry to `TensorStore`.
     ///
     /// Serializes the registry using bincode and stores it under a system key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or storage fails.
     pub fn save_to_store(&self, store: &TensorStore) -> Result<(), String> {
         let bytes = bincode::serialize(self).map_err(|e| e.to_string())?;
         let mut data = TensorData::new();
@@ -529,16 +568,16 @@ impl ArchetypeRegistry {
             .map_err(|e| e.to_string())
     }
 
-    /// Load a registry from TensorStore.
+    /// Load a registry from `TensorStore`.
     ///
-    /// Returns None if no registry exists or if deserialization fails.
-    /// The max_archetypes parameter is ignored if loading succeeds (the stored
+    /// Returns `None` if no registry exists or if deserialization fails.
+    /// The `max_archetypes` parameter is ignored if loading succeeds (the stored
     /// value is used instead).
+    #[must_use]
     pub fn load_from_store(store: &TensorStore, _max_archetypes: usize) -> Option<Self> {
         let data = store.get("_system:archetype_registry").ok()?;
-        let bytes = match data.get("_bytes")? {
-            TensorValue::Scalar(ScalarValue::Bytes(b)) => b,
-            _ => return None,
+        let TensorValue::Scalar(ScalarValue::Bytes(bytes)) = data.get("_bytes")? else {
+            return None;
         };
         bincode::deserialize(bytes).ok()
     }
@@ -597,7 +636,8 @@ pub struct KMeans {
 
 impl KMeans {
     /// Create a new k-means instance with the given configuration.
-    pub fn new(config: KMeansConfig) -> Self {
+    #[must_use]
+    pub const fn new(config: KMeansConfig) -> Self {
         Self { config }
     }
 
@@ -623,17 +663,17 @@ impl KMeans {
         for _ in 0..self.config.max_iterations {
             // Assign each vector to nearest centroid
             for (i, vector) in vectors.iter().enumerate() {
-                assignments[i] = self.nearest_centroid(vector, &centroids);
+                assignments[i] = Self::nearest_centroid(vector, &centroids);
             }
 
             // Update centroids
-            let new_centroids = self.update_centroids(vectors, &assignments, k, dim);
+            let new_centroids = Self::update_centroids(vectors, &assignments, k, dim);
 
             // Check convergence
             let max_movement = centroids
                 .iter()
                 .zip(new_centroids.iter())
-                .map(|(old, new)| self.euclidean_distance(old, new))
+                .map(|(old, new)| Self::euclidean_distance(old, new))
                 .fold(0.0f32, f32::max);
 
             centroids = new_centroids;
@@ -647,6 +687,7 @@ impl KMeans {
     }
 
     /// Random initialization: select k random points.
+    #[allow(clippy::cast_possible_truncation)] // RNG index modulo vector length
     fn init_random(&self, vectors: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
         // Simple deterministic selection based on seed
         let mut indices: Vec<usize> = (0..vectors.len()).collect();
@@ -654,7 +695,9 @@ impl KMeans {
         // Fisher-Yates shuffle with deterministic seed
         let mut rng_state = self.config.seed;
         for i in (1..indices.len()).rev() {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let j = (rng_state as usize) % (i + 1);
             indices.swap(i, j);
         }
@@ -667,12 +710,16 @@ impl KMeans {
     }
 
     /// K-means++ initialization: probabilistic selection favoring distant points.
+    #[allow(clippy::cast_precision_loss)] // RNG normalization; precision loss acceptable for random sampling
+    #[allow(clippy::cast_possible_truncation)] // RNG index modulo vector length
     fn init_kmeans_plusplus(&self, vectors: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
         let mut centroids = Vec::with_capacity(k);
         let mut rng_state = self.config.seed;
 
         // Select first centroid randomly
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         let first_idx = (rng_state as usize) % vectors.len();
         centroids.push(vectors[first_idx].clone());
 
@@ -682,19 +729,19 @@ impl KMeans {
         for _ in 1..k {
             // Update distances to nearest centroid
             for (i, vector) in vectors.iter().enumerate() {
-                let dist_to_new = self.euclidean_distance_sq(vector, centroids.last().unwrap());
+                let dist_to_new = Self::euclidean_distance_sq(vector, centroids.last().unwrap());
                 distances[i] = distances[i].min(dist_to_new);
             }
 
             // Select next centroid with probability proportional to distance squared
             let total_dist: f32 = distances.iter().sum();
-            if total_dist == 0.0 {
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let idx = if total_dist == 0.0 {
                 // All remaining points are at centroids, pick randomly
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let idx = (rng_state as usize) % vectors.len();
-                centroids.push(vectors[idx].clone());
+                (rng_state as usize) % vectors.len()
             } else {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let threshold = (rng_state as f32 / u64::MAX as f32) * total_dist;
 
                 let mut cumulative = 0.0;
@@ -706,27 +753,27 @@ impl KMeans {
                         break;
                     }
                 }
-                centroids.push(vectors[selected].clone());
-            }
+                selected
+            };
+            centroids.push(vectors[idx].clone());
         }
 
         centroids
     }
 
     /// Find the nearest centroid to a vector.
-    fn nearest_centroid(&self, vector: &[f32], centroids: &[Vec<f32>]) -> usize {
+    fn nearest_centroid(vector: &[f32], centroids: &[Vec<f32>]) -> usize {
         centroids
             .iter()
             .enumerate()
-            .map(|(i, c)| (i, self.euclidean_distance_sq(vector, c)))
+            .map(|(i, c)| (i, Self::euclidean_distance_sq(vector, c)))
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(0)
+            .map_or(0, |(i, _)| i)
     }
 
     /// Update centroids based on assignments.
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for centroid averaging
     fn update_centroids(
-        &self,
         vectors: &[Vec<f32>],
         assignments: &[usize],
         k: usize,
@@ -756,7 +803,7 @@ impl KMeans {
 
     /// Squared Euclidean distance between two vectors.
     #[inline]
-    fn euclidean_distance_sq(&self, a: &[f32], b: &[f32]) -> f32 {
+    fn euclidean_distance_sq(a: &[f32], b: &[f32]) -> f32 {
         a.iter()
             .zip(b.iter())
             .map(|(&x, &y)| (x - y) * (x - y))
@@ -765,8 +812,8 @@ impl KMeans {
 
     /// Euclidean distance between two vectors.
     #[inline]
-    fn euclidean_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        self.euclidean_distance_sq(a, b).sqrt()
+    fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+        Self::euclidean_distance_sq(a, b).sqrt()
     }
 }
 
@@ -1614,5 +1661,78 @@ mod tests {
         let (best_id, sim) = restored.find_best_archetype(&query).unwrap();
         assert_eq!(best_id, 0);
         assert!(sim > 0.9);
+    }
+
+    // Additional coverage tests
+
+    #[test]
+    fn test_delta_sparsity_zero_dimension() {
+        let dv = DeltaVector::from_parts(0, 0, vec![], vec![]);
+        assert_eq!(dv.delta_sparsity(), 1.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_dense_precomputed() {
+        let archetype = vec![1.0, 0.0, 0.0];
+        let dv = DeltaVector::from_dense_with_reference(&[1.0, 0.5, 0.0], &archetype, 0, 0.001);
+
+        let query = vec![1.0, 0.0, 0.0];
+        let archetype_dot_query: f32 = archetype.iter().zip(&query).map(|(a, q)| a * q).sum();
+
+        let self_dense = dv.to_dense(&archetype);
+        let self_mag = self_dense.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let query_mag = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        let sim = dv.cosine_similarity_dense_precomputed(
+            &query,
+            archetype_dot_query,
+            self_mag,
+            query_mag,
+        );
+        assert!(sim > 0.0 && sim <= 1.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_dense_precomputed_zero_magnitude() {
+        let archetype = vec![0.0, 0.0, 0.0];
+        let dv = DeltaVector::from_dense_with_reference(&[0.0, 0.0, 0.0], &archetype, 0, 0.001);
+
+        let query = vec![1.0, 0.0, 0.0];
+        let sim = dv.cosine_similarity_dense_precomputed(&query, 0.0, 0.0, 1.0);
+        assert_eq!(sim, 0.0);
+    }
+
+    #[test]
+    fn test_compression_ratio_large_vector() {
+        let archetype = vec![1.0; 100];
+        // Dense vector mostly the same as archetype (only a few differences)
+        let mut dense = vec![1.0; 100];
+        dense[0] = 1.5; // Only 3 positions differ
+        dense[50] = 0.5;
+        dense[99] = 2.0;
+        let dv = DeltaVector::from_dense_with_reference(&dense, &archetype, 0, 0.01);
+
+        let ratio = dv.compression_ratio();
+        // With only 3 deltas vs 100 elements, should compress well
+        assert!(ratio > 1.0, "Expected ratio > 1.0, got {}", ratio);
+    }
+
+    #[test]
+    fn test_compression_ratio_zero_dimension() {
+        let dv = DeltaVector::from_parts(0, 0, vec![], vec![]);
+        assert_eq!(dv.compression_ratio(), 1.0);
+    }
+
+    #[test]
+    fn test_archetype_registry_memory_bytes() {
+        let mut registry = ArchetypeRegistry::new(10);
+        let archetype = vec![1.0, 2.0, 3.0, 4.0];
+        registry.register(archetype.clone());
+
+        let bytes = registry.memory_bytes();
+        // Should include struct size + archetype storage + magnitude cache
+        assert!(bytes > 0);
+        // With one 4-element archetype, should have at least 4*4 = 16 bytes for archetype
+        assert!(bytes >= 16);
     }
 }

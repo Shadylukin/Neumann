@@ -1,6 +1,6 @@
 //! Partition-aware store wrapper for distributed operations.
 //!
-//! Provides a wrapper around TensorStore that integrates with the partitioner
+//! Provides a wrapper around `TensorStore` that integrates with the partitioner
 //! to support distributed storage operations.
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ impl std::fmt::Display for PartitionedError {
                     result.primary
                 )
             },
-            Self::StoreError(msg) => write!(f, "store error: {}", msg),
+            Self::StoreError(msg) => write!(f, "store error: {msg}"),
             Self::NoPartitioner => write!(f, "no partitioner configured"),
         }
     }
@@ -68,7 +68,7 @@ pub struct PartitionedPut {
     pub partition: PartitionResult,
 }
 
-/// Partition-aware wrapper around TensorStore.
+/// Partition-aware wrapper around `TensorStore`.
 ///
 /// Provides methods that:
 /// - Check partition ownership before local operations
@@ -92,6 +92,7 @@ impl std::fmt::Debug for PartitionedStore {
 
 impl PartitionedStore {
     /// Create a new partitioned store without a partitioner (single-node mode).
+    #[must_use]
     pub fn new(store: TensorStore) -> Self {
         Self {
             store,
@@ -100,6 +101,7 @@ impl PartitionedStore {
     }
 
     /// Create a partitioned store with a consistent hash partitioner.
+    #[must_use]
     pub fn with_consistent_hash(store: TensorStore, config: ConsistentHashConfig) -> Self {
         Self {
             store,
@@ -108,6 +110,7 @@ impl PartitionedStore {
     }
 
     /// Create a partitioned store with a custom partitioner.
+    #[must_use]
     pub fn with_partitioner(store: TensorStore, partitioner: Arc<dyn Partitioner>) -> Self {
         Self {
             store,
@@ -115,28 +118,27 @@ impl PartitionedStore {
         }
     }
 
+    #[must_use]
     pub fn partition_for(&self, key: &str) -> Option<PartitionResult> {
         self.partitioner.as_ref().map(|p| p.partition(key))
     }
 
     /// Check if a key belongs to the local node.
+    #[must_use]
     pub fn is_local(&self, key: &str) -> bool {
-        match &self.partitioner {
-            Some(p) => p.is_local(key),
-            None => true, // Single-node mode: all keys are local
-        }
+        self.partitioner.as_ref().is_none_or(|p| p.is_local(key))
     }
 
     /// Get partition info and data for a key.
     ///
     /// Returns both the data (if found) and partition information.
     /// Does NOT check partition ownership - use `get_local` for that.
+    #[must_use]
     pub fn get_partitioned(&self, key: &str) -> PartitionedGet {
         let partition = self
             .partitioner
             .as_ref()
-            .map(|p| p.partition(key))
-            .unwrap_or_else(|| PartitionResult::local("local", 0));
+            .map_or_else(|| PartitionResult::local("local", 0), |p| p.partition(key));
 
         let data = self.store.get(key).ok();
 
@@ -144,6 +146,8 @@ impl PartitionedStore {
     }
 
     /// Get data only if the key belongs to this node.
+    ///
+    /// # Errors
     ///
     /// Returns `Err(RemotePartition)` if the key belongs to another node.
     pub fn get_local(&self, key: &str) -> PartitionedResult<Option<TensorData>> {
@@ -160,6 +164,10 @@ impl PartitionedStore {
     /// Put data with partition information.
     ///
     /// Returns partition information. Does NOT check partition ownership.
+    ///
+    /// # Errors
+    ///
+    /// This function currently does not return errors.
     pub fn put_partitioned(
         &self,
         key: impl Into<String>,
@@ -169,8 +177,7 @@ impl PartitionedStore {
         let partition = self
             .partitioner
             .as_ref()
-            .map(|p| p.partition(&key))
-            .unwrap_or_else(|| PartitionResult::local("local", 0));
+            .map_or_else(|| PartitionResult::local("local", 0), |p| p.partition(&key));
 
         let success = self.store.put(&key, data).is_ok();
 
@@ -179,7 +186,10 @@ impl PartitionedStore {
 
     /// Put data only if the key belongs to this node.
     ///
-    /// Returns `Err(RemotePartition)` if the key belongs to another node.
+    /// # Errors
+    ///
+    /// Returns `Err(RemotePartition)` if the key belongs to another node,
+    /// or `Err(StoreError)` if the store operation fails.
     pub fn put_local(&self, key: impl Into<String>, data: TensorData) -> PartitionedResult<()> {
         let key = key.into();
 
@@ -197,7 +207,10 @@ impl PartitionedStore {
 
     /// Delete data only if the key belongs to this node.
     ///
-    /// Returns `Err(RemotePartition)` if the key belongs to another node.
+    /// # Errors
+    ///
+    /// Returns `Err(RemotePartition)` if the key belongs to another node,
+    /// or `Err(StoreError)` if the store operation fails.
     pub fn delete_local(&self, key: &str) -> PartitionedResult<()> {
         if let Some(ref p) = self.partitioner {
             let partition = p.partition(key);
@@ -214,6 +227,7 @@ impl PartitionedStore {
     /// Check if a key exists locally.
     ///
     /// Returns false for remote keys without checking the store.
+    #[must_use]
     pub fn exists_local(&self, key: &str) -> bool {
         if let Some(ref p) = self.partitioner {
             if !p.is_local(key) {
@@ -227,6 +241,7 @@ impl PartitionedStore {
     /// Get all local keys with a given prefix.
     ///
     /// Note: This scans the local store and filters by partition ownership.
+    #[must_use]
     pub fn scan_local(&self, prefix: &str) -> Vec<String> {
         let keys = self.store.scan(prefix);
 
@@ -236,42 +251,48 @@ impl PartitionedStore {
         }
     }
 
+    #[must_use]
     pub fn local_count(&self) -> usize {
-        match &self.partitioner {
-            Some(p) => self
-                .store
-                .scan("")
-                .into_iter()
-                .filter(|k| p.is_local(k))
-                .count(),
-            None => self.store.len(),
-        }
+        self.partitioner.as_ref().map_or_else(
+            || self.store.len(),
+            |p| {
+                self.store
+                    .scan("")
+                    .into_iter()
+                    .filter(|k| p.is_local(k))
+                    .count()
+            },
+        )
     }
 
     /// Get total keys in the local store (including remote keys during migration).
+    #[must_use]
     pub fn total_count(&self) -> usize {
         self.store.len()
     }
 
     /// Access the underlying store directly.
-    pub fn store(&self) -> &TensorStore {
+    #[must_use]
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 
     /// Access the partitioner.
+    #[must_use]
     pub fn partitioner(&self) -> Option<&Arc<dyn Partitioner>> {
         self.partitioner.as_ref()
     }
 
+    #[must_use]
     pub fn local_node(&self) -> Option<&PhysicalNodeId> {
         self.partitioner.as_ref().map(|p| p.local_node())
     }
 
+    #[must_use]
     pub fn nodes(&self) -> Vec<PhysicalNodeId> {
         self.partitioner
             .as_ref()
-            .map(|p| p.nodes())
-            .unwrap_or_default()
+            .map_or_else(Vec::new, |p| p.nodes())
     }
 }
 
@@ -650,5 +671,78 @@ mod tests {
         let c = PartitionedError::StoreError("test".to_string());
         let d = PartitionedError::StoreError("test".to_string());
         assert_eq!(c, d);
+    }
+
+    #[test]
+    fn test_local_count_with_partitioner() {
+        let store = TensorStore::new();
+        let config = ConsistentHashConfig::new("node1").with_virtual_nodes(100);
+        let partitioner = {
+            let mut p = ConsistentHashPartitioner::new(config);
+            p.add_node("node1".to_string());
+            Arc::new(p) as Arc<dyn Partitioner>
+        };
+        let partitioned = PartitionedStore::with_partitioner(store, partitioner);
+
+        // Insert some data - all should be local since we only have node1
+        for i in 0..5 {
+            let tensor = make_tensor(i);
+            partitioned.put_local(format!("key{}", i), tensor).unwrap();
+        }
+
+        // local_count should use the partitioner branch
+        let count = partitioned.local_count();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_local_count_filters_remote_keys() {
+        let store = TensorStore::new();
+        let config = ConsistentHashConfig::new("node1").with_virtual_nodes(100);
+        let partitioner = {
+            let mut p = ConsistentHashPartitioner::new(config);
+            p.add_node("node1".to_string());
+            p.add_node("node2".to_string());
+            Arc::new(p) as Arc<dyn Partitioner>
+        };
+        let partitioned = PartitionedStore::with_partitioner(store, partitioner);
+
+        // Insert via put_partitioned which doesn't check ownership
+        // This allows us to insert keys regardless of which node they belong to
+        let mut local_count = 0;
+        for i in 0..20 {
+            let key = format!("testkey{}", i);
+            let tensor = make_tensor(i);
+            if partitioned.is_local(&key) {
+                partitioned.put_partitioned(&key, tensor).unwrap();
+                local_count += 1;
+            }
+        }
+
+        // local_count should only count keys that belong to this node
+        assert_eq!(partitioned.local_count(), local_count);
+        // total_count is the same since we only inserted local keys
+        assert_eq!(partitioned.total_count(), local_count);
+    }
+
+    #[test]
+    fn test_debug_impl() {
+        let store = TensorStore::new();
+        let partitioned = PartitionedStore::new(store);
+        let debug = format!("{:?}", partitioned);
+        assert!(debug.contains("PartitionedStore"));
+        assert!(debug.contains("has_partitioner"));
+    }
+
+    #[test]
+    fn test_partitioned_error_from_slab_router_error() {
+        use crate::slab_router::SlabRouterError;
+
+        let slab_err = SlabRouterError::NotFound("test_key".to_string());
+        let partitioned_err: PartitionedError = slab_err.into();
+        match partitioned_err {
+            PartitionedError::StoreError(msg) => assert!(msg.contains("test_key")),
+            _ => panic!("Expected StoreError variant"),
+        }
     }
 }

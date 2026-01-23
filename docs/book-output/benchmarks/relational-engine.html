@@ -1,0 +1,382 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>relational_engine - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/benchmarks/relational-engine.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="relational_engine-benchmarks"><a class="header" href="#relational_engine-benchmarks">relational_engine Benchmarks</a></h1>
+<p>The relational engine provides SQL-like operations on top of tensor_store, with
+optional hash indexes for accelerated equality lookups and tensor-native
+condition evaluation.</p>
+<h2 id="row-insertion"><a class="header" href="#row-insertion">Row Insertion</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Count</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>100</td><td>462us</td><td>216K rows/s</td></tr>
+<tr><td>1,000</td><td>3.1ms</td><td>319K rows/s</td></tr>
+<tr><td>5,000</td><td>15.6ms</td><td>320K rows/s</td></tr>
+</tbody></table>
+</div>
+<h2 id="batch-insertion"><a class="header" href="#batch-insertion">Batch Insertion</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Count</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>100</td><td>282us</td><td>355K rows/s</td></tr>
+<tr><td>1,000</td><td>1.45ms</td><td>688K rows/s</td></tr>
+<tr><td>5,000</td><td>7.26ms</td><td>688K rows/s</td></tr>
+</tbody></table>
+</div>
+<h2 id="select-full-scan"><a class="header" href="#select-full-scan">Select Full Scan</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Rows</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>100</td><td>119us</td><td>841K rows/s</td></tr>
+<tr><td>1,000</td><td>995us</td><td>1.01M rows/s</td></tr>
+<tr><td>5,000</td><td>5.27ms</td><td>949K rows/s</td></tr>
+</tbody></table>
+</div>
+<h2 id="select-with-index-vs-without-5000-rows"><a class="header" href="#select-with-index-vs-without-5000-rows">Select with Index vs Without (5,000 rows)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Query Type</th><th>With Index</th><th>Without Index</th><th>Speedup</th></tr></thead><tbody>
+<tr><td>Equality (2% match)</td><td>105us</td><td>4.23ms</td><td><strong>40x</strong></td></tr>
+<tr><td>By _id (single row)</td><td>2.93us</td><td>4.70ms</td><td><strong>1,604x</strong></td></tr>
+</tbody></table>
+</div>
+<h2 id="select-filtered---no-index-5000-rows"><a class="header" href="#select-filtered---no-index-5000-rows">Select Filtered - No Index (5,000 rows)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Filter Type</th><th>Time</th></tr></thead><tbody>
+<tr><td>Range (20% match)</td><td>4.16ms</td></tr>
+<tr><td>Compound AND</td><td>4.42ms</td></tr>
+</tbody></table>
+</div>
+<h2 id="index-creation-parallel"><a class="header" href="#index-creation-parallel">Index Creation (parallel)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Rows</th><th>Time</th></tr></thead><tbody>
+<tr><td>100</td><td>554us</td></tr>
+<tr><td>1,000</td><td>2.75ms</td></tr>
+<tr><td>5,000</td><td>12.3ms</td></tr>
+</tbody></table>
+</div>
+<h2 id="updatedelete-1000-rows-10-affected"><a class="header" href="#updatedelete-1000-rows-10-affected">Update/Delete (1,000 rows, 10% affected)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>Update</td><td>1.74ms</td></tr>
+<tr><td>Delete</td><td>2.14ms</td></tr>
+</tbody></table>
+</div>
+<h2 id="join-performance-hash-join"><a class="header" href="#join-performance-hash-join">Join Performance (hash join)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Tables</th><th>Result Rows</th><th>Time</th></tr></thead><tbody>
+<tr><td>50 users x 500 posts</td><td>500</td><td>1.78ms</td></tr>
+<tr><td>100 users x 1000 posts</td><td>1,000</td><td>1.50ms</td></tr>
+<tr><td>100 users x 5000 posts</td><td>5,000</td><td>32.2ms</td></tr>
+</tbody></table>
+</div>
+<h2 id="join-types-10k-x-10k-rows"><a class="header" href="#join-types-10k-x-10k-rows">JOIN Types (10K x 10K rows)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>JOIN Type</th><th>Time</th><th>Throughput</th></tr></thead><tbody>
+<tr><td>INNER JOIN</td><td>45ms</td><td>2.2M rows/s</td></tr>
+<tr><td>LEFT JOIN</td><td>52ms</td><td>1.9M rows/s</td></tr>
+<tr><td>RIGHT JOIN</td><td>51ms</td><td>1.9M rows/s</td></tr>
+<tr><td>FULL JOIN</td><td>68ms</td><td>1.5M rows/s</td></tr>
+<tr><td>CROSS JOIN</td><td>180ms</td><td>555K rows/s</td></tr>
+<tr><td>NATURAL JOIN</td><td>48ms</td><td>2.1M rows/s</td></tr>
+</tbody></table>
+</div>
+<h2 id="aggregate-functions-1m-rows-simd-accelerated"><a class="header" href="#aggregate-functions-1m-rows-simd-accelerated">Aggregate Functions (1M rows, SIMD-accelerated)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Function</th><th>Time</th><th>Notes</th></tr></thead><tbody>
+<tr><td>COUNT(*)</td><td>2.1ms</td><td>O(1) via counter</td></tr>
+<tr><td>SUM(col)</td><td>8.5ms</td><td>SIMD i64x4</td></tr>
+<tr><td>AVG(col)</td><td>8.7ms</td><td>SIMD i64x4</td></tr>
+<tr><td>MIN(col)</td><td>12ms</td><td>Full scan</td></tr>
+<tr><td>MAX(col)</td><td>12ms</td><td>Full scan</td></tr>
+</tbody></table>
+</div>
+<h2 id="group-by-performance-100k-rows"><a class="header" href="#group-by-performance-100k-rows">GROUP BY Performance (100K rows)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Groups</th><th>Time</th><th>Notes</th></tr></thead><tbody>
+<tr><td>10</td><td>15ms</td><td>Parallel aggregation</td></tr>
+<tr><td>100</td><td>18ms</td><td>Hash-based grouping</td></tr>
+<tr><td>1,000</td><td>25ms</td><td>Low per-group overhead</td></tr>
+<tr><td>10,000</td><td>45ms</td><td>High cardinality</td></tr>
+</tbody></table>
+</div>
+<h2 id="row-count"><a class="header" href="#row-count">Row Count</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Rows</th><th>Time</th></tr></thead><tbody>
+<tr><td>100</td><td>49us</td></tr>
+<tr><td>1,000</td><td>462us</td></tr>
+<tr><td>5,000</td><td>2.95ms</td></tr>
+</tbody></table>
+</div>
+<h2 id="analysis"><a class="header" href="#analysis">Analysis</a></h2>
+<ul>
+<li><strong>Index acceleration</strong>: Hash indexes provide O(1) lookup for equality
+conditions
+<ul>
+<li>40x speedup for equality queries matching 2% of rows</li>
+<li>1,604x speedup for single-row _id lookups</li>
+</ul>
+</li>
+<li><strong>Full scan cost</strong>: Without index, O(n) for all queries (parallelized for
+<blockquote>
+<p>1000 rows)</p>
+</blockquote>
+</li>
+<li><strong>Batch insert</strong>: 2x faster than individual inserts (688K/s vs 320K/s)</li>
+<li><strong>Tensor-native evaluation</strong>: <code>evaluate_tensor()</code> evaluates conditions
+directly on TensorData, avoiding Row conversion for non-matching rows</li>
+<li><strong>Parallel operations</strong>: update/delete/create_index use rayon for condition
+evaluation</li>
+<li><strong>Index maintenance</strong>: Small overhead on insert/update/delete to maintain
+indexes</li>
+<li><strong>Join complexity</strong>: O(n+m) hash join for INNER/LEFT/RIGHT/NATURAL; O(n*m) for
+CROSS</li>
+<li><strong>Aggregate functions</strong>: SUM/AVG use SIMD i64x4 vectors for 4x throughput
+improvement</li>
+<li><strong>GROUP BY</strong>: Hash-based grouping with parallel per-group aggregation</li>
+</ul>
+<h2 id="competitor-comparison"><a class="header" href="#competitor-comparison">Competitor Comparison</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Neumann</th><th>SQLite</th><th>DuckDB</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Point lookup (indexed)</td><td>2.9us</td><td>~3us</td><td>~30us</td><td>B-tree optimized</td></tr>
+<tr><td>Full scan (5K rows)</td><td>5.3ms</td><td>~15ms</td><td>~2ms</td><td>DuckDB columnar wins</td></tr>
+<tr><td>Aggregation (1M rows)</td><td>8.5ms</td><td>~200ms</td><td>~12ms</td><td>SIMD-accelerated</td></tr>
+<tr><td>Hash join (10Kx10K)</td><td>45ms</td><td>~500ms</td><td>~35ms</td><td>Parallel execution</td></tr>
+<tr><td>Insert (single row)</td><td>3.1us</td><td>~2us</td><td>~5us</td><td>SQLite B-tree optimal</td></tr>
+<tr><td>Batch insert (1K rows)</td><td>1.5ms</td><td>~8ms</td><td>~3ms</td><td>Neumann batch-optimized</td></tr>
+</tbody></table>
+</div>
+<h2 id="design-trade-offs"><a class="header" href="#design-trade-offs">Design Trade-offs</a></h2>
+<ul>
+<li><strong>vs SQLite</strong>: Neumann trades SQLite’s proven stability for tensor-native
+storage and SIMD acceleration. SQLite wins on point lookups; Neumann wins on
+analytics.</li>
+<li><strong>vs DuckDB</strong>: Similar columnar design. DuckDB has more mature query
+optimizer; Neumann has tighter tensor integration and lower memory footprint.</li>
+<li><strong>Unique to Neumann</strong>: Unified tensor storage enables cross-engine queries
+(relational + graph + vector) without data movement.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../benchmarks/tensor-store.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../benchmarks/graph-engine.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../benchmarks/tensor-store.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../benchmarks/graph-engine.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

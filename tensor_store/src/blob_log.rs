@@ -1,6 +1,6 @@
 //! Append-only blob log with segment management.
 //!
-//! BlobLog provides content-addressable storage using append-only log segments.
+//! `BlobLog` provides content-addressable storage using append-only log segments.
 //! Data is chunked, hashed, and stored in fixed-size segments for efficient
 //! sequential writes and garbage collection.
 //!
@@ -9,7 +9,7 @@
 //! - Append-only writes: no in-place updates
 //! - Content-addressable: chunks are identified by their SHA-256 hash
 //! - Segment-based: fixed-size segments for efficient compaction
-//! - Thread-safe: uses parking_lot for concurrent access
+//! - Thread-safe: uses `parking_lot` for concurrent access
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,18 +21,20 @@ use fxhash::FxHasher;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-/// Content hash for blob chunks (simulated SHA-256 via FxHash for performance).
+/// Content hash for blob chunks (simulated SHA-256 via `FxHash` for performance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ChunkHash(pub u64);
 
 impl ChunkHash {
+    #[must_use]
     pub fn from_data(data: &[u8]) -> Self {
         let mut hasher = FxHasher::default();
         data.hash(&mut hasher);
         Self(hasher.finish())
     }
 
-    pub fn as_u64(self) -> u64 {
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
         self.0
     }
 }
@@ -62,7 +64,7 @@ impl LogSegment {
         }
     }
 
-    fn can_fit(&self, size: usize) -> bool {
+    const fn can_fit(&self, size: usize) -> bool {
         self.data.len() + size <= self.capacity
     }
 
@@ -80,7 +82,7 @@ impl LogSegment {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 }
@@ -103,6 +105,7 @@ pub struct BlobLog {
 
 impl BlobLog {
     /// Create a new blob log with the specified segment size.
+    #[must_use]
     pub fn new(segment_size: usize) -> Self {
         Self {
             active: Mutex::new(LogSegment::new(0, segment_size)),
@@ -117,6 +120,7 @@ impl BlobLog {
     }
 
     /// Create with default 64MB segment size.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(64 * 1024 * 1024)
     }
@@ -181,8 +185,10 @@ impl BlobLog {
 
     /// Get data by its content hash.
     pub fn get(&self, hash: &ChunkHash) -> Option<Vec<u8>> {
-        let index = self.index.read();
-        let location = index.get(hash)?;
+        let location = {
+            let index = self.index.read();
+            *index.get(hash)?
+        };
 
         // Check active segment first
         {
@@ -190,21 +196,24 @@ impl BlobLog {
             if location.segment_id == active.id {
                 return active
                     .read(location.offset, location.length)
-                    .map(|s| s.to_vec());
+                    .map(<[u8]>::to_vec);
             }
         }
 
         // Check sealed segments
         let sealed = self.sealed.read();
-        for segment in sealed.iter() {
+        let result = sealed.iter().find_map(|segment| {
             if segment.id == location.segment_id {
-                return segment
+                segment
                     .read(location.offset, location.length)
-                    .map(|s| s.to_vec());
+                    .map(<[u8]>::to_vec)
+            } else {
+                None
             }
-        }
+        });
+        drop(sealed);
 
-        None
+        result
     }
 
     /// Check if a chunk exists.
@@ -255,12 +264,12 @@ impl BlobLog {
                 self.active
                     .lock()
                     .read(location.offset, location.length)
-                    .map(|s| s.to_vec())
+                    .map(<[u8]>::to_vec)
             } else {
                 sealed
                     .iter()
                     .find(|s| s.id == location.segment_id)
-                    .and_then(|s| s.read(location.offset, location.length).map(|s| s.to_vec()))
+                    .and_then(|s| s.read(location.offset, location.length).map(<[u8]>::to_vec))
             };
 
             if let Some(data) = data {
@@ -350,6 +359,7 @@ impl BlobLog {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: BlobLogSnapshot) -> Self {
         let next_segment_id = snapshot
             .sealed
@@ -382,7 +392,7 @@ impl Default for BlobLog {
     }
 }
 
-/// Serializable snapshot of BlobLog state.
+/// Serializable snapshot of `BlobLog` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobLogSnapshot {
     active: LogSegment,

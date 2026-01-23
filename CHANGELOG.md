@@ -3,9 +3,10 @@
 All notable changes to Neumann are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project adheres to [Semantic Versioning](https://semver.org/).
 
-> **Note**: All 0.x versions are considered unstable. Breaking changes may occur between minor versions.
+> **Note**: All 0.x versions are considered unstable.
+> Breaking changes may occur between minor versions.
 
 ## [Unreleased]
 
@@ -14,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Core Storage (tensor_store)
+
 - Thread-safe key-value storage using DashMap
 - TensorValue types: Scalar, Vector, Pointer, Pointers
 - Bloom filter for fast negative lookups
@@ -26,19 +28,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Write-ahead log (WAL) for crash recovery
 
 #### Query Engines
+
 - **Relational Engine**: Tables, schemas, SQL-like operations, B-tree indexes
 - **Graph Engine**: Nodes, edges, traversals, path finding, BFS
-- **Vector Engine**: Embedding storage, k-NN search, cosine/euclidean/dot product metrics
+- **Vector Engine**: Embedding storage, k-NN search, distance metrics
 
 #### Extended Modules
+
 - **Tensor Compress**: Int8/binary quantization, delta encoding, RLE
-- **Tensor Vault**: AES-256-GCM encryption, Argon2id key derivation, graph-based access control, TTL grants, rate limiting, audit logging, secret versioning
-- **Tensor Cache**: Multi-layer LLM response caching (exact + semantic), tiktoken integration, cost tracking, background eviction
-- **Tensor Blob**: S3-style chunked blob storage, SHA-256 content addressing, streaming upload/download, entity linking, tagging, garbage collection
+- **Tensor Vault**: AES-256-GCM encryption, Argon2id key derivation,
+  graph-based access control, TTL grants, rate limiting, audit logging
+- **Tensor Cache**: Multi-layer LLM response caching (exact + semantic),
+  tiktoken integration, cost tracking, background eviction
+- **Tensor Blob**: S3-style chunked blob storage, SHA-256 content addressing,
+  streaming upload/download, entity linking, tagging, garbage collection
 
 #### Query Language (neumann_parser)
+
 - Hand-written recursive descent parser
-- SQL: SELECT, INSERT, UPDATE, DELETE, CREATE/DROP TABLE, JOINs, GROUP BY, HAVING
+- SQL: SELECT, INSERT, UPDATE, DELETE, CREATE/DROP TABLE, JOINs, GROUP BY
 - Graph: NODE, EDGE, NEIGHBORS, PATH, FIND
 - Vector: EMBED, SIMILAR
 - Vault: SET, GET, DELETE, LIST, ROTATE, GRANT, REVOKE
@@ -46,18 +54,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blob: PUT, GET, DELETE, INFO, LINK, TAG, GC, REPAIR
 
 #### Shell (neumann_shell)
+
 - Interactive REPL with readline support
 - Command history persistence
 - ASCII table output formatting
 - Built-in commands: help, tables, save, load, wal status
 
 ### Security
+
 - AES-256-GCM for secret encryption
 - Argon2id for key derivation
 - Secure key zeroization on drop
 - Graph-based access control with permission levels
 
 ### Performance
+
 - DashMap sharded storage for concurrent access
 - HNSW index: O(log n) similarity search
 - Sparse vectors: 10-150x dot product speedup at 99% sparsity
@@ -65,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 95%+ test coverage across all crates
 
 ### Known Limitations
+
 - Single-node only (no distributed queries)
 - In-memory first (snapshots for persistence)
 - API unstable (0.x version)

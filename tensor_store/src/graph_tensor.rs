@@ -1,6 +1,6 @@
 //! CSR-based graph storage with append log.
 //!
-//! GraphTensor stores graph edges using Compressed Sparse Row (CSR) format
+//! `GraphTensor` stores graph edges using Compressed Sparse Row (CSR) format
 //! for efficient traversal, combined with an append log for O(1) edge insertion.
 //! Background merging combines pending edges into the CSR structure.
 //!
@@ -27,11 +27,13 @@ use crate::{entity_index::EntityId, metadata_slab::MetadataSlab, TensorData};
 pub struct EdgeId(pub u64);
 
 impl EdgeId {
-    pub fn new(id: u64) -> Self {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
-    pub fn as_u64(self) -> u64 {
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
         self.0
     }
 }
@@ -46,6 +48,14 @@ impl From<u64> for EdgeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct EdgeTypeId(u32);
 
+impl EdgeTypeId {
+    /// Create from array index. Edge type count is practically limited.
+    #[allow(clippy::cast_possible_truncation)]
+    const fn from_index(idx: usize) -> Self {
+        Self(idx as u32)
+    }
+}
+
 /// A pending edge entry in the append log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EdgeEntry {
@@ -59,22 +69,22 @@ struct EdgeEntry {
 /// Compressed Sparse Row graph representation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CsrGraph {
-    /// Row pointers: node i's outgoing edges start at row_ptr[i] and end at row_ptr[i+1].
+    /// Row pointers: node i's outgoing edges start at `row_ptr[i]` and end at `row_ptr[i+1]`.
     row_ptr: Vec<u32>,
 
     /// Column indices: target nodes for each edge.
     col_idx: Vec<EntityId>,
 
-    /// Edge IDs for each edge (parallel to col_idx).
+    /// Edge IDs for each edge (parallel to `col_idx`).
     edge_ids: Vec<EdgeId>,
 
-    /// Edge types for each edge (parallel to col_idx).
+    /// Edge types for each edge (parallel to `col_idx`).
     edge_types: Vec<EdgeTypeId>,
 
     /// Direction flags packed as bits (true = directed).
     directions: BitVec,
 
-    /// Maximum node ID in the graph (for sizing row_ptr).
+    /// Maximum node ID in the graph (for sizing `row_ptr`).
     max_node_id: u64,
 }
 
@@ -90,10 +100,11 @@ impl CsrGraph {
         }
 
         // Count outgoing edges per node
+        #[allow(clippy::cast_possible_truncation)] // Node count bounded by memory
         let num_nodes = (max_node_id + 1) as usize;
         let mut out_degree = vec![0u32; num_nodes];
         for edge in edges {
-            let from_idx = edge.from.as_u64() as usize;
+            let from_idx = edge.from.as_index();
             if from_idx < num_nodes {
                 out_degree[from_idx] += 1;
             }
@@ -115,7 +126,7 @@ impl CsrGraph {
         // Fill edges
         let mut write_pos = vec![0u32; num_nodes];
         for edge in edges {
-            let from_idx = edge.from.as_u64() as usize;
+            let from_idx = edge.from.as_index();
             if from_idx < num_nodes {
                 let pos = (row_ptr[from_idx] + write_pos[from_idx]) as usize;
                 col_idx[pos] = edge.to;
@@ -138,7 +149,7 @@ impl CsrGraph {
 
     /// Get outgoing edges for a node.
     fn outgoing(&self, node: EntityId) -> Vec<(EntityId, EdgeId)> {
-        let node_idx = node.as_u64() as usize;
+        let node_idx = node.as_index();
         if node_idx >= self.row_ptr.len().saturating_sub(1) {
             return Vec::new();
         }
@@ -151,11 +162,11 @@ impl CsrGraph {
             .collect()
     }
 
-    fn edge_count(&self) -> usize {
+    const fn edge_count(&self) -> usize {
         self.col_idx.len()
     }
 
-    fn node_count(&self) -> usize {
+    const fn node_count(&self) -> usize {
         self.row_ptr.len().saturating_sub(1)
     }
 }
@@ -197,12 +208,14 @@ pub struct GraphTensor {
 }
 
 impl GraphTensor {
-    /// Create a new GraphTensor.
+    /// Create a new `GraphTensor`.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_merge_threshold(10_000)
     }
 
-    /// Create a GraphTensor with a custom merge threshold.
+    /// Create a `GraphTensor` with a custom merge threshold.
+    #[must_use]
     pub fn with_merge_threshold(threshold: usize) -> Self {
         Self {
             csr: RwLock::new(CsrGraph::new()),
@@ -224,7 +237,7 @@ impl GraphTensor {
 
     /// Add an edge to the graph.
     ///
-    /// Returns the new EdgeId. The edge is added to the pending log
+    /// Returns the new `EdgeId`. The edge is added to the pending log
     /// and will be merged into the CSR on the next merge.
     pub fn add_edge(
         &self,
@@ -321,7 +334,7 @@ impl GraphTensor {
         // Check CSR
         {
             let csr = self.csr.read();
-            let node_idx = from.as_u64() as usize;
+            let node_idx = from.as_index();
             if node_idx < csr.row_ptr.len().saturating_sub(1) {
                 let start = csr.row_ptr[node_idx] as usize;
                 let end = csr.row_ptr[node_idx + 1] as usize;
@@ -463,8 +476,7 @@ impl GraphTensor {
             }
 
             for (neighbor, _) in self.outgoing(node) {
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor);
+                if visited.insert(neighbor) {
                     queue.push_back((neighbor, depth + 1));
                 }
             }
@@ -488,8 +500,7 @@ impl GraphTensor {
 
         while let Some(node) = queue.pop_front() {
             for (neighbor, _) in self.outgoing(node) {
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor);
+                if visited.insert(neighbor) {
                     parent.insert(neighbor, node);
 
                     if neighbor == to {
@@ -514,19 +525,23 @@ impl GraphTensor {
 
     /// Get the total number of edges (including pending, excluding deleted).
     pub fn edge_count(&self) -> usize {
-        let deleted = self.deleted.lock();
-        let csr = self.csr.read();
-        let pending = self.pending.lock();
+        let deleted = self.deleted.lock().clone();
 
-        let csr_count = csr
-            .edge_ids
-            .iter()
-            .filter(|id| !deleted.contains(id))
-            .count();
-        let pending_count = pending
-            .iter()
-            .filter(|e| !deleted.contains(&e.edge_id))
-            .count();
+        let csr_count = {
+            let csr = self.csr.read();
+            csr.edge_ids
+                .iter()
+                .filter(|id| !deleted.contains(id))
+                .count()
+        };
+
+        let pending_count = {
+            let pending = self.pending.lock();
+            pending
+                .iter()
+                .filter(|e| !deleted.contains(&e.edge_id))
+                .count()
+        };
 
         csr_count + pending_count
     }
@@ -552,25 +567,28 @@ impl GraphTensor {
         // Force merge before snapshot
         self.merge();
 
-        let csr = self.csr.read();
-        let edge_types = self.edge_types.read().clone();
+        let edge_types = { self.edge_types.read().clone() };
 
         // Collect all edges
-        let mut edges = Vec::new();
-        for node_idx in 0..csr.node_count() {
-            let start = csr.row_ptr[node_idx] as usize;
-            let end = csr.row_ptr[node_idx + 1] as usize;
+        let edges = {
+            let csr = self.csr.read();
+            let mut edges = Vec::new();
+            for node_idx in 0..csr.node_count() {
+                let start = csr.row_ptr[node_idx] as usize;
+                let end = csr.row_ptr[node_idx + 1] as usize;
 
-            for i in start..end {
-                edges.push(GraphEdgeSnapshot {
-                    edge_id: csr.edge_ids[i],
-                    from: EntityId::new(node_idx as u64),
-                    to: csr.col_idx[i],
-                    edge_type_idx: csr.edge_types[i].0,
-                    directed: csr.directions[i],
-                });
+                for i in start..end {
+                    edges.push(GraphEdgeSnapshot {
+                        edge_id: csr.edge_ids[i],
+                        from: EntityId::new(node_idx as u64),
+                        to: csr.col_idx[i],
+                        edge_type_idx: csr.edge_types[i].0,
+                        directed: csr.directions[i],
+                    });
+                }
             }
-        }
+            edges
+        };
 
         GraphTensorSnapshot {
             edges,
@@ -582,20 +600,21 @@ impl GraphTensor {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: GraphTensorSnapshot) -> Self {
         let graph = Self::new();
 
         // Restore edge types
-        {
-            let mut types = graph.edge_types.write();
-            let mut type_ids = graph.edge_type_ids.write();
-            types.clear();
-            type_ids.clear();
-            for (idx, type_name) in snapshot.edge_types.iter().enumerate() {
-                types.push(type_name.clone());
-                type_ids.insert(type_name.clone(), EdgeTypeId(idx as u32));
-            }
+        let mut types = graph.edge_types.write();
+        let mut type_ids = graph.edge_type_ids.write();
+        types.clear();
+        type_ids.clear();
+        for (idx, type_name) in snapshot.edge_types.iter().enumerate() {
+            types.push(type_name.clone());
+            type_ids.insert(type_name.clone(), EdgeTypeId::from_index(idx));
         }
+        drop(types);
+        drop(type_ids);
 
         // Restore edges
         for edge in snapshot.edges {
@@ -638,9 +657,11 @@ impl GraphTensor {
             return id;
         }
 
-        let id = EdgeTypeId(types.len() as u32);
+        let id = EdgeTypeId::from_index(types.len());
         types.push(edge_type.to_string());
         ids.insert(edge_type.to_string(), id);
+        drop(types);
+        drop(ids);
         id
     }
 
@@ -688,7 +709,7 @@ struct GraphEdgeSnapshot {
     directed: bool,
 }
 
-/// Serializable snapshot of GraphTensor state.
+/// Serializable snapshot of `GraphTensor` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphTensorSnapshot {
     edges: Vec<GraphEdgeSnapshot>,
@@ -1129,5 +1150,31 @@ mod tests {
         // Query nonexistent node
         let outgoing = graph.outgoing(EntityId::new(999));
         assert!(outgoing.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_restore_with_edge_data() {
+        let graph = GraphTensor::with_merge_threshold(2);
+
+        // Add nodes and edges
+        graph.add_edge(EntityId::new(0), EntityId::new(1), "friend", true);
+
+        // Add edge data
+        let mut edge_data = TensorData::new();
+        edge_data.set(
+            "weight",
+            crate::TensorValue::Scalar(crate::ScalarValue::Float(0.5)),
+        );
+        graph.edge_data.set("edge:0:1:friend", edge_data);
+
+        // Create snapshot
+        let snapshot = graph.snapshot();
+
+        // Restore to new graph
+        let restored = GraphTensor::restore(snapshot);
+
+        // Verify edge data was restored
+        let restored_data = restored.edge_data.get("edge:0:1:friend");
+        assert!(restored_data.is_some());
     }
 }

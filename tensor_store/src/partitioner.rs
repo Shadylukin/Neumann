@@ -205,4 +205,13 @@ mod tests {
         let b = PartitionResult::new("node1", 42, false);
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn test_partitioner_default_region_centroid() {
+        use crate::consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner};
+        let config = ConsistentHashConfig::new("local");
+        let partitioner = ConsistentHashPartitioner::new(config);
+        // Test the default implementation returns None
+        assert!(partitioner.region_centroid(&"node1".to_string()).is_none());
+    }
 }

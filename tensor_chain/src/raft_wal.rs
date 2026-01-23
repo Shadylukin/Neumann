@@ -584,6 +584,7 @@ impl RaftRecoveryState {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::fs;
@@ -896,8 +897,7 @@ mod tests {
         fs::set_permissions(&wal_path, perms).unwrap();
 
         let result = RaftWal::open(&wal_path);
-        if result.is_ok() {
-            let mut wal = result.unwrap();
+        if let Ok(mut wal) = result {
             let append_result = wal.append(&RaftWalEntry::TermChange { new_term: 2 });
             assert!(append_result.is_err());
         }

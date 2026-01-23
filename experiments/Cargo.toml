@@ -10,3 +10,4 @@ publish = false
 tensor_store = { path = "../tensor_store" }
 tensor_chain = { path = "../tensor_chain" }
 rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }

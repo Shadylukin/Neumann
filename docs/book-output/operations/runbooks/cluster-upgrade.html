@@ -1,0 +1,493 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Cluster Upgrade - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/operations/runbooks/cluster-upgrade.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="cluster-upgrade"><a class="header" href="#cluster-upgrade">Cluster Upgrade</a></h1>
+<p>This runbook covers upgrading tensor_chain clusters with minimal downtime.</p>
+<h2 id="diagnostic-steps"><a class="header" href="#diagnostic-steps">Diagnostic Steps</a></h2>
+<ol>
+<li>Verify cluster health and quorum:
+<code>neumann cluster health</code></li>
+<li>Confirm current versions:
+<code>neumann cluster versions</code></li>
+<li>Check the compatibility matrix and any release notes.</li>
+</ol>
+<h2 id="upgrade-types"><a class="header" href="#upgrade-types">Upgrade Types</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Downtime</th><th>Complexity</th><th>Use Case</th></tr></thead><tbody>
+<tr><td>Rolling</td><td>None</td><td>Low</td><td>Minor version upgrades</td></tr>
+<tr><td>Blue-Green</td><td>Minimal</td><td>Medium</td><td>Major version upgrades</td></tr>
+<tr><td>Canary</td><td>None</td><td>High</td><td>Risk-sensitive environments</td></tr>
+</tbody></table>
+</div>
+<h2 id="rolling-upgrade"><a class="header" href="#rolling-upgrade">Rolling Upgrade</a></h2>
+<p>Upgrade nodes one at a time while maintaining cluster availability.</p>
+<h3 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h3>
+<ul>
+<li><input disabled="" type="checkbox"/>
+Cluster has 3+ nodes for quorum during upgrades</li>
+<li><input disabled="" type="checkbox"/>
+New version is backwards compatible with current version</li>
+<li><input disabled="" type="checkbox"/>
+Upgrade tested in staging environment</li>
+<li><input disabled="" type="checkbox"/>
+Backup of cluster state completed</li>
+</ul>
+<h3 id="symptoms-why-upgrade"><a class="header" href="#symptoms-why-upgrade">Symptoms (Why Upgrade)</a></h3>
+<ul>
+<li>Security patches available</li>
+<li>New features required</li>
+<li>Bug fixes needed</li>
+<li>Performance improvements available</li>
+</ul>
+<h3 id="upgrade-sequence"><a class="header" href="#upgrade-sequence">Upgrade Sequence</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant F1 as Follower 1
+    participant F2 as Follower 2
+    participant L as Leader
+    participant A as Admin
+
+    Note over A: Start rolling upgrade
+    A-&gt;&gt;F1: upgrade
+    F1-&gt;&gt;F1: restart with new version
+    F1-&gt;&gt;L: rejoin cluster
+    Note over F1: Follower 1 upgraded
+
+    A-&gt;&gt;F2: upgrade
+    F2-&gt;&gt;F2: restart with new version
+    F2-&gt;&gt;L: rejoin cluster
+    Note over F2: Follower 2 upgraded
+
+    A-&gt;&gt;L: transfer leadership
+    L-&gt;&gt;F1: leadership transferred
+    A-&gt;&gt;L: upgrade (now follower)
+    L-&gt;&gt;F1: rejoin cluster
+    Note over L: All nodes upgraded
+</pre>
+<h3 id="procedure"><a class="header" href="#procedure">Procedure</a></h3>
+<h4 id="step-1-pre-upgrade-checks"><a class="header" href="#step-1-pre-upgrade-checks">Step 1: Pre-upgrade checks</a></h4>
+<pre><code class="language-bash"># Verify cluster health
+neumann cluster health
+
+# Check current versions
+neumann cluster versions
+
+# Verify backup is current
+neumann backup status
+</code></pre>
+<h4 id="step-2-upgrade-followers-first"><a class="header" href="#step-2-upgrade-followers-first">Step 2: Upgrade followers first</a></h4>
+<pre><code class="language-bash"># For each follower node:
+
+# 1. Drain the node
+neumann node drain node2
+
+# 2. Stop the service
+ssh node2 "systemctl stop neumann"
+
+# 3. Upgrade the binary
+ssh node2 "cargo install neumann --version X.Y.Z"
+
+# 4. Start the service
+ssh node2 "systemctl start neumann"
+
+# 5. Verify rejoin
+neumann cluster members
+
+# 6. Wait for replication catch-up
+neumann metrics node2 | grep replication_lag
+</code></pre>
+<h4 id="step-3-upgrade-the-leader"><a class="header" href="#step-3-upgrade-the-leader">Step 3: Upgrade the leader</a></h4>
+<pre><code class="language-bash"># Transfer leadership to an upgraded follower
+neumann raft transfer-leadership --to node2
+
+# Verify leadership transferred
+neumann raft status
+
+# Now upgrade the old leader (same steps as followers)
+neumann node drain node1
+ssh node1 "systemctl stop neumann"
+ssh node1 "cargo install neumann --version X.Y.Z"
+ssh node1 "systemctl start neumann"
+</code></pre>
+<h4 id="step-4-post-upgrade-verification"><a class="header" href="#step-4-post-upgrade-verification">Step 4: Post-upgrade verification</a></h4>
+<pre><code class="language-bash"># Verify all nodes on new version
+neumann cluster versions
+
+# Expected output:
+# ID     VERSION
+# node1  X.Y.Z
+# node2  X.Y.Z
+# node3  X.Y.Z
+
+# Run health checks
+neumann cluster health
+
+# Verify functionality with test transactions
+neumann test-transaction
+</code></pre>
+<h2 id="version-compatibility"><a class="header" href="#version-compatibility">Version Compatibility</a></h2>
+<h3 id="compatibility-matrix"><a class="header" href="#compatibility-matrix">Compatibility Matrix</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>From Version</th><th>To Version</th><th>Compatible</th><th>Notes</th></tr></thead><tbody>
+<tr><td>0.9.x</td><td>0.10.x</td><td>Yes</td><td>Rolling upgrade supported</td></tr>
+<tr><td>0.10.x</td><td>0.11.x</td><td>Yes</td><td>Rolling upgrade supported</td></tr>
+<tr><td>0.8.x</td><td>0.10.x</td><td>No</td><td>Blue-green required</td></tr>
+<tr><td>0.x.x</td><td>1.0.x</td><td>No</td><td>Blue-green required</td></tr>
+</tbody></table>
+</div>
+<h3 id="version-skew-policy"><a class="header" href="#version-skew-policy">Version Skew Policy</a></h3>
+<ul>
+<li><strong>Maximum skew</strong>: 1 minor version during rolling upgrades</li>
+<li><strong>Leader version</strong>: Must be &gt;= follower versions</li>
+<li><strong>Upgrade order</strong>: Always followers first, then leader</li>
+</ul>
+<h2 id="rollback-procedure"><a class="header" href="#rollback-procedure">Rollback Procedure</a></h2>
+<p>If issues are discovered after upgrade:</p>
+<h3 id="symptoms-requiring-rollback"><a class="header" href="#symptoms-requiring-rollback">Symptoms Requiring Rollback</a></h3>
+<ul>
+<li>Transaction failures after upgrade</li>
+<li>Performance degradation</li>
+<li>Consensus failures</li>
+<li>Data corruption detected</li>
+</ul>
+<h3 id="rollback-steps"><a class="header" href="#rollback-steps">Rollback Steps</a></h3>
+<pre><code class="language-bash"># 1. Stop accepting new requests
+neumann cluster pause
+
+# 2. Identify problematic nodes
+neumann cluster health --verbose
+
+# 3. Rollback affected nodes
+ssh node1 "cargo install neumann --version X.Y.Z-OLD"
+ssh node1 "systemctl restart neumann"
+
+# 4. Verify rollback
+neumann cluster versions
+
+# 5. Resume operations
+neumann cluster resume
+</code></pre>
+<h3 id="rollback-limitations"><a class="header" href="#rollback-limitations">Rollback Limitations</a></h3>
+<ul>
+<li>Cannot rollback if schema changes were applied</li>
+<li>Cannot rollback if new features were used</li>
+<li>Always test rollback in staging first</li>
+</ul>
+<h2 id="canary-upgrade"><a class="header" href="#canary-upgrade">Canary Upgrade</a></h2>
+<p>For risk-sensitive environments, upgrade a single node first and monitor.</p>
+<h3 id="procedure-1"><a class="header" href="#procedure-1">Procedure</a></h3>
+<pre><code class="language-bash"># 1. Select canary node (typically a follower)
+CANARY=node3
+
+# 2. Upgrade canary
+neumann node drain $CANARY
+ssh $CANARY "cargo install neumann --version X.Y.Z"
+ssh $CANARY "systemctl restart neumann"
+
+# 3. Monitor canary for 24-48 hours
+neumann metrics $CANARY --watch
+
+# 4. Compare metrics with non-canary nodes
+neumann metrics compare $CANARY node1
+
+# 5. If healthy, proceed with rolling upgrade
+# If unhealthy, rollback canary
+</code></pre>
+<h3 id="canary-success-criteria"><a class="header" href="#canary-success-criteria">Canary Success Criteria</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Threshold</th><th>Action if Exceeded</th></tr></thead><tbody>
+<tr><td>Error rate</td><td>&lt; 0.1%</td><td>Rollback</td></tr>
+<tr><td>Latency p99</td><td>&lt; 2x baseline</td><td>Investigate</td></tr>
+<tr><td>Replication lag</td><td>&lt; 100ms</td><td>Investigate</td></tr>
+<tr><td>Memory usage</td><td>&lt; 1.5x baseline</td><td>Investigate</td></tr>
+</tbody></table>
+</div>
+<h2 id="automated-upgrade-script"><a class="header" href="#automated-upgrade-script">Automated Upgrade Script</a></h2>
+<pre><code class="language-bash">#!/bin/bash
+# rolling-upgrade.sh - Automated rolling upgrade script
+
+set -e
+
+NEW_VERSION=$1
+NODES=$(neumann cluster members --format json | jq -r '.[] | .id')
+LEADER=$(neumann raft status --format json | jq -r '.leader')
+
+echo "Upgrading cluster to version $NEW_VERSION"
+
+# Upgrade followers first
+for node in $NODES; do
+    if [ "$node" == "$LEADER" ]; then
+        continue
+    fi
+
+    echo "Upgrading follower: $node"
+    neumann node drain $node
+    ssh $node "cargo install neumann --version $NEW_VERSION"
+    ssh $node "systemctl restart neumann"
+
+    # Wait for rejoin
+    sleep 10
+    neumann cluster wait-healthy --timeout 120
+done
+
+# Transfer leadership and upgrade old leader
+echo "Transferring leadership from $LEADER"
+NEW_LEADER=$(echo $NODES | tr ' ' '\n' | grep -v $LEADER | head -1)
+neumann raft transfer-leadership --to $NEW_LEADER
+
+sleep 5
+
+echo "Upgrading old leader: $LEADER"
+neumann node drain $LEADER
+ssh $LEADER "cargo install neumann --version $NEW_VERSION"
+ssh $LEADER "systemctl restart neumann"
+
+# Final verification
+neumann cluster wait-healthy --timeout 120
+neumann cluster versions
+
+echo "Upgrade complete"
+</code></pre>
+<h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
+<ul>
+<li><a href="node-management.html">Node Management</a></li>
+<li><a href="backup-restore.html">Backup and Restore</a></li>
+<li><a href="../configuration.html">Configuration</a></li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../operations/runbooks/node-management.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../../operations/runbooks/leader-election.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../operations/runbooks/node-management.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../../operations/runbooks/leader-election.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../../ace.js"></script>
+        <script src="../../mode-rust.js"></script>
+        <script src="../../editor.js"></script>
+        <script src="../../theme-dawn.js"></script>
+        <script src="../../theme-tomorrow_night.js"></script>
+
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

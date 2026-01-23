@@ -393,7 +393,9 @@ fn test_delta_replication_with_checksums() {
     // Queue updates
     for i in 0..5 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Create batch

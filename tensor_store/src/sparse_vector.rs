@@ -41,7 +41,8 @@ impl SparseVector {
     ///
     /// The dimension defines the shell - all positions within [0, dimension)
     /// are valid, but none contain information yet.
-    pub fn new(dimension: usize) -> Self {
+    #[must_use]
+    pub const fn new(dimension: usize) -> Self {
         Self {
             dimension,
             positions: Vec::new(),
@@ -50,6 +51,7 @@ impl SparseVector {
     }
 
     /// Create a sparse vector with pre-allocated capacity.
+    #[must_use]
     pub fn with_capacity(dimension: usize, capacity: usize) -> Self {
         Self {
             dimension,
@@ -61,6 +63,7 @@ impl SparseVector {
     /// Create from parallel arrays of positions and values.
     ///
     /// Filters out zeros and sorts by position.
+    #[must_use]
     pub fn from_parts(dimension: usize, positions: Vec<u32>, values: Vec<f32>) -> Self {
         debug_assert_eq!(positions.len(), values.len());
 
@@ -85,6 +88,8 @@ impl SparseVector {
     }
 
     /// Create from a dense vector, storing only non-zero values.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_dense(dense: &[f32]) -> Self {
         let dimension = dense.len();
         let mut positions = Vec::new();
@@ -105,6 +110,8 @@ impl SparseVector {
     }
 
     /// Create from a dense vector with a threshold - values below threshold become zero.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_dense_with_threshold(dense: &[f32], threshold: f32) -> Self {
         let dimension = dense.len();
         let mut positions = Vec::new();
@@ -126,18 +133,22 @@ impl SparseVector {
 
     /// The shell/boundary - total dimension of the vector space.
     #[inline]
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
     /// Number of non-zero values stored.
     #[inline]
-    pub fn nnz(&self) -> usize {
+    #[must_use]
+    pub const fn nnz(&self) -> usize {
         self.values.len()
     }
 
     /// Sparsity ratio (fraction of zeros).
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio calculation
     pub fn sparsity(&self) -> f32 {
         if self.dimension == 0 {
             0.0
@@ -147,7 +158,8 @@ impl SparseVector {
     }
 
     #[inline]
-    pub fn in_bounds(&self, index: usize) -> bool {
+    #[must_use]
+    pub const fn in_bounds(&self, index: usize) -> bool {
         index < self.dimension
     }
 
@@ -156,17 +168,21 @@ impl SparseVector {
     /// Returns 0.0 for positions within shell that have no stored value.
     /// This is a "contextual zero" - absence of information, not stored zero.
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32
     pub fn get(&self, index: usize) -> f32 {
         debug_assert!(index < self.dimension, "Index out of bounds");
 
-        // Binary search for position
-        match self.positions.binary_search(&(index as u32)) {
-            Ok(i) => self.values[i],
-            Err(_) => 0.0, // Contextual zero
-        }
+        // Binary search for position - returns 0.0 (contextual zero) if not found
+        self.positions
+            .binary_search(&(index as u32))
+            .ok()
+            .map_or(0.0, |i| self.values[i])
     }
 
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32
     pub fn has_value(&self, index: usize) -> bool {
         self.positions.binary_search(&(index as u32)).is_ok()
     }
@@ -175,6 +191,7 @@ impl SparseVector {
     ///
     /// If value is zero, removes from storage (zero doesn't exist).
     /// If value is non-zero, inserts or updates.
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32
     pub fn set(&mut self, index: usize, value: f32) {
         debug_assert!(index < self.dimension, "Index out of bounds");
 
@@ -204,6 +221,7 @@ impl SparseVector {
     /// Convert to dense representation.
     ///
     /// This "realizes" all the contextual zeros as actual values.
+    #[must_use]
     pub fn to_dense(&self) -> Vec<f32> {
         let mut dense = vec![0.0; self.dimension];
         for (&pos, &val) in self.positions.iter().zip(&self.values) {
@@ -214,9 +232,10 @@ impl SparseVector {
 
     /// Dot product with another sparse vector.
     ///
-    /// O(min(nnz_a, nnz_b)) - only overlapping non-zero positions contribute.
+    /// `O(min(nnz_a, nnz_b))` - only overlapping non-zero positions contribute.
     /// This is where sparse shines: zero * anything = zero, and we don't store zeros.
-    pub fn dot(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn dot(&self, other: &Self) -> f32 {
         debug_assert_eq!(
             self.dimension, other.dimension,
             "Dimension mismatch: {} vs {}",
@@ -244,7 +263,8 @@ impl SparseVector {
 
     /// Dot product with a dense vector.
     ///
-    /// O(nnz) - only iterate over our non-zero positions.
+    /// `O(nnz)` - only iterate over our non-zero positions.
+    #[must_use]
     pub fn dot_dense(&self, dense: &[f32]) -> f32 {
         debug_assert_eq!(
             self.dimension,
@@ -264,7 +284,8 @@ impl SparseVector {
     /// Add another sparse vector. Returns new sparse vector.
     ///
     /// Positions with zero sum are not stored in result.
-    pub fn add(&self, other: &SparseVector) -> SparseVector {
+    #[must_use]
+    pub fn add(&self, other: &Self) -> Self {
         debug_assert_eq!(self.dimension, other.dimension);
 
         let mut result_positions = Vec::new();
@@ -315,7 +336,7 @@ impl SparseVector {
             }
         }
 
-        SparseVector {
+        Self {
             dimension: self.dimension,
             positions: result_positions,
             values: result_values,
@@ -323,26 +344,29 @@ impl SparseVector {
     }
 
     /// Scale by a constant.
-    pub fn scale(&self, factor: f32) -> SparseVector {
+    #[must_use]
+    pub fn scale(&self, factor: f32) -> Self {
         if factor == 0.0 {
             // Everything becomes zero, which doesn't exist
-            return SparseVector::new(self.dimension);
+            return Self::new(self.dimension);
         }
 
-        SparseVector {
+        Self {
             dimension: self.dimension,
             positions: self.positions.clone(),
             values: self.values.iter().map(|&v| v * factor).collect(),
         }
     }
 
-    /// L2 norm (magnitude).
+    /// `L2` norm (magnitude).
+    #[must_use]
     pub fn magnitude(&self) -> f32 {
         self.values.iter().map(|v| v * v).sum::<f32>().sqrt()
     }
 
     /// Normalize to unit length. Returns None if zero vector.
-    pub fn normalize(&self) -> Option<SparseVector> {
+    #[must_use]
+    pub fn normalize(&self) -> Option<Self> {
         let mag = self.magnitude();
         if mag == 0.0 {
             None
@@ -354,7 +378,8 @@ impl SparseVector {
     /// Cosine similarity with another sparse vector.
     /// Returns a value in [-1.0, 1.0], with 0.0 for degenerate cases.
     /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
-    pub fn cosine_similarity(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn cosine_similarity(&self, other: &Self) -> f32 {
         let dot = self.dot(other);
         let mag_a = self.magnitude();
         let mag_b = other.magnitude();
@@ -376,6 +401,7 @@ impl SparseVector {
     /// Cosine distance with a dense vector (1 - similarity).
     /// Returns a value in [0.0, 2.0], with 1.0 (max distance) for degenerate cases.
     /// SECURITY: Sanitizes NaN/Inf to prevent consensus ordering issues.
+    #[must_use]
     pub fn cosine_distance_dense(&self, dense: &[f32]) -> f32 {
         let dot = self.dot_dense(dense);
         let mag_sparse = self.magnitude();
@@ -403,6 +429,8 @@ impl SparseVector {
     ///
     /// Only stores positions where |after\[i\] - before\[i\]| > threshold.
     /// This is the core operation for eliminating dense ceremony.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_diff(before: &[f32], after: &[f32], threshold: f32) -> Self {
         debug_assert_eq!(before.len(), after.len());
         let dimension = before.len();
@@ -429,7 +457,8 @@ impl SparseVector {
     /// Subtract another sparse vector (self - other).
     ///
     /// Positions with zero difference are not stored.
-    pub fn sub(&self, other: &SparseVector) -> SparseVector {
+    #[must_use]
+    pub fn sub(&self, other: &Self) -> Self {
         self.add(&other.scale(-1.0))
     }
 
@@ -437,12 +466,13 @@ impl SparseVector {
     ///
     /// Result = (w1 * self + w2 * other) / (w1 + w2)
     /// Positions with zero result are not stored.
-    pub fn weighted_average(&self, other: &SparseVector, w1: f32, w2: f32) -> SparseVector {
+    #[must_use]
+    pub fn weighted_average(&self, other: &Self, w1: f32, w2: f32) -> Self {
         debug_assert_eq!(self.dimension, other.dimension);
 
         let total = w1 + w2;
         if total == 0.0 {
-            return SparseVector::new(self.dimension);
+            return Self::new(self.dimension);
         }
 
         let mut result_positions = Vec::new();
@@ -466,7 +496,7 @@ impl SparseVector {
                 match self.positions[i].cmp(&other.positions[j]) {
                     std::cmp::Ordering::Equal => {
                         let p = self.positions[i];
-                        let v = (w1 * self.values[i] + w2 * other.values[j]) / total;
+                        let v = w1.mul_add(self.values[i], w2 * other.values[j]) / total;
                         i += 1;
                         j += 1;
                         (p, v)
@@ -492,7 +522,7 @@ impl SparseVector {
             }
         }
 
-        SparseVector {
+        Self {
             dimension: self.dimension,
             positions: result_positions,
             values: result_values,
@@ -502,7 +532,8 @@ impl SparseVector {
     /// Project out the component along a direction (self - proj(self onto direction)).
     ///
     /// Used for conflict resolution: removes the conflicting component.
-    pub fn project_orthogonal(&self, direction: &SparseVector) -> SparseVector {
+    #[must_use]
+    pub fn project_orthogonal(&self, direction: &Self) -> Self {
         let dir_mag_sq = direction.values.iter().map(|v| v * v).sum::<f32>();
         if dir_mag_sq == 0.0 {
             return self.clone();
@@ -519,11 +550,12 @@ impl SparseVector {
     // Geometric Distance Metrics
     // ========================================================================
 
-    /// Angular distance: acos(cosine_similarity).
+    /// Angular distance: `acos(cosine_similarity)`.
     ///
     /// More linear than cosine for small angles.
     /// Range: [0, PI] where 0 = identical, PI = opposite.
-    pub fn angular_distance(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn angular_distance(&self, other: &Self) -> f32 {
         let cos = self.cosine_similarity(other).clamp(-1.0, 1.0);
         cos.acos()
     }
@@ -531,8 +563,9 @@ impl SparseVector {
     /// Geodesic distance on unit sphere.
     ///
     /// For normalized vectors, this is the arc length.
-    /// Equivalent to angular_distance for normalized inputs.
-    pub fn geodesic_distance(&self, other: &SparseVector) -> f32 {
+    /// Equivalent to `angular_distance` for normalized inputs.
+    #[must_use]
+    pub fn geodesic_distance(&self, other: &Self) -> f32 {
         // Geodesic on hypersphere is just arc length = angle
         self.angular_distance(other)
     }
@@ -542,7 +575,8 @@ impl SparseVector {
     /// Measures structural overlap independent of values.
     /// |intersection| / |union| of non-zero positions.
     /// Range: [0, 1] where 1 = same positions, 0 = no overlap.
-    pub fn jaccard_index(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn jaccard_index(&self, other: &Self) -> f32 {
         if self.positions.is_empty() && other.positions.is_empty() {
             return 1.0; // Both empty = identical structure
         }
@@ -567,14 +601,18 @@ impl SparseVector {
         }
 
         let union = self.positions.len() + other.positions.len() - intersection;
-        intersection as f32 / union as f32
+        #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio
+        {
+            intersection as f32 / union as f32
+        }
     }
 
     /// Overlap coefficient: |intersection| / min(|a|, |b|).
     ///
     /// Measures containment - 1.0 if smaller is subset of larger.
     /// Range: [0, 1].
-    pub fn overlap_coefficient(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn overlap_coefficient(&self, other: &Self) -> f32 {
         if self.positions.is_empty() || other.positions.is_empty() {
             return 0.0;
         }
@@ -596,14 +634,18 @@ impl SparseVector {
         }
 
         let min_size = self.positions.len().min(other.positions.len());
-        intersection as f32 / min_size as f32
+        #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio
+        {
+            intersection as f32 / min_size as f32
+        }
     }
 
     /// Weighted Jaccard: sum(min(|a|, |b|)) / sum(max(|a|, |b|)).
     ///
     /// Like Jaccard but accounts for value magnitudes.
     /// Range: [0, 1] where 1 = identical values at all positions.
-    pub fn weighted_jaccard(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn weighted_jaccard(&self, other: &Self) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 
         let mut min_sum = 0.0f32;
@@ -657,12 +699,14 @@ impl SparseVector {
     /// Euclidean distance (L2 norm of difference).
     ///
     /// sqrt(sum((a\[i\] - b\[i\])^2))
-    pub fn euclidean_distance(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn euclidean_distance(&self, other: &Self) -> f32 {
         self.euclidean_distance_squared(other).sqrt()
     }
 
     /// Squared Euclidean distance (avoids sqrt).
-    pub fn euclidean_distance_squared(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn euclidean_distance_squared(&self, other: &Self) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 
         let mut sum_sq = 0.0f32;
@@ -709,7 +753,8 @@ impl SparseVector {
     /// Manhattan distance (L1 norm of difference).
     ///
     /// sum(|a\[i\] - b\[i\]|)
-    pub fn manhattan_distance(&self, other: &SparseVector) -> f32 {
+    #[must_use]
+    pub fn manhattan_distance(&self, other: &Self) -> f32 {
         debug_assert_eq!(self.dimension, other.dimension);
 
         let mut sum = 0.0f32;
@@ -754,6 +799,8 @@ impl SparseVector {
     }
 
     /// Memory usage in bytes (approximate).
+    #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // Vec::capacity() is not const
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.positions.capacity() * std::mem::size_of::<u32>()
@@ -761,21 +808,26 @@ impl SparseVector {
     }
 
     /// Memory that a dense representation would use.
-    pub fn dense_memory_bytes(&self) -> usize {
+    #[must_use]
+    pub const fn dense_memory_bytes(&self) -> usize {
         self.dimension * std::mem::size_of::<f32>()
     }
 
     /// Compression ratio vs dense storage.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for ratio
     pub fn compression_ratio(&self) -> f32 {
         self.dense_memory_bytes() as f32 / self.memory_bytes() as f32
     }
 
     /// Access raw positions slice.
+    #[must_use]
     pub fn positions(&self) -> &[u32] {
         &self.positions
     }
 
     /// Access raw values slice.
+    #[must_use]
     pub fn values(&self) -> &[f32] {
         &self.values
     }
@@ -789,7 +841,8 @@ impl SparseVector {
     }
 
     /// Check if this is effectively a zero vector (no stored values).
-    pub fn is_zero(&self) -> bool {
+    #[must_use]
+    pub const fn is_zero(&self) -> bool {
         self.values.is_empty()
     }
 
@@ -807,18 +860,17 @@ impl SparseVector {
     }
 
     /// Create a pruned copy.
-    pub fn pruned(&self, threshold: f32) -> SparseVector {
-        let pairs: Vec<_> = self
+    #[must_use]
+    pub fn pruned(&self, threshold: f32) -> Self {
+        let (positions, values) = self
             .positions
             .iter()
             .zip(&self.values)
             .filter(|(_, &v)| v.abs() >= threshold)
             .map(|(&p, &v)| (p, v))
-            .collect();
+            .unzip();
 
-        let (positions, values) = pairs.into_iter().unzip();
-
-        SparseVector {
+        Self {
             dimension: self.dimension,
             positions,
             values,
@@ -839,13 +891,15 @@ pub struct SparseVectorBuilder {
 }
 
 impl SparseVectorBuilder {
-    pub fn new(dimension: usize) -> Self {
+    #[must_use]
+    pub const fn new(dimension: usize) -> Self {
         Self {
             dimension,
             entries: Vec::new(),
         }
     }
 
+    #[must_use]
     pub fn with_capacity(dimension: usize, capacity: usize) -> Self {
         Self {
             dimension,
@@ -861,6 +915,7 @@ impl SparseVectorBuilder {
     }
 
     /// Build the final sparse vector.
+    #[must_use]
     pub fn build(mut self) -> SparseVector {
         self.entries.sort_by_key(|(p, _)| *p);
 
@@ -1369,5 +1424,89 @@ mod tests {
         let geodesic = a.geodesic_distance(&b);
 
         assert!((angular - geodesic).abs() < 1e-6);
+    }
+
+    // Additional edge case coverage tests
+
+    #[test]
+    fn sparsity_zero_dimension() {
+        let sv = SparseVector::new(0);
+        assert_eq!(sv.sparsity(), 0.0);
+    }
+
+    #[test]
+    fn weighted_average_zero_weights() {
+        let a = SparseVector::from_dense(&[1.0, 2.0]);
+        let b = SparseVector::from_dense(&[3.0, 4.0]);
+        let result = a.weighted_average(&b, 0.0, 0.0);
+        assert_eq!(result.dimension(), 2);
+        assert_eq!(result.nnz(), 0);
+    }
+
+    #[test]
+    fn weighted_average_overlapping_positions() {
+        // Both vectors have values at positions 0 and 2
+        let a = SparseVector::from_dense(&[1.0, 0.0, 3.0]);
+        let b = SparseVector::from_dense(&[2.0, 0.0, 4.0]);
+        let result = a.weighted_average(&b, 1.0, 1.0);
+        // (1*1 + 1*2)/2 = 1.5, (1*3 + 1*4)/2 = 3.5
+        assert!((result.get(0) - 1.5).abs() < 1e-6);
+        assert!((result.get(2) - 3.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weighted_jaccard_different_positions() {
+        // a has values at 0, 2; b has values at 1, 2
+        let a = SparseVector::from_dense(&[1.0, 0.0, 3.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 2.0, 4.0, 0.0]);
+        // This exercises all branches in weighted_jaccard merge loop
+        let result = a.weighted_jaccard(&b);
+        assert!(result >= 0.0 && result <= 1.0);
+    }
+
+    #[test]
+    fn weighted_jaccard_one_extends_past_other() {
+        // a is longer than b after merge
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
+        let b = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
+        let result = a.weighted_jaccard(&b);
+        assert!(result >= 0.0 && result <= 1.0);
+    }
+
+    #[test]
+    fn euclidean_distance_disjoint_positions() {
+        // a has values at 0, 2; b has values at 1, 3
+        let a = SparseVector::from_dense(&[1.0, 0.0, 2.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 3.0, 0.0, 4.0]);
+        let dist = a.euclidean_distance(&b);
+        // sqrt(1^2 + 3^2 + 2^2 + 4^2) = sqrt(1+9+4+16) = sqrt(30)
+        assert!((dist - 30.0_f32.sqrt()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn euclidean_distance_a_extends_past_b() {
+        let a = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
+        let b = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
+        let dist = a.euclidean_distance(&b);
+        // sqrt(0 + 4 + 9 + 16) = sqrt(29)
+        assert!((dist - 29.0_f32.sqrt()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn euclidean_distance_b_extends_past_a() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 0.0, 0.0]);
+        let b = SparseVector::from_dense(&[1.0, 2.0, 3.0, 4.0]);
+        let dist = a.euclidean_distance(&b);
+        // sqrt(0 + 4 + 9 + 16) = sqrt(29)
+        assert!((dist - 29.0_f32.sqrt()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn manhattan_distance_disjoint_positions() {
+        let a = SparseVector::from_dense(&[1.0, 0.0, 2.0, 0.0]);
+        let b = SparseVector::from_dense(&[0.0, 3.0, 0.0, 4.0]);
+        let dist = a.manhattan_distance(&b);
+        // |1| + |3| + |2| + |4| = 10
+        assert!((dist - 10.0).abs() < 1e-6);
     }
 }

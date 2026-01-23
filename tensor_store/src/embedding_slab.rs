@@ -1,14 +1,14 @@
 //! Dense embedding storage with chunked allocation.
 //!
-//! EmbeddingSlab stores dense f32 embeddings in contiguous chunks to avoid
-//! large reallocations. Embeddings are stored by EntityId, with O(1) lookup
+//! `EmbeddingSlab` stores dense f32 embeddings in contiguous chunks to avoid
+//! large reallocations. Embeddings are stored by `EntityId`, with O(1) lookup
 //! and append operations.
 //!
 //! # Design Philosophy
 //!
 //! - Append-only growth with chunked allocation
 //! - Free slot reuse for deleted embeddings
-//! - O(1) lookup by EntityId
+//! - O(1) lookup by `EntityId`
 //! - Zero-copy iteration for HNSW index building
 
 use std::{
@@ -24,12 +24,12 @@ use crate::entity_index::EntityId;
 /// Default chunk size: 16MB of f32s = 4M floats
 const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
-/// Error types for EmbeddingSlab operations.
-#[derive(Debug, Clone, PartialEq)]
+/// Error types for `EmbeddingSlab` operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddingError {
     /// Embedding dimension mismatch.
     DimensionMismatch { expected: usize, actual: usize },
-    /// EntityId not found.
+    /// `EntityId` not found.
     NotFound(EntityId),
     /// Slab is full and cannot allocate more chunks.
     OutOfMemory,
@@ -39,11 +39,7 @@ impl std::fmt::Display for EmbeddingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DimensionMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "dimension mismatch: expected {}, got {}",
-                    expected, actual
-                )
+                write!(f, "dimension mismatch: expected {expected}, got {actual}")
             },
             Self::NotFound(id) => write!(f, "entity {} not found", id.as_u64()),
             Self::OutOfMemory => write!(f, "out of memory"),
@@ -63,8 +59,13 @@ pub struct EmbeddingSlot {
 }
 
 impl EmbeddingSlot {
-    fn new(chunk: u32, offset: u32) -> Self {
-        Self { chunk, offset }
+    /// Create from chunk index and offset. Chunk count is practically limited.
+    #[allow(clippy::cast_possible_truncation)]
+    const fn from_position(chunk_idx: usize, offset: usize) -> Self {
+        Self {
+            chunk: chunk_idx as u32,
+            offset: offset as u32,
+        }
     }
 }
 
@@ -91,7 +92,7 @@ pub struct EmbeddingSlab {
     /// Chunked storage: each chunk is a fixed-size box.
     chunks: RwLock<Vec<Box<[f32]>>>,
 
-    /// EntityId -> slot mapping.
+    /// `EntityId` -> slot mapping.
     index: RwLock<BTreeMap<EntityId, EmbeddingSlot>>,
 
     /// Free slots for deleted embeddings.
@@ -105,12 +106,13 @@ pub struct EmbeddingSlab {
 }
 
 impl EmbeddingSlab {
-    /// Create a new EmbeddingSlab with the given dimension and initial capacity.
+    /// Create a new `EmbeddingSlab` with the given dimension and initial capacity.
     ///
     /// # Arguments
     ///
     /// * `dimension` - Fixed embedding dimension (e.g., 768 for BERT)
     /// * `initial_capacity` - Initial number of embeddings to pre-allocate
+    #[must_use]
     pub fn new(dimension: usize, initial_capacity: usize) -> Self {
         let chunk_capacity = DEFAULT_CHUNK_SIZE / dimension;
         let chunk_capacity = chunk_capacity.max(1);
@@ -131,14 +133,16 @@ impl EmbeddingSlab {
         }
     }
 
-    /// Create an EmbeddingSlab with default capacity.
+    /// Create an `EmbeddingSlab` with default capacity.
+    #[must_use]
     pub fn with_dimension(dimension: usize) -> Self {
         Self::new(dimension, 1000)
     }
 
     /// Get the embedding dimension.
     #[inline]
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         self.dimension
     }
 
@@ -158,35 +162,32 @@ impl EmbeddingSlab {
         }
 
         // Check if entity already has a slot
-        {
-            let index = self.index.read();
-            if let Some(&slot) = index.get(&entity) {
-                // Update in-place
-                let chunks = self.chunks.read();
-                let chunk = &chunks[slot.chunk as usize];
-                let start = slot.offset as usize * self.dimension;
-                // Safety: we know the slot is valid
-                unsafe {
-                    let ptr = chunk.as_ptr().add(start) as *mut f32;
-                    std::ptr::copy_nonoverlapping(embedding.as_ptr(), ptr, self.dimension);
-                }
-                return Ok(());
-            }
-        }
-
-        // Get or allocate a slot
-        let slot = self.allocate_slot()?;
-
-        // Write the embedding
-        {
+        if let Some(&slot) = self.index.read().get(&entity) {
+            // Update in-place
             let chunks = self.chunks.read();
             let chunk = &chunks[slot.chunk as usize];
             let start = slot.offset as usize * self.dimension;
+            // Safety: we know the slot is valid
             unsafe {
-                let ptr = chunk.as_ptr().add(start) as *mut f32;
+                let ptr = chunk.as_ptr().add(start).cast_mut();
                 std::ptr::copy_nonoverlapping(embedding.as_ptr(), ptr, self.dimension);
             }
+            drop(chunks);
+            return Ok(());
         }
+
+        // Get or allocate a slot
+        let slot = self.allocate_slot();
+
+        // Write the embedding
+        let chunks = self.chunks.read();
+        let chunk = &chunks[slot.chunk as usize];
+        let start = slot.offset as usize * self.dimension;
+        unsafe {
+            let ptr = chunk.as_ptr().add(start).cast_mut();
+            std::ptr::copy_nonoverlapping(embedding.as_ptr(), ptr, self.dimension);
+        }
+        drop(chunks);
 
         // Update index
         self.index.write().insert(entity, slot);
@@ -195,17 +196,18 @@ impl EmbeddingSlab {
         Ok(())
     }
 
-    /// Get an embedding by EntityId (cloned).
+    /// Get an embedding by `EntityId` (cloned).
+    #[must_use]
     pub fn get(&self, entity: EntityId) -> Option<Vec<f32>> {
-        let index = self.index.read();
-        let slot = index.get(&entity)?;
+        let slot = *self.index.read().get(&entity)?;
 
-        let chunks = self.chunks.read();
-        let chunk = &chunks[slot.chunk as usize];
         let start = slot.offset as usize * self.dimension;
         let end = start + self.dimension;
+        let chunks = self.chunks.read();
+        let embedding = chunks[slot.chunk as usize][start..end].to_vec();
+        drop(chunks);
 
-        Some(chunk[start..end].to_vec())
+        Some(embedding)
     }
 
     /// Check if an entity has an embedding.
@@ -218,43 +220,45 @@ impl EmbeddingSlab {
     ///
     /// The slot is added to the free list for reuse.
     pub fn delete(&self, entity: EntityId) -> bool {
-        let mut index = self.index.write();
-        if let Some(slot) = index.remove(&entity) {
+        self.index.write().remove(&entity).is_some_and(|slot| {
             self.free_slots.lock().push(slot);
             self.count.fetch_sub(1, Ordering::Relaxed);
             true
-        } else {
-            false
-        }
+        })
     }
 
     /// Get the number of embeddings.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.count.load(Ordering::Relaxed)
     }
 
     /// Check if the slab is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Get the total capacity (across all chunks).
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.chunks.read().len() * self.chunk_capacity
     }
 
     /// Get memory usage in bytes.
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         let chunks = self.chunks.read();
         chunks.len() * self.chunk_capacity * self.dimension * std::mem::size_of::<f32>()
     }
 
-    /// Iterate over all (EntityId, embedding) pairs.
+    /// Collect all (`EntityId`, embedding) pairs.
     ///
     /// Note: This clones each embedding. For zero-copy access, use `iter_with`.
-    pub fn iter(&self) -> Vec<(EntityId, Vec<f32>)> {
+    #[must_use]
+    pub fn entries(&self) -> Vec<(EntityId, Vec<f32>)> {
         let index = self.index.read();
         let chunks = self.chunks.read();
 
@@ -271,7 +275,7 @@ impl EmbeddingSlab {
 
     /// Iterate with a callback for zero-copy access.
     ///
-    /// The callback receives each (EntityId, &[f32]) pair.
+    /// The callback receives each (`EntityId`, `&[f32]`) pair.
     pub fn iter_with<F>(&self, mut f: F)
     where
         F: FnMut(EntityId, &[f32]),
@@ -285,9 +289,12 @@ impl EmbeddingSlab {
             let end = start + self.dimension;
             f(entity, &chunk[start..end]);
         }
+        drop(index);
+        drop(chunks);
     }
 
-    /// Get all EntityIds with embeddings.
+    /// Get all `EntityId`s with embeddings.
+    #[must_use]
     pub fn entity_ids(&self) -> Vec<EntityId> {
         self.index.read().keys().copied().collect()
     }
@@ -305,7 +312,7 @@ impl EmbeddingSlab {
     /// This is an expensive O(n) operation that rewrites all embeddings.
     pub fn compact(&self) {
         // Build new compact storage
-        let old_entries: Vec<(EntityId, Vec<f32>)> = self.iter();
+        let old_entries: Vec<(EntityId, Vec<f32>)> = self.entries();
 
         if old_entries.is_empty() {
             return;
@@ -337,6 +344,8 @@ impl EmbeddingSlab {
                 (entity, CompressedEmbedding::from_dense(dense))
             })
             .collect();
+        drop(index);
+        drop(chunks);
 
         EmbeddingSlabSnapshot {
             dimension: self.dimension,
@@ -347,6 +356,7 @@ impl EmbeddingSlab {
     /// Restore from a snapshot.
     ///
     /// Decompresses sparse vectors back to dense format for HNSW compatibility.
+    #[must_use]
     pub fn restore(snapshot: EmbeddingSlabSnapshot) -> Self {
         let slab = Self::new(snapshot.dimension, snapshot.embeddings.len().max(1));
 
@@ -359,13 +369,11 @@ impl EmbeddingSlab {
     }
 
     /// Allocate a slot for a new embedding.
-    fn allocate_slot(&self) -> Result<EmbeddingSlot, EmbeddingError> {
+    fn allocate_slot(&self) -> EmbeddingSlot {
         // Try to reuse a free slot
-        {
-            let mut free = self.free_slots.lock();
-            if let Some(slot) = free.pop() {
-                return Ok(slot);
-            }
+        let free_slot = self.free_slots.lock().pop();
+        if let Some(slot) = free_slot {
+            return slot;
         }
 
         // Allocate from current write position
@@ -374,14 +382,13 @@ impl EmbeddingSlab {
         let offset = pos % self.chunk_capacity;
 
         // Ensure we have enough chunks
-        {
-            let mut chunks = self.chunks.write();
-            while chunks.len() <= chunk_idx {
-                chunks.push(vec![0.0f32; self.chunk_capacity * self.dimension].into_boxed_slice());
-            }
+        let mut chunks = self.chunks.write();
+        while chunks.len() <= chunk_idx {
+            chunks.push(vec![0.0f32; self.chunk_capacity * self.dimension].into_boxed_slice());
         }
+        drop(chunks);
 
-        Ok(EmbeddingSlot::new(chunk_idx as u32, offset as u32))
+        EmbeddingSlot::from_position(chunk_idx, offset)
     }
 }
 
@@ -406,6 +413,7 @@ pub enum CompressedEmbedding {
 
 impl CompressedEmbedding {
     /// Create from a dense vector, using sparse format if beneficial (50% threshold).
+    #[must_use]
     pub fn from_dense(vector: &[f32]) -> Self {
         if vector.is_empty() {
             return Self::Dense(Vec::new());
@@ -437,6 +445,7 @@ impl CompressedEmbedding {
     }
 
     /// Convert to a dense vector.
+    #[must_use]
     pub fn to_dense(&self) -> Vec<f32> {
         match self {
             Self::Dense(v) => v.clone(),
@@ -455,7 +464,7 @@ impl CompressedEmbedding {
     }
 }
 
-/// Serializable snapshot of EmbeddingSlab state.
+/// Serializable snapshot of `EmbeddingSlab` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingSlabSnapshot {
     dimension: usize,
@@ -593,7 +602,7 @@ mod tests {
                 .unwrap();
         }
 
-        let entries = slab.iter();
+        let entries = slab.entries();
         assert_eq!(entries.len(), 3);
 
         let ids: HashSet<u64> = entries.iter().map(|(e, _)| e.as_u64()).collect();
@@ -922,5 +931,15 @@ mod tests {
             serialized.len(),
             dense_size
         );
+    }
+
+    #[test]
+    fn test_compressed_embedding_from_empty_vector() {
+        let empty: Vec<f32> = vec![];
+        let compressed = CompressedEmbedding::from_dense(&empty);
+        match compressed {
+            CompressedEmbedding::Dense(v) => assert!(v.is_empty()),
+            _ => panic!("Expected Dense for empty vector"),
+        }
     }
 }

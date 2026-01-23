@@ -1557,8 +1557,7 @@ mod tests {
         let result = orchestrator2
             .send_query(&"node1".to_string(), request)
             .await;
-        if result.is_ok() {
-            let response = result.unwrap();
+        if let Ok(response) = result {
             assert_eq!(response.query_id, 42);
             assert!(response.success);
             assert_eq!(response.result, b"success_result");

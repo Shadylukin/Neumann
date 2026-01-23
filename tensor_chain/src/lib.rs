@@ -19,25 +19,29 @@
 //!
 //! # Quick Start
 //!
-//! ```ignore
-//! use tensor_chain::TensorChain;
+//! ```rust
+//! use std::sync::Arc;
+//! use graph_engine::GraphEngine;
+//! use tensor_chain::{Chain, Transaction};
 //!
-//! // Create a new chain
-//! let chain = TensorChain::new(store, "node1".to_string());
-//! chain.initialize()?;
+//! // Create a chain backed by a graph engine
+//! let graph = Arc::new(GraphEngine::new());
+//! let chain = Chain::new(graph, "node1".to_string());
+//! chain.initialize().unwrap();
 //!
-//! // Begin a transaction
-//! let tx = chain.begin()?;
+//! // Build a new block with transactions
+//! let builder = chain.new_block()
+//!     .add_transaction(Transaction::Put {
+//!         key: "users:1".into(),
+//!         data: vec![1, 2, 3],
+//!     });
 //!
-//! // Add operations
-//! tx.add_operation(Transaction::Put { key: "users:1".into(), data: vec![...] })?;
+//! // Append the block to the chain
+//! let block = builder.build();
+//! chain.append(block).unwrap();
 //!
-//! // Commit (creates new block)
-//! let block_hash = chain.commit(tx)?;
+//! assert_eq!(chain.height(), 1);
 //! ```
-
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::must_use_candidate)]
 
 pub mod atomic_io;
 pub mod block;

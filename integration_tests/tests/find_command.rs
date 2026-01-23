@@ -31,14 +31,14 @@ fn test_find_with_where_clause() {
     let result = router.execute_parsed("FIND NODE WHERE age > 30").unwrap();
 
     match result {
-        query_router::QueryResult::Unified(unified) => {
+        query_router::QueryResult::Unified(_unified) => {
             // Should find users with age > 30 (Bob=35, Dave=42)
             // Note: FIND may return placeholder results in current implementation
             // This test documents expected behavior
         },
         query_router::QueryResult::Rows(rows) => {
             // Alternative result type
-            assert!(rows.len() >= 0); // May be 0 if FIND WHERE not fully implemented
+            let _ = rows.len(); // May be 0 if FIND WHERE not fully implemented
         },
         _ => {
             // FIND may return different result types depending on implementation
@@ -72,13 +72,13 @@ fn test_find_with_similar_to() {
             // Most similar should be doc:0 itself
             assert!(similar[0].key.contains("doc:0"));
         },
-        Ok(query_router::QueryResult::Unified(unified)) => {
+        Ok(query_router::QueryResult::Unified(_unified)) => {
             // Unified result type
         },
         Ok(_) => {
             // Other result types acceptable
         },
-        Err(e) => {
+        Err(_e) => {
             // FIND may not be fully implemented
             // This documents expected vs actual behavior
         },
@@ -174,7 +174,7 @@ fn test_find_combined_where_similar() {
 
     // This tests combined WHERE + SIMILAR functionality
     match result {
-        Ok(query_router::QueryResult::Unified(unified)) => {
+        Ok(query_router::QueryResult::Unified(_unified)) => {
             // Expected unified result combining table filter and similarity
         },
         Ok(_) => {
@@ -199,7 +199,7 @@ fn test_find_combined_all_clauses() {
         _ => panic!("Expected Ids"),
     };
 
-    let bob = match router
+    let _bob = match router
         .execute("NODE CREATE user name='Bob', age=25")
         .unwrap()
     {
@@ -235,7 +235,7 @@ fn test_find_combined_all_clauses() {
 
     // This is the most complex FIND query combining all three query types
     match result {
-        Ok(query_router::QueryResult::Unified(unified)) => {
+        Ok(query_router::QueryResult::Unified(_unified)) => {
             // Full unified query result
         },
         Ok(_) => {
@@ -272,7 +272,7 @@ fn test_find_with_limit() {
             // Should be limited to 5 results
             assert!(similar.len() <= 5);
         },
-        Ok(query_router::QueryResult::Unified(unified)) => {
+        Ok(query_router::QueryResult::Unified(_unified)) => {
             // Unified result with limit
         },
         Ok(_) => {},
@@ -293,7 +293,7 @@ fn test_find_empty_results() {
     let result = router.execute_parsed("FIND NODE WHERE id > 0");
 
     match result {
-        Ok(query_router::QueryResult::Unified(unified)) => {
+        Ok(query_router::QueryResult::Unified(_unified)) => {
             // Empty unified result is valid
         },
         Ok(query_router::QueryResult::Rows(rows)) => {
@@ -339,7 +339,8 @@ fn test_find_node_basic() {
 
     if let Ok(QueryResult::Unified(unified)) = result {
         // Description should mention finding person nodes
-        assert!(unified.description.contains("person") || unified.items.len() >= 0);
+        // Description should mention person or items exist (items.len() always >= 0 for usize)
+        let _ = &unified.items;
     }
 }
 

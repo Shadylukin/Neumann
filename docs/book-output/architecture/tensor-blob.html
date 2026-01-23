@@ -1,0 +1,1210 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tensor Blob - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/tensor-blob.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="tensor-blob-architecture"><a class="header" href="#tensor-blob-architecture">Tensor Blob Architecture</a></h1>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>S3-style object storage for large artifacts using content-addressable chunked
+storage with tensor-native metadata. Artifacts are split into SHA-256 hashed
+chunks for automatic deduplication, with metadata stored in the tensor store for
+integration with graph, relational, and vector queries.</p>
+<p>All I/O operations are async via Tokio. Large files are streamed through
+<code>BlobWriter</code> and <code>BlobReader</code> without loading entirely into memory. Background
+garbage collection removes orphaned chunks automatically.</p>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<h3 id="core-types"><a class="header" href="#core-types">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>BlobStore</code></td><td>Main API for storing, retrieving, and managing artifacts</td></tr>
+<tr><td><code>BlobConfig</code></td><td>Configuration for chunk size, GC intervals, and limits</td></tr>
+<tr><td><code>BlobWriter</code></td><td>Streaming upload with incremental chunking and hash computation</td></tr>
+<tr><td><code>BlobReader</code></td><td>Streaming download with chunk-by-chunk reads and verification</td></tr>
+<tr><td><code>Chunk</code></td><td>Content-addressed data segment with SHA-256 hash</td></tr>
+<tr><td><code>Chunker</code></td><td>Splits data into fixed-size content-addressable chunks</td></tr>
+<tr><td><code>StreamingHasher</code></td><td>Incremental SHA-256 computation for large files</td></tr>
+<tr><td><code>GarbageCollector</code></td><td>Background task for cleaning orphaned chunks</td></tr>
+</tbody></table>
+</div>
+<h3 id="metadata-types"><a class="header" href="#metadata-types">Metadata Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ArtifactMetadata</code></td><td>Full metadata including filename, size, checksum, links, tags</td></tr>
+<tr><td><code>PutOptions</code></td><td>Upload options: content type, creator, links, tags, custom metadata, embedding</td></tr>
+<tr><td><code>MetadataUpdates</code></td><td>Partial updates for filename, content type, custom fields</td></tr>
+<tr><td><code>SimilarArtifact</code></td><td>Search result with artifact ID, filename, and similarity score</td></tr>
+<tr><td><code>WriteState</code></td><td>Internal state tracking artifact metadata during streaming upload</td></tr>
+</tbody></table>
+</div>
+<h3 id="statistics-types"><a class="header" href="#statistics-types">Statistics Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>BlobStats</code></td><td>Storage statistics: artifact count, chunk count, dedup ratio, orphaned chunks</td></tr>
+<tr><td><code>GcStats</code></td><td>GC results: chunks deleted, bytes freed</td></tr>
+<tr><td><code>RepairStats</code></td><td>Repair results: artifacts checked, chunks verified, refs fixed, orphans deleted</td></tr>
+</tbody></table>
+</div>
+<h3 id="error-types"><a class="header" href="#error-types">Error Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>NotFound</code></td><td>Artifact does not exist</td></tr>
+<tr><td><code>ChunkMissing</code></td><td>Referenced chunk not found in storage</td></tr>
+<tr><td><code>ChecksumMismatch</code></td><td>Data corruption detected during verification</td></tr>
+<tr><td><code>EmptyData</code></td><td>Cannot store empty artifact</td></tr>
+<tr><td><code>InvalidConfig</code></td><td>Invalid configuration parameter (e.g., zero chunk size)</td></tr>
+<tr><td><code>InvalidArtifactId</code></td><td>Malformed artifact ID format</td></tr>
+<tr><td><code>StorageError</code></td><td>Underlying tensor store error</td></tr>
+<tr><td><code>GraphError</code></td><td>Graph engine integration error (feature-gated)</td></tr>
+<tr><td><code>VectorError</code></td><td>Vector engine integration error (feature-gated)</td></tr>
+<tr><td><code>IoError</code></td><td>I/O error during streaming operations</td></tr>
+<tr><td><code>GcError</code></td><td>Garbage collection failure</td></tr>
+<tr><td><code>AlreadyExists</code></td><td>Artifact with given ID already exists</td></tr>
+<tr><td><code>DimensionMismatch</code></td><td>Embedding dimension mismatch</td></tr>
+</tbody></table>
+</div>
+<h2 id="architecture-diagram"><a class="header" href="#architecture-diagram">Architecture Diagram</a></h2>
+<pre><code class="language-sql">+--------------------------------------------------+
+|                BlobStore (Public API)            |
+|   - put, get, delete, exists                     |
+|   - metadata, update_metadata                    |
+|   - link, unlink, tag, untag                     |
+|   - verify, repair, gc, full_gc                  |
++--------------------------------------------------+
+            |              |              |
+    +-------+      +-------+      +-------+
+    |              |              |
++--------+   +-----------+   +----------+
+| Writer |   |  Reader   |   |    GC    |
+| Stream |   |  Stream   |   | (Tokio)  |
++--------+   +-----------+   +----------+
+    |              |              |
+    +-------+------+------+-------+
+            |
+    +------------------+
+    |     Chunker      |
+    |   SHA-256 hash   |
+    +------------------+
+            |
+    +------------------+
+    |   tensor_store   |
+    | _blob:meta:*     |
+    | _blob:chunk:*    |
+    +------------------+
+</code></pre>
+<h2 id="storage-format"><a class="header" href="#storage-format">Storage Format</a></h2>
+<h3 id="artifact-metadata"><a class="header" href="#artifact-metadata">Artifact Metadata</a></h3>
+<p>Stored at <code>_blob:meta:{artifact_id}</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>_type</code></td><td>String</td><td>Always <code>"blob_artifact"</code></td></tr>
+<tr><td><code>_id</code></td><td>String</td><td>Unique artifact identifier (UUID v4)</td></tr>
+<tr><td><code>_filename</code></td><td>String</td><td>Original filename</td></tr>
+<tr><td><code>_content_type</code></td><td>String</td><td>MIME type</td></tr>
+<tr><td><code>_size</code></td><td>Int</td><td>Total size in bytes</td></tr>
+<tr><td><code>_checksum</code></td><td>String</td><td>SHA-256 hash of full content (<code>sha256:{hex}</code>)</td></tr>
+<tr><td><code>_chunk_size</code></td><td>Int</td><td>Size of each chunk (except possibly last)</td></tr>
+<tr><td><code>_chunk_count</code></td><td>Int</td><td>Number of chunks</td></tr>
+<tr><td><code>_chunks</code></td><td>Pointers</td><td>Ordered list of chunk keys</td></tr>
+<tr><td><code>_created</code></td><td>Int</td><td>Unix timestamp (seconds)</td></tr>
+<tr><td><code>_modified</code></td><td>Int</td><td>Unix timestamp (seconds)</td></tr>
+<tr><td><code>_created_by</code></td><td>String</td><td>Creator identity</td></tr>
+<tr><td><code>_linked_to</code></td><td>Pointers</td><td>Linked entity IDs</td></tr>
+<tr><td><code>_tags</code></td><td>Pointers</td><td>Applied tags (prefixed with <code>tag:</code>)</td></tr>
+<tr><td><code>_meta:*</code></td><td>String</td><td>Custom metadata fields</td></tr>
+<tr><td><code>_embedding</code></td><td>Vector/Sparse</td><td>Optional embedding (sparse if &gt;50% zeros)</td></tr>
+<tr><td><code>_embedded_model</code></td><td>String</td><td>Embedding model name</td></tr>
+</tbody></table>
+</div>
+<h3 id="chunk-data"><a class="header" href="#chunk-data">Chunk Data</a></h3>
+<p>Stored at <code>_blob:chunk:sha256:{hex}</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>_type</code></td><td>String</td><td>Always <code>"blob_chunk"</code></td></tr>
+<tr><td><code>_data</code></td><td>Bytes</td><td>Raw chunk data</td></tr>
+<tr><td><code>_size</code></td><td>Int</td><td>Chunk size in bytes</td></tr>
+<tr><td><code>_refs</code></td><td>Int</td><td>Reference count for deduplication</td></tr>
+<tr><td><code>_created</code></td><td>Int</td><td>Unix timestamp (seconds)</td></tr>
+</tbody></table>
+</div>
+<h2 id="content-addressable-chunking-algorithm"><a class="header" href="#content-addressable-chunking-algorithm">Content-Addressable Chunking Algorithm</a></h2>
+<p>The chunker uses a fixed-size chunking strategy with SHA-256 content addressing:</p>
+<pre class="mermaid">flowchart TD
+    A[Input Data] --&gt; B[Split into fixed-size chunks]
+    B --&gt; C{For each chunk}
+    C --&gt; D[Compute SHA-256 hash]
+    D --&gt; E{Chunk exists?}
+    E --&gt;|Yes| F[Increment ref count]
+    E --&gt;|No| G[Store new chunk]
+    F --&gt; H[Record chunk key]
+    G --&gt; H
+    H --&gt; C
+    C --&gt;|Done| I[Compute full-file checksum]
+    I --&gt; J[Store metadata with chunk list]
+</pre>
+<h3 id="chunker-implementation"><a class="header" href="#chunker-implementation">Chunker Implementation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Chunker splits data into fixed-size segments
+pub struct Chunker {
+    chunk_size: usize,  // Default: 1MB (1,048,576 bytes)
+}
+
+impl Chunker {
+    // Split data into chunks using Rust's chunks() iterator
+    pub fn chunk&lt;'a&gt;(&amp;'a self, data: &amp;'a [u8]) -&gt; impl Iterator&lt;Item = Chunk&gt; + 'a {
+        data.chunks(self.chunk_size).map(|chunk_data| {
+            let hash = compute_hash(chunk_data);
+            Chunk {
+                hash,
+                data: chunk_data.to_vec(),
+                size: chunk_data.len(),
+            }
+        })
+    }
+
+    // Count chunks without allocating (useful for progress estimation)
+    pub fn chunk_count(&amp;self, data_len: usize) -&gt; usize {
+        if data_len == 0 { 0 } else { data_len.div_ceil(self.chunk_size) }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="chunk-key-format"><a class="header" href="#chunk-key-format">Chunk Key Format</a></h3>
+<p>Chunk keys follow a deterministic format for content addressing:</p>
+<pre><code class="language-text">_blob:chunk:sha256:{64_hex_chars}
+</code></pre>
+<p>Example:</p>
+<pre><code class="language-text">_blob:chunk:sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+</code></pre>
+<h3 id="sha-256-checksum-computation"><a class="header" href="#sha-256-checksum-computation">SHA-256 Checksum Computation</a></h3>
+<p>The system uses the <code>sha2</code> crate for cryptographic hashing:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use sha2::{Digest, Sha256};
+
+// Single-shot hash for chunk content
+pub fn compute_hash(data: &amp;[u8]) -&gt; String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    format!("sha256:{:x}", result)  // Lowercase hex encoding
+}
+
+// Streaming hash for large files (used by BlobWriter)
+pub struct StreamingHasher {
+    hasher: Sha256,
+}
+
+impl StreamingHasher {
+    pub fn new() -&gt; Self {
+        Self { hasher: Sha256::new() }
+    }
+
+    pub fn update(&amp;mut self, data: &amp;[u8]) {
+        self.hasher.update(data);
+    }
+
+    pub fn finalize(self) -&gt; String {
+        let result = self.hasher.finalize();
+        format!("sha256:{:x}", result)
+    }
+}
+
+// Multi-segment hash (for verification)
+pub fn compute_hash_streaming&lt;'a&gt;(segments: impl Iterator&lt;Item = &amp;'a [u8]&gt;) -&gt; String {
+    let mut hasher = Sha256::new();
+    for segment in segments {
+        hasher.update(segment);
+    }
+    let result = hasher.finalize();
+    format!("sha256:{:x}", result)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="content-addressable-deduplication"><a class="header" href="#content-addressable-deduplication">Content-Addressable Deduplication</a></h2>
+<p>Chunks are keyed by SHA-256 hash, enabling automatic deduplication:</p>
+<ol>
+<li>When writing data, the chunker splits it into fixed-size segments (default
+1MB)</li>
+<li>Each chunk is hashed with SHA-256 to produce a unique key</li>
+<li>If the chunk already exists, only the reference count is incremented</li>
+<li>Identical data across different artifacts shares the same physical chunks</li>
+</ol>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let data = vec![0u8; 10_000];
+
+// Store same data twice
+blob.put("file1.bin", &amp;data, PutOptions::default()).await?;
+blob.put("file2.bin", &amp;data, PutOptions::default()).await?;
+
+let stats = blob.stats().await?;
+// stats.chunk_count = 1 (deduplicated)
+// stats.dedup_ratio &gt; 0.0
+<span class="boring">}</span></code></pre></pre>
+<h3 id="deduplication-ratio-calculation"><a class="header" href="#deduplication-ratio-calculation">Deduplication Ratio Calculation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let dedup_ratio = if total_bytes &gt; 0 {
+    1.0 - (unique_bytes as f64 / total_bytes as f64)
+} else {
+    0.0
+};
+<span class="boring">}</span></code></pre></pre>
+<p>A ratio of 0.5 means 50% space savings through deduplication.</p>
+<h2 id="streaming-upload-state-machine"><a class="header" href="#streaming-upload-state-machine">Streaming Upload State Machine</a></h2>
+<p>The <code>BlobWriter</code> manages incremental uploads with proper buffering:</p>
+<pre class="mermaid">stateDiagram-v2
+    [*] --&gt; Created: new()
+    Created --&gt; Buffering: write()
+    Buffering --&gt; Buffering: write() [buffer &lt; chunk_size]
+    Buffering --&gt; ChunkReady: write() [buffer &gt;= chunk_size]
+    ChunkReady --&gt; StoreChunk: drain buffer
+    StoreChunk --&gt; CheckExists: compute hash
+    CheckExists --&gt; IncrementRefs: chunk exists
+    CheckExists --&gt; StoreNew: chunk new
+    IncrementRefs --&gt; Buffering
+    StoreNew --&gt; Buffering
+    Buffering --&gt; FlushFinal: finish()
+    FlushFinal --&gt; StoreMetadata: store remaining buffer
+    StoreMetadata --&gt; [*]: return artifact_id
+</pre>
+<h3 id="blobwriter-internal-state"><a class="header" href="#blobwriter-internal-state">BlobWriter Internal State</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct BlobWriter {
+    store: TensorStore,
+    chunker: Chunker,
+    state: WriteState,      // Artifact metadata (filename, content_type, etc.)
+    chunks: Vec&lt;String&gt;,    // Ordered list of chunk keys
+    total_size: usize,      // Running total of bytes written
+    hasher: StreamingHasher, // Incremental full-file hash
+    buffer: Vec&lt;u8&gt;,        // Incomplete chunk buffer
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="write-operation-flow"><a class="header" href="#write-operation-flow">Write Operation Flow</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn write(&amp;mut self, data: &amp;[u8]) -&gt; Result&lt;()&gt; {
+    if data.is_empty() { return Ok(()); }
+
+    // 1. Update full-file hash (computed independently of chunking)
+    self.hasher.update(data);
+    self.total_size += data.len();
+
+    // 2. Add to internal buffer
+    self.buffer.extend_from_slice(data);
+
+    // 3. Process complete chunks (may be multiple if large write)
+    while self.buffer.len() &gt;= self.chunker.chunk_size() {
+        let chunk_data: Vec&lt;u8&gt; = self.buffer.drain(..self.chunker.chunk_size()).collect();
+        let chunk = Chunk::new(chunk_data);
+        self.store_chunk(chunk).await?;
+    }
+
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="finish-operation"><a class="header" href="#finish-operation">Finish Operation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn finish(mut self) -&gt; Result&lt;String&gt; {
+    // 1. Flush remaining buffer as final (possibly smaller) chunk
+    if !self.buffer.is_empty() {
+        let chunk = Chunk::new(std::mem::take(&amp;mut self.buffer));
+        self.store_chunk(chunk).await?;
+    }
+
+    // 2. Finalize full-file checksum
+    let checksum = self.hasher.finalize();
+
+    // 3. Build and store metadata tensor
+    let mut tensor = TensorData::new();
+    tensor.set("_type", "blob_artifact");
+    tensor.set("_id", self.state.artifact_id.clone());
+    tensor.set("_checksum", checksum);
+    tensor.set("_chunks", TensorValue::Pointers(self.chunks));
+    // ... additional fields ...
+
+    let meta_key = format!("_blob:meta:{}", self.state.artifact_id);
+    self.store.put(&amp;meta_key, tensor)?;
+
+    Ok(self.state.artifact_id)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="streaming-download-state-machine"><a class="header" href="#streaming-download-state-machine">Streaming Download State Machine</a></h2>
+<p>The <code>BlobReader</code> manages incremental downloads with chunk-level iteration:</p>
+<pre class="mermaid">stateDiagram-v2
+    [*] --&gt; Initialized: new()
+    Initialized --&gt; LoadMetadata: read chunk list
+    LoadMetadata --&gt; Ready: chunks loaded
+    Ready --&gt; ReadChunk: next_chunk()
+    ReadChunk --&gt; ChunkLoaded: fetch from store
+    ChunkLoaded --&gt; Ready: return data
+    Ready --&gt; [*]: all chunks read
+    Ready --&gt; Verify: verify()
+    Verify --&gt; HashAll: reset and hash all chunks
+    HashAll --&gt; Compare: compare checksums
+    Compare --&gt; [*]: return bool
+</pre>
+<h3 id="blobreader-internal-state"><a class="header" href="#blobreader-internal-state">BlobReader Internal State</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct BlobReader {
+    store: TensorStore,
+    chunks: Vec&lt;String&gt;,       // Ordered list of chunk keys
+    current_chunk: usize,      // Index of next chunk to read
+    current_data: Option&lt;Vec&lt;u8&gt;&gt;, // Cached current chunk for read()
+    current_offset: usize,     // Offset within current_data
+    total_size: usize,         // Total artifact size
+    bytes_read: usize,         // Bytes read so far
+    checksum: String,          // Expected checksum for verification
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="read-modes"><a class="header" href="#read-modes">Read Modes</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Mode 1: Chunk-at-a-time (best for processing in batches)
+while let Some(chunk) = reader.next_chunk().await? {
+    process_chunk(&amp;chunk);
+}
+
+// Mode 2: Read all into memory (convenient for small files)
+let data = reader.read_all().await?;
+
+// Mode 3: Buffer-based reading (for streaming to other APIs)
+let mut buf = vec![0u8; 4096];
+loop {
+    let n = reader.read(&amp;mut buf).await?;
+    if n == 0 { break; }
+    output.write_all(&amp;buf[..n])?;
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="garbage-collection-reference-counting"><a class="header" href="#garbage-collection-reference-counting">Garbage Collection Reference Counting</a></h2>
+<p>The GC system uses reference counting with two operational modes:</p>
+<h3 id="reference-count-management"><a class="header" href="#reference-count-management">Reference Count Management</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// When storing a chunk (in BlobWriter::store_chunk)
+if self.store.exists(&amp;chunk_key) {
+    // Chunk already exists - just increment ref count
+    increment_chunk_refs(&amp;self.store, &amp;chunk_key)?;
+} else {
+    // New chunk - store with ref count of 1
+    let mut tensor = TensorData::new();
+    tensor.set("_refs", TensorValue::Scalar(ScalarValue::Int(1)));
+    // ... store chunk data ...
+}
+
+// When deleting an artifact
+pub fn delete_artifact(store: &amp;TensorStore, artifact_id: &amp;str) -&gt; Result&lt;()&gt; {
+    let tensor = store.get(&amp;meta_key)?;
+    if let Some(chunks) = get_pointers(&amp;tensor, "_chunks") {
+        for chunk_key in chunks {
+            decrement_chunk_refs(store, &amp;chunk_key)?;  // Saturating at 0
+        }
+    }
+    store.delete(&amp;meta_key)?;
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="incremental-gc-gc"><a class="header" href="#incremental-gc-gc">Incremental GC (<code>gc()</code>)</a></h3>
+<p>Processes a limited batch of chunks per cycle, respecting age requirements:</p>
+<pre class="mermaid">flowchart TD
+    A[Start GC Cycle] --&gt; B[Scan chunk keys]
+    B --&gt; C{Take batch_size chunks}
+    C --&gt; D{For each chunk}
+    D --&gt; E{refs == 0?}
+    E --&gt;|No| D
+    E --&gt;|Yes| F{age &gt; min_age?}
+    F --&gt;|No| D
+    F --&gt;|Yes| G[Delete chunk]
+    G --&gt; H[Track freed bytes]
+    H --&gt; D
+    D --&gt;|Done| I[Return GcStats]
+</pre>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn gc_cycle(&amp;self) -&gt; GcStats {
+    let mut deleted = 0;
+    let mut freed_bytes = 0;
+
+    let now = current_timestamp();
+    let min_created = now.saturating_sub(self.config.min_age.as_secs());
+
+    let chunk_keys = self.store.scan("_blob:chunk:");
+
+    for chunk_key in chunk_keys.into_iter().take(self.config.batch_size) {
+        if let Ok(tensor) = self.store.get(&amp;chunk_key) {
+            let refs = get_int(&amp;tensor, "_refs").unwrap_or(0);
+            let created = get_int(&amp;tensor, "_created").unwrap_or(0) as u64;
+
+            // Zero refs AND old enough
+            if refs == 0 &amp;&amp; created &lt; min_created {
+                let size = get_int(&amp;tensor, "_size").unwrap_or(0) as usize;
+                if self.store.delete(&amp;chunk_key).is_ok() {
+                    deleted += 1;
+                    freed_bytes += size;
+                }
+            }
+        }
+    }
+
+    GcStats { deleted, freed_bytes }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="full-gc-full_gc"><a class="header" href="#full-gc-full_gc">Full GC (<code>full_gc()</code>)</a></h3>
+<p>Rebuilds reference counts from scratch and deletes all unreferenced chunks:</p>
+<pre class="mermaid">flowchart TD
+    A[Start Full GC] --&gt; B[Build reference set from all artifacts]
+    B --&gt; C[Scan all artifact metadata]
+    C --&gt; D[Extract chunk lists]
+    D --&gt; E[Add to HashSet]
+    E --&gt; C
+    C --&gt;|Done| F[Scan all chunks]
+    F --&gt; G{Chunk in reference set?}
+    G --&gt;|Yes| F
+    G --&gt;|No| H[Delete chunk]
+    H --&gt; I[Track freed bytes]
+    I --&gt; F
+    F --&gt;|Done| J[Return GcStats]
+</pre>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn full_gc(&amp;self) -&gt; Result&lt;GcStats&gt; {
+    // Phase 1: Build reference set from all artifacts
+    let mut referenced: HashSet&lt;String&gt; = HashSet::new();
+    for meta_key in self.store.scan("_blob:meta:") {
+        if let Ok(tensor) = self.store.get(&amp;meta_key) {
+            if let Some(chunks) = get_pointers(&amp;tensor, "_chunks") {
+                referenced.extend(chunks);
+            }
+        }
+    }
+
+    // Phase 2: Delete unreferenced chunks (ignores age requirement)
+    let mut deleted = 0;
+    let mut freed_bytes = 0;
+    for chunk_key in self.store.scan("_blob:chunk:") {
+        if !referenced.contains(&amp;chunk_key) {
+            if let Ok(tensor) = self.store.get(&amp;chunk_key) {
+                let size = get_int(&amp;tensor, "_size").unwrap_or(0) as usize;
+                if self.store.delete(&amp;chunk_key).is_ok() {
+                    deleted += 1;
+                    freed_bytes += size;
+                }
+            }
+        }
+    }
+
+    Ok(GcStats { deleted, freed_bytes })
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="background-gc-task"><a class="header" href="#background-gc-task">Background GC Task</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn start(self: Arc&lt;Self&gt;) -&gt; JoinHandle&lt;()&gt; {
+    let gc = Arc::clone(&amp;self);
+    tokio::spawn(async move {
+        gc.run().await;
+    })
+}
+
+async fn run(&amp;self) {
+    let mut interval = interval(self.config.check_interval);
+    let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() =&gt; {
+                let _ = self.gc_cycle().await;
+            }
+            _ = shutdown_rx.recv() =&gt; {
+                break;
+            }
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="integrity-repair-algorithm"><a class="header" href="#integrity-repair-algorithm">Integrity Repair Algorithm</a></h2>
+<p>The repair operation fixes reference count inconsistencies and removes orphans:</p>
+<pre class="mermaid">flowchart TD
+    A[Start Repair] --&gt; B[Phase 1: Build true reference counts]
+    B --&gt; C[Scan all artifacts]
+    C --&gt; D[Count chunk references]
+    D --&gt; E[Build HashMap chunk -&gt; count]
+    E --&gt; F[Phase 2: Verify and fix chunks]
+    F --&gt; G[Scan all chunks]
+    G --&gt; H{Current refs == expected?}
+    H --&gt;|Yes| I{Expected refs == 0?}
+    H --&gt;|No| J[Update refs to expected]
+    J --&gt; I
+    I --&gt;|Yes| K[Mark as orphan]
+    I --&gt;|No| G
+    K --&gt; G
+    G --&gt;|Done| L[Phase 3: Delete orphans]
+    L --&gt; M[Delete marked chunks]
+    M --&gt; N[Return RepairStats]
+</pre>
+<h3 id="repair-implementation"><a class="header" href="#repair-implementation">Repair Implementation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn repair(store: &amp;TensorStore) -&gt; Result&lt;RepairStats&gt; {
+    let mut stats = RepairStats::default();
+
+    // Phase 1: Build true reference counts from all artifacts
+    let mut true_refs: HashMap&lt;String, i64&gt; = HashMap::new();
+    for meta_key in store.scan("_blob:meta:") {
+        stats.artifacts_checked += 1;
+        if let Ok(tensor) = store.get(&amp;meta_key) {
+            if let Some(chunks) = get_pointers(&amp;tensor, "_chunks") {
+                for chunk_key in chunks {
+                    *true_refs.entry(chunk_key).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    // Phase 2: Verify and fix reference counts
+    let mut orphan_keys = Vec::new();
+    for chunk_key in store.scan("_blob:chunk:") {
+        stats.chunks_verified += 1;
+        if let Ok(mut tensor) = store.get(&amp;chunk_key) {
+            let current_refs = get_int(&amp;tensor, "_refs").unwrap_or(0);
+            let expected_refs = true_refs.get(&amp;chunk_key).copied().unwrap_or(0);
+
+            if current_refs != expected_refs {
+                tensor.set("_refs", TensorValue::Scalar(ScalarValue::Int(expected_refs)));
+                store.put(&amp;chunk_key, tensor)?;
+                stats.refs_fixed += 1;
+            }
+
+            if expected_refs == 0 {
+                orphan_keys.push(chunk_key);
+            }
+        }
+    }
+
+    // Phase 3: Delete orphans
+    for orphan_key in orphan_keys {
+        if store.delete(&amp;orphan_key).is_ok() {
+            stats.orphans_deleted += 1;
+        }
+    }
+
+    Ok(stats)
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="artifact-verification"><a class="header" href="#artifact-verification">Artifact Verification</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn verify_artifact(store: &amp;TensorStore, artifact_id: &amp;str) -&gt; Result&lt;bool&gt; {
+    let meta_key = format!("_blob:meta:{artifact_id}");
+    let tensor = store.get(&amp;meta_key)?;
+
+    let expected_checksum = get_string(&amp;tensor, "_checksum")?;
+    let chunks = get_pointers(&amp;tensor, "_chunks")?;
+
+    // Recompute checksum by hashing all chunks in order
+    let mut hasher = StreamingHasher::new();
+    for chunk_key in &amp;chunks {
+        let chunk_tensor = store.get(chunk_key)?;
+        let chunk_data = get_bytes(&amp;chunk_tensor, "_data")?;
+        hasher.update(&amp;chunk_data);
+    }
+
+    let actual_checksum = hasher.finalize();
+    Ok(actual_checksum == expected_checksum)
+}
+
+// Verify individual chunk integrity
+pub fn verify_chunk(store: &amp;TensorStore, chunk_key: &amp;str) -&gt; Result&lt;bool&gt; {
+    let expected_hash = chunk_key.strip_prefix("_blob:chunk:")?;
+    let tensor = store.get(chunk_key)?;
+    let data = get_bytes(&amp;tensor, "_data")?;
+    let actual_hash = compute_hash(&amp;data);
+    Ok(actual_hash == expected_hash)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="usage-examples"><a class="header" href="#usage-examples">Usage Examples</a></h2>
+<h3 id="basic-storage"><a class="header" href="#basic-storage">Basic Storage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_blob::{BlobStore, BlobConfig, PutOptions};
+use tensor_store::TensorStore;
+
+let store = TensorStore::new();
+let blob = BlobStore::new(store, BlobConfig::default()).await?;
+
+// Store an artifact
+let artifact_id = blob.put(
+    "report.pdf",
+    &amp;file_bytes,
+    PutOptions::new()
+        .with_created_by("user:alice")
+        .with_tag("quarterly")
+        .with_link("task:123"),
+).await?;
+
+// Retrieve it
+let data = blob.get(&amp;artifact_id).await?;
+
+// Get metadata
+let meta = blob.metadata(&amp;artifact_id).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="streaming-api"><a class="header" href="#streaming-api">Streaming API</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Streaming upload (memory-efficient for large files)
+let mut writer = blob.writer("large_file.bin", PutOptions::default()).await?;
+for chunk in file_chunks {
+    writer.write(&amp;chunk).await?;
+}
+let artifact_id = writer.finish().await?;
+
+// Streaming download
+let mut reader = blob.reader(&amp;artifact_id).await?;
+while let Some(chunk) = reader.next_chunk().await? {
+    process_chunk(&amp;chunk);
+}
+
+// Verify integrity after download
+let mut reader = blob.reader(&amp;artifact_id).await?;
+let valid = reader.verify().await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="entity-linking-and-tagging"><a class="header" href="#entity-linking-and-tagging">Entity Linking and Tagging</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Link artifact to entities
+blob.link(&amp;artifact_id, "user:alice").await?;
+blob.link(&amp;artifact_id, "task:123").await?;
+
+// Find artifacts linked to an entity
+let artifacts = blob.artifacts_for("user:alice").await?;
+
+// Add tags
+blob.tag(&amp;artifact_id, "important").await?;
+
+// Find artifacts by tag
+let important_files = blob.by_tag("important").await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="semantic-search-with-vector-feature"><a class="header" href="#semantic-search-with-vector-feature">Semantic Search (with <code>vector</code> feature)</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Set embedding for artifact
+blob.set_embedding(&amp;artifact_id, embedding, "text-embedding-3-small").await?;
+
+// Find similar artifacts
+let similar = blob.similar(&amp;artifact_id, 10).await?;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="configuration-options"><a class="header" href="#configuration-options">Configuration Options</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Option</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>chunk_size</code></td><td>1 MB (1,048,576 bytes)</td><td>Size of each chunk in bytes</td></tr>
+<tr><td><code>max_artifact_size</code></td><td>None (unlimited)</td><td>Maximum artifact size limit</td></tr>
+<tr><td><code>max_artifacts</code></td><td>None (unlimited)</td><td>Maximum number of artifacts</td></tr>
+<tr><td><code>gc_interval</code></td><td>5 minutes (300s)</td><td>Background GC check frequency</td></tr>
+<tr><td><code>gc_batch_size</code></td><td>100</td><td>Chunks processed per GC cycle</td></tr>
+<tr><td><code>gc_min_age</code></td><td>1 minute (60s)</td><td>Minimum age before GC eligible</td></tr>
+<tr><td><code>default_content_type</code></td><td><code>application/octet-stream</code></td><td>Default MIME type</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = BlobConfig::new()
+    .with_chunk_size(1024 * 1024)
+    .with_gc_interval(Duration::from_secs(300))
+    .with_gc_batch_size(100)
+    .with_gc_min_age(Duration::from_secs(3600))
+    .with_max_artifact_size(100 * 1024 * 1024);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="configuration-validation"><a class="header" href="#configuration-validation">Configuration Validation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Configuration is validated on BlobStore::new()
+pub fn validate(&amp;self) -&gt; Result&lt;()&gt; {
+    if self.chunk_size == 0 {
+        return Err(BlobError::InvalidConfig("chunk_size must be &gt; 0"));
+    }
+    if self.gc_batch_size == 0 {
+        return Err(BlobError::InvalidConfig("gc_batch_size must be &gt; 0"));
+    }
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="garbage-collection"><a class="header" href="#garbage-collection">Garbage Collection</a></h2>
+<p>Two GC modes are available:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th><th>Age Requirement</th><th>Reference Source</th></tr></thead><tbody>
+<tr><td><code>gc()</code></td><td>Incremental GC: processes <code>batch_size</code> chunks per cycle</td><td>Respects <code>min_age</code></td><td>Uses stored <code>_refs</code> field</td></tr>
+<tr><td><code>full_gc()</code></td><td>Full GC: recounts all references from artifacts</td><td>Ignores age</td><td>Rebuilds from artifact metadata</td></tr>
+</tbody></table>
+</div>
+<p>Background GC runs automatically when started:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>blob.start().await?;     // Start background GC
+// ... use blob store ...
+blob.shutdown().await?;  // Graceful shutdown (waits for current cycle)
+<span class="boring">}</span></code></pre></pre>
+<h2 id="blobstore-api"><a class="header" href="#blobstore-api">BlobStore API</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>new(store, config)</code></td><td>Create with configuration (validates config)</td></tr>
+<tr><td><code>start()</code></td><td>Start background GC task</td></tr>
+<tr><td><code>shutdown()</code></td><td>Graceful shutdown (sends signal and awaits task)</td></tr>
+<tr><td><code>store()</code></td><td>Get reference to underlying TensorStore</td></tr>
+<tr><td><code>put(filename, data, options)</code></td><td>Store bytes, return artifact ID</td></tr>
+<tr><td><code>get(artifact_id)</code></td><td>Retrieve all bytes</td></tr>
+<tr><td><code>delete(artifact_id)</code></td><td>Delete artifact and decrement chunk refs</td></tr>
+<tr><td><code>exists(artifact_id)</code></td><td>Check if artifact exists</td></tr>
+<tr><td><code>writer(filename, options)</code></td><td>Create streaming upload writer</td></tr>
+<tr><td><code>reader(artifact_id)</code></td><td>Create streaming download reader</td></tr>
+<tr><td><code>metadata(artifact_id)</code></td><td>Get artifact metadata</td></tr>
+<tr><td><code>update_metadata(artifact_id, updates)</code></td><td>Apply metadata updates</td></tr>
+<tr><td><code>set_meta(artifact_id, key, value)</code></td><td>Set custom metadata field</td></tr>
+<tr><td><code>get_meta(artifact_id, key)</code></td><td>Get custom metadata field</td></tr>
+<tr><td><code>link(artifact_id, entity)</code></td><td>Link to entity</td></tr>
+<tr><td><code>unlink(artifact_id, entity)</code></td><td>Remove link</td></tr>
+<tr><td><code>links(artifact_id)</code></td><td>Get linked entities</td></tr>
+<tr><td><code>artifacts_for(entity)</code></td><td>Find artifacts by linked entity</td></tr>
+<tr><td><code>tag(artifact_id, tag)</code></td><td>Add tag</td></tr>
+<tr><td><code>untag(artifact_id, tag)</code></td><td>Remove tag</td></tr>
+<tr><td><code>by_tag(tag)</code></td><td>Find artifacts by tag</td></tr>
+<tr><td><code>list(prefix)</code></td><td>List artifacts with optional prefix filter</td></tr>
+<tr><td><code>by_content_type(type)</code></td><td>Find by content type</td></tr>
+<tr><td><code>by_creator(creator)</code></td><td>Find by creator</td></tr>
+<tr><td><code>verify(artifact_id)</code></td><td>Verify checksum integrity</td></tr>
+<tr><td><code>repair()</code></td><td>Repair broken references</td></tr>
+<tr><td><code>gc()</code></td><td>Run incremental GC</td></tr>
+<tr><td><code>full_gc()</code></td><td>Run full GC</td></tr>
+<tr><td><code>stats()</code></td><td>Get storage statistics</td></tr>
+<tr><td><code>set_embedding(id, vec, model)</code></td><td>Set artifact embedding (feature-gated)</td></tr>
+<tr><td><code>similar(id, k)</code></td><td>Find k similar artifacts (feature-gated)</td></tr>
+<tr><td><code>search_by_embedding(vec, k)</code></td><td>Search by embedding vector (feature-gated)</td></tr>
+</tbody></table>
+</div>
+<h2 id="blobwriter-api"><a class="header" href="#blobwriter-api">BlobWriter API</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>write(data)</code></td><td>Write chunk of data (buffers until chunk_size reached)</td></tr>
+<tr><td><code>finish()</code></td><td>Finalize, flush buffer, store metadata, return artifact ID</td></tr>
+<tr><td><code>bytes_written()</code></td><td>Total bytes written so far</td></tr>
+<tr><td><code>chunks_written()</code></td><td>Chunks stored so far (not including buffered data)</td></tr>
+</tbody></table>
+</div>
+<h2 id="blobreader-api"><a class="header" href="#blobreader-api">BlobReader API</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>next_chunk()</code></td><td>Read next chunk, returns <code>None</code> when done</td></tr>
+<tr><td><code>read_all()</code></td><td>Read all remaining data into buffer</td></tr>
+<tr><td><code>read(buf)</code></td><td>Read into buffer, returns bytes read (for streaming)</td></tr>
+<tr><td><code>verify()</code></td><td>Verify checksum against stored value (resets read position)</td></tr>
+<tr><td><code>checksum()</code></td><td>Get expected checksum</td></tr>
+<tr><td><code>total_size()</code></td><td>Total artifact size</td></tr>
+<tr><td><code>bytes_read()</code></td><td>Bytes read so far</td></tr>
+<tr><td><code>chunk_count()</code></td><td>Number of chunks</td></tr>
+</tbody></table>
+</div>
+<h2 id="shell-commands"><a class="header" href="#shell-commands">Shell Commands</a></h2>
+<pre><code class="language-text">BLOB PUT 'filename' 'data'              Store inline data
+BLOB PUT 'filename' FROM 'path'         Store from file path
+BLOB GET 'artifact_id'                  Retrieve data
+BLOB GET 'artifact_id' TO 'path'        Write to file
+BLOB DELETE 'artifact_id'               Delete artifact
+BLOB INFO 'artifact_id'                 Show metadata
+BLOB VERIFY 'artifact_id'               Verify integrity
+
+BLOB LINK 'artifact_id' TO 'entity'     Link to entity
+BLOB UNLINK 'artifact_id' FROM 'entity' Remove link
+BLOB TAG 'artifact_id' 'tag'            Add tag
+BLOB UNTAG 'artifact_id' 'tag'          Remove tag
+
+BLOB META SET 'artifact_id' 'key' 'value'  Set custom metadata
+BLOB META GET 'artifact_id' 'key'          Get custom metadata
+
+BLOB GC                                 Run incremental GC
+BLOB GC FULL                            Full garbage collection
+BLOB REPAIR                             Repair broken references
+BLOB STATS                              Show storage statistics
+
+BLOBS                                   List all artifacts
+BLOBS FOR 'entity'                      Find by linked entity
+BLOBS BY TAG 'tag'                      Find by tag
+BLOBS WHERE TYPE = 'content/type'       Find by content type
+BLOBS SIMILAR TO 'artifact_id' LIMIT n  Find similar (requires embeddings)
+</code></pre>
+<h2 id="edge-cases-and-gotchas"><a class="header" href="#edge-cases-and-gotchas">Edge Cases and Gotchas</a></h2>
+<h3 id="empty-data"><a class="header" href="#empty-data">Empty Data</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Empty data is rejected
+let result = blob.put("empty.txt", b"", PutOptions::default()).await;
+assert!(matches!(result, Err(BlobError::EmptyData)));
+<span class="boring">}</span></code></pre></pre>
+<h3 id="size-limits"><a class="header" href="#size-limits">Size Limits</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Exceeding max_artifact_size returns InvalidConfig error
+let config = BlobConfig::new().with_max_artifact_size(1024);
+let blob = BlobStore::new(store, config).await?;
+
+let result = blob.put("large.bin", &amp;vec![0u8; 2048], PutOptions::default()).await;
+// Returns Err(BlobError::InvalidConfig("data size 2048 exceeds max 1024"))
+<span class="boring">}</span></code></pre></pre>
+<h3 id="concurrent-deduplication"><a class="header" href="#concurrent-deduplication">Concurrent Deduplication</a></h3>
+<p>The reference counting is not fully atomic. If two writers simultaneously store
+the same chunk:</p>
+<ul>
+<li>Both may check <code>exists()</code> and find it missing</li>
+<li>Both may store the chunk with <code>refs = 1</code></li>
+<li>One write will overwrite the other</li>
+<li>Result: ref count may be 1 instead of 2</li>
+</ul>
+<p><strong>Mitigation</strong>: For high-concurrency scenarios, use <code>full_gc()</code> periodically to
+rebuild accurate reference counts.</p>
+<h3 id="gc-timing"><a class="header" href="#gc-timing">GC Timing</a></h3>
+<ul>
+<li>Incremental GC respects <code>min_age</code> to avoid deleting chunks from in-progress
+uploads</li>
+<li>A writer that takes longer than <code>min_age</code> to complete may have chunks
+collected</li>
+<li><strong>Recommendation</strong>: Set <code>gc_min_age</code> longer than your maximum expected upload
+time</li>
+</ul>
+<h3 id="checksum-vs-chunk-hash"><a class="header" href="#checksum-vs-chunk-hash">Checksum vs Chunk Hash</a></h3>
+<ul>
+<li><strong>Checksum</strong> (<code>_checksum</code>): SHA-256 of the entire file content</li>
+<li><strong>Chunk hash</strong> (in key): SHA-256 of individual chunk data</li>
+<li>These are different values and cannot be compared directly</li>
+</ul>
+<h3 id="sparse-embedding-detection"><a class="header" href="#sparse-embedding-detection">Sparse Embedding Detection</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Embeddings with &gt;50% zeros are stored in sparse format
+pub(crate) fn should_use_sparse(vector: &amp;[f32]) -&gt; bool {
+    if vector.is_empty() { return false; }
+    let nnz = vector.iter().filter(|&amp;&amp;v| v.abs() &gt; 1e-6).count();
+    nnz * 2 &lt;= vector.len()  // Use sparse if nnz &lt;= 50%
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="performance-tips-and-best-practices"><a class="header" href="#performance-tips-and-best-practices">Performance Tips and Best Practices</a></h2>
+<h3 id="chunk-size-selection"><a class="header" href="#chunk-size-selection">Chunk Size Selection</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Chunk Size</th><th>Best For</th><th>Trade-offs</th></tr></thead><tbody>
+<tr><td>256 KB</td><td>Many small files, high dedup potential</td><td>More metadata overhead</td></tr>
+<tr><td>1 MB (default)</td><td>General purpose</td><td>Good balance</td></tr>
+<tr><td>4 MB</td><td>Large media files, sequential access</td><td>Less dedup, fewer chunks</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Benchmark different chunk sizes for your workload
+let config = BlobConfig::new().with_chunk_size(512 * 1024); // 512KB
+<span class="boring">}</span></code></pre></pre>
+<h3 id="streaming-for-large-files"><a class="header" href="#streaming-for-large-files">Streaming for Large Files</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Bad: Loads entire file into memory
+let data = std::fs::read("large_file.bin")?;
+blob.put("large_file.bin", &amp;data, PutOptions::default()).await?;
+
+// Good: Streams file in chunks
+let mut writer = blob.writer("large_file.bin", PutOptions::default()).await?;
+let file = std::fs::File::open("large_file.bin")?;
+let mut reader = std::io::BufReader::new(file);
+let mut buffer = vec![0u8; 64 * 1024]; // 64KB read buffer
+loop {
+    let n = reader.read(&amp;mut buffer)?;
+    if n == 0 { break; }
+    writer.write(&amp;buffer[..n]).await?;
+}
+let artifact_id = writer.finish().await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="gc-tuning"><a class="header" href="#gc-tuning">GC Tuning</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// High-throughput: More aggressive GC
+let config = BlobConfig::new()
+    .with_gc_interval(Duration::from_secs(60))   // Check every minute
+    .with_gc_batch_size(500)                      // Process more per cycle
+    .with_gc_min_age(Duration::from_secs(300));   // 5 minute grace period
+
+// Low-priority background: Less aggressive
+let config = BlobConfig::new()
+    .with_gc_interval(Duration::from_secs(3600)) // Check hourly
+    .with_gc_batch_size(50)                       // Small batches
+    .with_gc_min_age(Duration::from_secs(86400)); // 24 hour grace period
+<span class="boring">}</span></code></pre></pre>
+<h3 id="batch-operations"><a class="header" href="#batch-operations">Batch Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// For multiple related artifacts, batch metadata updates
+for artifact_id in artifact_ids {
+    blob.tag(&amp;artifact_id, "batch-processed").await?;
+}
+
+// Use full_gc() after bulk deletions
+for artifact_id in to_delete {
+    blob.delete(&amp;artifact_id).await?;
+}
+blob.full_gc().await?; // Clean up all orphans at once
+<span class="boring">}</span></code></pre></pre>
+<h3 id="verification-strategy"><a class="header" href="#verification-strategy">Verification Strategy</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Verify on read (paranoid mode)
+let mut reader = blob.reader(&amp;artifact_id).await?;
+let data = reader.read_all().await?;
+if !reader.verify().await? {
+    return Err("Corruption detected");
+}
+
+// Periodic verification (background task)
+for artifact_id in blob.list(None).await? {
+    if !blob.verify(&amp;artifact_id).await? {
+        log::warn!("Corruption in artifact: {}", artifact_id);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><code>tensor_store</code></td><td>Underlying key-value storage for chunks and metadata</td></tr>
+<tr><td><code>query_router</code></td><td>Executes BLOB commands from parsed queries</td></tr>
+<tr><td><code>neumann_shell</code></td><td>Interactive CLI for blob operations</td></tr>
+<tr><td><code>vector_engine</code></td><td>Optional semantic search via embeddings</td></tr>
+<tr><td><code>graph_engine</code></td><td>Optional entity linking via graph edges</td></tr>
+</tbody></table>
+</div>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>tensor_store</code></td><td>Key-value storage layer</td></tr>
+<tr><td><code>tokio</code></td><td>Async runtime for streaming and background GC</td></tr>
+<tr><td><code>sha2</code></td><td>SHA-256 hashing for content addressing</td></tr>
+<tr><td><code>uuid</code></td><td>Artifact ID generation (UUID v4)</td></tr>
+</tbody></table>
+</div>
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/tensor-cache.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/tensor-checkpoint.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/tensor-cache.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/tensor-checkpoint.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

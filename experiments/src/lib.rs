@@ -30,6 +30,10 @@
 
 pub mod adversary;
 pub mod attribution;
+pub mod curvature_byzantine;
+pub mod detection_benchmark;
+pub mod hyperbolic;
+pub mod hyperbolic_consensus;
 pub mod network;
 pub mod proofs;
 pub mod rank2;
@@ -76,3 +80,12 @@ pub use report_network::ReportBasedNetwork;
 
 // Tensor attribution (the real theorem)
 pub use tensor_attribution::{EvidenceTensor, NodeEvidence, TensorSimulation};
+
+// Hyperbolic geometry experiments
+pub use curvature_byzantine::{
+    CurvatureByzantineDetector, CurvatureSimulation, HybridByzantineDetector, NodeCurvature,
+};
+pub use hyperbolic::{AdaptiveGeometry, CurvatureEstimator, LorentzPoint, MixedCurvatureSpace};
+pub use hyperbolic_consensus::{
+    AdaptiveConflictDetector, ConflictDelta, EuclideanConflictDetector, HyperbolicConflictDetector,
+};

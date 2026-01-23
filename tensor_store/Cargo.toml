@@ -12,6 +12,8 @@ memmap2 = "0.9"
 fxhash = "0.2"
 parking_lot = "0.12"
 bitvec = { version = "1", features = ["serde"] }
+crc32fast = "1.4"
+thiserror = "2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

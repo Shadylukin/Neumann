@@ -124,10 +124,10 @@
 //!     suspicion_timeout_ms: 5000,  // 5 seconds before marking failed
 //!
 //!     // Indirect probing
-//!     ping_req_fanout: 3,  // Ask 3 peers for indirect probes
+//!     indirect_ping_count: 3,  // Ask 3 peers for indirect probes
 //!
 //!     // State dissemination
-//!     max_piggyback_states: 10,  // Max states per message
+//!     max_states_per_message: 10,  // Max states per message
 //!
 //!     // Other settings...
 //!     ..Default::default()
@@ -1666,9 +1666,11 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false; // Disable geometric
-        config.fanout = 2;
+        let config = GossipConfig {
+            geometric_routing: false,
+            fanout: 2,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -1687,8 +1689,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false;
+        let config = GossipConfig {
+            geometric_routing: false,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -1705,8 +1709,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false;
+        let config = GossipConfig {
+            geometric_routing: false,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -1719,9 +1725,11 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false;
-        config.fanout = 3;
+        let config = GossipConfig {
+            geometric_routing: false,
+            fanout: 3,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -1973,8 +1981,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.suspicion_timeout_ms = 1; // 1ms timeout for quick test
+        let config = GossipConfig {
+            suspicion_timeout_ms: 1, // 1ms timeout for quick test
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -2008,8 +2018,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.suspicion_timeout_ms = 60000; // 60s timeout
+        let config = GossipConfig {
+            suspicion_timeout_ms: 60000, // 60s timeout
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -2045,8 +2057,10 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.suspicion_timeout_ms = 1;
+        let config = GossipConfig {
+            suspicion_timeout_ms: 1,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -2113,8 +2127,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false;
+        let config = GossipConfig {
+            geometric_routing: false,
+            ..Default::default()
+        };
 
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
@@ -2620,8 +2636,10 @@ mod tests {
         use crate::network::MemoryTransport;
 
         let transport = Arc::new(MemoryTransport::new("node1".to_string()));
-        let mut config = GossipConfig::default();
-        config.geometric_routing = false; // Disable geometric to test fallback
+        let config = GossipConfig {
+            geometric_routing: false, // Disable geometric to test fallback
+            ..Default::default()
+        };
         let manager = GossipMembershipManager::new("node1".to_string(), config, transport);
 
         manager.add_peer("node2".to_string());

@@ -1,23 +1,30 @@
 //! Slab router for directing operations to specialized storage backends.
 //!
-//! SlabRouter coordinates between the specialized slabs (EntityIndex, EmbeddingSlab,
-//! GraphTensor, RelationalSlab, MetadataSlab, CacheRing, BlobLog) and provides
-//! a unified interface similar to TensorStore.
+//! `SlabRouter` coordinates between the specialized slabs (`EntityIndex`, `EmbeddingSlab`,
+//! `GraphTensor`, `RelationalSlab`, `MetadataSlab`, `CacheRing`, `BlobLog`) and provides
+//! a unified interface similar to `TensorStore`.
 //!
 //! # Key Routing
 //!
 //! Operations are routed based on key prefixes:
-//! - `emb:*` -> EmbeddingSlab (embedding vectors)
-//! - `node:*`, `edge:*` -> GraphTensor (graph data)
-//! - `table:*` -> RelationalSlab (relational rows)
-//! - `_cache:*` -> CacheRing (cached data)
-//! - Everything else (including `_blob:*`) -> MetadataSlab (general metadata)
+//! - `emb:*` -> `EmbeddingSlab` (embedding vectors)
+//! - `node:*`, `edge:*` -> `GraphTensor` (graph data)
+//! - `table:*` -> `RelationalSlab` (relational rows)
+//! - `_cache:*` -> `CacheRing` (cached data)
+//! - Everything else (including `_blob:*`) -> `MetadataSlab` (general metadata)
+//!
+//! # Durability (WAL)
+//!
+//! When created with [`SlabRouter::with_wal`], operations can be made durable via
+//! [`put_durable`](SlabRouter::put_durable) and [`delete_durable`](SlabRouter::delete_durable).
+//! Cache operations are never logged (cache is transient by design).
 
 use std::{
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,21 +36,22 @@ use crate::{
     metadata_slab::{MetadataSlab, MetadataSlabSnapshot},
     relational_slab::{RelationalSlab, RelationalSlabSnapshot},
     snapshot::{self, SnapshotFormatError},
+    wal::{TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalStatus},
     TensorData, TensorValue,
 };
 
-/// Configuration for SlabRouter.
+/// Configuration for `SlabRouter`.
 #[derive(Debug, Clone)]
 pub struct SlabRouterConfig {
-    /// Embedding dimension for EmbeddingSlab.
+    /// Embedding dimension for `EmbeddingSlab`.
     pub embedding_dim: usize,
-    /// Cache capacity for CacheRing.
+    /// Cache capacity for `CacheRing`.
     pub cache_capacity: usize,
-    /// Eviction strategy for CacheRing.
+    /// Eviction strategy for `CacheRing`.
     pub cache_strategy: EvictionStrategy,
-    /// Segment size for BlobLog.
+    /// Segment size for `BlobLog`.
     pub blob_segment_size: usize,
-    /// Merge threshold for GraphTensor.
+    /// Merge threshold for `GraphTensor`.
     pub graph_merge_threshold: usize,
 }
 
@@ -77,18 +85,24 @@ pub struct SlabRouter {
     pub blobs: BlobLog,
     /// Operation counter for stats.
     ops_count: AtomicU64,
+    /// Optional Write-Ahead Log for durability.
+    wal: Option<Mutex<TensorWal>>,
+    /// Checkpoint counter for unique IDs.
+    checkpoint_counter: AtomicU64,
 }
 
 impl SlabRouter {
     /// Create a new slab router with default configuration.
+    #[must_use]
     pub fn new() -> Self {
-        Self::with_config(SlabRouterConfig::default())
+        Self::with_config(&SlabRouterConfig::default())
     }
 
     /// Create a new slab router with a capacity hint.
     ///
-    /// Note: The capacity hint is informational. BTreeMap-based slabs don't
-    /// pre-allocate. This method exists for API compatibility with TensorStore.
+    /// Note: The capacity hint is informational. `BTreeMap`-based slabs don't
+    /// pre-allocate. This method exists for API compatibility with `TensorStore`.
+    #[must_use]
     pub fn with_capacity(_capacity: usize) -> Self {
         // BTreeMap-based slabs don't benefit from capacity hints
         // (they split nodes on demand rather than resize)
@@ -96,7 +110,8 @@ impl SlabRouter {
     }
 
     /// Create a new slab router with custom configuration.
-    pub fn with_config(config: SlabRouterConfig) -> Self {
+    #[must_use]
+    pub fn with_config(config: &SlabRouterConfig) -> Self {
         Self {
             index: EntityIndex::new(),
             embeddings: EmbeddingSlab::with_dimension(config.embedding_dim),
@@ -106,10 +121,50 @@ impl SlabRouter {
             cache: CacheRing::new(config.cache_capacity, config.cache_strategy),
             blobs: BlobLog::new(config.blob_segment_size),
             ops_count: AtomicU64::new(0),
+            wal: None,
+            checkpoint_counter: AtomicU64::new(0),
         }
     }
 
+    /// Create a new slab router with a Write-Ahead Log for durability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL file cannot be opened or created.
+    pub fn with_wal(wal_path: impl AsRef<Path>, wal_config: WalConfig) -> std::io::Result<Self> {
+        Self::with_wal_and_config(wal_path, wal_config, &SlabRouterConfig::default())
+    }
+
+    /// Create a new slab router with both WAL and custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL file cannot be opened or created.
+    pub fn with_wal_and_config(
+        wal_path: impl AsRef<Path>,
+        wal_config: WalConfig,
+        config: &SlabRouterConfig,
+    ) -> std::io::Result<Self> {
+        let wal = TensorWal::open(wal_path, wal_config)?;
+        Ok(Self {
+            index: EntityIndex::new(),
+            embeddings: EmbeddingSlab::with_dimension(config.embedding_dim),
+            graph: GraphTensor::with_merge_threshold(config.graph_merge_threshold),
+            relations: RelationalSlab::new(),
+            metadata: MetadataSlab::new(),
+            cache: CacheRing::new(config.cache_capacity, config.cache_strategy),
+            blobs: BlobLog::new(config.blob_segment_size),
+            ops_count: AtomicU64::new(0),
+            wal: Some(Mutex::new(wal)),
+            checkpoint_counter: AtomicU64::new(0),
+        })
+    }
+
     /// Store a value, routing to the appropriate slab.
+    ///
+    /// # Errors
+    ///
+    /// This function currently always succeeds but returns `Result` for API consistency.
     pub fn put(&self, key: &str, value: TensorData) -> Result<(), SlabRouterError> {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
@@ -150,6 +205,10 @@ impl SlabRouter {
     }
 
     /// Retrieve a value, routing to the appropriate slab.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlabRouterError::NotFound`] if the key does not exist.
     pub fn get(&self, key: &str) -> Result<TensorData, SlabRouterError> {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
@@ -179,7 +238,9 @@ impl SlabRouter {
 
     /// Delete a value, routing to the appropriate slab.
     ///
-    /// Returns an error if the key doesn't exist.
+    /// # Errors
+    ///
+    /// Returns [`SlabRouterError::NotFound`] if the key does not exist.
     pub fn delete(&self, key: &str) -> Result<(), SlabRouterError> {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
@@ -311,6 +372,7 @@ impl SlabRouter {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: SlabRouterSnapshot) -> Self {
         Self {
             index: EntityIndex::restore(snapshot.index),
@@ -321,20 +383,59 @@ impl SlabRouter {
             cache: CacheRing::restore(snapshot.cache),
             blobs: BlobLog::restore(snapshot.blobs),
             ops_count: AtomicU64::new(0),
+            wal: None,
+            checkpoint_counter: AtomicU64::new(0),
         }
     }
 
+    /// Restore from a snapshot with WAL attached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL file cannot be opened.
+    pub fn restore_with_wal(
+        snapshot: SlabRouterSnapshot,
+        wal_path: impl AsRef<Path>,
+        wal_config: WalConfig,
+    ) -> std::io::Result<Self> {
+        let wal = TensorWal::open(wal_path, wal_config)?;
+        Ok(Self {
+            index: EntityIndex::restore(snapshot.index),
+            embeddings: EmbeddingSlab::restore(snapshot.embeddings),
+            graph: GraphTensor::restore(snapshot.graph),
+            relations: RelationalSlab::restore(snapshot.relations),
+            metadata: MetadataSlab::restore(snapshot.metadata),
+            cache: CacheRing::restore(snapshot.cache),
+            blobs: BlobLog::restore(snapshot.blobs),
+            ops_count: AtomicU64::new(0),
+            wal: Some(Mutex::new(wal)),
+            checkpoint_counter: AtomicU64::new(0),
+        })
+    }
+
     /// Save to a file (v3 format with auto-detection on load).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotFormatError`] if file I/O or serialization fails.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SnapshotFormatError> {
         snapshot::save_v3(self, path)
     }
 
     /// Load from a file (auto-detects v2/v3 format).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotFormatError`] if file I/O, deserialization, or format validation fails.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SnapshotFormatError> {
         snapshot::load(path)
     }
 
     /// Serialize to bytes (v3 format).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotFormatError`] if serialization fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, SnapshotFormatError> {
         let router_snapshot = self.snapshot();
         let entry_count = (self.len() + self.index.len()) as u64;
@@ -348,11 +449,241 @@ impl SlabRouter {
     }
 
     /// Deserialize from bytes (v3 format).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotFormatError`] if deserialization or header validation fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotFormatError> {
         let v3: snapshot::V3Snapshot =
             bincode::deserialize(bytes).map_err(SnapshotFormatError::from)?;
         v3.header.validate()?;
         Ok(Self::restore(v3.router))
+    }
+
+    // ========== WAL / Durable Operations ==========
+
+    /// Store a value durably, logging to WAL before applying.
+    ///
+    /// Cache operations are never logged (cache is transient by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL append fails. If no WAL is configured, falls back to
+    /// non-durable `put`.
+    pub fn put_durable(&self, key: &str, value: TensorData) -> Result<(), SlabRouterError> {
+        // Cache operations are not durable
+        if Self::classify_key(key) == KeyClass::Cache {
+            return self.put(key, value);
+        }
+
+        // Log to WAL first (if configured)
+        if let Some(wal_mutex) = &self.wal {
+            let mut wal = wal_mutex.lock();
+
+            // Log embedding separately if present
+            if let Some(TensorValue::Vector(embedding)) = value.get("_embedding") {
+                let entity_id = self.index.get_or_create(key);
+                let entry = WalEntry::EmbeddingSet {
+                    entity_id,
+                    embedding: embedding.clone(),
+                };
+                wal.append(&entry).map_err(|e| {
+                    SlabRouterError::WalError(format!("Failed to log embedding: {e}"))
+                })?;
+            }
+
+            // Log metadata set
+            let entry = WalEntry::MetadataSet {
+                key: key.to_string(),
+                data: value.clone(),
+            };
+            wal.append(&entry)
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to log put: {e}")))?;
+        }
+
+        // Apply to in-memory state
+        self.put(key, value)
+    }
+
+    /// Delete a value durably, logging to WAL before applying.
+    ///
+    /// Cache operations are never logged (cache is transient by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist or WAL append fails.
+    pub fn delete_durable(&self, key: &str) -> Result<(), SlabRouterError> {
+        // Cache operations are not durable
+        if Self::classify_key(key) == KeyClass::Cache {
+            return self.delete(key);
+        }
+
+        // Log to WAL first (if configured)
+        if let Some(wal_mutex) = &self.wal {
+            let mut wal = wal_mutex.lock();
+
+            // Log embedding delete if key is in entity index
+            if let Some(entity_id) = self.index.get(key) {
+                let entry = WalEntry::EmbeddingDelete { entity_id };
+                wal.append(&entry).map_err(|e| {
+                    SlabRouterError::WalError(format!("Failed to log embedding delete: {e}"))
+                })?;
+
+                let entry = WalEntry::EntityRemove {
+                    key: key.to_string(),
+                };
+                wal.append(&entry).map_err(|e| {
+                    SlabRouterError::WalError(format!("Failed to log entity remove: {e}"))
+                })?;
+            }
+
+            // Log metadata delete
+            let entry = WalEntry::MetadataDelete {
+                key: key.to_string(),
+            };
+            wal.append(&entry)
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to log delete: {e}")))?;
+        }
+
+        // Apply to in-memory state
+        self.delete(key)
+    }
+
+    /// Create a checkpoint by saving a snapshot and marking WAL position.
+    ///
+    /// After checkpoint, the WAL is truncated since the snapshot contains all state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if snapshot save or WAL operations fail.
+    pub fn checkpoint(&self, snapshot_path: &Path) -> Result<u64, SlabRouterError> {
+        // Save snapshot first
+        self.save_to_file(snapshot_path)
+            .map_err(|e| SlabRouterError::WalError(format!("Failed to save snapshot: {e}")))?;
+
+        let checkpoint_id = self.checkpoint_counter.fetch_add(1, Ordering::SeqCst);
+
+        // Log checkpoint marker and truncate WAL
+        if let Some(wal_mutex) = &self.wal {
+            let mut wal = wal_mutex.lock();
+
+            let entry = WalEntry::Checkpoint {
+                snapshot_id: checkpoint_id,
+            };
+            wal.append(&entry)
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to log checkpoint: {e}")))?;
+
+            // Truncate WAL after successful checkpoint
+            wal.truncate()
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to truncate WAL: {e}")))?;
+        }
+
+        Ok(checkpoint_id)
+    }
+
+    /// Recover from a snapshot and replay WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if snapshot loading or WAL replay fails.
+    pub fn recover(
+        wal_path: impl AsRef<Path>,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&Path>,
+    ) -> Result<Self, SlabRouterError> {
+        // Load snapshot if provided
+        let mut router = if let Some(path) = snapshot_path {
+            if path.exists() {
+                Self::load_from_file(path).map_err(|e| {
+                    SlabRouterError::WalError(format!("Failed to load snapshot: {e}"))
+                })?
+            } else {
+                Self::new()
+            }
+        } else {
+            Self::new()
+        };
+
+        // Open WAL and replay
+        let wal = TensorWal::open(&wal_path, wal_config.clone())
+            .map_err(|e| SlabRouterError::WalError(format!("Failed to open WAL: {e}")))?;
+
+        let recovery = WalRecovery::from_wal(&wal)
+            .map_err(|e| SlabRouterError::WalError(format!("Failed to replay WAL: {e}")))?;
+
+        // Apply recovered operations
+        for entry in recovery.all_operations() {
+            router.apply_wal_entry(entry);
+        }
+
+        // Attach the WAL
+        router.wal = Some(Mutex::new(wal));
+
+        Ok(router)
+    }
+
+    /// Apply a single WAL entry to in-memory state.
+    fn apply_wal_entry(&self, entry: &WalEntry) {
+        match entry {
+            WalEntry::MetadataSet { key, data } => {
+                self.metadata.set(key, data.clone());
+                // Also update embeddings if present
+                if let Some(TensorValue::Vector(vec)) = data.get("_embedding") {
+                    let entity_id = self.index.get_or_create(key);
+                    let _ = self.embeddings.set(entity_id, vec);
+                }
+            },
+            WalEntry::MetadataDelete { key } => {
+                self.metadata.delete(key);
+            },
+            WalEntry::EmbeddingSet {
+                entity_id,
+                embedding,
+            } => {
+                let _ = self.embeddings.set(*entity_id, embedding);
+            },
+            WalEntry::EmbeddingDelete { entity_id } => {
+                self.embeddings.delete(*entity_id);
+            },
+            WalEntry::EntityCreate { key, .. } => {
+                // Re-establish key -> entity_id mapping (ID may differ from original)
+                let _ = self.index.get_or_create(key);
+            },
+            WalEntry::EntityRemove { key } => {
+                self.index.remove(key);
+            },
+            // Transaction markers are handled by WalRecovery
+            WalEntry::TxBegin { .. }
+            | WalEntry::TxCommit { .. }
+            | WalEntry::TxAbort { .. }
+            | WalEntry::Checkpoint { .. } => {},
+        }
+    }
+
+    /// Get WAL status if WAL is configured.
+    #[must_use]
+    pub fn wal_status(&self) -> Option<WalStatus> {
+        self.wal.as_ref().map(|m| m.lock().status())
+    }
+
+    /// Check if WAL is enabled.
+    #[must_use]
+    pub const fn has_wal(&self) -> bool {
+        self.wal.is_some()
+    }
+
+    /// Flush and sync the WAL to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL fsync fails.
+    pub fn wal_sync(&self) -> Result<(), SlabRouterError> {
+        if let Some(wal_mutex) = &self.wal {
+            let mut wal = wal_mutex.lock();
+            wal.fsync()
+                .map_err(|e| SlabRouterError::WalError(format!("Failed to sync WAL: {e}")))?;
+        }
+        Ok(())
     }
 
     /// Classify a key to determine which slab should handle it.
@@ -373,7 +704,7 @@ impl SlabRouter {
         }
     }
 
-    /// Estimate the byte size of a TensorData for cache scoring.
+    /// Estimate the byte size of a `TensorData` for cache scoring.
     fn estimate_size(data: &TensorData) -> usize {
         // Rough estimate: 100 bytes per field
         data.len() * 100
@@ -396,23 +727,31 @@ enum KeyClass {
     Metadata,
 }
 
-/// Errors from SlabRouter operations.
+/// Errors from `SlabRouter` operations.
 #[derive(Debug, Clone)]
 pub enum SlabRouterError {
     NotFound(String),
     EmbeddingError(String),
     GraphError(String),
     RelationalError(String),
+    WalError(String),
 }
 
 impl std::fmt::Display for SlabRouterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound(key) => write!(f, "not found: {}", key),
-            Self::EmbeddingError(msg) => write!(f, "embedding error: {}", msg),
-            Self::GraphError(msg) => write!(f, "graph error: {}", msg),
-            Self::RelationalError(msg) => write!(f, "relational error: {}", msg),
+            Self::NotFound(key) => write!(f, "not found: {key}"),
+            Self::EmbeddingError(msg) => write!(f, "embedding error: {msg}"),
+            Self::GraphError(msg) => write!(f, "graph error: {msg}"),
+            Self::RelationalError(msg) => write!(f, "relational error: {msg}"),
+            Self::WalError(msg) => write!(f, "WAL error: {msg}"),
         }
+    }
+}
+
+impl From<WalError> for SlabRouterError {
+    fn from(err: WalError) -> Self {
+        Self::WalError(err.to_string())
     }
 }
 
@@ -457,7 +796,7 @@ mod tests {
             cache_capacity: 1000,
             ..Default::default()
         };
-        let router = SlabRouter::with_config(config);
+        let router = SlabRouter::with_config(&config);
         assert!(router.is_empty());
     }
 
@@ -907,5 +1246,545 @@ mod tests {
         let results = router.scan("emb:");
         assert!(results.len() >= 2);
         assert!(results.contains(&"emb:vec1".to_string()));
+    }
+
+    #[test]
+    fn test_scan_includes_cache_entries() {
+        let router = SlabRouter::new();
+
+        // Add cache entry via cache ring prefix
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(crate::ScalarValue::Int(42)));
+        router.put("_cache:cached_item", data).unwrap();
+
+        // Add regular metadata entry with same prefix
+        router.put("_cache:other_item", create_test_data()).unwrap();
+
+        let results = router.scan("_cache:");
+        assert!(results.len() >= 2);
+        assert!(results.contains(&"_cache:cached_item".to_string()));
+        assert!(results.contains(&"_cache:other_item".to_string()));
+    }
+
+    #[test]
+    fn test_scan_entity_index_deduplication() {
+        let router = SlabRouter::new();
+
+        // Add entry that will appear in both metadata and entity index
+        let mut data = TensorData::new();
+        data.set("id", TensorValue::Scalar(crate::ScalarValue::Int(1)));
+        router.put("entity:item1", data).unwrap();
+
+        // Add another entity entry
+        let mut data2 = TensorData::new();
+        data2.set("id", TensorValue::Scalar(crate::ScalarValue::Int(2)));
+        router.put("entity:item2", data2).unwrap();
+
+        let results = router.scan("entity:");
+        // Should not have duplicates
+        let mut deduped: Vec<_> = results.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(results.len(), deduped.len());
+    }
+
+    // ========== WAL Integration Tests ==========
+
+    #[test]
+    fn test_with_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+        assert!(router.has_wal());
+        assert!(wal_path.exists());
+    }
+
+    #[test]
+    fn test_with_wal_and_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let config = SlabRouterConfig {
+            embedding_dim: 128,
+            ..Default::default()
+        };
+
+        let router =
+            SlabRouter::with_wal_and_config(&wal_path, WalConfig::default(), &config).unwrap();
+        assert!(router.has_wal());
+    }
+
+    #[test]
+    fn test_has_wal_false_without_wal() {
+        let router = SlabRouter::new();
+        assert!(!router.has_wal());
+    }
+
+    #[test]
+    fn test_wal_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        let status = router.wal_status().unwrap();
+        assert_eq!(status.path, wal_path);
+        assert!(status.checksums_enabled);
+    }
+
+    #[test]
+    fn test_wal_status_none_without_wal() {
+        let router = SlabRouter::new();
+        assert!(router.wal_status().is_none());
+    }
+
+    #[test]
+    fn test_put_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        router.put_durable("key1", create_test_data()).unwrap();
+
+        assert!(router.exists("key1"));
+
+        // Check WAL has entry
+        let status = router.wal_status().unwrap();
+        assert!(status.entry_count > 0);
+    }
+
+    #[test]
+    fn test_put_durable_without_wal() {
+        let router = SlabRouter::new();
+
+        // Should still work, just not durable
+        router.put_durable("key1", create_test_data()).unwrap();
+        assert!(router.exists("key1"));
+    }
+
+    #[test]
+    fn test_put_durable_with_embedding() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.01).collect();
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(embedding));
+        data.set(
+            "name",
+            TensorValue::Scalar(crate::ScalarValue::String("test".to_string())),
+        );
+
+        router.put_durable("emb:vec1", data).unwrap();
+
+        let retrieved = router.get("emb:vec1").unwrap();
+        assert!(retrieved.get("_embedding").is_some());
+    }
+
+    #[test]
+    fn test_put_durable_cache_not_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        // Cache operations should not be logged
+        router
+            .put_durable("_cache:item", create_test_data())
+            .unwrap();
+
+        // Entry count should still be 0 (cache is not durable)
+        let status = router.wal_status().unwrap();
+        assert_eq!(status.entry_count, 0);
+    }
+
+    #[test]
+    fn test_delete_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        router.put_durable("key1", create_test_data()).unwrap();
+        assert!(router.exists("key1"));
+
+        router.delete_durable("key1").unwrap();
+        assert!(!router.exists("key1"));
+    }
+
+    #[test]
+    fn test_delete_durable_without_wal() {
+        let router = SlabRouter::new();
+
+        router.put("key1", create_test_data()).unwrap();
+        router.delete_durable("key1").unwrap();
+        assert!(!router.exists("key1"));
+    }
+
+    #[test]
+    fn test_delete_durable_cache_not_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        router.put("_cache:item", create_test_data()).unwrap();
+
+        let status_before = router.wal_status().unwrap();
+        router.delete_durable("_cache:item").unwrap();
+        let status_after = router.wal_status().unwrap();
+
+        // No additional entries for cache delete
+        assert_eq!(status_before.entry_count, status_after.entry_count);
+    }
+
+    #[test]
+    fn test_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        router.put_durable("key1", create_test_data()).unwrap();
+        router.put_durable("key2", create_test_data()).unwrap();
+
+        let checkpoint_id = router.checkpoint(&snapshot_path).unwrap();
+        assert_eq!(checkpoint_id, 0);
+
+        // Snapshot should exist
+        assert!(snapshot_path.exists());
+
+        // WAL should be truncated
+        let status = router.wal_status().unwrap();
+        assert_eq!(status.entry_count, 0);
+    }
+
+    #[test]
+    fn test_checkpoint_without_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        let router = SlabRouter::new();
+        router.put("key1", create_test_data()).unwrap();
+
+        // Should still create snapshot
+        let checkpoint_id = router.checkpoint(&snapshot_path).unwrap();
+        assert_eq!(checkpoint_id, 0);
+        assert!(snapshot_path.exists());
+    }
+
+    #[test]
+    fn test_recover_from_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Create and populate router
+        {
+            let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+            router.put_durable("key1", create_test_data()).unwrap();
+
+            let mut data2 = TensorData::new();
+            data2.set("value", TensorValue::Scalar(crate::ScalarValue::Int(42)));
+            router.put_durable("key2", data2).unwrap();
+        }
+
+        // Recover from WAL
+        let recovered = SlabRouter::recover(&wal_path, &WalConfig::default(), None).unwrap();
+
+        assert!(recovered.exists("key1"));
+        assert!(recovered.exists("key2"));
+        assert!(recovered.has_wal());
+    }
+
+    #[test]
+    fn test_recover_from_snapshot_and_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        // Create initial state and checkpoint
+        {
+            let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+            router.put_durable("key1", create_test_data()).unwrap();
+            router.checkpoint(&snapshot_path).unwrap();
+
+            // Add more data after checkpoint
+            let mut data2 = TensorData::new();
+            data2.set("value", TensorValue::Scalar(crate::ScalarValue::Int(99)));
+            router.put_durable("key2", data2).unwrap();
+        }
+
+        // Recover from snapshot + WAL
+        let recovered =
+            SlabRouter::recover(&wal_path, &WalConfig::default(), Some(&snapshot_path)).unwrap();
+
+        assert!(recovered.exists("key1"));
+        assert!(recovered.exists("key2"));
+    }
+
+    #[test]
+    fn test_recover_missing_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("nonexistent.bin");
+
+        // Create WAL with data
+        {
+            let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+            router.put_durable("key1", create_test_data()).unwrap();
+        }
+
+        // Recover should work with missing snapshot
+        let recovered =
+            SlabRouter::recover(&wal_path, &WalConfig::default(), Some(&snapshot_path)).unwrap();
+
+        assert!(recovered.exists("key1"));
+    }
+
+    #[test]
+    fn test_wal_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+        router.put_durable("key1", create_test_data()).unwrap();
+
+        // Sync should succeed
+        router.wal_sync().unwrap();
+    }
+
+    #[test]
+    fn test_wal_sync_without_wal() {
+        let router = SlabRouter::new();
+        // Should be no-op, not error
+        router.wal_sync().unwrap();
+    }
+
+    #[test]
+    fn test_restore_with_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Create and save a router
+        let original = SlabRouter::new();
+        original.put("key1", create_test_data()).unwrap();
+        let snapshot = original.snapshot();
+
+        // Restore with WAL
+        let restored =
+            SlabRouter::restore_with_wal(snapshot, &wal_path, WalConfig::default()).unwrap();
+
+        assert!(restored.exists("key1"));
+        assert!(restored.has_wal());
+    }
+
+    #[test]
+    fn test_error_display_wal_variant() {
+        let err = SlabRouterError::WalError("test error".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("WAL"));
+        assert!(msg.contains("test error"));
+    }
+
+    #[test]
+    fn test_wal_error_from_conversion() {
+        use crate::wal::WalError;
+        let wal_err = WalError::NoActiveTransaction;
+        let router_err: SlabRouterError = wal_err.into();
+        assert!(matches!(router_err, SlabRouterError::WalError(_)));
+    }
+
+    #[test]
+    fn test_apply_wal_entry_metadata_set() {
+        let router = SlabRouter::new();
+
+        let entry = WalEntry::MetadataSet {
+            key: "test_key".to_string(),
+            data: create_test_data(),
+        };
+
+        router.apply_wal_entry(&entry);
+        assert!(router.exists("test_key"));
+    }
+
+    #[test]
+    fn test_apply_wal_entry_metadata_delete() {
+        let router = SlabRouter::new();
+        router.put("test_key", create_test_data()).unwrap();
+
+        let entry = WalEntry::MetadataDelete {
+            key: "test_key".to_string(),
+        };
+
+        router.apply_wal_entry(&entry);
+        assert!(!router.metadata.contains("test_key"));
+    }
+
+    #[test]
+    fn test_apply_wal_entry_embedding_set() {
+        let router = SlabRouter::new();
+
+        let entry = WalEntry::EmbeddingSet {
+            entity_id: crate::EntityId(42),
+            embedding: vec![1.0, 2.0, 3.0],
+        };
+
+        router.apply_wal_entry(&entry);
+        // Embedding should be stored (though dimension mismatch)
+    }
+
+    #[test]
+    fn test_apply_wal_entry_embedding_delete() {
+        let router = SlabRouter::new();
+
+        let entry = WalEntry::EmbeddingDelete {
+            entity_id: crate::EntityId(42),
+        };
+
+        // Should not error even if entity doesn't exist
+        router.apply_wal_entry(&entry);
+    }
+
+    #[test]
+    fn test_apply_wal_entry_entity_create() {
+        let router = SlabRouter::new();
+
+        let entry = WalEntry::EntityCreate {
+            key: "entity_key".to_string(),
+            entity_id: crate::EntityId(123),
+        };
+
+        router.apply_wal_entry(&entry);
+        assert!(router.index.contains("entity_key"));
+    }
+
+    #[test]
+    fn test_apply_wal_entry_entity_remove() {
+        let router = SlabRouter::new();
+        let _ = router.index.get_or_create("entity_key");
+
+        let entry = WalEntry::EntityRemove {
+            key: "entity_key".to_string(),
+        };
+
+        router.apply_wal_entry(&entry);
+        assert!(!router.index.contains("entity_key"));
+    }
+
+    #[test]
+    fn test_apply_wal_entry_transaction_markers() {
+        let router = SlabRouter::new();
+
+        // These should be no-ops (handled by WalRecovery)
+        router.apply_wal_entry(&WalEntry::TxBegin { tx_id: 1 });
+        router.apply_wal_entry(&WalEntry::TxCommit { tx_id: 1 });
+        router.apply_wal_entry(&WalEntry::TxAbort { tx_id: 1 });
+        router.apply_wal_entry(&WalEntry::Checkpoint { snapshot_id: 1 });
+    }
+
+    #[test]
+    fn test_apply_wal_entry_metadata_set_with_embedding() {
+        let router = SlabRouter::new();
+
+        let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.01).collect();
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(embedding));
+        data.set(
+            "name",
+            TensorValue::Scalar(crate::ScalarValue::String("test".to_string())),
+        );
+
+        let entry = WalEntry::MetadataSet {
+            key: "emb:test".to_string(),
+            data,
+        };
+
+        router.apply_wal_entry(&entry);
+
+        // Both metadata and embedding should be stored
+        assert!(router.metadata.contains("emb:test"));
+        let entity_id = router.index.get("emb:test").unwrap();
+        assert!(router.embeddings.get(entity_id).is_some());
+    }
+
+    #[test]
+    fn test_multiple_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        router.put_durable("key1", create_test_data()).unwrap();
+        let id1 = router.checkpoint(&snapshot_path).unwrap();
+
+        router.put_durable("key2", create_test_data()).unwrap();
+        let id2 = router.checkpoint(&snapshot_path).unwrap();
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+    }
+
+    #[test]
+    fn test_delete_durable_with_embedding() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+        // Put embedding
+        let embedding: Vec<f32> = (0..384).map(|i| i as f32 * 0.01).collect();
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(embedding));
+        router.put_durable("emb:vec1", data).unwrap();
+
+        // Delete should log embedding delete and entity remove
+        router.delete_durable("emb:vec1").unwrap();
+
+        assert!(!router.exists("emb:vec1"));
+    }
+
+    #[test]
+    fn test_crash_recovery_simulation() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        // Simulate initial state
+        {
+            let router = SlabRouter::with_wal(&wal_path, WalConfig::default()).unwrap();
+
+            // Add data and checkpoint
+            router.put_durable("persisted", create_test_data()).unwrap();
+            router.checkpoint(&snapshot_path).unwrap();
+
+            // Add more data after checkpoint (this will be in WAL only)
+            let mut data = TensorData::new();
+            data.set("value", TensorValue::Scalar(crate::ScalarValue::Int(42)));
+            router.put_durable("in_wal_only", data).unwrap();
+
+            // "Crash" - drop router without clean shutdown
+        }
+
+        // Recover
+        let recovered =
+            SlabRouter::recover(&wal_path, &WalConfig::default(), Some(&snapshot_path)).unwrap();
+
+        // Both should be present
+        assert!(recovered.exists("persisted"));
+        assert!(recovered.exists("in_wal_only"));
+
+        // Verify data integrity
+        let retrieved = recovered.get("in_wal_only").unwrap();
+        if let Some(TensorValue::Scalar(crate::ScalarValue::Int(v))) = retrieved.get("value") {
+            assert_eq!(*v, 42);
+        } else {
+            panic!("Expected Int value");
+        }
     }
 }

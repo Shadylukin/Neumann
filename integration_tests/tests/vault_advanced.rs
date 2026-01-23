@@ -129,7 +129,7 @@ fn test_vault_grant_ttl_expiration() {
     vault.cleanup_expired_grants();
 
     // Access should now be denied
-    let result = vault.get(&user_entity, "ttl/secret");
+    let _result = vault.get(&user_entity, "ttl/secret");
     // After TTL expiration, access should be denied
     // Note: Actual behavior depends on TTL enforcement implementation
 }
@@ -180,7 +180,7 @@ fn test_vault_permission_levels() {
     assert!(vault.get(&writer_entity, "perm/secret").is_ok());
 
     // Reader cannot write (if permission enforced)
-    let write_attempt = vault.set(&reader_entity, "perm/secret", "new_value");
+    let _write_attempt = vault.set(&reader_entity, "perm/secret", "new_value");
     // May succeed or fail depending on permission enforcement
 }
 
@@ -310,7 +310,7 @@ fn test_vault_concurrent_grant_revoke() {
 
     // Create multiple users
     let mut user_entities = vec![];
-    for i in 0..10 {
+    for _ in 0..10 {
         let node = graph.create_node("user", HashMap::new()).unwrap();
         user_entities.push(format!("node:{}", node));
     }

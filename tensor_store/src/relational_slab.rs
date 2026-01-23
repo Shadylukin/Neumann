@@ -1,6 +1,6 @@
 //! Columnar storage for relational data.
 //!
-//! RelationalSlab stores table rows in a column-oriented format, optimizing
+//! `RelationalSlab` stores table rows in a column-oriented format, optimizing
 //! for scan operations and batch inserts. Each column is stored as a separate
 //! vector, providing cache-friendly access patterns for analytical queries.
 //!
@@ -34,12 +34,22 @@ pub enum RangeOp {
 pub struct RowId(pub u64);
 
 impl RowId {
-    pub fn new(id: u64) -> Self {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
-    pub fn as_u64(self) -> u64 {
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
         self.0
+    }
+
+    /// Convert to array index. Truncates on 32-bit platforms (acceptable since
+    /// `Vec` capacity is also limited to `usize::MAX`).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub const fn as_index(self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -67,6 +77,7 @@ pub struct ColumnDef {
 }
 
 impl ColumnDef {
+    #[must_use]
     pub fn new(name: &str, col_type: ColumnType, nullable: bool) -> Self {
         Self {
             name: name.to_string(),
@@ -84,18 +95,21 @@ pub struct TableSchema {
 }
 
 impl TableSchema {
-    pub fn new(columns: Vec<ColumnDef>) -> Self {
+    #[must_use]
+    pub const fn new(columns: Vec<ColumnDef>) -> Self {
         Self {
             columns,
             primary_key: None,
         }
     }
 
+    #[must_use]
     pub fn with_primary_key(mut self, column: &str) -> Self {
         self.primary_key = Some(column.to_string());
         self
     }
 
+    #[must_use]
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
     }
@@ -112,8 +126,9 @@ pub enum ColumnValue {
 }
 
 impl ColumnValue {
-    pub fn is_null(&self) -> bool {
-        matches!(self, ColumnValue::Null)
+    #[must_use]
+    pub const fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
     }
 }
 
@@ -157,21 +172,17 @@ impl ColumnStorage {
         match self {
             Self::Int(v) => v
                 .get(idx)
-                .map(|i| ColumnValue::Int(*i))
-                .unwrap_or(ColumnValue::Null),
+                .map_or(ColumnValue::Null, |i| ColumnValue::Int(*i)),
             Self::Float(v) => v
                 .get(idx)
-                .map(|f| ColumnValue::Float(*f))
-                .unwrap_or(ColumnValue::Null),
+                .map_or(ColumnValue::Null, |f| ColumnValue::Float(*f)),
             Self::String(v) => v
                 .get(idx)
-                .and_then(|s| s.clone())
-                .map(ColumnValue::String)
-                .unwrap_or(ColumnValue::Null),
+                .and_then(Clone::clone)
+                .map_or(ColumnValue::Null, ColumnValue::String),
             Self::Bool(v) => v
                 .get(idx)
-                .map(|b| ColumnValue::Bool(*b))
-                .unwrap_or(ColumnValue::Null),
+                .map_or(ColumnValue::Null, |b| ColumnValue::Bool(*b)),
         }
     }
 }
@@ -234,7 +245,7 @@ impl TableStorage {
     }
 
     fn get(&self, row_id: RowId) -> Option<Row> {
-        let idx = row_id.as_u64() as usize;
+        let idx = row_id.as_index();
         if idx >= self.total_rows || !self.alive[idx] {
             return None;
         }
@@ -256,7 +267,7 @@ impl TableStorage {
     }
 
     fn delete(&mut self, row_id: RowId) -> bool {
-        let idx = row_id.as_u64() as usize;
+        let idx = row_id.as_index();
         if idx >= self.total_rows || !self.alive[idx] {
             return false;
         }
@@ -303,9 +314,8 @@ impl TableStorage {
             return false;
         }
 
-        let col_idx = match self.schema.column_index(column) {
-            Some(idx) => idx,
-            None => return false,
+        let Some(col_idx) = self.schema.column_index(column) else {
+            return false;
         };
 
         // Only support int indexes for now
@@ -336,7 +346,7 @@ impl TableStorage {
             .and_then(|idx| idx.get(&key))
             .map(|rows| {
                 rows.iter()
-                    .filter(|r| self.alive[r.as_u64() as usize])
+                    .filter(|r| self.alive[r.as_index()])
                     .copied()
                     .collect()
             })
@@ -351,7 +361,7 @@ impl TableStorage {
         let alive = &self.alive;
         let filter_alive = |rows: &Vec<RowId>| -> Vec<RowId> {
             rows.iter()
-                .filter(|r| alive[r.as_u64() as usize])
+                .filter(|r| alive[r.as_index()])
                 .copied()
                 .collect()
         };
@@ -394,7 +404,7 @@ impl TableStorage {
         let mut result = Vec::new();
         for (_, rows) in index.range(min..=max) {
             for row_id in rows {
-                if self.alive[row_id.as_u64() as usize] {
+                if self.alive[row_id.as_index()] {
                     result.push(*row_id);
                 }
             }
@@ -414,7 +424,8 @@ pub struct RelationalSlab {
 }
 
 impl RelationalSlab {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             tables: RwLock::new(BTreeMap::new()),
             next_table_id: AtomicU64::new(0),
@@ -422,20 +433,31 @@ impl RelationalSlab {
     }
 
     /// Create a new table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a table with the given name already exists.
     pub fn create_table(&self, name: &str, schema: TableSchema) -> Result<(), RelationalError> {
         let mut tables = self.tables.write();
         if tables.contains_key(name) {
             return Err(RelationalError::TableExists(name.to_string()));
         }
         tables.insert(name.to_string(), TableStorage::new(schema));
+        drop(tables);
         self.next_table_id.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Drop a table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn drop_table(&self, name: &str) -> Result<(), RelationalError> {
         let mut tables = self.tables.write();
-        if tables.remove(name).is_none() {
+        let removed = tables.remove(name).is_some();
+        drop(tables);
+        if !removed {
             return Err(RelationalError::TableNotFound(name.to_string()));
         }
         Ok(())
@@ -452,6 +474,11 @@ impl RelationalSlab {
     }
 
     /// Insert a row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or if the row has the wrong number of columns.
+    #[allow(clippy::needless_pass_by_value)] // API consistency with batch_insert
     pub fn insert(&self, table: &str, row: Row) -> Result<RowId, RelationalError> {
         let mut tables = self.tables.write();
         let storage = tables
@@ -465,10 +492,16 @@ impl RelationalSlab {
             });
         }
 
-        Ok(storage.insert(&row))
+        let row_id = storage.insert(&row);
+        drop(tables);
+        Ok(row_id)
     }
 
     /// Batch insert rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or if any row has the wrong number of columns.
     pub fn batch_insert(&self, table: &str, rows: Vec<Row>) -> Result<Vec<RowId>, RelationalError> {
         let mut tables = self.tables.write();
         let storage = tables
@@ -485,31 +518,48 @@ impl RelationalSlab {
             }
             row_ids.push(storage.insert(&row));
         }
+        drop(tables);
 
         Ok(row_ids)
     }
 
     /// Get a row by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn get(&self, table: &str, row_id: RowId) -> Result<Option<Row>, RelationalError> {
         let tables = self.tables.read();
         let storage = tables
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.get(row_id))
+        let result = storage.get(row_id);
+        drop(tables);
+        Ok(result)
     }
 
     /// Delete a row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn delete(&self, table: &str, row_id: RowId) -> Result<bool, RelationalError> {
         let mut tables = self.tables.write();
         let storage = tables
             .get_mut(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.delete(row_id))
+        let deleted = storage.delete(row_id);
+        drop(tables);
+        Ok(deleted)
     }
 
     /// Scan a table with a predicate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn scan<F>(&self, table: &str, predicate: F) -> Result<Vec<(RowId, Row)>, RelationalError>
     where
         F: Fn(&Row) -> bool,
@@ -519,22 +569,34 @@ impl RelationalSlab {
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.scan(predicate))
+        let results = storage.scan(predicate);
+        drop(tables);
+        Ok(results)
     }
 
     /// Get all rows from a table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn scan_all(&self, table: &str) -> Result<Vec<(RowId, Row)>, RelationalError> {
         self.scan(table, |_| true)
     }
 
     /// Create an index on a column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or if index creation fails.
     pub fn create_index(&self, table: &str, column: &str) -> Result<(), RelationalError> {
         let mut tables = self.tables.write();
         let storage = tables
             .get_mut(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        if !storage.create_index(column) {
+        let created = storage.create_index(column);
+        drop(tables);
+        if !created {
             return Err(RelationalError::IndexCreationFailed(column.to_string()));
         }
 
@@ -542,6 +604,10 @@ impl RelationalSlab {
     }
 
     /// Look up rows by indexed column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn index_lookup(
         &self,
         table: &str,
@@ -553,10 +619,16 @@ impl RelationalSlab {
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.index_lookup(column, key))
+        let result = storage.index_lookup(column, key);
+        drop(tables);
+        Ok(result)
     }
 
     /// Range query on indexed column using B-tree's O(log n) range operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn index_range(
         &self,
         table: &str,
@@ -569,10 +641,16 @@ impl RelationalSlab {
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.index_range(column, op, key))
+        let result = storage.index_range(column, op, key);
+        drop(tables);
+        Ok(result)
     }
 
     /// Range query for values between min and max (inclusive).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn index_between(
         &self,
         table: &str,
@@ -585,17 +663,25 @@ impl RelationalSlab {
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.index_between(column, min, max))
+        let result = storage.index_between(column, min, max);
+        drop(tables);
+        Ok(result)
     }
 
     /// Get the number of live rows in a table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
     pub fn row_count(&self, table: &str) -> Result<usize, RelationalError> {
         let tables = self.tables.read();
         let storage = tables
             .get(table)
             .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
 
-        Ok(storage.live_rows)
+        let count = storage.live_rows;
+        drop(tables);
+        Ok(count)
     }
 
     /// Get the number of tables.
@@ -621,6 +707,7 @@ impl RelationalSlab {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: RelationalSlabSnapshot) -> Self {
         Self {
             tables: RwLock::new(snapshot.tables),
@@ -635,8 +722,8 @@ impl Default for RelationalSlab {
     }
 }
 
-/// Errors from RelationalSlab operations.
-#[derive(Debug, Clone, PartialEq)]
+/// Errors from `RelationalSlab` operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalError {
     TableNotFound(String),
     TableExists(String),
@@ -647,13 +734,13 @@ pub enum RelationalError {
 impl std::fmt::Display for RelationalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TableNotFound(name) => write!(f, "table not found: {}", name),
-            Self::TableExists(name) => write!(f, "table already exists: {}", name),
+            Self::TableNotFound(name) => write!(f, "table not found: {name}"),
+            Self::TableExists(name) => write!(f, "table already exists: {name}"),
             Self::ColumnMismatch { expected, actual } => {
-                write!(f, "column mismatch: expected {}, got {}", expected, actual)
+                write!(f, "column mismatch: expected {expected}, got {actual}")
             },
             Self::IndexCreationFailed(col) => {
-                write!(f, "index creation failed for column: {}", col)
+                write!(f, "index creation failed for column: {col}")
             },
         }
     }
@@ -661,7 +748,7 @@ impl std::fmt::Display for RelationalError {
 
 impl std::error::Error for RelationalError {}
 
-/// Serializable snapshot of RelationalSlab state.
+/// Serializable snapshot of `RelationalSlab` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationalSlabSnapshot {
     tables: BTreeMap<String, TableStorage>,

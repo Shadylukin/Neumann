@@ -57,7 +57,7 @@
 //! let all_data = buffer.as_bytes().unwrap();
 //!
 //! // Or read specific chunk (for network transfer)
-//! let chunk = buffer.as_slice(0, 1024).unwrap();
+//! let chunk = buffer.as_slice(0, buffer.total_len() as usize).unwrap();
 //! ```
 //!
 //! ## Checking Buffer State
@@ -95,12 +95,12 @@
 //!
 //! // Read in chunks
 //! let mut buf = [0u8; 5];
-//! reader.read(&mut buf).unwrap();
+//! reader.read_exact(&mut buf).unwrap();
 //! assert_eq!(&buf, b"01234");
 //!
 //! // Seek to position
 //! reader.seek(SeekFrom::Start(3)).unwrap();
-//! reader.read(&mut buf).unwrap();
+//! reader.read_exact(&mut buf).unwrap();
 //! assert_eq!(&buf, b"34567");
 //! ```
 //!
@@ -532,6 +532,7 @@ impl Seek for SnapshotBufferReader<'_> {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -694,7 +695,7 @@ mod tests {
 
         // Read from middle
         let mut buf = [0u8; 10];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, &data[50..60]);
     }
 
@@ -803,7 +804,7 @@ mod tests {
 
         // Read last 10 bytes
         let mut buf = [0u8; 10];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, &data[90..100]);
     }
 
@@ -831,7 +832,7 @@ mod tests {
 
         // Read from position 40
         let mut buf = [0u8; 10];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, &data[40..50]);
     }
 
@@ -943,14 +944,14 @@ mod tests {
         let mut buffer = SnapshotBuffer::new(config).unwrap();
 
         // First write triggers spill
-        buffer.write(&vec![1u8; 150]).unwrap();
+        buffer.write(&[1u8; 150]).unwrap();
         assert!(buffer.is_file_backed());
 
         // Write more to trigger first growth
-        buffer.write(&vec![2u8; 200]).unwrap();
+        buffer.write(&[2u8; 200]).unwrap();
 
         // Write even more to trigger second growth
-        buffer.write(&vec![3u8; 500]).unwrap();
+        buffer.write(&[3u8; 500]).unwrap();
 
         buffer.finalize().unwrap();
         assert_eq!(buffer.total_len(), 850);
@@ -980,7 +981,7 @@ mod tests {
         assert_eq!(reader.position(), 0);
 
         let mut buf = [0u8; 5];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(reader.remaining(), 5);
         assert_eq!(reader.position(), 5);
     }

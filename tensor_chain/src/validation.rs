@@ -475,6 +475,7 @@ impl FastPathValidator {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -600,7 +601,7 @@ mod tests {
         // Note: The learned states are stored in the local codebook
         let locals = validator.locals.read();
         assert!(locals.contains_key("custom"));
-        assert!(locals.get("custom").unwrap().len() > 0);
+        assert!(!locals.get("custom").unwrap().is_empty());
     }
 
     #[test]

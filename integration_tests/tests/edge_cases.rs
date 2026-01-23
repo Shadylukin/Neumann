@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use graph_engine::{Direction, GraphEngine, PropertyValue};
-use integration_tests::{create_shared_engines, sample_embeddings};
+use graph_engine::{Direction, GraphEngine};
+use integration_tests::sample_embeddings;
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;
@@ -110,7 +110,7 @@ fn test_zero_vector_handling() {
             assert_eq!(retrieved, zero_vec);
 
             // Search with zero vector
-            let results = vector.search_similar(&zero_vec, 10).unwrap();
+            let _results = vector.search_similar(&zero_vec, 10).unwrap();
             // Should handle gracefully (may return itself or empty)
         },
         Err(e) => {
@@ -322,7 +322,7 @@ fn test_self_loop_graph_handling() {
             // Self-loop created successfully
             // Note: neighbors() may or may not include self in results
             // This documents the behavior
-            let neighbors = graph.neighbors(node, None, Direction::Outgoing).unwrap();
+            let _neighbors = graph.neighbors(node, None, Direction::Outgoing).unwrap();
 
             // The edge exists, so the graph supports self-loops
             // neighbors may filter out self-references in some implementations

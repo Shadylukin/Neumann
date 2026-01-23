@@ -43,7 +43,9 @@ fn test_queue_update() {
 
     // Queue an update
     let embedding = make_embedding(42, 64);
-    manager.queue_update("test_key".to_string(), &embedding, 1);
+    manager
+        .queue_update("test_key".to_string(), &embedding, 1)
+        .unwrap();
 
     assert_eq!(manager.pending_count(), 1);
 }
@@ -56,7 +58,9 @@ fn test_queue_multiple_updates() {
     // Queue multiple updates
     for i in 0..10 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     assert_eq!(manager.pending_count(), 10);
@@ -73,7 +77,9 @@ fn test_create_batch() {
     // Queue updates
     for i in 0..10 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Create a batch
@@ -95,7 +101,9 @@ fn test_flush_all_batches() {
     // Queue updates
     for i in 0..10 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Flush all
@@ -169,7 +177,9 @@ fn test_clustered_data_encoding() {
     for i in 0..20 {
         let cluster = i % 4;
         let embedding = make_clustered_embedding(cluster, 10 + i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Create batch
@@ -195,7 +205,9 @@ fn test_apply_batch_callback() {
     // Queue updates
     for i in 0..5 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Create batch
@@ -224,7 +236,9 @@ fn test_stats_tracking() {
     // Queue updates
     for i in 0..10 {
         let embedding = make_embedding(i, 64);
-        manager.queue_update(format!("key_{}", i), &embedding, i as u64);
+        manager
+            .queue_update(format!("key_{}", i), &embedding, i as u64)
+            .unwrap();
     }
 
     // Create batch to trigger encoding

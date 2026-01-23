@@ -455,6 +455,7 @@ pub fn serialize_entries(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::{Block, BlockHeader};
@@ -885,10 +886,7 @@ mod tests {
         let io_err = StreamingError::Io(io::Error::new(io::ErrorKind::NotFound, "test"));
         assert!(io_err.to_string().contains("I/O error"));
 
-        let buf_err = StreamingError::Buffer(SnapshotBufferError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "test",
-        )));
+        let buf_err = StreamingError::Buffer(SnapshotBufferError::Io(io::Error::other("test")));
         assert!(buf_err.to_string().contains("buffer error"));
 
         let ser_err = StreamingError::Serialization("test".to_string());
@@ -909,7 +907,7 @@ mod tests {
         assert!(matches!(streaming_err, StreamingError::Io(_)));
 
         // Test From<SnapshotBufferError>
-        let buf_err = SnapshotBufferError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        let buf_err = SnapshotBufferError::Io(io::Error::other("test"));
         let streaming_err: StreamingError = buf_err.into();
         assert!(matches!(streaming_err, StreamingError::Buffer(_)));
     }

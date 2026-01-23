@@ -37,7 +37,8 @@ async fn test_blob_gc_cleans_orphaned_chunks() {
 
     // GC should clean up orphaned chunks
     // The deleted artifact's chunks should be collected if not shared
-    assert!(gc_stats.deleted >= 0);
+    // gc_stats.deleted is valid (unsigned, always >= 0)
+    let _ = gc_stats.deleted;
 
     // Second artifact should still work
     let content = blob.get(&id2).await.unwrap();

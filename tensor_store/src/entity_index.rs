@@ -1,13 +1,13 @@
 //! Vocabulary-based entity index for O(log n) lookup with stable IDs.
 //!
-//! The EntityIndex maps string keys to EntityId values using an append-only
-//! vocabulary tensor. EntityId is simply the index into the vocabulary vector,
+//! The `EntityIndex` maps string keys to `EntityId` values using an append-only
+//! vocabulary tensor. `EntityId` is simply the index into the vocabulary vector,
 //! providing O(1) reverse lookups and stable IDs that never change.
 //!
 //! # Design Philosophy
 //!
 //! This is a tensor-native approach: the key's position in the vocabulary IS
-//! the EntityId. New keys append to the vocabulary, maintaining stable IDs.
+//! the `EntityId`. New keys append to the vocabulary, maintaining stable IDs.
 //! A sorted hash index provides O(log n) forward lookups.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,21 +17,31 @@ use serde::{Deserialize, Serialize};
 
 /// A unique identifier for an entity in the store.
 ///
-/// EntityId is simply an index into the vocabulary vector, providing
+/// `EntityId` is simply an index into the vocabulary vector, providing
 /// O(1) reverse lookups (id -> key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityId(pub u64);
 
 impl EntityId {
-    /// Create a new EntityId from a raw u64 value.
+    /// Create a new `EntityId` from a raw u64 value.
     #[inline]
-    pub fn new(id: u64) -> Self {
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
     #[inline]
-    pub fn as_u64(self) -> u64 {
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
         self.0
+    }
+
+    /// Convert to array index. Truncates on 32-bit platforms.
+    #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub const fn as_index(self) -> usize {
+        self.0 as usize
     }
 }
 
@@ -42,7 +52,7 @@ impl From<u64> for EntityId {
 }
 
 impl From<EntityId> for u64 {
-    fn from(id: EntityId) -> u64 {
+    fn from(id: EntityId) -> Self {
         id.0
     }
 }
@@ -62,11 +72,11 @@ impl From<EntityId> for u64 {
 /// - `scan_prefix`: O(n) linear scan
 /// - `len`: O(1)
 pub struct EntityIndex {
-    /// The vocabulary: EntityId = index into this vector.
+    /// The vocabulary: `EntityId` = index into this vector.
     /// Append-only for stable IDs.
     vocabulary: RwLock<Vec<String>>,
 
-    /// Sorted (hash, vocab_index) pairs for O(log n) lookup.
+    /// Sorted (hash, `vocab_index`) pairs for O(log n) lookup.
     /// Binary search by hash, then verify key for collision handling.
     reverse: RwLock<Vec<(u64, u32)>>,
 
@@ -79,8 +89,9 @@ pub struct EntityIndex {
 }
 
 impl EntityIndex {
-    /// Create a new empty EntityIndex.
-    pub fn new() -> Self {
+    /// Create a new empty `EntityIndex`.
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             vocabulary: RwLock::new(Vec::new()),
             reverse: RwLock::new(Vec::new()),
@@ -89,7 +100,8 @@ impl EntityIndex {
         }
     }
 
-    /// Create an EntityIndex with pre-allocated capacity.
+    /// Create an `EntityIndex` with pre-allocated capacity.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             vocabulary: RwLock::new(Vec::with_capacity(capacity)),
@@ -99,13 +111,14 @@ impl EntityIndex {
         }
     }
 
-    /// Look up an EntityId by key.
+    /// Look up an `EntityId` by key.
     ///
     /// Returns `None` if the key doesn't exist or has been deleted.
     ///
     /// # Performance
     ///
     /// O(log n) binary search + O(k) collision scan where k is typically 1.
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<EntityId> {
         let hash = fxhash::hash64(key);
         // Lock order: vocabulary -> reverse (consistent with get_or_create)
@@ -128,18 +141,21 @@ impl EntityIndex {
             idx += 1;
         }
 
+        drop(vocab);
+        drop(reverse);
         None
     }
 
-    /// Get or create an EntityId for the given key.
+    /// Get or create an `EntityId` for the given key.
     ///
-    /// If the key exists and is not deleted, returns the existing EntityId.
-    /// Otherwise, appends the key to the vocabulary and returns a new EntityId.
+    /// If the key exists and is not deleted, returns the existing `EntityId`.
+    /// Otherwise, appends the key to the vocabulary and returns a new `EntityId`.
     ///
     /// # Performance
     ///
     /// O(log n) amortized. The sorted index insert is O(n) worst case but
     /// amortized O(log n) due to the distribution of hash values.
+    #[must_use]
     pub fn get_or_create(&self, key: &str) -> EntityId {
         // Fast path: read-only lookup
         if let Some(id) = self.get(key) {
@@ -172,19 +188,24 @@ impl EntityIndex {
         // Insert new entry
         let new_id = vocab.len() as u64;
         vocab.push(key.to_string());
+        #[allow(clippy::cast_possible_truncation)] // Entity IDs won't exceed 4 billion
         reverse.insert(insert_pos, (hash, new_id as u32));
+        drop(vocab);
+        drop(reverse);
         self.live_count.fetch_add(1, Ordering::Relaxed);
 
         EntityId(new_id)
     }
 
-    /// Get the key for an EntityId.
+    /// Get the key for an `EntityId`.
     ///
-    /// Returns `None` if the EntityId is invalid or the entry was deleted.
+    /// Returns `None` if the `EntityId` is invalid or the entry was deleted.
     ///
     /// # Performance
     ///
     /// O(1) direct array access.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Entity IDs limited to address space
     pub fn key_for(&self, id: EntityId) -> Option<String> {
         if self.is_tombstone(id) {
             return None;
@@ -194,16 +215,17 @@ impl EntityIndex {
 
     /// Check if a key exists and is not deleted.
     #[inline]
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.get(key).is_some()
     }
 
     /// Mark an entity as deleted (tombstone).
     ///
-    /// The key remains in the vocabulary to preserve EntityId stability,
+    /// The key remains in the vocabulary to preserve `EntityId` stability,
     /// but lookups will return `None`.
     ///
-    /// Returns the EntityId if the key existed and was deleted, `None` otherwise.
+    /// Returns the `EntityId` if the key existed and was deleted, `None` otherwise.
     pub fn remove(&self, key: &str) -> Option<EntityId> {
         let id = self.get(key)?;
         self.set_tombstone(id);
@@ -213,11 +235,12 @@ impl EntityIndex {
 
     /// Scan for all keys matching a prefix.
     ///
-    /// Returns pairs of (key, EntityId) for all matching, non-deleted entries.
+    /// Returns pairs of (key, `EntityId`) for all matching, non-deleted entries.
     ///
     /// # Performance
     ///
     /// O(n) linear scan of vocabulary.
+    #[must_use]
     pub fn scan_prefix(&self, prefix: &str) -> Vec<(String, EntityId)> {
         let vocab = self.vocabulary.read();
         vocab
@@ -239,6 +262,7 @@ impl EntityIndex {
     /// # Performance
     ///
     /// O(n) linear scan of vocabulary.
+    #[must_use]
     pub fn scan_prefix_count(&self, prefix: &str) -> usize {
         let vocab = self.vocabulary.read();
         vocab
@@ -253,19 +277,22 @@ impl EntityIndex {
 
     /// Get the number of live (non-deleted) entries.
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Entry count limited to address space
     pub fn len(&self) -> usize {
         self.live_count.load(Ordering::Relaxed) as usize
     }
 
     /// Check if the index is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Get the total number of entries including deleted ones.
     ///
-    /// This represents the vocabulary size and the range of valid EntityIds.
+    /// This represents the vocabulary size and the range of valid `EntityId`s.
     pub fn total_entries(&self) -> usize {
         self.vocabulary.read().len()
     }
@@ -289,6 +316,7 @@ impl EntityIndex {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: EntityIndexSnapshot) -> Self {
         Self {
             vocabulary: RwLock::new(snapshot.vocabulary),
@@ -298,7 +326,7 @@ impl EntityIndex {
         }
     }
 
-    /// Check if an EntityId has been deleted.
+    /// Check if an `EntityId` has been deleted.
     #[inline]
     fn is_tombstone(&self, id: EntityId) -> bool {
         let tombstones = self.tombstones.read();
@@ -310,7 +338,7 @@ impl EntityIndex {
         (tombstones[block_idx] & (1u64 << bit_idx)) != 0
     }
 
-    /// Mark an EntityId as deleted.
+    /// Mark an `EntityId` as deleted.
     fn set_tombstone(&self, id: EntityId) {
         let mut tombstones = self.tombstones.write();
         let block_idx = (id.0 / 64) as usize;
@@ -331,7 +359,7 @@ impl Default for EntityIndex {
     }
 }
 
-/// Serializable snapshot of EntityIndex state.
+/// Serializable snapshot of `EntityIndex` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityIndexSnapshot {
     vocabulary: Vec<String>,
@@ -397,7 +425,7 @@ mod tests {
     #[test]
     fn test_get_nonexistent() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
+        let _ = index.get_or_create("user:1");
 
         let found = index.get("user:2");
         assert_eq!(found, None);
@@ -415,7 +443,7 @@ mod tests {
     #[test]
     fn test_key_for_invalid() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
+        let _ = index.get_or_create("user:1");
 
         let key = index.key_for(EntityId(999));
         assert_eq!(key, None);
@@ -424,7 +452,7 @@ mod tests {
     #[test]
     fn test_contains() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
+        let _ = index.get_or_create("user:1");
 
         assert!(index.contains("user:1"));
         assert!(!index.contains("user:2"));
@@ -468,10 +496,10 @@ mod tests {
     #[test]
     fn test_scan_prefix() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
-        index.get_or_create("user:2");
-        index.get_or_create("post:1");
-        index.get_or_create("user:3");
+        let _ = index.get_or_create("user:1");
+        let _ = index.get_or_create("user:2");
+        let _ = index.get_or_create("post:1");
+        let _ = index.get_or_create("user:3");
 
         let users = index.scan_prefix("user:");
         assert_eq!(users.len(), 3);
@@ -485,9 +513,9 @@ mod tests {
     #[test]
     fn test_scan_prefix_with_deletes() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
-        index.get_or_create("user:2");
-        index.get_or_create("user:3");
+        let _ = index.get_or_create("user:1");
+        let _ = index.get_or_create("user:2");
+        let _ = index.get_or_create("user:3");
         index.remove("user:2");
 
         let users = index.scan_prefix("user:");
@@ -502,9 +530,9 @@ mod tests {
     #[test]
     fn test_scan_prefix_count() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
-        index.get_or_create("user:2");
-        index.get_or_create("post:1");
+        let _ = index.get_or_create("user:1");
+        let _ = index.get_or_create("user:2");
+        let _ = index.get_or_create("post:1");
 
         assert_eq!(index.scan_prefix_count("user:"), 2);
         assert_eq!(index.scan_prefix_count("post:"), 1);
@@ -514,8 +542,8 @@ mod tests {
     #[test]
     fn test_snapshot_restore() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
-        index.get_or_create("user:2");
+        let _ = index.get_or_create("user:1");
+        let _ = index.get_or_create("user:2");
         index.remove("user:1");
 
         let snapshot = index.snapshot();
@@ -529,8 +557,8 @@ mod tests {
     #[test]
     fn test_clear() {
         let index = EntityIndex::new();
-        index.get_or_create("user:1");
-        index.get_or_create("user:2");
+        let _ = index.get_or_create("user:1");
+        let _ = index.get_or_create("user:2");
 
         index.clear();
 
@@ -549,7 +577,7 @@ mod tests {
             let idx = Arc::clone(&index);
             handles.push(thread::spawn(move || {
                 for i in 0..250 {
-                    idx.get_or_create(&format!("thread{}:key{}", t, i));
+                    let _ = idx.get_or_create(&format!("thread{}:key{}", t, i));
                 }
             }));
         }
@@ -583,7 +611,7 @@ mod tests {
 
         for i in 0..count {
             let op_start = Instant::now();
-            index.get_or_create(&format!("entity:{}", i));
+            let _ = index.get_or_create(&format!("entity:{}", i));
             let op_time = op_start.elapsed();
             if op_time > max_op_time {
                 max_op_time = op_time;
@@ -617,7 +645,7 @@ mod tests {
         let keys: Vec<String> = (0..1000).map(|i| format!("key:{}", i)).collect();
 
         for key in &keys {
-            index.get_or_create(key);
+            let _ = index.get_or_create(key);
         }
 
         // Verify all keys are retrievable
@@ -648,7 +676,7 @@ mod tests {
 
         // Should work normally
         for i in 0..100 {
-            index.get_or_create(&format!("key:{}", i));
+            let _ = index.get_or_create(&format!("key:{}", i));
         }
         assert_eq!(index.len(), 100);
     }
@@ -660,7 +688,7 @@ mod tests {
 
         // Insert many keys
         for i in 0..count {
-            index.get_or_create(&format!("entity:{}", i));
+            let _ = index.get_or_create(&format!("entity:{}", i));
         }
 
         assert_eq!(index.len(), count);
@@ -690,7 +718,7 @@ mod tests {
         let keys = vec!["user:alice", "user:bob", "user:charlie"];
 
         for key in &keys {
-            index.get_or_create(key);
+            let _ = index.get_or_create(key);
         }
 
         for key in &keys {
@@ -704,7 +732,7 @@ mod tests {
 
         // Create more than 64 entries to test multi-block tombstones
         for i in 0..100 {
-            index.get_or_create(&format!("key:{}", i));
+            let _ = index.get_or_create(&format!("key:{}", i));
         }
 
         // Delete entries across multiple blocks
@@ -742,5 +770,31 @@ mod tests {
         let id_b_new = index.get_or_create("b");
         assert_ne!(id_b, id_b_new);
         assert_eq!(id_b_new.as_u64(), 3); // Appended at end
+    }
+
+    #[test]
+    fn test_entity_id_from_u64() {
+        let id: EntityId = 42u64.into();
+        assert_eq!(id.as_u64(), 42);
+
+        let id2: EntityId = EntityId::from(100u64);
+        assert_eq!(id2.as_u64(), 100);
+    }
+
+    #[test]
+    fn test_u64_from_entity_id() {
+        let id = EntityId::new(99);
+        let val: u64 = id.into();
+        assert_eq!(val, 99);
+
+        let val2: u64 = u64::from(EntityId::new(123));
+        assert_eq!(val2, 123);
+    }
+
+    #[test]
+    fn test_entity_index_default() {
+        let index = EntityIndex::default();
+        assert_eq!(index.len(), 0);
+        assert!(index.is_empty());
     }
 }

@@ -1,0 +1,1028 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tensor Checkpoint - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/tensor-checkpoint.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="tensor-checkpoint"><a class="header" href="#tensor-checkpoint">Tensor Checkpoint</a></h1>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>Tensor Checkpoint provides point-in-time snapshots of the database state for
+recovery operations. It enables users to create manual checkpoints before
+important operations, automatically checkpoint before destructive operations,
+and rollback to any previous checkpoint. Checkpoints are stored as blob
+artifacts in tensor_blob for content-addressable storage with automatic
+deduplication.</p>
+<p>The module integrates with the query router to provide SQL-like commands
+(<code>CHECKPOINT</code>, <code>CHECKPOINTS</code>, <code>ROLLBACK TO</code>) and supports interactive
+confirmation prompts for destructive operations with configurable retention
+policies.</p>
+<h2 id="module-structure"><a class="header" href="#module-structure">Module Structure</a></h2>
+<pre><code class="language-text">tensor_checkpoint/
+  src/
+    lib.rs          # CheckpointManager, CheckpointConfig
+    state.rs        # CheckpointState, DestructiveOp, metadata types
+    storage.rs      # Blob storage integration
+    retention.rs    # Count-based purge logic
+    preview.rs      # Destructive operation previews
+    error.rs        # Error types
+</code></pre>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<h3 id="core-types"><a class="header" href="#core-types">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>CheckpointManager</code></td><td>Main API for checkpoint operations</td></tr>
+<tr><td><code>CheckpointConfig</code></td><td>Configuration (retention, auto-checkpoint, interactive mode)</td></tr>
+<tr><td><code>CheckpointState</code></td><td>Full checkpoint data with snapshot and metadata</td></tr>
+<tr><td><code>CheckpointInfo</code></td><td>Lightweight checkpoint listing info</td></tr>
+<tr><td><code>CheckpointTrigger</code></td><td>Context for auto-checkpoints (command, operation, preview)</td></tr>
+</tbody></table>
+</div>
+<h3 id="state-types"><a class="header" href="#state-types">State Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>DestructiveOp</code></td><td>Enum of destructive operations that trigger auto-checkpoints</td></tr>
+<tr><td><code>OperationPreview</code></td><td>Summary and sample data for confirmation prompts</td></tr>
+<tr><td><code>CheckpointMetadata</code></td><td>Statistics for validation (tables, nodes, embeddings)</td></tr>
+<tr><td><code>RelationalMeta</code></td><td>Table and row counts</td></tr>
+<tr><td><code>GraphMeta</code></td><td>Node and edge counts</td></tr>
+<tr><td><code>VectorMeta</code></td><td>Embedding count</td></tr>
+</tbody></table>
+</div>
+<h3 id="error-types"><a class="header" href="#error-types">Error Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Variant</th><th>Description</th><th>Common Cause</th></tr></thead><tbody>
+<tr><td><code>NotFound</code></td><td>Checkpoint not found by ID or name</td><td>Typo in checkpoint name or ID was pruned by retention</td></tr>
+<tr><td><code>Storage</code></td><td>Blob storage error</td><td>Disk full, permissions issue</td></tr>
+<tr><td><code>Serialization</code></td><td>Bincode serialization error</td><td>Corrupt in-memory state</td></tr>
+<tr><td><code>Deserialization</code></td><td>Bincode deserialization error</td><td>Corrupt checkpoint file</td></tr>
+<tr><td><code>Blob</code></td><td>Underlying blob store error</td><td>BlobStore not initialized</td></tr>
+<tr><td><code>Snapshot</code></td><td>TensorStore snapshot error</td><td>Store locked or corrupted</td></tr>
+<tr><td><code>Cancelled</code></td><td>Operation cancelled by user</td><td>User rejected confirmation prompt</td></tr>
+<tr><td><code>InvalidId</code></td><td>Invalid checkpoint identifier</td><td>Empty or malformed ID string</td></tr>
+<tr><td><code>Retention</code></td><td>Retention enforcement error</td><td>Failed to delete old checkpoints</td></tr>
+</tbody></table>
+</div>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<pre class="mermaid">flowchart TB
+    subgraph Commands
+        CP[CHECKPOINT]
+        CPS[CHECKPOINTS]
+        RB[ROLLBACK TO]
+    end
+
+    subgraph CheckpointManager
+        Create[create / create_auto]
+        List[list]
+        Rollback[rollback]
+        Delete[delete]
+        Confirm[request_confirmation]
+        Preview[generate_preview]
+    end
+
+    subgraph Storage Layer
+        CS[CheckpointStorage]
+        RM[RetentionManager]
+        PG[PreviewGenerator]
+    end
+
+    subgraph Dependencies
+        Blob[tensor_blob::BlobStore]
+        Store[tensor_store::TensorStore]
+    end
+
+    CP --&gt; Create
+    CPS --&gt; List
+    RB --&gt; Rollback
+
+    Create --&gt; CS
+    Create --&gt; RM
+    List --&gt; CS
+    Rollback --&gt; CS
+    Delete --&gt; CS
+
+    Confirm --&gt; PG
+    Preview --&gt; PG
+
+    CS --&gt; Blob
+    Create --&gt; Store
+    Rollback --&gt; Store
+</pre>
+<h3 id="checkpoint-creation-flow"><a class="header" href="#checkpoint-creation-flow">Checkpoint Creation Flow</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant User
+    participant Manager as CheckpointManager
+    participant Store as TensorStore
+    participant Storage as CheckpointStorage
+    participant Retention as RetentionManager
+    participant Blob as BlobStore
+
+    User-&gt;&gt;Manager: create(name, store)
+    Manager-&gt;&gt;Manager: Generate UUID
+    Manager-&gt;&gt;Manager: collect_metadata(store)
+    Manager-&gt;&gt;Store: snapshot_bytes()
+    Store--&gt;&gt;Manager: Vec&lt;u8&gt;
+    Manager-&gt;&gt;Manager: Create CheckpointState
+    Manager-&gt;&gt;Storage: store(state, blob)
+    Storage-&gt;&gt;Storage: bincode::serialize(state)
+    Storage-&gt;&gt;Blob: put(filename, data, options)
+    Blob--&gt;&gt;Storage: artifact_id
+    Storage--&gt;&gt;Manager: artifact_id
+    Manager-&gt;&gt;Retention: enforce(blob)
+    Retention-&gt;&gt;Storage: list(blob)
+    Storage--&gt;&gt;Retention: Vec&lt;CheckpointInfo&gt;
+    Retention-&gt;&gt;Retention: Sort by created_at DESC
+    Retention-&gt;&gt;Storage: delete(oldest beyond limit)
+    Retention--&gt;&gt;Manager: deleted_count
+    Manager--&gt;&gt;User: checkpoint_id
+</pre>
+<h3 id="rollback-flow"><a class="header" href="#rollback-flow">Rollback Flow</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant User
+    participant Manager as CheckpointManager
+    participant Storage as CheckpointStorage
+    participant Blob as BlobStore
+    participant Store as TensorStore
+
+    User-&gt;&gt;Manager: rollback(id_or_name, store)
+    Manager-&gt;&gt;Storage: load(id_or_name, blob)
+    Storage-&gt;&gt;Storage: find_by_id_or_name()
+    Storage-&gt;&gt;Storage: list() and match
+    Storage-&gt;&gt;Blob: get(artifact_id)
+    Blob--&gt;&gt;Storage: checkpoint_bytes
+    Storage-&gt;&gt;Storage: bincode::deserialize()
+    Storage--&gt;&gt;Manager: CheckpointState
+    Manager-&gt;&gt;Store: restore_from_bytes(state.store_snapshot)
+    Store-&gt;&gt;Store: SlabRouter::from_bytes()
+    Store-&gt;&gt;Store: clear() current data
+    Store-&gt;&gt;Store: copy all entries from new router
+    Store--&gt;&gt;Manager: Ok(())
+    Manager--&gt;&gt;User: Success
+</pre>
+<h2 id="storage-format"><a class="header" href="#storage-format">Storage Format</a></h2>
+<p>Checkpoints are stored as blob artifacts using content-addressable storage:</p>
+<div class="table-wrapper"><table><thead><tr><th>Property</th><th>Value</th></tr></thead><tbody>
+<tr><td>Tag</td><td><code>_system:checkpoint</code></td></tr>
+<tr><td>Content-Type</td><td><code>application/x-neumann-checkpoint</code></td></tr>
+<tr><td>Format</td><td>bincode-serialized <code>CheckpointState</code></td></tr>
+<tr><td>Filename</td><td><code>checkpoint_{id}.ncp</code></td></tr>
+<tr><td>Creator</td><td><code>system:checkpoint</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="checkpoint-state-structure"><a class="header" href="#checkpoint-state-structure">Checkpoint State Structure</a></h3>
+<p>The <code>CheckpointState</code> is serialized using bincode for efficient binary encoding:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[derive(Serialize, Deserialize)]
+pub struct CheckpointState {
+    pub id: String,           // UUID v4
+    pub name: String,         // User-provided or auto-generated
+    pub created_at: u64,      // Unix timestamp (seconds)
+    pub trigger: Option&lt;CheckpointTrigger&gt;,  // For auto-checkpoints
+    pub store_snapshot: Vec&lt;u8&gt;,  // Serialized SlabRouterSnapshot
+    pub metadata: CheckpointMetadata,
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="snapshot-serialization-format"><a class="header" href="#snapshot-serialization-format">Snapshot Serialization Format</a></h3>
+<p>The <code>store_snapshot</code> field contains a V3 format snapshot:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// V3 snapshot structure (bincode serialized)
+pub struct V3Snapshot {
+    pub header: SnapshotHeader,     // Magic bytes, version, entry count
+    pub router: SlabRouterSnapshot, // All slab data
+}
+
+pub struct SlabRouterSnapshot {
+    pub index: EntityIndexSnapshot,      // Key-to-entity mapping
+    pub embeddings: EmbeddingSlabSnapshot,
+    pub graph: GraphTensorSnapshot,
+    pub relations: RelationalSlabSnapshot,
+    pub metadata: MetadataSlabSnapshot,
+    pub cache: CacheRingSnapshot&lt;TensorData&gt;,
+    pub blobs: BlobLogSnapshot,
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Custom metadata stored with each artifact:</p>
+<div class="table-wrapper"><table><thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>checkpoint_id</code></td><td>String</td><td>UUID identifier</td></tr>
+<tr><td><code>checkpoint_name</code></td><td>String</td><td>User-provided or auto-generated name</td></tr>
+<tr><td><code>created_at</code></td><td>String</td><td>Unix timestamp (parsed to u64)</td></tr>
+<tr><td><code>trigger</code></td><td>String</td><td>Operation name (for auto-checkpoints only)</td></tr>
+</tbody></table>
+</div>
+<h3 id="metadata-collection-algorithm"><a class="header" href="#metadata-collection-algorithm">Metadata Collection Algorithm</a></h3>
+<p>When creating a checkpoint, metadata is collected by scanning the store:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn collect_metadata(&amp;self, store: &amp;TensorStore) -&gt; CheckpointMetadata {
+    let store_key_count = store.len();
+
+    // Count relational tables by scanning _schema: prefix
+    let table_keys: Vec&lt;_&gt; = store.scan("_schema:");
+    let table_count = table_keys.len();
+    let mut total_rows = 0;
+    for key in &amp;table_keys {
+        if let Some(table_name) = key.strip_prefix("_schema:") {
+            total_rows += store.scan_count(&amp;format!("{table_name}:"));
+        }
+    }
+
+    // Count graph entities
+    let node_count = store.scan_count("node:");
+    let edge_count = store.scan_count("edge:");
+
+    // Count embeddings
+    let embedding_count = store.scan_count("_embed:");
+
+    CheckpointMetadata::new(
+        RelationalMeta::new(table_count, total_rows),
+        GraphMeta::new(node_count, edge_count),
+        VectorMeta::new(embedding_count),
+        store_key_count,
+    )
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h3 id="checkpointconfig"><a class="header" href="#checkpointconfig">CheckpointConfig</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>max_checkpoints</code></td><td><code>usize</code></td><td>10</td><td>Maximum checkpoints before pruning</td></tr>
+<tr><td><code>auto_checkpoint</code></td><td><code>bool</code></td><td>true</td><td>Enable auto-checkpoints before destructive ops</td></tr>
+<tr><td><code>interactive_confirm</code></td><td><code>bool</code></td><td>true</td><td>Require confirmation for destructive ops</td></tr>
+<tr><td><code>preview_sample_size</code></td><td><code>usize</code></td><td>5</td><td>Number of sample rows in previews</td></tr>
+</tbody></table>
+</div>
+<h3 id="builder-pattern"><a class="header" href="#builder-pattern">Builder Pattern</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = CheckpointConfig::default()
+    .with_max_checkpoints(20)
+    .with_auto_checkpoint(true)
+    .with_interactive_confirm(false)
+    .with_preview_sample_size(10);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="configuration-presets"><a class="header" href="#configuration-presets">Configuration Presets</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Preset</th><th>max_checkpoints</th><th>auto_checkpoint</th><th>interactive_confirm</th><th>Use Case</th></tr></thead><tbody>
+<tr><td>Default</td><td>10</td><td>true</td><td>true</td><td>Interactive CLI usage</td></tr>
+<tr><td>Automated</td><td>20</td><td>true</td><td>false</td><td>Batch processing scripts</td></tr>
+<tr><td>Minimal</td><td>3</td><td>false</td><td>false</td><td>Memory-constrained environments</td></tr>
+<tr><td>Safe</td><td>50</td><td>true</td><td>true</td><td>Production with high retention</td></tr>
+</tbody></table>
+</div>
+<h2 id="destructive-operations"><a class="header" href="#destructive-operations">Destructive Operations</a></h2>
+<p>Operations that trigger auto-checkpoints when <code>auto_checkpoint</code> is enabled:</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Variant</th><th>Fields</th><th>Affected Count</th></tr></thead><tbody>
+<tr><td>DELETE</td><td><code>Delete</code></td><td><code>table</code>, <code>row_count</code></td><td><code>row_count</code></td></tr>
+<tr><td>DROP TABLE</td><td><code>DropTable</code></td><td><code>table</code>, <code>row_count</code></td><td><code>row_count</code></td></tr>
+<tr><td>DROP INDEX</td><td><code>DropIndex</code></td><td><code>table</code>, <code>column</code></td><td>1</td></tr>
+<tr><td>NODE DELETE</td><td><code>NodeDelete</code></td><td><code>node_id</code>, <code>edge_count</code></td><td>1 + <code>edge_count</code></td></tr>
+<tr><td>EMBED DELETE</td><td><code>EmbedDelete</code></td><td><code>key</code></td><td>1</td></tr>
+<tr><td>VAULT DELETE</td><td><code>VaultDelete</code></td><td><code>key</code></td><td>1</td></tr>
+<tr><td>BLOB DELETE</td><td><code>BlobDelete</code></td><td><code>artifact_id</code>, <code>size</code></td><td>1</td></tr>
+<tr><td>CACHE CLEAR</td><td><code>CacheClear</code></td><td><code>entry_count</code></td><td><code>entry_count</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="destructiveop-implementation"><a class="header" href="#destructiveop-implementation">DestructiveOp Implementation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DestructiveOp {
+    Delete { table: String, row_count: usize },
+    DropTable { table: String, row_count: usize },
+    DropIndex { table: String, column: String },
+    NodeDelete { node_id: u64, edge_count: usize },
+    EmbedDelete { key: String },
+    VaultDelete { key: String },
+    BlobDelete { artifact_id: String, size: usize },
+    CacheClear { entry_count: usize },
+}
+
+impl DestructiveOp {
+    pub fn operation_name(&amp;self) -&gt; &amp;'static str {
+        match self {
+            DestructiveOp::Delete { .. } =&gt; "DELETE",
+            DestructiveOp::DropTable { .. } =&gt; "DROP TABLE",
+            // ... etc
+        }
+    }
+
+    pub fn affected_count(&amp;self) -&gt; usize {
+        match self {
+            DestructiveOp::Delete { row_count, .. } =&gt; *row_count,
+            DestructiveOp::NodeDelete { edge_count, .. } =&gt; 1 + edge_count,
+            DestructiveOp::DropIndex { .. } =&gt; 1,
+            // ... etc
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="sql-commands"><a class="header" href="#sql-commands">SQL Commands</a></h2>
+<h3 id="checkpoint"><a class="header" href="#checkpoint">CHECKPOINT</a></h3>
+<pre><code class="language-sql">-- Named checkpoint
+CHECKPOINT 'before-migration'
+
+-- Auto-generated name (checkpoint-{timestamp})
+CHECKPOINT
+</code></pre>
+<h3 id="checkpoints"><a class="header" href="#checkpoints">CHECKPOINTS</a></h3>
+<pre><code class="language-sql">-- List all checkpoints
+CHECKPOINTS
+
+-- List last N checkpoints
+CHECKPOINTS LIMIT 10
+</code></pre>
+<p>Returns: <code>ID</code>, <code>Name</code>, <code>Created</code>, <code>Type</code> (manual/auto)</p>
+<h3 id="rollback-to"><a class="header" href="#rollback-to">ROLLBACK TO</a></h3>
+<pre><code class="language-sql">-- By name
+ROLLBACK TO 'checkpoint-name'
+
+-- By ID
+ROLLBACK TO 'uuid-string'
+</code></pre>
+<h2 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h2>
+<h3 id="checkpointmanager"><a class="header" href="#checkpointmanager">CheckpointManager</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl CheckpointManager {
+    /// Create manager with blob storage and configuration
+    pub async fn new(
+        blob: Arc&lt;Mutex&lt;BlobStore&gt;&gt;,
+        config: CheckpointConfig
+    ) -&gt; Self;
+
+    /// Create a manual checkpoint
+    pub async fn create(
+        &amp;self,
+        name: Option&lt;&amp;str&gt;,
+        store: &amp;TensorStore
+    ) -&gt; Result&lt;String&gt;;
+
+    /// Create an auto-checkpoint before destructive operation
+    pub async fn create_auto(
+        &amp;self,
+        command: &amp;str,
+        op: DestructiveOp,
+        preview: OperationPreview,
+        store: &amp;TensorStore
+    ) -&gt; Result&lt;String&gt;;
+
+    /// Rollback to a checkpoint by ID or name
+    pub async fn rollback(
+        &amp;self,
+        id_or_name: &amp;str,
+        store: &amp;TensorStore
+    ) -&gt; Result&lt;()&gt;;
+
+    /// List checkpoints, most recent first
+    pub async fn list(
+        &amp;self,
+        limit: Option&lt;usize&gt;
+    ) -&gt; Result&lt;Vec&lt;CheckpointInfo&gt;&gt;;
+
+    /// Delete a checkpoint by ID or name
+    pub async fn delete(&amp;self, id_or_name: &amp;str) -&gt; Result&lt;()&gt;;
+
+    /// Generate preview for a destructive operation
+    pub fn generate_preview(
+        &amp;self,
+        op: &amp;DestructiveOp,
+        sample_data: Vec&lt;String&gt;
+    ) -&gt; OperationPreview;
+
+    /// Request user confirmation for an operation
+    pub fn request_confirmation(
+        &amp;self,
+        op: &amp;DestructiveOp,
+        preview: &amp;OperationPreview
+    ) -&gt; bool;
+
+    /// Set custom confirmation handler
+    pub fn set_confirmation_handler(
+        &amp;mut self,
+        handler: Arc&lt;dyn ConfirmationHandler&gt;
+    );
+
+    /// Check if auto-checkpoint is enabled
+    pub fn auto_checkpoint_enabled(&amp;self) -&gt; bool;
+
+    /// Check if interactive confirmation is enabled
+    pub fn interactive_confirm_enabled(&amp;self) -&gt; bool;
+
+    /// Access the current configuration
+    pub fn config(&amp;self) -&gt; &amp;CheckpointConfig;
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="confirmationhandler"><a class="header" href="#confirmationhandler">ConfirmationHandler</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait ConfirmationHandler: Send + Sync {
+    fn confirm(&amp;self, op: &amp;DestructiveOp, preview: &amp;OperationPreview) -&gt; bool;
+}
+<span class="boring">}</span></code></pre></pre>
+<p>Built-in implementations:</p>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Behavior</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><code>AutoConfirm</code></td><td>Always returns true</td><td>Automated scripts, testing</td></tr>
+<tr><td><code>AutoReject</code></td><td>Always returns false</td><td>Testing cancellation paths</td></tr>
+</tbody></table>
+</div>
+<h3 id="checkpointstorage"><a class="header" href="#checkpointstorage">CheckpointStorage</a></h3>
+<p>Internal storage layer for checkpoint persistence:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl CheckpointStorage {
+    /// Store a checkpoint state to blob storage
+    pub async fn store(state: &amp;CheckpointState, blob: &amp;BlobStore) -&gt; Result&lt;String&gt;;
+
+    /// Load a checkpoint by ID or name
+    pub async fn load(checkpoint_id: &amp;str, blob: &amp;BlobStore) -&gt; Result&lt;CheckpointState&gt;;
+
+    /// List all checkpoints (sorted by created_at descending)
+    pub async fn list(blob: &amp;BlobStore) -&gt; Result&lt;Vec&lt;CheckpointInfo&gt;&gt;;
+
+    /// Delete a checkpoint by artifact ID
+    pub async fn delete(artifact_id: &amp;str, blob: &amp;BlobStore) -&gt; Result&lt;()&gt;;
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="previewgenerator"><a class="header" href="#previewgenerator">PreviewGenerator</a></h3>
+<p>Generates human-readable previews for destructive operations:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl PreviewGenerator {
+    pub fn new(sample_size: usize) -&gt; Self;
+
+    pub fn generate(&amp;self, op: &amp;DestructiveOp, sample_data: Vec&lt;String&gt;) -&gt; OperationPreview;
+}
+
+// Utility functions
+pub fn format_warning(op: &amp;DestructiveOp) -&gt; String;
+pub fn format_confirmation_prompt(op: &amp;DestructiveOp, preview: &amp;OperationPreview) -&gt; String;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="usage-examples"><a class="header" href="#usage-examples">Usage Examples</a></h2>
+<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_checkpoint::{CheckpointManager, CheckpointConfig};
+use tensor_blob::{BlobStore, BlobConfig};
+use tensor_store::TensorStore;
+
+// Initialize
+let store = TensorStore::new();
+let blob = BlobStore::new(store.clone(), BlobConfig::default()).await?;
+let blob = Arc::new(Mutex::new(blob));
+
+let config = CheckpointConfig::default();
+let manager = CheckpointManager::new(blob, config).await;
+
+// Create checkpoint
+let id = manager.create(Some("before-migration"), &amp;store).await?;
+
+// ... make changes ...
+
+// Rollback if needed
+manager.rollback("before-migration", &amp;store).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="with-query-router"><a class="header" href="#with-query-router">With Query Router</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use query_router::QueryRouter;
+
+let mut router = QueryRouter::new();
+router.init_blob()?;
+router.init_checkpoint()?;
+
+// Execute checkpoint commands via SQL
+router.execute_parsed("CHECKPOINT 'backup'")?;
+router.execute_parsed("CHECKPOINTS")?;
+router.execute_parsed("ROLLBACK TO 'backup'")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="custom-confirmation-handler"><a class="header" href="#custom-confirmation-handler">Custom Confirmation Handler</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_checkpoint::{ConfirmationHandler, DestructiveOp, OperationPreview};
+use std::io::{self, Write};
+
+struct InteractiveHandler;
+
+impl ConfirmationHandler for InteractiveHandler {
+    fn confirm(&amp;self, op: &amp;DestructiveOp, preview: &amp;OperationPreview) -&gt; bool {
+        println!("{}", tensor_checkpoint::format_confirmation_prompt(op, preview));
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin().read_line(&amp;mut input).unwrap();
+        input.trim().to_lowercase() == "yes"
+    }
+}
+
+// Usage
+manager.set_confirmation_handler(Arc::new(InteractiveHandler));
+<span class="boring">}</span></code></pre></pre>
+<h3 id="auto-checkpoint-with-rejection"><a class="header" href="#auto-checkpoint-with-rejection">Auto-Checkpoint with Rejection</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_checkpoint::{AutoReject, CheckpointConfig};
+
+// Create config with auto-checkpoint enabled
+let config = CheckpointConfig::default()
+    .with_auto_checkpoint(true)
+    .with_interactive_confirm(true);
+
+let mut manager = CheckpointManager::new(blob, config).await;
+manager.set_confirmation_handler(Arc::new(AutoReject));
+
+// DELETE will be rejected, no checkpoint created, operation cancelled
+let result = router.execute("DELETE FROM users WHERE age &gt; 50");
+assert!(result.is_err());  // Operation cancelled by user
+<span class="boring">}</span></code></pre></pre>
+<h2 id="retention-management"><a class="header" href="#retention-management">Retention Management</a></h2>
+<p>Checkpoints are automatically pruned when <code>max_checkpoints</code> is exceeded:</p>
+<h3 id="retention-algorithm"><a class="header" href="#retention-algorithm">Retention Algorithm</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn enforce(&amp;self, blob: &amp;BlobStore) -&gt; Result&lt;usize&gt; {
+    let checkpoints = CheckpointStorage::list(blob).await?;
+
+    if checkpoints.len() &lt;= self.max_checkpoints {
+        return Ok(0);
+    }
+
+    let to_remove = checkpoints.len() - self.max_checkpoints;
+    let mut removed = 0;
+
+    // Checkpoints are sorted by created_at descending, oldest are at end
+    for checkpoint in checkpoints.iter().rev().take(to_remove) {
+        if CheckpointStorage::delete(&amp;checkpoint.artifact_id, blob)
+            .await
+            .is_ok()
+        {
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="retention-timing"><a class="header" href="#retention-timing">Retention Timing</a></h3>
+<p>Retention is enforced after every checkpoint creation:</p>
+<ol>
+<li>Create new checkpoint</li>
+<li>Store in blob storage</li>
+<li>Call <code>retention.enforce()</code></li>
+<li>Return checkpoint ID</li>
+</ol>
+<p>This ensures the checkpoint count never exceeds <code>max_checkpoints + 1</code> at any
+point.</p>
+<h3 id="retention-edge-cases"><a class="header" href="#retention-edge-cases">Retention Edge Cases</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>Creation fails</td><td>Retention not called, count unchanged</td></tr>
+<tr><td>Retention delete fails</td><td>Logged but not fatal, continues deleting</td></tr>
+<tr><td>max_checkpoints = 0</td><td>All checkpoints deleted after creation</td></tr>
+<tr><td>max_checkpoints = 1</td><td>Only newest checkpoint retained</td></tr>
+</tbody></table>
+</div>
+<h2 id="interactive-confirmation"><a class="header" href="#interactive-confirmation">Interactive Confirmation</a></h2>
+<p>When <code>interactive_confirm</code> is enabled, destructive operations display a preview:</p>
+<pre><code class="language-sql">WARNING: About to delete 5 row(s) from table 'users'
+Will delete 5 row(s) from table 'users'
+
+Affected data sample:
+  1. id=1, name='Alice'
+  2. id=2, name='Bob'
+  ... and 3 more
+
+Type 'yes' to proceed, anything else to cancel:
+</code></pre>
+<h3 id="preview-generation"><a class="header" href="#preview-generation">Preview Generation</a></h3>
+<p>The preview generator formats human-readable summaries:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn format_summary(&amp;self, op: &amp;DestructiveOp) -&gt; String {
+    match op {
+        DestructiveOp::Delete { table, row_count } =&gt; {
+            format!("Will delete {row_count} row(s) from table '{table}'")
+        },
+        DestructiveOp::DropTable { table, row_count } =&gt; {
+            format!("Will drop table '{table}' containing {row_count} row(s)")
+        },
+        DestructiveOp::BlobDelete { artifact_id, size } =&gt; {
+            let size_str = format_bytes(*size);
+            format!("Will delete blob artifact '{artifact_id}' ({size_str})")
+        },
+        // ... etc
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="size-formatting"><a class="header" href="#size-formatting">Size Formatting</a></h3>
+<p>Blob sizes are formatted for readability:</p>
+<div class="table-wrapper"><table><thead><tr><th>Bytes</th><th>Display</th></tr></thead><tbody>
+<tr><td>&lt; 1024</td><td>“N bytes”</td></tr>
+<tr><td>&gt;= 1 KB</td><td>“N.NN KB”</td></tr>
+<tr><td>&gt;= 1 MB</td><td>“N.NN MB”</td></tr>
+<tr><td>&gt;= 1 GB</td><td>“N.NN GB”</td></tr>
+</tbody></table>
+</div>
+<h2 id="rollback-algorithm"><a class="header" href="#rollback-algorithm">Rollback Algorithm</a></h2>
+<p>The rollback process completely replaces the store contents:</p>
+<h3 id="algorithm-steps"><a class="header" href="#algorithm-steps">Algorithm Steps</a></h3>
+<ol>
+<li><strong>Locate Checkpoint</strong>: Search by ID first, then by name</li>
+<li><strong>Load State</strong>: Deserialize <code>CheckpointState</code> from blob storage</li>
+<li><strong>Deserialize Snapshot</strong>: Convert <code>store_snapshot</code> bytes to <code>SlabRouter</code></li>
+<li><strong>Clear Current Data</strong>: Remove all entries from current store</li>
+<li><strong>Copy Restored Data</strong>: Iterate and copy all entries from restored router</li>
+</ol>
+<h3 id="rollback-implementation"><a class="header" href="#rollback-implementation">Rollback Implementation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub async fn rollback(&amp;self, id_or_name: &amp;str, store: &amp;TensorStore) -&gt; Result&lt;()&gt; {
+    let blob = self.blob.lock().await;
+    let state = CheckpointStorage::load(id_or_name, &amp;blob).await?;
+
+    store
+        .restore_from_bytes(&amp;state.store_snapshot)
+        .map_err(|e| CheckpointError::Snapshot(e.to_string()))?;
+
+    Ok(())
+}
+
+// In TensorStore
+pub fn restore_from_bytes(&amp;self, bytes: &amp;[u8]) -&gt; SnapshotResult&lt;()&gt; {
+    let new_router = SlabRouter::from_bytes(bytes)?;
+
+    // Clear current and copy data from new router
+    self.router.clear();
+    for key in new_router.scan("") {
+        if let Ok(value) = new_router.get(&amp;key) {
+            let _ = self.router.put(&amp;key, value);
+        }
+    }
+
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="rollback-characteristics"><a class="header" href="#rollback-characteristics">Rollback Characteristics</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Aspect</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>Atomicity</td><td>Not atomic - partial restore possible on failure</td></tr>
+<tr><td>Isolation</td><td>No locking - concurrent operations may see partial state</td></tr>
+<tr><td>Duration</td><td>O(n) where n = number of entries</td></tr>
+<tr><td>Memory</td><td>Requires 2x memory during restore (old + new)</td></tr>
+</tbody></table>
+</div>
+<h2 id="edge-cases-and-gotchas"><a class="header" href="#edge-cases-and-gotchas">Edge Cases and Gotchas</a></h2>
+<h3 id="name-vs-id-lookup"><a class="header" href="#name-vs-id-lookup">Name vs ID Lookup</a></h3>
+<p>Checkpoints can be referenced by either name or ID:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>async fn find_by_id_or_name(id_or_name: &amp;str, blob: &amp;BlobStore) -&gt; Result&lt;String&gt; {
+    let checkpoints = Self::list(blob).await?;
+
+    for cp in checkpoints {
+        // Exact match on ID or name
+        if cp.id == id_or_name || cp.name == id_or_name {
+            return Ok(cp.artifact_id);
+        }
+    }
+
+    Err(CheckpointError::NotFound(id_or_name.to_string()))
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Gotcha</strong>: If a checkpoint is named with a valid UUID format, it may conflict
+with ID lookup.</p>
+<h3 id="auto-generated-names"><a class="header" href="#auto-generated-names">Auto-Generated Names</a></h3>
+<p>When no name is provided:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let name = name.map(String::from).unwrap_or_else(|| {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("checkpoint-{now}")
+});
+<span class="boring">}</span></code></pre></pre>
+<p>Auto-checkpoint names follow the pattern: <code>auto-before-{operation-name}</code></p>
+<h3 id="timestamp-edge-cases"><a class="header" href="#timestamp-edge-cases">Timestamp Edge Cases</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Scenario</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>System time before epoch</td><td>Timestamp becomes 0</td></tr>
+<tr><td>Rapid checkpoint creation</td><td>May have same second timestamp</td></tr>
+<tr><td>Clock drift</td><td>Checkpoints may be out of order</td></tr>
+</tbody></table>
+</div>
+<h3 id="blob-store-dependency"><a class="header" href="#blob-store-dependency">Blob Store Dependency</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn init_checkpoint(&amp;mut self) -&gt; Result&lt;()&gt; {
+    self.init_checkpoint_with_config(CheckpointConfig::default())
+}
+
+pub fn init_checkpoint_with_config(&amp;mut self, config: CheckpointConfig) -&gt; Result&lt;()&gt; {
+    let blob = self
+        .blob
+        .as_ref()
+        .ok_or_else(|| {
+            RouterError::CheckpointError(
+                "Blob store must be initialized first".to_string()
+            )
+        })?;
+    // ...
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Gotcha</strong>: Always call <code>init_blob()</code> before <code>init_checkpoint()</code>.</p>
+<h2 id="performance-tips"><a class="header" href="#performance-tips">Performance Tips</a></h2>
+<h3 id="checkpoint-creation-performance"><a class="header" href="#checkpoint-creation-performance">Checkpoint Creation Performance</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Factor</th><th>Impact</th><th>Recommendation</th></tr></thead><tbody>
+<tr><td>Store size</td><td>O(n) serialization</td><td>Keep hot data separate</td></tr>
+<tr><td>Retention limit</td><td>More deletions on creation</td><td>Set appropriate <code>max_checkpoints</code></td></tr>
+<tr><td>Blob storage</td><td>Network latency for remote</td><td>Use local storage for fast checkpoints</td></tr>
+</tbody></table>
+</div>
+<h3 id="memory-considerations"><a class="header" href="#memory-considerations">Memory Considerations</a></h3>
+<ul>
+<li>Full snapshot is held in memory during creation</li>
+<li>Rollback requires 2x memory temporarily</li>
+<li>Large embeddings significantly increase checkpoint size</li>
+</ul>
+<h3 id="optimization-strategies"><a class="header" href="#optimization-strategies">Optimization Strategies</a></h3>
+<ol>
+<li>
+<p><strong>Incremental Checkpoints</strong> (not yet supported)</p>
+<ul>
+<li>Currently full snapshots only</li>
+<li>Future: delta-based checkpoints</li>
+</ul>
+</li>
+<li>
+<p><strong>Selective Checkpointing</strong></p>
+<ul>
+<li>Use separate stores for hot vs. cold data</li>
+<li>Only checkpoint critical data</li>
+</ul>
+</li>
+<li>
+<p><strong>Compression</strong></p>
+<ul>
+<li>TensorStore supports compressed snapshots for file I/O</li>
+<li>Checkpoint uses bincode (no compression)</li>
+</ul>
+</li>
+</ol>
+<h3 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Store Size</th><th>Checkpoint Time</th><th>Rollback Time</th><th>Memory</th></tr></thead><tbody>
+<tr><td>1K entries</td><td>~5ms</td><td>~3ms</td><td>~100KB</td></tr>
+<tr><td>10K entries</td><td>~50ms</td><td>~30ms</td><td>~1MB</td></tr>
+<tr><td>100K entries</td><td>~500ms</td><td>~300ms</td><td>~10MB</td></tr>
+<tr><td>1M entries</td><td>~5s</td><td>~3s</td><td>~100MB</td></tr>
+</tbody></table>
+</div>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><code>tensor_blob</code></td><td>Storage backend for checkpoint data</td></tr>
+<tr><td><code>tensor_store</code></td><td>Source of snapshots and restore target</td></tr>
+<tr><td><code>query_router</code></td><td>SQL command integration</td></tr>
+<tr><td><code>neumann_shell</code></td><td>Interactive confirmation handling</td></tr>
+</tbody></table>
+</div>
+<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
+<ul>
+<li>Full snapshots only (no incremental checkpoints)</li>
+<li>Single-node operation (no distributed checkpoints)</li>
+<li>In-memory restore (entire snapshot loaded)</li>
+<li>No automatic scheduling (manual or trigger-based only)</li>
+<li>Not atomic (partial restore possible on failure)</li>
+<li>No encryption (checkpoints stored in plaintext)</li>
+<li>Bloom filter state not preserved (rebuilt on load if needed)</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/tensor-blob.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/tensor-unified.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/tensor-blob.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/tensor-unified.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

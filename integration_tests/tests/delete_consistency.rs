@@ -119,7 +119,7 @@ fn test_delete_vector_embedding() {
 
 #[test]
 fn test_delete_cross_engine_entity() {
-    let (store, relational, graph, vector) = create_shared_engines();
+    let (_store, relational, graph, vector) = create_shared_engines();
 
     // Create unified entity across all engines
     let entity_id = 42;

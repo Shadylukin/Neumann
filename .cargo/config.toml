@@ -1,0 +1,35 @@
+# Workspace cargo configuration
+
+[alias]
+# Strict clippy check
+lint = "clippy --all-targets --all-features -- -D warnings"
+# Full security check
+sec = ["audit", "deny check", "geiger --forbid-only"]
+
+[build]
+# Enable all warnings as errors for release builds
+rustflags = ["-D", "warnings"]
+# Parallel frontend jobs (proc-macros, build scripts)
+jobs = 10
+# NOTE: sccache removed - it invalidates fingerprints causing recompilation
+# Use RUSTC_WRAPPER=sccache for clean builds only
+
+[target.aarch64-apple-darwin]
+# Use lld for faster linking (2-5x faster than default ld)
+rustflags = ["-D", "warnings", "-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
+
+[registries.crates-io]
+# Sparse protocol for faster index fetching
+protocol = "sparse"
+
+# Dev profile optimizations
+[profile.dev]
+# More codegen units = faster compile, slower runtime (fine for dev)
+codegen-units = 256
+# Skip debug info for dependencies
+[profile.dev.package."*"]
+debug = false
+
+# Faster incremental builds with split debuginfo
+[profile.dev.build-override]
+opt-level = 0

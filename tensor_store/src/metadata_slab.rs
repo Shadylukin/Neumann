@@ -1,15 +1,15 @@
-//! BTreeMap-based metadata storage slab.
+//! `BTreeMap`-based metadata storage slab.
 //!
-//! MetadataSlab provides key-value storage for metadata, vault secrets, and
-//! miscellaneous data using a BTreeMap. Unlike hash tables, BTreeMaps split
+//! `MetadataSlab` provides key-value storage for metadata, vault secrets, and
+//! miscellaneous data using a `BTreeMap`. Unlike hash tables, `BTreeMap`s split
 //! nodes on insertion rather than resizing the entire structure, avoiding
-//! the throughput stalls associated with DashMap resizing.
+//! the throughput stalls associated with `DashMap` resizing.
 //!
 //! # Design Philosophy
 //!
 //! This slab is optimized for:
 //! - Low-volume, high-value data (secrets, configuration)
-//! - Prefix-based scanning (via BTreeMap's ordered iteration)
+//! - Prefix-based scanning (via `BTreeMap`'s ordered iteration)
 //! - Stable performance without resize stalls
 //! - O(log n) operations for all access patterns
 
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TensorData;
 
-/// BTreeMap-based metadata storage with prefix scanning support.
+/// `BTreeMap`-based metadata storage with prefix scanning support.
 ///
 /// # Thread Safety
 ///
@@ -38,9 +38,9 @@ use crate::TensorData;
 /// - `scan`: O(k + log n) where k is the number of matching entries
 /// - `len`: O(1)
 ///
-/// BTreeMaps never resize; they split nodes on insertion, which is O(log n).
+/// `BTreeMap`s never resize; they split nodes on insertion, which is O(log n).
 pub struct MetadataSlab {
-    /// The underlying BTreeMap storage.
+    /// The underlying `BTreeMap` storage.
     data: RwLock<BTreeMap<String, TensorData>>,
 
     /// Approximate total bytes stored (for memory tracking).
@@ -51,8 +51,9 @@ pub struct MetadataSlab {
 }
 
 impl MetadataSlab {
-    /// Create a new empty MetadataSlab.
-    pub fn new() -> Self {
+    /// Create a new empty `MetadataSlab`.
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             data: RwLock::new(BTreeMap::new()),
             total_bytes: AtomicUsize::new(0),
@@ -62,13 +63,15 @@ impl MetadataSlab {
 
     /// Get a value by key.
     ///
-    /// Returns a cloned TensorData to avoid holding the lock.
+    /// Returns a cloned `TensorData` to avoid holding the lock.
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<TensorData> {
         self.data.read().get(key).cloned()
     }
 
     /// Check if a key exists.
     #[inline]
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.data.read().contains_key(key)
     }
@@ -81,15 +84,20 @@ impl MetadataSlab {
         let mut data = self.data.write();
 
         // Subtract old value bytes if replacing
-        if let Some(old) = data.get(key) {
-            let old_bytes = estimate_tensor_data_bytes(old);
-            self.total_bytes.fetch_sub(old_bytes, Ordering::Relaxed);
-        } else {
-            // New key - increment count
-            self.len.fetch_add(1, Ordering::Relaxed);
-        }
+        let is_new = data
+            .get(key)
+            .inspect(|old| {
+                let old_bytes = estimate_tensor_data_bytes(old);
+                self.total_bytes.fetch_sub(old_bytes, Ordering::Relaxed);
+            })
+            .is_none();
 
         data.insert(key.to_string(), value);
+        drop(data);
+
+        if is_new {
+            self.len.fetch_add(1, Ordering::Relaxed);
+        }
         self.total_bytes
             .fetch_add(key.len() + value_bytes, Ordering::Relaxed);
     }
@@ -97,52 +105,49 @@ impl MetadataSlab {
     /// Delete a key and return the old value.
     pub fn delete(&self, key: &str) -> Option<TensorData> {
         let mut data = self.data.write();
-        if let Some(old) = data.remove(key) {
-            let old_bytes = key.len() + estimate_tensor_data_bytes(&old);
+        data.remove(key).inspect(|old| {
+            let old_bytes = key.len() + estimate_tensor_data_bytes(old);
             self.total_bytes.fetch_sub(old_bytes, Ordering::Relaxed);
             self.len.fetch_sub(1, Ordering::Relaxed);
-            Some(old)
-        } else {
-            None
-        }
+        })
     }
 
     /// Scan for all keys matching a prefix.
     ///
-    /// Returns pairs of (key, TensorData) for all matching entries.
-    /// Uses BTreeMap's range for efficient prefix scanning.
+    /// Returns pairs of (key, `TensorData`) for all matching entries.
+    /// Uses `BTreeMap`'s range for efficient prefix scanning.
+    #[must_use]
     pub fn scan(&self, prefix: &str) -> Vec<(String, TensorData)> {
         let data = self.data.read();
+        let prefix_owned = prefix.to_string();
 
         // BTreeMap range can efficiently find prefix matches
-        let end = next_prefix(prefix);
-
-        match end {
-            Some(end_key) => data
-                .range(prefix.to_string()..end_key)
+        if let Some(end_key) = next_prefix(prefix) {
+            data.range(prefix_owned..end_key)
                 .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            None => {
-                // Prefix is all 0xFF bytes or empty, scan to end
-                data.range(prefix.to_string()..)
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            },
+                .collect()
+        } else {
+            // Prefix is all 0xFF bytes or empty, scan to end
+            data.range(prefix_owned..)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
         }
     }
 
     /// Count keys matching a prefix.
+    #[must_use]
     pub fn scan_count(&self, prefix: &str) -> usize {
         if prefix.is_empty() {
             return self.len();
         }
 
         let data = self.data.read();
-        let end = next_prefix(prefix);
+        let prefix_owned = prefix.to_string();
 
-        match end {
-            Some(end_key) => data.range(prefix.to_string()..end_key).count(),
-            None => data.range(prefix.to_string()..).count(),
+        if let Some(end_key) = next_prefix(prefix) {
+            data.range(prefix_owned..end_key).count()
+        } else {
+            data.range(prefix_owned..).count()
         }
     }
 
@@ -171,12 +176,14 @@ impl MetadataSlab {
         F: FnMut(&str, &TensorData) -> Option<T>,
     {
         let data = self.data.read();
-        let end = next_prefix(prefix);
+        let prefix_owned = prefix.to_string();
 
-        let iter: Box<dyn Iterator<Item = (&String, &TensorData)>> = match end {
-            Some(end_key) => Box::new(data.range(prefix.to_string()..end_key)),
-            None => Box::new(data.range(prefix.to_string()..)),
-        };
+        let iter: Box<dyn Iterator<Item = (&String, &TensorData)>> =
+            if let Some(end_key) = next_prefix(prefix) {
+                Box::new(data.range(prefix_owned..end_key))
+            } else {
+                Box::new(data.range(prefix_owned..))
+            };
 
         iter.filter_map(|(k, v)| f(k, v)).collect()
     }
@@ -219,6 +226,7 @@ impl MetadataSlab {
     }
 
     /// Restore from a snapshot.
+    #[must_use]
     pub fn restore(snapshot: MetadataSlabSnapshot) -> Self {
         let len = snapshot.data.len();
         let total_bytes: usize = snapshot
@@ -234,10 +242,11 @@ impl MetadataSlab {
         }
     }
 
-    /// Iterate over all entries.
+    /// Returns all entries as a vector.
     ///
     /// Note: This clones all entries. For large slabs, consider using scan with a prefix.
-    pub fn iter(&self) -> Vec<(String, TensorData)> {
+    #[must_use]
+    pub fn entries(&self) -> Vec<(String, TensorData)> {
         self.data
             .read()
             .iter()
@@ -254,23 +263,24 @@ impl MetadataSlab {
         F: FnOnce(&mut TensorData),
     {
         let mut data = self.data.write();
-        if let Some(value) = data.get_mut(key) {
-            let old_bytes = estimate_tensor_data_bytes(value);
-            f(value);
-            let new_bytes = estimate_tensor_data_bytes(value);
+        let Some(value) = data.get_mut(key) else {
+            return false;
+        };
 
-            // Update byte tracking
-            if new_bytes > old_bytes {
-                self.total_bytes
-                    .fetch_add(new_bytes - old_bytes, Ordering::Relaxed);
-            } else {
-                self.total_bytes
-                    .fetch_sub(old_bytes - new_bytes, Ordering::Relaxed);
-            }
-            true
+        let old_bytes = estimate_tensor_data_bytes(value);
+        f(value);
+        let new_bytes = estimate_tensor_data_bytes(value);
+        drop(data);
+
+        // Update byte tracking
+        if new_bytes > old_bytes {
+            self.total_bytes
+                .fetch_add(new_bytes - old_bytes, Ordering::Relaxed);
         } else {
-            false
+            self.total_bytes
+                .fetch_sub(old_bytes - new_bytes, Ordering::Relaxed);
         }
+        true
     }
 
     /// Get or insert a value.
@@ -279,11 +289,8 @@ impl MetadataSlab {
     /// Otherwise, inserts the provided value and returns a clone of it.
     pub fn get_or_insert(&self, key: &str, value: TensorData) -> TensorData {
         // Fast path: check if exists
-        {
-            let data = self.data.read();
-            if let Some(existing) = data.get(key) {
-                return existing.clone();
-            }
+        if let Some(existing) = self.data.read().get(key) {
+            return existing.clone();
         }
 
         // Slow path: insert
@@ -296,6 +303,8 @@ impl MetadataSlab {
         let value_bytes = key.len() + estimate_tensor_data_bytes(&value);
         let result = value.clone();
         data.insert(key.to_string(), value);
+        drop(data);
+
         self.total_bytes.fetch_add(value_bytes, Ordering::Relaxed);
         self.len.fetch_add(1, Ordering::Relaxed);
         result
@@ -308,7 +317,7 @@ impl Default for MetadataSlab {
     }
 }
 
-/// Serializable snapshot of MetadataSlab state.
+/// Serializable snapshot of `MetadataSlab` state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataSlabSnapshot {
     pub(crate) data: BTreeMap<String, TensorData>,
@@ -345,7 +354,7 @@ fn next_prefix(prefix: &str) -> Option<String> {
     None
 }
 
-/// Estimate the memory usage of a TensorData in bytes.
+/// Estimate the memory usage of a `TensorData` in bytes.
 fn estimate_tensor_data_bytes(data: &TensorData) -> usize {
     use crate::{ScalarValue, TensorValue};
 
@@ -356,15 +365,14 @@ fn estimate_tensor_data_bytes(data: &TensorData) -> usize {
             TensorValue::Scalar(s) => match s {
                 ScalarValue::Null => 0,
                 ScalarValue::Bool(_) => 1,
-                ScalarValue::Int(_) => 8,
-                ScalarValue::Float(_) => 8,
+                ScalarValue::Int(_) | ScalarValue::Float(_) => 8,
                 ScalarValue::String(s) => s.len(),
                 ScalarValue::Bytes(b) => b.len(),
             },
             TensorValue::Vector(v) => v.len() * 4,
             TensorValue::Sparse(s) => s.memory_bytes(),
             TensorValue::Pointer(p) => p.len(),
-            TensorValue::Pointers(ps) => ps.iter().map(|p| p.len()).sum(),
+            TensorValue::Pointers(ps) => ps.iter().map(String::len).sum(),
         };
     }
     bytes
@@ -624,12 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn test_iter() {
+    fn test_entries() {
         let slab = MetadataSlab::new();
         slab.set("a", make_tensor_data(1));
         slab.set("b", make_tensor_data(2));
 
-        let entries = slab.iter();
+        let entries = slab.entries();
         assert_eq!(entries.len(), 2);
     }
 
@@ -836,5 +844,61 @@ mod tests {
 
         let bytes_after = slab.bytes();
         assert!(bytes_after > bytes_before);
+    }
+
+    #[test]
+    fn test_scan_count_empty_prefix() {
+        let slab = MetadataSlab::new();
+        slab.set("key1", TensorData::new());
+        slab.set("key2", TensorData::new());
+        slab.set("key3", TensorData::new());
+
+        // Empty prefix should return total count
+        assert_eq!(slab.scan_count(""), 3);
+    }
+
+    #[test]
+    fn test_scan_count_no_upper_bound() {
+        let slab = MetadataSlab::new();
+        // Create a key that ends with 0xFF bytes (no upper bound case)
+        let high_key = format!("prefix\u{ff}\u{ff}");
+        slab.set(&high_key, TensorData::new());
+        slab.set("prefix_normal", TensorData::new());
+
+        // Scan with prefix that has no computable upper bound
+        let prefix = format!("prefix\u{ff}");
+        let count = slab.scan_count(&prefix);
+        // Should find the key with 0xFF0xFF suffix
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_next_prefix_all_ff() {
+        // Test the internal next_prefix function via scan
+        let slab = MetadataSlab::new();
+        // All 0xFF prefix has no upper bound
+        let ff_prefix = "\u{ff}\u{ff}\u{ff}";
+        slab.set(&format!("{ff_prefix}key"), TensorData::new());
+
+        let count = slab.scan_count(ff_prefix);
+        // Should find the key
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_scan_filter_map_no_upper_bound() {
+        let slab = MetadataSlab::new();
+        // All 0xFF prefix has no upper bound - exercises line 185 in scan_filter_map
+        let ff_prefix = "\u{ff}\u{ff}\u{ff}";
+        let mut data = TensorData::new();
+        data.set(
+            "val",
+            crate::TensorValue::Scalar(crate::ScalarValue::Int(42)),
+        );
+        slab.set(&format!("{ff_prefix}key1"), data.clone());
+        slab.set(&format!("{ff_prefix}key2"), data);
+
+        let results: Vec<String> = slab.scan_filter_map(ff_prefix, |k, _| Some(k.to_string()));
+        assert_eq!(results.len(), 2);
     }
 }

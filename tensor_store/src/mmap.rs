@@ -26,12 +26,12 @@ pub enum MmapError {
 impl std::fmt::Display for MmapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MmapError::Io(e) => write!(f, "I/O error: {}", e),
-            MmapError::InvalidMagic => write!(f, "Invalid file magic"),
-            MmapError::UnsupportedVersion(v) => write!(f, "Unsupported version: {}", v),
-            MmapError::Serialization(s) => write!(f, "Serialization error: {}", s),
-            MmapError::NotFound(k) => write!(f, "Key not found: {}", k),
-            MmapError::EmptyFile => write!(f, "Empty file"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::InvalidMagic => write!(f, "Invalid file magic"),
+            Self::UnsupportedVersion(v) => write!(f, "Unsupported version: {v}"),
+            Self::Serialization(s) => write!(f, "Serialization error: {s}"),
+            Self::NotFound(k) => write!(f, "Key not found: {k}"),
+            Self::EmptyFile => write!(f, "Empty file"),
         }
     }
 }
@@ -40,13 +40,13 @@ impl std::error::Error for MmapError {}
 
 impl From<io::Error> for MmapError {
     fn from(e: io::Error) -> Self {
-        MmapError::Io(e)
+        Self::Io(e)
     }
 }
 
 impl From<bincode::Error> for MmapError {
     fn from(e: bincode::Error) -> Self {
-        MmapError::Serialization(e.to_string())
+        Self::Serialization(e.to_string())
     }
 }
 
@@ -82,6 +82,14 @@ pub struct MmapStore {
 
 impl MmapStore {
     /// Open an existing mmap store file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, is empty, or has an invalid header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file header is malformed.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
         let metadata = file.metadata()?;
@@ -154,6 +162,10 @@ impl MmapStore {
     }
 
     /// Get a tensor by key, deserializing on demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found or deserialization fails.
     pub fn get(&self, key: &str) -> Result<TensorData> {
         let loc = self
             .index
@@ -166,17 +178,21 @@ impl MmapStore {
     }
 
     /// Check if a key exists.
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.index.contains_key(key)
     }
 
     /// Get the number of entries.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // Entry count won't exceed usize on any platform
+    pub const fn len(&self) -> usize {
         self.entry_count as usize
     }
 
     /// Check if empty.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.entry_count == 0
     }
 
@@ -186,6 +202,7 @@ impl MmapStore {
     }
 
     /// Get total memory-mapped size in bytes.
+    #[must_use]
     pub fn mmap_size(&self) -> usize {
         self.mmap.len()
     }
@@ -200,6 +217,10 @@ pub struct MmapStoreBuilder {
 
 impl MmapStoreBuilder {
     /// Create a new mmap store file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be created or the header cannot be written.
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -221,6 +242,11 @@ impl MmapStoreBuilder {
     }
 
     /// Add an entry to the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing fails.
+    #[allow(clippy::cast_possible_truncation)] // Keys and data won't exceed 4GB
     pub fn add(&mut self, key: &str, tensor: &TensorData) -> Result<()> {
         let key_bytes = key.as_bytes();
         let data = bincode::serialize(tensor)?;
@@ -241,6 +267,10 @@ impl MmapStoreBuilder {
     }
 
     /// Finalize the store and return the file size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the header cannot be updated or the file cannot be flushed.
     pub fn finish(mut self) -> Result<u64> {
         // Update entry count in header
         self.file.seek(SeekFrom::Start(8))?;
@@ -265,6 +295,10 @@ pub struct MmapStoreMut {
 
 impl MmapStoreMut {
     /// Create a new mutable mmap store with initial capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be created or memory-mapped.
     pub fn create<P: AsRef<Path>>(path: P, initial_capacity: usize) -> Result<Self> {
         let capacity = initial_capacity.max(HEADER_SIZE + 1024);
 
@@ -295,6 +329,14 @@ impl MmapStoreMut {
     }
 
     /// Open an existing mutable mmap store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, is empty, or has an invalid header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file header is malformed.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
 
@@ -303,6 +345,7 @@ impl MmapStoreMut {
             return Err(MmapError::EmptyFile);
         }
 
+        #[allow(clippy::cast_possible_truncation)] // File size limited to address space
         let capacity = metadata.len() as usize;
         let mmap = unsafe { MmapMut::map_mut(&file)? };
 
@@ -374,6 +417,10 @@ impl MmapStoreMut {
     ///
     /// Note: Updates append a new version; old data becomes garbage.
     /// Use compaction to reclaim space.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails or the file cannot be extended.
     pub fn insert(&mut self, key: &str, tensor: &TensorData) -> Result<()> {
         let key_bytes = key.as_bytes();
         let data = bincode::serialize(tensor)?;
@@ -390,11 +437,14 @@ impl MmapStoreMut {
 
         // Write entry
         let offset = self.write_offset;
-        self.mmap[offset..offset + 4].copy_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+        #[allow(clippy::cast_possible_truncation)] // Keys and data won't exceed 4GB
+        let key_len_bytes = (key_bytes.len() as u32).to_le_bytes();
+        #[allow(clippy::cast_possible_truncation)] // Keys and data won't exceed 4GB
+        let data_len_bytes = (data.len() as u32).to_le_bytes();
+        self.mmap[offset..offset + 4].copy_from_slice(&key_len_bytes);
         self.mmap[offset + 4..offset + 4 + key_bytes.len()].copy_from_slice(key_bytes);
         let data_offset = offset + 4 + key_bytes.len() + 4;
-        self.mmap[offset + 4 + key_bytes.len()..data_offset]
-            .copy_from_slice(&(data.len() as u32).to_le_bytes());
+        self.mmap[offset + 4 + key_bytes.len()..data_offset].copy_from_slice(&data_len_bytes);
         self.mmap[data_offset..data_offset + data.len()].copy_from_slice(&data);
 
         // Update index (new entry or replace old location)
@@ -419,6 +469,10 @@ impl MmapStoreMut {
     }
 
     /// Get a tensor by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key is not found or deserialization fails.
     pub fn get(&self, key: &str) -> Result<TensorData> {
         let loc = self
             .index
@@ -431,16 +485,19 @@ impl MmapStoreMut {
     }
 
     /// Check if a key exists.
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.index.contains_key(key)
     }
 
     /// Get the number of entries.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.index.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.index.is_empty()
     }
@@ -451,24 +508,34 @@ impl MmapStoreMut {
     }
 
     /// Flush changes to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flush operation fails.
     pub fn flush(&self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
     }
 
     /// Get current used size in bytes.
-    pub fn used_size(&self) -> usize {
+    #[must_use]
+    pub const fn used_size(&self) -> usize {
         self.write_offset
     }
 
     /// Get total allocated capacity in bytes.
-    pub fn capacity(&self) -> usize {
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Compact the store by removing garbage (old versions of updated keys).
     ///
     /// Returns the new file size after compaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the compacted file cannot be created or entries cannot be copied.
     pub fn compact<P: AsRef<Path>>(&self, output_path: P) -> Result<u64> {
         let mut builder = MmapStoreBuilder::create(output_path)?;
 
@@ -1055,5 +1122,29 @@ mod tests {
 
         let not_found = MmapError::NotFound("key".to_string());
         assert!(not_found.source().is_none());
+    }
+
+    #[test]
+    fn test_mmap_error_from_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+        let mmap_err: MmapError = io_err.into();
+        match mmap_err {
+            MmapError::Io(e) => assert!(e.to_string().contains("access denied")),
+            _ => panic!("Expected Io variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmap_error_from_bincode_error() {
+        // Create a bincode error by trying to deserialize invalid data
+        let invalid_data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let result: std::result::Result<String, _> = bincode::deserialize(invalid_data);
+        if let Err(e) = result {
+            let mmap_err: MmapError = e.into();
+            match mmap_err {
+                MmapError::Serialization(_) => {},
+                _ => panic!("Expected Serialization variant"),
+            }
+        }
     }
 }

@@ -94,7 +94,7 @@ fn run_throughput_test(config: StressConfig) -> (f64, f64) {
         cache_capacity: 100_000,
         ..Default::default()
     };
-    let router = Arc::new(SlabRouter::with_config(router_config));
+    let router = Arc::new(SlabRouter::with_config(&router_config));
     let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let write_ops = Arc::new(AtomicU64::new(0));
     let read_ops = Arc::new(AtomicU64::new(0));
@@ -297,7 +297,7 @@ fn stress_slab_router_embedding_heavy() {
         embedding_dim: 384,
         ..Default::default()
     };
-    let router = Arc::new(SlabRouter::with_config(config));
+    let router = Arc::new(SlabRouter::with_config(&config));
     let iterations = 10_000;
     let start = Instant::now();
 

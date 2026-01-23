@@ -55,7 +55,8 @@ impl DistanceMetric {
     ///
     /// Similarity metrics (cosine, jaccard) have higher = better.
     /// Distance metrics (angular, euclidean) have lower = better.
-    pub fn higher_is_better(&self) -> bool {
+    #[must_use]
+    pub const fn higher_is_better(&self) -> bool {
         matches!(
             self,
             Self::Cosine
@@ -70,6 +71,7 @@ impl DistanceMetric {
     ///
     /// Returns a value where interpretation depends on the metric type.
     /// Use `higher_is_better()` to determine if high or low is "similar".
+    #[must_use]
     pub fn compute(&self, a: &SparseVector, b: &SparseVector) -> f32 {
         match self {
             Self::Cosine => a.cosine_similarity(b),
@@ -85,10 +87,11 @@ impl DistanceMetric {
     }
 
     /// Convert raw metric value to similarity score (0-1 range, higher = more similar).
+    #[must_use]
     pub fn to_similarity(&self, raw: f32) -> f32 {
         match self {
             // Already similarities
-            Self::Cosine => (raw + 1.0) / 2.0, // [-1, 1] -> [0, 1]
+            Self::Cosine => f32::midpoint(raw, 1.0), // [-1, 1] -> [0, 1]
             Self::Jaccard | Self::Overlap | Self::WeightedJaccard | Self::Composite(_) => raw,
 
             // Distances need inversion
@@ -105,9 +108,9 @@ impl DistanceMetric {
 /// Configuration for composite geometric scoring.
 ///
 /// Combines multiple geometric aspects into a single score:
-/// - **cosine_weight**: Angular/directional similarity
-/// - **structural_weight**: Jaccard positional overlap
-/// - **magnitude_weight**: Euclidean distance (inverted)
+/// - **`cosine_weight`**: Angular/directional similarity
+/// - **`structural_weight`**: Jaccard positional overlap
+/// - **`magnitude_weight`**: Euclidean distance (inverted)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GeometricConfig {
     /// Weight for cosine similarity component.
@@ -132,7 +135,8 @@ impl Default for GeometricConfig {
 
 impl GeometricConfig {
     /// Create a config emphasizing angular similarity.
-    pub fn angular_heavy() -> Self {
+    #[must_use]
+    pub const fn angular_heavy() -> Self {
         Self {
             cosine_weight: 0.8,
             structural_weight: 0.1,
@@ -141,7 +145,8 @@ impl GeometricConfig {
     }
 
     /// Create a config emphasizing structural overlap.
-    pub fn structural_heavy() -> Self {
+    #[must_use]
+    pub const fn structural_heavy() -> Self {
         Self {
             cosine_weight: 0.2,
             structural_weight: 0.7,
@@ -150,7 +155,8 @@ impl GeometricConfig {
     }
 
     /// Create a config for balanced conflict detection.
-    pub fn conflict_detection() -> Self {
+    #[must_use]
+    pub const fn conflict_detection() -> Self {
         Self {
             cosine_weight: 0.4,
             structural_weight: 0.5, // High structural weight catches same-key conflicts
@@ -161,6 +167,7 @@ impl GeometricConfig {
     /// Compute composite similarity score.
     ///
     /// All components are normalized to [0, 1] where 1 = most similar.
+    #[must_use]
     pub fn compute(&self, a: &SparseVector, b: &SparseVector) -> f32 {
         let total_weight = self.cosine_weight + self.structural_weight + self.magnitude_weight;
         if total_weight == 0.0 {
@@ -168,7 +175,7 @@ impl GeometricConfig {
         }
 
         // Cosine: [-1, 1] -> [0, 1]
-        let cosine_sim = (a.cosine_similarity(b) + 1.0) / 2.0;
+        let cosine_sim = f32::midpoint(a.cosine_similarity(b), 1.0);
 
         // Jaccard: already [0, 1]
         let jaccard_sim = a.jaccard_index(b);
@@ -177,10 +184,11 @@ impl GeometricConfig {
         let euclidean_dist = a.euclidean_distance(b);
         let euclidean_sim = 1.0 / (1.0 + euclidean_dist);
 
-        (self.cosine_weight * cosine_sim
-            + self.structural_weight * jaccard_sim
-            + self.magnitude_weight * euclidean_sim)
-            / total_weight
+        self.cosine_weight.mul_add(
+            cosine_sim,
+            self.structural_weight
+                .mul_add(jaccard_sim, self.magnitude_weight * euclidean_sim),
+        ) / total_weight
     }
 }
 

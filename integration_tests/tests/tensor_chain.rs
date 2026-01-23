@@ -11,6 +11,7 @@ use query_router::{ChainResult, QueryResult, QueryRouter};
 #[test]
 fn test_chain_initialization() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
 
     // Chain should not be initialized initially
     let stmt = parse("CHAIN HEIGHT").unwrap();
@@ -34,6 +35,7 @@ fn test_chain_initialization() {
 #[test]
 fn test_chain_genesis_block() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("genesis_test").unwrap();
 
     // Get tip - should be genesis
@@ -51,6 +53,7 @@ fn test_chain_genesis_block() {
 #[test]
 fn test_chain_verification() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("verify_test").unwrap();
 
     let stmt = parse("CHAIN VERIFY").unwrap();
@@ -67,6 +70,7 @@ fn test_chain_verification() {
 #[test]
 fn test_chain_begin_transaction() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("tx_test").unwrap();
 
     // Begin a transaction
@@ -83,6 +87,7 @@ fn test_chain_begin_transaction() {
 #[test]
 fn test_chain_history_empty() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("history_test").unwrap();
 
     let stmt = parse("CHAIN HISTORY 'nonexistent_key'").unwrap();
@@ -98,6 +103,7 @@ fn test_chain_history_empty() {
 #[test]
 fn test_chain_drift_metrics() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("drift_test").unwrap();
 
     let stmt = parse("CHAIN DRIFT FROM 0 TO 100").unwrap();
@@ -114,6 +120,7 @@ fn test_chain_drift_metrics() {
 #[test]
 fn test_chain_block_not_found() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("block_test").unwrap();
 
     // Try to get a block that doesn't exist
@@ -125,6 +132,7 @@ fn test_chain_block_not_found() {
 #[test]
 fn test_show_codebook_global() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("codebook_test").unwrap();
 
     let stmt = parse("SHOW CODEBOOK GLOBAL").unwrap();
@@ -140,6 +148,7 @@ fn test_show_codebook_global() {
 #[test]
 fn test_show_codebook_local() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("codebook_local_test").unwrap();
 
     let stmt = parse("SHOW CODEBOOK LOCAL 'users'").unwrap();
@@ -156,6 +165,7 @@ fn test_show_codebook_local() {
 #[test]
 fn test_analyze_transitions() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("analyze_test").unwrap();
 
     let stmt = parse("ANALYZE CODEBOOK TRANSITIONS").unwrap();
@@ -173,6 +183,7 @@ fn test_analyze_transitions() {
 #[test]
 fn test_chain_similar_empty() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("similar_test").unwrap();
 
     let stmt = parse("CHAIN SIMILAR [1.0, 0.0, 0.0] LIMIT 10").unwrap();
@@ -189,6 +200,7 @@ fn test_chain_similar_empty() {
 #[test]
 fn test_rollback_chain() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("rollback_test").unwrap();
 
     let stmt = parse("ROLLBACK CHAIN TO 0").unwrap();
@@ -204,6 +216,7 @@ fn test_rollback_chain() {
 #[test]
 fn test_commit_chain() {
     let mut router = QueryRouter::new();
+    router.set_identity("test-user");
     router.init_chain("commit_test").unwrap();
 
     let stmt = parse("COMMIT CHAIN").unwrap();
@@ -313,7 +326,8 @@ fn test_load_or_create_fresh_store() {
     let chain = TensorChain::load_or_create(store, config);
 
     assert_eq!(chain.codebook_manager().global().len(), 0);
-    assert_eq!(chain.codebook_manager().global().dimension(), 4);
+    // Default dimension is 128 (not 4)
+    assert_eq!(chain.codebook_manager().global().dimension(), 128);
 }
 
 #[test]
@@ -325,7 +339,8 @@ fn test_codebook_manager_accessor() {
     let chain = TensorChain::new(store, "accessor_test");
 
     let manager = chain.codebook_manager();
-    assert_eq!(manager.global().dimension(), 4);
+    // Default dimension is 128 (not 4)
+    assert_eq!(manager.global().dimension(), 128);
     assert!(manager.global().is_empty());
 }
 

@@ -1,0 +1,322 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Benchmarks - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/benchmarks/index.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="benchmarks"><a class="header" href="#benchmarks">Benchmarks</a></h1>
+<p>This section provides performance benchmarks for all Neumann crates, measured
+using Criterion.rs.</p>
+<h2 id="running-benchmarks"><a class="header" href="#running-benchmarks">Running Benchmarks</a></h2>
+<pre><code class="language-bash"># Run all benchmarks
+cargo bench
+
+# Run benchmarks for a specific crate
+cargo bench --package tensor_store
+cargo bench --package relational_engine
+cargo bench --package graph_engine
+cargo bench --package vector_engine
+cargo bench --package neumann_parser
+cargo bench --package query_router
+cargo bench --package neumann_shell
+cargo bench --package tensor_compress
+cargo bench --package tensor_vault
+cargo bench --package tensor_cache
+cargo bench --package tensor_chain
+</code></pre>
+<p>Benchmark reports are generated in <code>target/criterion/</code> with HTML visualizations.</p>
+<h2 id="performance-summary"><a class="header" href="#performance-summary">Performance Summary</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>Key Metric</th><th>Performance</th></tr></thead><tbody>
+<tr><td><a href="tensor-store.html">tensor_store</a></td><td>Concurrent writes</td><td>7.5M/sec @ 1M entities</td></tr>
+<tr><td><a href="relational-engine.html">relational_engine</a></td><td>Indexed lookup</td><td>2.9us (1,604x vs scan)</td></tr>
+<tr><td><a href="graph-engine.html">graph_engine</a></td><td>BFS traversal</td><td>3us/node</td></tr>
+<tr><td><a href="vector-engine.html">vector_engine</a></td><td>HNSW search</td><td>150us @ 10K vectors</td></tr>
+<tr><td><a href="tensor-compress.html">tensor_compress</a></td><td>TT decompose</td><td>10-20x compression</td></tr>
+<tr><td><a href="tensor-vault.html">tensor_vault</a></td><td>AES-256-GCM</td><td>24us get, 29us set</td></tr>
+<tr><td><a href="tensor-cache.html">tensor_cache</a></td><td>Exact lookup</td><td>208ns hit</td></tr>
+<tr><td><a href="tensor-chain.html">tensor_chain</a></td><td>Conflict detection</td><td>52M pairs/sec @ 99% sparse</td></tr>
+<tr><td><a href="neumann-parser.html">neumann_parser</a></td><td>Query parsing</td><td>1.9M queries/sec</td></tr>
+<tr><td><a href="query-router.html">query_router</a></td><td>Mixed workload</td><td>455 queries/sec</td></tr>
+</tbody></table>
+</div>
+<h2 id="hardware-notes"><a class="header" href="#hardware-notes">Hardware Notes</a></h2>
+<p>Benchmarks run on:</p>
+<ul>
+<li>Apple M-series (ARM64) or Intel x86_64</li>
+<li>Results may vary based on CPU cache sizes, memory bandwidth, and core count</li>
+</ul>
+<p>For consistent benchmarking:</p>
+<pre><code class="language-bash"># Disable CPU frequency scaling (Linux)
+sudo cpupower frequency-set --governor performance
+
+# Run with minimal background activity
+cargo bench -- --noplot  # Skip HTML report generation for faster runs
+</code></pre>
+<h2 id="benchmark-categories"><a class="header" href="#benchmark-categories">Benchmark Categories</a></h2>
+<h3 id="storage-layer"><a class="header" href="#storage-layer">Storage Layer</a></h3>
+<ul>
+<li><a href="tensor-store.html">tensor_store</a> - DashMap concurrent storage, Bloom filters,
+snapshots</li>
+<li><a href="tensor-compress.html">tensor_compress</a> - Tensor Train, delta encoding, RLE</li>
+</ul>
+<h3 id="engines"><a class="header" href="#engines">Engines</a></h3>
+<ul>
+<li><a href="relational-engine.html">relational_engine</a> - SQL operations, indexes, JOINs,
+aggregates</li>
+<li><a href="graph-engine.html">graph_engine</a> - Node/edge operations, traversals, path
+finding</li>
+<li><a href="vector-engine.html">vector_engine</a> - Embeddings, SIMD similarity, HNSW index</li>
+</ul>
+<h3 id="extended-modules"><a class="header" href="#extended-modules">Extended Modules</a></h3>
+<ul>
+<li><a href="tensor-vault.html">tensor_vault</a> - Encrypted storage, access control</li>
+<li><a href="tensor-cache.html">tensor_cache</a> - LLM response caching, semantic search</li>
+<li><a href="tensor-blob.html">tensor_blob</a> - Blob storage operations</li>
+</ul>
+<h3 id="distributed-systems"><a class="header" href="#distributed-systems">Distributed Systems</a></h3>
+<ul>
+<li><a href="tensor-chain.html">tensor_chain</a> - Consensus, 2PC, gossip, sparse vectors</li>
+</ul>
+<h3 id="query-layer"><a class="header" href="#query-layer">Query Layer</a></h3>
+<ul>
+<li><a href="neumann-parser.html">neumann_parser</a> - Tokenization, parsing, expressions</li>
+<li><a href="query-router.html">query_router</a> - Cross-engine query routing</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operations/runbooks/deadlock-resolution.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../benchmarks/tensor-store.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operations/runbooks/deadlock-resolution.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../benchmarks/tensor-store.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

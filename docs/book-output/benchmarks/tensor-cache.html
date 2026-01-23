@@ -1,0 +1,355 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>tensor_cache - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/benchmarks/tensor-cache.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="tensor_cache-benchmarks"><a class="header" href="#tensor_cache-benchmarks">tensor_cache Benchmarks</a></h1>
+<p>The tensor_cache crate provides LLM response caching with exact, semantic
+(HNSW), and embedding caches.</p>
+<h2 id="exact-cache-hash-based-o1"><a class="header" href="#exact-cache-hash-based-o1">Exact Cache (Hash-based O(1))</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>lookup_hit</td><td>208 ns</td></tr>
+<tr><td>lookup_miss</td><td>102 ns</td></tr>
+</tbody></table>
+</div>
+<h2 id="semantic-cache-hnsw-based-olog-n"><a class="header" href="#semantic-cache-hnsw-based-olog-n">Semantic Cache (HNSW-based O(log n))</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>lookup_hit</td><td>21 us</td></tr>
+</tbody></table>
+</div>
+<h2 id="put-exact--semantic--hnsw-insert"><a class="header" href="#put-exact--semantic--hnsw-insert">Put (Exact + Semantic + HNSW insert)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Entries</th><th>Time</th></tr></thead><tbody>
+<tr><td>100</td><td>49 us</td></tr>
+<tr><td>1,000</td><td>47 us</td></tr>
+<tr><td>10,000</td><td>53 us</td></tr>
+</tbody></table>
+</div>
+<h2 id="embedding-cache"><a class="header" href="#embedding-cache">Embedding Cache</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>lookup_hit</td><td>230 ns</td></tr>
+<tr><td>lookup_miss</td><td>110 ns</td></tr>
+</tbody></table>
+</div>
+<h2 id="eviction-batch-processing"><a class="header" href="#eviction-batch-processing">Eviction (batch processing)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Entries in Cache</th><th>Time</th></tr></thead><tbody>
+<tr><td>1,000</td><td>3.3 us</td></tr>
+<tr><td>5,000</td><td>4.0 us</td></tr>
+<tr><td>10,000</td><td>8.4 us</td></tr>
+</tbody></table>
+</div>
+<h2 id="distance-metrics-raw-computation-128d"><a class="header" href="#distance-metrics-raw-computation-128d">Distance Metrics (raw computation, 128d)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Time</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Jaccard</td><td>73 ns</td><td>Fastest, best for sparse</td></tr>
+<tr><td>Euclidean</td><td>105 ns</td><td>Good for spatial data</td></tr>
+<tr><td>Cosine</td><td>186 ns</td><td>Default, best for dense</td></tr>
+<tr><td>Angular</td><td>193 ns</td><td>Alternative to cosine</td></tr>
+</tbody></table>
+</div>
+<h2 id="semantic-lookup-by-metric-1000-entries"><a class="header" href="#semantic-lookup-by-metric-1000-entries">Semantic Lookup by Metric (1000 entries)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Time</th></tr></thead><tbody>
+<tr><td>Jaccard</td><td>28.6 us</td></tr>
+<tr><td>Euclidean</td><td>27.8 us</td></tr>
+<tr><td>Cosine</td><td>28.4 us</td></tr>
+</tbody></table>
+</div>
+<h2 id="sparse-vs-dense-80-sparsity"><a class="header" href="#sparse-vs-dense-80-sparsity">Sparse vs Dense (80% sparsity)</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Configuration</th><th>Time</th><th>Improvement</th></tr></thead><tbody>
+<tr><td>Dense lookup</td><td>28.8 us</td><td>baseline</td></tr>
+<tr><td>Sparse lookup</td><td>24.1 us</td><td><strong>16% faster</strong></td></tr>
+</tbody></table>
+</div>
+<h2 id="auto-metric-selection"><a class="header" href="#auto-metric-selection">Auto-Metric Selection</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>Sparsity check</td><td>0.66 ns</td></tr>
+<tr><td>Auto-select dense</td><td>13.4 us</td></tr>
+<tr><td>Auto-select sparse</td><td>16.5 us</td></tr>
+</tbody></table>
+</div>
+<h2 id="redis-comparison"><a class="header" href="#redis-comparison">Redis Comparison</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>System</th><th>In-Process</th><th>Over TCP</th></tr></thead><tbody>
+<tr><td>Redis</td><td>~60 ns</td><td>~143 us</td></tr>
+<tr><td>tensor_cache (exact)</td><td>208 ns</td><td>~143 us*</td></tr>
+<tr><td>tensor_cache (semantic)</td><td>21 us</td><td>N/A</td></tr>
+</tbody></table>
+</div>
+<p>*Estimated: network latency dominates (99.9% of time).</p>
+<p><strong>Key Insight</strong>: For embedded use (no network), Redis is 3.5x faster for exact
+lookups. Over TCP (typical deployment), both are network-bound at ~143us. Our
+differentiator is <strong>semantic search</strong> (21us) which Redis cannot provide.</p>
+<h2 id="analysis"><a class="header" href="#analysis">Analysis</a></h2>
+<ul>
+<li><strong>Exact cache</strong>: Hash-based O(1) lookup provides sub-microsecond hit/miss
+detection</li>
+<li><strong>Semantic cache</strong>: HNSW index provides O(log n) similarity search (~21us for
+hit)</li>
+<li><strong>Embedding cache</strong>: Fast O(1) lookup for precomputed embeddings</li>
+<li><strong>Put performance</strong>: Consistent ~50us regardless of cache size (HNSW insert is
+O(log n))</li>
+<li><strong>Eviction</strong>: Efficient batch eviction with LRU/LFU/Cost/Hybrid strategies</li>
+<li><strong>Distance metrics</strong>: Auto-selection based on sparsity (&gt;=70% sparse uses
+Jaccard)</li>
+<li><strong>Token counting</strong>: tiktoken cl100k_base encoding for accurate GPT-4 token
+counts</li>
+<li><strong>Cost tracking</strong>: Estimates cost savings based on model pricing tables</li>
+</ul>
+<h2 id="cache-layers"><a class="header" href="#cache-layers">Cache Layers</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Layer</th><th>Complexity</th><th>Use Case</th></tr></thead><tbody>
+<tr><td>Exact</td><td>O(1)</td><td>Identical prompts</td></tr>
+<tr><td>Semantic</td><td>O(log n)</td><td>Similar prompts</td></tr>
+<tr><td>Embedding</td><td>O(1)</td><td>Precomputed embeddings</td></tr>
+</tbody></table>
+</div>
+<h2 id="eviction-strategies"><a class="header" href="#eviction-strategies">Eviction Strategies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>Description</th></tr></thead><tbody>
+<tr><td>LRU</td><td>Evict least recently accessed</td></tr>
+<tr><td>LFU</td><td>Evict least frequently accessed</td></tr>
+<tr><td>CostBased</td><td>Evict lowest cost efficiency</td></tr>
+<tr><td>Hybrid</td><td>Weighted combination (recommended)</td></tr>
+</tbody></table>
+</div>
+<h2 id="metric-selection-guide"><a class="header" href="#metric-selection-guide">Metric Selection Guide</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Embedding Type</th><th>Recommended Metric</th></tr></thead><tbody>
+<tr><td>OpenAI/Cohere (dense)</td><td>Cosine (default)</td></tr>
+<tr><td>Sparse (&gt;=70% zeros)</td><td>Jaccard (auto-selected)</td></tr>
+<tr><td>Spatial/geographic</td><td>Euclidean</td></tr>
+<tr><td>Custom binary</td><td>Jaccard</td></tr>
+</tbody></table>
+</div>
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../benchmarks/tensor-vault.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../benchmarks/tensor-blob.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../benchmarks/tensor-vault.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../benchmarks/tensor-blob.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

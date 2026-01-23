@@ -208,6 +208,7 @@ pub fn is_plausible_tx_id(tx_id: u64, window_ms: u64) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
@@ -307,11 +308,7 @@ mod tests {
 
         // Check that no consecutive IDs differ by exactly 1 (would indicate sequential pattern)
         for window in ids.windows(2) {
-            let diff = if window[1] > window[0] {
-                window[1] - window[0]
-            } else {
-                window[0] - window[1]
-            };
+            let diff = window[1].abs_diff(window[0]);
             // With 32 bits of randomness, difference of exactly 1 is astronomically unlikely
             assert_ne!(
                 diff, 1,
@@ -410,9 +407,9 @@ mod tests {
         let mut bit_counts = [0u32; 32];
         for id in &ids {
             let random = id & 0xFFFF_FFFF;
-            for i in 0..32 {
+            for (i, count) in bit_counts.iter_mut().enumerate() {
                 if (random >> i) & 1 == 1 {
-                    bit_counts[i] += 1;
+                    *count += 1;
                 }
             }
         }

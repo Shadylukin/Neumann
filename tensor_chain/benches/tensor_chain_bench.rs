@@ -382,7 +382,10 @@ fn bench_chain_query(c: &mut Criterion) {
     });
 
     group.bench_function("verify_chain_100_blocks", |b| {
-        b.iter(|| black_box(chain.verify().unwrap()))
+        b.iter(|| {
+            chain.verify().unwrap();
+            black_box(())
+        })
     });
 
     group.finish();
@@ -776,7 +779,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
             // 3-5 fields change, each affecting ~3 dimensions
             let num_fields = 3 + (i % 3);
             for f in 0..num_fields {
-                let change_start = ((i * 7 + f * 31) % (dimension - 3)) as usize;
+                let change_start = (i * 7 + f * 31) % (dimension - 3);
                 for j in 0..3 {
                     after[change_start + j] += 0.3 * ((i + f + j) as f32 / 100.0).cos();
                 }
@@ -807,7 +810,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
             // New record has ~20-30% of dimensions populated
             let num_fields = 25 + (i % 10);
             for f in 0..num_fields {
-                let pos = ((i * 7 + f * 13) % dimension) as usize;
+                let pos = (i * 7 + f * 13) % dimension;
                 after[pos] = 0.1 + 0.5 * ((i + f) as f32 / 100.0).sin().abs();
             }
 
@@ -862,7 +865,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
             // 40-60% of dimensions change (bulk operation)
             let changes = 50 + (i % 20);
             for f in 0..changes {
-                let pos = ((i * 7 + f * 3) % dimension) as usize;
+                let pos = (i * 7 + f * 3) % dimension;
                 after[pos] += 0.2 * ((i + f) as f32 / 100.0).cos();
             }
 
@@ -891,7 +894,7 @@ fn measure_real_delta_sparsity(c: &mut Criterion) {
             // Edge affects ~6-8 dimensions (from/to/type/properties)
             let edge_dims = 6 + (i % 3);
             for f in 0..edge_dims {
-                let pos = ((i * 11 + f * 17) % dimension) as usize;
+                let pos = (i * 11 + f * 17) % dimension;
                 after[pos] += 0.4 * ((i + f) as f32 / 50.0).sin();
             }
 
@@ -1231,7 +1234,7 @@ fn bench_gossip_operations(c: &mut Criterion) {
 
         b.iter(|| {
             let mut merged = state1.clone();
-            merged.merge(&[node_state2.clone()]);
+            merged.merge(std::slice::from_ref(&node_state2));
             black_box(merged)
         })
     });
@@ -1391,7 +1394,7 @@ fn bench_snapshot_operations(c: &mut Criterion) {
                         "id".to_string(),
                         tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(i)),
                     );
-                    let _ = store.put(&format!("key_{}", i), data);
+                    let _ = store.put(format!("key_{}", i), data);
                 }
                 store
             },

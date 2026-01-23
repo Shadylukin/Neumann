@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use tensor_chain::{
-    BlockHeader, MemoryTransport, RaftConfig, RaftMembershipConfig, RaftNode, Transport,
-};
+use tensor_chain::{MemoryTransport, RaftConfig, RaftMembershipConfig, RaftNode};
 
 /// Create a connected N-node cluster with memory transport.
 fn create_cluster(node_ids: &[&str]) -> Vec<Arc<RaftNode>> {
@@ -283,7 +281,7 @@ async fn test_snapshot_includes_membership() {
 
 #[tokio::test]
 async fn test_log_entry_config_change() {
-    use tensor_chain::{Block, ConfigChange, LogEntry};
+    use tensor_chain::{ConfigChange, LogEntry};
 
     let entry = LogEntry::config(
         2,

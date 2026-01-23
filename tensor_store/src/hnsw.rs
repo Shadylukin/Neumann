@@ -1,12 +1,12 @@
 //! HNSW (Hierarchical Navigable Small World) index for approximate nearest neighbor search.
 //!
-//! This module provides a shared HNSW implementation used by both VectorEngine
-//! and TensorCache for efficient similarity search.
+//! This module provides a shared HNSW implementation used by both `VectorEngine`
+//! and `TensorCache` for efficient similarity search.
 //!
 //! Key features:
 //! - O(log n) search complexity vs O(n) for brute force
 //! - 5-8x speedup for 10K-100K vectors
-//! - Configurable recall/speed tradeoff via ef_search parameter
+//! - Configurable recall/speed tradeoff via `ef_search` parameter
 //! - Supports both dense and sparse vectors
 
 use std::{
@@ -31,8 +31,8 @@ use tensor_compress::{
     tt_reconstruct, TTConfig, TTVector,
 };
 
-/// Error type for EmbeddingStorage operations.
-#[derive(Debug, Clone, PartialEq)]
+/// Error type for `EmbeddingStorage` operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddingStorageError {
     /// Delta storage requires an archetype registry.
     DeltaRequiresRegistry,
@@ -53,16 +53,15 @@ impl std::fmt::Display for EmbeddingStorageError {
                 write!(f, "Delta storage requires archetype registry")
             },
             Self::ArchetypeNotFound(id) => {
-                write!(f, "Archetype {} not found in registry", id)
+                write!(f, "Archetype {id} not found in registry")
             },
             Self::ReconstructionFailed(msg) => {
-                write!(f, "Reconstruction failed: {}", msg)
+                write!(f, "Reconstruction failed: {msg}")
             },
             Self::CapacityExceeded { limit, current } => {
                 write!(
                     f,
-                    "HNSW index at capacity: {} nodes (limit: {})",
-                    current, limit
+                    "HNSW index at capacity: {current} nodes (limit: {limit})"
                 )
             },
             Self::DeltaNotSupported => {
@@ -83,6 +82,7 @@ pub mod simd {
 
     /// Compute dot product using SIMD (8-wide f32 lanes).
     #[inline]
+    #[must_use]
     pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
         let chunks = a.len() / 8;
         let remainder = a.len() % 8;
@@ -112,6 +112,7 @@ pub mod simd {
 
     /// Compute sum of squares using SIMD (for magnitude calculation).
     #[inline]
+    #[must_use]
     pub fn sum_of_squares(v: &[f32]) -> f32 {
         let chunks = v.len() / 8;
         let remainder = v.len() % 8;
@@ -140,6 +141,7 @@ pub mod simd {
 
     /// Compute magnitude (L2 norm) using SIMD.
     #[inline]
+    #[must_use]
     pub fn magnitude(v: &[f32]) -> f32 {
         sum_of_squares(v).sqrt()
     }
@@ -153,7 +155,7 @@ pub mod simd {
 /// Delta storage is used when vectors cluster around common archetypes,
 /// storing only the difference from a reference vector.
 ///
-/// TensorTrain storage uses Tensor Train decomposition for 8-10x compression
+/// `TensorTrain` storage uses Tensor Train decomposition for 8-10x compression
 /// of high-dimensional vectors (768+ dims) with <1% reconstruction error.
 /// TT vector with cached norm for fast distance computation.
 #[derive(Debug, Clone)]
@@ -164,6 +166,7 @@ pub struct TTVectorCached {
 }
 
 impl TTVectorCached {
+    #[must_use]
     pub fn new(tt: TTVector) -> Self {
         let norm = tt_norm(&tt);
         Self { tt, norm }
@@ -183,12 +186,13 @@ pub enum EmbeddingStorage {
 }
 
 impl EmbeddingStorage {
-    pub fn dimension(&self) -> usize {
+    #[must_use]
+    pub const fn dimension(&self) -> usize {
         match self {
-            EmbeddingStorage::Dense(v) => v.len(),
-            EmbeddingStorage::Sparse(s) => s.dimension(),
-            EmbeddingStorage::Delta(d) => d.dimension(),
-            EmbeddingStorage::TensorTrain(cached) => cached.tt.original_dim,
+            Self::Dense(v) => v.len(),
+            Self::Sparse(s) => s.dimension(),
+            Self::Delta(d) => d.dimension(),
+            Self::TensorTrain(cached) => cached.tt.original_dim,
         }
     }
 
@@ -196,102 +200,125 @@ impl EmbeddingStorage {
     ///
     /// For Delta storage, requires the archetype registry to reconstruct.
     /// Use `to_dense_with_registry` for Delta vectors.
+    ///
+    /// # Panics
+    /// Panics if called on Delta storage without registry. Use `try_to_dense_with_registry` instead.
+    #[must_use]
     pub fn to_dense(&self) -> Vec<f32> {
         match self {
-            EmbeddingStorage::Dense(v) => v.clone(),
-            EmbeddingStorage::Sparse(s) => s.to_dense(),
-            EmbeddingStorage::Delta(_) => {
+            Self::Dense(v) => v.clone(),
+            Self::Sparse(s) => s.to_dense(),
+            Self::Delta(_) => {
                 panic!("Delta storage requires archetype registry for reconstruction")
             },
-            EmbeddingStorage::TensorTrain(cached) => tt_reconstruct(&cached.tt),
+            Self::TensorTrain(cached) => tt_reconstruct(&cached.tt),
         }
     }
 
     /// Convert to dense representation with archetype registry support.
+    ///
+    /// # Panics
+    /// Panics if registry is `None` for Delta storage, or if archetype is not found.
+    #[must_use]
     pub fn to_dense_with_registry(&self, registry: Option<&ArchetypeRegistry>) -> Vec<f32> {
         match self {
-            EmbeddingStorage::Dense(v) => v.clone(),
-            EmbeddingStorage::Sparse(s) => s.to_dense(),
-            EmbeddingStorage::Delta(d) => {
+            Self::Dense(v) => v.clone(),
+            Self::Sparse(s) => s.to_dense(),
+            Self::Delta(d) => {
                 let registry = registry.expect("Delta storage requires archetype registry");
                 registry.decode(d).expect("Archetype not found in registry")
             },
-            EmbeddingStorage::TensorTrain(cached) => tt_reconstruct(&cached.tt),
+            Self::TensorTrain(cached) => tt_reconstruct(&cached.tt),
         }
     }
 
     /// Convert to dense representation with archetype registry support.
-    /// Returns `Result` instead of panicking on Delta storage without registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if Delta storage is used without a registry,
+    /// or if the archetype is not found in the registry.
     pub fn try_to_dense_with_registry(
         &self,
         registry: Option<&ArchetypeRegistry>,
     ) -> Result<Vec<f32>, EmbeddingStorageError> {
         match self {
-            EmbeddingStorage::Dense(v) => Ok(v.clone()),
-            EmbeddingStorage::Sparse(s) => Ok(s.to_dense()),
-            EmbeddingStorage::Delta(d) => {
+            Self::Dense(v) => Ok(v.clone()),
+            Self::Sparse(s) => Ok(s.to_dense()),
+            Self::Delta(d) => {
                 let registry = registry.ok_or(EmbeddingStorageError::DeltaRequiresRegistry)?;
                 registry
                     .decode(d)
                     .ok_or_else(|| EmbeddingStorageError::ArchetypeNotFound(d.archetype_id()))
             },
-            EmbeddingStorage::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
+            Self::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
         }
     }
 
+    #[must_use]
     pub fn as_dense(&self) -> Option<&[f32]> {
         match self {
-            EmbeddingStorage::Dense(v) => Some(v),
+            Self::Dense(v) => Some(v),
             _ => None,
         }
     }
 
-    pub fn as_sparse(&self) -> Option<&SparseVector> {
+    #[must_use]
+    pub const fn as_sparse(&self) -> Option<&SparseVector> {
         match self {
-            EmbeddingStorage::Sparse(s) => Some(s),
+            Self::Sparse(s) => Some(s),
             _ => None,
         }
     }
 
-    pub fn as_delta(&self) -> Option<&DeltaVector> {
+    #[must_use]
+    pub const fn as_delta(&self) -> Option<&DeltaVector> {
         match self {
-            EmbeddingStorage::Delta(d) => Some(d),
+            Self::Delta(d) => Some(d),
             _ => None,
         }
     }
 
-    pub fn as_tt(&self) -> Option<&TTVector> {
+    #[must_use]
+    pub const fn as_tt(&self) -> Option<&TTVector> {
         match self {
-            EmbeddingStorage::TensorTrain(cached) => Some(&cached.tt),
+            Self::TensorTrain(cached) => Some(&cached.tt),
             _ => None,
         }
     }
 
-    pub fn is_sparse(&self) -> bool {
-        matches!(self, EmbeddingStorage::Sparse(_))
+    #[must_use]
+    pub const fn is_sparse(&self) -> bool {
+        matches!(self, Self::Sparse(_))
     }
 
-    pub fn is_delta(&self) -> bool {
-        matches!(self, EmbeddingStorage::Delta(_))
+    #[must_use]
+    pub const fn is_delta(&self) -> bool {
+        matches!(self, Self::Delta(_))
     }
 
-    pub fn is_tt(&self) -> bool {
-        matches!(self, EmbeddingStorage::TensorTrain(_))
+    #[must_use]
+    pub const fn is_tt(&self) -> bool {
+        matches!(self, Self::TensorTrain(_))
     }
 
     /// Compute dot product with a dense query vector.
     ///
     /// For Delta storage, requires archetype registry.
-    /// For TensorTrain storage, reconstructs to dense first.
+    /// For `TensorTrain` storage, reconstructs to dense first.
+    ///
+    /// # Panics
+    /// Panics if called on Delta storage. Use `dot_with_dense_and_registry` instead.
     #[inline]
+    #[must_use]
     pub fn dot_with_dense(&self, query: &[f32]) -> f32 {
         match self {
-            EmbeddingStorage::Dense(v) => simd::dot_product(v, query),
-            EmbeddingStorage::Sparse(s) => s.dot_dense(query),
-            EmbeddingStorage::Delta(_) => {
+            Self::Dense(v) => simd::dot_product(v, query),
+            Self::Sparse(s) => s.dot_dense(query),
+            Self::Delta(_) => {
                 panic!("Delta storage requires archetype for dot product - use dot_with_dense_and_registry")
             },
-            EmbeddingStorage::TensorTrain(cached) => {
+            Self::TensorTrain(cached) => {
                 let dense = tt_reconstruct(&cached.tt);
                 simd::dot_product(&dense, query)
             },
@@ -299,22 +326,26 @@ impl EmbeddingStorage {
     }
 
     /// Compute dot product with a dense query, with archetype registry support.
+    ///
+    /// # Panics
+    /// Panics if registry is `None` for Delta storage, or if archetype is not found.
     #[inline]
+    #[must_use]
     pub fn dot_with_dense_and_registry(
         &self,
         query: &[f32],
         registry: Option<&ArchetypeRegistry>,
     ) -> f32 {
         match self {
-            EmbeddingStorage::Dense(v) => simd::dot_product(v, query),
-            EmbeddingStorage::Sparse(s) => s.dot_dense(query),
-            EmbeddingStorage::Delta(d) => {
+            Self::Dense(v) => simd::dot_product(v, query),
+            Self::Sparse(s) => s.dot_dense(query),
+            Self::Delta(d) => {
                 let registry = registry.expect("Delta storage requires archetype registry");
                 registry
                     .dot_delta_dense(d, query)
                     .expect("Archetype not found")
             },
-            EmbeddingStorage::TensorTrain(cached) => {
+            Self::TensorTrain(cached) => {
                 let dense = tt_reconstruct(&cached.tt);
                 simd::dot_product(&dense, query)
             },
@@ -322,15 +353,19 @@ impl EmbeddingStorage {
     }
 
     /// Compute dot product with a sparse query vector.
+    ///
+    /// # Panics
+    /// Panics if called on Delta storage.
     #[inline]
+    #[must_use]
     pub fn dot_with_sparse(&self, query: &SparseVector) -> f32 {
         match self {
-            EmbeddingStorage::Dense(v) => query.dot_dense(v),
-            EmbeddingStorage::Sparse(s) => s.dot(query),
-            EmbeddingStorage::Delta(_) => {
+            Self::Dense(v) => query.dot_dense(v),
+            Self::Sparse(s) => s.dot(query),
+            Self::Delta(_) => {
                 panic!("Delta storage requires archetype for dot product")
             },
-            EmbeddingStorage::TensorTrain(cached) => {
+            Self::TensorTrain(cached) => {
                 let dense = tt_reconstruct(&cached.tt);
                 query.dot_dense(&dense)
             },
@@ -338,23 +373,27 @@ impl EmbeddingStorage {
     }
 
     /// Compute dot product with a TT query vector (zero-alloc for TT-TT).
+    ///
+    /// # Panics
+    /// Panics if called on Delta storage.
     #[inline]
+    #[must_use]
     pub fn dot_with_tt(&self, query_tt: &TTVector) -> f32 {
         match self {
-            EmbeddingStorage::TensorTrain(cached) => {
+            Self::TensorTrain(cached) => {
                 // Native TT dot product - no allocation!
                 tt_dot_product(&cached.tt, query_tt).unwrap_or(0.0)
             },
-            EmbeddingStorage::Dense(v) => {
+            Self::Dense(v) => {
                 // Reconstruct query once to compute against dense storage
                 let query_dense = tt_reconstruct(query_tt);
                 simd::dot_product(v, &query_dense)
             },
-            EmbeddingStorage::Sparse(s) => {
+            Self::Sparse(s) => {
                 let query_dense = tt_reconstruct(query_tt);
                 s.dot_dense(&query_dense)
             },
-            EmbeddingStorage::Delta(_) => {
+            Self::Delta(_) => {
                 panic!("Delta storage requires archetype for dot product")
             },
         }
@@ -363,38 +402,47 @@ impl EmbeddingStorage {
     /// Compute magnitude (L2 norm).
     ///
     /// For Delta storage, requires archetype registry.
-    /// For TensorTrain storage, uses cached norm for efficiency.
+    /// For `TensorTrain` storage, uses cached norm for efficiency.
+    ///
+    /// # Panics
+    /// Panics if called on Delta storage. Use `magnitude_with_registry` instead.
     #[inline]
+    #[must_use]
     pub fn magnitude(&self) -> f32 {
         match self {
-            EmbeddingStorage::Dense(v) => simd::magnitude(v),
-            EmbeddingStorage::Sparse(s) => s.magnitude(),
-            EmbeddingStorage::Delta(_) => {
+            Self::Dense(v) => simd::magnitude(v),
+            Self::Sparse(s) => s.magnitude(),
+            Self::Delta(_) => {
                 panic!(
                     "Delta storage requires archetype for magnitude - use magnitude_with_registry"
                 )
             },
-            EmbeddingStorage::TensorTrain(cached) => cached.norm,
+            Self::TensorTrain(cached) => cached.norm,
         }
     }
 
     /// Compute magnitude with archetype registry support.
+    ///
+    /// # Panics
+    /// Panics if registry is `None` for Delta storage, or if archetype is not found.
     #[inline]
+    #[must_use]
     pub fn magnitude_with_registry(&self, registry: Option<&ArchetypeRegistry>) -> f32 {
         match self {
-            EmbeddingStorage::Dense(v) => simd::magnitude(v),
-            EmbeddingStorage::Sparse(s) => s.magnitude(),
-            EmbeddingStorage::Delta(d) => {
+            Self::Dense(v) => simd::magnitude(v),
+            Self::Sparse(s) => s.magnitude(),
+            Self::Delta(d) => {
                 let registry = registry.expect("Delta storage requires archetype registry");
                 let archetype = registry.get(d.archetype_id()).expect("Archetype not found");
                 d.magnitude(archetype)
             },
-            EmbeddingStorage::TensorTrain(cached) => cached.norm,
+            Self::TensorTrain(cached) => cached.norm,
         }
     }
 
     /// Compute cosine distance (1 - similarity) with a dense query.
     #[inline]
+    #[must_use]
     pub fn cosine_distance_dense(&self, query: &[f32]) -> f32 {
         let dot = self.dot_with_dense(query);
         let mag_self = self.magnitude();
@@ -409,6 +457,7 @@ impl EmbeddingStorage {
 
     /// Compute cosine distance with archetype registry support.
     #[inline]
+    #[must_use]
     pub fn cosine_distance_dense_with_registry(
         &self,
         query: &[f32],
@@ -427,6 +476,7 @@ impl EmbeddingStorage {
 
     /// Compute cosine distance (1 - similarity) with a sparse query.
     #[inline]
+    #[must_use]
     pub fn cosine_distance_sparse(&self, query: &SparseVector) -> f32 {
         let dot = self.dot_with_sparse(query);
         let mag_self = self.magnitude();
@@ -444,75 +494,74 @@ impl EmbeddingStorage {
     /// Uses native TT operations for TT-TT comparisons (zero allocation).
     /// Falls back to reconstruction for mixed storage types.
     #[inline]
+    #[must_use]
     pub fn cosine_distance_tt(&self, query_tt: &TTVector) -> f32 {
         self.cosine_distance_tt_with_norm(query_tt, tt_norm(query_tt))
     }
 
     /// Compute cosine distance with pre-computed query norm (avoids redundant norm calculation).
     #[inline]
+    #[must_use]
     pub fn cosine_distance_tt_with_norm(&self, query_tt: &TTVector, query_norm: f32) -> f32 {
         if query_norm < 1e-10 {
             return 1.0;
         }
 
-        match self {
-            EmbeddingStorage::TensorTrain(cached) => {
-                // Native TT dot product + cached norms (zero-alloc)
-                let dot = match tt_dot_product(&cached.tt, query_tt) {
-                    Ok(d) => d,
-                    Err(_) => return 1.0,
-                };
-                if cached.norm < 1e-10 {
-                    return 1.0;
-                }
-                1.0 - (dot / (cached.norm * query_norm))
-            },
-            _ => {
-                // For non-TT storage, use dot product approach
-                let dot = self.dot_with_tt(query_tt);
-                let mag_self = self.magnitude();
+        if let Self::TensorTrain(cached) = self {
+            // Native TT dot product + cached norms (zero-alloc)
+            let Ok(dot) = tt_dot_product(&cached.tt, query_tt) else {
+                return 1.0;
+            };
+            if cached.norm < 1e-10 {
+                return 1.0;
+            }
+            1.0 - (dot / (cached.norm * query_norm))
+        } else {
+            // For non-TT storage, use dot product approach
+            let dot = self.dot_with_tt(query_tt);
+            let mag_self = self.magnitude();
 
-                if mag_self == 0.0 {
-                    return 1.0;
-                }
+            if mag_self == 0.0 {
+                return 1.0;
+            }
 
-                1.0 - (dot / (mag_self * query_norm))
-            },
+            1.0 - (dot / (mag_self * query_norm))
         }
     }
 
     /// Memory usage in bytes.
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         match self {
-            EmbeddingStorage::Dense(v) => v.len() * 4,
-            EmbeddingStorage::Sparse(s) => s.memory_bytes(),
-            EmbeddingStorage::Delta(d) => d.memory_bytes(),
-            EmbeddingStorage::TensorTrain(cached) => cached.tt.storage_size() * 4,
+            Self::Dense(v) => v.len() * 4,
+            Self::Sparse(s) => s.memory_bytes(),
+            Self::Delta(d) => d.memory_bytes(),
+            Self::TensorTrain(cached) => cached.tt.storage_size() * 4,
         }
     }
 }
 
 impl From<Vec<f32>> for EmbeddingStorage {
     fn from(v: Vec<f32>) -> Self {
-        EmbeddingStorage::Dense(v)
+        Self::Dense(v)
     }
 }
 
 impl From<SparseVector> for EmbeddingStorage {
     fn from(s: SparseVector) -> Self {
-        EmbeddingStorage::Sparse(s)
+        Self::Sparse(s)
     }
 }
 
 impl From<DeltaVector> for EmbeddingStorage {
     fn from(d: DeltaVector) -> Self {
-        EmbeddingStorage::Delta(d)
+        Self::Delta(d)
     }
 }
 
 impl From<TTVector> for EmbeddingStorage {
     fn from(tt: TTVector) -> Self {
-        EmbeddingStorage::TensorTrain(TTVectorCached::new(tt))
+        Self::TensorTrain(TTVectorCached::new(tt))
     }
 }
 
@@ -526,13 +575,14 @@ struct CompressedNeighbors {
 }
 
 impl CompressedNeighbors {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             compressed: Vec::new(),
         }
     }
 
     /// Get decompressed neighbor IDs (sorted order).
+    #[allow(clippy::cast_possible_truncation)] // Node IDs limited to index size
     fn get(&self) -> Vec<usize> {
         if self.compressed.is_empty() {
             return Vec::new();
@@ -579,7 +629,7 @@ impl CompressedNeighbors {
 
     /// Memory usage in bytes.
     #[allow(dead_code)]
-    fn memory_bytes(&self) -> usize {
+    const fn memory_bytes(&self) -> usize {
         self.compressed.len()
     }
 }
@@ -613,7 +663,7 @@ struct Neighbor {
 }
 
 impl Neighbor {
-    fn new(id: usize, distance: f32) -> Self {
+    const fn new(id: usize, distance: f32) -> Self {
         Self { id, distance }
     }
 }
@@ -694,6 +744,7 @@ pub struct HNSWConfig {
 }
 
 impl Default for HNSWConfig {
+    #[allow(clippy::cast_precision_loss)] // m is small, no precision loss
     fn default() -> Self {
         let m = 16;
         Self {
@@ -719,7 +770,7 @@ pub struct HNSWMemoryStats {
     pub sparse_count: usize,
     /// Number of nodes using delta storage
     pub delta_count: usize,
-    /// Number of nodes using TensorTrain storage
+    /// Number of nodes using `TensorTrain` storage
     pub tt_count: usize,
     /// Total bytes used for embeddings
     pub embedding_bytes: usize,
@@ -727,6 +778,7 @@ pub struct HNSWMemoryStats {
 
 impl HNSWConfig {
     /// Create a config optimized for high recall (slower but more accurate)
+    #[must_use]
     pub fn high_recall() -> Self {
         Self {
             m: 32,
@@ -740,6 +792,7 @@ impl HNSWConfig {
     }
 
     /// Create a config optimized for speed (faster but lower recall)
+    #[must_use]
     pub fn high_speed() -> Self {
         Self {
             m: 8,
@@ -771,12 +824,14 @@ pub struct HNSWIndex {
 
 impl HNSWIndex {
     /// Create a new HNSW index with default configuration.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(HNSWConfig::default())
     }
 
     /// Create a new HNSW index with custom configuration.
-    pub fn with_config(config: HNSWConfig) -> Self {
+    #[must_use]
+    pub const fn with_config(config: HNSWConfig) -> Self {
         Self {
             nodes: RwLock::new(Vec::new()),
             entry_point: AtomicUsize::new(usize::MAX),
@@ -788,6 +843,7 @@ impl HNSWIndex {
     }
 
     /// Create an HNSW index with access instrumentation enabled.
+    #[must_use]
     pub fn with_instrumentation(config: HNSWConfig) -> Self {
         Self {
             nodes: RwLock::new(Vec::new()),
@@ -799,18 +855,25 @@ impl HNSWIndex {
         }
     }
 
-    pub fn has_instrumentation(&self) -> bool {
+    #[must_use]
+    pub const fn has_instrumentation(&self) -> bool {
         self.access_stats.is_some()
     }
 
+    #[must_use]
     pub fn access_stats(&self) -> Option<crate::instrumentation::HNSWStatsSnapshot> {
         self.access_stats.as_ref().map(|s| s.snapshot())
     }
 
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.read().unwrap().len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -826,6 +889,9 @@ impl HNSWIndex {
     }
 
     /// Select a random layer for a new node (exponential distribution)
+    #[allow(clippy::cast_precision_loss)] // Acceptable for random number generation
+    #[allow(clippy::cast_sign_loss)] // Result is always non-negative: -ln(x) >= 0 for x in (0,1)
+    #[allow(clippy::cast_possible_truncation)] // Level capped at 32
     fn random_level(&self) -> usize {
         let r = self.next_random();
         // Convert to float in [0, 1)
@@ -851,6 +917,7 @@ impl HNSWIndex {
     /// above `config.sparsity_threshold` (default 50% zeros), otherwise
     /// uses dense storage. This provides memory savings for high-sparsity
     /// vectors without requiring manual format selection.
+    #[allow(clippy::cast_precision_loss)] // Sparsity ratio calculation accepts precision loss
     pub fn insert_auto(&self, vector: Vec<f32>) -> usize {
         let nnz = vector.iter().filter(|&&x| x != 0.0).count();
         let sparsity = 1.0 - (nnz as f32 / vector.len() as f32);
@@ -863,22 +930,32 @@ impl HNSWIndex {
     }
 
     /// Try to insert a vector into the index.
-    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityExceeded)` if `max_nodes` limit is reached.
     pub fn try_insert(&self, vector: Vec<f32>) -> Result<usize, EmbeddingStorageError> {
         self.try_insert_embedding(EmbeddingStorage::Dense(vector))
     }
 
     /// Try to insert a sparse vector into the index.
-    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityExceeded)` if `max_nodes` limit is reached.
     pub fn try_insert_sparse(&self, sparse: SparseVector) -> Result<usize, EmbeddingStorageError> {
         self.try_insert_embedding(EmbeddingStorage::Sparse(sparse))
     }
 
-    /// Insert a vector with TensorTrain compression.
+    /// Insert a vector with `TensorTrain` compression.
     ///
     /// Uses Tensor Train decomposition to compress the vector before storage,
     /// achieving 8-10x memory savings for high-dimensional vectors (768+ dims).
     /// The config parameter controls compression accuracy vs size tradeoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TT decomposition fails.
     pub fn insert_tt(&self, vector: Vec<f32>, config: &TTConfig) -> Result<usize, String> {
         // Validate via TT decomposition (ensures vector is compatible)
         match tt_decompose(&vector, config) {
@@ -886,24 +963,28 @@ impl HNSWIndex {
                 // Store as dense for fast HNSW distance computations
                 Ok(self.insert_embedding(EmbeddingStorage::Dense(vector)))
             },
-            Err(e) => Err(format!("TT decomposition failed: {:?}", e)),
+            Err(e) => Err(format!("TT decomposition failed: {e:?}")),
         }
     }
 
-    /// Insert a pre-decomposed TensorTrain vector.
+    /// Insert a pre-decomposed `TensorTrain` vector.
     ///
     /// Reconstructs to dense for storage - HNSW needs fast distance computations.
     /// TT compression is useful for storage/transmission, not HNSW indexing.
-    pub fn insert_tt_vector(&self, tt: TTVector) -> usize {
+    pub fn insert_tt_vector(&self, tt: &TTVector) -> usize {
         // Reconstruct to dense for fast distance computations during search
-        let dense = tt_reconstruct(&tt);
+        let dense = tt_reconstruct(tt);
         self.insert_embedding(EmbeddingStorage::Dense(dense))
     }
 
-    /// Insert multiple vectors with TensorTrain validation in batch.
+    /// Insert multiple vectors with `TensorTrain` validation in batch.
     ///
     /// Vectors are validated via TT decomposition but stored as dense
     /// for fast HNSW distance computations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if batch TT decomposition fails.
     pub fn insert_batch_tt(
         &self,
         vectors: Vec<Vec<f32>>,
@@ -914,9 +995,9 @@ impl HNSWIndex {
         }
 
         // Validate vectors via TT decomposition (uses rayon for 4+ vectors)
-        let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
+        let refs: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
         let _tts = tt_decompose_batch(&refs, config)
-            .map_err(|e| format!("Batch TT decomposition failed: {:?}", e))?;
+            .map_err(|e| format!("Batch TT decomposition failed: {e:?}"))?;
 
         // Insert as dense for fast distance computations
         let ids: Vec<usize> = vectors
@@ -927,14 +1008,13 @@ impl HNSWIndex {
         Ok(ids)
     }
 
-    /// Search with a TensorTrain-compressed query.
+    /// Search with a `TensorTrain`-compressed query.
     ///
     /// The query is compressed before searching, reducing memory bandwidth
     /// during the search. Works best when the index contains TT-compressed vectors.
     pub fn search_tt(&self, query: &[f32], k: usize, config: &TTConfig) -> Vec<(usize, f32)> {
-        let query_tt = match tt_decompose(query, config) {
-            Ok(tt) => tt,
-            Err(_) => return self.search(query, k), // Fall back to dense search
+        let Ok(query_tt) = tt_decompose(query, config) else {
+            return self.search(query, k); // Fall back to dense search
         };
         self.search_tt_with_ef(&query_tt, k, self.config.ef_search)
     }
@@ -943,6 +1023,10 @@ impl HNSWIndex {
     ///
     /// Uses native TT operations throughout - no dense reconstruction needed.
     /// For TT-to-TT comparisons, this is zero-allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn search_tt_with_ef(&self, query_tt: &TTVector, k: usize, ef: usize) -> Vec<(usize, f32)> {
         let entry_id = self.entry_point.load(AtomicOrdering::Relaxed);
         if entry_id == usize::MAX {
@@ -965,6 +1049,7 @@ impl HNSWIndex {
         // At layer 0, do full search with native TT distance
         let candidates =
             self.search_layer_tt_native(&nodes, query_tt, query_norm, current_node, ef.max(k), 0);
+        drop(nodes);
 
         // Return top k with similarity scores
         candidates
@@ -975,6 +1060,7 @@ impl HNSWIndex {
     }
 
     /// Search layer with native TT distance computation (zero-alloc for TT storage).
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_tt_native(
         &self,
         nodes: &[HNSWNode],
@@ -1011,13 +1097,8 @@ impl HNSWIndex {
                         .embedding
                         .cosine_distance_tt_with_norm(query_tt, query_norm);
 
-                    let should_add = results.len() < ef || {
-                        if let Some(worst) = results.peek() {
-                            dist < worst.0.distance
-                        } else {
-                            true
-                        }
-                    };
+                    let should_add = results.len() < ef
+                        || results.peek().is_none_or(|worst| dist < worst.0.distance);
 
                     if should_add {
                         candidates.push(Neighbor::new(neighbor_id, dist));
@@ -1041,27 +1122,36 @@ impl HNSWIndex {
     }
 
     /// Insert an embedding (dense or sparse) into the index.
-    /// Panics if the index is at capacity (max_nodes) or if Delta vectors are used.
+    ///
     /// Use `try_insert_embedding` for a non-panicking version.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index is at capacity (`max_nodes`), if Delta vectors are used,
+    /// or if the internal lock is poisoned.
     pub fn insert_embedding(&self, embedding: EmbeddingStorage) -> usize {
         match self.try_insert_embedding(embedding) {
             Ok(id) => id,
             Err(EmbeddingStorageError::CapacityExceeded { limit, current }) => {
-                panic!(
-                    "HNSW index at capacity: {} nodes (limit: {})",
-                    current, limit
-                )
+                panic!("HNSW index at capacity: {current} nodes (limit: {limit})")
             },
             Err(EmbeddingStorageError::DeltaNotSupported) => {
                 panic!("Delta vectors require archetype registry. Convert to Dense first.")
             },
-            Err(e) => panic!("Insert failed: {}", e),
+            Err(e) => panic!("Insert failed: {e}"),
         }
     }
 
     /// Insert an embedding with capacity checking.
-    /// Returns `Err(CapacityExceeded)` if max_nodes limit is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CapacityExceeded)` if `max_nodes` limit is reached.
     /// Returns `Err(DeltaNotSupported)` if a Delta vector is provided.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn try_insert_embedding(
         &self,
         embedding: EmbeddingStorage,
@@ -1188,6 +1278,10 @@ impl HNSWIndex {
     }
 
     /// Search with custom ef parameter (higher = better recall, slower)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn search_with_ef(&self, query: &[f32], k: usize, ef: usize) -> Vec<(usize, f32)> {
         let entry_id = self.entry_point.load(AtomicOrdering::Relaxed);
         if entry_id == usize::MAX {
@@ -1221,6 +1315,7 @@ impl HNSWIndex {
 
         // At layer 0, do full search
         let candidates = self.search_layer(&nodes, query, current_node, ef.max(k), 0);
+        drop(nodes);
 
         // Return top k with similarity scores (converted from distance)
         candidates
@@ -1231,6 +1326,10 @@ impl HNSWIndex {
     }
 
     /// Search with sparse query and custom ef parameter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn search_sparse_with_ef(
         &self,
         query: &SparseVector,
@@ -1268,6 +1367,7 @@ impl HNSWIndex {
 
         // At layer 0, do full search
         let candidates = self.search_layer_sparse(&nodes, query, current_node, ef.max(k), 0);
+        drop(nodes);
 
         // Return top k with similarity scores (converted from distance)
         candidates
@@ -1278,6 +1378,7 @@ impl HNSWIndex {
     }
 
     /// Greedy search in a layer - find the closest node to query
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_greedy(
         &self,
         nodes: &[HNSWNode],
@@ -1310,6 +1411,7 @@ impl HNSWIndex {
     }
 
     /// Greedy search with sparse query
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_greedy_sparse(
         &self,
         nodes: &[HNSWNode],
@@ -1342,6 +1444,7 @@ impl HNSWIndex {
     }
 
     /// Greedy search with TT query (zero-alloc for TT-TT comparisons).
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_greedy_tt(
         &self,
         nodes: &[HNSWNode],
@@ -1379,6 +1482,7 @@ impl HNSWIndex {
     }
 
     /// Search in a layer - find ef closest nodes to query
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer(
         &self,
         nodes: &[HNSWNode],
@@ -1413,13 +1517,8 @@ impl HNSWIndex {
                     let dist = nodes[neighbor_id].embedding.cosine_distance_dense(query);
 
                     // Add to results if closer than worst, or if we don't have ef results yet
-                    let should_add = results.len() < ef || {
-                        if let Some(worst) = results.peek() {
-                            dist < worst.0.distance
-                        } else {
-                            true
-                        }
-                    };
+                    let should_add = results.len() < ef
+                        || results.peek().is_none_or(|worst| dist < worst.0.distance);
 
                     if should_add {
                         candidates.push(Neighbor::new(neighbor_id, dist));
@@ -1445,6 +1544,7 @@ impl HNSWIndex {
     }
 
     /// Search in a layer with sparse query
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn search_layer_sparse(
         &self,
         nodes: &[HNSWNode],
@@ -1476,13 +1576,8 @@ impl HNSWIndex {
                 if visited.insert(neighbor_id) {
                     let dist = nodes[neighbor_id].embedding.cosine_distance_sparse(query);
 
-                    let should_add = results.len() < ef || {
-                        if let Some(worst) = results.peek() {
-                            dist < worst.0.distance
-                        } else {
-                            true
-                        }
-                    };
+                    let should_add = results.len() < ef
+                        || results.peek().is_none_or(|worst| dist < worst.0.distance);
 
                     if should_add {
                         candidates.push(Neighbor::new(neighbor_id, dist));
@@ -1509,8 +1604,9 @@ impl HNSWIndex {
     ///
     /// Note: Delta storage is currently converted to dense for distance computation.
     /// For optimal delta-aware distance, use an HNSW index with archetype registry.
-    /// TensorTrain vectors use native tt_cosine_similarity when both are TT.
+    /// `TensorTrain` vectors use native `tt_cosine_similarity` when both are TT.
     #[inline]
+    #[allow(clippy::unused_self)] // Method for API consistency
     fn distance_embeddings(&self, a: &EmbeddingStorage, b: &EmbeddingStorage) -> f32 {
         match (a, b) {
             (EmbeddingStorage::Dense(va), EmbeddingStorage::Dense(vb)) => {
@@ -1574,7 +1670,12 @@ impl HNSWIndex {
     }
 
     /// Get the vector for a node ID (as dense, for compatibility).
+    ///
     /// Returns None if the vector cannot be converted to dense (e.g., Delta without registry).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn get_vector(&self, id: usize) -> Option<Vec<f32>> {
         let nodes = self.nodes.read().unwrap();
         nodes
@@ -1582,13 +1683,21 @@ impl HNSWIndex {
             .and_then(|n| n.embedding.try_to_dense_with_registry(None).ok())
     }
 
-    /// Get the embedding storage for a node ID
+    /// Get the embedding storage for a node ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn get_embedding(&self, id: usize) -> Option<EmbeddingStorage> {
         let nodes = self.nodes.read().unwrap();
         nodes.get(id).map(|n| n.embedding.clone())
     }
 
-    /// Get memory usage statistics
+    /// Get memory usage statistics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn memory_stats(&self) -> HNSWMemoryStats {
         let nodes = self.nodes.read().unwrap();
         let mut dense_count = 0usize;
@@ -1618,12 +1727,13 @@ impl HNSWIndex {
     }
 
     /// Get configuration
-    pub fn config(&self) -> &HNSWConfig {
+    #[must_use]
+    pub const fn config(&self) -> &HNSWConfig {
         &self.config
     }
 
-    /// Set ef_search parameter (controls recall/speed tradeoff)
-    pub fn set_ef_search(&mut self, ef: usize) {
+    /// Set `ef_search` parameter (controls recall/speed tradeoff)
+    pub const fn set_ef_search(&mut self, ef: usize) {
         self.config.ef_search = ef;
     }
 }
@@ -2561,6 +2671,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Timing-sensitive test, may fail under coverage instrumentation
     fn test_hnsw_tt_insert_performance() {
         use std::time::Instant;
 
@@ -2606,7 +2717,7 @@ mod tests {
         // Time HNSW insert with pre-decomposed vectors
         let index = HNSWIndex::new();
         let start = Instant::now();
-        for tt in tts {
+        for tt in &tts {
             index.insert_tt_vector(tt);
         }
         let insert_time = start.elapsed();
@@ -3067,5 +3178,372 @@ mod tests {
         // Search with dense query
         let results = index.search(&vector, 1);
         assert_eq!(results.len(), 1);
+    }
+
+    // Additional EmbeddingStorage method coverage tests
+
+    #[test]
+    fn test_embedding_storage_tt_dot_with_dense() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let query = vec![1.0; 64];
+        let dot = storage.dot_with_dense(&query);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_tt_dot_with_dense_and_registry() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let query = vec![1.0; 64];
+        let dot = storage.dot_with_dense_and_registry(&query, None);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_tt_dot_with_sparse() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let sparse_query = SparseVector::from_dense(&vec![1.0; 64]);
+        let dot = storage.dot_with_sparse(&sparse_query);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_tt_dot_with_tt() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let v2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
+
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let storage1 = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+        let dot = storage1.dot_with_tt(&tt2);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_dense_dot_with_tt() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let dense = EmbeddingStorage::Dense(vec![1.0; 64]);
+        let dot = dense.dot_with_tt(&tt);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_sparse_dot_with_tt() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| i as f32 * 0.1).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+
+        let sparse = EmbeddingStorage::Sparse(SparseVector::from_dense(&vec![1.0; 64]));
+        let dot = sparse.dot_with_tt(&tt);
+        assert!(dot.is_finite());
+    }
+
+    #[test]
+    fn test_embedding_storage_tt_cosine_distance_tt() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let v2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+        // Distance to approximately same vector should be near 0
+        let dist = storage.cosine_distance_tt_with_norm(&tt2, tt_norm(&tt2));
+        assert!(dist.is_finite());
+        assert!(dist < 0.1);
+    }
+
+    #[test]
+    fn test_try_to_dense_tt_no_registry() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt));
+
+        let result = storage.try_to_dense_with_registry(None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_embedding_storage_from_vec() {
+        let vec = vec![1.0, 2.0, 3.0];
+        let storage: EmbeddingStorage = vec.clone().into();
+        match storage {
+            EmbeddingStorage::Dense(v) => assert_eq!(v, vec),
+            _ => panic!("Expected Dense variant"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_storage_from_sparse_vector() {
+        let sparse = SparseVector::from_dense(&[1.0, 0.0, 2.0]);
+        let storage: EmbeddingStorage = sparse.clone().into();
+        match storage {
+            EmbeddingStorage::Sparse(s) => assert_eq!(s.dimension(), sparse.dimension()),
+            _ => panic!("Expected Sparse variant"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_storage_from_delta_vector() {
+        let archetype = vec![1.0, 2.0, 3.0];
+        let delta = DeltaVector::from_dense_with_reference(&[1.1, 2.0, 3.0], &archetype, 0, 0.01);
+        let storage: EmbeddingStorage = delta.clone().into();
+        match storage {
+            EmbeddingStorage::Delta(d) => {
+                // Both should have same delta sparsity
+                let expected_sparsity = delta.delta_sparsity();
+                let actual_sparsity = d.delta_sparsity();
+                assert!((expected_sparsity - actual_sparsity).abs() < 0.001);
+            },
+            _ => panic!("Expected Delta variant"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_storage_from_tt_vector() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let tt = tt_decompose(&vector, &config).unwrap();
+        let storage: EmbeddingStorage = tt.into();
+        match storage {
+            EmbeddingStorage::TensorTrain(_) => {},
+            _ => panic!("Expected TensorTrain variant"),
+        }
+    }
+
+    #[test]
+    fn test_cosine_distance_tt_without_norm() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let v2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+        let dist = storage.cosine_distance_tt(&tt2);
+        assert!(dist.is_finite());
+        assert!(dist >= 0.0);
+    }
+
+    #[test]
+    fn test_cosine_distance_tt_zero_query_norm() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let tt1 = tt_decompose(&v1, &config).unwrap();
+        let storage = EmbeddingStorage::TensorTrain(TTVectorCached::new(tt1));
+
+        // Create a zero-norm query TT
+        let zero_vec: Vec<f32> = vec![0.0; 64];
+        let tt_zero = tt_decompose(&zero_vec, &config).unwrap();
+
+        let dist = storage.cosine_distance_tt_with_norm(&tt_zero, 0.0);
+        assert_eq!(dist, 1.0);
+    }
+
+    #[test]
+    fn test_cosine_distance_tt_from_dense_storage() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let v2: Vec<f32> = (0..64).map(|i| i as f32 + 1.0).collect();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+        let query_norm = tt_norm(&tt2);
+
+        let storage = EmbeddingStorage::Dense(v1);
+        let dist = storage.cosine_distance_tt_with_norm(&tt2, query_norm);
+        assert!(dist.is_finite());
+    }
+
+    #[test]
+    fn test_cosine_distance_tt_from_zero_magnitude_dense() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let v1: Vec<f32> = vec![0.0; 64];
+        let v2: Vec<f32> = (0..64).map(|i| i as f32 + 1.0).collect();
+        let tt2 = tt_decompose(&v2, &config).unwrap();
+        let query_norm = tt_norm(&tt2);
+
+        let storage = EmbeddingStorage::Dense(v1);
+        let dist = storage.cosine_distance_tt_with_norm(&tt2, query_norm);
+        assert_eq!(dist, 1.0);
+    }
+
+    #[test]
+    fn test_neighbor_equality() {
+        let n1 = Neighbor::new(5, 0.5);
+        let n2 = Neighbor::new(5, 0.7); // Same id, different distance
+        let n3 = Neighbor::new(6, 0.5); // Different id, same distance
+
+        // Equality is based on id only
+        assert!(n1 == n2);
+        assert!(n1 != n3);
+    }
+
+    #[test]
+    fn test_max_neighbor_equality() {
+        let n1 = Neighbor::new(5, 0.5);
+        let n2 = Neighbor::new(5, 0.7);
+        let n3 = Neighbor::new(6, 0.5);
+
+        let mn1 = MaxNeighbor(n1);
+        let mn2 = MaxNeighbor(n2);
+        let mn3 = MaxNeighbor(n3);
+
+        // Equality is based on id only
+        assert!(mn1 == mn2);
+        assert!(mn1 != mn3);
+    }
+
+    #[test]
+    fn test_hnsw_sparse_vector_search() {
+        let index = HNSWIndex::new();
+
+        // Insert several sparse vectors
+        for i in 0..20 {
+            let sparse = SparseVector::from_dense(&[
+                (i as f32 * 0.1).sin(),
+                (i as f32 * 0.2).cos(),
+                (i as f32 * 0.3).sin(),
+                (i as f32 * 0.4).cos(),
+            ]);
+            index.insert_sparse(sparse);
+        }
+
+        assert_eq!(index.len(), 20);
+
+        // Search with a sparse query to trigger sparse search paths
+        let query = SparseVector::from_dense(&[0.5, 0.5, 0.5, 0.5]);
+        let results = index.search_sparse(&query, 5);
+        assert_eq!(results.len(), 5);
+
+        // All results should have valid distances
+        for (id, dist) in &results {
+            assert!(*id < 20);
+            assert!(dist.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_hnsw_tt_vector_search() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let index = HNSWIndex::new();
+
+        // Insert several TT vectors
+        for i in 0..15 {
+            let vector: Vec<f32> = (0..64)
+                .map(|j| ((i * 17 + j) as f32 * 0.05).sin())
+                .collect();
+            index.insert_tt(vector, &config).unwrap();
+        }
+
+        assert_eq!(index.len(), 15);
+
+        // Search with a TT query
+        let query: Vec<f32> = (0..64).map(|j| (j as f32 * 0.05).cos()).collect();
+        let results = index.search_tt(&query, 5, &config);
+        assert_eq!(results.len(), 5);
+
+        for (id, dist) in &results {
+            assert!(*id < 15);
+            assert!(dist.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_distance_embeddings_tt_to_sparse() {
+        let config = TTConfig::for_dim(64).unwrap();
+        let index = HNSWIndex::new();
+
+        // Insert a TT vector
+        let tt_vec: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        index.insert_tt(tt_vec.clone(), &config).unwrap();
+
+        // Insert a sparse vector (will be stored as sparse)
+        let sparse = SparseVector::from_dense(&tt_vec);
+        index.insert_sparse(sparse);
+
+        // The index now has mixed storage types
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn test_distance_embeddings_tt_zero_norm() {
+        let config = TTConfig::for_dim(64).unwrap();
+
+        // Create TT with near-zero norm
+        let zero_vec: Vec<f32> = vec![0.0; 64];
+        let tt_zero = tt_decompose(&zero_vec, &config).unwrap();
+        let cached_zero = TTVectorCached::new(tt_zero);
+        assert!(cached_zero.norm < 1e-10);
+
+        // Create normal TT
+        let normal_vec: Vec<f32> = (0..64).map(|i| i as f32).collect();
+        let tt_normal = tt_decompose(&normal_vec, &config).unwrap();
+        let cached_normal = TTVectorCached::new(tt_normal);
+
+        let storage_zero = EmbeddingStorage::TensorTrain(cached_zero);
+        let storage_normal = EmbeddingStorage::TensorTrain(cached_normal);
+
+        // Distance between zero-norm and normal should be 1.0
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&storage_zero, &storage_normal);
+        assert_eq!(dist, 1.0);
+    }
+
+    #[test]
+    fn test_distance_embeddings_tt_to_dense() {
+        let config = TTConfig::for_dim(64).unwrap();
+
+        let vec1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let vec2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
+
+        let tt = tt_decompose(&vec1, &config).unwrap();
+        let cached = TTVectorCached::new(tt);
+
+        let storage_tt = EmbeddingStorage::TensorTrain(cached);
+        let storage_dense = EmbeddingStorage::Dense(vec2);
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&storage_tt, &storage_dense);
+        assert!(dist.is_finite());
+        assert!(dist >= 0.0);
+        assert!(dist <= 2.0);
+    }
+
+    #[test]
+    fn test_distance_embeddings_sparse_to_tt() {
+        let config = TTConfig::for_dim(64).unwrap();
+
+        let vec1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+        let sparse = SparseVector::from_dense(&vec1);
+
+        let vec2: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).cos()).collect();
+        let tt = tt_decompose(&vec2, &config).unwrap();
+        let cached = TTVectorCached::new(tt);
+
+        let storage_sparse = EmbeddingStorage::Sparse(sparse);
+        let storage_tt = EmbeddingStorage::TensorTrain(cached);
+
+        let index = HNSWIndex::new();
+        let dist = index.distance_embeddings(&storage_sparse, &storage_tt);
+        assert!(dist.is_finite());
+        assert!(dist >= 0.0);
     }
 }

@@ -1,0 +1,1075 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Tensor Cache - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/tensor-cache.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="tensor-cache-architecture"><a class="header" href="#tensor-cache-architecture">Tensor Cache Architecture</a></h1>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>Semantic caching for LLM responses with cost tracking and background eviction.
+Module 10 of Neumann.</p>
+<p>The tensor_cache module provides multi-layer caching optimized for LLM
+workloads. It combines O(1) exact hash lookups with O(log n) semantic similarity
+search via HNSW indices. All cache entries are stored as <code>TensorData</code> in a
+shared <code>TensorStore</code>, following the tensor-native paradigm used by
+<code>tensor_vault</code> and <code>tensor_blob</code>.</p>
+<h2 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Principle</th><th>Description</th></tr></thead><tbody>
+<tr><td>Multi-Layer Caching</td><td>Exact O(1), Semantic O(log n), Embedding O(1) lookups</td></tr>
+<tr><td>Cost-Aware</td><td>Tracks tokens and estimates savings using tiktoken</td></tr>
+<tr><td>Background Eviction</td><td>Async eviction with configurable strategies</td></tr>
+<tr><td>TTL Expiration</td><td>Time-based entry expiration with min-heap tracking</td></tr>
+<tr><td>Thread-Safe</td><td>All operations are concurrent via DashMap</td></tr>
+<tr><td>Zero Allocation Lookup</td><td>Embeddings stored inline, not as pointers</td></tr>
+<tr><td>Sparse-Aware</td><td>Automatic sparse storage for vectors with &gt;50% zeros</td></tr>
+</tbody></table>
+</div>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<h3 id="core-types"><a class="header" href="#core-types">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Cache</code></td><td>Main API - multi-layer LLM response cache</td></tr>
+<tr><td><code>CacheConfig</code></td><td>Configuration (capacity, TTL, eviction, metrics)</td></tr>
+<tr><td><code>CacheHit</code></td><td>Successful cache lookup result</td></tr>
+<tr><td><code>CacheStats</code></td><td>Thread-safe statistics with atomic counters</td></tr>
+<tr><td><code>StatsSnapshot</code></td><td>Point-in-time snapshot for reporting</td></tr>
+<tr><td><code>CacheLayer</code></td><td>Enum: <code>Exact</code>, <code>Semantic</code>, <code>Embedding</code></td></tr>
+<tr><td><code>CacheError</code></td><td>Error types for cache operations</td></tr>
+</tbody></table>
+</div>
+<h3 id="configuration-types"><a class="header" href="#configuration-types">Configuration Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>EvictionStrategy</code></td><td><code>LRU</code>, <code>LFU</code>, <code>CostBased</code>, <code>Hybrid</code></td></tr>
+<tr><td><code>EvictionManager</code></td><td>Background eviction task controller</td></tr>
+<tr><td><code>EvictionScorer</code></td><td>Calculates eviction priority scores</td></tr>
+<tr><td><code>EvictionHandle</code></td><td>Handle for controlling background eviction</td></tr>
+<tr><td><code>EvictionConfig</code></td><td>Interval, batch size, and strategy settings</td></tr>
+</tbody></table>
+</div>
+<h3 id="token-counting"><a class="header" href="#token-counting">Token Counting</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>TokenCounter</code></td><td>GPT-4 compatible token counting via tiktoken</td></tr>
+<tr><td><code>ModelPricing</code></td><td>Predefined pricing for GPT-4, Claude 3, etc.</td></tr>
+</tbody></table>
+</div>
+<h3 id="index-types-internal"><a class="header" href="#index-types-internal">Index Types (Internal)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>CacheIndex</code></td><td>HNSW wrapper with key-to-node mapping</td></tr>
+<tr><td><code>IndexSearchResult</code></td><td>Semantic search result with similarity score</td></tr>
+</tbody></table>
+</div>
+<h2 id="architecture-diagram"><a class="header" href="#architecture-diagram">Architecture Diagram</a></h2>
+<pre><code class="language-text">+--------------------------------------------------+
+|                  Cache (Public API)               |
+|   - get(prompt, embedding) -&gt; CacheHit           |
+|   - put(prompt, embedding, response, ...)        |
+|   - stats(), evict(), clear()                    |
++--------------------------------------------------+
+            |           |           |
+    +-------+    +------+    +------+
+    |            |           |
++--------+  +----------+  +-----------+
+| Exact  |  | Semantic |  | Embedding |
+| Cache  |  |  Cache   |  |   Cache   |
+| O(1)   |  | O(log n) |  |   O(1)    |
++--------+  +----------+  +-----------+
+    |            |           |
+    +-------+----+----+------+
+            |
+    +------------------+
+    |   CacheIndex     |
+    |  (HNSW wrapper)  |
+    +------------------+
+            |
+    +------------------+
+    |   tensor_store   |
+    |     hnsw.rs      |
+    +------------------+
+</code></pre>
+<h2 id="multi-layer-cache-lookup-algorithm"><a class="header" href="#multi-layer-cache-lookup-algorithm">Multi-Layer Cache Lookup Algorithm</a></h2>
+<p>The cache lookup algorithm is designed to maximize hit rates while minimizing
+latency. It follows a hierarchical approach, checking faster layers first before
+falling back to more expensive operations.</p>
+<h3 id="lookup-flow-diagram"><a class="header" href="#lookup-flow-diagram">Lookup Flow Diagram</a></h3>
+<pre class="mermaid">flowchart TD
+    A[get prompt, embedding] --&gt; B{Exact Cache Hit?}
+    B --&gt;|Yes| C[Return CacheHit layer=Exact]
+    B --&gt;|No| D[Record Exact Miss]
+    D --&gt; E{Embedding Provided?}
+    E --&gt;|No| F[Return None]
+    E --&gt;|Yes| G{Auto-Select Metric?}
+    G --&gt;|Yes| H{Sparsity &gt;= Threshold?}
+    G --&gt;|No| I[Use Configured Metric]
+    H --&gt;|Yes| J[Use Jaccard]
+    H --&gt;|No| I
+    J --&gt; K[HNSW Search with Metric]
+    I --&gt; K
+    K --&gt; L{Results Above Threshold?}
+    L --&gt;|No| M[Record Semantic Miss]
+    M --&gt; F
+    L --&gt;|Yes| N{Entry Expired?}
+    N --&gt;|Yes| M
+    N --&gt;|No| O[Return CacheHit layer=Semantic]
+</pre>
+<h3 id="exact-cache-lookup-o1"><a class="header" href="#exact-cache-lookup-o1">Exact Cache Lookup (O(1))</a></h3>
+<p>The exact cache uses a hash-based key derived from the prompt text:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Key generation using DefaultHasher
+fn exact_key(prompt: &amp;str) -&gt; String {
+    let mut hasher = DefaultHasher::new();
+    prompt.hash(&amp;mut hasher);
+    let hash = hasher.finish();
+    format!("_cache:exact:{:016x}", hash)
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The lookup sequence:</p>
+<ol>
+<li>Generate hash key from prompt</li>
+<li>Query <code>TensorStore</code> with key</li>
+<li>Check expiration timestamp</li>
+<li>Return hit or proceed to semantic lookup</li>
+</ol>
+<h3 id="semantic-cache-lookup-olog-n"><a class="header" href="#semantic-cache-lookup-olog-n">Semantic Cache Lookup (O(log n))</a></h3>
+<p>The semantic cache uses HNSW (Hierarchical Navigable Small World) graphs for
+approximate nearest neighbor search:</p>
+<pre class="mermaid">flowchart LR
+    A[Query Vector] --&gt; B[HNSW Entry Point]
+    B --&gt; C[Layer 2: Coarse Search]
+    C --&gt; D[Layer 1: Refined Search]
+    D --&gt; E[Layer 0: Fine Search]
+    E --&gt; F[Top-k Candidates]
+    F --&gt; G[Re-score with Metric]
+    G --&gt; H[Filter by Threshold]
+    H --&gt; I[Return Best Match]
+</pre>
+<p><strong>Re-scoring Strategy</strong>: The HNSW index retrieves candidates using cosine
+similarity, then re-scores them with the requested metric. This allows using
+different metrics without rebuilding the index:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Retrieve more candidates than needed for re-scoring
+let ef = (k * 3).max(10);
+let candidates = index.search(query, ef);
+
+// Re-score with specified metric
+let similarity = match &amp;embedding {
+    EmbeddingStorage::Dense(dense) =&gt; {
+        let stored_sparse = SparseVector::from_dense(dense);
+        let raw = metric.compute(&amp;query_sparse, &amp;stored_sparse);
+        metric.to_similarity(raw)
+    }
+    EmbeddingStorage::Sparse(sparse) =&gt; {
+        let raw = metric.compute(&amp;query_sparse, sparse);
+        metric.to_similarity(raw)
+    }
+    // ...handles Delta and TensorTrain storage types
+};
+<span class="boring">}</span></code></pre></pre>
+<h3 id="automatic-metric-selection"><a class="header" href="#automatic-metric-selection">Automatic Metric Selection</a></h3>
+<p>When <code>auto_select_metric</code> is enabled, the cache automatically selects the
+optimal distance metric based on embedding sparsity:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn select_metric(&amp;self, embedding: &amp;[f32]) -&gt; DistanceMetric {
+    if !self.config.auto_select_metric {
+        return self.config.distance_metric.clone();
+    }
+
+    let sparse = SparseVector::from_dense(embedding);
+    if sparse.sparsity() &gt;= self.config.sparsity_metric_threshold {
+        DistanceMetric::Jaccard  // Better for sparse vectors
+    } else {
+        self.config.distance_metric.clone()  // Default (usually Cosine)
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="cache-layers"><a class="header" href="#cache-layers">Cache Layers</a></h2>
+<h3 id="exact-cache-o1"><a class="header" href="#exact-cache-o1">Exact Cache (O(1))</a></h3>
+<p>Hash-based lookup for identical queries. Keys are generated from prompt text
+using <code>DefaultHasher</code>. Stored with prefix <code>_cache:exact:</code>.</p>
+<p><strong>When to use</strong>: Repetitive queries with exact same prompts (e.g., FAQ systems,
+chatbots with canned responses).</p>
+<h3 id="semantic-cache-olog-n"><a class="header" href="#semantic-cache-olog-n">Semantic Cache (O(log n))</a></h3>
+<p>HNSW-based similarity search for semantically similar queries. Uses configurable
+distance metrics (Cosine, Jaccard, Euclidean, Angular). Stored with prefix
+<code>_cache:sem:</code>.</p>
+<p><strong>When to use</strong>: Natural language queries with variations (e.g., “What’s the
+weather?” vs “How’s the weather today?”).</p>
+<h3 id="embedding-cache-o1"><a class="header" href="#embedding-cache-o1">Embedding Cache (O(1))</a></h3>
+<p>Stores precomputed embeddings to avoid redundant embedding API calls. Keys
+combine source and content hash. Stored with prefix <code>_cache:emb:</code>.</p>
+<p><strong>When to use</strong>: When embedding computation is expensive and the same content is
+embedded multiple times.</p>
+<h2 id="storage-format"><a class="header" href="#storage-format">Storage Format</a></h2>
+<p>Cache entries are stored as <code>TensorData</code> with standardized fields:</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>_response</code></td><td>String</td><td>Cached response text</td></tr>
+<tr><td><code>_embedding</code></td><td>Vector/Sparse</td><td>Embedding (semantic/embedding layers)</td></tr>
+<tr><td><code>_embedding_dim</code></td><td>Int</td><td>Embedding dimension</td></tr>
+<tr><td><code>_input_tokens</code></td><td>Int</td><td>Input token count</td></tr>
+<tr><td><code>_output_tokens</code></td><td>Int</td><td>Output token count</td></tr>
+<tr><td><code>_model</code></td><td>String</td><td>Model identifier</td></tr>
+<tr><td><code>_layer</code></td><td>String</td><td>Cache layer (exact/semantic/embedding)</td></tr>
+<tr><td><code>_created_at</code></td><td>Int</td><td>Creation timestamp (millis)</td></tr>
+<tr><td><code>_expires_at</code></td><td>Int</td><td>Expiration timestamp (millis)</td></tr>
+<tr><td><code>_access_count</code></td><td>Int</td><td>Access count for LFU</td></tr>
+<tr><td><code>_last_access</code></td><td>Int</td><td>Last access timestamp for LRU</td></tr>
+<tr><td><code>_version</code></td><td>String</td><td>Optional version tag</td></tr>
+<tr><td><code>_source</code></td><td>String</td><td>Embedding source identifier</td></tr>
+<tr><td><code>_content_hash</code></td><td>Int</td><td>Content hash for deduplication</td></tr>
+</tbody></table>
+</div>
+<h3 id="sparse-storage-optimization"><a class="header" href="#sparse-storage-optimization">Sparse Storage Optimization</a></h3>
+<p>Embeddings with high sparsity (&gt;50% zeros) are automatically stored in sparse
+format to reduce memory usage:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>fn should_use_sparse(vector: &amp;[f32]) -&gt; bool {
+    if vector.is_empty() {
+        return false;
+    }
+    let nnz = vector.iter().filter(|&amp;&amp;v| v.abs() &gt; 1e-6).count();
+    // Use sparse if non-zero count &lt;= half of total length
+    nnz * 2 &lt;= vector.len()
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="distance-metrics"><a class="header" href="#distance-metrics">Distance Metrics</a></h2>
+<p>Configurable distance metrics for semantic similarity:</p>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Best For</th><th>Range</th><th>Formula</th></tr></thead><tbody>
+<tr><td>Cosine</td><td>Dense embeddings (default)</td><td>[-1, 1]</td><td><code>dot(a,b) / (‖a‖ * ‖b‖)</code></td></tr>
+<tr><td>Angular</td><td>Linear angle relationships</td><td>[0, PI]</td><td><code>acos(cosine_sim)</code></td></tr>
+<tr><td>Jaccard</td><td>Sparse/binary embeddings</td><td>[0, 1]</td><td><code>‖A ∩ B‖ / ‖A ∪ B‖</code></td></tr>
+<tr><td>Euclidean</td><td>Absolute distances</td><td>[0, inf)</td><td><code>sqrt(sum((a-b)^2))</code></td></tr>
+<tr><td>WeightedJaccard</td><td>Sparse with magnitudes</td><td>[0, 1]</td><td>Weighted set similarity</td></tr>
+</tbody></table>
+</div>
+<p><strong>Auto-selection</strong>: When <code>auto_select_metric</code> is true, the cache automatically
+selects Jaccard for sparse embeddings (sparsity &gt;= threshold, default 70%) and
+the configured metric otherwise.</p>
+<h2 id="eviction-strategies"><a class="header" href="#eviction-strategies">Eviction Strategies</a></h2>
+<h3 id="strategy-comparison"><a class="header" href="#strategy-comparison">Strategy Comparison</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>Description</th><th>Score Formula</th><th>Best For</th></tr></thead><tbody>
+<tr><td>LRU</td><td>Evicts entries that haven’t been accessed recently</td><td><code>-last_access_secs</code></td><td>General purpose</td></tr>
+<tr><td>LFU</td><td>Evicts entries with lowest access count</td><td><code>access_count</code></td><td>Stable workloads</td></tr>
+<tr><td>CostBased</td><td>Evicts entries with lowest cost savings per byte</td><td><code>cost_per_hit / size_bytes</code></td><td>Cost optimization</td></tr>
+<tr><td>Hybrid</td><td>Combines all strategies with configurable weights</td><td>Weighted combination</td><td>Production systems</td></tr>
+</tbody></table>
+</div>
+<h3 id="hybrid-eviction-score-algorithm"><a class="header" href="#hybrid-eviction-score-algorithm">Hybrid Eviction Score Algorithm</a></h3>
+<p>The Hybrid strategy combines recency, frequency, and cost factors:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn score(
+    &amp;self,
+    last_access_secs: f64,
+    access_count: u64,
+    cost_per_hit: f64,
+    size_bytes: usize,
+) -&gt; f64 {
+    match self.strategy {
+        EvictionStrategy::LRU =&gt; -last_access_secs,
+        EvictionStrategy::LFU =&gt; access_count as f64,
+        EvictionStrategy::CostBased =&gt; {
+            if size_bytes == 0 { 0.0 }
+            else { cost_per_hit / size_bytes as f64 }
+        }
+        EvictionStrategy::Hybrid { lru_weight, lfu_weight, cost_weight } =&gt; {
+            let total = f64::from(lru_weight) + f64::from(lfu_weight) + f64::from(cost_weight);
+            let recency_w = f64::from(lru_weight) / total;
+            let frequency_w = f64::from(lfu_weight) / total;
+            let cost_w = f64::from(cost_weight) / total;
+
+            let age_minutes = last_access_secs / 60.0;
+            let recency_score = 1.0 / (1.0 + age_minutes);    // Decays with age
+            let frequency_score = (1.0 + access_count as f64).log2();  // Log scale
+            let cost_score = cost_per_hit;
+
+            recency_score * recency_w + frequency_score * frequency_w + cost_score * cost_w
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Lower scores are evicted first</strong>. The hybrid formula:</p>
+<ul>
+<li><code>recency_score</code>: Decays as <code>1/(1 + age_in_minutes)</code> - newer entries score
+higher</li>
+<li><code>frequency_score</code>: Grows logarithmically with access count - frequently
+accessed entries score higher</li>
+<li><code>cost_score</code>: Direct cost per hit - higher cost savings score higher</li>
+</ul>
+<h3 id="background-eviction-flow"><a class="header" href="#background-eviction-flow">Background Eviction Flow</a></h3>
+<pre class="mermaid">flowchart TD
+    A[EvictionManager::start] --&gt; B[Spawn Tokio Task]
+    B --&gt; C[Initialize Interval Timer]
+    C --&gt; D{Select Event}
+    D --&gt;|Timer Tick| E[Call evict_fn batch_size]
+    D --&gt;|Shutdown Signal| F[Set running=false]
+    E --&gt; G{Evicted &gt; 0?}
+    G --&gt;|Yes| H[Record Eviction Stats]
+    G --&gt;|No| D
+    H --&gt; D
+    F --&gt; I[Break Loop]
+</pre>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Starting background eviction
+let handle = manager.start(move |batch_size| {
+    cache.evict(batch_size)
+});
+
+// Later: graceful shutdown
+handle.shutdown().await;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h3 id="default-configuration"><a class="header" href="#default-configuration">Default Configuration</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>CacheConfig {
+    exact_capacity: 10_000,
+    semantic_capacity: 5_000,
+    embedding_capacity: 50_000,
+    default_ttl: Duration::from_secs(3600),
+    max_ttl: Duration::from_secs(86400),
+    semantic_threshold: 0.92,
+    embedding_dim: 1536,
+    eviction_strategy: EvictionStrategy::Hybrid {
+        lru_weight: 40,
+        lfu_weight: 30,
+        cost_weight: 30
+    },
+    eviction_interval: Duration::from_secs(60),
+    eviction_batch_size: 100,
+    input_cost_per_1k: 0.0015,
+    output_cost_per_1k: 0.002,
+    inline_threshold: 4096,
+    distance_metric: DistanceMetric::Cosine,
+    auto_select_metric: true,
+    sparsity_metric_threshold: 0.7,
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="configuration-presets"><a class="header" href="#configuration-presets">Configuration Presets</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Use Case</th><th>Exact Capacity</th><th>Semantic Capacity</th><th>Embedding Capacity</th><th>Eviction Batch</th></tr></thead><tbody>
+<tr><td><code>default()</code></td><td>General purpose</td><td>10,000</td><td>5,000</td><td>50,000</td><td>100</td></tr>
+<tr><td><code>high_throughput()</code></td><td>High-traffic server</td><td>50,000</td><td>20,000</td><td>100,000</td><td>500</td></tr>
+<tr><td><code>low_memory()</code></td><td>Memory-constrained</td><td>1,000</td><td>500</td><td>5,000</td><td>50</td></tr>
+<tr><td><code>development()</code></td><td>Dev/testing</td><td>100</td><td>50</td><td>200</td><td>10</td></tr>
+<tr><td><code>sparse_embeddings()</code></td><td>Sparse vectors</td><td>10,000</td><td>5,000</td><td>50,000</td><td>100</td></tr>
+</tbody></table>
+</div>
+<h3 id="configuration-validation"><a class="header" href="#configuration-validation">Configuration Validation</a></h3>
+<p>The config validates on cache creation:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn validate(&amp;self) -&gt; Result&lt;(), String&gt; {
+    if self.semantic_threshold &lt; 0.0 || self.semantic_threshold &gt; 1.0 {
+        return Err("semantic_threshold must be between 0.0 and 1.0");
+    }
+    if self.embedding_dim == 0 {
+        return Err("embedding_dim must be greater than 0");
+    }
+    if self.eviction_batch_size == 0 {
+        return Err("eviction_batch_size must be greater than 0");
+    }
+    if self.default_ttl &gt; self.max_ttl {
+        return Err("default_ttl cannot exceed max_ttl");
+    }
+    if self.sparsity_metric_threshold &lt; 0.0 || self.sparsity_metric_threshold &gt; 1.0 {
+        return Err("sparsity_metric_threshold must be between 0.0 and 1.0");
+    }
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="usage-examples"><a class="header" href="#usage-examples">Usage Examples</a></h2>
+<h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_cache::{Cache, CacheConfig};
+
+let mut config = CacheConfig::default();
+config.embedding_dim = 3;
+let cache = Cache::with_config(config).unwrap();
+
+// Store a response
+let embedding = vec![0.1, 0.2, 0.3];
+cache.put("What is 2+2?", &amp;embedding, "4", "gpt-4", None).unwrap();
+
+// Look up (tries exact first, then semantic)
+if let Some(hit) = cache.get("What is 2+2?", Some(&amp;embedding)) {
+    println!("Cached: {}", hit.response);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="explicit-metric-queries"><a class="header" href="#explicit-metric-queries">Explicit Metric Queries</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_cache::DistanceMetric;
+
+let hit = cache.get_with_metric(
+    "query",
+    Some(&amp;embedding),
+    Some(&amp;DistanceMetric::Euclidean),
+);
+
+if let Some(hit) = hit {
+    println!("Metric used: {:?}", hit.metric_used);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="embedding-cache-with-compute-fallback"><a class="header" href="#embedding-cache-with-compute-fallback">Embedding Cache with Compute Fallback</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Get cached embedding or compute on miss
+let embedding = cache.get_or_compute_embedding(
+    "openai",           // source
+    "Hello, world!",    // content
+    "text-embedding-3-small",  // model
+    || {
+        // Compute function called only on cache miss
+        Ok(compute_embedding("Hello, world!"))
+    }
+)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="token-counting-and-cost-estimation"><a class="header" href="#token-counting-and-cost-estimation">Token Counting and Cost Estimation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_cache::{TokenCounter, ModelPricing};
+
+// Count tokens in text
+let tokens = TokenCounter::count("Hello, world!");
+
+// Count tokens in chat messages (includes overhead)
+let messages = vec![("user", "Hello"), ("assistant", "Hi there!")];
+let total = TokenCounter::count_messages(&amp;messages);
+
+// Estimate cost with custom rates
+let cost = TokenCounter::estimate_cost(1000, 500, 0.01, 0.03);
+
+// Use predefined model pricing
+let pricing = ModelPricing::GPT4O;
+let cost = pricing.estimate(1000, 500);
+
+// Lookup pricing by model name
+if let Some(pricing) = ModelPricing::for_model("gpt-4o-mini") {
+    println!("Cost: ${:.4}", pricing.estimate(1000, 500));
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="statistics-and-monitoring"><a class="header" href="#statistics-and-monitoring">Statistics and Monitoring</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let stats = cache.stats_snapshot();
+
+// Hit rates by layer
+println!("Exact hit rate: {:.2}%", stats.hit_rate(CacheLayer::Exact) * 100.0);
+println!("Semantic hit rate: {:.2}%", stats.hit_rate(CacheLayer::Semantic) * 100.0);
+
+// Tokens and cost saved
+println!("Input tokens saved: {}", stats.tokens_saved_in);
+println!("Output tokens saved: {}", stats.tokens_saved_out);
+println!("Cost saved: ${:.2}", stats.cost_saved_dollars);
+
+// Cache utilization
+println!("Total entries: {}", stats.total_entries());
+println!("Evictions: {}", stats.evictions);
+println!("Expirations: {}", stats.expirations);
+println!("Uptime: {} seconds", stats.uptime_secs);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="shared-tensorstore-integration"><a class="header" href="#shared-tensorstore-integration">Shared TensorStore Integration</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::TensorStore;
+use tensor_cache::{Cache, CacheConfig};
+
+// Share store with other engines
+let store = TensorStore::new();
+let cache = Cache::with_store(store.clone(), CacheConfig::default())?;
+
+// Other engines can use the same store
+let vault = Vault::with_store(store.clone(), VaultConfig::default())?;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="token-counting-implementation"><a class="header" href="#token-counting-implementation">Token Counting Implementation</a></h2>
+<p>The <code>TokenCounter</code> uses tiktoken’s <code>cl100k_base</code> encoding, which is compatible
+with GPT-4, GPT-3.5-turbo, and text-embedding-ada-002.</p>
+<h3 id="lazy-encoder-initialization"><a class="header" href="#lazy-encoder-initialization">Lazy Encoder Initialization</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>static CL100K_ENCODER: OnceLock&lt;Option&lt;CoreBPE&gt;&gt; = OnceLock::new();
+
+impl TokenCounter {
+    fn encoder() -&gt; Option&lt;&amp;'static CoreBPE&gt; {
+        CL100K_ENCODER
+            .get_or_init(|| tiktoken_rs::cl100k_base().ok())
+            .as_ref()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="fallback-estimation"><a class="header" href="#fallback-estimation">Fallback Estimation</a></h3>
+<p>If tiktoken is unavailable, falls back to character-based estimation (~4 chars
+per token for English text):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>const fn estimate_tokens(text: &amp;str) -&gt; usize {
+    text.len().div_ceil(4)
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="message-token-counting"><a class="header" href="#message-token-counting">Message Token Counting</a></h3>
+<p>Chat messages include overhead tokens per message (role markers, separators):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn count_message(role: &amp;str, content: &amp;str) -&gt; usize {
+    Self::encoder().map_or_else(
+        || Self::estimate_tokens(role) + Self::estimate_tokens(content) + 4,
+        |enc| {
+            let role_tokens = enc.encode_ordinary(role).len();
+            let content_tokens = enc.encode_ordinary(content).len();
+            role_tokens + content_tokens + 4  // 4 tokens overhead per message
+        },
+    )
+}
+
+pub fn count_messages(messages: &amp;[(&amp;str, &amp;str)]) -&gt; usize {
+    let mut total = 0;
+    for (role, content) in messages {
+        total += Self::count_message(role, content);
+    }
+    total + 3  // 3 tokens for assistant reply priming
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="cost-calculation-formulas"><a class="header" href="#cost-calculation-formulas">Cost Calculation Formulas</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Basic cost calculation
+pub fn estimate_cost(
+    input_tokens: usize,
+    output_tokens: usize,
+    input_rate: f64,   // $/1000 tokens
+    output_rate: f64,  // $/1000 tokens
+) -&gt; f64 {
+    (input_tokens as f64 / 1000.0) * input_rate +
+    (output_tokens as f64 / 1000.0) * output_rate
+}
+
+// For atomic operations (avoids floating point accumulation errors)
+pub fn estimate_cost_microdollars(...) -&gt; u64 {
+    let dollars = Self::estimate_cost(...);
+    (dollars * 1_000_000.0) as u64
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="model-pricing"><a class="header" href="#model-pricing">Model Pricing</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Model</th><th>Input/1K</th><th>Output/1K</th><th>Notes</th></tr></thead><tbody>
+<tr><td>GPT-4o</td><td>$0.005</td><td>$0.015</td><td>Best for complex tasks</td></tr>
+<tr><td>GPT-4o mini</td><td>$0.00015</td><td>$0.0006</td><td>Cost-effective</td></tr>
+<tr><td>GPT-4 Turbo</td><td>$0.01</td><td>$0.03</td><td>High capability</td></tr>
+<tr><td>GPT-3.5 Turbo</td><td>$0.0005</td><td>$0.0015</td><td>Budget option</td></tr>
+<tr><td>Claude 3 Opus</td><td>$0.015</td><td>$0.075</td><td>Highest quality</td></tr>
+<tr><td>Claude 3 Sonnet</td><td>$0.003</td><td>$0.015</td><td>Balanced</td></tr>
+<tr><td>Claude 3 Haiku</td><td>$0.00025</td><td>$0.00125</td><td>Fast and cheap</td></tr>
+</tbody></table>
+</div>
+<h3 id="model-name-matching"><a class="header" href="#model-name-matching">Model Name Matching</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn for_model(model: &amp;str) -&gt; Option&lt;Self&gt; {
+    let model_lower = model.to_lowercase();
+    if model_lower.contains("gpt-4o-mini") {
+        Some(Self::GPT4O_MINI)
+    } else if model_lower.contains("gpt-4o") {
+        Some(Self::GPT4O)
+    } else if model_lower.contains("gpt-4-turbo") {
+        Some(Self::GPT4_TURBO)
+    } else if model_lower.contains("gpt-3.5") {
+        Some(Self::GPT35_TURBO)
+    } else if model_lower.contains("claude-3-opus") || model_lower.contains("claude-opus") {
+        Some(Self::CLAUDE3_OPUS)
+    } else if model_lower.contains("claude-3-sonnet") || model_lower.contains("claude-sonnet") {
+        Some(Self::CLAUDE3_SONNET)
+    } else if model_lower.contains("claude-3-haiku") || model_lower.contains("claude-haiku") {
+        Some(Self::CLAUDE3_HAIKU)
+    } else {
+        None
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="semantic-search-index-internals"><a class="header" href="#semantic-search-index-internals">Semantic Search Index Internals</a></h2>
+<h3 id="cacheindex-structure"><a class="header" href="#cacheindex-structure">CacheIndex Structure</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct CacheIndex {
+    index: RwLock&lt;HNSWIndex&gt;,           // HNSW graph
+    config: HNSWConfig,                  // For recreation on clear
+    key_to_node: DashMap&lt;String, usize&gt;, // Cache key -&gt; HNSW node
+    node_to_key: DashMap&lt;usize, String&gt;, // HNSW node -&gt; Cache key
+    dimension: usize,                    // Expected embedding dimension
+    entry_count: AtomicUsize,            // Entry count
+    distance_metric: DistanceMetric,     // Default metric
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="insert-strategies"><a class="header" href="#insert-strategies">Insert Strategies</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Dense embedding insert
+pub fn insert(&amp;self, key: &amp;str, embedding: &amp;[f32]) -&gt; Result&lt;usize&gt;;
+
+// Sparse embedding insert (memory efficient)
+pub fn insert_sparse(&amp;self, key: &amp;str, embedding: &amp;SparseVector) -&gt; Result&lt;usize&gt;;
+
+// Auto-select based on sparsity threshold
+pub fn insert_auto(
+    &amp;self,
+    key: &amp;str,
+    embedding: &amp;[f32],
+    sparsity_threshold: f32,
+) -&gt; Result&lt;usize&gt;;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="key-orphaning-on-re-insert"><a class="header" href="#key-orphaning-on-re-insert">Key Orphaning on Re-insert</a></h3>
+<p>When a key is re-inserted, the old HNSW node is orphaned (not deleted) because
+HNSW doesn’t support efficient deletion:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let is_new = !self.key_to_node.contains_key(key);
+if !is_new {
+    // Remove mapping but leave HNSW node (will be ignored in search)
+    self.key_to_node.remove(key);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="memory-statistics"><a class="header" href="#memory-statistics">Memory Statistics</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn memory_stats(&amp;self) -&gt; Option&lt;HNSWMemoryStats&gt; {
+    self.index.read().ok().map(|index| index.memory_stats())
+}
+// Returns: dense_count, sparse_count, delta_count, embedding_bytes, etc.
+<span class="boring">}</span></code></pre></pre>
+<h2 id="error-types"><a class="header" href="#error-types">Error Types</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Description</th><th>Recovery</th></tr></thead><tbody>
+<tr><td><code>NotFound</code></td><td>Cache entry not found</td><td>Check key exists</td></tr>
+<tr><td><code>DimensionMismatch</code></td><td>Embedding dimension does not match config</td><td>Verify embedding size</td></tr>
+<tr><td><code>StorageError</code></td><td>Underlying tensor store error</td><td>Check store health</td></tr>
+<tr><td><code>SerializationError</code></td><td>Serialization/deserialization failed</td><td>Verify data format</td></tr>
+<tr><td><code>TokenizerError</code></td><td>Token counting failed</td><td>Falls back to estimation</td></tr>
+<tr><td><code>CacheFull</code></td><td>Cache capacity exceeded</td><td>Run eviction or increase capacity</td></tr>
+<tr><td><code>InvalidConfig</code></td><td>Invalid configuration provided</td><td>Fix config values</td></tr>
+<tr><td><code>Cancelled</code></td><td>Operation was cancelled</td><td>Retry operation</td></tr>
+<tr><td><code>LockPoisoned</code></td><td>Internal lock was poisoned</td><td>Restart cache</td></tr>
+</tbody></table>
+</div>
+<h3 id="error-conversion"><a class="header" href="#error-conversion">Error Conversion</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl From&lt;tensor_store::TensorStoreError&gt; for CacheError {
+    fn from(e: TensorStoreError) -&gt; Self {
+        Self::StorageError(e.to_string())
+    }
+}
+
+impl From&lt;bincode::Error&gt; for CacheError {
+    fn from(e: bincode::Error) -&gt; Self {
+        Self::SerializationError(e.to_string())
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
+<h3 id="benchmarks-10000-entries-128-dim-embeddings"><a class="header" href="#benchmarks-10000-entries-128-dim-embeddings">Benchmarks (10,000 entries, 128-dim embeddings)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Exact lookup (hit)</td><td>~50ns</td><td>Hash lookup + TensorStore get</td></tr>
+<tr><td>Exact lookup (miss)</td><td>~30ns</td><td>Hash lookup only</td></tr>
+<tr><td>Semantic lookup</td><td>~5us</td><td>HNSW search + re-scoring</td></tr>
+<tr><td>Put (exact + semantic)</td><td>~10us</td><td>Two stores + HNSW insert</td></tr>
+<tr><td>Eviction (100 entries)</td><td>~200us</td><td>Batch deletion</td></tr>
+<tr><td>Clear (full index)</td><td>~1ms</td><td>HNSW recreation</td></tr>
+</tbody></table>
+</div>
+<h3 id="distance-metric-performance-128-dim-1000-entries"><a class="header" href="#distance-metric-performance-128-dim-1000-entries">Distance Metric Performance (128-dim, 1000 entries)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Search Time</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Cosine</td><td>21 us</td><td>Default, best for dense</td></tr>
+<tr><td>Jaccard</td><td>18 us</td><td>Best for sparse</td></tr>
+<tr><td>Angular</td><td>23 us</td><td>+acos overhead</td></tr>
+<tr><td>Euclidean</td><td>19 us</td><td>Absolute distance</td></tr>
+</tbody></table>
+</div>
+<h3 id="auto-selection-overhead"><a class="header" href="#auto-selection-overhead">Auto-Selection Overhead</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+<tr><td>Sparsity check</td><td>~50 ns</td></tr>
+<tr><td>Metric selection</td><td>~10 ns</td></tr>
+</tbody></table>
+</div>
+<h3 id="memory-efficiency"><a class="header" href="#memory-efficiency">Memory Efficiency</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Storage Type</th><th>Memory per Entry</th><th>Best For</th></tr></thead><tbody>
+<tr><td>Dense Vector</td><td>4 * dim bytes</td><td>Low sparsity (&lt;50% zeros)</td></tr>
+<tr><td>Sparse Vector</td><td>8 * nnz bytes</td><td>High sparsity (&gt;50% zeros)</td></tr>
+</tbody></table>
+</div>
+<h2 id="edge-cases-and-gotchas"><a class="header" href="#edge-cases-and-gotchas">Edge Cases and Gotchas</a></h2>
+<h3 id="ttl-behavior"><a class="header" href="#ttl-behavior">TTL Behavior</a></h3>
+<ul>
+<li>Entries with <code>expires_at = 0</code> never expire</li>
+<li>Expired entries return <code>None</code> on lookup but remain in storage until cleanup</li>
+<li><code>cleanup_expired()</code> must be called explicitly or via background eviction</li>
+</ul>
+<h3 id="capacity-limits"><a class="header" href="#capacity-limits">Capacity Limits</a></h3>
+<ul>
+<li><code>put()</code> fails with <code>CacheFull</code> when capacity is reached</li>
+<li>Capacity is checked per-layer (exact, semantic, embedding)</li>
+<li>No automatic eviction on put - must be explicit</li>
+</ul>
+<h3 id="hash-collisions"><a class="header" href="#hash-collisions">Hash Collisions</a></h3>
+<ul>
+<li>Extremely unlikely with 64-bit hashes (~1 in 18 quintillion)</li>
+<li>If collision occurs, exact cache will return wrong response</li>
+<li>Semantic cache provides fallback for semantically different queries</li>
+</ul>
+<h3 id="metric-re-scoring"><a class="header" href="#metric-re-scoring">Metric Re-scoring</a></h3>
+<ul>
+<li>HNSW always uses cosine similarity for graph navigation</li>
+<li>Re-scoring with different metrics may change result order</li>
+<li>Retrieves 3x candidates to account for re-ranking</li>
+</ul>
+<h3 id="sparse-storage-threshold"><a class="header" href="#sparse-storage-threshold">Sparse Storage Threshold</a></h3>
+<ul>
+<li>Uses sparse format when <code>nnz * 2 &lt;= len</code> (50% zeros)</li>
+<li>Different from auto-metric selection threshold (default 70%)</li>
+<li>Both thresholds are configurable</li>
+</ul>
+<h2 id="performance-tips-and-best-practices"><a class="header" href="#performance-tips-and-best-practices">Performance Tips and Best Practices</a></h2>
+<h3 id="configuration-tuning"><a class="header" href="#configuration-tuning">Configuration Tuning</a></h3>
+<ol>
+<li><strong>Semantic Threshold</strong>: Start with 0.92, lower to 0.85 for fuzzy matching</li>
+<li><strong>Eviction Weights</strong>: Increase <code>cost_weight</code> if API costs matter most</li>
+<li><strong>Batch Size</strong>: Larger batches (500+) for high-throughput systems</li>
+<li><strong>TTL</strong>: Match to your content freshness requirements</li>
+</ol>
+<h3 id="memory-optimization"><a class="header" href="#memory-optimization">Memory Optimization</a></h3>
+<ol>
+<li>Use <code>sparse_embeddings()</code> preset for sparse data</li>
+<li>Set <code>inline_threshold</code> based on typical response sizes</li>
+<li>Enable <code>auto_select_metric</code> for mixed workloads</li>
+<li>Monitor <code>memory_stats()</code> to track sparse vs dense ratio</li>
+</ol>
+<h3 id="hit-rate-optimization"><a class="header" href="#hit-rate-optimization">Hit Rate Optimization</a></h3>
+<ol>
+<li>Normalize prompts before caching (lowercase, trim whitespace)</li>
+<li>Use versioning for model/prompt template changes</li>
+<li>Set appropriate semantic threshold for your domain</li>
+<li>Consider domain-specific embeddings</li>
+</ol>
+<h3 id="cost-tracking"><a class="header" href="#cost-tracking">Cost Tracking</a></h3>
+<ol>
+<li>Use <code>estimate_cost_microdollars()</code> for atomic accumulation</li>
+<li>Record cost per cache hit for ROI analysis</li>
+<li>Compare <code>tokens_saved</code> against capacity costs</li>
+</ol>
+<h2 id="shell-commands"><a class="header" href="#shell-commands">Shell Commands</a></h2>
+<pre><code class="language-text">CACHE INIT     Initialize semantic cache
+CACHE STATS    Show cache statistics
+CACHE CLEAR    Clear all cache entries
+</code></pre>
+<h2 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h2>
+<h3 id="cache-methods"><a class="header" href="#cache-methods">Cache Methods</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>new()</code></td><td>Create with default config</td></tr>
+<tr><td><code>with_config(config)</code></td><td>Create with custom config</td></tr>
+<tr><td><code>with_store(store, config)</code></td><td>Create with shared TensorStore</td></tr>
+<tr><td><code>get(prompt, embedding)</code></td><td>Look up cached response</td></tr>
+<tr><td><code>get_with_metric(prompt, embedding, metric)</code></td><td>Look up with explicit metric</td></tr>
+<tr><td><code>put(prompt, embedding, response, model, ttl)</code></td><td>Store response</td></tr>
+<tr><td><code>get_embedding(source, content)</code></td><td>Get cached embedding</td></tr>
+<tr><td><code>put_embedding(source, content, embedding, model)</code></td><td>Store embedding</td></tr>
+<tr><td><code>get_or_compute_embedding(source, content, model, compute)</code></td><td>Get or compute embedding</td></tr>
+<tr><td><code>get_simple(key)</code></td><td>Simple key-value lookup</td></tr>
+<tr><td><code>put_simple(key, value)</code></td><td>Simple key-value store</td></tr>
+<tr><td><code>invalidate(prompt)</code></td><td>Remove exact entry</td></tr>
+<tr><td><code>invalidate_version(version)</code></td><td>Remove entries by version</td></tr>
+<tr><td><code>invalidate_embeddings(source)</code></td><td>Remove embeddings by source</td></tr>
+<tr><td><code>evict(count)</code></td><td>Manually evict entries</td></tr>
+<tr><td><code>cleanup_expired()</code></td><td>Remove expired entries</td></tr>
+<tr><td><code>clear()</code></td><td>Clear all entries</td></tr>
+<tr><td><code>stats()</code></td><td>Get statistics reference</td></tr>
+<tr><td><code>stats_snapshot()</code></td><td>Get statistics snapshot</td></tr>
+<tr><td><code>config()</code></td><td>Get configuration reference</td></tr>
+<tr><td><code>len()</code></td><td>Total cached entries</td></tr>
+<tr><td><code>is_empty()</code></td><td>Check if cache is empty</td></tr>
+</tbody></table>
+</div>
+<h3 id="cachehit-fields"><a class="header" href="#cachehit-fields">CacheHit Fields</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>response</code></td><td><code>String</code></td><td>Cached response text</td></tr>
+<tr><td><code>layer</code></td><td><code>CacheLayer</code></td><td>Which layer matched</td></tr>
+<tr><td><code>similarity</code></td><td><code>Option&lt;f32&gt;</code></td><td>Similarity score (semantic only)</td></tr>
+<tr><td><code>input_tokens</code></td><td><code>usize</code></td><td>Input tokens saved</td></tr>
+<tr><td><code>output_tokens</code></td><td><code>usize</code></td><td>Output tokens saved</td></tr>
+<tr><td><code>cost_saved</code></td><td><code>f64</code></td><td>Estimated cost saved (dollars)</td></tr>
+<tr><td><code>metric_used</code></td><td><code>Option&lt;DistanceMetric&gt;</code></td><td>Metric used (semantic only)</td></tr>
+</tbody></table>
+</div>
+<h3 id="statssnapshot-fields"><a class="header" href="#statssnapshot-fields">StatsSnapshot Fields</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>exact_hits</code></td><td><code>u64</code></td><td>Exact cache hits</td></tr>
+<tr><td><code>exact_misses</code></td><td><code>u64</code></td><td>Exact cache misses</td></tr>
+<tr><td><code>semantic_hits</code></td><td><code>u64</code></td><td>Semantic cache hits</td></tr>
+<tr><td><code>semantic_misses</code></td><td><code>u64</code></td><td>Semantic cache misses</td></tr>
+<tr><td><code>embedding_hits</code></td><td><code>u64</code></td><td>Embedding cache hits</td></tr>
+<tr><td><code>embedding_misses</code></td><td><code>u64</code></td><td>Embedding cache misses</td></tr>
+<tr><td><code>tokens_saved_in</code></td><td><code>u64</code></td><td>Total input tokens saved</td></tr>
+<tr><td><code>tokens_saved_out</code></td><td><code>u64</code></td><td>Total output tokens saved</td></tr>
+<tr><td><code>cost_saved_dollars</code></td><td><code>f64</code></td><td>Total cost saved</td></tr>
+<tr><td><code>evictions</code></td><td><code>u64</code></td><td>Total evictions</td></tr>
+<tr><td><code>expirations</code></td><td><code>u64</code></td><td>Total expirations</td></tr>
+<tr><td><code>exact_size</code></td><td><code>usize</code></td><td>Current exact cache size</td></tr>
+<tr><td><code>semantic_size</code></td><td><code>usize</code></td><td>Current semantic cache size</td></tr>
+<tr><td><code>embedding_size</code></td><td><code>usize</code></td><td>Current embedding cache size</td></tr>
+<tr><td><code>uptime_secs</code></td><td><code>u64</code></td><td>Cache uptime in seconds</td></tr>
+</tbody></table>
+</div>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>tensor_store</code></td><td>HNSW index implementation, TensorStore</td></tr>
+<tr><td><code>tiktoken-rs</code></td><td>GPT-compatible token counting</td></tr>
+<tr><td><code>dashmap</code></td><td>Concurrent hash maps</td></tr>
+<tr><td><code>tokio</code></td><td>Async runtime for background eviction</td></tr>
+<tr><td><code>uuid</code></td><td>Unique ID generation</td></tr>
+<tr><td><code>thiserror</code></td><td>Error type derivation</td></tr>
+<tr><td><code>serde</code></td><td>Configuration serialization</td></tr>
+<tr><td><code>bincode</code></td><td>Binary serialization</td></tr>
+</tbody></table>
+</div>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<ul>
+<li><code>tensor_store</code> - Backing storage and HNSW index</li>
+<li><code>query_router</code> - Cache integration for query execution</li>
+<li><code>neumann_shell</code> - CLI commands for cache management</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/tensor-vault.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/tensor-blob.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/tensor-vault.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/tensor-blob.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

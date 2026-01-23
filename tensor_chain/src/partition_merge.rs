@@ -1459,6 +1459,7 @@ impl PartitionMergeManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -2163,7 +2164,7 @@ mod tests {
 
         let session = manager.get_session(session_id).unwrap();
         assert!(session.local_summary.is_some());
-        assert!(session.remote_summaries.contains_key(&"node1".to_string()));
+        assert!(session.remote_summaries.contains_key("node1"));
     }
 
     // ========== Timeout Processing Tests ==========
@@ -2405,7 +2406,7 @@ mod tests {
         manager.handle_view_exchange(msg);
 
         let session = manager.get_session(session_id).unwrap();
-        assert!(session.remote_views.contains_key(&"node1".to_string()));
+        assert!(session.remote_views.contains_key("node1"));
     }
 
     #[test]

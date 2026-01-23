@@ -1,0 +1,18 @@
+[package]
+name = "neumann-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native Python bindings for Neumann database"
+license = "MIT"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+query_router = { path = "../../query_router" }
+parking_lot = "0.12"
+
+[build-dependencies]
+pyo3-build-config = "0.22"

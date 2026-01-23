@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-/// Default shard count matching DashMap's internal sharding.
+/// Default shard count matching `DashMap`'s internal sharding.
 pub const DEFAULT_SHARD_COUNT: usize = 16;
 
 /// Per-shard access statistics.
@@ -19,7 +19,7 @@ pub struct ShardStats {
 }
 
 impl ShardStats {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             reads: AtomicU64::new(0),
             writes: AtomicU64::new(0),
@@ -48,7 +48,7 @@ impl ShardStats {
     }
 }
 
-/// Tracks access patterns across TensorStore shards.
+/// Tracks access patterns across `TensorStore` shards.
 pub struct ShardAccessTracker {
     shards: Box<[ShardStats]>,
     shard_count: usize,
@@ -60,6 +60,7 @@ pub struct ShardAccessTracker {
 impl ShardAccessTracker {
     /// Create a new tracker with specified shard count and sampling rate.
     /// Sample rate of 1 means track every access; 100 means track 1 in 100.
+    #[must_use]
     pub fn new(shard_count: usize, sample_rate: u32) -> Self {
         let shards: Vec<ShardStats> = (0..shard_count).map(|_| ShardStats::new()).collect();
         Self {
@@ -72,6 +73,7 @@ impl ShardAccessTracker {
     }
 
     /// Create with default settings (16 shards, 1:100 sampling).
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(DEFAULT_SHARD_COUNT, 100)
     }
@@ -89,6 +91,7 @@ impl ShardAccessTracker {
     /// Record a write access for the given shard (sampled).
     /// Shard IDs are mapped to tracker shards using modulo.
     #[inline]
+    #[allow(clippy::cast_possible_truncation)] // Duration millis truncation acceptable for instrumentation
     pub fn record_write(&self, shard_id: usize) {
         if self.should_sample() {
             let idx = shard_id % self.shard_count;
@@ -98,15 +101,17 @@ impl ShardAccessTracker {
     }
 
     #[inline]
+    #[allow(clippy::cast_lossless)] // Sample rate conversion is intentional
     fn should_sample(&self) -> bool {
         if self.sample_rate == 1 {
             return true;
         }
         let count = self.sample_counter.fetch_add(1, Ordering::Relaxed);
-        count.is_multiple_of(self.sample_rate as u64)
+        count.is_multiple_of(u64::from(self.sample_rate))
     }
 
     /// Get shards that haven't been accessed within the threshold (in ms).
+    #[allow(clippy::cast_possible_truncation)] // Duration millis truncation acceptable for instrumentation
     pub fn cold_shards(&self, threshold_ms: u64) -> Vec<usize> {
         let now = self.start_time.elapsed().as_millis() as u64;
         self.shards
@@ -150,6 +155,7 @@ impl ShardAccessTracker {
         ShardAccessSnapshot {
             shard_stats,
             hot_shards,
+            #[allow(clippy::cast_possible_truncation)] // Uptime won't exceed u64::MAX ms
             timestamp_ms: self.start_time.elapsed().as_millis() as u64,
             sample_rate: self.sample_rate,
         }
@@ -161,7 +167,7 @@ impl ShardAccessTracker {
             .iter()
             .map(|s| s.reads.load(Ordering::Relaxed))
             .sum::<u64>()
-            * self.sample_rate as u64
+            * u64::from(self.sample_rate)
     }
 
     /// Total write count across all shards (scaled by sample rate).
@@ -170,11 +176,12 @@ impl ShardAccessTracker {
             .iter()
             .map(|s| s.writes.load(Ordering::Relaxed))
             .sum::<u64>()
-            * self.sample_rate as u64
+            * u64::from(self.sample_rate)
     }
 
     /// Get the shard count.
-    pub fn shard_count(&self) -> usize {
+    #[must_use]
+    pub const fn shard_count(&self) -> usize {
         self.shard_count
     }
 }
@@ -196,6 +203,7 @@ pub struct HNSWAccessStats {
 }
 
 impl HNSWAccessStats {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entry_point_accesses: AtomicU64::new(0),
@@ -232,6 +240,7 @@ impl HNSWAccessStats {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> HNSWStatsSnapshot {
         let total_searches = self.total_searches.load(Ordering::Relaxed);
         let distance_calcs = self.distance_calculations.load(Ordering::Relaxed);
@@ -242,19 +251,23 @@ impl HNSWAccessStats {
             upper_layer_traversals: self.upper_layer_traversals.load(Ordering::Relaxed),
             total_searches,
             distance_calculations: distance_calcs,
+            #[allow(clippy::cast_precision_loss)] // Acceptable for statistics
             avg_distances_per_search: if total_searches > 0 {
                 distance_calcs as f64 / total_searches as f64
             } else {
                 0.0
             },
+            #[allow(clippy::cast_possible_truncation)] // Uptime won't exceed u64::MAX ms
             uptime_ms: self.start_time.elapsed().as_millis() as u64,
         }
     }
 
+    #[must_use]
     pub fn total_searches(&self) -> u64 {
         self.total_searches.load(Ordering::Relaxed)
     }
 
+    #[must_use]
     pub fn distance_calculations(&self) -> u64 {
         self.distance_calculations.load(Ordering::Relaxed)
     }
@@ -276,7 +289,8 @@ pub struct ShardStatsSnapshot {
 }
 
 impl ShardStatsSnapshot {
-    pub fn total_accesses(&self) -> u64 {
+    #[must_use]
+    pub const fn total_accesses(&self) -> u64 {
         self.reads + self.writes
     }
 }
@@ -291,17 +305,25 @@ pub struct ShardAccessSnapshot {
 }
 
 impl ShardAccessSnapshot {
+    #[must_use]
     pub fn total_reads(&self) -> u64 {
-        self.shard_stats.iter().map(|s| s.reads).sum::<u64>() * self.sample_rate as u64
+        self.shard_stats.iter().map(|s| s.reads).sum::<u64>() * u64::from(self.sample_rate)
     }
 
+    #[must_use]
     pub fn total_writes(&self) -> u64 {
-        self.shard_stats.iter().map(|s| s.writes).sum::<u64>() * self.sample_rate as u64
+        self.shard_stats.iter().map(|s| s.writes).sum::<u64>() * u64::from(self.sample_rate)
     }
 
     /// Access distribution as percentages per shard.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Acceptable for percentages
     pub fn distribution(&self) -> Vec<(usize, f64)> {
-        let total: u64 = self.shard_stats.iter().map(|s| s.total_accesses()).sum();
+        let total: u64 = self
+            .shard_stats
+            .iter()
+            .map(ShardStatsSnapshot::total_accesses)
+            .sum();
         if total == 0 {
             return vec![];
         }
@@ -326,6 +348,8 @@ pub struct HNSWStatsSnapshot {
 
 impl HNSWStatsSnapshot {
     /// Layer 0 accounts for most work; this ratio indicates traversal efficiency.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Acceptable for ratio
     pub fn layer0_ratio(&self) -> f64 {
         let total = self.layer0_traversals + self.upper_layer_traversals;
         if total == 0 {
@@ -336,6 +360,8 @@ impl HNSWStatsSnapshot {
     }
 
     /// Searches per second.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Acceptable for rate calculation
     pub fn searches_per_second(&self) -> f64 {
         if self.uptime_ms == 0 {
             0.0
@@ -609,5 +635,43 @@ mod tests {
         // total_reads scales back up by sample_rate
         let total = snapshot.total_reads();
         assert!(total >= 80 && total <= 120);
+    }
+
+    #[test]
+    fn test_hnsw_access_stats_distance_calculations() {
+        let stats = HNSWAccessStats::new();
+        assert_eq!(stats.distance_calculations(), 0);
+
+        stats.record_distance_calculations(2);
+        assert_eq!(stats.distance_calculations(), 2);
+    }
+
+    #[test]
+    fn test_hnsw_snapshot_zero_uptime_searches_per_second() {
+        let snapshot = HNSWStatsSnapshot {
+            entry_point_accesses: 0,
+            layer0_traversals: 0,
+            upper_layer_traversals: 0,
+            total_searches: 100,
+            distance_calculations: 0,
+            avg_distances_per_search: 0.0,
+            uptime_ms: 0, // Zero uptime
+        };
+        assert_eq!(snapshot.searches_per_second(), 0.0);
+    }
+
+    #[test]
+    fn test_hnsw_stats_zero_traversals_layer0_ratio() {
+        // No traversals recorded
+        let snapshot = HNSWStatsSnapshot {
+            entry_point_accesses: 0,
+            layer0_traversals: 0,
+            upper_layer_traversals: 0,
+            total_searches: 0,
+            distance_calculations: 0,
+            avg_distances_per_search: 0.0,
+            uptime_ms: 1000,
+        };
+        assert_eq!(snapshot.layer0_ratio(), 0.0);
     }
 }

@@ -702,3 +702,12 @@ path = "fuzz_targets/quorum_formula.rs"
 test = false
 doc = false
 bench = false
+
+# Tier 38: TensorStore WAL targets
+
+[[bin]]
+name = "tensor_wal_roundtrip"
+path = "fuzz_targets/tensor_wal_roundtrip.rs"
+test = false
+doc = false
+bench = false

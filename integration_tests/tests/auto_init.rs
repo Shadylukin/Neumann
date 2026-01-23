@@ -27,7 +27,7 @@ fn test_cache_init_with_config() {
     // Initialize with custom config
     let mut config = CacheConfig::default();
     config.embedding_dim = 8;
-    router.init_cache_with_config(config);
+    router.init_cache_with_config(config).unwrap();
 
     assert!(router.cache().is_some());
 }
@@ -51,7 +51,7 @@ fn test_cache_get_without_init() {
     let result = router.execute_parsed("CACHE GET 'key'");
     // Should return error or empty, not panic
     match result {
-        Ok(QueryResult::Value(v)) => {
+        Ok(QueryResult::Value(_)) => {
             // Empty or error message
         },
         Err(_) => {
@@ -148,7 +148,7 @@ fn test_cache_stats_after_use() {
     // Use small dimension for test
     let mut config = CacheConfig::default();
     config.embedding_dim = 4;
-    router.init_cache_with_config(config);
+    router.init_cache_with_config(config).unwrap();
     router.set_identity("test-user");
 
     // Store some cache entries via CACHE PUT (exact key-value cache)

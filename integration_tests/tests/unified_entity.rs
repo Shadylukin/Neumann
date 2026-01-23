@@ -294,7 +294,7 @@ fn test_entity_large_embedding() {
     let router = create_shared_router();
 
     // Create entity with larger embedding
-    let emb: Vec<f32> = (0..128).map(|i| (i as f32 / 128.0)).collect();
+    let emb: Vec<f32> = (0..128).map(|i| i as f32 / 128.0).collect();
     let emb_str = emb
         .iter()
         .map(|v| format!("{:.4}", v))

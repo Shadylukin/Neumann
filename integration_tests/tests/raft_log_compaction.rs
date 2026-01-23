@@ -62,9 +62,10 @@ async fn test_leader_auto_compacts_log() {
 
     let store = TensorStore::new();
     let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+    // Single-node cluster to avoid quorum issues
     let node = Arc::new(RaftNode::with_store(
         "node1".to_string(),
-        vec!["node2".to_string()],
+        vec![],
         transport,
         config,
         &store,

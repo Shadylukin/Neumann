@@ -5,7 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use graph_engine::GraphEngine;
-use integration_tests::{create_shared_engines, create_shared_router, sample_embeddings};
+use integration_tests::{create_shared_router, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, Schema, Value};
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
@@ -147,7 +147,7 @@ fn test_dimension_mismatch_on_search() {
     // Should either return error or empty results (implementation-dependent)
     // The key is it shouldn't panic
     match result {
-        Ok(results) => {
+        Ok(_results) => {
             // If it returns results, they should be empty or handle gracefully
             // This is acceptable behavior
         },

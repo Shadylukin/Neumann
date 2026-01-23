@@ -3,12 +3,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use graph_engine::{Direction, GraphEngine, PropertyValue};
-use integration_tests::{create_shared_engines, sample_embeddings};
 use relational_engine::{Column, ColumnType, Condition, RelationalEngine, Schema, Value};
 use tensor_blob::{BlobConfig, BlobStore, PutOptions};
 use tensor_checkpoint::{CheckpointConfig, CheckpointManager};
 use tensor_store::TensorStore;
-use tensor_unified::{UnifiedEngine, UnifiedItem};
+use tensor_unified::UnifiedEngine;
 use vector_engine::VectorEngine;
 
 /// The "Grand Unification" Test
@@ -31,7 +30,7 @@ async fn test_the_neumann_protocol() {
     let vector = Arc::new(VectorEngine::with_store(store.clone()));
 
     // The Unified Engine sits on top
-    let unified = UnifiedEngine::with_engines(
+    let _unified = UnifiedEngine::with_engines(
         store.clone(),
         relational.clone(),
         graph.clone(),

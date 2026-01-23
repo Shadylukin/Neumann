@@ -6,13 +6,7 @@
 //! - Health state transitions and callbacks
 //! - Membership with Raft voting integration
 
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use tensor_chain::{
@@ -46,23 +40,17 @@ fn create_test_cluster_config(node_id: &str, peers: &[(&str, &str)]) -> ClusterC
 
 struct TestCallback {
     health_changes: Mutex<Vec<(String, NodeHealth, NodeHealth)>>,
-    view_changes: AtomicUsize,
 }
 
 impl TestCallback {
     fn new() -> Self {
         Self {
             health_changes: Mutex::new(Vec::new()),
-            view_changes: AtomicUsize::new(0),
         }
     }
 
     fn health_change_count(&self) -> usize {
         self.health_changes.lock().len()
-    }
-
-    fn view_change_count(&self) -> usize {
-        self.view_changes.load(Ordering::SeqCst)
     }
 
     fn last_change(&self) -> Option<(String, NodeHealth, NodeHealth)> {
@@ -77,9 +65,7 @@ impl MembershipCallback for TestCallback {
             .push((node_id.clone(), old_health, new_health));
     }
 
-    fn on_view_change(&self, _view: &ClusterView) {
-        self.view_changes.fetch_add(1, Ordering::SeqCst);
-    }
+    fn on_view_change(&self, _view: &ClusterView) {}
 }
 
 #[tokio::test]

@@ -1,0 +1,357 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Split-Brain Recovery - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../../favicon.svg">
+        <link rel="shortcut icon" href="../../favicon.png">
+        <link rel="stylesheet" href="../../css/variables.css">
+        <link rel="stylesheet" href="../../css/general.css">
+        <link rel="stylesheet" href="../../css/chrome.css">
+        <link rel="stylesheet" href="../../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/operations/runbooks/split-brain.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="split-brain-recovery"><a class="header" href="#split-brain-recovery">Split-Brain Recovery</a></h1>
+<h2 id="what-is-split-brain"><a class="header" href="#what-is-split-brain">What is Split-Brain?</a></h2>
+<p>A network partition where multiple nodes believe they are the leader,
+potentially accepting conflicting writes.</p>
+<h2 id="symptoms"><a class="header" href="#symptoms">Symptoms</a></h2>
+<ul>
+<li>Multiple nodes reporting <code>raft_state="leader"</code> in metrics</li>
+<li>Clients seeing different data depending on which node they connect to</li>
+<li><code>tensor_chain_partition_detected</code> metric &gt; 0</li>
+<li>Gossip reporting different membership views</li>
+</ul>
+<h2 id="diagnostic-steps"><a class="header" href="#diagnostic-steps">Diagnostic Steps</a></h2>
+<ol>
+<li>Confirm multiple leaders from metrics:
+<code>curl -s http://node1:9090/metrics | grep raft_state</code></li>
+<li>Compare Raft terms and commit indexes:
+<code>neumann-admin raft-info --all</code></li>
+<li>Compare membership views from gossip:
+<code>neumann-admin cluster-status</code></li>
+</ol>
+<h2 id="how-tensor_chain-prevents-split-brain"><a class="header" href="#how-tensor_chain-prevents-split-brain">How tensor_chain Prevents Split-Brain</a></h2>
+<p>Raft consensus requires majority quorum:</p>
+<ul>
+<li>3 nodes: 2 required (only 1 partition can have leader)</li>
+<li>5 nodes: 3 required</li>
+</ul>
+<p>Split-brain can only occur with <strong>symmetric partition</strong> where old leader is
+isolated but doesn’t realize it.</p>
+<h2 id="automatic-recovery-partition-merge-protocol"><a class="header" href="#automatic-recovery-partition-merge-protocol">Automatic Recovery (Partition Merge Protocol)</a></h2>
+<p>When partitions heal, tensor_chain automatically reconciles:</p>
+<h3 id="phase-1-detection"><a class="header" href="#phase-1-detection">Phase 1: Detection</a></h3>
+<ul>
+<li>Gossip detects new reachable nodes</li>
+<li>Compare Raft terms and log lengths</li>
+</ul>
+<h3 id="phase-2-leader-resolution"><a class="header" href="#phase-2-leader-resolution">Phase 2: Leader Resolution</a></h3>
+<ul>
+<li>Higher term wins</li>
+<li>If same term, longer log wins</li>
+<li>Losing leader steps down</li>
+</ul>
+<h3 id="phase-3-state-reconciliation"><a class="header" href="#phase-3-state-reconciliation">Phase 3: State Reconciliation</a></h3>
+<ul>
+<li>Semantic conflict detection on divergent entries</li>
+<li>Orthogonal changes: vector-add merge</li>
+<li>Conflicting changes: reject newer (requires manual resolution)</li>
+</ul>
+<h3 id="phase-4-log-synchronization"><a class="header" href="#phase-4-log-synchronization">Phase 4: Log Synchronization</a></h3>
+<ul>
+<li>Follower truncates divergent suffix</li>
+<li>Leader replicates correct entries</li>
+</ul>
+<h3 id="phase-5-membership-merge"><a class="header" href="#phase-5-membership-merge">Phase 5: Membership Merge</a></h3>
+<ul>
+<li>Gossip merges LWW membership states</li>
+<li>Higher incarnation wins for each node</li>
+</ul>
+<h3 id="phase-6-checkpoint"><a class="header" href="#phase-6-checkpoint">Phase 6: Checkpoint</a></h3>
+<ul>
+<li>Create snapshot post-merge for fast recovery</li>
+</ul>
+<h2 id="manual-intervention-when-automatic-fails"><a class="header" href="#manual-intervention-when-automatic-fails">Manual Intervention (When Automatic Fails)</a></h2>
+<h3 id="scenario-conflicting-writes"><a class="header" href="#scenario-conflicting-writes">Scenario: Conflicting Writes</a></h3>
+<pre><code class="language-bash"># 1. Identify conflicts
+neumann-admin conflicts list --since "2h ago"
+
+# 2. Export conflicting transactions
+neumann-admin conflicts export --tx-id 12345 --output conflict.json
+
+# 3. Choose resolution
+neumann-admin conflicts resolve --tx-id 12345 --keep-version A
+
+# 4. Or merge manually
+neumann-admin conflicts resolve --tx-id 12345 --merge-custom merge.json
+</code></pre>
+<h3 id="scenario-completely-diverged-state"><a class="header" href="#scenario-completely-diverged-state">Scenario: Completely Diverged State</a></h3>
+<pre><code class="language-bash"># 1. Stop all nodes
+systemctl stop neumann
+
+# 2. Identify authoritative node (longest log, highest term)
+for node in node1 node2 node3; do
+  ssh $node "neumann-admin raft-info"
+done
+
+# 3. On non-authoritative nodes, clear state
+rm -rf /var/lib/neumann/raft/*
+
+# 4. Restart authoritative node first
+systemctl start neumann
+
+# 5. Restart other nodes (will sync from leader)
+systemctl start neumann
+</code></pre>
+<h2 id="post-recovery-verification"><a class="header" href="#post-recovery-verification">Post-Recovery Verification</a></h2>
+<pre><code class="language-bash"># Verify single leader
+curl -s http://node1:9090/metrics | grep 'raft_state{state="leader"}'
+
+# Verify all nodes in sync
+neumann-admin cluster-status
+
+# Check for unresolved conflicts
+neumann-admin conflicts list
+
+# Verify recent transactions
+neumann-admin tx-log --last 100
+</code></pre>
+<h2 id="prevention"><a class="header" href="#prevention">Prevention</a></h2>
+<ol>
+<li><strong>Network design</strong>: Avoid symmetric partitions</li>
+<li><strong>Monitoring</strong>: Alert on partition detection</li>
+<li><strong>Testing</strong>: Regularly run chaos engineering tests</li>
+<li><strong>Backups</strong>: Regular snapshots enable point-in-time recovery</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../operations/runbooks/leader-election.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../../operations/runbooks/node-recovery.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../operations/runbooks/leader-election.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../../operations/runbooks/node-recovery.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../../ace.js"></script>
+        <script src="../../mode-rust.js"></script>
+        <script src="../../editor.js"></script>
+        <script src="../../theme-dawn.js"></script>
+        <script src="../../theme-tomorrow_night.js"></script>
+
+        <script src="../../elasticlunr.min.js"></script>
+        <script src="../../mark.min.js"></script>
+        <script src="../../searcher.js"></script>
+
+        <script src="../../clipboard.min.js"></script>
+        <script src="../../highlight.js"></script>
+        <script src="../../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

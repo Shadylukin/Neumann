@@ -8,6 +8,8 @@ members = [
     "query_router",
     "neumann_parser",
     "neumann_shell",
+    "neumann_client",
+    "neumann_server",
     "tensor_compress",
     "tensor_vault",
     "tensor_cache",

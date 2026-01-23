@@ -253,7 +253,7 @@ fn test_deadlock_with_lock_manager() {
     assert_eq!(result.unwrap_err().blocking_tx_id, 1);
 
     // Detect the cycle
-    let detector = DeadlockDetector::with_defaults();
+    let _detector = DeadlockDetector::with_defaults();
     // Use the same graph
     let cycles = graph.detect_cycles();
     assert!(!cycles.is_empty(), "should detect deadlock cycle");

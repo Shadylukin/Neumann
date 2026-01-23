@@ -883,12 +883,8 @@ mod tests {
 
         // With the append_lock, exactly one thread should succeed per height
         // Since all threads try to append at height 1, only one should succeed
-        assert!(successes >= 1, "at least one append should succeed");
-        assert_eq!(
-            chain.height() as usize,
-            successes,
-            "chain height should match successful appends"
-        );
+        assert!(successes >= 1);
+        assert_eq!(chain.height() as usize, successes);
     }
 
     #[test]
@@ -908,5 +904,225 @@ mod tests {
             let block = chain.get_block_at(i).unwrap().unwrap();
             assert_eq!(block.header.height, i);
         }
+    }
+
+    #[test]
+    fn test_append_invalid_tx_root() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Build a block but manually corrupt the tx_root
+        let mut block = chain
+            .new_block()
+            .add_transaction(Transaction::Put {
+                key: "test".to_string(),
+                data: vec![1, 2, 3],
+            })
+            .build();
+
+        // Set a wrong tx_root (not matching the transactions)
+        block.header.tx_root = [0xAB; 32];
+
+        let err = chain.append(block).unwrap_err();
+        assert!(matches!(err, ChainError::ValidationFailed(msg) if msg.contains("tx_root")));
+    }
+
+    #[test]
+    fn test_append_unsigned_block_at_height_2() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Append first block (height 1 - no signature required)
+        let block1 = chain.new_block().build();
+        chain.append(block1).unwrap();
+
+        // Try to append second block without signature (height 2+ requires signature)
+        let block2 = chain.new_block().build();
+        let err = chain.append(block2).unwrap_err();
+        assert!(matches!(err, ChainError::ValidationFailed(msg) if msg.contains("signed")));
+    }
+
+    #[test]
+    fn test_get_block_at_missing_block_data() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Store malformed data at a block key (missing _block field)
+        let key = format!("{}999", BLOCK_PREFIX);
+        let mut data = tensor_store::TensorData::new();
+        data.set(
+            "wrong_field",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(42)),
+        );
+        chain.graph.store().put(&key, data).unwrap();
+
+        // Try to get this block - should error due to missing _block field
+        let err = chain.get_block_at(999).unwrap_err();
+        assert!(matches!(err, ChainError::StorageError(msg) if msg.contains("missing block data")));
+    }
+
+    #[test]
+    fn test_load_height_wrong_type() {
+        let store = tensor_store::TensorStore::new();
+        let graph = Arc::new(GraphEngine::with_store(store));
+        let chain = Chain::new(graph, "test_node".to_string());
+
+        // Store height with wrong type (String instead of Int)
+        let mut data = tensor_store::TensorData::new();
+        data.set(
+            "height",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(
+                "not_a_number".to_string(),
+            )),
+        );
+        chain.graph.store().put(CHAIN_META_KEY, data).unwrap();
+
+        // load_height should return None for wrong type
+        assert!(chain.load_height().is_none());
+    }
+
+    #[test]
+    fn test_chain_iterator_block_not_found() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Manually set height to claim we have blocks we don't
+        chain.height.store(5, std::sync::atomic::Ordering::SeqCst);
+
+        // Iterate - should get BlockNotFound errors for missing blocks
+        let has_not_found = chain
+            .iter()
+            .any(|r| matches!(r, Err(ChainError::BlockNotFound(_))));
+        assert!(has_not_found);
+    }
+
+    #[test]
+    fn test_chain_iterator_storage_error() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Add a valid block at height 1
+        let block = chain.new_block().build();
+        chain.append(block).unwrap();
+
+        // Store corrupted data at height 2
+        let key = format!("{}2", BLOCK_PREFIX);
+        let mut data = tensor_store::TensorData::new();
+        data.set(
+            "_block",
+            tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::Int(999)),
+        );
+        chain.graph.store().put(&key, data).unwrap();
+
+        // Manually set height to 2
+        chain.height.store(2, std::sync::atomic::Ordering::SeqCst);
+
+        // Iterate - height 2 should produce an error (wrong type for _block)
+        let mut found_storage_error = false;
+        for result in chain.iter() {
+            if let Err(ChainError::StorageError(_)) = result {
+                found_storage_error = true;
+                break;
+            }
+        }
+        assert!(found_storage_error, "Should have found StorageError");
+    }
+
+    #[test]
+    fn test_block_builder_with_embedding() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let embedding = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let block = chain
+            .new_block()
+            .with_embedding(embedding.clone())
+            .with_signature(test_signature())
+            .build();
+
+        assert_eq!(block.header.delta_embedding.dimension(), 3);
+        chain.append(block).unwrap();
+    }
+
+    #[test]
+    fn test_append_zero_tx_root_with_transactions() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Build block and manually zero out the tx_root
+        let mut block = chain
+            .new_block()
+            .add_transaction(Transaction::Put {
+                key: "test".to_string(),
+                data: vec![1, 2, 3],
+            })
+            .build();
+
+        // Force tx_root to zero (append should compute it)
+        block.header.tx_root = [0u8; 32];
+
+        // Append should succeed - it will compute the tx_root
+        let result = chain.append(block);
+        assert!(result.is_ok());
+
+        // Verify the stored block has correct tx_root
+        let stored = chain.get_block_at(1).unwrap().unwrap();
+        assert_ne!(stored.header.tx_root, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_block_builder_with_dense_embedding() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let block = chain
+            .new_block()
+            .with_dense_embedding(&[1.0, 2.0, 3.0, 4.0])
+            .with_signature(test_signature())
+            .build();
+
+        assert_eq!(block.header.delta_embedding.dimension(), 4);
+        chain.append(block).unwrap();
+    }
+
+    #[test]
+    fn test_block_builder_with_codes() {
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        let codes = vec![1u16, 2, 3, 4, 5];
+        let block = chain
+            .new_block()
+            .with_codes(codes.clone())
+            .with_signature(test_signature())
+            .build();
+
+        assert_eq!(block.header.quantized_codes, codes);
+        chain.append(block).unwrap();
+    }
+
+    #[test]
+    fn test_block_builder_sign_and_build() {
+        use crate::signing::Identity;
+
+        let chain = create_test_chain();
+        chain.initialize().unwrap();
+
+        // Create an identity for signing
+        let identity = Identity::generate();
+
+        let block = chain
+            .new_block()
+            .add_transaction(Transaction::Put {
+                key: "test".to_string(),
+                data: vec![1, 2, 3],
+            })
+            .sign_and_build(&identity);
+
+        // Block should be signed with Ed25519 (64-byte signature)
+        assert!(!block.header.signature.is_empty());
+        assert_eq!(block.header.signature.len(), 64);
+
+        chain.append(block).unwrap();
     }
 }

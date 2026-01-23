@@ -2,6 +2,12 @@
 
 use thiserror::Error;
 
+use crate::atomic_io::AtomicIoError;
+use crate::embedding::EmbeddingError;
+use crate::raft_wal::WalError;
+use crate::snapshot_buffer::SnapshotBufferError;
+use crate::snapshot_streaming::StreamingError;
+
 /// Result type for tensor_chain operations.
 pub type Result<T> = std::result::Result<T, ChainError>;
 
@@ -9,6 +15,26 @@ pub type Result<T> = std::result::Result<T, ChainError>;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ChainError {
+    /// WAL error.
+    #[error("WAL error: {0}")]
+    Wal(#[from] WalError),
+
+    /// Atomic I/O error.
+    #[error("atomic I/O error: {0}")]
+    AtomicIo(#[from] AtomicIoError),
+
+    /// Snapshot buffer error.
+    #[error("snapshot buffer error: {0}")]
+    SnapshotBuffer(#[from] SnapshotBufferError),
+
+    /// Snapshot streaming error.
+    #[error("streaming error: {0}")]
+    Streaming(#[from] StreamingError),
+
+    /// Embedding operation error.
+    #[error("embedding error: {0}")]
+    EmbeddingOp(#[from] EmbeddingError),
+
     /// Block validation failed.
     #[error("block validation failed: {0}")]
     ValidationFailed(String),

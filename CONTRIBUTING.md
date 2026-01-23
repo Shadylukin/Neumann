@@ -1,6 +1,8 @@
 # Contributing to Neumann
 
-Thank you for your interest in contributing to Neumann! This project aims to provide unified tensor-based storage for the AI era, and we welcome contributions of all kinds.
+Thank you for your interest in contributing to Neumann! This project aims to
+provide unified tensor-based storage for the AI era, and we welcome
+contributions of all kinds.
 
 ## Getting Started
 
@@ -34,25 +36,26 @@ cargo test
 
 Neumann is organized as a Cargo workspace with 11 crates:
 
-| Crate | Purpose |
-|-------|---------|
-| `tensor_store` | Core key-value storage layer |
-| `relational_engine` | SQL-like table operations |
-| `graph_engine` | Node/edge graph operations |
-| `vector_engine` | Embedding similarity search |
-| `tensor_compress` | Compression algorithms |
-| `tensor_vault` | Encrypted secret storage |
-| `tensor_cache` | LLM response caching |
-| `tensor_blob` | Chunked blob storage |
-| `neumann_parser` | Query language parser |
-| `query_router` | Unified query execution |
-| `neumann_shell` | Interactive CLI |
+| Crate              | Purpose                      |
+| ------------------ | ---------------------------- |
+| `tensor_store`     | Core key-value storage layer |
+| `relational_engine`| SQL-like table operations    |
+| `graph_engine`     | Node/edge graph operations   |
+| `vector_engine`    | Embedding similarity search  |
+| `tensor_compress`  | Compression algorithms       |
+| `tensor_vault`     | Encrypted secret storage     |
+| `tensor_cache`     | LLM response caching         |
+| `tensor_blob`      | Chunked blob storage         |
+| `neumann_parser`   | Query language parser        |
+| `query_router`     | Unified query execution      |
+| `neumann_shell`    | Interactive CLI              |
 
 ## How to Contribute
 
 ### Reporting Bugs
 
-1. Check existing [issues](https://github.com/Shadylukin/Neumann/issues) to avoid duplicates
+1. Check existing [issues](https://github.com/Shadylukin/Neumann/issues)
+   to avoid duplicates
 2. Use the bug report template
 3. Include:
    - Rust version (`rustc --version`)
@@ -72,12 +75,14 @@ Neumann is organized as a Cargo workspace with 11 crates:
 2. Create a feature branch (`git checkout -b feature/your-feature`)
 3. Make your changes
 4. Ensure all checks pass:
+
    ```bash
    cargo fmt --check
    cargo clippy -- -D warnings
    cargo test
    cargo doc --no-deps
    ```
+
 5. Commit with a clear message (see below)
 6. Push and open a pull request
 
@@ -109,7 +114,7 @@ Neumann is organized as a Cargo workspace with 11 crates:
 
 Write clear, imperative commit messages:
 
-```
+```text
 Add vector similarity search with cosine metric
 
 - Implement cosine, euclidean, and dot product metrics
@@ -129,9 +134,11 @@ Add vector similarity search with cosine metric
 ## Community
 
 - [Discord](https://discord.gg/uN3KbAyKvw) - Chat with the community
-- [GitHub Issues](https://github.com/Shadylukin/Neumann/issues) - Bug reports and features
-- [GitHub Discussions](https://github.com/Shadylukin/Neumann/discussions) - Questions and ideas
+- [GitHub Issues](https://github.com/Shadylukin/Neumann/issues) - Bug reports
+- [GitHub Discussions](https://github.com/Shadylukin/Neumann/discussions) -
+  Questions and ideas
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same terms as the project: MIT OR Apache-2.0.
+By contributing, you agree that your contributions will be licensed under the
+same terms as the project: MIT OR Apache-2.0.

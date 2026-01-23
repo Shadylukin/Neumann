@@ -1,8 +1,8 @@
 //! Snapshot format v2/v3 with backward compatibility.
 //!
 //! Format evolution:
-//! - v2: HashMap<String, TensorData> serialized with bincode
-//! - v3: SlabRouterSnapshot with specialized slab storage
+//! - v2: `HashMap<String, TensorData>` serialized with bincode
+//! - v3: `SlabRouterSnapshot` with specialized slab storage
 //!
 //! The loader automatically detects format version and loads appropriately.
 
@@ -43,7 +43,8 @@ pub struct SnapshotHeader {
 }
 
 impl SnapshotHeader {
-    pub fn new(entry_count: u64) -> Self {
+    #[must_use]
+    pub const fn new(entry_count: u64) -> Self {
         Self {
             magic: V3_MAGIC,
             version: CURRENT_VERSION,
@@ -52,6 +53,9 @@ impl SnapshotHeader {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the magic bytes are invalid or the version is unsupported.
     pub fn validate(&self) -> Result<(), SnapshotFormatError> {
         if self.magic != V3_MAGIC {
             return Err(SnapshotFormatError::InvalidMagic);
@@ -83,9 +87,9 @@ impl std::fmt::Display for SnapshotFormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidMagic => write!(f, "invalid magic bytes"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported version: {}", v),
-            Self::IoError(msg) => write!(f, "io error: {}", msg),
-            Self::SerializationError(msg) => write!(f, "serialization error: {}", msg),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
+            Self::IoError(msg) => write!(f, "io error: {msg}"),
+            Self::SerializationError(msg) => write!(f, "serialization error: {msg}"),
         }
     }
 }
@@ -105,6 +109,10 @@ impl From<bincode::Error> for SnapshotFormatError {
 }
 
 /// Detect the snapshot format version from a file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened.
 pub fn detect_version<P: AsRef<Path>>(path: P) -> Result<SnapshotVersion, SnapshotFormatError> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
@@ -120,7 +128,11 @@ pub fn detect_version<P: AsRef<Path>>(path: P) -> Result<SnapshotVersion, Snapsh
     }
 }
 
-/// Save a SlabRouter to v3 snapshot format.
+/// Save a `SlabRouter` to v3 snapshot format.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be created or serialization fails.
 pub fn save_v3<P: AsRef<Path>>(router: &SlabRouter, path: P) -> Result<(), SnapshotFormatError> {
     let path = path.as_ref();
     let temp_path = path.with_extension("tmp");
@@ -143,7 +155,11 @@ pub fn save_v3<P: AsRef<Path>>(router: &SlabRouter, path: P) -> Result<(), Snaps
     Ok(())
 }
 
-/// Load a SlabRouter from snapshot (auto-detecting version).
+/// Load a `SlabRouter` from snapshot (auto-detecting version).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, the format is invalid, or deserialization fails.
 pub fn load<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
     let path = path.as_ref();
     match detect_version(path)? {
@@ -179,6 +195,10 @@ fn load_v3<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
 }
 
 /// Convert v2 snapshot to v3 format.
+///
+/// # Errors
+///
+/// Returns an error if loading v2 or saving v3 fails.
 pub fn migrate_v2_to_v3<P: AsRef<Path>, Q: AsRef<Path>>(
     v2_path: P,
     v3_path: Q,

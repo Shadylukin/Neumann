@@ -643,6 +643,7 @@ impl Drop for TcpTransport {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use std::time::Duration;
 
@@ -1238,27 +1239,22 @@ mod tests {
         let server_config_clone = TcpTransportConfig::new("server", server_addr);
 
         tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
-                        let connections = server_connections.clone();
-                        let incoming_tx = server_incoming_tx.clone();
-                        let config = server_config_clone.clone();
+            while let Ok((stream, addr)) = listener.accept().await {
+                let connections = server_connections.clone();
+                let incoming_tx = server_incoming_tx.clone();
+                let config = server_config_clone.clone();
 
-                        tokio::spawn(async move {
-                            let _ = TcpTransport::handle_incoming_connection(
-                                stream,
-                                addr,
-                                connections,
-                                incoming_tx,
-                                config,
-                                "server".to_string(),
-                            )
-                            .await;
-                        });
-                    },
-                    Err(_) => break,
-                }
+                tokio::spawn(async move {
+                    let _ = TcpTransport::handle_incoming_connection(
+                        stream,
+                        addr,
+                        connections,
+                        incoming_tx,
+                        config,
+                        "server".to_string(),
+                    )
+                    .await;
+                });
             }
         });
 

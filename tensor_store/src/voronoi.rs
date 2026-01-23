@@ -1,6 +1,6 @@
 //! Voronoi partitioner with explicit geometric region boundaries.
 //!
-//! Extends SemanticPartitioner with explicit Voronoi regions per node,
+//! Extends `SemanticPartitioner` with explicit Voronoi regions per node,
 //! enabling geometric-aware data distribution and query routing.
 
 use std::{collections::HashMap, sync::RwLock};
@@ -34,7 +34,8 @@ pub struct VoronoiRegion {
 
 impl VoronoiRegion {
     /// Create a new Voronoi region.
-    pub fn new(owner: PhysicalNodeId, centroid: Vec<f32>) -> Self {
+    #[must_use]
+    pub const fn new(owner: PhysicalNodeId, centroid: Vec<f32>) -> Self {
         Self {
             owner,
             centroid,
@@ -44,6 +45,7 @@ impl VoronoiRegion {
     }
 
     /// Compute the distance from a point to this region's centroid.
+    #[must_use]
     pub fn distance_to(&self, point: &[f32]) -> f32 {
         if self.centroid.len() != point.len() {
             return f32::MAX;
@@ -59,6 +61,7 @@ impl VoronoiRegion {
     }
 
     /// Compute similarity (1 - normalized distance) to a point.
+    #[must_use]
     pub fn similarity_to(&self, point: &[f32]) -> f32 {
         if self.centroid.is_empty() || point.is_empty() {
             return 0.0;
@@ -92,6 +95,7 @@ pub struct VoronoiPartitionerConfig {
 
 impl VoronoiPartitionerConfig {
     /// Create a new config for the given local node.
+    #[must_use]
     pub fn new(local_node: impl Into<PhysicalNodeId>, num_shards: usize, dimension: usize) -> Self {
         Self {
             semantic_config: SemanticPartitionerConfig::new(local_node, num_shards, dimension),
@@ -102,13 +106,15 @@ impl VoronoiPartitionerConfig {
     }
 
     /// Disable automatic rebalancing.
-    pub fn without_auto_rebalance(mut self) -> Self {
+    #[must_use]
+    pub const fn without_auto_rebalance(mut self) -> Self {
         self.auto_rebalance = false;
         self
     }
 
     /// Set the minimum samples needed before computing regions.
-    pub fn with_min_samples(mut self, min: usize) -> Self {
+    #[must_use]
+    pub const fn with_min_samples(mut self, min: usize) -> Self {
         self.min_samples_for_regions = min;
         self
     }
@@ -116,7 +122,7 @@ impl VoronoiPartitionerConfig {
 
 /// Voronoi partitioner with explicit geometric regions.
 ///
-/// Extends SemanticPartitioner with explicit Voronoi region definitions.
+/// Extends `SemanticPartitioner` with explicit Voronoi region definitions.
 /// Each node owns a region defined by its centroid, and data points are
 /// routed to the node whose region centroid is closest.
 #[derive(Debug)]
@@ -135,6 +141,7 @@ pub struct VoronoiPartitioner {
 
 impl VoronoiPartitioner {
     /// Create a new Voronoi partitioner.
+    #[must_use]
     pub fn new(config: VoronoiPartitionerConfig) -> Self {
         let semantic = SemanticPartitioner::new(config.semantic_config.clone());
 
@@ -147,7 +154,7 @@ impl VoronoiPartitioner {
         }
     }
 
-    /// Create from an existing SemanticPartitioner.
+    /// Create from an existing `SemanticPartitioner`.
     pub fn from_semantic(semantic: SemanticPartitioner, config: VoronoiPartitionerConfig) -> Self {
         Self {
             semantic,
@@ -159,6 +166,10 @@ impl VoronoiPartitioner {
     }
 
     /// Add a sample embedding for region computation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn add_sample(&self, embedding: Vec<f32>) {
         let mut samples = self.samples.write().unwrap();
         samples.push(embedding);
@@ -172,6 +183,11 @@ impl VoronoiPartitioner {
     }
 
     /// Compute regions from the given sample embeddings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    #[allow(clippy::cast_precision_loss)] // Volume estimation doesn't need full precision
     pub fn compute_regions_from_samples(&self, samples: &[Vec<f32>]) {
         if samples.is_empty() {
             return;
@@ -207,6 +223,7 @@ impl VoronoiPartitioner {
                 regions.insert(node.clone(), region);
             }
         }
+        drop(regions);
 
         // Update semantic partitioner centroids
         self.semantic.set_centroids(centroids);
@@ -215,6 +232,7 @@ impl VoronoiPartitioner {
     }
 
     /// Find the index of the nearest centroid to a point.
+    #[allow(clippy::unused_self)] // Instance method for consistency with other partitioner methods.
     fn nearest_centroid_index(&self, point: &[f32], centroids: &[Vec<f32>]) -> Option<usize> {
         let mut best_idx = None;
         let mut best_dist = f32::MAX;
@@ -240,6 +258,10 @@ impl VoronoiPartitioner {
     }
 
     /// Get the region containing an embedding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn region_for_embedding(&self, embedding: &[f32]) -> Option<VoronoiRegion> {
         let regions = self.regions.read().unwrap();
 
@@ -253,27 +275,40 @@ impl VoronoiPartitioner {
                 best_region = Some(region.clone());
             }
         }
+        drop(regions);
 
         best_region
     }
 
     /// Get a node's Voronoi region.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn get_region(&self, node: &PhysicalNodeId) -> Option<VoronoiRegion> {
         self.regions.read().unwrap().get(node).cloned()
     }
 
     /// Get all regions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn all_regions(&self) -> Vec<VoronoiRegion> {
         self.regions.read().unwrap().values().cloned().collect()
     }
 
     /// Check if regions have been computed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn has_regions(&self) -> bool {
         *self.regions_computed.read().unwrap()
     }
 
     /// Rebalance regions after a node change.
-    fn rebalance(&mut self) {
+    fn rebalance(&self) {
         let samples = self.samples.read().unwrap().clone();
         if samples.len() >= self.config.min_samples_for_regions {
             self.compute_regions_from_samples(&samples);
@@ -281,7 +316,8 @@ impl VoronoiPartitioner {
     }
 
     /// Get embeddings that should migrate from one node to another.
-    pub fn embeddings_for_migration(
+    #[must_use]
+    pub const fn embeddings_for_migration(
         &self,
         _from: &PhysicalNodeId,
         _to: &PhysicalNodeId,
@@ -292,7 +328,8 @@ impl VoronoiPartitioner {
     }
 
     /// Get the underlying semantic partitioner.
-    pub fn semantic(&self) -> &SemanticPartitioner {
+    #[must_use]
+    pub const fn semantic(&self) -> &SemanticPartitioner {
         &self.semantic
     }
 }

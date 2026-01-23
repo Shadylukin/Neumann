@@ -18,7 +18,9 @@ tensor_chain = { path = "../tensor_chain" }
 query_router = { path = "../query_router" }
 neumann_parser = { path = "../neumann_parser" }
 neumann_shell = { path = "../neumann_shell" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+neumann_client = { path = "../neumann_client", features = ["full"] }
+neumann_server = { path = "../neumann_server" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 futures = "0.3"
 serde_json = "1"
 parking_lot = "0.12"

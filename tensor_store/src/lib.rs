@@ -33,6 +33,7 @@ pub mod snapshot;
 pub mod sparse_vector;
 pub mod tiered;
 pub mod voronoi;
+pub mod wal;
 
 pub use blob_log::{BlobLog, BlobLogSnapshot, ChunkHash};
 pub use cache_ring::{CacheRing, CacheRingSnapshot, CacheStats, EvictionScorer, EvictionStrategy};
@@ -73,11 +74,12 @@ pub use snapshot::{
 pub use sparse_vector::SparseVector;
 pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
 pub use voronoi::{VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion};
+pub use wal::{TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalStatus};
 
 /// Reserved field prefixes for unified entity storage.
 ///
 /// These prefixes are used by the different engines to store their data
-/// within a single TensorData entity, enabling cross-engine queries.
+/// within a single `TensorData` entity, enabling cross-engine queries.
 pub mod fields {
     /// Graph: outgoing edge pointers (`Vec<String>`)
     pub const OUT: &str = "_out";
@@ -122,6 +124,12 @@ impl BloomFilter {
     /// # Arguments
     /// * `expected_items` - Expected number of items to insert
     /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )] // Bloom filter math: values are bounded by reasonable filter sizes
     pub fn new(expected_items: usize, false_positive_rate: f64) -> Self {
         // Calculate optimal size: m = -n*ln(p) / (ln(2)^2)
         let ln2_squared = std::f64::consts::LN_2 * std::f64::consts::LN_2;
@@ -147,6 +155,7 @@ impl BloomFilter {
 
     /// Create a Bloom filter with default parameters for typical key-value usage.
     /// Expects ~10,000 items with 1% false positive rate.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(10_000, 0.01)
     }
@@ -179,24 +188,27 @@ impl BloomFilter {
 
     /// Clear all bits in the filter.
     pub fn clear(&self) {
-        for block in self.bits.iter() {
+        for block in &*self.bits {
             block.store(0, Ordering::Relaxed);
         }
     }
 
     /// Compute hash index for a key with a given seed.
     #[inline]
+    #[allow(clippy::cast_possible_truncation)] // Hash modulo num_bits fits in usize
     fn hash_index<K: Hash>(&self, key: &K, seed: usize) -> usize {
         let mut hasher = SipHasher::new_with_seed(seed as u64);
         key.hash(&mut hasher);
         (hasher.finish() as usize) % self.num_bits
     }
 
-    pub fn num_bits(&self) -> usize {
+    #[must_use]
+    pub const fn num_bits(&self) -> usize {
         self.num_bits
     }
 
-    pub fn num_hashes(&self) -> usize {
+    #[must_use]
+    pub const fn num_hashes(&self) -> usize {
         self.num_hashes
     }
 }
@@ -208,7 +220,7 @@ struct SipHasher {
 }
 
 impl SipHasher {
-    fn new_with_seed(seed: u64) -> Self {
+    const fn new_with_seed(seed: u64) -> Self {
         Self {
             state: seed ^ 0x736f_6d65_7073_6575,
             seed,
@@ -223,7 +235,7 @@ impl Hasher for SipHasher {
 
     fn write(&mut self, bytes: &[u8]) {
         for byte in bytes {
-            self.state = self.state.wrapping_mul(31).wrapping_add(*byte as u64);
+            self.state = self.state.wrapping_mul(31).wrapping_add(u64::from(*byte));
             self.state ^= self.seed;
         }
     }
@@ -274,17 +286,19 @@ impl TensorValue {
     /// let val = TensorValue::from_embedding(sparse, 0.01, 0.7);
     /// assert!(matches!(val, TensorValue::Sparse(_)));
     /// ```
+    #[must_use]
     pub fn from_embedding(dense: Vec<f32>, value_threshold: f32, sparsity_threshold: f32) -> Self {
         let sparse = SparseVector::from_dense_with_threshold(&dense, value_threshold);
 
         if sparse.sparsity() >= sparsity_threshold {
-            TensorValue::Sparse(sparse)
+            Self::Sparse(sparse)
         } else {
-            TensorValue::Vector(dense)
+            Self::Vector(dense)
         }
     }
 
     /// Create an embedding with default thresholds (0.01 value, 0.7 sparsity).
+    #[must_use]
     pub fn from_embedding_auto(dense: Vec<f32>) -> Self {
         Self::from_embedding(dense, DEFAULT_VALUE_THRESHOLD, DEFAULT_SPARSITY_THRESHOLD)
     }
@@ -292,18 +306,20 @@ impl TensorValue {
     /// Convert to dense vector representation (for compatibility with dense operations).
     ///
     /// Returns `Some(Vec<f32>)` for Vector or Sparse variants, `None` otherwise.
+    #[must_use]
     pub fn to_dense(&self) -> Option<Vec<f32>> {
         match self {
-            TensorValue::Vector(v) => Some(v.clone()),
-            TensorValue::Sparse(s) => Some(s.to_dense()),
+            Self::Vector(v) => Some(v.clone()),
+            Self::Sparse(s) => Some(s.to_dense()),
             _ => None,
         }
     }
 
-    pub fn dimension(&self) -> Option<usize> {
+    #[must_use]
+    pub const fn dimension(&self) -> Option<usize> {
         match self {
-            TensorValue::Vector(v) => Some(v.len()),
-            TensorValue::Sparse(s) => Some(s.dimension()),
+            Self::Vector(v) => Some(v.len()),
+            Self::Sparse(s) => Some(s.dimension()),
             _ => None,
         }
     }
@@ -311,12 +327,14 @@ impl TensorValue {
     /// Compute dot product between two tensor values (if both are vectors).
     ///
     /// Optimizes for sparse-sparse and sparse-dense cases.
-    pub fn dot(&self, other: &TensorValue) -> Option<f32> {
+    #[must_use]
+    pub fn dot(&self, other: &Self) -> Option<f32> {
         match (self, other) {
-            (TensorValue::Sparse(a), TensorValue::Sparse(b)) => Some(a.dot(b)),
-            (TensorValue::Sparse(s), TensorValue::Vector(d))
-            | (TensorValue::Vector(d), TensorValue::Sparse(s)) => Some(s.dot_dense(d)),
-            (TensorValue::Vector(a), TensorValue::Vector(b)) => {
+            (Self::Sparse(a), Self::Sparse(b)) => Some(a.dot(b)),
+            (Self::Sparse(s), Self::Vector(d)) | (Self::Vector(d), Self::Sparse(s)) => {
+                Some(s.dot_dense(d))
+            },
+            (Self::Vector(a), Self::Vector(b)) => {
                 if a.len() != b.len() {
                     return None;
                 }
@@ -327,11 +345,11 @@ impl TensorValue {
     }
 
     /// Compute cosine similarity between two tensor values.
-    pub fn cosine_similarity(&self, other: &TensorValue) -> Option<f32> {
+    #[must_use]
+    pub fn cosine_similarity(&self, other: &Self) -> Option<f32> {
         match (self, other) {
-            (TensorValue::Sparse(a), TensorValue::Sparse(b)) => Some(a.cosine_similarity(b)),
-            (TensorValue::Sparse(s), TensorValue::Vector(d))
-            | (TensorValue::Vector(d), TensorValue::Sparse(s)) => {
+            (Self::Sparse(a), Self::Sparse(b)) => Some(a.cosine_similarity(b)),
+            (Self::Sparse(s), Self::Vector(d)) | (Self::Vector(d), Self::Sparse(s)) => {
                 let dot = s.dot_dense(d);
                 let mag_s = s.magnitude();
                 let mag_d: f32 = d.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -341,7 +359,7 @@ impl TensorValue {
                     Some(dot / (mag_s * mag_d))
                 }
             },
-            (TensorValue::Vector(a), TensorValue::Vector(b)) => {
+            (Self::Vector(a), Self::Vector(b)) => {
                 if a.len() != b.len() {
                     return None;
                 }
@@ -358,28 +376,30 @@ impl TensorValue {
         }
     }
 
-    pub fn is_vector(&self) -> bool {
-        matches!(self, TensorValue::Vector(_) | TensorValue::Sparse(_))
+    #[must_use]
+    pub const fn is_vector(&self) -> bool {
+        matches!(self, Self::Vector(_) | Self::Sparse(_))
     }
 
-    pub fn is_sparse(&self) -> bool {
-        matches!(self, TensorValue::Sparse(_))
+    #[must_use]
+    pub const fn is_sparse(&self) -> bool {
+        matches!(self, Self::Sparse(_))
     }
 
+    #[must_use]
     pub fn memory_bytes(&self) -> usize {
         match self {
-            TensorValue::Scalar(s) => match s {
+            Self::Scalar(s) => match s {
                 ScalarValue::Null => 0,
                 ScalarValue::Bool(_) => 1,
-                ScalarValue::Int(_) => 8,
-                ScalarValue::Float(_) => 8,
+                ScalarValue::Int(_) | ScalarValue::Float(_) => 8,
                 ScalarValue::String(s) => s.len(),
                 ScalarValue::Bytes(b) => b.len(),
             },
-            TensorValue::Vector(v) => v.len() * 4,
-            TensorValue::Sparse(s) => s.memory_bytes(),
-            TensorValue::Pointer(p) => p.len(),
-            TensorValue::Pointers(ps) => ps.iter().map(|p| p.len()).sum(),
+            Self::Vector(v) => v.len() * 4,
+            Self::Sparse(s) => s.memory_bytes(),
+            Self::Pointer(p) => p.len(),
+            Self::Pointers(ps) => ps.iter().map(String::len).sum(),
         }
     }
 }
@@ -396,12 +416,13 @@ pub enum ScalarValue {
 }
 
 /// An entity that can hold scalar properties, vector embeddings, and pointers to other tensors.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TensorData {
     fields: HashMap<String, TensorValue>,
 }
 
 impl TensorData {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             fields: HashMap::new(),
@@ -412,6 +433,7 @@ impl TensorData {
         self.fields.insert(key.into(), value);
     }
 
+    #[must_use]
     pub fn get(&self, key: &str) -> Option<&TensorValue> {
         self.fields.get(key)
     }
@@ -429,18 +451,22 @@ impl TensorData {
         self.fields.iter()
     }
 
+    #[must_use]
     pub fn has(&self, key: &str) -> bool {
         self.fields.contains_key(key)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.fields.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 
+    #[must_use]
     pub fn entity_type(&self) -> Option<&str> {
         match self.get(fields::TYPE) {
             Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.as_str()),
@@ -448,6 +474,7 @@ impl TensorData {
         }
     }
 
+    #[must_use]
     pub fn entity_id(&self) -> Option<i64> {
         match self.get(fields::ID) {
             Some(TensorValue::Scalar(ScalarValue::Int(id))) => Some(*id),
@@ -455,6 +482,7 @@ impl TensorData {
         }
     }
 
+    #[must_use]
     pub fn label(&self) -> Option<&str> {
         match self.get(fields::LABEL) {
             Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.as_str()),
@@ -462,6 +490,7 @@ impl TensorData {
         }
     }
 
+    #[must_use]
     pub fn embedding(&self) -> Option<&Vec<f32>> {
         match self.get(fields::EMBEDDING) {
             Some(TensorValue::Vector(v)) => Some(v),
@@ -469,6 +498,7 @@ impl TensorData {
         }
     }
 
+    #[must_use]
     pub fn outgoing_edges(&self) -> Option<&Vec<String>> {
         match self.get(fields::OUT) {
             Some(TensorValue::Pointers(p)) => Some(p),
@@ -476,6 +506,7 @@ impl TensorData {
         }
     }
 
+    #[must_use]
     pub fn incoming_edges(&self) -> Option<&Vec<String>> {
         match self.get(fields::IN) {
             Some(TensorValue::Pointers(p)) => Some(p),
@@ -537,10 +568,12 @@ impl TensorData {
         self.set(fields::IN, TensorValue::Pointers(edges));
     }
 
+    #[must_use]
     pub fn has_embedding(&self) -> bool {
         self.has(fields::EMBEDDING)
     }
 
+    #[must_use]
     pub fn has_edges(&self) -> bool {
         self.has(fields::OUT) || self.has(fields::IN)
     }
@@ -557,7 +590,7 @@ impl TensorData {
 
 pub type Result<T> = std::result::Result<T, TensorStoreError>;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorStoreError {
     NotFound(String),
 }
@@ -565,7 +598,7 @@ pub enum TensorStoreError {
 impl std::fmt::Display for TensorStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TensorStoreError::NotFound(key) => write!(f, "Key not found: {}", key),
+            Self::NotFound(key) => write!(f, "Key not found: {key}"),
         }
     }
 }
@@ -584,8 +617,8 @@ pub enum SnapshotError {
 impl std::fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SnapshotError::IoError(e) => write!(f, "I/O error: {}", e),
-            SnapshotError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
+            Self::IoError(e) => write!(f, "I/O error: {e}"),
+            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
         }
     }
 }
@@ -593,35 +626,35 @@ impl std::fmt::Display for SnapshotError {
 impl std::error::Error for SnapshotError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SnapshotError::IoError(e) => Some(e),
-            SnapshotError::SerializationError(_) => None,
+            Self::IoError(e) => Some(e),
+            Self::SerializationError(_) => None,
         }
     }
 }
 
 impl From<std::io::Error> for SnapshotError {
     fn from(e: std::io::Error) -> Self {
-        SnapshotError::IoError(e)
+        Self::IoError(e)
     }
 }
 
 impl From<bincode::Error> for SnapshotError {
     fn from(e: bincode::Error) -> Self {
-        SnapshotError::SerializationError(e.to_string())
+        Self::SerializationError(e.to_string())
     }
 }
 
 pub type SnapshotResult<T> = std::result::Result<T, SnapshotError>;
 
-/// Thread-safe key-value store backed by SlabRouter.
+/// Thread-safe key-value store backed by `SlabRouter`.
 ///
-/// TensorStore provides a unified storage layer for all tensor data, with
+/// `TensorStore` provides a unified storage layer for all tensor data, with
 /// optional Bloom filter for fast negative lookups and instrumentation for
 /// access pattern tracking.
 ///
 /// # Performance
 ///
-/// SlabRouter eliminates resize stalls by using BTreeMap-based storage.
+/// `SlabRouter` eliminates resize stalls by using `BTreeMap`-based storage.
 /// - Throughput: ~3.2M ops/sec PUT, ~5M ops/sec GET (release mode)
 /// - CV: <7% (vs 222% with hash table resize events)
 ///
@@ -636,6 +669,7 @@ pub struct TensorStore {
 impl TensorStore {
     const DEFAULT_SHARD_COUNT: usize = 16;
 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             router: Arc::new(SlabRouter::new()),
@@ -645,6 +679,7 @@ impl TensorStore {
     }
 
     /// Create a store with a specific capacity hint for better initial allocation.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             router: Arc::new(SlabRouter::with_capacity(capacity)),
@@ -661,6 +696,7 @@ impl TensorStore {
     /// # Arguments
     /// * `expected_items` - Expected number of items to store
     /// * `false_positive_rate` - Desired false positive rate (e.g., 0.01 for 1%)
+    #[must_use]
     pub fn with_bloom_filter(expected_items: usize, false_positive_rate: f64) -> Self {
         Self {
             router: Arc::new(SlabRouter::new()),
@@ -675,6 +711,7 @@ impl TensorStore {
     /// Create a store with default Bloom filter settings.
     ///
     /// Uses defaults: 10,000 expected items, 1% false positive rate.
+    #[must_use]
     pub fn with_default_bloom_filter() -> Self {
         Self {
             router: Arc::new(SlabRouter::new()),
@@ -686,7 +723,8 @@ impl TensorStore {
     /// Create a store with memory instrumentation enabled.
     ///
     /// Instrumentation tracks shard access patterns with minimal overhead
-    /// using sampling. Use sample_rate=1 for full tracking, 100 for 1% sampling.
+    /// using sampling. Use `sample_rate=1` for full tracking, 100 for 1% sampling.
+    #[must_use]
     pub fn with_instrumentation(sample_rate: u32) -> Self {
         Self {
             router: Arc::new(SlabRouter::new()),
@@ -699,6 +737,7 @@ impl TensorStore {
     }
 
     /// Create a store with both Bloom filter and instrumentation.
+    #[must_use]
     pub fn with_bloom_and_instrumentation(
         expected_items: usize,
         false_positive_rate: f64,
@@ -718,6 +757,7 @@ impl TensorStore {
     }
 
     /// Compute shard index for a key (for instrumentation).
+    #[allow(clippy::cast_possible_truncation)] // Hash modulo shard count fits in usize
     fn shard_for_key(key: &str) -> usize {
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
@@ -725,17 +765,20 @@ impl TensorStore {
         hasher.finish() as usize % Self::DEFAULT_SHARD_COUNT
     }
 
-    pub fn has_bloom_filter(&self) -> bool {
+    #[must_use]
+    pub const fn has_bloom_filter(&self) -> bool {
         self.bloom_filter.is_some()
     }
 
-    pub fn has_instrumentation(&self) -> bool {
+    #[must_use]
+    pub const fn has_instrumentation(&self) -> bool {
         self.instrumentation.is_some()
     }
 
     /// Get a snapshot of shard access patterns.
     ///
     /// Returns None if instrumentation is not enabled.
+    #[must_use]
     pub fn access_snapshot(&self) -> Option<ShardAccessSnapshot> {
         self.instrumentation.as_ref().map(|i| i.snapshot())
     }
@@ -743,6 +786,7 @@ impl TensorStore {
     /// Get shards sorted by access count (hottest first).
     ///
     /// Returns None if instrumentation is not enabled.
+    #[must_use]
     pub fn hot_shards(&self, limit: usize) -> Option<Vec<(usize, u64)>> {
         self.instrumentation.as_ref().map(|i| i.hot_shards(limit))
     }
@@ -750,12 +794,18 @@ impl TensorStore {
     /// Get shards that haven't been accessed within the threshold (in ms).
     ///
     /// Returns None if instrumentation is not enabled.
+    #[must_use]
     pub fn cold_shards(&self, threshold_ms: u64) -> Option<Vec<usize>> {
         self.instrumentation
             .as_ref()
             .map(|i| i.cold_shards(threshold_ms))
     }
 
+    /// Store a tensor under the given key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operation fails.
     pub fn put(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
         let key = key.into();
         if let Some(ref filter) = self.bloom_filter {
@@ -773,6 +823,10 @@ impl TensorStore {
     ///
     /// If a Bloom filter is enabled, this will first check the filter and return
     /// `NotFound` immediately if the key is definitely not present.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TensorStoreError::NotFound` if the key does not exist.
     pub fn get(&self, key: &str) -> Result<TensorData> {
         // Fast path: check Bloom filter first
         if let Some(ref filter) = self.bloom_filter {
@@ -788,6 +842,11 @@ impl TensorStore {
             .map_err(|_| TensorStoreError::NotFound(key.to_string()))
     }
 
+    /// Delete a key from the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TensorStoreError::NotFound` if the key does not exist.
     pub fn delete(&self, key: &str) -> Result<()> {
         if let Some(ref instr) = self.instrumentation {
             instr.record_write(Self::shard_for_key(key));
@@ -801,6 +860,7 @@ impl TensorStore {
     ///
     /// If a Bloom filter is enabled, this will first check the filter and return
     /// `false` immediately if the key is definitely not present.
+    #[must_use]
     pub fn exists(&self, key: &str) -> bool {
         // Fast path: check Bloom filter first
         if let Some(ref filter) = self.bloom_filter {
@@ -814,14 +874,17 @@ impl TensorStore {
         self.router.exists(key)
     }
 
+    #[must_use]
     pub fn scan(&self, prefix: &str) -> Vec<String> {
         self.router.scan(prefix)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.router.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.router.is_empty()
     }
@@ -833,10 +896,11 @@ impl TensorStore {
         }
     }
 
-    /// Access the underlying SlabRouter for direct slab operations.
+    /// Access the underlying `SlabRouter` for direct slab operations.
     ///
-    /// This provides access to specialized slabs like RelationalSlab for
+    /// This provides access to specialized slabs like `RelationalSlab` for
     /// engines that need direct columnar storage access.
+    #[must_use]
     pub fn router(&self) -> &SlabRouter {
         &self.router
     }
@@ -849,6 +913,7 @@ impl TensorStore {
         self.router.evict_cache(count)
     }
 
+    #[must_use]
     pub fn scan_count(&self, prefix: &str) -> usize {
         self.router.scan_count(prefix)
     }
@@ -890,6 +955,11 @@ impl TensorStore {
     ///
     /// Uses v3 format (SlabRouter-based). Loads auto-detect v2/v3 format.
     ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotError::IoError` if file operations fail, or
+    /// `SnapshotError::SerializationError` if serialization fails.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -905,8 +975,13 @@ impl TensorStore {
 
     /// Load a store from a snapshot file.
     ///
-    /// Auto-detects v2 (HashMap) or v3 (SlabRouter) format.
+    /// Auto-detects v2 (`HashMap`) or v3 (`SlabRouter`) format.
     /// Note: Bloom filter state is not persisted and will need to be re-enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotError::IoError` if file operations fail, or
+    /// `SnapshotError::SerializationError` if deserialization fails.
     ///
     /// # Example
     ///
@@ -928,6 +1003,11 @@ impl TensorStore {
     /// Load a store from a snapshot file with a Bloom filter.
     ///
     /// The Bloom filter is rebuilt from the loaded keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotError::IoError` if file operations fail, or
+    /// `SnapshotError::SerializationError` if deserialization fails.
     pub fn load_snapshot_with_bloom_filter<P: AsRef<Path>>(
         path: P,
         expected_items: usize,
@@ -977,9 +1057,8 @@ impl TensorStore {
         let mut entries = Vec::with_capacity(keys.len());
 
         for key in keys {
-            let tensor = match self.router.get(&key) {
-                Ok(t) => t,
-                Err(_) => continue,
+            let Ok(tensor) = self.router.get(&key) else {
+                continue;
             };
 
             let mut fields = HashMap::new();
@@ -1006,7 +1085,7 @@ impl TensorStore {
                     TensorValue::Pointer(p) => CompressedValue::Pointer(p.clone()),
                     TensorValue::Pointers(ps) => CompressedValue::Pointers(ps.clone()),
                 };
-                fields.insert(field_name.to_string(), compressed);
+                fields.insert(field_name.clone(), compressed);
             }
 
             entries.push(CompressedEntry { key, fields });
@@ -1041,7 +1120,7 @@ impl TensorStore {
             .validate()
             .map_err(|e| SnapshotError::SerializationError(e.to_string()))?;
 
-        let store = TensorStore::new();
+        let store = Self::new();
 
         for entry in snapshot.entries {
             let mut tensor = TensorData::new();
@@ -1066,6 +1145,8 @@ impl TensorStore {
                     } => {
                         // Load directly as sparse vector
                         let pos_ids = tensor_compress::decompress_ids(&positions);
+                        #[allow(clippy::cast_possible_truncation)]
+                        // Sparse vector positions fit in u32
                         let positions_u32: Vec<u32> = pos_ids.iter().map(|&p| p as u32).collect();
                         TensorValue::Sparse(SparseVector::from_parts(
                             dimension,
@@ -1096,6 +1177,10 @@ impl TensorStore {
     }
 
     /// Serialize the store contents to bytes for checkpointing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotError::SerializationError` if serialization fails.
     pub fn snapshot_bytes(&self) -> SnapshotResult<Vec<u8>> {
         self.router
             .to_bytes()
@@ -1103,6 +1188,10 @@ impl TensorStore {
     }
 
     /// Restore store contents from serialized checkpoint bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotError::SerializationError` if deserialization fails.
     pub fn restore_from_bytes(&self, bytes: &[u8]) -> SnapshotResult<()> {
         // Create a new router from the bytes
         let new_router = SlabRouter::from_bytes(bytes)
@@ -1118,6 +1207,167 @@ impl TensorStore {
 
         Ok(())
     }
+
+    // ========== WAL / Durable Operations ==========
+
+    /// Create a store with a Write-Ahead Log for durability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL file cannot be opened or created.
+    pub fn open_durable<P: AsRef<Path>>(wal_path: P, config: WalConfig) -> std::io::Result<Self> {
+        let router = SlabRouter::with_wal(wal_path, config)?;
+        Ok(Self {
+            router: Arc::new(router),
+            bloom_filter: None,
+            instrumentation: None,
+        })
+    }
+
+    /// Create a durable store with a Bloom filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the WAL file cannot be opened or created.
+    pub fn open_durable_with_bloom<P: AsRef<Path>>(
+        wal_path: P,
+        config: WalConfig,
+        expected_items: usize,
+        false_positive_rate: f64,
+    ) -> std::io::Result<Self> {
+        let router = SlabRouter::with_wal(wal_path, config)?;
+        Ok(Self {
+            router: Arc::new(router),
+            bloom_filter: Some(Arc::new(BloomFilter::new(
+                expected_items,
+                false_positive_rate,
+            ))),
+            instrumentation: None,
+        })
+    }
+
+    /// Recover a store from a snapshot and WAL.
+    ///
+    /// This is the primary crash recovery mechanism:
+    /// 1. Load the most recent snapshot (if available)
+    /// 2. Replay the WAL to recover uncommitted changes
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if snapshot loading or WAL replay fails.
+    pub fn recover<P: AsRef<Path>>(
+        wal_path: P,
+        config: &WalConfig,
+        snapshot_path: Option<&Path>,
+    ) -> std::result::Result<Self, SlabRouterError> {
+        let router = SlabRouter::recover(wal_path, config, snapshot_path)?;
+        Ok(Self {
+            router: Arc::new(router),
+            bloom_filter: None,
+            instrumentation: None,
+        })
+    }
+
+    /// Recover a store with a Bloom filter.
+    ///
+    /// The Bloom filter is rebuilt from the recovered keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if recovery fails.
+    pub fn recover_with_bloom<P: AsRef<Path>>(
+        wal_path: P,
+        config: &WalConfig,
+        snapshot_path: Option<&Path>,
+        expected_items: usize,
+        false_positive_rate: f64,
+    ) -> std::result::Result<Self, SlabRouterError> {
+        let router = SlabRouter::recover(wal_path, config, snapshot_path)?;
+
+        let bloom = BloomFilter::new(expected_items, false_positive_rate);
+        for key in router.scan("") {
+            bloom.add(&key);
+        }
+
+        Ok(Self {
+            router: Arc::new(router),
+            bloom_filter: Some(Arc::new(bloom)),
+            instrumentation: None,
+        })
+    }
+
+    /// Store a tensor durably, logging to WAL before applying.
+    ///
+    /// Cache operations are never logged (cache is transient by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL append fails. If no WAL is configured, falls back to
+    /// non-durable `put`.
+    pub fn put_durable(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
+        let key = key.into();
+        if let Some(ref filter) = self.bloom_filter {
+            filter.add(&key);
+        }
+        if let Some(ref instr) = self.instrumentation {
+            instr.record_write(Self::shard_for_key(&key));
+        }
+        self.router
+            .put_durable(&key, tensor)
+            .map_err(|e| TensorStoreError::NotFound(e.to_string()))
+    }
+
+    /// Delete a key durably, logging to WAL before applying.
+    ///
+    /// Cache operations are never logged (cache is transient by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist or WAL append fails.
+    pub fn delete_durable(&self, key: &str) -> Result<()> {
+        if let Some(ref instr) = self.instrumentation {
+            instr.record_write(Self::shard_for_key(key));
+        }
+        self.router
+            .delete_durable(key)
+            .map_err(|e| TensorStoreError::NotFound(e.to_string()))
+    }
+
+    /// Create a checkpoint by saving a snapshot and truncating the WAL.
+    ///
+    /// After checkpoint, all committed data is in the snapshot and the WAL
+    /// can be safely truncated. Returns the checkpoint ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if snapshot save or WAL operations fail.
+    pub fn checkpoint<P: AsRef<Path>>(
+        &self,
+        snapshot_path: P,
+    ) -> std::result::Result<u64, SlabRouterError> {
+        self.router.checkpoint(snapshot_path.as_ref())
+    }
+
+    /// Get WAL status if WAL is configured.
+    #[must_use]
+    pub fn wal_status(&self) -> Option<WalStatus> {
+        self.router.wal_status()
+    }
+
+    /// Check if WAL is enabled.
+    #[must_use]
+    pub fn has_wal(&self) -> bool {
+        self.router.has_wal()
+    }
+
+    /// Flush and sync the WAL to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if WAL fsync fails.
+    pub fn wal_sync(&self) -> std::result::Result<(), SlabRouterError> {
+        self.router.wal_sync()
+    }
 }
 
 impl Default for TensorStore {
@@ -1128,8 +1378,8 @@ impl Default for TensorStore {
 
 /// Unified entity store that provides a shared storage layer for all engines.
 ///
-/// EntityStore wraps a TensorStore and provides entity-oriented access patterns
-/// that enable cross-engine queries. All engines can share the same EntityStore
+/// `EntityStore` wraps a `TensorStore` and provides entity-oriented access patterns
+/// that enable cross-engine queries. All engines can share the same `EntityStore`
 /// to enable unified entity access.
 ///
 /// # Entity Key Format
@@ -1158,34 +1408,41 @@ pub struct EntityStore {
 }
 
 impl EntityStore {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: Arc::new(TensorStore::new()),
         }
     }
 
+    #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             store: Arc::new(store),
         }
     }
 
-    pub fn with_arc(store: Arc<TensorStore>) -> Self {
+    #[must_use]
+    pub const fn with_arc(store: Arc<TensorStore>) -> Self {
         Self { store }
     }
 
+    #[must_use]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
 
+    #[must_use]
     pub fn store_arc(&self) -> Arc<TensorStore> {
         Arc::clone(&self.store)
     }
 
+    #[must_use]
     pub fn entity_key(entity_type: &str, id: u64) -> String {
-        format!("{}:{}", entity_type, id)
+        format!("{entity_type}:{id}")
     }
 
+    #[must_use]
     pub fn parse_key(key: &str) -> Option<(&str, u64)> {
         let parts: Vec<&str> = key.splitn(2, ':').collect();
         if parts.len() == 2 {
@@ -1195,28 +1452,43 @@ impl EntityStore {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist.
     pub fn get(&self, key: &str) -> Result<TensorData> {
         self.store.get(key)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operation fails.
     pub fn put(&self, key: impl Into<String>, data: TensorData) -> Result<()> {
         self.store.put(key, data)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist.
     pub fn delete(&self, key: &str) -> Result<()> {
         self.store.delete(key)
     }
 
+    #[must_use]
     pub fn exists(&self, key: &str) -> bool {
         self.store.exists(key)
     }
 
-    /// Returns existing entity or creates empty TensorData if not found.
+    /// Returns existing entity or creates empty `TensorData` if not found.
+    #[must_use]
     pub fn get_or_create(&self, key: &str) -> TensorData {
         self.store.get(key).unwrap_or_else(|_| TensorData::new())
     }
 
     /// Atomically read-modify-write an entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operation fails.
     pub fn update<F>(&self, key: &str, updater: F) -> Result<()>
     where
         F: FnOnce(&mut TensorData),
@@ -1226,38 +1498,30 @@ impl EntityStore {
         self.store.put(key, data)
     }
 
+    #[must_use]
     pub fn scan_type(&self, entity_type: &str) -> Vec<String> {
-        self.store.scan(&format!("{}:", entity_type))
+        self.store.scan(&format!("{entity_type}:"))
     }
 
+    #[must_use]
     pub fn scan_with_embeddings(&self) -> Vec<String> {
         self.store
             .scan("")
             .into_iter()
-            .filter(|key| {
-                if let Ok(data) = self.store.get(key) {
-                    data.has_embedding()
-                } else {
-                    false
-                }
-            })
+            .filter(|key| self.store.get(key).is_ok_and(|data| data.has_embedding()))
             .collect()
     }
 
+    #[must_use]
     pub fn scan_with_edges(&self) -> Vec<String> {
         self.store
             .scan("")
             .into_iter()
-            .filter(|key| {
-                if let Ok(data) = self.store.get(key) {
-                    data.has_edges()
-                } else {
-                    false
-                }
-            })
+            .filter(|key| self.store.get(key).is_ok_and(|data| data.has_edges()))
             .collect()
     }
 
+    #[must_use]
     pub fn get_embedding(&self, key: &str) -> Option<Vec<f32>> {
         self.store
             .get(key)
@@ -1266,6 +1530,10 @@ impl EntityStore {
     }
 
     /// Creates entity if it doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying storage operation fails.
     pub fn set_embedding(&self, key: &str, embedding: Vec<f32>) -> Result<()> {
         self.update(key, |data| {
             data.set_embedding(embedding);
@@ -1273,6 +1541,10 @@ impl EntityStore {
     }
 
     /// Updates both from and to nodes with edge pointers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if updating either node fails.
     pub fn add_edge(&self, from_key: &str, to_key: &str, edge_key: &str) -> Result<()> {
         self.update(from_key, |data| {
             data.add_outgoing_edge(edge_key.to_string());
@@ -1283,11 +1555,17 @@ impl EntityStore {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist.
     pub fn outgoing_neighbors(&self, key: &str) -> Result<Vec<String>> {
         let data = self.get(key)?;
         Ok(data.outgoing_edges().cloned().unwrap_or_default())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the key does not exist.
     pub fn incoming_neighbors(&self, key: &str) -> Result<Vec<String>> {
         let data = self.get(key)?;
         Ok(data.incoming_edges().cloned().unwrap_or_default())
@@ -1297,16 +1575,19 @@ impl EntityStore {
         self.store.clear();
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.store.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.store.is_empty()
     }
 
+    #[must_use]
     pub fn count_type(&self, entity_type: &str) -> usize {
-        self.store.scan_count(&format!("{}:", entity_type))
+        self.store.scan_count(&format!("{entity_type}:"))
     }
 }
 
@@ -3233,5 +3514,516 @@ mod tests {
 
         let keys = router.scan("table:");
         assert_eq!(keys.len(), 1);
+    }
+
+    // Additional TensorValue coverage tests
+
+    #[test]
+    fn tensor_value_is_vector_predicates() {
+        let vec = TensorValue::Vector(vec![1.0, 2.0]);
+        assert!(vec.is_vector());
+        assert!(!vec.is_sparse());
+
+        let sparse = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0]));
+        assert!(sparse.is_vector());
+        assert!(sparse.is_sparse());
+
+        let scalar = TensorValue::Scalar(ScalarValue::Int(42));
+        assert!(!scalar.is_vector());
+        assert!(!scalar.is_sparse());
+
+        let pointer = TensorValue::Pointer("ref".into());
+        assert!(!pointer.is_vector());
+        assert!(!pointer.is_sparse());
+    }
+
+    #[test]
+    fn tensor_value_memory_bytes() {
+        // Null
+        let null = TensorValue::Scalar(ScalarValue::Null);
+        assert_eq!(null.memory_bytes(), 0);
+
+        // Bool
+        let bool_val = TensorValue::Scalar(ScalarValue::Bool(true));
+        assert_eq!(bool_val.memory_bytes(), 1);
+
+        // Int
+        let int_val = TensorValue::Scalar(ScalarValue::Int(42));
+        assert_eq!(int_val.memory_bytes(), 8);
+
+        // Float
+        let float_val = TensorValue::Scalar(ScalarValue::Float(3.14));
+        assert_eq!(float_val.memory_bytes(), 8);
+
+        // String
+        let string_val = TensorValue::Scalar(ScalarValue::String("hello".into()));
+        assert_eq!(string_val.memory_bytes(), 5);
+
+        // Bytes
+        let bytes_val = TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3, 4]));
+        assert_eq!(bytes_val.memory_bytes(), 4);
+
+        // Vector (4 bytes per f32)
+        let vec_val = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        assert_eq!(vec_val.memory_bytes(), 12);
+
+        // Sparse
+        let sparse = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0, 2.0]));
+        assert!(sparse.memory_bytes() > 0);
+
+        // Pointer
+        let pointer = TensorValue::Pointer("ref:123".into());
+        assert_eq!(pointer.memory_bytes(), 7);
+
+        // Pointers
+        let pointers = TensorValue::Pointers(vec!["a".into(), "bb".into(), "ccc".into()]);
+        assert_eq!(pointers.memory_bytes(), 6); // 1 + 2 + 3
+    }
+
+    #[test]
+    fn tensor_value_cosine_similarity_edge_cases() {
+        // Dimension mismatch
+        let a = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        let b = TensorValue::Vector(vec![1.0, 2.0]);
+        assert!(a.cosine_similarity(&b).is_none());
+
+        // Zero magnitude dense vector
+        let zero_vec = TensorValue::Vector(vec![0.0, 0.0, 0.0]);
+        let nonzero = TensorValue::Vector(vec![1.0, 0.0, 0.0]);
+        let sim = zero_vec.cosine_similarity(&nonzero);
+        assert!(sim.is_some());
+        assert!((sim.unwrap() - 0.0).abs() < 0.001);
+
+        // Both zero magnitude
+        let sim2 = zero_vec.cosine_similarity(&zero_vec);
+        assert!(sim2.is_some());
+        assert!((sim2.unwrap() - 0.0).abs() < 0.001);
+
+        // Mixed sparse-dense
+        let sparse = TensorValue::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let dense = TensorValue::Vector(vec![1.0, 0.0, 0.0]);
+        let sim3 = sparse.cosine_similarity(&dense);
+        assert!(sim3.is_some());
+        assert!((sim3.unwrap() - 1.0).abs() < 0.001);
+
+        // Dense-sparse reversed
+        let sim4 = dense.cosine_similarity(&sparse);
+        assert!(sim4.is_some());
+        assert!((sim4.unwrap() - 1.0).abs() < 0.001);
+
+        // Zero magnitude sparse
+        let zero_sparse = TensorValue::Sparse(SparseVector::new(3));
+        let sim5 = zero_sparse.cosine_similarity(&dense);
+        assert!(sim5.is_some());
+        assert!((sim5.unwrap() - 0.0).abs() < 0.001);
+
+        // Non-vector types
+        let scalar = TensorValue::Scalar(ScalarValue::Int(1));
+        assert!(scalar.cosine_similarity(&dense).is_none());
+        assert!(dense.cosine_similarity(&scalar).is_none());
+    }
+
+    #[test]
+    fn test_tensor_data_entity_id_none() {
+        let mut data = TensorData::new();
+        // No ID field
+        assert!(data.entity_id().is_none());
+
+        // Wrong type for ID field
+        data.set(
+            fields::ID,
+            TensorValue::Scalar(ScalarValue::String("not_an_id".to_string())),
+        );
+        assert!(data.entity_id().is_none());
+    }
+
+    #[test]
+    fn test_tensor_data_label_none() {
+        let mut data = TensorData::new();
+        // No label field
+        assert!(data.label().is_none());
+
+        // Wrong type for label field
+        data.set(fields::LABEL, TensorValue::Scalar(ScalarValue::Int(42)));
+        assert!(data.label().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_error_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let snap_err: SnapshotError = io_err.into();
+        match snap_err {
+            SnapshotError::IoError(e) => assert!(e.to_string().contains("file not found")),
+            _ => panic!("Expected IoError variant"),
+        }
+    }
+
+    #[test]
+    fn test_snapshot_error_from_bincode_error() {
+        // Create a bincode error by trying to deserialize invalid data
+        let invalid_data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let result: std::result::Result<String, _> = bincode::deserialize(invalid_data);
+        if let Err(e) = result {
+            let snap_err: SnapshotError = e.into();
+            match snap_err {
+                SnapshotError::SerializationError(_) => {},
+                _ => panic!("Expected SerializationError variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_tensor_store_router_access() {
+        let store = TensorStore::new();
+        let router = store.router();
+        // Just verify we can access the router
+        assert_eq!(router.len(), 0);
+    }
+
+    #[test]
+    fn test_tensor_store_evict_cache() {
+        let store = TensorStore::new();
+        // Add some cache entries
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(ScalarValue::Int(1)));
+        store.put("_cache:item1", data.clone()).unwrap();
+        store.put("_cache:item2", data.clone()).unwrap();
+
+        // Evict from cache
+        let evicted = store.evict_cache(1);
+        // May or may not evict depending on cache state
+        assert!(evicted <= 2);
+    }
+
+    #[test]
+    fn test_tensor_data_add_incoming_edge_existing() {
+        let mut data = TensorData::new();
+        // First add an incoming edge
+        data.add_incoming_edge("edge1".to_string());
+        // Then add another
+        data.add_incoming_edge("edge2".to_string());
+        // Verify both are present
+        match data.get(fields::IN) {
+            Some(TensorValue::Pointers(edges)) => {
+                assert_eq!(edges.len(), 2);
+                assert!(edges.contains(&"edge1".to_string()));
+                assert!(edges.contains(&"edge2".to_string()));
+            },
+            _ => panic!("Expected Pointers"),
+        }
+    }
+
+    #[test]
+    fn snapshot_compressed_all_value_types() {
+        let store = TensorStore::new();
+
+        // Test all scalar types
+        let mut tensor1 = TensorData::new();
+        tensor1.set("null_val", TensorValue::Scalar(ScalarValue::Null));
+        tensor1.set("bool_val", TensorValue::Scalar(ScalarValue::Bool(true)));
+        tensor1.set("int_val", TensorValue::Scalar(ScalarValue::Int(42)));
+        tensor1.set("float_val", TensorValue::Scalar(ScalarValue::Float(3.14)));
+        tensor1.set(
+            "string_val",
+            TensorValue::Scalar(ScalarValue::String("hello".into())),
+        );
+        tensor1.set(
+            "bytes_val",
+            TensorValue::Scalar(ScalarValue::Bytes(vec![0xAB, 0xCD, 0xEF])),
+        );
+        store.put("scalars", tensor1).unwrap();
+
+        // Test sparse vector
+        let mut tensor2 = TensorData::new();
+        let sparse = SparseVector::from_dense(&[0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 3.0]);
+        tensor2.set("sparse_vec", TensorValue::Sparse(sparse));
+        store.put("sparse", tensor2).unwrap();
+
+        // Test pointer types
+        let mut tensor3 = TensorData::new();
+        tensor3.set("ptr", TensorValue::Pointer("ref:123".into()));
+        tensor3.set(
+            "ptrs",
+            TensorValue::Pointers(vec!["ref:1".into(), "ref:2".into()]),
+        );
+        store.put("pointers", tensor3).unwrap();
+
+        let config = tensor_compress::CompressionConfig::default();
+        let temp = std::env::temp_dir().join("test_all_types_compressed.bin");
+        store.save_snapshot_compressed(&temp, config).unwrap();
+
+        let loaded = TensorStore::load_snapshot_compressed(&temp).unwrap();
+        assert_eq!(loaded.len(), 3);
+
+        // Verify scalars
+        let t1 = loaded.get("scalars").unwrap();
+        assert!(matches!(
+            t1.get("null_val"),
+            Some(TensorValue::Scalar(ScalarValue::Null))
+        ));
+        assert!(matches!(
+            t1.get("bool_val"),
+            Some(TensorValue::Scalar(ScalarValue::Bool(true)))
+        ));
+        assert!(matches!(
+            t1.get("int_val"),
+            Some(TensorValue::Scalar(ScalarValue::Int(42)))
+        ));
+
+        // Verify pointers
+        let t3 = loaded.get("pointers").unwrap();
+        assert!(matches!(
+            t3.get("ptr"),
+            Some(TensorValue::Pointer(ref p)) if p == "ref:123"
+        ));
+        assert!(matches!(t3.get("ptrs"), Some(TensorValue::Pointers(_))));
+
+        std::fs::remove_file(&temp).ok();
+    }
+
+    // ========== TensorStore WAL Tests ==========
+
+    #[test]
+    fn store_open_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+        assert!(store.has_wal());
+        assert!(wal_path.exists());
+    }
+
+    #[test]
+    fn store_open_durable_with_bloom() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store =
+            TensorStore::open_durable_with_bloom(&wal_path, WalConfig::default(), 1000, 0.01)
+                .unwrap();
+        assert!(store.has_wal());
+        assert!(store.has_bloom_filter());
+    }
+
+    #[test]
+    fn store_has_wal_false_without_wal() {
+        let store = TensorStore::new();
+        assert!(!store.has_wal());
+    }
+
+    #[test]
+    fn store_wal_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+        let status = store.wal_status().unwrap();
+        assert_eq!(status.path, wal_path);
+        assert!(status.checksums_enabled);
+    }
+
+    #[test]
+    fn store_wal_status_none_without_wal() {
+        let store = TensorStore::new();
+        assert!(store.wal_status().is_none());
+    }
+
+    #[test]
+    fn store_put_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+        let mut tensor = TensorData::new();
+        tensor.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put_durable("key1", tensor).unwrap();
+
+        assert!(store.exists("key1"));
+
+        let status = store.wal_status().unwrap();
+        assert!(status.entry_count > 0);
+    }
+
+    #[test]
+    fn store_put_durable_without_wal() {
+        let store = TensorStore::new();
+
+        let mut tensor = TensorData::new();
+        tensor.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put_durable("key1", tensor).unwrap();
+
+        assert!(store.exists("key1"));
+    }
+
+    #[test]
+    fn store_delete_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+        store.put_durable("key1", TensorData::new()).unwrap();
+        assert!(store.exists("key1"));
+
+        store.delete_durable("key1").unwrap();
+        assert!(!store.exists("key1"));
+    }
+
+    #[test]
+    fn store_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+        store.put_durable("key1", TensorData::new()).unwrap();
+        store.put_durable("key2", TensorData::new()).unwrap();
+
+        let checkpoint_id = store.checkpoint(&snapshot_path).unwrap();
+        assert_eq!(checkpoint_id, 0);
+
+        assert!(snapshot_path.exists());
+
+        let status = store.wal_status().unwrap();
+        assert_eq!(status.entry_count, 0);
+    }
+
+    #[test]
+    fn store_checkpoint_without_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        let store = TensorStore::new();
+        store.put("key1", TensorData::new()).unwrap();
+
+        let checkpoint_id = store.checkpoint(&snapshot_path).unwrap();
+        assert_eq!(checkpoint_id, 0);
+        assert!(snapshot_path.exists());
+    }
+
+    #[test]
+    fn store_recover_from_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        {
+            let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+            let mut tensor = TensorData::new();
+            tensor.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+            store.put_durable("key1", tensor).unwrap();
+        }
+
+        let recovered = TensorStore::recover(&wal_path, &WalConfig::default(), None).unwrap();
+
+        assert!(recovered.exists("key1"));
+        assert!(recovered.has_wal());
+    }
+
+    #[test]
+    fn store_recover_from_snapshot_and_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        {
+            let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+            store.put_durable("key1", TensorData::new()).unwrap();
+            store.checkpoint(&snapshot_path).unwrap();
+
+            let mut tensor = TensorData::new();
+            tensor.set("value", TensorValue::Scalar(ScalarValue::Int(99)));
+            store.put_durable("key2", tensor).unwrap();
+        }
+
+        let recovered =
+            TensorStore::recover(&wal_path, &WalConfig::default(), Some(&snapshot_path)).unwrap();
+
+        assert!(recovered.exists("key1"));
+        assert!(recovered.exists("key2"));
+    }
+
+    #[test]
+    fn store_recover_with_bloom() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        {
+            let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+            store.put_durable("key1", TensorData::new()).unwrap();
+        }
+
+        let recovered =
+            TensorStore::recover_with_bloom(&wal_path, &WalConfig::default(), None, 1000, 0.01)
+                .unwrap();
+
+        assert!(recovered.exists("key1"));
+        assert!(recovered.has_wal());
+        assert!(recovered.has_bloom_filter());
+    }
+
+    #[test]
+    fn store_wal_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+        store.put_durable("key1", TensorData::new()).unwrap();
+
+        store.wal_sync().unwrap();
+    }
+
+    #[test]
+    fn store_wal_sync_without_wal() {
+        let store = TensorStore::new();
+        store.wal_sync().unwrap();
+    }
+
+    #[test]
+    fn store_crash_recovery_simulation() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+        let snapshot_path = dir.path().join("snapshot.bin");
+
+        {
+            let store = TensorStore::open_durable(&wal_path, WalConfig::default()).unwrap();
+
+            store.put_durable("persisted", TensorData::new()).unwrap();
+            store.checkpoint(&snapshot_path).unwrap();
+
+            let mut tensor = TensorData::new();
+            tensor.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+            store.put_durable("in_wal_only", tensor).unwrap();
+        }
+
+        let recovered =
+            TensorStore::recover(&wal_path, &WalConfig::default(), Some(&snapshot_path)).unwrap();
+
+        assert!(recovered.exists("persisted"));
+        assert!(recovered.exists("in_wal_only"));
+
+        let retrieved = recovered.get("in_wal_only").unwrap();
+        match retrieved.get("value") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => assert_eq!(*v, 42),
+            _ => panic!("Expected Int value"),
+        }
+    }
+
+    #[test]
+    fn store_put_durable_with_bloom_updates_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let store =
+            TensorStore::open_durable_with_bloom(&wal_path, WalConfig::default(), 1000, 0.01)
+                .unwrap();
+
+        store.put_durable("key1", TensorData::new()).unwrap();
+
+        assert!(store.exists("key1"));
+        assert!(!store.exists("nonexistent"));
     }
 }

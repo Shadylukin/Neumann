@@ -1,15 +1,132 @@
 //! Delta-compressed replication for bandwidth-efficient state transfer.
 //!
-//! Uses archetype-based delta encoding to reduce replication bandwidth by 4-6x.
-//! Entities are encoded as (archetype_id + sparse_delta) and batched for transfer.
+//! This module implements archetype-based delta encoding to reduce replication
+//! bandwidth by 4-6x compared to full embedding transfer. Entities are encoded
+//! as `(archetype_id, sparse_delta)` pairs and batched for efficient network transfer.
 //!
-//! ## Backpressure
+//! # Overview
 //!
-//! The replication queue has bounded capacity. When full, `queue_update()` returns
-//! `Err(ChainError::QueueFull)` to signal backpressure. Callers should either:
-//! - Retry after a delay
-//! - Use the async `queue_update_async()` which waits for space
-//! - Start auto-drain via `start_auto_drain()` for background sending
+//! Traditional replication sends full embeddings (e.g., 768 floats = 3KB per entity).
+//! Delta replication exploits the observation that embeddings cluster around archetypes
+//! (common patterns), so most updates can be expressed as small deltas from a reference.
+//!
+//! Key benefits:
+//! - **4-6x bandwidth reduction**: Sparse deltas typically have 10-20% non-zero entries
+//! - **Batched transfer**: Multiple updates sent in single network round-trip
+//! - **Integrity verification**: BLAKE2b checksums detect corruption
+//! - **Automatic archetype learning**: Registry adapts to data distribution
+//!
+//! # Architecture
+//!
+//! ```text
+//! +--------------------+     queue_update()    +------------------+
+//! |  TensorChain       | -------------------> | ReplicationQueue |
+//! |  (leader)          |                      | (bounded mpsc)   |
+//! +--------------------+                      +------------------+
+//!          |                                          |
+//!          | on commit                                | drain loop
+//!          v                                          v
+//! +--------------------+                      +------------------+
+//! | ArchetypeRegistry  |                      | DeltaBatch       |
+//! | - learn archetypes |                      | - updates[]      |
+//! | - encode to delta  |                      | - source_node    |
+//! +--------------------+                      | - sequence_num   |
+//!          |                                  +------------------+
+//!          | sparse delta                             |
+//!          v                                          | send
+//! +--------------------+                              v
+//! | DeltaUpdate        |                      +------------------+
+//! | - archetype_id     | -------------------> |  Network         |
+//! | - delta_indices[]  |     Message::        |  (Transport)     |
+//! | - delta_values[]   |     DeltaBatch       +------------------+
+//! | - checksum         |                              |
+//! +--------------------+                              | receive
+//!                                                     v
+//!                                             +------------------+
+//!                                             | Follower Node    |
+//!                                             | - apply_batch()  |
+//!                                             | - verify checksum|
+//!                                             | - decode delta   |
+//!                                             +------------------+
+//! ```
+//!
+//! # Delta Encoding Process
+//!
+//! 1. **Archetype lookup**: Find the closest archetype to the embedding
+//! 2. **Delta computation**: Subtract archetype from embedding
+//! 3. **Sparsification**: Keep only entries above threshold (default 1e-6)
+//! 4. **Serialization**: Pack as (indices, values) sparse representation
+//!
+//! ```text
+//! Embedding:   [0.1, 0.2, 0.8, 0.1, 0.9, ...]  (768 floats)
+//!                |
+//!                v
+//! Archetype:   [0.1, 0.2, 0.7, 0.1, 0.9, ...]  (closest match)
+//!                |
+//!                v
+//! Delta:       [0.0, 0.0, 0.1, 0.0, 0.0, ...]  (sparse: 90% zeros)
+//!                |
+//!                v
+//! Sparse:      indices=[2], values=[0.1]       (10-20x smaller)
+//! ```
+//!
+//! # Backpressure
+//!
+//! The replication queue has bounded capacity to prevent memory exhaustion.
+//! When full, callers have three options:
+//!
+//! | Method | Behavior |
+//! |--------|----------|
+//! | `queue_update()` | Returns `Err(QueueFull)` immediately |
+//! | `queue_update_async()` | Awaits until space available |
+//! | `start_auto_drain()` | Background task drains queue continuously |
+//!
+//! # Integrity Verification
+//!
+//! Each `DeltaUpdate` includes an optional BLAKE2b-256 checksum covering:
+//! - Key, archetype ID, version, dimension
+//! - All delta indices and values
+//!
+//! Receivers verify checksums and reject corrupted updates, triggering
+//! full re-sync if corruption is detected.
+//!
+//! # Configuration
+//!
+//! | Parameter | Default | Description |
+//! |-----------|---------|-------------|
+//! | `queue_capacity` | 10,000 | Max pending updates before backpressure |
+//! | `batch_size` | 100 | Updates per network batch |
+//! | `batch_timeout_ms` | 10 | Max wait before sending partial batch |
+//! | `delta_threshold` | 1e-6 | Sparsification threshold |
+//! | `enable_checksums` | true | Compute BLAKE2b checksums |
+//! | `max_retries` | 3 | Retries on send failure |
+//!
+//! # Usage
+//!
+//! ```rust
+//! use tensor_chain::delta_replication::{DeltaReplicationManager, DeltaReplicationConfig};
+//! use tensor_store::TensorStore;
+//!
+//! // Create manager with default config
+//! let store = TensorStore::new();
+//! let config = DeltaReplicationConfig::default();
+//! let manager = DeltaReplicationManager::new("node1".to_string(), config);
+//!
+//! // Queue an update for replication
+//! let embedding = vec![0.1, 0.2, 0.3, /* ... */];
+//! // manager.queue_update("entity_key", &embedding, version)?;
+//!
+//! // Or use async version with backpressure handling
+//! // manager.queue_update_async("entity_key", &embedding, version).await?;
+//! ```
+//!
+//! # Metrics
+//!
+//! The manager tracks replication statistics:
+//! - `updates_queued`: Total updates added to queue
+//! - `updates_sent`: Successfully sent to followers
+//! - `bytes_saved`: Estimated bandwidth savings from delta encoding
+//! - `checksum_failures`: Corrupted updates detected
 
 use std::{
     sync::{
@@ -554,6 +671,22 @@ impl DeltaReplicationManager {
         let registry = ArchetypeRegistry::load_from_store(store, 256)
             .unwrap_or_else(|| ArchetypeRegistry::new(256));
         Self::with_registry(local_node, config, Arc::new(RwLock::new(registry)))
+    }
+
+    /// Create a manager with a closed channel for testing error paths.
+    #[cfg(test)]
+    fn with_closed_channel(local_node: NodeId, config: DeltaReplicationConfig) -> Self {
+        let (pending_tx, pending_rx) = mpsc::channel(config.max_pending);
+        drop(pending_rx); // Close the channel immediately
+        Self {
+            config,
+            registry: Arc::new(RwLock::new(ArchetypeRegistry::new(256))),
+            pending_tx,
+            pending_rx: Mutex::new(mpsc::channel(1).1), // Dummy receiver
+            local_node,
+            sequence: AtomicU64::new(0),
+            stats: Arc::new(ReplicationStats::new()),
+        }
     }
 
     /// Persist the archetype registry to the store.
@@ -1361,7 +1494,7 @@ mod tests {
         let manager = DeltaReplicationManager::new("node1".to_string(), config);
 
         let registry = manager.registry();
-        assert!(registry.read().len() == 0);
+        assert!(registry.read().is_empty());
     }
 
     #[test]
@@ -1764,5 +1897,257 @@ mod tests {
         let with_checksum = update.with_checksum();
         assert!(with_checksum.checksum.is_some());
         assert!(with_checksum.verify_checksum());
+    }
+
+    #[test]
+    fn test_persist_registry() {
+        let store = TensorStore::new();
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Initialize with some archetypes
+        let samples = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
+        manager.initialize_archetypes(&samples, 2);
+
+        // Persist to store
+        let result = manager.persist_registry(&store);
+        assert!(result.is_ok());
+
+        // Load it back via a new manager
+        let config2 = DeltaReplicationConfig::default();
+        let manager2 = DeltaReplicationManager::with_store("node2".to_string(), config2, &store);
+
+        // Should have the same archetypes
+        assert_eq!(
+            manager2.registry().read().len(),
+            manager.registry().read().len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_queue_update_async() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Queue using async method
+        let result = manager
+            .queue_update_async("key1".to_string(), &[1.0, 2.0, 3.0, 4.0], 1)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(manager.pending_count(), 1);
+
+        // Queue multiple
+        for i in 2..5 {
+            manager
+                .queue_update_async(format!("key{}", i), &[i as f32], i as u64)
+                .await
+                .unwrap();
+        }
+        assert_eq!(manager.pending_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_send_to_peer() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Queue some updates
+        for i in 0..3 {
+            manager
+                .queue_update(format!("key{}", i), &[i as f32, (i + 1) as f32], i as u64)
+                .unwrap();
+        }
+
+        // Create transport
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Send to peer
+        let sent = manager
+            .send_to_peer(node1.as_ref(), &"node2".to_string())
+            .await
+            .unwrap();
+        assert_eq!(sent, 3);
+        assert_eq!(manager.pending_count(), 0);
+
+        // Stats should be updated
+        let stats = manager.stats();
+        assert_eq!(stats.updates_sent, 3);
+        assert!(stats.batches_sent >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_auto_drain() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig {
+            auto_drain_interval_ms: 10, // Fast interval for testing
+            max_batch_size: 2,
+            ..Default::default()
+        };
+        let manager = Arc::new(DeltaReplicationManager::new("node1".to_string(), config));
+
+        // Create transport
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Start auto drain
+        let handle = manager.start_auto_drain(node1.clone(), "node2".to_string());
+        assert!(handle.is_running());
+
+        // Queue some updates
+        for i in 0..3 {
+            manager
+                .queue_update(format!("key{}", i), &[i as f32], i as u64)
+                .unwrap();
+        }
+
+        // Wait for auto drain to process
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should have drained
+        assert_eq!(manager.pending_count(), 0);
+
+        // Shutdown and wait for task to stop
+        handle.shutdown().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!handle.is_running());
+    }
+
+    #[tokio::test]
+    async fn test_send_to_peer_error_handling() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Create transport but don't connect to peer - send should fail
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+
+        // Queue an update
+        manager
+            .queue_update("key1".to_string(), &[1.0, 2.0], 1)
+            .unwrap();
+
+        // Try to send - should fail because peer not connected
+        let result = manager
+            .send_to_peer(node1.as_ref(), &"unknown_peer".to_string())
+            .await;
+
+        // Should error since peer is not connected
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_auto_drain_with_send_failure() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig {
+            auto_drain_interval_ms: 5,
+            max_batch_size: 2,
+            ..Default::default()
+        };
+        let manager = Arc::new(DeltaReplicationManager::new("node1".to_string(), config));
+
+        // Create transport but partition the peer so sends fail
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+        node1.partition(&"node2".to_string()); // Partition so sends fail
+
+        // Start auto drain
+        let handle = manager.start_auto_drain(node1.clone(), "node2".to_string());
+
+        // Queue some updates
+        for i in 0..3 {
+            manager
+                .queue_update(format!("key{}", i), &[i as f32], i as u64)
+                .unwrap();
+        }
+
+        // Wait for auto drain to attempt (will fail due to partition)
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // Auto drain stats should be recorded even on failure
+        let stats = manager.stats();
+        assert!(stats.auto_drains >= 1);
+
+        // Shutdown gracefully and wait for task to stop
+        handle.shutdown().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!handle.is_running());
+    }
+
+    #[tokio::test]
+    async fn test_send_batch_with_final_flag() {
+        use crate::network::MemoryTransport;
+
+        let config = DeltaReplicationConfig {
+            max_batch_size: 10,
+            ..Default::default()
+        };
+        let manager = DeltaReplicationManager::new("node1".to_string(), config);
+
+        // Queue updates
+        for i in 0..3 {
+            manager
+                .queue_update(format!("key{}", i), &[i as f32, (i + 1) as f32], i as u64)
+                .unwrap();
+        }
+
+        // Create connected transport
+        let node1 = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node2 = Arc::new(MemoryTransport::new("node2".to_string()));
+        node1.connect_to("node2".to_string(), node2.sender());
+
+        // Send - should create batch with is_final=true since queue empties
+        let sent = manager
+            .send_to_peer(node1.as_ref(), &"node2".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(sent, 3);
+
+        // Verify stats track the batch
+        let stats = manager.stats();
+        assert!(stats.bytes_sent > 0);
+    }
+
+    #[test]
+    fn test_queue_update_channel_closed() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::with_closed_channel("node1".to_string(), config);
+
+        // Try to queue - should get NetworkError due to closed channel
+        let result = manager.queue_update("key1".to_string(), &[1.0, 2.0], 1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChainError::NetworkError(msg) => {
+                assert!(msg.contains("closed"));
+            },
+            other => panic!("Expected NetworkError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_queue_update_async_channel_closed() {
+        let config = DeltaReplicationConfig::default();
+        let manager = DeltaReplicationManager::with_closed_channel("node1".to_string(), config);
+
+        // Try async queue - should get NetworkError
+        let result = manager
+            .queue_update_async("key1".to_string(), &[1.0, 2.0], 1)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChainError::NetworkError(msg) => {
+                assert!(msg.contains("closed"));
+            },
+            other => panic!("Expected NetworkError, got {:?}", other),
+        }
     }
 }

@@ -9,6 +9,7 @@
 ## Reporting a Vulnerability
 
 We take security seriously, especially given that Neumann includes:
+
 - `tensor_vault`: AES-256-GCM encrypted secret storage
 - `tensor_blob`: Content-addressable storage with integrity verification
 - Cryptographic key derivation (Argon2id)
@@ -19,7 +20,7 @@ We take security seriously, especially given that Neumann includes:
 
 Instead, report them via:
 
-1. **Email**: lukin@scrunchee.ai
+1. **Email**: [lukin@scrunchee.ai](mailto:lukin@scrunchee.ai)
    - Use subject line: `[SECURITY] Neumann: Brief description`
    - Include "SECURITY" in the subject
 
@@ -57,18 +58,21 @@ Instead, report them via:
 Neumann implements several security measures:
 
 ### Cryptography (tensor_vault)
+
 - AES-256-GCM for secret encryption
 - Argon2id for key derivation (memory-hard, side-channel resistant)
 - Secure key zeroization on drop
 - Graph-based access control
 
 ### Code Quality
+
 - `forbid(unsafe_code)` in most crates
 - Miri testing for undefined behavior detection
 - `cargo audit` in CI for dependency vulnerabilities
 - Strict Clippy lints
 
 ### Integrity (tensor_blob)
+
 - SHA-256 content addressing
 - Checksum verification on read
 - Integrity repair tools
@@ -76,19 +80,23 @@ Neumann implements several security measures:
 ## Scope
 
 In scope:
+
 - All Rust code in this repository
 - Cryptographic implementations
 - Access control logic
 - Data integrity mechanisms
 
 Out of scope:
+
 - Denial of service (unless caused by small inputs)
 - Issues in dependencies (report upstream, but let us know)
 - Social engineering
 
 ## Recognition
 
-We appreciate security researchers who help keep Neumann secure. With your permission, we'll acknowledge your contribution in:
+We appreciate security researchers who help keep Neumann secure. With your
+permission, we'll acknowledge your contribution in:
+
 - Security advisories
 - Release notes
 - CONTRIBUTORS.md (if created)

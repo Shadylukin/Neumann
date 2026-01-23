@@ -729,6 +729,7 @@ impl SignedGossipMessage {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -769,7 +770,7 @@ mod tests {
 
         // Values should be in [-1, 1] range
         for &val in embedding.values() {
-            assert!(val >= -1.0 && val <= 1.0, "Value out of range: {}", val);
+            assert!((-1.0..=1.0).contains(&val), "Value out of range: {}", val);
         }
     }
 
