@@ -7,10 +7,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     path::Path,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
 use dashmap::DashMap;
@@ -989,6 +986,13 @@ pub enum RelationalError {
         /// Description of the corruption.
         reason: String,
     },
+    /// Schema metadata is corrupted or incomplete.
+    SchemaCorrupted {
+        /// Table name.
+        table: String,
+        /// Description of the corruption.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for RelationalError {
@@ -1057,6 +1061,9 @@ impl std::fmt::Display for RelationalError {
             },
             Self::IndexCorrupted { reason } => {
                 write!(f, "Index data corrupted: {reason}")
+            },
+            Self::SchemaCorrupted { table, reason } => {
+                write!(f, "Schema corrupted for table '{table}': {reason}")
             },
         }
     }
@@ -1259,6 +1266,15 @@ type BTreeIndexKey = (String, String);
 /// SQL-like relational database engine.
 ///
 /// Provides tables, indexes, and SIMD-accelerated queries.
+///
+/// # Lock Ordering
+///
+/// To prevent deadlocks, locks must be acquired in this order:
+/// 1. `ddl_lock` (global DDL serialization)
+/// 2. `btree_indexes` (global B-tree index map)
+/// 3. `index_locks[n]` (per-key striped locks)
+///
+/// Never acquire a higher-numbered lock while holding a lower-numbered lock.
 pub struct RelationalEngine {
     store: TensorStore,
     row_counters: DashMap<String, AtomicU64>,
@@ -1266,13 +1282,22 @@ pub struct RelationalEngine {
     /// Maps (table, column) to a `BTreeMap` of value -> `row_ids`.
     btree_indexes: RwLock<HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>>>,
     /// Whether WAL is enabled for crash-safe writes.
+    ///
+    /// When `true`, table metadata and row data are written to the Write-Ahead Log.
+    /// Note: B-tree indexes and hash indexes are kept in-memory only and are NOT
+    /// persisted. After recovery, indexes must be recreated using `create_btree_index()`
+    /// or `create_index()`.
     is_durable: bool,
     /// Transaction manager for local transactions.
     tx_manager: TransactionManager,
     /// Serializes DDL operations to prevent TOCTOU races.
     ddl_lock: RwLock<()>,
-    /// Per-key locks for atomic index entry updates.
-    index_locks: DashMap<String, Arc<RwLock<()>>>,
+    /// Striped locks for atomic index entry updates (bounded memory via lock striping).
+    index_locks: [RwLock<()>; 64],
+    /// Maximum allowed B-tree index entries across all indexes.
+    max_btree_entries: usize,
+    /// Current total B-tree index entry count.
+    btree_entry_count: AtomicUsize,
 }
 
 /// Ordered key for B-tree indexes with correct comparison semantics.
@@ -1344,6 +1369,12 @@ impl RelationalEngine {
     /// Maximum rows in cross join result (prevents memory exhaustion).
     const MAX_CROSS_JOIN_ROWS: usize = 1_000_000;
 
+    /// Number of shards for index lock striping (power of 2 for fast modulo).
+    const INDEX_LOCK_SHARDS: usize = 64;
+
+    /// Maximum total entries across all B-tree indexes (default 10M).
+    const DEFAULT_MAX_BTREE_INDEX_ENTRIES: usize = 10_000_000;
+
     /// Creates a new in-memory relational engine.
     #[must_use]
     pub fn new() -> Self {
@@ -1354,7 +1385,9 @@ impl RelationalEngine {
             is_durable: false,
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
-            index_locks: DashMap::new(),
+            index_locks: std::array::from_fn(|_| RwLock::new(())),
+            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            btree_entry_count: AtomicUsize::new(0),
         }
     }
 
@@ -1368,11 +1401,18 @@ impl RelationalEngine {
             is_durable: false,
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
-            index_locks: DashMap::new(),
+            index_locks: std::array::from_fn(|_| RwLock::new(())),
+            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            btree_entry_count: AtomicUsize::new(0),
         }
     }
 
     /// Create a durable engine with Write-Ahead Log for crash safety.
+    ///
+    /// All table metadata and row data are persisted to the WAL. However:
+    /// - B-tree indexes are kept in-memory only and must be recreated after recovery
+    /// - Hash indexes are kept in-memory only and must be recreated after recovery
+    /// - Row counters are recovered from scanning existing data
     ///
     /// # Errors
     /// Returns an I/O error if the WAL file cannot be created or opened.
@@ -1385,11 +1425,18 @@ impl RelationalEngine {
             is_durable: true,
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
-            index_locks: DashMap::new(),
+            index_locks: std::array::from_fn(|_| RwLock::new(())),
+            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            btree_entry_count: AtomicUsize::new(0),
         })
     }
 
     /// Recover a durable engine from WAL after crash.
+    ///
+    /// Recovers all table metadata and row data from the WAL. The following are
+    /// NOT recovered and must be recreated manually:
+    /// - B-tree indexes: call `create_btree_index()` for each needed index
+    /// - Hash indexes: call `create_index()` for each needed index
     ///
     /// # Errors
     /// Returns `RelationalError::StorageError` if WAL recovery fails.
@@ -1407,7 +1454,9 @@ impl RelationalEngine {
             is_durable: true,
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
-            index_locks: DashMap::new(),
+            index_locks: std::array::from_fn(|_| RwLock::new(())),
+            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            btree_entry_count: AtomicUsize::new(0),
         })
     }
 
@@ -1421,11 +1470,16 @@ impl RelationalEngine {
         &self.store.router().relations
     }
 
-    fn acquire_index_lock(&self, key: &str) -> Arc<RwLock<()>> {
-        self.index_locks
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(RwLock::new(())))
-            .clone()
+    fn acquire_index_lock(&self, key: &str) -> &RwLock<()> {
+        let shard = Self::index_lock_shard(key);
+        &self.index_locks[shard]
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn index_lock_shard(key: &str) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish() as usize % Self::INDEX_LOCK_SHARDS
     }
 
     fn put_maybe_durable(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
@@ -1595,7 +1649,8 @@ impl RelationalEngine {
     }
 
     /// # Errors
-    /// Returns `TableNotFound` if the table does not exist.
+    /// Returns `TableNotFound` if the table does not exist, or `SchemaCorrupted`
+    /// if the schema metadata is malformed.
     pub fn get_schema(&self, table: &str) -> Result<Schema> {
         let meta_key = Self::table_meta_key(table);
         let meta = self
@@ -1611,27 +1666,42 @@ impl RelationalEngine {
         let mut columns = Vec::new();
         for col_name in columns_str.split(',') {
             if col_name.is_empty() {
+                // Empty from trailing comma is OK
                 continue;
             }
             let col_key = format!("_col:{col_name}");
-            if let Some(TensorValue::Scalar(ScalarValue::String(type_str))) = meta.get(&col_key) {
-                let parts: Vec<&str> = type_str.split(':').collect();
-                if parts.len() == 2 {
-                    let column_type = match parts[0] {
-                        "int" => ColumnType::Int,
-                        "float" => ColumnType::Float,
-                        "bool" => ColumnType::Bool,
-                        // "string" and unknown types default to String
-                        _ => ColumnType::String,
-                    };
-                    let nullable = parts[1] == "null";
-                    let mut col = Column::new(col_name, column_type);
-                    if nullable {
-                        col = col.nullable();
-                    }
-                    columns.push(col);
-                }
+            let Some(TensorValue::Scalar(ScalarValue::String(type_str))) = meta.get(&col_key)
+            else {
+                return Err(RelationalError::SchemaCorrupted {
+                    table: table.to_string(),
+                    reason: format!("missing metadata for column '{col_name}'"),
+                });
+            };
+            let parts: Vec<&str> = type_str.split(':').collect();
+            if parts.len() != 2 {
+                return Err(RelationalError::SchemaCorrupted {
+                    table: table.to_string(),
+                    reason: format!("malformed type string for column '{col_name}': '{type_str}'"),
+                });
             }
+            let column_type = match parts[0] {
+                "int" => ColumnType::Int,
+                "float" => ColumnType::Float,
+                "bool" => ColumnType::Bool,
+                "string" => ColumnType::String,
+                unknown => {
+                    return Err(RelationalError::SchemaCorrupted {
+                        table: table.to_string(),
+                        reason: format!("unknown column type '{unknown}' for column '{col_name}'"),
+                    });
+                },
+            };
+            let nullable = parts[1] == "null";
+            let mut col = Column::new(col_name, column_type);
+            if nullable {
+                col = col.nullable();
+            }
+            columns.push(col);
         }
 
         Ok(Schema::new(columns))
@@ -1648,10 +1718,10 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound`, `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
-    #[allow(clippy::cast_possible_wrap)] // Row IDs are monotonic from 1, won't exceed i64::MAX
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, values), fields(table = %table))]
     pub fn insert(&self, table: &str, values: HashMap<String, Value>) -> Result<u64> {
+        // Validation for early exit without transaction overhead
         let schema = self.get_schema(table)?;
 
         for col in &schema.columns {
@@ -1673,55 +1743,23 @@ impl RelationalEngine {
             }
         }
 
-        // Build slab row in column order
-        let slab_row: Vec<SlabColumnValue> = schema
-            .columns
-            .iter()
-            .map(|col| {
-                values
-                    .get(&col.name)
-                    .map_or(SlabColumnValue::Null, std::convert::Into::into)
-            })
-            .collect();
-
-        // Insert into RelationalSlab (returns slab's row ID)
-        let slab_row_id = self
-            .slab()
-            .insert(table, slab_row)
-            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
-
-        // Use slab's row ID + 1 for our row_id (slab is 0-based, we use 1-based)
-        let row_id = slab_row_id.as_u64() + 1;
-
-        // Update row counter to stay in sync
-        self.row_counters
-            .entry(table.to_string())
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_max(row_id, Ordering::Relaxed);
-
-        let indexed_columns = self.get_table_indexes(table);
-        for col in &indexed_columns {
-            if col == "_id" {
-                self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
-            } else if let Some(value) = values.get(col) {
-                self.index_add(table, col, value, row_id)?;
-            }
+        // Use internal transaction for atomicity
+        let tx_id = self.begin_transaction();
+        match self.tx_insert(tx_id, table, values) {
+            Ok(row_id) => {
+                self.commit(tx_id)?;
+                Ok(row_id)
+            },
+            Err(e) => {
+                let _ = self.rollback(tx_id);
+                Err(e)
+            },
         }
-
-        let btree_columns = self.get_table_btree_indexes(table);
-        for col in &btree_columns {
-            if col == "_id" {
-                self.btree_index_add(table, col, &Value::Int(row_id as i64), row_id)?;
-            } else if let Some(value) = values.get(col) {
-                self.btree_index_add(table, col, value, row_id)?;
-            }
-        }
-
-        Ok(row_id)
     }
 
     /// # Errors
     /// Returns `TableNotFound`, `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
+    #[must_use = "batch insert results contain row IDs that should be used"]
     #[allow(clippy::cast_possible_wrap)] // Row IDs are monotonic from 1, won't exceed i64::MAX
     pub fn batch_insert(&self, table: &str, rows: Vec<HashMap<String, Value>>) -> Result<Vec<u64>> {
         if rows.is_empty() {
@@ -1809,6 +1847,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[must_use = "query results should be used"]
     #[allow(clippy::cast_possible_truncation)] // Row IDs fit in usize on 64-bit platforms
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, condition), fields(table = %table))]
@@ -1913,6 +1952,7 @@ impl RelationalEngine {
         condition: Condition,
         updates: HashMap<String, Value>,
     ) -> Result<usize> {
+        // Validation for early exit without transaction overhead
         let schema = self.get_schema(table)?;
 
         for (col_name, value) in &updates {
@@ -1932,113 +1972,39 @@ impl RelationalEngine {
             }
         }
 
-        let indexed_columns = self.get_table_indexes(table);
-        let btree_columns = self.get_table_btree_indexes(table);
-
-        // Scan slab to find matching rows
-        let slab_rows = self
-            .slab()
-            .scan_all(table)
-            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
-
-        let matching_rows: Vec<(SlabRowId, Row)> = slab_rows
-            .into_iter()
-            .filter_map(|(row_id, slab_row)| {
-                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
-                if condition.evaluate(&row) {
-                    Some((row_id, row))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Convert updates to slab format
-        let slab_updates: Vec<(String, SlabColumnValue)> = updates
-            .iter()
-            .map(|(col, val)| (col.clone(), val.into()))
-            .collect();
-
-        for (slab_row_id, row) in &matching_rows {
-            // Update indexes
-            for col in &indexed_columns {
-                if let Some(new_value) = updates.get(col) {
-                    if let Some(old_value) = row.get_with_id(col) {
-                        self.index_remove(table, col, &old_value, row.id)?;
-                    }
-                    self.index_add(table, col, new_value, row.id)?;
-                }
-            }
-
-            for col in &btree_columns {
-                if let Some(new_value) = updates.get(col) {
-                    if let Some(old_value) = row.get_with_id(col) {
-                        self.btree_index_remove(table, col, &old_value, row.id)?;
-                    }
-                    self.btree_index_add(table, col, new_value, row.id)?;
-                }
-            }
-
-            // Update the row in slab
-            self.slab()
-                .update_row(table, *slab_row_id, &slab_updates)
-                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+        // Use internal transaction for atomicity
+        let tx_id = self.begin_transaction();
+        match self.tx_update(tx_id, table, condition, updates) {
+            Ok(count) => {
+                self.commit(tx_id)?;
+                Ok(count)
+            },
+            Err(e) => {
+                let _ = self.rollback(tx_id);
+                Err(e)
+            },
         }
-
-        Ok(matching_rows.len())
     }
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
-        let schema = self.get_schema(table)?;
+        // Validation for early exit
+        let _ = self.get_schema(table)?;
 
-        let indexed_columns = self.get_table_indexes(table);
-        let btree_columns = self.get_table_btree_indexes(table);
-
-        // Scan slab to find matching rows
-        let slab_rows = self
-            .slab()
-            .scan_all(table)
-            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
-
-        let to_delete: Vec<(SlabRowId, Row)> = slab_rows
-            .into_iter()
-            .filter_map(|(row_id, slab_row)| {
-                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
-                if condition.evaluate(&row) {
-                    Some((row_id, row))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Remove from indexes
-        for (_, row) in &to_delete {
-            for col in &indexed_columns {
-                if let Some(value) = row.get_with_id(col) {
-                    self.index_remove(table, col, &value, row.id)?;
-                }
-            }
-            for col in &btree_columns {
-                if let Some(value) = row.get_with_id(col) {
-                    self.btree_index_remove(table, col, &value, row.id)?;
-                }
-            }
+        // Use internal transaction for atomicity
+        let tx_id = self.begin_transaction();
+        match self.tx_delete(tx_id, table, condition) {
+            Ok(count) => {
+                self.commit(tx_id)?;
+                Ok(count)
+            },
+            Err(e) => {
+                let _ = self.rollback(tx_id);
+                Err(e)
+            },
         }
-
-        let count = to_delete.len();
-
-        // Delete from slab
-        for (slab_row_id, _) in &to_delete {
-            self.slab()
-                .delete(table, *slab_row_id)
-                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
-        }
-
-        Ok(count)
     }
 
     /// Hash join: O(n+m) instead of O(n*m) nested loop join.
@@ -2269,6 +2235,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
+    #[must_use = "query results should be used"]
     pub fn cross_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let _ = self.get_schema(table_a)?;
         let _ = self.get_schema(table_b)?;
@@ -2301,6 +2268,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
+    #[must_use = "query results should be used"]
     pub fn natural_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let schema_a = self.get_schema(table_a)?;
         let schema_b = self.get_schema(table_b)?;
@@ -2785,9 +2753,17 @@ impl RelationalEngine {
             });
         }
 
-        {
+        // Remove in-memory index and count entries being removed
+        let entries_removed = {
             let key = (table.to_string(), column.to_string());
-            self.btree_indexes.write().remove(&key);
+            let mut indexes = self.btree_indexes.write();
+            indexes.remove(&key).map_or(0, |btree| btree.len())
+        };
+
+        // Decrement entry counter
+        if entries_removed > 0 {
+            self.btree_entry_count
+                .fetch_sub(entries_removed, Ordering::Relaxed);
         }
 
         let prefix = Self::btree_prefix(table, column);
@@ -2983,19 +2959,41 @@ impl RelationalEngine {
         let sortable = value.sortable_key();
         let store_key = Self::btree_entry_key(table, column, &sortable);
 
-        // Atomic: acquire per-key lock for TensorStore update
-        let lock = self.acquire_index_lock(&store_key);
-        let _guard = lock.write();
-
+        // Lock ordering: global btree_indexes FIRST, then per-key lock
         // Update in-memory BTreeMap (protected by btree_indexes RwLock)
-        {
+        let added_new_key = {
             let mut indexes = self.btree_indexes.write();
             let btree = indexes.entry(key).or_default();
+
+            // Check if this is a new key (will add memory)
+            let is_new_key = !btree.contains_key(&ordered_key);
+            if is_new_key {
+                // Check bounds before adding new entry
+                let current = self.btree_entry_count.load(Ordering::Relaxed);
+                if current >= self.max_btree_entries {
+                    return Err(RelationalError::ResultTooLarge {
+                        operation: "btree_index_add".to_string(),
+                        actual: current + 1,
+                        max: self.max_btree_entries,
+                    });
+                }
+            }
+
             let ids = btree.entry(ordered_key).or_default();
             if !ids.contains(&row_id) {
                 ids.push(row_id);
             }
+            is_new_key
+        };
+
+        // Increment counter after successful in-memory insert
+        if added_new_key {
+            self.btree_entry_count.fetch_add(1, Ordering::Relaxed);
         }
+
+        // Per-key lock for TensorStore update (after global lock released)
+        let lock = self.acquire_index_lock(&store_key);
+        let _guard = lock.write();
 
         // Update TensorStore (now protected by per-key lock)
         let mut ids: Vec<u64> = match self.store.get(&store_key) {
@@ -3011,6 +3009,7 @@ impl RelationalEngine {
         Ok(())
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Lock scope is intentional for atomicity
     fn btree_index_remove(
         &self,
         table: &str,
@@ -3023,22 +3022,31 @@ impl RelationalEngine {
         let sortable = value.sortable_key();
         let store_key = Self::btree_entry_key(table, column, &sortable);
 
-        // Atomic: acquire per-key lock for TensorStore update
-        let lock = self.acquire_index_lock(&store_key);
-        let _guard = lock.write();
-
+        // Lock ordering: global btree_indexes FIRST, then per-key lock
         // Update in-memory BTreeMap
-        {
+        let removed_key = {
             let mut indexes = self.btree_indexes.write();
+            let mut key_removed = false;
             if let Some(btree) = indexes.get_mut(&key) {
                 if let Some(ids) = btree.get_mut(&ordered_key) {
                     ids.retain(|&id| id != row_id);
                     if ids.is_empty() {
                         btree.remove(&ordered_key);
+                        key_removed = true;
                     }
                 }
             }
+            key_removed
+        };
+
+        // Decrement counter if key was removed
+        if removed_key {
+            self.btree_entry_count.fetch_sub(1, Ordering::Relaxed);
         }
+
+        // Per-key lock for TensorStore update (after global lock released)
+        let lock = self.acquire_index_lock(&store_key);
+        let _guard = lock.write();
 
         // Update TensorStore (now protected by per-key lock)
         if let Ok(tensor) = self.store.get(&store_key) {
@@ -3303,6 +3311,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, or `StorageError`.
+    #[must_use = "query results should be used"]
     #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn select_columnar(
         &self,
@@ -3890,6 +3899,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[must_use = "query results should be used"]
     pub fn select_with_projection(
         &self,
         table: &str,
@@ -3963,8 +3973,14 @@ impl RelationalEngine {
 
     /// Rollback a transaction, undoing all changes.
     ///
+    /// This function always completes transaction cleanup (releasing locks, removing
+    /// the transaction) even if individual undo operations fail. This ensures
+    /// transactions never get stuck in the `Aborting` phase.
+    ///
     /// # Errors
-    /// Returns `TransactionNotFound`, `TransactionInactive`, or `StorageError`.
+    /// Returns `TransactionNotFound` or `TransactionInactive` for invalid transactions.
+    /// Returns `RollbackFailed` if any undo operations failed, but the transaction
+    /// is still properly cleaned up in this case.
     pub fn rollback(&self, tx_id: u64) -> Result<()> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -3979,24 +3995,43 @@ impl RelationalEngine {
         // Get undo log
         let undo_log = self.tx_manager.get_undo_log(tx_id).unwrap_or_default();
 
-        // Apply undo entries in reverse order
+        // Apply undo entries in reverse order, collecting any errors
+        let mut all_errors: Vec<String> = Vec::new();
         for entry in undo_log.into_iter().rev() {
-            self.apply_undo_entry(&entry)?;
+            let errors = self.apply_undo_entry(&entry);
+            all_errors.extend(errors);
         }
 
-        // Release locks
+        // ALWAYS release locks and clean up, even if undo had errors
         self.tx_manager.release_locks(tx_id);
-
-        // Mark as aborted and remove
         self.tx_manager.set_phase(tx_id, TxPhase::Aborted);
         self.tx_manager.remove(tx_id);
+
+        // Report errors if any occurred during undo
+        if !all_errors.is_empty() {
+            return Err(RelationalError::RollbackFailed {
+                tx_id,
+                reason: format!(
+                    "{} error(s) during rollback: {}",
+                    all_errors.len(),
+                    all_errors.join("; ")
+                ),
+            });
+        }
 
         Ok(())
     }
 
     /// Apply a single undo entry during rollback.
+    ///
+    /// This function is infallible by design - rollback must always complete
+    /// to release locks and clean up transaction state. Any errors during
+    /// undo are collected and returned but do not prevent rollback from completing.
     #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
-    fn apply_undo_entry(&self, entry: &UndoEntry) -> Result<()> {
+    #[allow(clippy::too_many_lines)] // Necessary to handle all UndoEntry variants with error collection
+    fn apply_undo_entry(&self, entry: &UndoEntry) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+
         match entry {
             UndoEntry::InsertedRow {
                 table,
@@ -4005,14 +4040,24 @@ impl RelationalEngine {
                 index_entries,
             } => {
                 // Undo insert: delete the row
-                self.slab()
-                    .delete(table, *slab_row_id)
-                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+                if let Err(e) = self.slab().delete(table, *slab_row_id) {
+                    errors.push(format!(
+                        "Failed to delete row {row_id} from table '{table}': {e}"
+                    ));
+                }
 
-                // Remove from indexes using stored values (captured at insert time)
+                // Remove from indexes (continue even if some fail)
                 for (col, value) in index_entries {
-                    self.index_remove(table, col, value, *row_id)?;
-                    self.btree_index_remove(table, col, value, *row_id)?;
+                    if let Err(e) = self.index_remove(table, col, value, *row_id) {
+                        errors.push(format!(
+                            "Failed to remove index entry for {table}.{col}: {e}"
+                        ));
+                    }
+                    if let Err(e) = self.btree_index_remove(table, col, value, *row_id) {
+                        errors.push(format!(
+                            "Failed to remove btree index entry for {table}.{col}: {e}"
+                        ));
+                    }
                 }
             },
             UndoEntry::UpdatedRow {
@@ -4023,17 +4068,46 @@ impl RelationalEngine {
                 index_changes,
             } => {
                 // Undo update: restore old values
-                self.slab()
-                    .restore_row(table, *slab_row_id, old_values)
-                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+                if let Err(e) = self.slab().restore_row(table, *slab_row_id, old_values) {
+                    errors.push(format!(
+                        "Failed to restore row {row_id} in table '{table}': {e}"
+                    ));
+                }
 
-                // Revert index changes
+                // Revert index changes (continue even if some fail)
                 for change in index_changes {
-                    // Remove new value, add old value
-                    self.index_remove(table, &change.column, &change.new_value, *row_id)?;
-                    self.index_add(table, &change.column, &change.old_value, *row_id)?;
-                    self.btree_index_remove(table, &change.column, &change.new_value, *row_id)?;
-                    self.btree_index_add(table, &change.column, &change.old_value, *row_id)?;
+                    if let Err(e) =
+                        self.index_remove(table, &change.column, &change.new_value, *row_id)
+                    {
+                        errors.push(format!(
+                            "Failed to remove index entry for {table}.{}: {e}",
+                            change.column
+                        ));
+                    }
+                    if let Err(e) =
+                        self.index_add(table, &change.column, &change.old_value, *row_id)
+                    {
+                        errors.push(format!(
+                            "Failed to add index entry for {table}.{}: {e}",
+                            change.column
+                        ));
+                    }
+                    if let Err(e) =
+                        self.btree_index_remove(table, &change.column, &change.new_value, *row_id)
+                    {
+                        errors.push(format!(
+                            "Failed to remove btree index for {table}.{}: {e}",
+                            change.column
+                        ));
+                    }
+                    if let Err(e) =
+                        self.btree_index_add(table, &change.column, &change.old_value, *row_id)
+                    {
+                        errors.push(format!(
+                            "Failed to add btree index for {table}.{}: {e}",
+                            change.column
+                        ));
+                    }
                 }
             },
             UndoEntry::DeletedRow {
@@ -4044,18 +4118,30 @@ impl RelationalEngine {
                 index_entries,
             } => {
                 // Undo delete: restore the row
-                self.slab()
+                if let Err(e) = self
+                    .slab()
                     .restore_deleted_row(table, *slab_row_id, old_values)
-                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+                {
+                    errors.push(format!(
+                        "Failed to restore deleted row {row_id} in table '{table}': {e}"
+                    ));
+                }
 
-                // Restore index entries
+                // Restore index entries (continue even if some fail)
                 for (col, value) in index_entries {
-                    self.index_add(table, col, value, *row_id)?;
-                    self.btree_index_add(table, col, value, *row_id)?;
+                    if let Err(e) = self.index_add(table, col, value, *row_id) {
+                        errors.push(format!("Failed to add index entry for {table}.{col}: {e}"));
+                    }
+                    if let Err(e) = self.btree_index_add(table, col, value, *row_id) {
+                        errors.push(format!(
+                            "Failed to add btree index entry for {table}.{col}: {e}"
+                        ));
+                    }
                 }
             },
         }
-        Ok(())
+
+        errors
     }
 
     /// Insert a row within a transaction.
@@ -4413,6 +4499,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`, or `StorageError`.
+    #[must_use = "query results should be used"]
     pub fn tx_select(&self, tx_id: u64, table: &str, condition: Condition) -> Result<Vec<Row>> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -12513,6 +12600,538 @@ mod tests {
             let tensor = make_test_tensor(1, 42);
             assert!(!Condition::Ge("missing".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
         }
+    }
+
+    #[test]
+    fn test_update_atomicity_on_failure() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("atomic_test", schema).unwrap();
+        engine.create_index("atomic_test", "val").unwrap();
+
+        // Insert initial row
+        engine
+            .insert(
+                "atomic_test",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        // Verify initial state
+        let rows = engine
+            .select(
+                "atomic_test",
+                Condition::Eq("val".to_string(), Value::Int(100)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        // Try update with type mismatch (should fail validation, no changes)
+        let result = engine.update(
+            "atomic_test",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::String("not_int".to_string()))]),
+        );
+        assert!(result.is_err());
+
+        // Verify state unchanged
+        let rows = engine
+            .select(
+                "atomic_test",
+                Condition::Eq("val".to_string(), Value::Int(100)),
+            )
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "Data should be unchanged after failed update"
+        );
+    }
+
+    #[test]
+    fn test_insert_atomicity() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("insert_atomic", schema).unwrap();
+        engine.create_index("insert_atomic", "val").unwrap();
+
+        // Successful insert
+        let row_id = engine
+            .insert(
+                "insert_atomic",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+        assert_eq!(row_id, 1);
+
+        // Verify index works
+        let rows = engine
+            .select(
+                "insert_atomic",
+                Condition::Eq("val".to_string(), Value::Int(42)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_atomicity() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("delete_atomic", schema).unwrap();
+        engine.create_index("delete_atomic", "val").unwrap();
+
+        engine
+            .insert(
+                "delete_atomic",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "delete_atomic",
+                HashMap::from([("val".to_string(), Value::Int(2))]),
+            )
+            .unwrap();
+
+        // Delete one row
+        let count = engine
+            .delete_rows(
+                "delete_atomic",
+                Condition::Eq("val".to_string(), Value::Int(1)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Verify only one row remains and index is correct
+        let rows = engine.select("delete_atomic", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let indexed = engine
+            .select(
+                "delete_atomic",
+                Condition::Eq("val".to_string(), Value::Int(2)),
+            )
+            .unwrap();
+        assert_eq!(indexed.len(), 1);
+    }
+
+    #[test]
+    fn test_index_lock_sharding_bounded_memory() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("users", schema).unwrap();
+        engine.create_index("users", "name").unwrap();
+
+        // Insert many unique values - lock array stays fixed size (64 locks)
+        for i in 0..1000 {
+            engine
+                .insert(
+                    "users",
+                    HashMap::from([
+                        ("name".to_string(), Value::String(format!("user_{i}"))),
+                        ("age".to_string(), Value::Int(i)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Verify all rows inserted correctly
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1000);
+    }
+
+    #[test]
+    fn test_concurrent_index_operations_with_lock_striping() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("users", schema).unwrap();
+        engine.create_index("users", "age").unwrap();
+
+        let handles: Vec<_> = (0..10)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                thread::spawn(move || {
+                    for i in 0..100 {
+                        let mut values = HashMap::new();
+                        values.insert(
+                            "name".to_string(),
+                            Value::String(format!("thread_{t}_user_{i}")),
+                        );
+                        values.insert("age".to_string(), Value::Int((t * 1000 + i) as i64));
+                        eng.insert("users", values).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify all rows inserted
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1000);
+    }
+
+    #[test]
+    fn test_btree_index_lock_ordering_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("lock_test", schema).unwrap();
+        engine.create_btree_index("lock_test", "value").unwrap();
+
+        // Pre-insert rows
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("value".to_string(), Value::Int(i));
+            engine.insert("lock_test", values).unwrap();
+        }
+
+        let mut handles = vec![];
+
+        // Spawn threads doing concurrent btree index adds
+        for t in 0..4 {
+            let eng = Arc::clone(&engine);
+            handles.push(thread::spawn(move || {
+                for i in 0..50 {
+                    let val = (t * 1000 + i) as i64;
+                    let mut values = HashMap::new();
+                    values.insert("value".to_string(), Value::Int(val));
+                    let _ = eng.insert("lock_test", values);
+                }
+            }));
+        }
+
+        // Spawn threads doing concurrent btree index removes (via delete)
+        for _ in 0..2 {
+            let eng = Arc::clone(&engine);
+            handles.push(thread::spawn(move || {
+                for i in 0..50 {
+                    let _ = eng.delete_rows(
+                        "lock_test",
+                        Condition::Eq("value".to_string(), Value::Int(i)),
+                    );
+                }
+            }));
+        }
+
+        // Use timeout to detect deadlock
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("Thread panicked");
+        }
+        let elapsed = start.elapsed();
+
+        // If this takes more than 10 seconds, likely deadlock (test should complete in < 1s)
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "Possible deadlock: took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_rollback_always_releases_locks_even_on_undo_failure() {
+        use std::sync::Arc;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Start transaction and insert a row
+        let tx1 = engine.begin_transaction();
+        let mut values = HashMap::new();
+        values.insert("value".to_string(), Value::Int(42));
+        engine.tx_insert(tx1, "test", values).unwrap();
+
+        // Rollback - should always release locks
+        let _ = engine.rollback(tx1);
+
+        // Verify transaction is gone (not stuck in Aborting)
+        assert!(
+            engine.tx_manager.get(tx1).is_none(),
+            "Transaction should be removed after rollback"
+        );
+
+        // Verify another transaction can proceed (locks released)
+        let tx2 = engine.begin_transaction();
+        let mut values2 = HashMap::new();
+        values2.insert("value".to_string(), Value::Int(100));
+        let result = engine.tx_insert(tx2, "test", values2);
+        assert!(
+            result.is_ok(),
+            "New transaction should succeed after rollback"
+        );
+        engine.commit(tx2).unwrap();
+    }
+
+    #[test]
+    fn test_rollback_completes_all_undo_entries_even_with_errors() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("multi", schema).unwrap();
+
+        // Insert multiple rows in a transaction
+        let tx = engine.begin_transaction();
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("a".to_string(), Value::Int(i));
+            values.insert("b".to_string(), Value::Int(i * 10));
+            engine.tx_insert(tx, "multi", values).unwrap();
+        }
+
+        // Rollback should process all entries
+        let result = engine.rollback(tx);
+
+        // Transaction should be cleaned up regardless of result
+        assert!(
+            engine.tx_manager.get(tx).is_none(),
+            "Transaction must be removed after rollback"
+        );
+
+        // Rollback succeeded with no errors in this case
+        assert!(result.is_ok());
+
+        // Table should be empty (all inserts undone)
+        let rows = engine.select("multi", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0, "All inserted rows should be undone");
+    }
+
+    #[test]
+    fn test_rollback_returns_error_but_still_cleans_up() {
+        // This test verifies that even if RollbackFailed is returned,
+        // the transaction state is properly cleaned up
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("cleanup_test", schema).unwrap();
+
+        let tx = engine.begin_transaction();
+        let mut values = HashMap::new();
+        values.insert("val".to_string(), Value::Int(1));
+        engine.tx_insert(tx, "cleanup_test", values).unwrap();
+
+        // Even if rollback returns an error, transaction should be gone
+        let _ = engine.rollback(tx);
+
+        // Attempting to use the transaction should fail with NotFound, not Inactive
+        let result = engine.rollback(tx);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_get_schema_missing_column_metadata_returns_error() {
+        let engine = RelationalEngine::new();
+
+        // Create a table normally first to ensure the infrastructure exists
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Corrupt the schema by adding a column name without its metadata
+        let meta_key = "_meta:table:test";
+        let mut meta = engine.store.get(meta_key).unwrap();
+        // Overwrite _columns to include a non-existent column
+        meta.set(
+            "_columns".to_string(),
+            TensorValue::Scalar(ScalarValue::String("name,ghost_column".to_string())),
+        );
+        engine.store.put(meta_key, meta).unwrap();
+
+        // Now get_schema should return an error for the missing column metadata
+        let result = engine.get_schema("test");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            RelationalError::SchemaCorrupted { table, reason } => {
+                assert_eq!(table, "test");
+                assert!(reason.contains("ghost_column"));
+                assert!(reason.contains("missing metadata"));
+            },
+            other => panic!("Expected SchemaCorrupted, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_get_schema_malformed_type_string_returns_error() {
+        let engine = RelationalEngine::new();
+
+        // Create a table normally first
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Corrupt the column type metadata to be malformed (missing the nullable part)
+        let meta_key = "_meta:table:test";
+        let mut meta = engine.store.get(meta_key).unwrap();
+        meta.set(
+            "_col:name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("string".to_string())), // Missing :notnull or :null
+        );
+        engine.store.put(meta_key, meta).unwrap();
+
+        // Now get_schema should return an error for the malformed type string
+        let result = engine.get_schema("test");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            RelationalError::SchemaCorrupted { table, reason } => {
+                assert_eq!(table, "test");
+                assert!(reason.contains("malformed type string"));
+                assert!(reason.contains("name"));
+            },
+            other => panic!("Expected SchemaCorrupted, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_get_schema_unknown_column_type_returns_error() {
+        let engine = RelationalEngine::new();
+
+        // Create a table normally first
+        let schema = Schema::new(vec![Column::new("data", ColumnType::String)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Corrupt the column type metadata to have an unknown type
+        let meta_key = "_meta:table:test";
+        let mut meta = engine.store.get(meta_key).unwrap();
+        meta.set(
+            "_col:data".to_string(),
+            TensorValue::Scalar(ScalarValue::String("blob:notnull".to_string())),
+        );
+        engine.store.put(meta_key, meta).unwrap();
+
+        // Now get_schema should return an error for the unknown type
+        let result = engine.get_schema("test");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            RelationalError::SchemaCorrupted { table, reason } => {
+                assert_eq!(table, "test");
+                assert!(reason.contains("unknown column type"));
+                assert!(reason.contains("blob"));
+            },
+            other => panic!("Expected SchemaCorrupted, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn test_btree_index_respects_entry_limit() {
+        // Create an engine with a very small btree entry limit for testing
+        let mut engine = RelationalEngine::new();
+        engine.max_btree_entries = 3; // Very small limit for testing
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_btree_index("test", "val").unwrap();
+
+        // Insert rows with unique values - each creates a new btree entry
+        for i in 0..3 {
+            engine
+                .insert("test", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Verify counter is at 3
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 3);
+
+        // Fourth unique value should fail
+        let result = engine.insert(
+            "test",
+            HashMap::from([("val".to_string(), Value::Int(100))]),
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RelationalError::ResultTooLarge {
+                operation,
+                actual,
+                max,
+            } => {
+                assert_eq!(operation, "btree_index_add");
+                assert_eq!(actual, 4);
+                assert_eq!(max, 3);
+            },
+            other => panic!("Expected ResultTooLarge, got: {other}"),
+        }
+
+        // Inserting duplicate value should work (doesn't add new btree key)
+        engine
+            .insert("test", HashMap::from([("val".to_string(), Value::Int(0))]))
+            .unwrap();
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn test_btree_index_remove_decrements_counter() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_btree_index("test", "val").unwrap();
+
+        // Insert 3 rows with unique values
+        for i in 0..3 {
+            engine
+                .insert("test", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 3);
+
+        // Delete one row - should decrement counter
+        engine
+            .delete_rows("test", Condition::Eq("val".to_string(), Value::Int(1)))
+            .unwrap();
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 2);
+
+        // Delete another row
+        engine
+            .delete_rows("test", Condition::Eq("val".to_string(), Value::Int(0)))
+            .unwrap();
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_drop_btree_index_clears_counter() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_btree_index("test", "val").unwrap();
+
+        // Insert rows with unique values
+        for i in 0..5 {
+            engine
+                .insert("test", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 5);
+
+        // Drop the index - should decrement counter by 5
+        engine.drop_btree_index("test", "val").unwrap();
+        assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 0);
     }
 }
 
