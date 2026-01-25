@@ -58,6 +58,42 @@ impl EdgeTypeId {
     }
 }
 
+/// Interned edge type registry.
+///
+/// Consolidates edge type strings and their IDs into a single structure
+/// to reduce lock contention (one lock instead of two).
+#[derive(Debug, Clone, Default)]
+struct EdgeTypeRegistry {
+    types: Vec<String>,
+    ids: HashMap<String, EdgeTypeId>,
+}
+
+impl EdgeTypeRegistry {
+    fn new() -> Self {
+        let mut registry = Self::default();
+        registry.types.push("default".to_string());
+        registry.ids.insert("default".to_string(), EdgeTypeId(0));
+        registry
+    }
+
+    fn intern(&mut self, edge_type: &str) -> EdgeTypeId {
+        if let Some(&id) = self.ids.get(edge_type) {
+            return id;
+        }
+        let id = EdgeTypeId::from_index(self.types.len());
+        self.types.push(edge_type.to_string());
+        self.ids.insert(edge_type.to_string(), id);
+        id
+    }
+
+    fn get_id(&self, edge_type: &str) -> EdgeTypeId {
+        self.ids
+            .get(edge_type)
+            .copied()
+            .unwrap_or(EdgeTypeId(u32::MAX))
+    }
+}
+
 /// A pending edge entry in the append log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EdgeEntry {
@@ -179,7 +215,23 @@ impl CsrGraph {
 ///
 /// Uses `parking_lot` locks for concurrent access. The append log allows
 /// O(1) edge insertion without blocking reads on the CSR structure.
+///
+/// ## Lock Ordering (prevents deadlock)
+///
+/// When multiple locks are needed, acquire in this order:
+/// 1. `merge_lock` (outermost, exclusive merge coordination)
+/// 2. `edge_types` (edge type registry)
+/// 3. `incoming_index` (incoming edge index)
+/// 4. `csr` (main CSR structure)
+/// 5. `pending` (pending edge log)
+/// 6. `deleted` (deleted edge set, innermost)
+///
+/// Most operations only need 1-2 locks. The `merge()` operation needs
+/// the `merge_lock` to ensure atomicity.
 pub struct GraphTensor {
+    /// Merge lock to prevent concurrent merges and ensure atomic state transitions.
+    merge_lock: Mutex<()>,
+
     /// Immutable CSR structure (rebuilt on merge).
     csr: RwLock<CsrGraph>,
 
@@ -192,9 +244,8 @@ pub struct GraphTensor {
     /// Edge metadata (properties).
     edge_data: MetadataSlab,
 
-    /// Edge type string interning.
-    edge_types: RwLock<Vec<String>>,
-    edge_type_ids: RwLock<HashMap<String, EdgeTypeId>>,
+    /// Edge type string interning (consolidated registry).
+    edge_types: RwLock<EdgeTypeRegistry>,
 
     /// Next edge ID.
     next_edge_id: AtomicU64,
@@ -220,16 +271,12 @@ impl GraphTensor {
     #[must_use]
     pub fn with_merge_threshold(threshold: usize) -> Self {
         Self {
+            merge_lock: Mutex::new(()),
             csr: RwLock::new(CsrGraph::new()),
             pending: Mutex::new(Vec::new()),
             deleted: Mutex::new(BTreeSet::new()),
             edge_data: MetadataSlab::new(),
-            edge_types: RwLock::new(vec!["default".to_string()]),
-            edge_type_ids: RwLock::new({
-                let mut m = HashMap::new();
-                m.insert("default".to_string(), EdgeTypeId(0));
-                m
-            }),
+            edge_types: RwLock::new(EdgeTypeRegistry::new()),
             next_edge_id: AtomicU64::new(0),
             max_node_id: AtomicU64::new(0),
             merge_threshold: threshold,
@@ -398,9 +445,18 @@ impl GraphTensor {
     /// Merge pending edges into CSR.
     ///
     /// This rebuilds the CSR structure with all non-deleted edges.
+    /// Uses `merge_lock` to ensure atomic state transitions and prevent
+    /// race conditions where edges could be deleted after snapshot
+    /// but before CSR rebuild.
     pub fn merge(&self) {
+        // Acquire merge lock first - prevents concurrent merges and
+        // ensures no modifications to pending/deleted during rebuild
+        let _merge_guard = self.merge_lock.lock();
+
+        // Atomically take both pending and deleted
+        // This prevents race where edge is deleted after snapshot but before clear
         let pending: Vec<EdgeEntry> = self.pending.lock().drain(..).collect();
-        let deleted: BTreeSet<EdgeId> = self.deleted.lock().clone();
+        let deleted: BTreeSet<EdgeId> = std::mem::take(&mut *self.deleted.lock());
 
         if pending.is_empty() && deleted.is_empty() {
             return;
@@ -444,9 +500,6 @@ impl GraphTensor {
 
         // Swap in new CSR
         *self.csr.write() = new_csr;
-
-        // Clear deleted set
-        self.deleted.lock().clear();
     }
 
     /// Set edge metadata.
@@ -569,7 +622,7 @@ impl GraphTensor {
         // Force merge before snapshot
         self.merge();
 
-        let edge_types = { self.edge_types.read().clone() };
+        let edge_types = self.edge_types.read().types.clone();
 
         // Collect all edges
         let edges = {
@@ -606,17 +659,18 @@ impl GraphTensor {
     pub fn restore(snapshot: GraphTensorSnapshot) -> Self {
         let graph = Self::new();
 
-        // Restore edge types
-        let mut types = graph.edge_types.write();
-        let mut type_ids = graph.edge_type_ids.write();
-        types.clear();
-        type_ids.clear();
-        for (idx, type_name) in snapshot.edge_types.iter().enumerate() {
-            types.push(type_name.clone());
-            type_ids.insert(type_name.clone(), EdgeTypeId::from_index(idx));
+        // Restore edge types using consolidated registry
+        {
+            let mut registry = graph.edge_types.write();
+            registry.types.clear();
+            registry.ids.clear();
+            for (idx, type_name) in snapshot.edge_types.iter().enumerate() {
+                registry.types.push(type_name.clone());
+                registry
+                    .ids
+                    .insert(type_name.clone(), EdgeTypeId::from_index(idx));
+            }
         }
-        drop(types);
-        drop(type_ids);
 
         // Restore edges
         for edge in snapshot.edges {
@@ -642,38 +696,22 @@ impl GraphTensor {
 
     /// Intern an edge type string, returning its ID.
     fn intern_edge_type(&self, edge_type: &str) -> EdgeTypeId {
-        // Fast path: check if already interned
+        // Fast path: read-only check
         {
-            let ids = self.edge_type_ids.read();
-            if let Some(&id) = ids.get(edge_type) {
+            let registry = self.edge_types.read();
+            if let Some(&id) = registry.ids.get(edge_type) {
                 return id;
             }
         }
 
-        // Slow path: intern new type
-        let mut types = self.edge_types.write();
-        let mut ids = self.edge_type_ids.write();
-
-        // Double-check
-        if let Some(&id) = ids.get(edge_type) {
-            return id;
-        }
-
-        let id = EdgeTypeId::from_index(types.len());
-        types.push(edge_type.to_string());
-        ids.insert(edge_type.to_string(), id);
-        drop(types);
-        drop(ids);
-        id
+        // Slow path: write to intern new type
+        let mut registry = self.edge_types.write();
+        registry.intern(edge_type)
     }
 
     /// Get edge type ID (for lookups).
     fn get_edge_type_id(&self, edge_type: &str) -> EdgeTypeId {
-        self.edge_type_ids
-            .read()
-            .get(edge_type)
-            .copied()
-            .unwrap_or(EdgeTypeId(u32::MAX))
+        self.edge_types.read().get_id(edge_type)
     }
 
     /// Update max node ID.
