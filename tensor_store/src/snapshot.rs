@@ -10,7 +10,7 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{Read, Write},
     path::Path,
 };
 
@@ -43,6 +43,9 @@ pub enum SnapshotVersion {
     V3,
 }
 
+/// Size of the raw header in bytes (magic + version + flags + `entry_count`).
+const HEADER_SIZE: usize = 4 + 4 + 4 + 8;
+
 /// Header for v3 snapshot format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotHeader {
@@ -54,6 +57,30 @@ pub struct SnapshotHeader {
     pub flags: u32,
     /// Total entry count.
     pub entry_count: u64,
+}
+
+impl SnapshotHeader {
+    /// Serialize header to raw bytes (fixed 20-byte format).
+    fn to_raw_bytes(&self) -> [u8; HEADER_SIZE] {
+        let mut buf = [0u8; HEADER_SIZE];
+        buf[0..4].copy_from_slice(&self.magic);
+        buf[4..8].copy_from_slice(&self.version.to_le_bytes());
+        buf[8..12].copy_from_slice(&self.flags.to_le_bytes());
+        buf[12..20].copy_from_slice(&self.entry_count.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize header from raw bytes.
+    const fn from_raw_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
+        Self {
+            magic: [buf[0], buf[1], buf[2], buf[3]],
+            version: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            flags: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            entry_count: u64::from_le_bytes([
+                buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+            ]),
+        }
+    }
 }
 
 impl SnapshotHeader {
@@ -140,8 +167,8 @@ impl From<std::io::Error> for SnapshotFormatError {
     }
 }
 
-impl From<bincode::Error> for SnapshotFormatError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for SnapshotFormatError {
+    fn from(e: bitcode::Error) -> Self {
         Self::SerializationError(e.to_string())
     }
 }
@@ -215,19 +242,18 @@ fn save_v3_with_compression<P: AsRef<Path>>(
 
     let mut file = File::create(&temp_path)?;
 
-    if compress {
-        // Write header first (uncompressed)
-        let header_bytes = bincode::serialize(&snapshot.header)?;
-        file.write_all(&header_bytes)?;
+    // Write header as raw bytes (fixed size for easy parsing)
+    file.write_all(&snapshot.header.to_raw_bytes())?;
 
-        // Compress and write router data
-        let router_bytes = bincode::serialize(&snapshot.router)?;
+    // Serialize router data
+    let router_bytes = bitcode::serialize(&snapshot.router)?;
+
+    if compress {
         let compressed = zstd::encode_all(&router_bytes[..], SNAPSHOT_COMPRESSION_LEVEL)
             .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?;
         file.write_all(&compressed)?;
     } else {
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &snapshot)?;
+        file.write_all(&router_bytes)?;
     }
 
     std::fs::rename(&temp_path, path)?;
@@ -251,14 +277,21 @@ pub fn load<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> 
 
 /// Load from v2 format (HashMap-based).
 fn load_v2<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let data: HashMap<String, TensorData> = bincode::deserialize_from(reader)?;
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let data: HashMap<String, TensorData> = bitcode::deserialize(&bytes)?;
 
     let router = SlabRouter::new();
     for (key, value) in data {
         // Best-effort: put each key into the router
-        let _ = router.put(&key, value);
+        if let Err(e) = router.put(&key, value) {
+            tracing::warn!(
+                key = %key,
+                error = %e,
+                "Failed to restore entry during v2 snapshot load"
+            );
+        }
     }
 
     Ok(router)
@@ -269,8 +302,10 @@ fn load_v2<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
 fn load_v3<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
     let mut file = File::open(path.as_ref())?;
 
-    // First, try to read just the header to check compression flag
-    let header: SnapshotHeader = bincode::deserialize_from(&mut file)?;
+    // Read the fixed-size header
+    let mut header_buf = [0u8; HEADER_SIZE];
+    file.read_exact(&mut header_buf)?;
+    let header = SnapshotHeader::from_raw_bytes(&header_buf);
     header.validate()?;
 
     if header.is_compressed() {
@@ -281,18 +316,16 @@ fn load_v3<P: AsRef<Path>>(path: P) -> Result<SlabRouter, SnapshotFormatError> {
         // Decompress and deserialize router
         let decompressed = zstd::decode_all(&compressed[..])
             .map_err(|e| SnapshotFormatError::IoError(e.to_string()))?;
-        let router: SlabRouterSnapshot = bincode::deserialize(&decompressed)?;
+        let router: SlabRouterSnapshot = bitcode::deserialize(&decompressed)?;
 
         Ok(SlabRouter::restore(router))
     } else {
-        // Uncompressed: re-read the whole file as V3Snapshot
-        // (Need to rewind since we consumed part of it)
-        drop(file);
-        let file = File::open(path.as_ref())?;
-        let reader = BufReader::new(file);
-        let snapshot: V3Snapshot = bincode::deserialize_from(reader)?;
+        // Uncompressed: read remaining router data
+        let mut router_bytes = Vec::new();
+        file.read_to_end(&mut router_bytes)?;
+        let router: SlabRouterSnapshot = bitcode::deserialize(&router_bytes)?;
 
-        Ok(SlabRouter::restore(snapshot.router))
+        Ok(SlabRouter::restore(router))
     }
 }
 
@@ -400,9 +433,9 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("key".to_string(), create_test_data());
 
-        let file = File::create(&path).unwrap();
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &data).unwrap();
+        let mut file = File::create(&path).unwrap();
+        let bytes = bitcode::serialize(&data).unwrap();
+        file.write_all(&bytes).unwrap();
 
         assert_eq!(detect_version(&path).unwrap(), SnapshotVersion::V2);
     }
@@ -417,9 +450,9 @@ mod tests {
         data.insert("user:1".to_string(), create_test_data());
         data.insert("user:2".to_string(), create_test_data());
 
-        let file = File::create(&path).unwrap();
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &data).unwrap();
+        let mut file = File::create(&path).unwrap();
+        let bytes = bitcode::serialize(&data).unwrap();
+        file.write_all(&bytes).unwrap();
 
         // Load with auto-detection
         let loaded = load(&path).unwrap();
@@ -438,9 +471,9 @@ mod tests {
         data.insert("key1".to_string(), create_test_data());
         data.insert("key2".to_string(), create_test_data());
 
-        let file = File::create(&v2_path).unwrap();
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &data).unwrap();
+        let mut file = File::create(&v2_path).unwrap();
+        let bytes = bitcode::serialize(&data).unwrap();
+        file.write_all(&bytes).unwrap();
 
         // Migrate
         migrate_v2_to_v3(&v2_path, &v3_path).unwrap();
@@ -628,9 +661,9 @@ mod tests {
 
         // Create empty v2 format
         let data: HashMap<String, TensorData> = HashMap::new();
-        let file = File::create(&path).unwrap();
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &data).unwrap();
+        let mut file = File::create(&path).unwrap();
+        let bytes = bitcode::serialize(&data).unwrap();
+        file.write_all(&bytes).unwrap();
 
         let loaded = load(&path).unwrap();
         assert!(loaded.is_empty());

@@ -12,6 +12,7 @@
 //! - Zero-copy iteration for HNSW index building
 
 use std::{
+    cell::UnsafeCell,
     collections::BTreeMap,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -94,8 +95,14 @@ pub struct EmbeddingSlab {
     /// Embeddings per chunk.
     chunk_capacity: usize,
 
-    /// Chunked storage: each chunk is a fixed-size box.
-    chunks: RwLock<Vec<Box<[f32]>>>,
+    /// Chunked storage with interior mutability for embedding updates.
+    ///
+    /// Uses `UnsafeCell` to allow writing to individual slots while other
+    /// threads read different slots. Safety is ensured by:
+    /// - `RwLock` on the outer Vec prevents reallocation during access
+    /// - Each slot is disjoint (indexed by `EntityId` -> chunk + offset)
+    /// - The index `RwLock` prevents concurrent slot assignment
+    chunks: RwLock<Vec<UnsafeCell<Box<[f32]>>>>,
 
     /// `EntityId` -> slot mapping.
     index: RwLock<BTreeMap<EntityId, EmbeddingSlot>>,
@@ -123,8 +130,8 @@ impl EmbeddingSlab {
         let chunk_capacity = chunk_capacity.max(1);
 
         let num_chunks = (initial_capacity / chunk_capacity).max(1);
-        let chunks: Vec<Box<[f32]>> = (0..num_chunks)
-            .map(|_| vec![0.0f32; chunk_capacity * dimension].into_boxed_slice())
+        let chunks: Vec<UnsafeCell<Box<[f32]>>> = (0..num_chunks)
+            .map(|_| UnsafeCell::new(vec![0.0f32; chunk_capacity * dimension].into_boxed_slice()))
             .collect();
 
         Self {
@@ -151,6 +158,31 @@ impl EmbeddingSlab {
         self.dimension
     }
 
+    /// Validate that a slot is within bounds.
+    /// Panics in debug builds if the slot is invalid.
+    #[inline]
+    fn assert_slot_valid(&self, slot: EmbeddingSlot, chunks_len: usize) {
+        let chunk_idx = slot.chunk as usize;
+        let offset = slot.offset as usize;
+        debug_assert!(
+            chunk_idx < chunks_len,
+            "chunk index {chunk_idx} out of bounds (len {chunks_len})",
+        );
+        let chunk_capacity = self.chunk_capacity;
+        debug_assert!(
+            offset < chunk_capacity,
+            "offset {offset} exceeds chunk capacity {chunk_capacity}",
+        );
+        // Validate slice bounds: start + dimension must fit in chunk
+        let start = offset * self.dimension;
+        let end = start + self.dimension;
+        let expected_chunk_size = chunk_capacity * self.dimension;
+        debug_assert!(
+            end <= expected_chunk_size,
+            "slice end {end} exceeds chunk size {expected_chunk_size}",
+        );
+    }
+
     /// Store an embedding for an entity.
     ///
     /// If the entity already has an embedding, it is replaced.
@@ -170,12 +202,15 @@ impl EmbeddingSlab {
         if let Some(&slot) = self.index.read().get(&entity) {
             // Update in-place
             let chunks = self.chunks.read();
+            self.assert_slot_valid(slot, chunks.len());
             let chunk = &chunks[slot.chunk as usize];
             let start = slot.offset as usize * self.dimension;
-            // Safety: we know the slot is valid
+            // SAFETY: RwLock on chunks prevents Vec reallocation. RwLock on index
+            // prevents concurrent slot assignment. Each slot is disjoint.
+            // UnsafeCell provides interior mutability for embedding data.
             unsafe {
-                let ptr = chunk.as_ptr().add(start).cast_mut();
-                std::ptr::copy_nonoverlapping(embedding.as_ptr(), ptr, self.dimension);
+                let slice = &mut *chunk.get();
+                slice[start..start + self.dimension].copy_from_slice(embedding);
             }
             drop(chunks);
             return Ok(());
@@ -186,11 +221,15 @@ impl EmbeddingSlab {
 
         // Write the embedding
         let chunks = self.chunks.read();
+        self.assert_slot_valid(slot, chunks.len());
         let chunk = &chunks[slot.chunk as usize];
         let start = slot.offset as usize * self.dimension;
+        // SAFETY: RwLock on chunks prevents Vec reallocation. RwLock on index
+        // prevents concurrent slot assignment. Each slot is disjoint.
+        // UnsafeCell provides interior mutability for embedding data.
         unsafe {
-            let ptr = chunk.as_ptr().add(start).cast_mut();
-            std::ptr::copy_nonoverlapping(embedding.as_ptr(), ptr, self.dimension);
+            let slice = &mut *chunk.get();
+            slice[start..start + self.dimension].copy_from_slice(embedding);
         }
         drop(chunks);
 
@@ -206,10 +245,13 @@ impl EmbeddingSlab {
     pub fn get(&self, entity: EntityId) -> Option<Vec<f32>> {
         let slot = *self.index.read().get(&entity)?;
 
+        let chunks = self.chunks.read();
+        self.assert_slot_valid(slot, chunks.len());
         let start = slot.offset as usize * self.dimension;
         let end = start + self.dimension;
-        let chunks = self.chunks.read();
-        let embedding = chunks[slot.chunk as usize][start..end].to_vec();
+        // SAFETY: RwLock on chunks prevents Vec reallocation. We only read
+        // the slot data, and writes to other slots don't affect this read.
+        let embedding = unsafe { (&(*chunks[slot.chunk as usize].get()))[start..end].to_vec() };
         drop(chunks);
 
         Some(embedding)
@@ -270,10 +312,14 @@ impl EmbeddingSlab {
         index
             .iter()
             .map(|(&entity, &slot)| {
-                let chunk = &chunks[slot.chunk as usize];
+                self.assert_slot_valid(slot, chunks.len());
                 let start = slot.offset as usize * self.dimension;
                 let end = start + self.dimension;
-                (entity, chunk[start..end].to_vec())
+                // SAFETY: RwLock on chunks prevents Vec reallocation. We only read
+                // the slot data under the read lock.
+                let embedding =
+                    unsafe { (&(*chunks[slot.chunk as usize].get()))[start..end].to_vec() };
+                (entity, embedding)
             })
             .collect()
     }
@@ -289,10 +335,14 @@ impl EmbeddingSlab {
         let chunks = self.chunks.read();
 
         for (&entity, &slot) in index.iter() {
-            let chunk = &chunks[slot.chunk as usize];
+            self.assert_slot_valid(slot, chunks.len());
             let start = slot.offset as usize * self.dimension;
             let end = start + self.dimension;
-            f(entity, &chunk[start..end]);
+            // SAFETY: RwLock on chunks prevents Vec reallocation. We only read
+            // the slot data under the read lock. The reference is valid for
+            // the duration of the callback while we hold the lock.
+            let slice = unsafe { &(&(*chunks[slot.chunk as usize].get()))[start..end] };
+            f(entity, slice);
         }
         drop(index);
         drop(chunks);
@@ -347,10 +397,12 @@ impl EmbeddingSlab {
         let embeddings: Vec<(EntityId, CompressedEmbedding)> = index
             .iter()
             .map(|(&entity, &slot)| {
-                let chunk = &chunks[slot.chunk as usize];
+                self.assert_slot_valid(slot, chunks.len());
                 let start = slot.offset as usize * self.dimension;
                 let end = start + self.dimension;
-                let dense = &chunk[start..end];
+                // SAFETY: RwLock on chunks prevents Vec reallocation. We only read
+                // the slot data under the read lock.
+                let dense = unsafe { &(&(*chunks[slot.chunk as usize].get()))[start..end] };
                 (entity, CompressedEmbedding::from_dense(dense))
             })
             .collect();
@@ -372,7 +424,13 @@ impl EmbeddingSlab {
 
         for (entity, compressed) in snapshot.embeddings {
             let dense = compressed.to_dense();
-            let _ = slab.set(entity, &dense);
+            if let Err(e) = slab.set(entity, &dense) {
+                tracing::warn!(
+                    entity = %entity.as_u64(),
+                    error = %e,
+                    "Failed to restore embedding"
+                );
+            }
         }
 
         slab
@@ -394,13 +452,21 @@ impl EmbeddingSlab {
         // Ensure we have enough chunks
         let mut chunks = self.chunks.write();
         while chunks.len() <= chunk_idx {
-            chunks.push(vec![0.0f32; self.chunk_capacity * self.dimension].into_boxed_slice());
+            chunks.push(UnsafeCell::new(
+                vec![0.0f32; self.chunk_capacity * self.dimension].into_boxed_slice(),
+            ));
         }
         drop(chunks);
 
         EmbeddingSlot::from_position(chunk_idx, offset)
     }
 }
+
+// SAFETY: EmbeddingSlab uses RwLock for all mutable access to chunks and index.
+// The UnsafeCell is only accessed through the RwLock-protected methods, ensuring
+// proper synchronization.
+unsafe impl Send for EmbeddingSlab {}
+unsafe impl Sync for EmbeddingSlab {}
 
 impl Default for EmbeddingSlab {
     fn default() -> Self {
@@ -971,7 +1037,7 @@ mod tests {
         }
 
         // Serialize and check size is much smaller than dense would be
-        let serialized = bincode::serialize(&snapshot).unwrap();
+        let serialized = bitcode::serialize(&snapshot).unwrap();
         let dense_size = 5 * 1000 * 4 + 100; // 5 vectors * 1000 floats * 4 bytes + overhead
         assert!(
             serialized.len() < dense_size / 10,
@@ -989,5 +1055,24 @@ mod tests {
             CompressedEmbedding::Dense(v) => assert!(v.is_empty()),
             _ => panic!("Expected Dense for empty vector"),
         }
+    }
+
+    #[test]
+    fn test_slot_bounds_validation() {
+        let slab = EmbeddingSlab::new(4, 10);
+
+        // Normal operations should not trigger bounds assertions
+        for i in 0..100 {
+            slab.set(EntityId::new(i), &[1.0, 2.0, 3.0, 4.0]).unwrap();
+        }
+
+        // Read back all - exercises bounds checks in get/iter
+        for i in 0..100 {
+            let _ = slab.get(EntityId::new(i));
+        }
+
+        slab.iter_with(|_, _| {});
+        let _ = slab.entries();
+        let _ = slab.snapshot();
     }
 }

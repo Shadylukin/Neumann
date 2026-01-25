@@ -10,10 +10,22 @@
 //! the `EntityId`. New keys append to the vocabulary, maintaining stable IDs.
 //! A sorted hash index provides O(log n) forward lookups.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    hash::{Hash, Hasher},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use parking_lot::RwLock;
+use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
+
+/// Hash a string key to a u64 using `FxHasher`.
+#[inline]
+fn hash_key(key: &str) -> u64 {
+    let mut hasher = FxHasher::default();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// A unique identifier for an entity in the store.
 ///
@@ -121,7 +133,7 @@ impl EntityIndex {
     /// O(log n) binary search + O(k) collision scan where k is typically 1.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<EntityId> {
-        let hash = fxhash::hash64(key);
+        let hash = hash_key(key);
         // Lock order: vocabulary -> reverse (consistent with get_or_create)
         let vocab = self.vocabulary.read();
         let reverse = self.reverse.read();
@@ -168,7 +180,7 @@ impl EntityIndex {
         let mut reverse = self.reverse.write();
 
         // Double-check after acquiring write lock (another thread may have inserted)
-        let hash = fxhash::hash64(key);
+        let hash = hash_key(key);
         let insert_pos = reverse.partition_point(|(h, _)| *h < hash);
 
         // Check for existing entry with same hash
