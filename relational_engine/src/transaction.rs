@@ -51,6 +51,8 @@ pub enum UndoEntry {
         slab_row_id: SlabRowId,
         /// Engine row ID.
         row_id: u64,
+        /// Index entries to remove on rollback.
+        index_entries: Vec<(String, Value)>,
     },
     /// Undo an update: restore old values.
     UpdatedRow {
@@ -489,6 +491,7 @@ mod tests {
             table: "users".to_string(),
             slab_row_id: SlabRowId::new(0),
             row_id: 1,
+            index_entries: vec![],
         });
         assert_eq!(tx.undo_log.len(), 1);
         assert!(tx.affected_tables.contains("users"));
@@ -557,6 +560,7 @@ mod tests {
                 table: "users".to_string(),
                 slab_row_id: SlabRowId::new(0),
                 row_id: 1,
+                index_entries: vec![],
             },
         );
 
@@ -628,6 +632,7 @@ mod tests {
             table: "t".to_string(),
             slab_row_id: SlabRowId::new(0),
             row_id: 1,
+            index_entries: vec![("col".to_string(), Value::Int(42))],
         };
 
         let update = UndoEntry::UpdatedRow {

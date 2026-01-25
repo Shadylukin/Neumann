@@ -3975,44 +3975,17 @@ impl RelationalEngine {
                 table,
                 slab_row_id,
                 row_id,
+                index_entries,
             } => {
                 // Undo insert: delete the row
                 self.slab()
                     .delete(table, *slab_row_id)
                     .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
-                // Remove from indexes
-                let indexed_columns = self.get_table_indexes(table);
-                let btree_columns = self.get_table_btree_indexes(table);
-
-                // Get row values for index removal
-                if let Ok(Some(slab_row)) = self.slab().get(table, *slab_row_id) {
-                    let schema = self.get_schema(table)?;
-                    for col in &indexed_columns {
-                        if col == "_id" {
-                            self.index_remove(table, col, &Value::Int(*row_id as i64), *row_id)?;
-                        } else if let Some(col_idx) =
-                            schema.columns.iter().position(|c| &c.name == col)
-                        {
-                            let value: Value = slab_row[col_idx].clone().into();
-                            self.index_remove(table, col, &value, *row_id)?;
-                        }
-                    }
-                    for col in &btree_columns {
-                        if col == "_id" {
-                            self.btree_index_remove(
-                                table,
-                                col,
-                                &Value::Int(*row_id as i64),
-                                *row_id,
-                            )?;
-                        } else if let Some(col_idx) =
-                            schema.columns.iter().position(|c| &c.name == col)
-                        {
-                            let value: Value = slab_row[col_idx].clone().into();
-                            self.btree_index_remove(table, col, &value, *row_id)?;
-                        }
-                    }
+                // Remove from indexes using stored values (captured at insert time)
+                for (col, value) in index_entries {
+                    self.index_remove(table, col, value, *row_id)?;
+                    self.btree_index_remove(table, col, value, *row_id)?;
                 }
             },
             UndoEntry::UpdatedRow {
@@ -4144,6 +4117,16 @@ impl RelationalEngine {
             }
         }
 
+        // Capture index entries for rollback (must happen AFTER index updates)
+        let mut index_entries: Vec<(String, Value)> = Vec::new();
+        for col in indexed_columns.iter().chain(btree_columns.iter()) {
+            if col == "_id" {
+                index_entries.push((col.clone(), Value::Int(row_id as i64)));
+            } else if let Some(value) = values.get(col) {
+                index_entries.push((col.clone(), value.clone()));
+            }
+        }
+
         // Record undo entry
         self.tx_manager.record_undo(
             tx_id,
@@ -4151,6 +4134,7 @@ impl RelationalEngine {
                 table: table.to_string(),
                 slab_row_id,
                 row_id,
+                index_entries,
             },
         );
 
@@ -11057,6 +11041,64 @@ mod tests {
         // Verify original value restored
         let rows = engine.select("tx_rb_btree", Condition::True).unwrap();
         assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_tx_insert_rollback_cleans_index() {
+        // Regression test: ensure index entries are removed after insert rollback
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("idx_clean", schema).unwrap();
+        engine.create_index("idx_clean", "val").unwrap();
+
+        let tx = engine.begin_transaction();
+        engine
+            .tx_insert(
+                tx,
+                "idx_clean",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+        engine.rollback(tx).unwrap();
+
+        // Verify index has no entries for value 42
+        let rows = engine
+            .select(
+                "idx_clean",
+                Condition::Eq("val".to_string(), Value::Int(42)),
+            )
+            .unwrap();
+        assert!(
+            rows.is_empty(),
+            "Index should not contain stale entries after rollback"
+        );
+
+        // Also verify with btree index
+        let engine2 = RelationalEngine::new();
+        let schema2 = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine2.create_table("btree_clean", schema2).unwrap();
+        engine2.create_btree_index("btree_clean", "val").unwrap();
+
+        let tx2 = engine2.begin_transaction();
+        engine2
+            .tx_insert(
+                tx2,
+                "btree_clean",
+                HashMap::from([("val".to_string(), Value::Int(99))]),
+            )
+            .unwrap();
+        engine2.rollback(tx2).unwrap();
+
+        let rows2 = engine2
+            .select(
+                "btree_clean",
+                Condition::Eq("val".to_string(), Value::Int(99)),
+            )
+            .unwrap();
+        assert!(
+            rows2.is_empty(),
+            "BTree index should not contain stale entries after rollback"
+        );
     }
 
     #[test]
