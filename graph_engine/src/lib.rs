@@ -557,6 +557,87 @@ impl VariableLengthPaths {
     }
 }
 
+/// Pagination configuration for graph queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Pagination {
+    /// Number of items to skip.
+    pub skip: usize,
+    /// Maximum items to return.
+    pub limit: Option<usize>,
+    /// Whether to compute total count (expensive).
+    pub count_total: bool,
+}
+
+impl Pagination {
+    #[must_use]
+    pub const fn new(skip: usize, limit: usize) -> Self {
+        Self {
+            skip,
+            limit: Some(limit),
+            count_total: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn limit(limit: usize) -> Self {
+        Self {
+            skip: 0,
+            limit: Some(limit),
+            count_total: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_total_count(mut self) -> Self {
+        self.count_total = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.skip == 0 && self.limit.is_none()
+    }
+}
+
+/// Result of a paginated graph query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PagedResult<T> {
+    pub items: Vec<T>,
+    pub total_count: Option<usize>,
+    pub has_more: bool,
+}
+
+impl<T> PagedResult<T> {
+    #[must_use]
+    pub fn new(items: Vec<T>, total_count: Option<usize>, has_more: bool) -> Self {
+        Self {
+            items,
+            total_count,
+            has_more,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+}
+
+impl<T> Default for PagedResult<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            total_count: None,
+            has_more: false,
+        }
+    }
+}
+
 /// Min-heap entry for Dijkstra (smallest distance first).
 #[derive(Copy, Clone)]
 struct DijkstraEntry {
@@ -2489,6 +2570,581 @@ impl GraphEngine {
 
         neighbors.sort_by_key(|n| n.id);
         Ok(neighbors)
+    }
+
+    // ========== Paginated Queries ==========
+
+    /// Returns all nodes in the graph with pagination.
+    #[must_use]
+    pub fn all_nodes_paginated(&self, pagination: Pagination) -> PagedResult<Node> {
+        let mut node_ids: Vec<u64> = self
+            .store
+            .scan("node:")
+            .iter()
+            .filter_map(|k| {
+                let suffix = k.strip_prefix("node:")?;
+                if suffix.contains(':') {
+                    return None;
+                }
+                suffix.parse().ok()
+            })
+            .collect();
+        node_ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(node_ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = node_ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Node> = node_ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+
+        PagedResult::new(items, total_count, has_more)
+    }
+
+    /// Returns all edges in the graph with pagination.
+    #[must_use]
+    pub fn all_edges_paginated(&self, pagination: Pagination) -> PagedResult<Edge> {
+        let mut edge_ids: Vec<u64> = self
+            .store
+            .scan("edge:")
+            .iter()
+            .filter_map(|k| {
+                let suffix = k.strip_prefix("edge:")?;
+                suffix.parse().ok()
+            })
+            .collect();
+        edge_ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(edge_ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = edge_ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Edge> = edge_ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_edge(id).ok())
+            .collect();
+
+        PagedResult::new(items, total_count, has_more)
+    }
+
+    /// Find nodes by label with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_label_paginated(
+        &self,
+        label: &str,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Node>> {
+        self.find_nodes_by_property_paginated(
+            "_label",
+            &PropertyValue::String(label.to_string()),
+            pagination,
+        )
+    }
+
+    /// Find nodes by exact property value match with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_property_paginated(
+        &self,
+        property: &str,
+        value: &PropertyValue,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Node>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Node, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        let mut ids: Vec<u64> = if let Some(btree) = indexes.get(&key) {
+            btree.get(&ordered_value).cloned().unwrap_or_default()
+        } else {
+            drop(indexes);
+            self.scan_node_ids_by_property(property, value)
+        };
+        ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Node> = ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    /// Find nodes using a range comparison with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_where_paginated(
+        &self,
+        property: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Node>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Node, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        let mut ids: Vec<u64> = if let Some(btree) = indexes.get(&key) {
+            match op {
+                RangeOp::Lt => btree
+                    .range(..ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Le => btree
+                    .range(..=ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Gt => btree
+                    .range((
+                        std::ops::Bound::Excluded(ordered_value),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Ge => btree
+                    .range(ordered_value..)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+            }
+        } else {
+            drop(indexes);
+            self.scan_node_ids_where(property, op, value)
+        };
+        ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Node> = ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    /// Find edges by type with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_by_type_paginated(
+        &self,
+        edge_type: &str,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Edge>> {
+        self.find_edges_by_property_paginated(
+            "_edge_type",
+            &PropertyValue::String(edge_type.to_string()),
+            pagination,
+        )
+    }
+
+    /// Find edges by exact property value match with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_by_property_paginated(
+        &self,
+        property: &str,
+        value: &PropertyValue,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Edge>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Edge, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        let mut ids: Vec<u64> = if let Some(btree) = indexes.get(&key) {
+            btree.get(&ordered_value).cloned().unwrap_or_default()
+        } else {
+            drop(indexes);
+            self.scan_edge_ids_by_property(property, value)
+        };
+        ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Edge> = ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_edge(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    /// Find edges using a range comparison with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_where_paginated(
+        &self,
+        property: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Edge>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Edge, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        let mut ids: Vec<u64> = if let Some(btree) = indexes.get(&key) {
+            match op {
+                RangeOp::Lt => btree
+                    .range(..ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Le => btree
+                    .range(..=ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Gt => btree
+                    .range((
+                        std::ops::Bound::Excluded(ordered_value),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Ge => btree
+                    .range(ordered_value..)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+            }
+        } else {
+            drop(indexes);
+            self.scan_edge_ids_where(property, op, value)
+        };
+        ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Edge> = ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_edge(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    /// Returns edges connected to a node with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NodeNotFound` if the node does not exist.
+    pub fn edges_of_paginated(
+        &self,
+        node_id: u64,
+        direction: Direction,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Edge>> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+
+        let mut edge_ids: Vec<u64> = {
+            let mut ids = HashSet::new();
+            if direction == Direction::Outgoing || direction == Direction::Both {
+                for id in self.get_edge_list(&Self::outgoing_edges_key(node_id)) {
+                    ids.insert(id);
+                }
+            }
+            if direction == Direction::Incoming || direction == Direction::Both {
+                for id in self.get_edge_list(&Self::incoming_edges_key(node_id)) {
+                    ids.insert(id);
+                }
+            }
+            ids.into_iter().collect()
+        };
+        edge_ids.sort_unstable();
+
+        let total_count = if pagination.count_total {
+            Some(edge_ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = edge_ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Edge> = edge_ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_edge(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    /// Returns neighbors of a node with pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NodeNotFound` if the node does not exist.
+    #[instrument(skip(self, filter), fields(node_id = node_id))]
+    pub fn neighbors_paginated(
+        &self,
+        node_id: u64,
+        edge_type: Option<&str>,
+        direction: Direction,
+        filter: Option<&TraversalFilter>,
+        pagination: Pagination,
+    ) -> Result<PagedResult<Node>> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+
+        let mut neighbor_ids: Vec<u64> = {
+            let mut ids = HashSet::new();
+
+            if direction == Direction::Outgoing || direction == Direction::Both {
+                let out_edges = self.get_edge_list(&Self::outgoing_edges_key(node_id));
+                for edge_id in out_edges {
+                    if let Ok(edge) = self.get_edge(edge_id) {
+                        if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                            if let Some(f) = filter {
+                                if !f.matches_edge(&edge) {
+                                    continue;
+                                }
+                            }
+                            if edge.from == node_id && edge.to != node_id {
+                                ids.insert(edge.to);
+                            } else if edge.to == node_id && edge.from != node_id {
+                                ids.insert(edge.from);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if direction == Direction::Incoming || direction == Direction::Both {
+                let in_edges = self.get_edge_list(&Self::incoming_edges_key(node_id));
+                for edge_id in in_edges {
+                    if let Ok(edge) = self.get_edge(edge_id) {
+                        if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                            if let Some(f) = filter {
+                                if !f.matches_edge(&edge) {
+                                    continue;
+                                }
+                            }
+                            if edge.to == node_id && edge.from != node_id {
+                                ids.insert(edge.from);
+                            } else if edge.from == node_id && edge.to != node_id {
+                                ids.insert(edge.to);
+                            }
+                        }
+                    }
+                }
+            }
+
+            ids.into_iter().collect()
+        };
+        neighbor_ids.sort_unstable();
+
+        // Collect all neighbors that pass the node filter (pre-pagination)
+        let filtered_ids: Vec<u64> = neighbor_ids
+            .into_iter()
+            .filter(|&id| {
+                if let Ok(node) = self.get_node(id) {
+                    if let Some(f) = filter {
+                        f.matches_node(&node)
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        let total_count = if pagination.count_total {
+            Some(filtered_ids.len())
+        } else {
+            None
+        };
+        let effective_limit = pagination.limit.unwrap_or(usize::MAX);
+        let has_more = filtered_ids.len() > pagination.skip.saturating_add(effective_limit);
+
+        let items: Vec<Node> = filtered_ids
+            .into_iter()
+            .skip(pagination.skip)
+            .take(effective_limit)
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+
+        Ok(PagedResult::new(items, total_count, has_more))
+    }
+
+    // ========== Paginated Query Helpers ==========
+
+    fn scan_node_ids_by_property(&self, property: &str, value: &PropertyValue) -> Vec<u64> {
+        let mut ids = Vec::new();
+
+        for key in self.store.scan("node:") {
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(node) = self.get_node(id) {
+                        let matches = if property == "_label" {
+                            match value {
+                                PropertyValue::String(s) => node.has_label(s),
+                                _ => false,
+                            }
+                        } else {
+                            node.properties.get(property) == Some(value)
+                        };
+                        if matches {
+                            ids.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    fn scan_node_ids_where(&self, property: &str, op: RangeOp, value: &PropertyValue) -> Vec<u64> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let mut ids = Vec::new();
+
+        for key in self.store.scan("node:") {
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(node) = self.get_node(id) {
+                        if let Some(prop_val) = node.properties.get(property).cloned() {
+                            let ordered_pv = OrderedPropertyValue::from(&prop_val);
+                            let matches = match op {
+                                RangeOp::Lt => ordered_pv < ordered_value,
+                                RangeOp::Le => ordered_pv <= ordered_value,
+                                RangeOp::Gt => ordered_pv > ordered_value,
+                                RangeOp::Ge => ordered_pv >= ordered_value,
+                            };
+                            if matches {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    fn scan_edge_ids_by_property(&self, property: &str, value: &PropertyValue) -> Vec<u64> {
+        let mut ids = Vec::new();
+
+        for key in self.store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(edge) = self.get_edge(id) {
+                        let matches = if property == "_edge_type" {
+                            match value {
+                                PropertyValue::String(s) => &edge.edge_type == s,
+                                _ => false,
+                            }
+                        } else {
+                            edge.properties.get(property) == Some(value)
+                        };
+                        if matches {
+                            ids.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    fn scan_edge_ids_where(&self, property: &str, op: RangeOp, value: &PropertyValue) -> Vec<u64> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let mut ids = Vec::new();
+
+        for key in self.store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(edge) = self.get_edge(id) {
+                        let prop_value = if property == "_edge_type" {
+                            Some(PropertyValue::String(edge.edge_type.clone()))
+                        } else {
+                            edge.properties.get(property).cloned()
+                        };
+
+                        if let Some(pv) = prop_value {
+                            let ordered_pv = OrderedPropertyValue::from(&pv);
+                            let matches = match op {
+                                RangeOp::Lt => ordered_pv < ordered_value,
+                                RangeOp::Le => ordered_pv <= ordered_value,
+                                RangeOp::Gt => ordered_pv > ordered_value,
+                                RangeOp::Ge => ordered_pv >= ordered_value,
+                            };
+                            if matches {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ids
     }
 
     pub fn traverse(
@@ -9384,5 +10040,816 @@ mod tests {
             let node = engine.get_node(id).unwrap();
             assert!(node.created_at.is_some());
         }
+    }
+
+    // ========== Pagination Tests ==========
+
+    #[test]
+    fn pagination_new() {
+        let p = Pagination::new(5, 10);
+        assert_eq!(p.skip, 5);
+        assert_eq!(p.limit, Some(10));
+        assert!(!p.count_total);
+    }
+
+    #[test]
+    fn pagination_limit_only() {
+        let p = Pagination::limit(20);
+        assert_eq!(p.skip, 0);
+        assert_eq!(p.limit, Some(20));
+        assert!(!p.count_total);
+    }
+
+    #[test]
+    fn pagination_with_total_count() {
+        let p = Pagination::new(0, 10).with_total_count();
+        assert!(p.count_total);
+    }
+
+    #[test]
+    fn pagination_is_empty() {
+        assert!(Pagination::default().is_empty());
+        assert!(!Pagination::limit(10).is_empty());
+        assert!(!Pagination::new(5, 10).is_empty());
+    }
+
+    #[test]
+    fn pagination_default() {
+        let p = Pagination::default();
+        assert_eq!(p.skip, 0);
+        assert!(p.limit.is_none());
+        assert!(!p.count_total);
+    }
+
+    #[test]
+    fn paged_result_new() {
+        let result: PagedResult<i32> = PagedResult::new(vec![1, 2, 3], Some(10), true);
+        assert_eq!(result.items, vec![1, 2, 3]);
+        assert_eq!(result.total_count, Some(10));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn paged_result_is_empty() {
+        let empty: PagedResult<i32> = PagedResult::default();
+        assert!(empty.is_empty());
+
+        let non_empty: PagedResult<i32> = PagedResult::new(vec![1], None, false);
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn paged_result_len() {
+        let result: PagedResult<i32> = PagedResult::new(vec![1, 2, 3], None, false);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn paged_result_default() {
+        let result: PagedResult<i32> = PagedResult::default();
+        assert!(result.items.is_empty());
+        assert!(result.total_count.is_none());
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_basic() {
+        let engine = GraphEngine::new();
+        for i in 0..5 {
+            engine
+                .create_node(&format!("Label{i}"), HashMap::new())
+                .unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::limit(3));
+        assert_eq!(result.len(), 3);
+        assert!(result.has_more);
+        assert!(result.total_count.is_none());
+    }
+
+    #[test]
+    fn all_nodes_paginated_skip() {
+        let engine = GraphEngine::new();
+        for i in 0..5 {
+            engine
+                .create_node(&format!("Label{i}"), HashMap::new())
+                .unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::new(2, 10));
+        assert_eq!(result.len(), 3);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_has_more() {
+        let engine = GraphEngine::new();
+        for _ in 0..10 {
+            engine.create_node("Test", HashMap::new()).unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::new(0, 5));
+        assert!(result.has_more);
+
+        let result = engine.all_nodes_paginated(Pagination::new(5, 5));
+        assert!(!result.has_more);
+
+        let result = engine.all_nodes_paginated(Pagination::new(8, 5));
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_skip_beyond_total() {
+        let engine = GraphEngine::new();
+        for _ in 0..5 {
+            engine.create_node("Test", HashMap::new()).unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::new(10, 5));
+        assert!(result.is_empty());
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_total_count() {
+        let engine = GraphEngine::new();
+        for _ in 0..5 {
+            engine.create_node("Test", HashMap::new()).unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::limit(2).with_total_count());
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.total_count, Some(5));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.all_nodes_paginated(Pagination::limit(10));
+        assert!(result.is_empty());
+        assert!(!result.has_more);
+        assert!(result.total_count.is_none());
+    }
+
+    #[test]
+    fn all_edges_paginated_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for i in 0..5 {
+            engine
+                .create_edge(n1, n2, &format!("REL{i}"), HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.all_edges_paginated(Pagination::limit(3));
+        assert_eq!(result.len(), 3);
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn all_edges_paginated_skip() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for _ in 0..5 {
+            engine
+                .create_edge(n1, n2, "REL", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.all_edges_paginated(Pagination::new(2, 10));
+        assert_eq!(result.len(), 3);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn find_nodes_by_label_paginated_basic() {
+        let engine = GraphEngine::new();
+        for _ in 0..10 {
+            engine.create_node("Person", HashMap::new()).unwrap();
+        }
+        for _ in 0..5 {
+            engine.create_node("Company", HashMap::new()).unwrap();
+        }
+
+        let result = engine
+            .find_nodes_by_label_paginated("Person", Pagination::limit(5).with_total_count())
+            .unwrap();
+        assert_eq!(result.len(), 5);
+        assert_eq!(result.total_count, Some(10));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn find_nodes_by_label_paginated_with_index() {
+        let engine = GraphEngine::new();
+        engine.create_label_index().unwrap();
+
+        for _ in 0..10 {
+            engine.create_node("Person", HashMap::new()).unwrap();
+        }
+
+        let result = engine
+            .find_nodes_by_label_paginated("Person", Pagination::new(3, 4).with_total_count())
+            .unwrap();
+        assert_eq!(result.len(), 4);
+        assert_eq!(result.total_count, Some(10));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn find_edges_by_type_paginated_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for _ in 0..8 {
+            engine
+                .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+        for _ in 0..4 {
+            engine
+                .create_edge(n1, n2, "LIKES", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine
+            .find_edges_by_type_paginated("KNOWS", Pagination::limit(5).with_total_count())
+            .unwrap();
+        assert_eq!(result.len(), 5);
+        assert_eq!(result.total_count, Some(8));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn edges_of_paginated_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for _ in 0..6 {
+            engine
+                .create_edge(n1, n2, "REL", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine
+            .edges_of_paginated(
+                n1,
+                Direction::Outgoing,
+                Pagination::limit(4).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 4);
+        assert_eq!(result.total_count, Some(6));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn edges_of_paginated_direction() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "OUT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n2, "OUT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n1, "IN", HashMap::new(), true)
+            .unwrap();
+
+        let out_result = engine
+            .edges_of_paginated(
+                n1,
+                Direction::Outgoing,
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(out_result.total_count, Some(2));
+
+        let in_result = engine
+            .edges_of_paginated(
+                n1,
+                Direction::Incoming,
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(in_result.total_count, Some(1));
+
+        let both_result = engine
+            .edges_of_paginated(
+                n1,
+                Direction::Both,
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(both_result.total_count, Some(3));
+    }
+
+    #[test]
+    fn neighbors_paginated_basic() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Center", HashMap::new()).unwrap();
+
+        for i in 0..8 {
+            let neighbor = engine
+                .create_node(&format!("Neighbor{i}"), HashMap::new())
+                .unwrap();
+            engine
+                .create_edge(center, neighbor, "CONNECTED", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine
+            .neighbors_paginated(
+                center,
+                None,
+                Direction::Outgoing,
+                None,
+                Pagination::limit(5).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 5);
+        assert_eq!(result.total_count, Some(8));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn neighbors_paginated_with_filter() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Center", HashMap::new()).unwrap();
+
+        for i in 0..10 {
+            let mut props = HashMap::new();
+            props.insert("active".to_string(), PropertyValue::Bool(i % 2 == 0));
+            let neighbor = engine.create_node("Neighbor", props).unwrap();
+            engine
+                .create_edge(center, neighbor, "CONNECTED", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let filter = TraversalFilter::new().node_eq("active", PropertyValue::Bool(true));
+
+        let result = engine
+            .neighbors_paginated(
+                center,
+                None,
+                Direction::Outgoing,
+                Some(&filter),
+                Pagination::limit(3).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(result.total_count, Some(5));
+        assert_eq!(result.len(), 3);
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn paginated_results_match_unpaginated_order() {
+        let engine = GraphEngine::new();
+        for i in 0..20 {
+            let mut props = HashMap::new();
+            props.insert("order".to_string(), PropertyValue::Int(i));
+            engine.create_node("Test", props).unwrap();
+        }
+
+        let all = engine.all_nodes();
+        let page1 = engine.all_nodes_paginated(Pagination::new(0, 5));
+        let page2 = engine.all_nodes_paginated(Pagination::new(5, 5));
+        let page3 = engine.all_nodes_paginated(Pagination::new(10, 5));
+        let page4 = engine.all_nodes_paginated(Pagination::new(15, 5));
+
+        let mut reconstructed = Vec::new();
+        reconstructed.extend(page1.items);
+        reconstructed.extend(page2.items);
+        reconstructed.extend(page3.items);
+        reconstructed.extend(page4.items);
+
+        assert_eq!(all.len(), reconstructed.len());
+        for (a, b) in all.iter().zip(reconstructed.iter()) {
+            assert_eq!(a.id, b.id);
+        }
+    }
+
+    #[test]
+    fn find_nodes_by_property_paginated_basic() {
+        let engine = GraphEngine::new();
+
+        for i in 0..10 {
+            let mut props = HashMap::new();
+            props.insert("status".to_string(), PropertyValue::String("active".into()));
+            props.insert("index".to_string(), PropertyValue::Int(i));
+            engine.create_node("Item", props).unwrap();
+        }
+
+        for i in 0..5 {
+            let mut props = HashMap::new();
+            props.insert(
+                "status".to_string(),
+                PropertyValue::String("inactive".into()),
+            );
+            props.insert("index".to_string(), PropertyValue::Int(i));
+            engine.create_node("Item", props).unwrap();
+        }
+
+        let result = engine
+            .find_nodes_by_property_paginated(
+                "status",
+                &PropertyValue::String("active".into()),
+                Pagination::limit(5).with_total_count(),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 5);
+        assert_eq!(result.total_count, Some(10));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn find_nodes_where_paginated_basic() {
+        let engine = GraphEngine::new();
+
+        for i in 0..15 {
+            let mut props = HashMap::new();
+            props.insert("age".to_string(), PropertyValue::Int(i * 10));
+            engine.create_node("Person", props).unwrap();
+        }
+
+        let result = engine
+            .find_nodes_where_paginated(
+                "age",
+                RangeOp::Ge,
+                &PropertyValue::Int(50),
+                Pagination::limit(5).with_total_count(),
+            )
+            .unwrap();
+
+        assert_eq!(result.total_count, Some(10));
+        assert_eq!(result.len(), 5);
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn find_edges_by_property_paginated_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for i in 0..8 {
+            let mut props = HashMap::new();
+            props.insert("weight".to_string(), PropertyValue::Int(i));
+            engine.create_edge(n1, n2, "REL", props, true).unwrap();
+        }
+
+        let result = engine
+            .find_edges_by_property_paginated(
+                "weight",
+                &PropertyValue::Int(3),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+
+        assert_eq!(result.total_count, Some(1));
+        assert_eq!(result.len(), 1);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn find_edges_where_paginated_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for i in 0..10 {
+            let mut props = HashMap::new();
+            props.insert("score".to_string(), PropertyValue::Int(i * 10));
+            engine.create_edge(n1, n2, "REL", props, true).unwrap();
+        }
+
+        let result = engine
+            .find_edges_where_paginated(
+                "score",
+                RangeOp::Lt,
+                &PropertyValue::Int(50),
+                Pagination::limit(3).with_total_count(),
+            )
+            .unwrap();
+
+        assert_eq!(result.total_count, Some(5));
+        assert_eq!(result.len(), 3);
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn all_nodes_paginated_limit_zero() {
+        let engine = GraphEngine::new();
+        for _ in 0..5 {
+            engine.create_node("Test", HashMap::new()).unwrap();
+        }
+
+        let result = engine.all_nodes_paginated(Pagination::new(0, 0).with_total_count());
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(5));
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn edges_paginated_results_match_unpaginated_order() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for _ in 0..10 {
+            engine
+                .create_edge(n1, n2, "REL", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let all = engine.all_edges();
+        let page1 = engine.all_edges_paginated(Pagination::new(0, 5));
+        let page2 = engine.all_edges_paginated(Pagination::new(5, 5));
+
+        let mut reconstructed = Vec::new();
+        reconstructed.extend(page1.items);
+        reconstructed.extend(page2.items);
+
+        assert_eq!(all.len(), reconstructed.len());
+        for (a, b) in all.iter().zip(reconstructed.iter()) {
+            assert_eq!(a.id, b.id);
+        }
+    }
+
+    #[test]
+    fn find_nodes_where_paginated_all_range_ops() {
+        let engine = GraphEngine::new();
+
+        for i in 0..10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i * 10));
+            engine.create_node("Test", props).unwrap();
+        }
+
+        let lt = engine
+            .find_nodes_where_paginated(
+                "value",
+                RangeOp::Lt,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(lt.total_count, Some(5));
+
+        let le = engine
+            .find_nodes_where_paginated(
+                "value",
+                RangeOp::Le,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(le.total_count, Some(6));
+
+        let gt = engine
+            .find_nodes_where_paginated(
+                "value",
+                RangeOp::Gt,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(gt.total_count, Some(4));
+
+        let ge = engine
+            .find_nodes_where_paginated(
+                "value",
+                RangeOp::Ge,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(ge.total_count, Some(5));
+    }
+
+    #[test]
+    fn find_edges_where_paginated_all_range_ops() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        for i in 0..10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i * 10));
+            engine.create_edge(n1, n2, "REL", props, true).unwrap();
+        }
+
+        let lt = engine
+            .find_edges_where_paginated(
+                "value",
+                RangeOp::Lt,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(lt.total_count, Some(5));
+
+        let le = engine
+            .find_edges_where_paginated(
+                "value",
+                RangeOp::Le,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(le.total_count, Some(6));
+
+        let gt = engine
+            .find_edges_where_paginated(
+                "value",
+                RangeOp::Gt,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(gt.total_count, Some(4));
+
+        let ge = engine
+            .find_edges_where_paginated(
+                "value",
+                RangeOp::Ge,
+                &PropertyValue::Int(50),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(ge.total_count, Some(5));
+    }
+
+    #[test]
+    fn edges_of_paginated_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.edges_of_paginated(999, Direction::Both, Pagination::limit(10));
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn neighbors_paginated_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result =
+            engine.neighbors_paginated(999, None, Direction::Both, None, Pagination::limit(10));
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn neighbors_paginated_edge_type_filter() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Center", HashMap::new()).unwrap();
+
+        for i in 0..5 {
+            let neighbor = engine
+                .create_node(&format!("N{i}"), HashMap::new())
+                .unwrap();
+            engine
+                .create_edge(center, neighbor, "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+        for i in 5..10 {
+            let neighbor = engine
+                .create_node(&format!("N{i}"), HashMap::new())
+                .unwrap();
+            engine
+                .create_edge(center, neighbor, "LIKES", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine
+            .neighbors_paginated(
+                center,
+                Some("KNOWS"),
+                Direction::Outgoing,
+                None,
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(result.total_count, Some(5));
+    }
+
+    #[test]
+    fn neighbors_paginated_incoming_direction() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Center", HashMap::new()).unwrap();
+
+        for i in 0..5 {
+            let neighbor = engine
+                .create_node(&format!("N{i}"), HashMap::new())
+                .unwrap();
+            engine
+                .create_edge(neighbor, center, "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine
+            .neighbors_paginated(
+                center,
+                None,
+                Direction::Incoming,
+                None,
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert_eq!(result.total_count, Some(5));
+    }
+
+    #[test]
+    fn find_nodes_by_property_paginated_empty_result() {
+        let engine = GraphEngine::new();
+        engine.create_node("Test", HashMap::new()).unwrap();
+
+        let result = engine
+            .find_nodes_by_property_paginated(
+                "nonexistent",
+                &PropertyValue::String("value".into()),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(0));
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn find_edges_by_property_paginated_empty_result() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "REL", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .find_edges_by_property_paginated(
+                "nonexistent",
+                &PropertyValue::String("value".into()),
+                Pagination::limit(10).with_total_count(),
+            )
+            .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(0));
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn all_edges_paginated_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.all_edges_paginated(Pagination::limit(10));
+        assert!(result.is_empty());
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn find_nodes_by_label_paginated_empty_result() {
+        let engine = GraphEngine::new();
+        engine.create_node("Other", HashMap::new()).unwrap();
+
+        let result = engine
+            .find_nodes_by_label_paginated("NonExistent", Pagination::limit(10).with_total_count())
+            .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(0));
+    }
+
+    #[test]
+    fn find_edges_by_type_paginated_empty_result() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "OTHER", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .find_edges_by_type_paginated("NonExistent", Pagination::limit(10).with_total_count())
+            .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(0));
+    }
+
+    #[test]
+    fn edges_of_paginated_empty_edges() {
+        let engine = GraphEngine::new();
+        let n = engine.create_node("Lonely", HashMap::new()).unwrap();
+
+        let result = engine
+            .edges_of_paginated(n, Direction::Both, Pagination::limit(10).with_total_count())
+            .unwrap();
+        assert!(result.is_empty());
+        assert_eq!(result.total_count, Some(0));
     }
 }

@@ -3,11 +3,41 @@
 //! This module provides a shared HNSW implementation used by both `VectorEngine`
 //! and `TensorCache` for efficient similarity search.
 //!
-//! Key features:
+//! # Features
+//!
 //! - O(log n) search complexity vs O(n) for brute force
 //! - 5-8x speedup for 10K-100K vectors
 //! - Configurable recall/speed tradeoff via `ef_search` parameter
-//! - Supports both dense and sparse vectors
+//! - Supports dense, sparse, and `TensorTrain` vectors
+//! - Multiple distance metrics: Cosine (default), Euclidean, `DotProduct`
+//!
+//! # Distance Metrics
+//!
+//! The index supports three distance metrics via [`HNSWDistanceMetric`]:
+//!
+//! | Metric | Use Case | Output Range |
+//! |--------|----------|--------------|
+//! | Cosine | Semantic similarity, text embeddings | \[0, 2\] |
+//! | Euclidean | Spatial distance, image features | \[0, inf) |
+//! | `DotProduct` | Maximum inner product search (MIPS) | (-inf, inf) |
+//!
+//! # Example
+//!
+//! ```
+//! use tensor_store::{HNSWConfig, HNSWDistanceMetric, HNSWIndex};
+//!
+//! // Create index with Euclidean distance
+//! let config = HNSWConfig::default()
+//!     .with_distance_metric(HNSWDistanceMetric::Euclidean);
+//! let index = HNSWIndex::with_config(config);
+//!
+//! // Insert and search
+//! index.insert(vec![0.0, 0.0]);
+//! index.insert(vec![3.0, 4.0]);
+//! let results = index.search(&[0.0, 0.0], 2);
+//! // results[0] = (0, 1.0)  - similarity 1/(1+0) = 1.0
+//! // results[1] = (1, 0.167) - similarity 1/(1+5) = 0.167
+//! ```
 
 use std::{
     cmp::Ordering,
@@ -85,6 +115,19 @@ impl std::fmt::Display for EmbeddingStorageError {
 impl std::error::Error for EmbeddingStorageError {}
 
 /// Distance metric for HNSW index operations.
+///
+/// Controls how similarity is computed during index construction and search.
+/// The metric should match how your embeddings were trained - using the wrong
+/// metric will produce poor search results.
+///
+/// # Choosing a Metric
+///
+/// - **Cosine**: Best for normalized embeddings (text, semantic search).
+///   Measures angle between vectors, invariant to magnitude.
+/// - **Euclidean**: Best for spatial data (images, coordinates).
+///   Measures straight-line distance in vector space.
+/// - **`DotProduct`**: Best for maximum inner product search (MIPS).
+///   Use when larger dot products indicate higher relevance.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HNSWDistanceMetric {
     /// Cosine distance: `1 - cosine_similarity`. Range `[0, 2]`.
@@ -692,6 +735,13 @@ impl EmbeddingStorage {
     }
 
     /// Compute distance using the specified metric with a dense query.
+    ///
+    /// Dispatches to the appropriate distance function based on the metric:
+    /// - [`Cosine`](HNSWDistanceMetric::Cosine): `1 - cosine_similarity`
+    /// - [`Euclidean`](HNSWDistanceMetric::Euclidean): L2 norm of difference
+    /// - [`DotProduct`](HNSWDistanceMetric::DotProduct): negative dot product
+    ///
+    /// For Delta storage, returns `f32::MAX` (unsupported without registry).
     #[inline]
     #[must_use]
     pub fn distance_dense(&self, query: &[f32], metric: HNSWDistanceMetric) -> f32 {
@@ -703,6 +753,13 @@ impl EmbeddingStorage {
     }
 
     /// Compute distance using the specified metric with a sparse query.
+    ///
+    /// Dispatches to the appropriate distance function based on the metric:
+    /// - [`Cosine`](HNSWDistanceMetric::Cosine): `1 - cosine_similarity`
+    /// - [`Euclidean`](HNSWDistanceMetric::Euclidean): L2 norm of difference
+    /// - [`DotProduct`](HNSWDistanceMetric::DotProduct): negative dot product
+    ///
+    /// For Delta storage, returns `f32::MAX` (unsupported without registry).
     #[inline]
     #[must_use]
     pub fn distance_sparse(&self, query: &SparseVector, metric: HNSWDistanceMetric) -> f32 {
@@ -965,7 +1022,15 @@ pub struct HNSWConfig {
     /// Maximum number of nodes allowed in the index (0 = unlimited).
     /// Default: 10,000,000 (10M nodes) to prevent memory exhaustion.
     pub max_nodes: usize,
-    /// Distance metric for similarity computation (default: Cosine).
+    /// Distance metric for similarity computation.
+    ///
+    /// Determines how distances are calculated during index construction and search.
+    /// Must match the embedding model's training objective:
+    /// - Use `Cosine` for normalized embeddings (most common)
+    /// - Use `Euclidean` for spatial/geometric embeddings
+    /// - Use `DotProduct` for MIPS (maximum inner product search)
+    ///
+    /// Default: [`HNSWDistanceMetric::Cosine`]
     pub distance_metric: HNSWDistanceMetric,
 }
 
@@ -1035,6 +1100,15 @@ impl HNSWConfig {
     }
 
     /// Set the distance metric for this configuration.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use tensor_store::{HNSWConfig, HNSWDistanceMetric};
+    ///
+    /// let config = HNSWConfig::default()
+    ///     .with_distance_metric(HNSWDistanceMetric::Euclidean);
+    /// ```
     #[must_use]
     pub const fn with_distance_metric(mut self, metric: HNSWDistanceMetric) -> Self {
         self.distance_metric = metric;
