@@ -1,0 +1,852 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Python SDK - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/neumann-py.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="python-sdk-architecture"><a class="header" href="#python-sdk-architecture">Python SDK Architecture</a></h1>
+<p>The Python SDK (<code>neumann-db</code>) provides a Python client for the Neumann database
+with support for both embedded mode (via PyO3 bindings) and remote mode (via
+gRPC). It includes async support and integrations for pandas and numpy.</p>
+<p>The SDK follows four design principles: Pythonic API (context managers, type
+hints, dataclasses), dual-mode (same API for embedded and remote), async-first
+(native asyncio support), and ecosystem integration (pandas DataFrame and numpy
+array support).</p>
+<h2 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h2>
+<pre class="mermaid">flowchart TD
+    subgraph Application
+        App[Python Application]
+    end
+
+    subgraph SDK[neumann-db]
+        Client[NeumannClient]
+        AsyncClient[AsyncNeumannClient]
+        Tx[Transaction]
+        Types[Data Types]
+        Errors[Error Classes]
+    end
+
+    subgraph Integrations
+        Pandas[pandas Integration]
+        Numpy[numpy Integration]
+    end
+
+    subgraph EmbeddedMode[Embedded Mode]
+        PyO3[_native PyO3 Module]
+        Router[QueryRouter]
+    end
+
+    subgraph RemoteMode[Remote Mode]
+        gRPC[grpcio]
+        Proto[Proto Stubs]
+    end
+
+    App --&gt; Client
+    App --&gt; AsyncClient
+    Client --&gt; Tx
+    Client --&gt; Types
+    Client --&gt; Errors
+    Client --&gt; Pandas
+    Client --&gt; Numpy
+    Client --&gt;|embedded| PyO3
+    PyO3 --&gt; Router
+    Client --&gt;|remote| gRPC
+    AsyncClient --&gt; gRPC
+    gRPC --&gt; Proto
+    Proto --&gt; Server[NeumannServer]
+</pre>
+<h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
+<pre><code class="language-bash"># Basic installation (remote mode only)
+pip install neumann-db
+
+# With native module for embedded mode
+pip install neumann-db[native]
+
+# With pandas integration
+pip install neumann-db[pandas]
+
+# With numpy integration
+pip install neumann-db[numpy]
+
+# Full installation
+pip install neumann-db[full]
+</code></pre>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>NeumannClient</code></td><td>Synchronous client supporting both modes</td></tr>
+<tr><td><code>AsyncNeumannClient</code></td><td>Async client for remote mode</td></tr>
+<tr><td><code>Transaction</code></td><td>Transaction context manager</td></tr>
+<tr><td><code>QueryResult</code></td><td>Query result with typed accessors</td></tr>
+<tr><td><code>QueryResultType</code></td><td>Enum of result types</td></tr>
+<tr><td><code>Value</code></td><td>Typed scalar value</td></tr>
+<tr><td><code>ScalarType</code></td><td>Enum of scalar types</td></tr>
+<tr><td><code>Row</code></td><td>Relational row with typed column accessors</td></tr>
+<tr><td><code>Node</code></td><td>Graph node with properties</td></tr>
+<tr><td><code>Edge</code></td><td>Graph edge with properties</td></tr>
+<tr><td><code>Path</code></td><td>Graph path as list of segments</td></tr>
+<tr><td><code>PathSegment</code></td><td>Path segment (node + optional edge)</td></tr>
+<tr><td><code>SimilarItem</code></td><td>Vector similarity result</td></tr>
+<tr><td><code>ArtifactInfo</code></td><td>Blob artifact metadata</td></tr>
+<tr><td><code>NeumannError</code></td><td>Base exception class</td></tr>
+</tbody></table>
+</div>
+<h2 id="client-modes"><a class="header" href="#client-modes">Client Modes</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Class Method</th><th>Requirements</th><th>Use Case</th></tr></thead><tbody>
+<tr><td>Embedded</td><td><code>NeumannClient.embedded()</code></td><td><code>neumann-db[native]</code></td><td>Testing, CLI tools</td></tr>
+<tr><td>Remote</td><td><code>NeumannClient.connect()</code></td><td><code>grpcio</code></td><td>Production</td></tr>
+<tr><td>Async Remote</td><td><code>AsyncNeumannClient.connect()</code></td><td><code>grpcio</code></td><td>Async applications</td></tr>
+</tbody></table>
+</div>
+<h2 id="synchronous-client"><a class="header" href="#synchronous-client">Synchronous Client</a></h2>
+<h3 id="embedded-mode"><a class="header" href="#embedded-mode">Embedded Mode</a></h3>
+<pre><code class="language-python">from neumann import NeumannClient
+
+# In-memory database
+client = NeumannClient.embedded()
+
+# Persistent storage
+client = NeumannClient.embedded(path="/path/to/data")
+
+# Use as context manager
+with NeumannClient.embedded() as client:
+    client.execute("CREATE TABLE users (name:string)")
+</code></pre>
+<h3 id="remote-mode"><a class="header" href="#remote-mode">Remote Mode</a></h3>
+<pre><code class="language-python">from neumann import NeumannClient
+
+# Basic connection
+client = NeumannClient.connect("localhost:9200")
+
+# With authentication and TLS
+client = NeumannClient.connect(
+    "db.example.com:9443",
+    api_key="your-api-key",
+    tls=True,
+)
+
+# Context manager
+with NeumannClient.connect("localhost:9200") as client:
+    result = client.execute("SELECT users")
+</code></pre>
+<h3 id="query-execution"><a class="header" href="#query-execution">Query Execution</a></h3>
+<pre><code class="language-python"># Single query
+result = client.execute("SELECT users")
+
+# With identity for vault access
+result = client.execute(
+    "VAULT GET 'secret'",
+    identity="service:backend",
+)
+
+# Streaming query
+for chunk in client.execute_stream("SELECT large_table"):
+    for row in chunk.rows:
+        print(row.to_dict())
+
+# Batch execution
+results = client.execute_batch([
+    "CREATE TABLE orders (id:int, total:float)",
+    "INSERT orders id=1, total=99.99",
+    "SELECT orders",
+])
+</code></pre>
+<h2 id="async-client"><a class="header" href="#async-client">Async Client</a></h2>
+<p>The async client supports remote mode only (PyO3 has threading limitations):</p>
+<pre><code class="language-python">from neumann.aio import AsyncNeumannClient
+
+# Connect
+client = await AsyncNeumannClient.connect(
+    "localhost:9200",
+    api_key="your-api-key",
+)
+
+# Execute query
+result = await client.execute("SELECT users")
+
+# Streaming
+async for chunk in client.execute_stream("SELECT large_table"):
+    for row in chunk.rows:
+        print(row.to_dict())
+
+# Batch
+results = await client.execute_batch(queries)
+
+# Close
+await client.close()
+</code></pre>
+<h3 id="async-context-manager"><a class="header" href="#async-context-manager">Async Context Manager</a></h3>
+<pre><code class="language-python">async with await AsyncNeumannClient.connect("localhost:9200") as client:
+    result = await client.execute("SELECT users")
+    for row in result.rows:
+        print(row.to_dict())
+</code></pre>
+<h3 id="run-embedded-in-async-context"><a class="header" href="#run-embedded-in-async-context">Run Embedded in Async Context</a></h3>
+<p>Use <code>run_in_executor</code> to use embedded mode from async code:</p>
+<pre><code class="language-python">async def query_embedded():
+    client = await AsyncNeumannClient.connect("localhost:9200")
+    # This runs the embedded client in a thread pool
+    result = await client.run_in_executor("SELECT users")
+    return result
+</code></pre>
+<h2 id="transaction-support"><a class="header" href="#transaction-support">Transaction Support</a></h2>
+<p>Transactions provide automatic commit/rollback with context managers:</p>
+<pre><code class="language-python">from neumann import NeumannClient, Transaction
+
+client = NeumannClient.connect("localhost:9200")
+
+# Using Transaction directly
+tx = Transaction(client)
+tx.begin()
+try:
+    tx.execute("INSERT users name='Alice'")
+    tx.execute("INSERT users name='Bob'")
+    tx.commit()
+except Exception:
+    tx.rollback()
+    raise
+
+# Using context manager (preferred)
+with Transaction(client) as tx:
+    tx.execute("INSERT users name='Alice'")
+    tx.execute("INSERT users name='Bob'")
+    # Auto-commits on success, auto-rollbacks on exception
+</code></pre>
+<h3 id="transaction-properties"><a class="header" href="#transaction-properties">Transaction Properties</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Property</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>is_active</code></td><td><code>bool</code></td><td>True if transaction is active</td></tr>
+</tbody></table>
+</div>
+<h3 id="transaction-methods"><a class="header" href="#transaction-methods">Transaction Methods</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>begin()</code></td><td>Start the transaction</td></tr>
+<tr><td><code>commit()</code></td><td>Commit the transaction</td></tr>
+<tr><td><code>rollback()</code></td><td>Rollback the transaction</td></tr>
+<tr><td><code>execute(query)</code></td><td>Execute query within transaction</td></tr>
+</tbody></table>
+</div>
+<h2 id="query-result-types"><a class="header" href="#query-result-types">Query Result Types</a></h2>
+<p>The <code>QueryResult</code> class provides typed access to query results:</p>
+<div class="table-wrapper"><table><thead><tr><th>Property</th><th>Return Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>type</code></td><td><code>QueryResultType</code></td><td>Result type enum</td></tr>
+<tr><td><code>is_empty</code></td><td><code>bool</code></td><td>True if empty result</td></tr>
+<tr><td><code>is_error</code></td><td><code>bool</code></td><td>True if error result</td></tr>
+<tr><td><code>value</code></td><td><code>str</code> or <code>None</code></td><td>Single value result</td></tr>
+<tr><td><code>count</code></td><td><code>int</code> or <code>None</code></td><td>Row count</td></tr>
+<tr><td><code>rows</code></td><td><code>list[Row]</code></td><td>Relational rows</td></tr>
+<tr><td><code>nodes</code></td><td><code>list[Node]</code></td><td>Graph nodes</td></tr>
+<tr><td><code>edges</code></td><td><code>list[Edge]</code></td><td>Graph edges</td></tr>
+<tr><td><code>paths</code></td><td><code>list[Path]</code></td><td>Graph paths</td></tr>
+<tr><td><code>similar_items</code></td><td><code>list[SimilarItem]</code></td><td>Similarity results</td></tr>
+<tr><td><code>ids</code></td><td><code>list[str]</code></td><td>ID list</td></tr>
+<tr><td><code>table_names</code></td><td><code>list[str]</code></td><td>Table names</td></tr>
+<tr><td><code>blob_data</code></td><td><code>bytes</code> or <code>None</code></td><td>Binary data</td></tr>
+<tr><td><code>blob_info</code></td><td><code>ArtifactInfo</code> or <code>None</code></td><td>Blob metadata</td></tr>
+<tr><td><code>error_message</code></td><td><code>str</code> or <code>None</code></td><td>Error message</td></tr>
+</tbody></table>
+</div>
+<h3 id="result-type-enum"><a class="header" href="#result-type-enum">Result Type Enum</a></h3>
+<pre><code class="language-python">from neumann import QueryResultType
+
+result = client.execute(query)
+
+match result.type:
+    case QueryResultType.EMPTY:
+        print("OK")
+    case QueryResultType.COUNT:
+        print(f"{result.count} rows affected")
+    case QueryResultType.ROWS:
+        for row in result.rows:
+            print(row.to_dict())
+    case QueryResultType.NODES:
+        for node in result.nodes:
+            print(f"[{node.id}] {node.label}")
+    case QueryResultType.SIMILAR:
+        for item in result.similar_items:
+            print(f"{item.key}: {item.score:.4f}")
+    case QueryResultType.ERROR:
+        raise Exception(result.error_message)
+</code></pre>
+<h2 id="data-types"><a class="header" href="#data-types">Data Types</a></h2>
+<h3 id="value"><a class="header" href="#value">Value</a></h3>
+<p>Immutable typed scalar value:</p>
+<pre><code class="language-python">from neumann import Value, ScalarType
+
+# Create values
+v1 = Value.null()
+v2 = Value.int_(42)
+v3 = Value.float_(3.14)
+v4 = Value.string("hello")
+v5 = Value.bool_(True)
+v6 = Value.bytes_(b"data")
+
+# Access type and data
+print(v2.type)  # ScalarType.INT
+print(v2.data)  # 42
+
+# Convert to Python native type
+native = v2.as_python()  # 42
+</code></pre>
+<h3 id="row"><a class="header" href="#row">Row</a></h3>
+<p>Relational row with typed accessors:</p>
+<pre><code class="language-python">from neumann import Row
+
+row = result.rows[0]
+
+# Get raw Value
+val = row.get("name")
+
+# Get typed values
+name: str | None = row.get_string("name")
+age: int | None = row.get_int("age")
+score: float | None = row.get_float("score")
+active: bool | None = row.get_bool("active")
+
+# Convert to dict
+data = row.to_dict()  # {"name": "Alice", "age": 30}
+</code></pre>
+<h3 id="node"><a class="header" href="#node">Node</a></h3>
+<p>Graph node with properties:</p>
+<pre><code class="language-python">from neumann import Node
+
+node = result.nodes[0]
+
+print(node.id)      # "1"
+print(node.label)   # "person"
+
+# Get property
+name = node.get_property("name")
+
+# Convert to dict
+data = node.to_dict()
+# {"id": "1", "label": "person", "properties": {"name": "Alice"}}
+</code></pre>
+<h3 id="edge"><a class="header" href="#edge">Edge</a></h3>
+<p>Graph edge with properties:</p>
+<pre><code class="language-python">from neumann import Edge
+
+edge = result.edges[0]
+
+print(edge.id)         # "1"
+print(edge.edge_type)  # "knows"
+print(edge.source)     # "1"
+print(edge.target)     # "2"
+
+# Get property
+since = edge.get_property("since")
+
+# Convert to dict
+data = edge.to_dict()
+# {"id": "1", "type": "knows", "source": "1", "target": "2", "properties": {}}
+</code></pre>
+<h3 id="path"><a class="header" href="#path">Path</a></h3>
+<p>Graph path as segments:</p>
+<pre><code class="language-python">from neumann import Path
+
+path = result.paths[0]
+
+# Get all nodes in path
+nodes = path.nodes  # [Node, Node, ...]
+
+# Get all edges in path
+edges = path.edges  # [Edge, Edge, ...]
+
+# Path length
+length = len(path)
+
+# Iterate segments
+for segment in path.segments:
+    print(f"Node: {segment.node.id}")
+    if segment.edge:
+        print(f"  -&gt; via edge {segment.edge.id}")
+</code></pre>
+<h3 id="similaritem"><a class="header" href="#similaritem">SimilarItem</a></h3>
+<p>Vector similarity result:</p>
+<pre><code class="language-python">from neumann import SimilarItem
+
+for item in result.similar_items:
+    print(f"Key: {item.key}")
+    print(f"Score: {item.score:.4f}")
+    if item.metadata:
+        print(f"Metadata: {item.metadata}")
+</code></pre>
+<h3 id="artifactinfo"><a class="header" href="#artifactinfo">ArtifactInfo</a></h3>
+<p>Blob artifact metadata:</p>
+<pre><code class="language-python">from neumann import ArtifactInfo
+
+info = result.blob_info
+print(f"ID: {info.artifact_id}")
+print(f"Filename: {info.filename}")
+print(f"Size: {info.size} bytes")
+print(f"Checksum: {info.checksum}")
+print(f"Content-Type: {info.content_type}")
+print(f"Created: {info.created_at}")
+print(f"Tags: {info.tags}")
+</code></pre>
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<h3 id="error-codes"><a class="header" href="#error-codes">Error Codes</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Name</th><th>Description</th></tr></thead><tbody>
+<tr><td>0</td><td><code>UNKNOWN</code></td><td>Unknown error</td></tr>
+<tr><td>1</td><td><code>INVALID_ARGUMENT</code></td><td>Bad request data</td></tr>
+<tr><td>2</td><td><code>NOT_FOUND</code></td><td>Resource not found</td></tr>
+<tr><td>3</td><td><code>PERMISSION_DENIED</code></td><td>Access denied</td></tr>
+<tr><td>4</td><td><code>ALREADY_EXISTS</code></td><td>Resource exists</td></tr>
+<tr><td>5</td><td><code>UNAUTHENTICATED</code></td><td>Auth failed</td></tr>
+<tr><td>6</td><td><code>UNAVAILABLE</code></td><td>Server unavailable</td></tr>
+<tr><td>7</td><td><code>INTERNAL</code></td><td>Internal error</td></tr>
+<tr><td>8</td><td><code>PARSE_ERROR</code></td><td>Query parse error</td></tr>
+<tr><td>9</td><td><code>QUERY_ERROR</code></td><td>Query execution error</td></tr>
+</tbody></table>
+</div>
+<h3 id="error-classes"><a class="header" href="#error-classes">Error Classes</a></h3>
+<pre><code class="language-python">from neumann import (
+    NeumannError,
+    ConnectionError,
+    AuthenticationError,
+    PermissionError,
+    NotFoundError,
+    InvalidArgumentError,
+    ParseError,
+    QueryError,
+    InternalError,
+    ErrorCode,
+)
+
+try:
+    result = client.execute("SELECT nonexistent")
+except ConnectionError as e:
+    print(f"Connection failed: {e.message}")
+except AuthenticationError:
+    print("Check your API key")
+except ParseError as e:
+    print(f"Query syntax error: {e.message}")
+except NeumannError as e:
+    print(f"[{e.code.name}] {e.message}")
+</code></pre>
+<h3 id="error-factory"><a class="header" href="#error-factory">Error Factory</a></h3>
+<pre><code class="language-python">from neumann.errors import error_from_code, ErrorCode
+
+# Create error from code
+error = error_from_code(ErrorCode.NOT_FOUND, "Table 'users' not found")
+# Returns NotFoundError instance
+</code></pre>
+<h2 id="pandas-integration"><a class="header" href="#pandas-integration">Pandas Integration</a></h2>
+<p>Convert query results to pandas DataFrames:</p>
+<pre><code class="language-python">from neumann.integrations.pandas import (
+    result_to_dataframe,
+    rows_to_dataframe,
+    dataframe_to_inserts,
+)
+
+# Result to DataFrame
+result = client.execute("SELECT users")
+df = result_to_dataframe(result)
+
+# Rows to DataFrame
+df = rows_to_dataframe(result.rows)
+
+# DataFrame to INSERT statements
+inserts = dataframe_to_inserts(
+    df,
+    table="users",
+    column_mapping={"user_name": "name"},  # Optional column rename
+)
+
+# Execute inserts
+for query in inserts:
+    client.execute(query)
+</code></pre>
+<h2 id="numpy-integration"><a class="header" href="#numpy-integration">NumPy Integration</a></h2>
+<p>Work with vectors using numpy arrays:</p>
+<pre><code class="language-python">from neumann.integrations.numpy import (
+    vector_to_insert,
+    vectors_to_inserts,
+    parse_embedding,
+    cosine_similarity,
+    euclidean_distance,
+    normalize_vectors,
+)
+import numpy as np
+
+# Single vector to INSERT
+query = vector_to_insert("doc1", np.array([0.1, 0.2, 0.3]))
+client.execute(query)
+
+# Multiple vectors
+vectors = {
+    "doc1": np.array([0.1, 0.2, 0.3]),
+    "doc2": np.array([0.4, 0.5, 0.6]),
+}
+queries = vectors_to_inserts(vectors, normalize=True)
+for q in queries:
+    client.execute(q)
+
+# Parse embedding from result
+embedding = parse_embedding("[0.1, 0.2, 0.3]")
+
+# Distance calculations
+sim = cosine_similarity(vec1, vec2)
+dist = euclidean_distance(vec1, vec2)
+
+# Batch normalization
+normalized = normalize_vectors(np.array([vec1, vec2, vec3]))
+</code></pre>
+<h2 id="usage-examples"><a class="header" href="#usage-examples">Usage Examples</a></h2>
+<h3 id="complete-crud-example"><a class="header" href="#complete-crud-example">Complete CRUD Example</a></h3>
+<pre><code class="language-python">from neumann import NeumannClient
+
+with NeumannClient.connect("localhost:9200") as client:
+    # Create table
+    client.execute("CREATE TABLE products (name:string, price:float)")
+
+    # Insert data
+    client.execute('INSERT products name="Widget", price=9.99')
+    client.execute('INSERT products name="Gadget", price=19.99')
+
+    # Query data
+    result = client.execute("SELECT products WHERE price &gt; 10")
+    for row in result.rows:
+        print(row.to_dict())
+
+    # Update
+    client.execute('UPDATE products SET price=24.99 WHERE name="Gadget"')
+
+    # Delete
+    client.execute("DELETE products WHERE price &lt; 15")
+
+    # Drop table
+    client.execute("DROP TABLE products")
+</code></pre>
+<h3 id="graph-operations"><a class="header" href="#graph-operations">Graph Operations</a></h3>
+<pre><code class="language-python">from neumann import NeumannClient
+
+with NeumannClient.connect("localhost:9200") as client:
+    # Create nodes
+    client.execute('NODE CREATE person {name: "Alice", age: 30}')
+    client.execute('NODE CREATE person {name: "Bob", age: 25}')
+
+    # Create edge
+    client.execute("EDGE CREATE 1 -&gt; 2 : knows {since: 2020}")
+
+    # List nodes
+    result = client.execute("NODE LIST person")
+    for node in result.nodes:
+        print(f"[{node.id}] {node.label}: {node.to_dict()['properties']}")
+
+    # Find neighbors
+    result = client.execute("NEIGHBORS 1 OUTGOING")
+
+    # Find path
+    result = client.execute("PATH 1 -&gt; 2")
+    if result.paths:
+        path = result.paths[0]
+        print(" -&gt; ".join(n.id for n in path.nodes))
+</code></pre>
+<h3 id="vector-search-with-numpy"><a class="header" href="#vector-search-with-numpy">Vector Search with NumPy</a></h3>
+<pre><code class="language-python">from neumann import NeumannClient
+from neumann.integrations.numpy import vector_to_insert, normalize_vectors
+import numpy as np
+
+with NeumannClient.connect("localhost:9200") as client:
+    # Generate and store embeddings
+    embeddings = np.random.randn(100, 768).astype(np.float32)
+    embeddings = normalize_vectors(embeddings)
+
+    for i, emb in enumerate(embeddings):
+        query = vector_to_insert(f"doc{i}", emb)
+        client.execute(query)
+
+    # Query vector
+    query_vec = np.random.randn(768).astype(np.float32)
+    query_str = vector_to_insert("query", query_vec)
+    client.execute(query_str)
+
+    # Find similar
+    result = client.execute('SIMILAR "query" COSINE LIMIT 10')
+    for item in result.similar_items:
+        print(f"{item.key}: {item.score:.4f}")
+</code></pre>
+<h3 id="async-web-application"><a class="header" href="#async-web-application">Async Web Application</a></h3>
+<pre><code class="language-python">from fastapi import FastAPI
+from neumann.aio import AsyncNeumannClient
+
+app = FastAPI()
+client: AsyncNeumannClient | None = None
+
+@app.on_event("startup")
+async def startup():
+    global client
+    client = await AsyncNeumannClient.connect(
+        "localhost:9200",
+        api_key="your-api-key",
+    )
+
+@app.on_event("shutdown")
+async def shutdown():
+    if client:
+        await client.close()
+
+@app.get("/users")
+async def get_users():
+    result = await client.execute("SELECT users")
+    return [row.to_dict() for row in result.rows]
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    result = await client.execute(f"SELECT users WHERE id = {user_id}")
+    if result.rows:
+        return result.rows[0].to_dict()
+    return {"error": "Not found"}
+</code></pre>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Package</th><th>Purpose</th><th>Extra</th></tr></thead><tbody>
+<tr><td><code>grpcio</code></td><td>gRPC client</td><td>Default</td></tr>
+<tr><td><code>protobuf</code></td><td>Protocol buffers</td><td>Default</td></tr>
+<tr><td><code>neumann-native</code></td><td>PyO3 bindings</td><td><code>[native]</code></td></tr>
+<tr><td><code>pandas</code></td><td>DataFrame support</td><td><code>[pandas]</code></td></tr>
+<tr><td><code>numpy</code></td><td>Array support</td><td><code>[numpy]</code></td></tr>
+</tbody></table>
+</div>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><code>neumann_server</code></td><td>Server that this SDK connects to</td></tr>
+<tr><td><code>neumann_client</code></td><td>Rust SDK with same capabilities</td></tr>
+<tr><td><code>@neumann/client</code></td><td>TypeScript SDK with same API design</td></tr>
+</tbody></table>
+</div>
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/neumann-ts.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/tcp-transport.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/neumann-ts.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/tcp-transport.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

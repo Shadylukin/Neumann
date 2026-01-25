@@ -249,7 +249,7 @@ async fn test_new_leader_uses_existing_snapshot() {
         &store,
     );
 
-    let data = bincode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
+    let data = bitcode::serialize(&vec![create_log_entry(1, 1), create_log_entry(2, 1)]).unwrap();
     let snapshot_hash = compute_hash(&data);
     let metadata = SnapshotMetadata::new(
         50,

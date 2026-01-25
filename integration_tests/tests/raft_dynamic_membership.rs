@@ -242,8 +242,8 @@ async fn test_config_change_serialization() {
     ];
 
     for change in changes {
-        let bytes = bincode::serialize(&change).unwrap();
-        let decoded: ConfigChange = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&change).unwrap();
+        let decoded: ConfigChange = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded, change);
     }
 }
@@ -254,8 +254,8 @@ async fn test_raft_membership_config_serialization() {
     config.add_learner("learner1".to_string());
     config.config_index = 42;
 
-    let bytes = bincode::serialize(&config).unwrap();
-    let decoded: RaftMembershipConfig = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&config).unwrap();
+    let decoded: RaftMembershipConfig = bitcode::deserialize(&bytes).unwrap();
 
     assert_eq!(decoded.voters, config.voters);
     assert_eq!(decoded.learners, config.learners);
@@ -296,7 +296,7 @@ async fn test_log_entry_config_change() {
     assert_eq!(entry.index, 10);
 
     // Verify serialization
-    let bytes = bincode::serialize(&entry).unwrap();
-    let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&entry).unwrap();
+    let decoded: LogEntry = bitcode::deserialize(&bytes).unwrap();
     assert!(decoded.is_config_change());
 }

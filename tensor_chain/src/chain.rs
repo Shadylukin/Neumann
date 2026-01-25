@@ -177,7 +177,7 @@ impl Chain {
             _ => return Err(ChainError::StorageError("missing block data".to_string())),
         };
 
-        let block: Block = bincode::deserialize(bytes)
+        let block: Block = bitcode::deserialize(bytes)
             .map_err(|e| ChainError::SerializationError(e.to_string()))?;
 
         Ok(Some(block))
@@ -263,7 +263,7 @@ impl Chain {
     fn store_block(&self, block: &Block) -> Result<()> {
         let key = block_key(block.header.height);
         let bytes =
-            bincode::serialize(block).map_err(|e| ChainError::SerializationError(e.to_string()))?;
+            bitcode::serialize(block).map_err(|e| ChainError::SerializationError(e.to_string()))?;
 
         let mut data = tensor_store::TensorData::new();
         data.set(

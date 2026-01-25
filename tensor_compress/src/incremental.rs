@@ -104,13 +104,13 @@ pub struct DeltaSnapshot {
 impl DeltaSnapshot {
     /// Serialize to bytes.
     pub fn serialize(&self) -> Result<Vec<u8>, DeltaError> {
-        bincode::serialize(self).map_err(|e| DeltaError::Format(e.to_string()))
+        bitcode::serialize(self).map_err(|e| DeltaError::Format(e.to_string()))
     }
 
     /// Deserialize from bytes.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, DeltaError> {
         let delta: Self =
-            bincode::deserialize(bytes).map_err(|e| DeltaError::Format(e.to_string()))?;
+            bitcode::deserialize(bytes).map_err(|e| DeltaError::Format(e.to_string()))?;
         delta.header.validate()?;
         Ok(delta)
     }

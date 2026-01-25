@@ -7,6 +7,7 @@ use libfuzzer_sys::fuzz_target;
 use tensor_chain::{atomic_truncate, atomic_write, AtomicWriter};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 enum AtomicOp {
     Write { data: Vec<u8> },
     Truncate,

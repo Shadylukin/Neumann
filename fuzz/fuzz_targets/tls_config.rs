@@ -105,8 +105,8 @@ fuzz_target!(|input: FuzzInput| {
     }
 
     // Test serialization roundtrip
-    let serialized = bincode::serialize(&config.security).unwrap();
-    let deserialized: SecurityConfig = bincode::deserialize(&serialized).unwrap();
+    let serialized = bitcode::serialize(&config.security).unwrap();
+    let deserialized: SecurityConfig = bitcode::deserialize(&serialized).unwrap();
     assert_eq!(config.security.mode, deserialized.mode);
     assert_eq!(config.security.warn_on_insecure, deserialized.warn_on_insecure);
 });

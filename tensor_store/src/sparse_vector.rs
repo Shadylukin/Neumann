@@ -4,7 +4,46 @@
 //! Only non-zero values are fundamental. The dimension defines the boundary
 //! (shell) of meaningful space.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+
+/// Maximum dimension for sparse vectors (limited by u32 position storage).
+pub const MAX_DIMENSION: usize = u32::MAX as usize;
+
+/// Error type for sparse vector operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SparseVectorError {
+    /// Dimension exceeds the maximum supported value.
+    DimensionExceeded {
+        /// The requested dimension.
+        dimension: usize,
+        /// The maximum allowed dimension.
+        max: usize,
+    },
+    /// Index is out of bounds for the vector dimension.
+    IndexOutOfBounds {
+        /// The requested index.
+        index: usize,
+        /// The vector dimension.
+        dimension: usize,
+    },
+}
+
+impl fmt::Display for SparseVectorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DimensionExceeded { dimension, max } => {
+                write!(f, "dimension {dimension} exceeds maximum {max} (u32::MAX)")
+            },
+            Self::IndexOutOfBounds { index, dimension } => {
+                write!(f, "index {index} out of bounds for dimension {dimension}")
+            },
+        }
+    }
+}
+
+impl std::error::Error for SparseVectorError {}
 
 /// A vector that only stores non-zero values.
 ///
@@ -41,18 +80,48 @@ impl SparseVector {
     ///
     /// The dimension defines the shell - all positions within [0, dimension)
     /// are valid, but none contain information yet.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dimension` exceeds `MAX_DIMENSION` (`u32::MAX`).
+    /// Use [`try_new`](Self::try_new) for a fallible version.
     #[must_use]
-    pub const fn new(dimension: usize) -> Self {
-        Self {
+    pub fn new(dimension: usize) -> Self {
+        Self::try_new(dimension).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create an empty sparse vector with given dimension.
+    ///
+    /// Returns an error if `dimension` exceeds `MAX_DIMENSION`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SparseVectorError::DimensionExceeded`] if dimension > `u32::MAX`.
+    pub const fn try_new(dimension: usize) -> Result<Self, SparseVectorError> {
+        if dimension > MAX_DIMENSION {
+            return Err(SparseVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
+        Ok(Self {
             dimension,
             positions: Vec::new(),
             values: Vec::new(),
-        }
+        })
     }
 
     /// Create a sparse vector with pre-allocated capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dimension` exceeds `MAX_DIMENSION`.
     #[must_use]
     pub fn with_capacity(dimension: usize, capacity: usize) -> Self {
+        assert!(
+            dimension <= MAX_DIMENSION,
+            "dimension {dimension} exceeds maximum {MAX_DIMENSION}"
+        );
         Self {
             dimension,
             positions: Vec::with_capacity(capacity),
@@ -63,16 +132,51 @@ impl SparseVector {
     /// Create from parallel arrays of positions and values.
     ///
     /// Filters out zeros and sorts by position.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dimension` exceeds `MAX_DIMENSION` or any position >= dimension.
+    /// Use [`try_from_parts`](Self::try_from_parts) for a fallible version.
     #[must_use]
     pub fn from_parts(dimension: usize, positions: Vec<u32>, values: Vec<f32>) -> Self {
+        Self::try_from_parts(dimension, positions, values).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create from parallel arrays of positions and values.
+    ///
+    /// Filters out zeros and sorts by position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `dimension` exceeds `MAX_DIMENSION`
+    /// - Any position is >= `dimension`
+    pub fn try_from_parts(
+        dimension: usize,
+        positions: Vec<u32>,
+        values: Vec<f32>,
+    ) -> Result<Self, SparseVectorError> {
+        if dimension > MAX_DIMENSION {
+            return Err(SparseVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
         debug_assert_eq!(positions.len(), values.len());
 
-        // Filter zeros and pair with positions
-        let mut pairs: Vec<(u32, f32)> = positions
-            .into_iter()
-            .zip(values)
-            .filter(|(_, v)| *v != 0.0)
-            .collect();
+        // Validate positions and filter zeros
+        let mut pairs: Vec<(u32, f32)> = Vec::with_capacity(positions.len());
+        for (pos, val) in positions.into_iter().zip(values) {
+            if pos as usize >= dimension {
+                return Err(SparseVectorError::IndexOutOfBounds {
+                    index: pos as usize,
+                    dimension,
+                });
+            }
+            if val != 0.0 {
+                pairs.push((pos, val));
+            }
+        }
 
         // Sort by position
         pairs.sort_by_key(|(p, _)| *p);
@@ -80,18 +184,39 @@ impl SparseVector {
         // Unzip back
         let (positions, values): (Vec<u32>, Vec<f32>) = pairs.into_iter().unzip();
 
-        Self {
+        Ok(Self {
             dimension,
             positions,
             values,
-        }
+        })
     }
 
     /// Create from a dense vector, storing only non-zero values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dense.len()` exceeds `MAX_DIMENSION`.
+    /// Use [`try_from_dense`](Self::try_from_dense) for a fallible version.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_dense(dense: &[f32]) -> Self {
+        Self::try_from_dense(dense).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create from a dense vector, storing only non-zero values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SparseVectorError::DimensionExceeded`] if `dense.len()` > `MAX_DIMENSION`.
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32; validated above
+    pub fn try_from_dense(dense: &[f32]) -> Result<Self, SparseVectorError> {
         let dimension = dense.len();
+        if dimension > MAX_DIMENSION {
+            return Err(SparseVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
+
         let mut positions = Vec::new();
         let mut values = Vec::new();
 
@@ -102,18 +227,42 @@ impl SparseVector {
             }
         }
 
-        Self {
+        Ok(Self {
             dimension,
             positions,
             values,
-        }
+        })
     }
 
     /// Create from a dense vector with a threshold - values below threshold become zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dense.len()` exceeds `MAX_DIMENSION`.
+    /// Use [`try_from_dense_with_threshold`](Self::try_from_dense_with_threshold) for a fallible version.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_dense_with_threshold(dense: &[f32], threshold: f32) -> Self {
+        Self::try_from_dense_with_threshold(dense, threshold).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create from a dense vector with a threshold - values below threshold become zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SparseVectorError::DimensionExceeded`] if `dense.len()` > `MAX_DIMENSION`.
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32; validated above
+    pub fn try_from_dense_with_threshold(
+        dense: &[f32],
+        threshold: f32,
+    ) -> Result<Self, SparseVectorError> {
         let dimension = dense.len();
+        if dimension > MAX_DIMENSION {
+            return Err(SparseVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
+
         let mut positions = Vec::new();
         let mut values = Vec::new();
 
@@ -124,11 +273,11 @@ impl SparseVector {
             }
         }
 
-        Self {
+        Ok(Self {
             dimension,
             positions,
             values,
-        }
+        })
     }
 
     /// The shell/boundary - total dimension of the vector space.
@@ -193,9 +342,31 @@ impl SparseVector {
     ///
     /// If value is zero, removes from storage (zero doesn't exist).
     /// If value is non-zero, inserts or updates.
-    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` >= `dimension`.
+    /// Use [`try_set`](Self::try_set) for a fallible version.
     pub fn set(&mut self, index: usize, value: f32) {
-        debug_assert!(index < self.dimension, "Index out of bounds");
+        self.try_set(index, value).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// Set value at position.
+    ///
+    /// If value is zero, removes from storage (zero doesn't exist).
+    /// If value is non-zero, inserts or updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SparseVectorError::IndexOutOfBounds`] if `index` >= `dimension`.
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32; validated above
+    pub fn try_set(&mut self, index: usize, value: f32) -> Result<(), SparseVectorError> {
+        if index >= self.dimension {
+            return Err(SparseVectorError::IndexOutOfBounds {
+                index,
+                dimension: self.dimension,
+            });
+        }
 
         let idx = index as u32;
         match self.positions.binary_search(&idx) {
@@ -218,6 +389,7 @@ impl SparseVector {
                 // If value is 0.0 and not found, do nothing (already absent)
             },
         }
+        Ok(())
     }
 
     /// Convert to dense representation.
@@ -431,11 +603,39 @@ impl SparseVector {
     ///
     /// Only stores positions where |after\[i\] - before\[i\]| > threshold.
     /// This is the core operation for eliminating dense ceremony.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `before.len()` exceeds `MAX_DIMENSION`.
+    /// Use [`try_from_diff`](Self::try_from_diff) for a fallible version.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32 for memory efficiency
     pub fn from_diff(before: &[f32], after: &[f32], threshold: f32) -> Self {
+        Self::try_from_diff(before, after, threshold).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create a sparse delta from two dense vectors.
+    ///
+    /// Only stores positions where |after\[i\] - before\[i\]| > threshold.
+    /// This is the core operation for eliminating dense ceremony.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SparseVectorError::DimensionExceeded`] if `before.len()` > `MAX_DIMENSION`.
+    #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32; validated above
+    pub fn try_from_diff(
+        before: &[f32],
+        after: &[f32],
+        threshold: f32,
+    ) -> Result<Self, SparseVectorError> {
         debug_assert_eq!(before.len(), after.len());
         let dimension = before.len();
+        if dimension > MAX_DIMENSION {
+            return Err(SparseVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
+
         let mut positions = Vec::new();
         let mut values = Vec::new();
 
@@ -449,11 +649,11 @@ impl SparseVector {
             }
         }
 
-        Self {
+        Ok(Self {
             dimension,
             positions,
             values,
-        }
+        })
     }
 
     /// Subtract another sparse vector (self - other).
@@ -1512,5 +1712,101 @@ mod tests {
         let dist = a.manhattan_distance(&b);
         // |1| + |3| + |2| + |4| = 10
         assert!((dist - 10.0).abs() < 1e-6);
+    }
+
+    // ========================================================================
+    // Security validation tests for integer truncation prevention
+    // ========================================================================
+
+    #[test]
+    fn test_try_new_at_max_boundary() {
+        // MAX_DIMENSION is u32::MAX, which is valid
+        let result = SparseVector::try_new(MAX_DIMENSION);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().dimension(), MAX_DIMENSION);
+    }
+
+    #[test]
+    fn test_try_new_exceeds_max() {
+        let result = SparseVector::try_new(MAX_DIMENSION + 1);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            SparseVectorError::DimensionExceeded {
+                dimension: MAX_DIMENSION + 1,
+                max: MAX_DIMENSION
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_from_parts_validates_positions() {
+        // Position 10 is out of bounds for dimension 5
+        let result = SparseVector::try_from_parts(5, vec![0, 2, 10], vec![1.0, 2.0, 3.0]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            SparseVectorError::IndexOutOfBounds {
+                index: 10,
+                dimension: 5
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_from_parts_valid() {
+        let result = SparseVector::try_from_parts(10, vec![0, 5, 9], vec![1.0, 2.0, 3.0]);
+        assert!(result.is_ok());
+        let sv = result.unwrap();
+        assert_eq!(sv.dimension(), 10);
+        assert_eq!(sv.nnz(), 3);
+    }
+
+    #[test]
+    fn test_try_set_index_out_of_bounds() {
+        let mut sv = SparseVector::new(5);
+        let result = sv.try_set(5, 1.0);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            SparseVectorError::IndexOutOfBounds {
+                index: 5,
+                dimension: 5
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_set_valid() {
+        let mut sv = SparseVector::new(5);
+        let result = sv.try_set(4, 1.0);
+        assert!(result.is_ok());
+        assert_eq!(sv.get(4), 1.0);
+    }
+
+    #[test]
+    fn test_sparse_vector_error_display() {
+        let err = SparseVectorError::DimensionExceeded {
+            dimension: 5_000_000_000,
+            max: MAX_DIMENSION,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("5000000000"));
+        assert!(msg.contains("exceeds maximum"));
+
+        let err2 = SparseVectorError::IndexOutOfBounds {
+            index: 100,
+            dimension: 50,
+        };
+        let msg2 = format!("{err2}");
+        assert!(msg2.contains("100"));
+        assert!(msg2.contains("50"));
+        assert!(msg2.contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_max_dimension_constant() {
+        // Verify the constant matches u32::MAX
+        assert_eq!(MAX_DIMENSION, u32::MAX as usize);
     }
 }

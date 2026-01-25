@@ -83,6 +83,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "asn1-rs"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,15 +260,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e050f626429857a27ddccb31e0aca21356bfa709c04041aefddac081a8f068a"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,6 +273,30 @@ name = "bit-vec"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "349f9b6a179ed607305526ca489b34ad0a41aed5f7980fa90eb03160b69598fb"
+
+[[package]]
+name = "bitcode"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a6ed1b54d8dc333e7be604d00fa9262f4635485ffea923647b6521a5fff045d"
+dependencies = [
+ "arrayvec",
+ "bitcode_derive",
+ "bytemuck",
+ "glam",
+ "serde",
+]
+
+[[package]]
+name = "bitcode_derive"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "238b90427dfad9da4a9abd60f3ec1cdee6b80454bde49ed37f1781dd8e9dc7f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "bitflags"
@@ -796,7 +817,10 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 name = "experiments"
 version = "0.1.0"
 dependencies = [
+ "criterion",
+ "parking_lot",
  "rand",
+ "rustc-hash 2.1.1",
  "serde",
  "tensor_chain",
  "tensor_store",
@@ -990,15 +1014,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fxhash"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1042,10 +1057,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74a4d85559e2637d3d839438b5b3d75c31e655276f9544d72475c36b92fabbed"
+
+[[package]]
 name = "graph_engine"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "parking_lot",
  "rayon",
  "serde",
  "tensor_store",
@@ -1474,7 +1496,7 @@ dependencies = [
 name = "integration_tests"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "futures",
  "graph_engine",
  "neumann_client",
@@ -2148,7 +2170,7 @@ dependencies = [
 name = "query_router"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "criterion",
  "futures",
  "graph_engine",
@@ -2376,6 +2398,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"
@@ -2851,7 +2879,7 @@ dependencies = [
 name = "tensor_cache"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "criterion",
  "dashmap 6.1.0",
  "serde",
@@ -2870,7 +2898,7 @@ name = "tensor_chain"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bincode",
+ "bitcode",
  "blake2",
  "bytes",
  "crc32fast",
@@ -2907,7 +2935,7 @@ dependencies = [
 name = "tensor_checkpoint"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "serde",
  "tempfile",
  "tensor_blob",
@@ -2921,7 +2949,7 @@ dependencies = [
 name = "tensor_compress"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "criterion",
  "peak_alloc",
  "rayon",
@@ -2933,13 +2961,13 @@ dependencies = [
 name = "tensor_store"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "bitcode",
  "bitvec",
  "crc32fast",
  "criterion",
- "fxhash",
  "memmap2",
  "parking_lot",
+ "rustc-hash 2.1.1",
  "serde",
  "tempfile",
  "tensor_compress",
@@ -3047,7 +3075,7 @@ dependencies = [
  "lazy_static",
  "parking_lot",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
 ]
 
 [[package]]

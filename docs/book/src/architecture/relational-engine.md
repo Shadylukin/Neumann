@@ -13,7 +13,7 @@ operations for bulk inserts.
 ## Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     subgraph RelationalEngine
         API[Public API]
         Schema[Schema Validation]
@@ -966,7 +966,7 @@ HAVING SUM(quantity) > 100;
 | Feature | Status |
 | --- | --- |
 | Query Optimization | Not implemented |
-| Transactions | Not implemented |
+| Transactions | Row-level ACID with undo log - see [Transactions](relational-transactions.md) |
 | Foreign Keys | Not implemented |
 | Subqueries | Not implemented |
 | Window Functions | Not implemented |

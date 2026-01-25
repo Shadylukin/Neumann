@@ -77,7 +77,7 @@ impl<W: Write> StreamingWriter<W> {
 
     /// Write a single compressed entry.
     pub fn write_entry(&mut self, entry: &CompressedEntry) -> Result<(), FormatError> {
-        let bytes = bincode::serialize(entry)?;
+        let bytes = bitcode::serialize(entry)?;
         let len = bytes.len() as u32;
 
         // Write length prefix then entry data
@@ -112,7 +112,7 @@ impl<W: Write + Seek> StreamingWriter<W> {
             data_start: self.data_start,
         };
 
-        let trailer_bytes = bincode::serialize(&header)?;
+        let trailer_bytes = bitcode::serialize(&header)?;
         self.writer.write_all(&trailer_bytes)?;
 
         // Write trailer size at very end for easy seeking
@@ -158,7 +158,7 @@ impl<R: Read + Seek> StreamingReader<R> {
         let mut trailer_bytes = vec![0u8; trailer_len as usize];
         reader.read_exact(&mut trailer_bytes)?;
 
-        let header: StreamingHeader = bincode::deserialize(&trailer_bytes)?;
+        let header: StreamingHeader = bitcode::deserialize(&trailer_bytes)?;
         header.validate()?;
 
         // Seek to data start
@@ -203,7 +203,7 @@ impl<R: Read> Iterator for StreamingReader<R> {
         // Read length prefix
         let mut len_bytes = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut len_bytes) {
-            return Some(Err(FormatError::from(bincode::Error::from(e))));
+            return Some(Err(FormatError::Io(e)));
         }
         let len = u32::from_le_bytes(len_bytes) as usize;
 
@@ -218,10 +218,10 @@ impl<R: Read> Iterator for StreamingReader<R> {
         // Read entry data
         let mut entry_bytes = vec![0u8; len];
         if let Err(e) = self.reader.read_exact(&mut entry_bytes) {
-            return Some(Err(FormatError::from(bincode::Error::from(e))));
+            return Some(Err(FormatError::Io(e)));
         }
 
-        match bincode::deserialize(&entry_bytes) {
+        match bitcode::deserialize(&entry_bytes) {
             Ok(entry) => {
                 self.entries_read += 1;
                 Some(Ok(entry))

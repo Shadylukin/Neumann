@@ -51,18 +51,18 @@ fn test_empty_graph_traversal() {
     let graph = GraphEngine::with_store(store);
 
     // Path find on empty graph
-    let path = graph.find_path(0, 1);
+    let path = graph.find_path(0, 1, None);
     assert!(path.is_err() || path.as_ref().map(|p| p.nodes.is_empty()).unwrap_or(true));
 
     // Create single node with no edges
     let node_id = graph.create_node("lonely", HashMap::new()).unwrap();
 
     // Neighbors of node with no edges should be empty
-    let neighbors = graph.neighbors(node_id, None, Direction::Both).unwrap();
+    let neighbors = graph.neighbors(node_id, None, Direction::Both, None).unwrap();
     assert!(neighbors.is_empty());
 
     // Path to self
-    let self_path = graph.find_path(node_id, node_id);
+    let self_path = graph.find_path(node_id, node_id, None);
     match self_path {
         Ok(path) => {
             // Path to self may return single-node path or empty
@@ -322,13 +322,13 @@ fn test_self_loop_graph_handling() {
             // Self-loop created successfully
             // Note: neighbors() may or may not include self in results
             // This documents the behavior
-            let _neighbors = graph.neighbors(node, None, Direction::Outgoing).unwrap();
+            let _neighbors = graph.neighbors(node, None, Direction::Outgoing, None).unwrap();
 
             // The edge exists, so the graph supports self-loops
             // neighbors may filter out self-references in some implementations
 
             // Path to self should work or return trivial path
-            let path_result = graph.find_path(node, node);
+            let path_result = graph.find_path(node, node, None);
             match path_result {
                 Ok(path) => {
                     // Path to self exists

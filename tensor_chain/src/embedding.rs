@@ -331,8 +331,8 @@ mod tests {
         let state = EmbeddingState::from_dense(&[1.0, 2.0]);
         let computed = state.compute_from_dense(&[3.0, 4.0]).unwrap();
 
-        let serialized = bincode::serialize(&computed).unwrap();
-        let deserialized: EmbeddingState = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&computed).unwrap();
+        let deserialized: EmbeddingState = bitcode::deserialize(&serialized).unwrap();
 
         assert!(deserialized.is_computed());
         assert_eq!(deserialized.delta_or_zero(), vec![2.0, 2.0]);

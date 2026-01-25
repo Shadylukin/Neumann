@@ -42,11 +42,11 @@ fuzz_target!(|test_case: TestCase| {
         TestCase::DeserializeArbitrary { bytes } => {
             // Test that arbitrary bytes don't panic during deserialization
             // (may or may not succeed, but shouldn't crash)
-            if let Ok(snapshot) = bincode::deserialize::<ChainMetricsSnapshot>(&bytes) {
+            if let Ok(snapshot) = bitcode::deserialize::<ChainMetricsSnapshot>(&bytes) {
                 // If successful, verify roundtrip works
-                if let Ok(roundtrip_bytes) = bincode::serialize(&snapshot) {
+                if let Ok(roundtrip_bytes) = bitcode::serialize(&snapshot) {
                     let restored: Result<ChainMetricsSnapshot, _> =
-                        bincode::deserialize(&roundtrip_bytes);
+                        bitcode::deserialize(&roundtrip_bytes);
                     assert!(
                         restored.is_ok(),
                         "Roundtrip should succeed for valid snapshot"
@@ -82,9 +82,9 @@ fuzz_target!(|test_case: TestCase| {
             let snapshot = create_snapshot_from_input(&input);
 
             // Serialize and deserialize
-            let bytes = bincode::serialize(&snapshot).expect("Serialization should succeed");
+            let bytes = bitcode::serialize(&snapshot).expect("Serialization should succeed");
             let restored: ChainMetricsSnapshot =
-                bincode::deserialize(&bytes).expect("Deserialization should succeed");
+                bitcode::deserialize(&bytes).expect("Deserialization should succeed");
 
             // Verify values match
             assert_eq!(

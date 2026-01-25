@@ -92,7 +92,11 @@ fn bench_neighbors(c: &mut Criterion) {
             fan_out,
             |b, _fan_out| {
                 b.iter(|| {
-                    black_box(engine.neighbors(center, None, Direction::Outgoing).unwrap());
+                    black_box(
+                        engine
+                            .neighbors(center, None, Direction::Outgoing, None)
+                            .unwrap(),
+                    );
                 });
             },
         );
@@ -135,7 +139,7 @@ fn bench_traverse(c: &mut Criterion) {
             |b, &depth| {
                 b.iter(|| {
                     let result = engine
-                        .traverse(root, Direction::Outgoing, depth + 1, None)
+                        .traverse(root, Direction::Outgoing, depth + 1, None, None)
                         .unwrap();
                     assert_eq!(result.len(), expected_nodes);
                     black_box(result);
@@ -179,7 +183,7 @@ fn bench_find_path(c: &mut Criterion) {
             chain_length,
             |b, _| {
                 b.iter(|| {
-                    black_box(engine.find_path(first, last).unwrap());
+                    black_box(engine.find_path(first, last, None).unwrap());
                 });
             },
         );
@@ -243,7 +247,7 @@ fn bench_find_path_branching(c: &mut Criterion) {
             grid_size,
             |b, _| {
                 b.iter(|| {
-                    black_box(engine.find_path(top_left, bottom_right).unwrap());
+                    black_box(engine.find_path(top_left, bottom_right, None).unwrap());
                 });
             },
         );

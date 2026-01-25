@@ -172,8 +172,8 @@ pub enum StreamingError {
     UnexpectedEof,
 }
 
-impl From<bincode::Error> for StreamingError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for StreamingError {
+    fn from(e: bitcode::Error) -> Self {
         Self::Serialization(e.to_string())
     }
 }
@@ -231,7 +231,7 @@ impl SnapshotWriter {
     }
 
     pub fn write_entry(&mut self, entry: &LogEntry) -> Result<()> {
-        let bytes = bincode::serialize(entry)?;
+        let bytes = bitcode::serialize(entry)?;
         let len = bytes.len() as u32;
 
         if bytes.len() > MAX_ENTRY_SIZE {
@@ -400,7 +400,7 @@ impl<'a> SnapshotReader<'a> {
         }
 
         let entry_bytes = self.buffer.as_slice(self.read_offset, len)?;
-        let entry: LogEntry = bincode::deserialize(entry_bytes)?;
+        let entry: LogEntry = bitcode::deserialize(entry_bytes)?;
         self.read_offset += len as u64;
 
         self.entries_read += 1;
@@ -438,7 +438,7 @@ pub fn deserialize_entries(data: &[u8]) -> Result<Vec<LogEntry>> {
         reader.collect()
     } else {
         // Fall back to legacy format (direct bincode Vec<LogEntry>)
-        let entries: Vec<LogEntry> = bincode::deserialize(data)?;
+        let entries: Vec<LogEntry> = bitcode::deserialize(data)?;
         Ok(entries)
     }
 }
@@ -712,7 +712,7 @@ mod tests {
 
         // Only write 1 valid entry
         let entry = create_test_entry(1, 1);
-        let bytes = bincode::serialize(&entry).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
         buffer.write(&(bytes.len() as u32).to_le_bytes()).unwrap();
         buffer.write(&bytes).unwrap();
         buffer.finalize().unwrap();
@@ -874,7 +874,7 @@ mod tests {
         let entries: Vec<LogEntry> = (1..=5).map(|i| create_test_entry(i, 1)).collect();
 
         // Serialize using legacy bincode format (not streaming)
-        let legacy_bytes = bincode::serialize(&entries).unwrap();
+        let legacy_bytes = bitcode::serialize(&entries).unwrap();
 
         // Should be able to deserialize
         let result = deserialize_entries(&legacy_bytes).unwrap();

@@ -375,8 +375,8 @@ fn test_delta_batch_serialization_with_checksums() {
     let batch_with_checksum = batch.with_checksum();
 
     // Serialize and deserialize
-    let bytes = bincode::serialize(&batch_with_checksum).expect("serialize");
-    let decoded: DeltaBatch = bincode::deserialize(&bytes).expect("deserialize");
+    let bytes = bitcode::serialize(&batch_with_checksum).expect("serialize");
+    let decoded: DeltaBatch = bitcode::deserialize(&bytes).expect("deserialize");
 
     // Checksums should survive serialization
     assert_eq!(batch_with_checksum.checksum, decoded.checksum);

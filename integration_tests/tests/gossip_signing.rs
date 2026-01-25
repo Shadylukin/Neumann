@@ -213,8 +213,8 @@ async fn test_signed_gossip_message_enum_variant() {
     let message = Message::SignedGossip(signed);
 
     // Verify it can be serialized/deserialized
-    let serialized = bincode::serialize(&message).unwrap();
-    let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+    let serialized = bitcode::serialize(&message).unwrap();
+    let deserialized: Message = bitcode::deserialize(&serialized).unwrap();
 
     match deserialized {
         Message::SignedGossip(s) => {

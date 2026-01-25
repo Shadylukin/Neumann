@@ -292,8 +292,8 @@ mod tests {
             avg_us: 200.0,
         };
 
-        let bytes = bincode::serialize(&snapshot).unwrap();
-        let restored: TimingSnapshot = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&snapshot).unwrap();
+        let restored: TimingSnapshot = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(snapshot, restored);
     }

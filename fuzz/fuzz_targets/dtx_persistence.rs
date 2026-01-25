@@ -19,27 +19,27 @@ struct FuzzInput {
 
 fuzz_target!(|input: FuzzInput| {
     // Test CoordinatorState deserialize doesn't panic
-    if let Ok(state) = bincode::deserialize::<CoordinatorState>(&input.coordinator_bytes) {
+    if let Ok(state) = bitcode::deserialize::<CoordinatorState>(&input.coordinator_bytes) {
         // If deserialize succeeds, verify roundtrip
-        if let Ok(bytes) = bincode::serialize(&state) {
+        if let Ok(bytes) = bitcode::serialize(&state) {
             // Re-deserialize should not panic
-            let _ = bincode::deserialize::<CoordinatorState>(&bytes);
+            let _ = bitcode::deserialize::<CoordinatorState>(&bytes);
         }
     }
 
     // Test ParticipantState deserialize doesn't panic
-    if let Ok(state) = bincode::deserialize::<ParticipantState>(&input.participant_bytes) {
+    if let Ok(state) = bitcode::deserialize::<ParticipantState>(&input.participant_bytes) {
         // If deserialize succeeds, verify roundtrip
-        if let Ok(bytes) = bincode::serialize(&state) {
-            let _ = bincode::deserialize::<ParticipantState>(&bytes);
+        if let Ok(bytes) = bitcode::serialize(&state) {
+            let _ = bitcode::deserialize::<ParticipantState>(&bytes);
         }
     }
 
     // Test SerializableLockState deserialize doesn't panic
-    if let Ok(state) = bincode::deserialize::<SerializableLockState>(&input.lock_state_bytes) {
+    if let Ok(state) = bitcode::deserialize::<SerializableLockState>(&input.lock_state_bytes) {
         // If deserialize succeeds, verify roundtrip
-        if let Ok(bytes) = bincode::serialize(&state) {
-            let _ = bincode::deserialize::<SerializableLockState>(&bytes);
+        if let Ok(bytes) = bitcode::serialize(&state) {
+            let _ = bitcode::deserialize::<SerializableLockState>(&bytes);
         }
     }
 });

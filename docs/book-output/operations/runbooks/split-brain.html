@@ -192,15 +192,6 @@ potentially accepting conflicting writes.</p>
 <li><code>tensor_chain_partition_detected</code> metric &gt; 0</li>
 <li>Gossip reporting different membership views</li>
 </ul>
-<h2 id="diagnostic-steps"><a class="header" href="#diagnostic-steps">Diagnostic Steps</a></h2>
-<ol>
-<li>Confirm multiple leaders from metrics:
-<code>curl -s http://node1:9090/metrics | grep raft_state</code></li>
-<li>Compare Raft terms and commit indexes:
-<code>neumann-admin raft-info --all</code></li>
-<li>Compare membership views from gossip:
-<code>neumann-admin cluster-status</code></li>
-</ol>
 <h2 id="how-tensor_chain-prevents-split-brain"><a class="header" href="#how-tensor_chain-prevents-split-brain">How tensor_chain Prevents Split-Brain</a></h2>
 <p>Raft consensus requires majority quorum:</p>
 <ul>

@@ -1,14 +1,12 @@
-//! Byzantine Fault Tolerance Experiments
+//! Byzantine Fault Tolerance and Geometry Experiments
 //!
-//! This crate provides rigorous experimental verification of two key BFT theorems:
+//! This crate provides:
 //!
-//! 1. **Detection Completeness**: Rank 2 density > 0 iff Byzantine equivocation exists.
-//!    No threshold is needed - the presence of ANY inconsistency proves Byzantine behavior.
+//! 1. **BFT Experiments**: Verification of detection completeness and attribution thresholds
+//! 2. **Geometry Benchmarks**: Hyperbolic vs Euclidean HNSW comparison
+//! 3. **Lock Optimization Prototypes**: SingleLockEntityIndex for benchmarking
 //!
-//! 2. **Attribution Threshold**: Identifying WHO is Byzantine requires n >= 3f+1.
-//!    This is a tight bound - below it, an optimal adversary can defeat all algorithms.
-//!
-//! # Key Insight
+//! # BFT Key Insight
 //!
 //! Detection is **structural** (geometric) - it works at any network size because
 //! equivocation creates observable inconsistencies.
@@ -18,22 +16,26 @@
 //!
 //! The 3f+1 bound is about WHO, not THAT.
 //!
-//! # Report-Based BFT (The Hard Problem)
+//! # Geometry Key Insight
 //!
-//! The `report_*` modules model the REAL BFT problem:
-//! - Nodes only see messages sent TO them (no global visibility)
-//! - Nodes must REPORT what they received (claims, not ground truth)
-//! - Byzantine nodes can LIE about reports
-//! - Attribution becomes ambiguous: "Did sender equivocate, OR is reporter lying?"
+//! Hyperbolic space has exponential volume growth (V(r) ~ e^(d*r)) vs polynomial
+//! for Euclidean (V(r) ~ r^d). This means:
+//! - Trees embed with zero distortion in hyperbolic space
+//! - 5D hyperbolic can match 200D Euclidean for hierarchical data
 //!
-//! This is why 3f+1 emerges: honest nodes must outvote lies in reports.
+//! # Benchmark Modules
+//!
+//! - `bench_utils`: Data generation for benchmarks (trees, clusters, random)
+//! - `single_lock_entity_index`: Lock optimization prototype
 
 pub mod adversary;
 pub mod attribution;
+pub mod bench_utils;
 pub mod curvature_byzantine;
 pub mod detection_benchmark;
 pub mod hyperbolic;
 pub mod hyperbolic_consensus;
+pub mod hyperbolic_hnsw;
 pub mod network;
 pub mod proofs;
 pub mod rank2;
@@ -41,6 +43,7 @@ pub mod report;
 pub mod report_adversary;
 pub mod report_detection;
 pub mod report_network;
+pub mod single_lock_entity_index;
 pub mod tensor_attribution;
 pub mod types;
 
@@ -88,4 +91,8 @@ pub use curvature_byzantine::{
 pub use hyperbolic::{AdaptiveGeometry, CurvatureEstimator, LorentzPoint, MixedCurvatureSpace};
 pub use hyperbolic_consensus::{
     AdaptiveConflictDetector, ConflictDelta, EuclideanConflictDetector, HyperbolicConflictDetector,
+};
+pub use hyperbolic_hnsw::{
+    run_hnsw_benchmark_suite, EuclideanHNSW, HNSWBenchmarkResults, HyperbolicHNSW,
+    HyperbolicHNSWConfig, LorentzVector,
 };

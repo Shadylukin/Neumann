@@ -68,7 +68,7 @@ use std::{
     collections::HashMap,
     fs::File,
     hash::{Hash, Hasher},
-    io::{BufReader, BufWriter},
+    io::{Read, Write},
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -105,13 +105,17 @@ pub use blob_log::{BlobLog, BlobLogSnapshot, ChunkHash};
 pub use cache_ring::{CacheRing, CacheRingSnapshot, CacheStats, EvictionScorer, EvictionStrategy};
 pub use consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner, ConsistentHashStats};
 pub use delta_vector::{
-    ArchetypeRegistry, CoverageStats, DeltaVector, KMeans, KMeansConfig, KMeansInit,
+    ArchetypeRegistry, CoverageStats, DeltaVector, DeltaVectorError, KMeans, KMeansConfig,
+    KMeansInit, MAX_DIMENSION as DELTA_MAX_DIMENSION,
 };
 pub use distance::{DistanceMetric, GeometricConfig};
 pub use embedding_slab::{
     CompressedEmbedding, EmbeddingError, EmbeddingSlab, EmbeddingSlabSnapshot, EmbeddingSlot,
 };
-pub use entity_index::{EntityId, EntityIndex, EntityIndexSnapshot};
+pub use entity_index::{
+    EntityId, EntityIndex, EntityIndexConfig, EntityIndexError, EntityIndexSnapshot,
+    DEFAULT_MAX_ENTITIES,
+};
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};
 pub use hnsw::{EmbeddingStorage, EmbeddingStorageError, HNSWConfig, HNSWIndex, HNSWMemoryStats};
 pub use instrumentation::{
@@ -137,7 +141,7 @@ pub use snapshot::{
     migrate_v2_to_v3 as snapshot_migrate, save_v3 as snapshot_save, SnapshotFormatError,
     SnapshotHeader, SnapshotVersion, V3Snapshot,
 };
-pub use sparse_vector::SparseVector;
+pub use sparse_vector::{SparseVector, SparseVectorError, MAX_DIMENSION as SPARSE_MAX_DIMENSION};
 pub use tiered::{TieredConfig, TieredError, TieredStats, TieredStore};
 pub use voronoi::{VoronoiPartitioner, VoronoiPartitionerConfig, VoronoiRegion};
 pub use wal::{TensorWal, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalStatus};
@@ -742,8 +746,8 @@ impl From<std::io::Error> for SnapshotError {
     }
 }
 
-impl From<bincode::Error> for SnapshotError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for SnapshotError {
+    fn from(e: bitcode::Error) -> Self {
         Self::SerializationError(e.to_string())
     }
 }
@@ -1207,9 +1211,9 @@ impl TensorStore {
         let header = Header::new(config, entries.len() as u64);
         let snapshot = CompressedSnapshot { header, entries };
 
-        let file = File::create(&temp_path)?;
-        let writer = BufWriter::new(file);
-        bincode::serialize_into(writer, &snapshot)?;
+        let bytes = bitcode::serialize(&snapshot)?;
+        let mut file = File::create(&temp_path)?;
+        file.write_all(&bytes)?;
 
         std::fs::rename(&temp_path, path)?;
 
@@ -1224,9 +1228,10 @@ impl TensorStore {
     pub fn load_snapshot_compressed<P: AsRef<Path>>(path: P) -> SnapshotResult<Self> {
         use tensor_compress::format::{decompress_vector, CompressedSnapshot, CompressedValue};
 
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let snapshot: CompressedSnapshot = bincode::deserialize_from(reader)?;
+        let mut file = File::open(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let snapshot: CompressedSnapshot = bitcode::deserialize(&bytes)?;
 
         snapshot
             .header
@@ -1284,7 +1289,13 @@ impl TensorStore {
             }
 
             // Best-effort restore - continue even if individual entries fail
-            store.router.put(&entry.key, tensor).ok();
+            if let Err(e) = store.router.put(&entry.key, tensor) {
+                tracing::warn!(
+                    key = %entry.key,
+                    error = %e,
+                    "Failed to restore entry during snapshot load"
+                );
+            }
         }
 
         Ok(store)
@@ -1316,7 +1327,13 @@ impl TensorStore {
         for key in new_router.scan("") {
             if let Ok(value) = new_router.get(&key) {
                 // Best-effort restore - continue even if individual entries fail
-                self.router.put(&key, value).ok();
+                if let Err(e) = self.router.put(&key, value) {
+                    tracing::warn!(
+                        key = %key,
+                        error = %e,
+                        "Failed to restore entry during checkpoint restore"
+                    );
+                }
             }
         }
 
@@ -3797,7 +3814,7 @@ mod tests {
     fn test_snapshot_error_from_bincode_error() {
         // Create a bincode error by trying to deserialize invalid data
         let invalid_data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        let result: std::result::Result<String, _> = bincode::deserialize(invalid_data);
+        let result: std::result::Result<String, _> = bitcode::deserialize(invalid_data);
         if let Err(e) = result {
             let snap_err: SnapshotError = e.into();
             match snap_err {

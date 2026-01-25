@@ -49,13 +49,13 @@ fuzz_target!(|input: SlabInput| {
 
     // Snapshot and serialize
     let snapshot = slab.snapshot();
-    let serialized = match bincode::serialize(&snapshot) {
+    let serialized = match bitcode::serialize(&snapshot) {
         Ok(s) => s,
         Err(_) => return,
     };
 
     // Deserialize
-    let deserialized = match bincode::deserialize(&serialized) {
+    let deserialized = match bitcode::deserialize(&serialized) {
         Ok(s) => s,
         Err(_) => return,
     };

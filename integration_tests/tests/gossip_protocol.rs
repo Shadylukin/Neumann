@@ -112,8 +112,8 @@ fn test_gossip_message_roundtrip() {
     ];
 
     for msg in messages {
-        let serialized = bincode::serialize(&msg).unwrap();
-        let deserialized: GossipMessage = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&msg).unwrap();
+        let deserialized: GossipMessage = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(msg, deserialized);
     }
 }

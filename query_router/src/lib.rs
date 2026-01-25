@@ -1216,7 +1216,7 @@ impl QueryRouter {
         })?;
 
         if response.success {
-            bincode::deserialize(&response.result)
+            bitcode::deserialize(&response.result)
                 .map_err(|e| RouterError::ChainError(format!("Deserialization error: {e}")))
         } else {
             Err(RouterError::ChainError(
@@ -1290,7 +1290,7 @@ impl QueryRouter {
                 match cluster.send_query(&node_id, request).await {
                     Ok(response) => {
                         if response.success {
-                            match bincode::deserialize(&response.result) {
+                            match bitcode::deserialize(&response.result) {
                                 Ok(result) => {
                                     results.push(ShardResult::success(
                                         shard,
@@ -3455,7 +3455,7 @@ impl QueryRouter {
         // Count connected edges (neighbors returns Vec<Node>)
         let edge_count = self
             .graph
-            .neighbors(node_id, None, Direction::Both)
+            .neighbors(node_id, None, Direction::Both, None)
             .map(|nodes| nodes.len())
             .unwrap_or(0);
 
@@ -3468,7 +3468,7 @@ impl QueryRouter {
                     .take(3)
                     .map(|(k, v)| format!("{}={:?}", k, v))
                     .collect();
-                vec![format!("label='{}', {}", node.label, props.join(", "))]
+                vec![format!("label='{}', {}", node.labels.join(":"), props.join(", "))]
             },
             Err(_) => vec![],
         };
@@ -3580,7 +3580,7 @@ impl QueryRouter {
                     .collect();
                 Ok(QueryResult::Nodes(vec![NodeResult {
                     id: node.id,
-                    label: node.label.clone(),
+                    label: node.labels.join(":"),
                     properties,
                 }]))
             },
@@ -3750,7 +3750,7 @@ impl QueryRouter {
         };
 
         let edge_type = neighbors.edge_type.as_ref().map(|e| e.name.as_str());
-        let neighbor_nodes = self.graph.neighbors(node_id, edge_type, direction)?;
+        let neighbor_nodes = self.graph.neighbors(node_id, edge_type, direction, None)?;
         let neighbor_ids: Vec<u64> = neighbor_nodes.iter().map(|n| n.id).collect();
 
         Ok(QueryResult::Ids(neighbor_ids))
@@ -3760,7 +3760,7 @@ impl QueryRouter {
         let from = self.expr_to_u64(&path.from_id)?;
         let to = self.expr_to_u64(&path.to_id)?;
 
-        match self.graph.find_path(from, to) {
+        match self.graph.find_path(from, to, None) {
             Ok(path) => Ok(QueryResult::Path(path.nodes)),
             Err(GraphError::PathNotFound) => Ok(QueryResult::Path(vec![])),
             Err(e) => Err(e.into()),
@@ -4057,7 +4057,7 @@ impl QueryRouter {
                     if let Ok(node) = self.graph().get_node(id) {
                         // Apply label filter
                         if let Some(filter) = label_filter {
-                            if node.label != filter {
+                            if !node.has_label(filter) {
                                 continue;
                             }
                         }
@@ -4071,7 +4071,7 @@ impl QueryRouter {
 
                         // Build unified item
                         let mut data = HashMap::new();
-                        data.insert("label".to_string(), node.label.clone());
+                        data.insert("label".to_string(), node.labels.join(":"));
                         for (k, v) in &node.properties {
                             data.insert(k.clone(), Self::property_to_string(v));
                         }
@@ -4150,7 +4150,7 @@ impl QueryRouter {
                 }
                 if col == "label" {
                     return match val {
-                        Value::String(s) => node.label == *s,
+                        Value::String(s) => node.has_label(s),
                         _ => false,
                     };
                 }
@@ -4885,7 +4885,7 @@ impl QueryRouter {
                     .collect();
                 let result = NodeResult {
                     id: node.id,
-                    label: node.label.clone(),
+                    label: node.labels.join(":"),
                     properties,
                 };
                 Ok(QueryResult::Nodes(vec![result]))
@@ -4940,7 +4940,7 @@ impl QueryRouter {
                             if let Ok(node) = self.graph.get_node(id) {
                                 // Apply label filter
                                 if let Some(filter) = label_filter {
-                                    if node.label != filter {
+                                    if !node.has_label(filter) {
                                         continue;
                                     }
                                 }
@@ -4951,7 +4951,7 @@ impl QueryRouter {
                                     .collect();
                                 results.push(NodeResult {
                                     id: node.id,
-                                    label: node.label.clone(),
+                                    label: node.labels.join(":"),
                                     properties,
                                 });
                             }
@@ -5034,7 +5034,7 @@ impl QueryRouter {
             },
         };
 
-        let neighbors = self.graph.neighbors(id, None, direction)?;
+        let neighbors = self.graph.neighbors(id, None, direction, None)?;
         let neighbor_ids: Vec<u64> = neighbors.iter().map(|n| n.id).collect();
 
         Ok(QueryResult::Ids(neighbor_ids))
@@ -5058,7 +5058,7 @@ impl QueryRouter {
             .parse()
             .map_err(|_| RouterError::InvalidArgument("Invalid to node ID".to_string()))?;
 
-        match self.graph.find_path(from, to) {
+        match self.graph.find_path(from, to, None) {
             Ok(path) => Ok(QueryResult::Path(path.nodes)),
             Err(GraphError::PathNotFound) => Ok(QueryResult::Path(vec![])),
             Err(e) => Err(e.into()),
@@ -6067,7 +6067,7 @@ impl QueryRouter {
     /// for use when the router is behind a lock.
     pub fn execute_for_cluster(&self, query: &str) -> std::result::Result<Vec<u8>, String> {
         let result = self.execute_parsed(query).map_err(|e| e.to_string())?;
-        bincode::serialize(&result).map_err(|e| format!("Serialization error: {e}"))
+        bitcode::serialize(&result).map_err(|e| format!("Serialization error: {e}"))
     }
 }
 
@@ -10710,7 +10710,7 @@ mod tests {
     fn test_init_cache_with_config() {
         let mut router = QueryRouter::new();
         let config = tensor_cache::CacheConfig::default();
-        router.init_cache_with_config(config);
+        let _ = router.init_cache_with_config(config);
         assert!(router.cache().is_some());
     }
 
@@ -11405,7 +11405,7 @@ mod tests {
         // Use a custom config with small embedding dimension for testing
         let mut config = CacheConfig::default();
         config.embedding_dim = 3;
-        router.init_cache_with_config(config);
+        let _ = router.init_cache_with_config(config);
         router.set_identity("user:test");
 
         let result = router.execute_parsed(
@@ -11426,7 +11426,7 @@ mod tests {
         // Use a custom config with small embedding dimension for testing
         let mut config = CacheConfig::default();
         config.embedding_dim = 2;
-        router.init_cache_with_config(config);
+        let _ = router.init_cache_with_config(config);
         router.set_identity("user:test");
 
         // First put something

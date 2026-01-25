@@ -90,7 +90,7 @@ impl<W: Write> StreamingTTWriter<W> {
 
     /// Write a pre-decomposed TT vector.
     pub fn write_tt(&mut self, tt: &TTVector) -> Result<(), FormatError> {
-        let bytes = bincode::serialize(tt)?;
+        let bytes = bitcode::serialize(tt)?;
         let len = bytes.len() as u32;
 
         self.writer.write_all(&len.to_le_bytes())?;
@@ -128,7 +128,7 @@ impl<W: Write + Seek> StreamingTTWriter<W> {
             data_start: self.data_start,
         };
 
-        let trailer_bytes = bincode::serialize(&header)?;
+        let trailer_bytes = bitcode::serialize(&header)?;
         self.writer.write_all(&trailer_bytes)?;
 
         // Write trailer size at very end for easy seeking
@@ -165,7 +165,7 @@ impl<R: Read + Seek> StreamingTTReader<R> {
         let mut trailer_bytes = vec![0u8; trailer_len as usize];
         reader.read_exact(&mut trailer_bytes)?;
 
-        let header: StreamingTTHeader = bincode::deserialize(&trailer_bytes)?;
+        let header: StreamingTTHeader = bitcode::deserialize(&trailer_bytes)?;
         header.validate()?;
 
         reader.seek(SeekFrom::Start(header.data_start))?;
@@ -213,7 +213,7 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
 
         let mut len_bytes = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut len_bytes) {
-            return Some(Err(FormatError::from(bincode::Error::from(e))));
+            return Some(Err(FormatError::Io(e)));
         }
         let len = u32::from_le_bytes(len_bytes) as usize;
 
@@ -226,10 +226,10 @@ impl<R: Read> Iterator for StreamingTTReader<R> {
 
         let mut entry_bytes = vec![0u8; len];
         if let Err(e) = self.reader.read_exact(&mut entry_bytes) {
-            return Some(Err(FormatError::from(bincode::Error::from(e))));
+            return Some(Err(FormatError::Io(e)));
         }
 
-        match bincode::deserialize(&entry_bytes) {
+        match bitcode::deserialize(&entry_bytes) {
             Ok(tt) => {
                 self.vectors_read += 1;
                 Some(Ok(tt))

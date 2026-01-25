@@ -102,7 +102,7 @@ impl BlockHeader {
         hasher.update(self.state_root);
 
         // Embedding must be serialized for deterministic cross-platform hashing
-        let embedding_bytes = match bincode::serialize(&self.delta_embedding) {
+        let embedding_bytes = match bitcode::serialize(&self.delta_embedding) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to serialize delta_embedding for hash");
@@ -153,7 +153,7 @@ impl BlockHeader {
         bytes.extend(self.state_root);
 
         // Serialize embedding deterministically
-        let embedding_bytes = match bincode::serialize(&self.delta_embedding) {
+        let embedding_bytes = match bitcode::serialize(&self.delta_embedding) {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to serialize delta_embedding for signing");
@@ -282,7 +282,7 @@ impl Transaction {
     }
 
     pub fn hash(&self) -> [u8; 32] {
-        let bytes = match bincode::serialize(self) {
+        let bytes = match bitcode::serialize(self) {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to serialize transaction for hash");

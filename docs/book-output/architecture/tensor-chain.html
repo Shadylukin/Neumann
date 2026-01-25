@@ -182,7 +182,6 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="tensor-chain-architecture"><a class="header" href="#tensor-chain-architecture">Tensor Chain Architecture</a></h1>
-<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p>Tensor-native blockchain with semantic conflict detection, hierarchical
 codebook-based validation, and Tensor-Raft distributed consensus. This is the
 most complex module in Neumann, providing distributed transaction coordination
@@ -193,43 +192,6 @@ detection and automatic merging of orthogonal transactions. The module
 integrates Raft consensus for leader election, two-phase commit (2PC) for
 cross-shard transactions, SWIM gossip for failure detection, and wait-for graph
 analysis for deadlock detection.</p>
-<h2 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h2>
-<ul>
-<li>Crate overview: <a href="../api/tensor_chain/index.html"><code>tensor_chain</code></a></li>
-<li>Consensus:
-<ul>
-<li><a href="../api/tensor_chain/raft/index.html"><code>raft</code></a></li>
-<li><a href="../api/tensor_chain/consensus/index.html"><code>consensus</code></a></li>
-<li><a href="../api/tensor_chain/validation/index.html"><code>validation</code></a></li>
-</ul>
-</li>
-<li>Transactions:
-<ul>
-<li><a href="../api/tensor_chain/distributed_tx/index.html"><code>distributed_tx</code></a></li>
-<li><a href="../api/tensor_chain/transaction/index.html"><code>transaction</code></a></li>
-<li><a href="../api/tensor_chain/deadlock/index.html"><code>deadlock</code></a></li>
-</ul>
-</li>
-<li>Membership and gossip:
-<ul>
-<li><a href="../api/tensor_chain/membership/index.html"><code>membership</code></a></li>
-<li><a href="../api/tensor_chain/gossip/index.html"><code>gossip</code></a></li>
-<li><a href="../api/tensor_chain/geometric_membership/index.html"><code>geometric_membership</code></a></li>
-</ul>
-</li>
-<li>Security and signing:
-<ul>
-<li><a href="../api/tensor_chain/signing/index.html"><code>signing</code></a></li>
-<li><a href="../api/tensor_chain/message_validation/index.html"><code>message_validation</code></a></li>
-</ul>
-</li>
-<li>Transport:
-<ul>
-<li><a href="../api/tensor_chain/tcp/index.html"><code>tcp</code></a></li>
-<li><a href="../api/tensor_chain/network/index.html"><code>network</code></a></li>
-</ul>
-</li>
-</ul>
 <h2 id="key-concepts"><a class="header" href="#key-concepts">Key Concepts</a></h2>
 <h3 id="raft-consensus"><a class="header" href="#raft-consensus">Raft Consensus</a></h3>
 <p>Tensor-Raft extends the standard Raft consensus protocol with tensor-native

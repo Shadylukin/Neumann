@@ -1035,8 +1035,8 @@ mod tests {
     #[test]
     fn test_conflict_class_serde() {
         let class = ConflictClass::Orthogonal;
-        let serialized = bincode::serialize(&class).unwrap();
-        let deserialized: ConflictClass = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&class).unwrap();
+        let deserialized: ConflictClass = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(class, deserialized);
     }
 
@@ -1072,8 +1072,8 @@ mod tests {
         ];
 
         for action in actions {
-            let serialized = bincode::serialize(&action).unwrap();
-            let deserialized: MergeAction = bincode::deserialize(&serialized).unwrap();
+            let serialized = bitcode::serialize(&action).unwrap();
+            let deserialized: MergeAction = bitcode::deserialize(&serialized).unwrap();
             assert_eq!(action, deserialized);
         }
     }
@@ -1175,8 +1175,8 @@ mod tests {
         let keys: HashSet<String> = ["key"].iter().map(|s| s.to_string()).collect();
         let d = DeltaVector::new(vec![1.0, 2.0], keys, 42);
 
-        let serialized = bincode::serialize(&d).unwrap();
-        let deserialized: DeltaVector = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&d).unwrap();
+        let deserialized: DeltaVector = bitcode::deserialize(&serialized).unwrap();
 
         assert_eq!(d.to_dense(2), deserialized.to_dense(2));
         assert_eq!(d.tx_id, deserialized.tx_id);

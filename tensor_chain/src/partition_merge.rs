@@ -1731,8 +1731,8 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let config = PartitionMergeConfig::aggressive();
-        let bytes = bincode::serialize(&config).unwrap();
-        let restored: PartitionMergeConfig = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&config).unwrap();
+        let restored: PartitionMergeConfig = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(
             restored.heal_confirmation_threshold,
@@ -1747,8 +1747,8 @@ mod tests {
             .with_log_position(100, 5)
             .with_hash([42u8; 32]);
 
-        let bytes = bincode::serialize(&summary).unwrap();
-        let restored: PartitionStateSummary = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&summary).unwrap();
+        let restored: PartitionStateSummary = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.node_id, summary.node_id);
         assert_eq!(restored.last_committed_index, summary.last_committed_index);
@@ -1759,8 +1759,8 @@ mod tests {
     fn test_membership_view_serialization() {
         let view = MembershipViewSummary::new("node1".to_string(), 100, 5);
 
-        let bytes = bincode::serialize(&view).unwrap();
-        let restored: MembershipViewSummary = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&view).unwrap();
+        let restored: MembershipViewSummary = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.node_id, view.node_id);
         assert_eq!(restored.lamport_time, view.lamport_time);
@@ -1770,8 +1770,8 @@ mod tests {
     fn test_pending_tx_serialization() {
         let tx = PendingTxState::new(123, "coordinator".to_string(), TxPhase::Preparing);
 
-        let bytes = bincode::serialize(&tx).unwrap();
-        let restored: PendingTxState = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&tx).unwrap();
+        let restored: PendingTxState = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.tx_id, tx.tx_id);
         assert_eq!(restored.coordinator, tx.coordinator);

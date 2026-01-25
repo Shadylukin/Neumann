@@ -749,4 +749,64 @@ mod tests {
             _ => panic!("Expected StoreError variant"),
         }
     }
+
+    // ========== Phase 3: Additional Negative Path Tests ==========
+
+    #[test]
+    fn test_partitioned_error_no_partitioner_display() {
+        // Verify NoPartitioner error can be constructed and formatted
+        let err = PartitionedError::NoPartitioner;
+        let msg = err.to_string();
+        assert!(msg.contains("no partitioner"));
+    }
+
+    #[test]
+    fn test_partitioned_error_is_std_error() {
+        // Verify PartitionedError implements std::error::Error
+        let err: Box<dyn std::error::Error> = Box::new(PartitionedError::NoPartitioner);
+        assert!(err.to_string().contains("no partitioner"));
+
+        // Test source() returns None (no nested error)
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_partitioned_error_remote_partition_display() {
+        let result = PartitionResult::remote("remote_node", 123);
+        let err = PartitionedError::RemotePartition(result);
+        let msg = err.to_string();
+        assert!(msg.contains("remote partition"));
+        assert!(msg.contains("remote_node"));
+    }
+
+    #[test]
+    fn test_partitioned_store_single_node_no_partitioner() {
+        // Single node mode has no partitioner, so partition_for returns None
+        let store = TensorStore::new();
+        let partitioned = PartitionedStore::new(store);
+
+        assert!(partitioned.partitioner().is_none());
+        assert!(partitioned.partition_for("any_key").is_none());
+        assert!(partitioned.local_node().is_none());
+        assert!(partitioned.nodes().is_empty());
+    }
+
+    #[test]
+    fn test_partitioned_error_clone() {
+        let err = PartitionedError::StoreError("test".to_string());
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+
+        let no_part = PartitionedError::NoPartitioner;
+        let cloned_no_part = no_part.clone();
+        assert_eq!(no_part, cloned_no_part);
+    }
+
+    #[test]
+    fn test_partitioned_error_debug_remote() {
+        let result = PartitionResult::remote("node2", 42);
+        let err = PartitionedError::RemotePartition(result);
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("RemotePartition"));
+    }
 }

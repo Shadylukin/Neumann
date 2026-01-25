@@ -1497,8 +1497,8 @@ mod tests {
         ];
 
         for msg in messages {
-            let bytes = bincode::serialize(&msg).unwrap();
-            let restored: GossipMessage = bincode::deserialize(&bytes).unwrap();
+            let bytes = bitcode::serialize(&msg).unwrap();
+            let restored: GossipMessage = bitcode::deserialize(&bytes).unwrap();
             assert_eq!(msg, restored);
         }
     }
@@ -1507,8 +1507,8 @@ mod tests {
     fn test_gossip_node_state_serialization() {
         let state = GossipNodeState::new("test".to_string(), NodeHealth::Healthy, 100, 5);
 
-        let bytes = bincode::serialize(&state).unwrap();
-        let restored: GossipNodeState = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
+        let restored: GossipNodeState = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(state.node_id, restored.node_id);
         assert_eq!(state.health, restored.health);

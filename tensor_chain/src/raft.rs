@@ -1048,7 +1048,7 @@ impl RaftNode {
         }
 
         // Serialize log entries as bytes
-        let log_bytes = bincode::serialize(&persistent.log)
+        let log_bytes = bitcode::serialize(&persistent.log)
             .map_err(|e| ChainError::SerializationError(format!("Raft log: {e}")))?;
         data.set("log", TensorValue::Scalar(ScalarValue::Bytes(log_bytes)));
 
@@ -1090,7 +1090,7 @@ impl RaftNode {
         // Load log entries
         let log = match data.get("log") {
             Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
-                bincode::deserialize(bytes).ok()?
+                bitcode::deserialize(bytes).ok()?
             },
             _ => Vec::new(),
         };
@@ -1111,7 +1111,7 @@ impl RaftNode {
 
         // Serialize and store metadata
         let meta_bytes =
-            bincode::serialize(meta).map_err(|e| ChainError::SerializationError(e.to_string()))?;
+            bitcode::serialize(meta).map_err(|e| ChainError::SerializationError(e.to_string()))?;
         let mut meta_data = TensorData::new();
         meta_data.set(
             "metadata",
@@ -1149,7 +1149,7 @@ impl RaftNode {
             Some(TensorValue::Scalar(ScalarValue::Bytes(b))) => b,
             _ => return None,
         };
-        let metadata: SnapshotMetadata = bincode::deserialize(meta_bytes).ok()?;
+        let metadata: SnapshotMetadata = bitcode::deserialize(meta_bytes).ok()?;
 
         // Load data
         let data_tensor = store.get(&Self::snapshot_data_key(node_id)).ok()?;
@@ -2729,7 +2729,7 @@ impl RaftNode {
         // In a full implementation, this would serialize the state machine state
         // For now, we serialize the log entries themselves as the "state"
         let state_entries: Vec<LogEntry> = persistent.log[..=snapshot_idx].to_vec();
-        let data = bincode::serialize(&state_entries)?;
+        let data = bitcode::serialize(&state_entries)?;
 
         // Compute SHA-256 hash of snapshot data for integrity validation
         use sha2::{Digest, Sha256};
@@ -5535,8 +5535,8 @@ mod tests {
     fn test_snapshot_metadata_serialization() {
         let meta = SnapshotMetadata::new(50, 3, [2u8; 32], vec!["n1".to_string()], 512);
 
-        let bytes = bincode::serialize(&meta).unwrap();
-        let decoded: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&meta).unwrap();
+        let decoded: SnapshotMetadata = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(decoded.last_included_index, 50);
         assert_eq!(decoded.last_included_term, 3);
@@ -5728,7 +5728,7 @@ mod tests {
 
         // Create snapshot data with log entries
         let entries: Vec<LogEntry> = (1..=5).map(create_test_log_entry).collect();
-        let data = bincode::serialize(&entries).unwrap();
+        let data = bitcode::serialize(&entries).unwrap();
 
         // Compute proper hash of the data
         use sha2::{Digest, Sha256};
@@ -5760,7 +5760,7 @@ mod tests {
         let node = create_test_node("follower", vec![]);
 
         let entries: Vec<LogEntry> = vec![];
-        let data = bincode::serialize(&entries).unwrap();
+        let data = bitcode::serialize(&entries).unwrap();
 
         // Compute proper hash of empty data
         use sha2::{Digest, Sha256};
@@ -5782,7 +5782,7 @@ mod tests {
         let node = create_test_node("follower", vec![]);
 
         let entries: Vec<LogEntry> = (1..=3).map(create_test_log_entry).collect();
-        let data = bincode::serialize(&entries).unwrap();
+        let data = bitcode::serialize(&entries).unwrap();
 
         // Compute proper hash of the data
         use sha2::{Digest, Sha256};
@@ -6384,8 +6384,8 @@ mod tests {
             state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
         };
 
-        let bytes = bincode::serialize(&pv).expect("serialize");
-        let restored: PreVote = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = bitcode::serialize(&pv).expect("serialize");
+        let restored: PreVote = bitcode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(restored.term, 42);
         assert_eq!(restored.candidate_id, "candidate1");
@@ -6401,8 +6401,8 @@ mod tests {
             voter_id: "voter1".to_string(),
         };
 
-        let bytes = bincode::serialize(&pvr).expect("serialize");
-        let restored: PreVoteResponse = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = bitcode::serialize(&pvr).expect("serialize");
+        let restored: PreVoteResponse = bitcode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(restored.term, 10);
         assert!(restored.vote_granted);
@@ -6558,8 +6558,8 @@ mod tests {
             leader_id: "leader1".to_string(),
         };
 
-        let bytes = bincode::serialize(&tn).expect("serialize");
-        let restored: TimeoutNow = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = bitcode::serialize(&tn).expect("serialize");
+        let restored: TimeoutNow = bitcode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(restored.term, 42);
         assert_eq!(restored.leader_id, "leader1");
@@ -6803,7 +6803,7 @@ mod tests {
 
         // Create valid snapshot data
         let entry = LogEntry::new(1, 1, create_test_block(1));
-        let data = bincode::serialize(&vec![entry]).unwrap();
+        let data = bitcode::serialize(&vec![entry]).unwrap();
 
         // Compute correct hash
         use sha2::{Digest, Sha256};
@@ -6831,7 +6831,7 @@ mod tests {
 
         // Create valid snapshot data
         let entry = LogEntry::new(1, 1, create_test_block(1));
-        let data = bincode::serialize(&vec![entry]).unwrap();
+        let data = bitcode::serialize(&vec![entry]).unwrap();
 
         // Compute correct hash
         use sha2::{Digest, Sha256};
@@ -8066,8 +8066,8 @@ mod tests {
         // Simulate deserializing old SnapshotMetadata without codebook field
         let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
 
-        let bytes = bincode::serialize(&meta).unwrap();
-        let decoded: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&meta).unwrap();
+        let decoded: SnapshotMetadata = bitcode::deserialize(&bytes).unwrap();
 
         // Should deserialize with codebook = None
         assert!(decoded.codebook.is_none());

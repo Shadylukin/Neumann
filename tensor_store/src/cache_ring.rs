@@ -17,8 +17,8 @@ use std::{
     time::Instant,
 };
 
-use fxhash::FxHasher;
 use parking_lot::RwLock;
+use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
 
 /// Eviction strategy for cache entries.

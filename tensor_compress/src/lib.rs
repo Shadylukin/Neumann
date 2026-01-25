@@ -185,8 +185,8 @@ mod tests {
             delta_encoding: true,
             rle_encoding: true,
         };
-        let bytes = bincode::serialize(&config).unwrap();
-        let decoded: CompressionConfig = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&config).unwrap();
+        let decoded: CompressionConfig = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(config, decoded);
     }
 

@@ -10,6 +10,7 @@ use libfuzzer_sys::fuzz_target;
 use tensor_chain::{LockManager, WaitForGraph};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 enum FuzzOp {
     TryLockWithWaitTracking {
         tx_id_mod: u8,
@@ -45,6 +46,7 @@ enum FuzzOp {
 }
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     operations: Vec<FuzzOp>,
 }

@@ -13,12 +13,14 @@ use libfuzzer_sys::fuzz_target;
 use tensor_chain::{RaftRecoveryState, RaftWalEntry};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     /// Sequence of entries to replay
     entries: Vec<WalEntryInput>,
 }
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct WalEntryInput {
     /// Entry type selector
     entry_type: u8,
@@ -164,9 +166,9 @@ fuzz_target!(|input: FuzzInput| {
 
     // Invariant 4: Serialization roundtrip for entries should work
     for entry in &entries {
-        let serialized = bincode::serialize(entry).expect("Entry should serialize");
+        let serialized = bitcode::serialize(entry).expect("Entry should serialize");
         let deserialized: RaftWalEntry =
-            bincode::deserialize(&serialized).expect("Entry should deserialize");
+            bitcode::deserialize(&serialized).expect("Entry should deserialize");
         assert_eq!(entry, &deserialized, "Entry roundtrip mismatch");
     }
 });

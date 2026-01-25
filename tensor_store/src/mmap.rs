@@ -75,8 +75,8 @@ impl From<io::Error> for MmapError {
     }
 }
 
-impl From<bincode::Error> for MmapError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for MmapError {
+    fn from(e: bitcode::Error) -> Self {
         Self::Serialization(e.to_string())
     }
 }
@@ -131,6 +131,10 @@ impl MmapStore {
             return Err(MmapError::EmptyFile);
         }
 
+        // SAFETY: Memory mapping is inherently unsafe. Invariants maintained:
+        // - File is opened read-only, ensuring no external writes
+        // - Mmap lifetime is tied to MmapStore, preventing use-after-close
+        // - File handle is kept alive for the duration of the mapping
         let mmap = unsafe { Mmap::map(&file)? };
 
         if mmap.len() < HEADER_SIZE {
@@ -212,9 +216,9 @@ impl MmapStore {
         let tensor: TensorData = if self.version == VERSION_COMPRESSED {
             let decompressed = zstd::decode_all(data)
                 .map_err(|e| MmapError::Serialization(format!("Zstd decompression failed: {e}")))?;
-            bincode::deserialize(&decompressed)?
+            bitcode::deserialize(&decompressed)?
         } else {
-            bincode::deserialize(data)?
+            bitcode::deserialize(data)?
         };
 
         Ok(tensor)
@@ -321,7 +325,7 @@ impl MmapStoreBuilder {
     #[allow(clippy::cast_possible_truncation)] // Keys and data won't exceed 4GB
     pub fn add(&mut self, key: &str, tensor: &TensorData) -> Result<()> {
         let key_bytes = key.as_bytes();
-        let serialized = bincode::serialize(tensor)?;
+        let serialized = bitcode::serialize(tensor)?;
 
         let data = if self.compress {
             zstd::encode_all(&serialized[..], ZSTD_COMPRESSION_LEVEL)
@@ -397,6 +401,10 @@ impl MmapStoreMut {
 
         file.set_len(capacity as u64)?;
 
+        // SAFETY: Memory mapping is inherently unsafe. Invariants maintained:
+        // - File is newly created with truncate(true), ensuring exclusive access
+        // - File size is set before mapping to ensure valid memory region
+        // - MmapStoreMut owns both file and mmap, preventing lifetime issues
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
         // Write header (V1 uncompressed format for mutable stores)
@@ -433,6 +441,10 @@ impl MmapStoreMut {
 
         #[allow(clippy::cast_possible_truncation)] // File size limited to address space
         let capacity = metadata.len() as usize;
+        // SAFETY: Memory mapping is inherently unsafe. Invariants maintained:
+        // - File is opened with read+write permissions for exclusive access
+        // - Caller is responsible for ensuring no concurrent external modifications
+        // - MmapStoreMut owns both file and mmap, preventing lifetime issues
         let mmap = unsafe { MmapMut::map_mut(&file)? };
 
         if mmap.len() < HEADER_SIZE {
@@ -510,7 +522,7 @@ impl MmapStoreMut {
     /// Returns an error if serialization fails or the file cannot be extended.
     pub fn insert(&mut self, key: &str, tensor: &TensorData) -> Result<()> {
         let key_bytes = key.as_bytes();
-        let data = bincode::serialize(tensor)?;
+        let data = bitcode::serialize(tensor)?;
 
         let entry_size = 4 + key_bytes.len() + 4 + data.len();
 
@@ -518,6 +530,10 @@ impl MmapStoreMut {
         if self.write_offset + entry_size > self.capacity {
             let new_capacity = (self.capacity * 2).max(self.write_offset + entry_size + 1024);
             self.file.set_len(new_capacity as u64)?;
+            // SAFETY: Remap after file resize. Invariants maintained:
+            // - Old mmap is dropped before new one is created (assignment)
+            // - File size is extended before remapping to ensure valid region
+            // - No references to old mmap exist (mutable borrow of self)
             self.mmap = unsafe { MmapMut::map_mut(&self.file)? };
             self.capacity = new_capacity;
         }
@@ -567,7 +583,7 @@ impl MmapStoreMut {
             .ok_or_else(|| MmapError::NotFound(key.to_string()))?;
 
         let data = &self.mmap[loc.data_offset..loc.data_offset + loc.data_len];
-        let tensor: TensorData = bincode::deserialize(data)?;
+        let tensor: TensorData = bitcode::deserialize(data)?;
         Ok(tensor)
     }
 
@@ -1225,7 +1241,7 @@ mod tests {
     fn test_mmap_error_from_bincode_error() {
         // Create a bincode error by trying to deserialize invalid data
         let invalid_data = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        let result: std::result::Result<String, _> = bincode::deserialize(invalid_data);
+        let result: std::result::Result<String, _> = bitcode::deserialize(invalid_data);
         if let Err(e) = result {
             let mmap_err: MmapError = e.into();
             match mmap_err {

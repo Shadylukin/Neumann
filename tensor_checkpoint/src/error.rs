@@ -32,8 +32,8 @@ pub enum CheckpointError {
 
 pub type Result<T> = std::result::Result<T, CheckpointError>;
 
-impl From<bincode::Error> for CheckpointError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for CheckpointError {
+    fn from(e: bitcode::Error) -> Self {
         CheckpointError::Serialization(e.to_string())
     }
 }
@@ -79,7 +79,7 @@ mod tests {
     fn test_from_bincode_error() {
         // Create a bincode error by trying to deserialize invalid data
         let bad_data: &[u8] = &[0xff, 0xff, 0xff];
-        let bincode_err: std::result::Result<String, _> = bincode::deserialize(bad_data);
+        let bincode_err: std::result::Result<String, _> = bitcode::deserialize(bad_data);
 
         if let Err(e) = bincode_err {
             let checkpoint_err: CheckpointError = e.into();

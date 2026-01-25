@@ -350,8 +350,8 @@ mod tests {
     #[test]
     fn test_hlc_timestamp_serialization() {
         let ts = HLCTimestamp::new(12345678, 99, 42);
-        let serialized = bincode::serialize(&ts).unwrap();
-        let deserialized: HLCTimestamp = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&ts).unwrap();
+        let deserialized: HLCTimestamp = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(ts, deserialized);
     }
 

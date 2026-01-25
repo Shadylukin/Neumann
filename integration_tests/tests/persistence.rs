@@ -74,7 +74,7 @@ fn test_snapshot_preserves_all_data() {
 
     // Verify graph data
     let neighbors = restored_graph
-        .neighbors(node1, None, graph_engine::Direction::Outgoing)
+        .neighbors(node1, None, graph_engine::Direction::Outgoing, None)
         .unwrap();
     assert!(neighbors.iter().any(|n| n.id == node2));
 

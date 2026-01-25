@@ -72,12 +72,15 @@ fuzz_target!(|input: Input| {
                 "Unknown should only be set during grace period"
             );
         },
+        _ => {
+            // Non-exhaustive enum, handle any new variants gracefully
+        }
     }
 
     // Test serialization roundtrip
-    let bytes = bincode::serialize(&status).expect("Failed to serialize PartitionStatus");
+    let bytes = bitcode::serialize(&status).expect("Failed to serialize PartitionStatus");
     let restored: PartitionStatus =
-        bincode::deserialize(&bytes).expect("Failed to deserialize PartitionStatus");
+        bitcode::deserialize(&bytes).expect("Failed to deserialize PartitionStatus");
     assert_eq!(status, restored, "Serialization roundtrip failed");
 
     // Test debug format doesn't panic

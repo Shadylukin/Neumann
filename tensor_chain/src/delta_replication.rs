@@ -833,7 +833,7 @@ impl DeltaReplicationManager {
 
         self.stats.record_batch(&batch_with_checksums, full_bytes);
 
-        let batch_bytes = bincode::serialize(&batch_with_checksums)
+        let batch_bytes = bitcode::serialize(&batch_with_checksums)
             .map_err(|e| ChainError::NetworkError(format!("Failed to serialize batch: {e}")))?;
 
         // Use batch checksum in snapshot_hash field
@@ -1639,8 +1639,8 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0, 3.0], 42);
-        let bytes = bincode::serialize(&update).unwrap();
-        let decoded: DeltaUpdate = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&update).unwrap();
+        let decoded: DeltaUpdate = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(update.key, decoded.key);
         assert_eq!(update.version, decoded.version);
@@ -1653,8 +1653,8 @@ mod tests {
         batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
         batch = batch.finalize();
 
-        let bytes = bincode::serialize(&batch).unwrap();
-        let decoded: DeltaBatch = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&batch).unwrap();
+        let decoded: DeltaBatch = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(batch.source, decoded.source);
         assert_eq!(batch.sequence, decoded.sequence);
@@ -1803,8 +1803,8 @@ mod tests {
     #[test]
     fn test_checksum_serialization_roundtrip() {
         let update = DeltaUpdate::full("key1".to_string(), &[1.0, 2.0], 1).with_checksum();
-        let bytes = bincode::serialize(&update).unwrap();
-        let decoded: DeltaUpdate = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&update).unwrap();
+        let decoded: DeltaUpdate = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(update.checksum, decoded.checksum);
         assert!(decoded.verify_checksum());
@@ -1816,8 +1816,8 @@ mod tests {
         batch.add(DeltaUpdate::full("key1".to_string(), &[1.0], 1));
         let batch = batch.with_checksum();
 
-        let bytes = bincode::serialize(&batch).unwrap();
-        let decoded: DeltaBatch = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&batch).unwrap();
+        let decoded: DeltaBatch = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(batch.checksum, decoded.checksum);
         assert!(decoded.verify().is_ok());

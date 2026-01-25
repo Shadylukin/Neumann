@@ -12,6 +12,7 @@ use libfuzzer_sys::fuzz_target;
 use tensor_chain::{DeltaUpdate, QuantizedDeltaUpdate};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     key: String,
     /// Values in range [0, 255] to create valid f32 values
@@ -61,6 +62,7 @@ fuzz_target!(|input: FuzzInput| {
             delta_values: values.clone(),
             version: input.version,
             dimension: values.len(),
+            checksum: None,
         }
     };
 
@@ -71,12 +73,12 @@ fuzz_target!(|input: FuzzInput| {
     };
 
     // Test 2: Serialization roundtrip
-    let serialized = match bincode::serialize(&quantized) {
+    let serialized = match bitcode::serialize(&quantized) {
         Ok(bytes) => bytes,
         Err(_) => return,
     };
 
-    let deserialized: QuantizedDeltaUpdate = match bincode::deserialize(&serialized) {
+    let deserialized: QuantizedDeltaUpdate = match bitcode::deserialize(&serialized) {
         Ok(q) => q,
         Err(_) => panic!("Failed to deserialize what we just serialized"),
     };

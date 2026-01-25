@@ -24,20 +24,20 @@ struct TxAckMsg {
 
 fuzz_target!(|data: &[u8]| {
     // Try to deserialize as TxAbortMsg
-    if let Ok(msg) = bincode::deserialize::<TxAbortMsg>(data) {
+    if let Ok(msg) = bitcode::deserialize::<TxAbortMsg>(data) {
         // If valid, re-serialize and verify roundtrip
-        let serialized = bincode::serialize(&msg).expect("Serialization should succeed");
+        let serialized = bitcode::serialize(&msg).expect("Serialization should succeed");
         let deserialized: TxAbortMsg =
-            bincode::deserialize(&serialized).expect("Deserialization should succeed");
+            bitcode::deserialize(&serialized).expect("Deserialization should succeed");
         assert_eq!(msg, deserialized, "Roundtrip should preserve data");
     }
 
     // Try to deserialize as TxAckMsg
-    if let Ok(msg) = bincode::deserialize::<TxAckMsg>(data) {
+    if let Ok(msg) = bitcode::deserialize::<TxAckMsg>(data) {
         // If valid, re-serialize and verify roundtrip
-        let serialized = bincode::serialize(&msg).expect("Serialization should succeed");
+        let serialized = bitcode::serialize(&msg).expect("Serialization should succeed");
         let deserialized: TxAckMsg =
-            bincode::deserialize(&serialized).expect("Deserialization should succeed");
+            bitcode::deserialize(&serialized).expect("Deserialization should succeed");
         assert_eq!(msg, deserialized, "Roundtrip should preserve data");
     }
 
@@ -53,9 +53,9 @@ fuzz_target!(|data: &[u8]| {
         };
 
         // Serialize and deserialize
-        let serialized = bincode::serialize(&abort_msg).expect("Serialization should succeed");
+        let serialized = bitcode::serialize(&abort_msg).expect("Serialization should succeed");
         let deserialized: TxAbortMsg =
-            bincode::deserialize(&serialized).expect("Deserialization should succeed");
+            bitcode::deserialize(&serialized).expect("Deserialization should succeed");
         assert_eq!(abort_msg, deserialized);
     }
 });

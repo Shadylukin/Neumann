@@ -1,0 +1,792 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Neumann Client - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/neumann-client.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="neumann-client-architecture"><a class="header" href="#neumann-client-architecture">Neumann Client Architecture</a></h1>
+<p>The Neumann Client (<code>neumann_client</code>) provides a Rust SDK for interacting with
+the Neumann database. It supports two modes: embedded mode for in-process
+database access via the Query Router, and remote mode for network access via
+gRPC to a Neumann Server.</p>
+<p>The client follows four design principles: dual-mode flexibility (same API for
+embedded and remote), security-first (API keys are zeroized on drop),
+async-native (built on tokio for remote operations), and zero-copy where
+possible (streaming results for large datasets).</p>
+<h2 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h2>
+<pre class="mermaid">flowchart TD
+    subgraph Application
+        App[User Application]
+    end
+
+    subgraph NeumannClient
+        Client[NeumannClient]
+        Builder[ClientBuilder]
+        Config[ClientConfig]
+    end
+
+    subgraph EmbeddedMode
+        Router[QueryRouter]
+        Store[TensorStore]
+    end
+
+    subgraph RemoteMode
+        gRPC[gRPC Channel]
+        TLS[TLS Layer]
+    end
+
+    subgraph NeumannServer
+        Server[NeumannServer]
+    end
+
+    App --&gt; Builder
+    Builder --&gt; Client
+    Client --&gt;|embedded| Router
+    Router --&gt; Store
+    Client --&gt;|remote| gRPC
+    gRPC --&gt; TLS
+    TLS --&gt; Server
+</pre>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>NeumannClient</code></td><td>Main client struct supporting both embedded and remote modes</td></tr>
+<tr><td><code>ClientBuilder</code></td><td>Fluent builder for remote client connections</td></tr>
+<tr><td><code>ClientConfig</code></td><td>Configuration for remote connections (address, API key, TLS)</td></tr>
+<tr><td><code>ClientMode</code></td><td>Enum: <code>Embedded</code> or <code>Remote</code></td></tr>
+<tr><td><code>ClientError</code></td><td>Error type for client operations</td></tr>
+<tr><td><code>RemoteQueryResult</code></td><td>Wrapper for proto query response with typed accessors</td></tr>
+<tr><td><code>QueryResult</code></td><td>Re-export of query_router result type (embedded mode)</td></tr>
+</tbody></table>
+</div>
+<h2 id="client-modes"><a class="header" href="#client-modes">Client Modes</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Feature Flag</th><th>Use Case</th></tr></thead><tbody>
+<tr><td>Embedded</td><td><code>embedded</code></td><td>In-process database, unit testing, CLI tools</td></tr>
+<tr><td>Remote</td><td><code>remote</code> (default)</td><td>Production gRPC connections to server</td></tr>
+<tr><td>Full</td><td><code>full</code></td><td>Both modes available</td></tr>
+</tbody></table>
+</div>
+<h3 id="feature-flags"><a class="header" href="#feature-flags">Feature Flags</a></h3>
+<pre><code class="language-toml">[dependencies]
+# Remote only (default)
+neumann_client = "0.1"
+
+# Embedded only
+neumann_client = { version = "0.1", default-features = false, features = ["embedded"] }
+
+# Both modes
+neumann_client = { version = "0.1", features = ["full"] }
+</code></pre>
+<h2 id="client-configuration"><a class="header" href="#client-configuration">Client Configuration</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>address</code></td><td><code>String</code></td><td><code>localhost:9200</code></td><td>Server address (host:port)</td></tr>
+<tr><td><code>api_key</code></td><td><code>Option&lt;String&gt;</code></td><td><code>None</code></td><td>API key for authentication</td></tr>
+<tr><td><code>tls</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable TLS encryption</td></tr>
+<tr><td><code>timeout_ms</code></td><td><code>u64</code></td><td><code>30000</code></td><td>Request timeout in milliseconds</td></tr>
+</tbody></table>
+</div>
+<h3 id="security-api-key-zeroization"><a class="header" href="#security-api-key-zeroization">Security: API Key Zeroization</a></h3>
+<p>API keys are automatically zeroed from memory when the configuration is dropped
+to prevent credential leakage:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl Drop for ClientConfig {
+    fn drop(&amp;mut self) {
+        if let Some(ref mut key) = self.api_key {
+            key.zeroize();  // Overwrites memory with zeros
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="remote-mode"><a class="header" href="#remote-mode">Remote Mode</a></h2>
+<h3 id="connection-builder"><a class="header" href="#connection-builder">Connection Builder</a></h3>
+<p>The <code>ClientBuilder</code> provides a fluent API for configuring remote connections:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_client::NeumannClient;
+use std::time::Duration;
+
+// Minimal connection
+let client = NeumannClient::connect("localhost:9200")
+    .build()
+    .await?;
+
+// Full configuration
+let client = NeumannClient::connect("db.example.com:9443")
+    .api_key("sk-production-key")
+    .with_tls()
+    .timeout_ms(60_000)
+    .build()
+    .await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="connection-flow"><a class="header" href="#connection-flow">Connection Flow</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant App as Application
+    participant Builder as ClientBuilder
+    participant Client as NeumannClient
+    participant Channel as gRPC Channel
+    participant Server as NeumannServer
+
+    App-&gt;&gt;Builder: connect(&quot;address&quot;)
+    App-&gt;&gt;Builder: api_key(&quot;key&quot;)
+    App-&gt;&gt;Builder: with_tls()
+    App-&gt;&gt;Builder: build().await
+    Builder-&gt;&gt;Channel: Create endpoint
+    Channel-&gt;&gt;Server: TCP/TLS handshake
+    Server--&gt;&gt;Channel: Connection established
+    Channel--&gt;&gt;Builder: Channel ready
+    Builder--&gt;&gt;Client: NeumannClient created
+    Client--&gt;&gt;App: Ready for queries
+</pre>
+<h3 id="query-execution"><a class="header" href="#query-execution">Query Execution</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Single query
+let result = client.execute("SELECT * FROM users").await?;
+
+// With identity (for vault access)
+let result = client
+    .execute_with_identity("VAULT GET 'secret'", Some("service:backend"))
+    .await?;
+
+// Batch queries
+let results = client
+    .execute_batch(&amp;[
+        "CREATE TABLE orders (id:int, total:float)",
+        "INSERT orders id=1, total=99.99",
+        "SELECT orders",
+    ])
+    .await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="remotequeryresult-accessors"><a class="header" href="#remotequeryresult-accessors">RemoteQueryResult Accessors</a></h3>
+<p>The <code>RemoteQueryResult</code> wrapper provides typed access to query results:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let result = client.execute("SELECT * FROM users").await?;
+
+// Check for errors
+if result.has_error() {
+    eprintln!("Error: {}", result.error_message().unwrap());
+    return Err(...);
+}
+
+// Check result type
+if result.is_empty() {
+    println!("No results");
+}
+
+// Access typed data
+if let Some(count) = result.count() {
+    println!("Count: {}", count);
+}
+
+if let Some(rows) = result.rows() {
+    for row in rows {
+        println!("Row ID: {}", row.id);
+    }
+}
+
+if let Some(nodes) = result.nodes() {
+    for node in nodes {
+        println!("Node: {} ({})", node.id, node.label);
+    }
+}
+
+if let Some(edges) = result.edges() {
+    for edge in edges {
+        println!("Edge: {} -&gt; {}", edge.from, edge.to);
+    }
+}
+
+if let Some(similar) = result.similar() {
+    for item in similar {
+        println!("{}: {:.4}", item.key, item.score);
+    }
+}
+
+// Access raw proto response
+let proto = result.into_inner();
+<span class="boring">}</span></code></pre></pre>
+<h3 id="blocking-connection"><a class="header" href="#blocking-connection">Blocking Connection</a></h3>
+<p>For synchronous contexts, use the blocking builder:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let client = NeumannClient::connect("localhost:9200")
+    .api_key("test-key")
+    .build_blocking()?;  // Creates temporary tokio runtime
+<span class="boring">}</span></code></pre></pre>
+<h2 id="embedded-mode"><a class="header" href="#embedded-mode">Embedded Mode</a></h2>
+<h3 id="creating-an-embedded-client"><a class="header" href="#creating-an-embedded-client">Creating an Embedded Client</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_client::NeumannClient;
+
+// New embedded database
+let client = NeumannClient::embedded()?;
+
+// With custom router (for shared state)
+use query_router::QueryRouter;
+use std::sync::Arc;
+use parking_lot::RwLock;
+
+let router = Arc::new(RwLock::new(QueryRouter::new()));
+let client = NeumannClient::with_router(router);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="synchronous-query-execution"><a class="header" href="#synchronous-query-execution">Synchronous Query Execution</a></h3>
+<p>Embedded mode provides synchronous execution for simpler code flow:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_client::QueryResult;
+
+// Create table
+let result = client.execute_sync("CREATE TABLE users (name:string, age:int)")?;
+assert!(matches!(result, QueryResult::Empty));
+
+// Insert data
+let result = client.execute_sync("INSERT users name=\"Alice\", age=30")?;
+
+// Query data
+let result = client.execute_sync("SELECT users")?;
+match result {
+    QueryResult::Rows(rows) =&gt; {
+        for row in rows {
+            println!("{:?}", row);
+        }
+    }
+    _ =&gt; {}
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="with-identity"><a class="header" href="#with-identity">With Identity</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Set identity for vault access control
+let result = client.execute_sync_with_identity(
+    "VAULT GET 'api_secret'",
+    Some("service:backend"),
+)?;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<h3 id="error-types"><a class="header" href="#error-types">Error Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Code</th><th>Retryable</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Connection</code></td><td>6</td><td>Yes</td><td>Failed to connect to server</td></tr>
+<tr><td><code>Query</code></td><td>9</td><td>No</td><td>Query execution failed</td></tr>
+<tr><td><code>Authentication</code></td><td>5</td><td>No</td><td>Invalid API key</td></tr>
+<tr><td><code>PermissionDenied</code></td><td>3</td><td>No</td><td>Access denied</td></tr>
+<tr><td><code>NotFound</code></td><td>2</td><td>No</td><td>Resource not found</td></tr>
+<tr><td><code>InvalidArgument</code></td><td>1</td><td>No</td><td>Bad request data</td></tr>
+<tr><td><code>Parse</code></td><td>8</td><td>No</td><td>Query parse error</td></tr>
+<tr><td><code>Internal</code></td><td>7</td><td>No</td><td>Server internal error</td></tr>
+<tr><td><code>Timeout</code></td><td>6</td><td>Yes</td><td>Request timed out</td></tr>
+<tr><td><code>Unavailable</code></td><td>6</td><td>Yes</td><td>Server unavailable</td></tr>
+</tbody></table>
+</div>
+<h3 id="error-methods"><a class="header" href="#error-methods">Error Methods</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let err = ClientError::Connection("connection refused".to_string());
+
+// Get error code
+let code = err.code();  // 6
+
+// Check if retryable
+if err.is_retryable() {
+    // Retry with exponential backoff
+}
+
+// Display error
+eprintln!("Error: {}", err);  // "connection error: connection refused"
+<span class="boring">}</span></code></pre></pre>
+<h3 id="error-handling-pattern"><a class="header" href="#error-handling-pattern">Error Handling Pattern</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_client::ClientError;
+
+match client.execute("SELECT * FROM users").await {
+    Ok(result) =&gt; {
+        if result.has_error() {
+            // Query-level error (e.g., table not found)
+            eprintln!("Query error: {}", result.error_message().unwrap());
+        } else {
+            // Process results
+        }
+    }
+    Err(ClientError::Connection(msg)) =&gt; {
+        // Network error - maybe retry
+        eprintln!("Connection failed: {}", msg);
+    }
+    Err(ClientError::Authentication(msg)) =&gt; {
+        // Bad credentials - check API key
+        eprintln!("Auth failed: {}", msg);
+    }
+    Err(ClientError::Timeout(msg)) =&gt; {
+        // Request too slow - maybe retry with longer timeout
+        eprintln!("Timeout: {}", msg);
+    }
+    Err(e) =&gt; {
+        eprintln!("Unexpected error: {}", e);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="conversion-from-grpc-status"><a class="header" href="#conversion-from-grpc-status">Conversion from gRPC Status</a></h3>
+<p>Remote errors are automatically converted from tonic Status:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl From&lt;tonic::Status&gt; for ClientError {
+    fn from(status: tonic::Status) -&gt; Self {
+        match status.code() {
+            Code::InvalidArgument =&gt; Self::InvalidArgument(status.message().to_string()),
+            Code::NotFound =&gt; Self::NotFound(status.message().to_string()),
+            Code::PermissionDenied =&gt; Self::PermissionDenied(status.message().to_string()),
+            Code::Unauthenticated =&gt; Self::Authentication(status.message().to_string()),
+            Code::Unavailable =&gt; Self::Unavailable(status.message().to_string()),
+            Code::DeadlineExceeded =&gt; Self::Timeout(status.message().to_string()),
+            _ =&gt; Self::Internal(status.message().to_string()),
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="connection-management"><a class="header" href="#connection-management">Connection Management</a></h2>
+<h3 id="connection-state"><a class="header" href="#connection-state">Connection State</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let client = NeumannClient::connect("localhost:9200")
+    .build()
+    .await?;
+
+// Check mode
+match client.mode() {
+    ClientMode::Embedded =&gt; println!("In-process"),
+    ClientMode::Remote =&gt; println!("Connected to server"),
+}
+
+// Check connection status
+if client.is_connected() {
+    // Ready for queries
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="closing-connections"><a class="header" href="#closing-connections">Closing Connections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut client = NeumannClient::connect("localhost:9200")
+    .build()
+    .await?;
+
+// Explicit close
+client.close();
+
+// Or automatic on drop
+drop(client);  // Connection closed, API key zeroized
+<span class="boring">}</span></code></pre></pre>
+<h2 id="usage-examples"><a class="header" href="#usage-examples">Usage Examples</a></h2>
+<h3 id="complete-remote-example"><a class="header" href="#complete-remote-example">Complete Remote Example</a></h3>
+<pre><pre class="playground"><code class="language-rust">use neumann_client::{NeumannClient, ClientError};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Connect to server
+    let client = NeumannClient::connect("localhost:9200")
+        .api_key(std::env::var("NEUMANN_API_KEY")?)
+        .with_tls()
+        .timeout_ms(30_000)
+        .build()
+        .await?;
+
+    // Create schema
+    client.execute("CREATE TABLE products (name:string, price:float)").await?;
+
+    // Insert data
+    client.execute("INSERT products name=\"Widget\", price=9.99").await?;
+    client.execute("INSERT products name=\"Gadget\", price=19.99").await?;
+
+    // Query data
+    let result = client.execute("SELECT products WHERE price &gt; 10").await?;
+
+    if let Some(rows) = result.rows() {
+        for row in rows {
+            println!("Product: {:?}", row);
+        }
+    }
+
+    Ok(())
+}</code></pre></pre>
+<h3 id="complete-embedded-example"><a class="header" href="#complete-embedded-example">Complete Embedded Example</a></h3>
+<pre><pre class="playground"><code class="language-rust">use neumann_client::{NeumannClient, QueryResult};
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Create embedded client
+    let client = NeumannClient::embedded()?;
+
+    // Create schema
+    client.execute_sync("CREATE TABLE events (name:string, timestamp:int)")?;
+
+    // Insert data
+    client.execute_sync("INSERT events name=\"login\", timestamp=1700000000")?;
+
+    // Query data
+    match client.execute_sync("SELECT events")? {
+        QueryResult::Rows(rows) =&gt; {
+            println!("Found {} events", rows.len());
+            for row in rows {
+                println!("  {:?}", row);
+            }
+        }
+        _ =&gt; println!("Unexpected result type"),
+    }
+
+    Ok(())
+}</code></pre></pre>
+<h3 id="testing-with-embedded-mode"><a class="header" href="#testing-with-embedded-mode">Testing with Embedded Mode</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[cfg(test)]
+mod tests {
+    use neumann_client::{NeumannClient, QueryResult};
+
+    #[test]
+    fn test_user_creation() {
+        let client = NeumannClient::embedded().unwrap();
+
+        // Setup
+        client
+            .execute_sync("CREATE TABLE users (email:string, active:bool)")
+            .unwrap();
+
+        // Test
+        client
+            .execute_sync("INSERT users email=\"test@example.com\", active=true")
+            .unwrap();
+
+        // Verify
+        let result = client.execute_sync("SELECT users").unwrap();
+        match result {
+            QueryResult::Rows(rows) =&gt; {
+                assert_eq!(rows.len(), 1);
+            }
+            _ =&gt; panic!("Expected rows"),
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="shared-router-between-clients"><a class="header" href="#shared-router-between-clients">Shared Router Between Clients</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_client::NeumannClient;
+use query_router::QueryRouter;
+use std::sync::Arc;
+use parking_lot::RwLock;
+
+// Create shared router
+let router = Arc::new(RwLock::new(QueryRouter::new()));
+
+// Create multiple clients sharing same state
+let client1 = NeumannClient::with_router(Arc::clone(&amp;router));
+let client2 = NeumannClient::with_router(Arc::clone(&amp;router));
+
+// Changes from client1 visible to client2
+client1.execute_sync("CREATE TABLE shared (x:int)")?;
+let result = client2.execute_sync("SELECT shared")?;  // Works!
+<span class="boring">}</span></code></pre></pre>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<h3 id="connection-reuse"><a class="header" href="#connection-reuse">Connection Reuse</a></h3>
+<p>Create one client and reuse it for multiple queries:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Good: Reuse client
+let client = NeumannClient::connect("localhost:9200").build().await?;
+for query in queries {
+    client.execute(&amp;query).await?;
+}
+
+// Bad: New connection per query
+for query in queries {
+    let client = NeumannClient::connect("localhost:9200").build().await?;
+    client.execute(&amp;query).await?;
+}  // Connection overhead for each query
+<span class="boring">}</span></code></pre></pre>
+<h3 id="timeout-configuration"><a class="header" href="#timeout-configuration">Timeout Configuration</a></h3>
+<p>Set appropriate timeouts based on query complexity:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Quick queries
+let client = NeumannClient::connect("localhost:9200")
+    .timeout_ms(5_000)  // 5 seconds
+    .build()
+    .await?;
+
+// Complex analytics
+let client = NeumannClient::connect("localhost:9200")
+    .timeout_ms(300_000)  // 5 minutes
+    .build()
+    .await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="api-key-security"><a class="header" href="#api-key-security">API Key Security</a></h3>
+<p>Never hardcode API keys:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Good: Environment variable
+let api_key = std::env::var("NEUMANN_API_KEY")?;
+let client = NeumannClient::connect("localhost:9200")
+    .api_key(api_key)
+    .build()
+    .await?;
+
+// Bad: Hardcoded key
+let client = NeumannClient::connect("localhost:9200")
+    .api_key("sk-secret-key-12345")  // Will be in binary!
+    .build()
+    .await?;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Purpose</th><th>Feature</th></tr></thead><tbody>
+<tr><td><code>query_router</code></td><td>Embedded mode query execution</td><td><code>embedded</code></td></tr>
+<tr><td><code>tonic</code></td><td>gRPC client</td><td><code>remote</code></td></tr>
+<tr><td><code>tokio</code></td><td>Async runtime</td><td><code>remote</code></td></tr>
+<tr><td><code>parking_lot</code></td><td>Thread-safe router access</td><td><code>embedded</code></td></tr>
+<tr><td><code>zeroize</code></td><td>Secure memory clearing</td><td>Always</td></tr>
+<tr><td><code>thiserror</code></td><td>Error type derivation</td><td>Always</td></tr>
+<tr><td><code>tracing</code></td><td>Structured logging</td><td>Always</td></tr>
+</tbody></table>
+</div>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><code>neumann_server</code></td><td>Server counterpart for remote mode</td></tr>
+<tr><td><code>query_router</code></td><td>Query execution backend for embedded mode</td></tr>
+<tr><td><code>neumann_shell</code></td><td>Alternative interactive interface</td></tr>
+</tbody></table>
+</div>
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/neumann-server.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/neumann-ts.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/neumann-server.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/neumann-ts.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

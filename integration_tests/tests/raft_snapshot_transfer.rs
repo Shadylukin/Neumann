@@ -80,8 +80,8 @@ fn test_snapshot_metadata_roundtrip() {
     );
 
     // Serialize and deserialize
-    let bytes = bincode::serialize(&original).unwrap();
-    let restored: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&original).unwrap();
+    let restored: SnapshotMetadata = bitcode::deserialize(&bytes).unwrap();
 
     assert_eq!(restored.last_included_index, 100);
     assert_eq!(restored.last_included_term, 5);
@@ -159,7 +159,7 @@ fn test_install_snapshot_updates_state() {
 
     // Create snapshot data with log entries
     let entries: Vec<LogEntry> = (1..=10).map(|i| create_test_log_entry(i)).collect();
-    let data = bincode::serialize(&entries).unwrap();
+    let data = bitcode::serialize(&entries).unwrap();
 
     // Note: last_included_term must match the term in the log entries (which is 1)
     let snapshot_hash = compute_hash(&data);
@@ -191,7 +191,7 @@ fn test_snapshot_install_validates_data() {
 
     // Empty snapshot data
     let empty_entries: Vec<LogEntry> = vec![];
-    let empty_data = bincode::serialize(&empty_entries).unwrap();
+    let empty_data = bitcode::serialize(&empty_entries).unwrap();
     let metadata = SnapshotMetadata::new(5, 1, [0u8; 32], vec![], empty_data.len() as u64);
 
     let result = node.install_snapshot(metadata, &empty_data);
@@ -199,7 +199,7 @@ fn test_snapshot_install_validates_data() {
 
     // Mismatched index
     let entries: Vec<LogEntry> = (1..=3).map(|i| create_test_log_entry(i)).collect();
-    let data = bincode::serialize(&entries).unwrap();
+    let data = bitcode::serialize(&entries).unwrap();
     let wrong_metadata = SnapshotMetadata::new(
         10, // Claims index 10, but data only has up to 3
         1,

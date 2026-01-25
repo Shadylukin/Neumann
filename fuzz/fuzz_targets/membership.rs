@@ -142,9 +142,9 @@ fuzz_target!(|input: MembershipInput| {
             }
 
             // Serialize to bincode
-            if let Ok(bytes) = bincode::serialize(&config) {
+            if let Ok(bytes) = bitcode::serialize(&config) {
                 // Deserialize back
-                let decoded: Result<ClusterConfig, _> = bincode::deserialize(&bytes);
+                let decoded: Result<ClusterConfig, _> = bitcode::deserialize(&bytes);
                 assert!(decoded.is_ok(), "Failed to parse valid bincode config");
 
                 let decoded = decoded.unwrap();
@@ -176,8 +176,8 @@ fuzz_target!(|input: MembershipInput| {
             }
 
             // Bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&config) {
-                let decoded: Result<HealthConfig, _> = bincode::deserialize(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&config) {
+                let decoded: Result<HealthConfig, _> = bitcode::deserialize(&bytes);
                 assert!(
                     decoded.is_ok(),
                     "Failed to parse valid bincode health config"

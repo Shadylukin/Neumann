@@ -30,7 +30,36 @@
 //! let reconstructed = delta.to_dense(&archetype);
 //! ```
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+
+/// Maximum dimension for delta vectors (limited by u16 position storage).
+pub const MAX_DIMENSION: usize = u16::MAX as usize;
+
+/// Error type for delta vector operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeltaVectorError {
+    /// Dimension exceeds the maximum supported value.
+    DimensionExceeded {
+        /// The requested dimension.
+        dimension: usize,
+        /// The maximum allowed dimension.
+        max: usize,
+    },
+}
+
+impl fmt::Display for DeltaVectorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DimensionExceeded { dimension, max } => {
+                write!(f, "dimension {dimension} exceeds maximum {max} (u16::MAX)")
+            },
+        }
+    }
+}
+
+impl std::error::Error for DeltaVectorError {}
 
 use crate::{ScalarValue, SparseVector, TensorData, TensorStore, TensorValue};
 
@@ -56,15 +85,45 @@ impl DeltaVector {
     /// Create a delta vector from a dense vector and its reference archetype.
     ///
     /// Only stores positions where |original - archetype| > threshold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dense.len()` exceeds `MAX_DIMENSION` (65535).
+    /// Use [`try_from_dense_with_reference`](Self::try_from_dense_with_reference) for a fallible version.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)] // Position index limited to u16::MAX dimensions
     pub fn from_dense_with_reference(
         dense: &[f32],
         archetype: &[f32],
         archetype_id: usize,
         threshold: f32,
     ) -> Self {
+        Self::try_from_dense_with_reference(dense, archetype, archetype_id, threshold)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create a delta vector from a dense vector and its reference archetype.
+    ///
+    /// Only stores positions where |original - archetype| > threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeltaVectorError::DimensionExceeded`] if `dense.len()` > 65535.
+    #[allow(clippy::cast_possible_truncation)] // Position index validated above
+    pub fn try_from_dense_with_reference(
+        dense: &[f32],
+        archetype: &[f32],
+        archetype_id: usize,
+        threshold: f32,
+    ) -> Result<Self, DeltaVectorError> {
         debug_assert_eq!(dense.len(), archetype.len());
+        let dimension = dense.len();
+
+        if dimension > MAX_DIMENSION {
+            return Err(DeltaVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
 
         let mut positions = Vec::new();
         let mut deltas = Vec::new();
@@ -77,13 +136,13 @@ impl DeltaVector {
             }
         }
 
-        Self {
+        Ok(Self {
             archetype_id,
-            dimension: dense.len(),
+            dimension,
             positions,
             deltas,
             cached_magnitude: None,
-        }
+        })
     }
 
     /// Create a delta vector with pre-computed magnitude.
@@ -101,6 +160,11 @@ impl DeltaVector {
     }
 
     /// Create from explicit components (for deserialization or testing).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dimension` exceeds `MAX_DIMENSION` (65535).
+    /// Use [`try_from_parts`](Self::try_from_parts) for a fallible version.
     #[must_use]
     pub fn from_parts(
         archetype_id: usize,
@@ -108,14 +172,35 @@ impl DeltaVector {
         positions: Vec<u16>,
         deltas: Vec<f32>,
     ) -> Self {
+        Self::try_from_parts(archetype_id, dimension, positions, deltas)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create from explicit components (for deserialization or testing).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeltaVectorError::DimensionExceeded`] if `dimension` > 65535.
+    pub fn try_from_parts(
+        archetype_id: usize,
+        dimension: usize,
+        positions: Vec<u16>,
+        deltas: Vec<f32>,
+    ) -> Result<Self, DeltaVectorError> {
+        if dimension > MAX_DIMENSION {
+            return Err(DeltaVectorError::DimensionExceeded {
+                dimension,
+                max: MAX_DIMENSION,
+            });
+        }
         debug_assert_eq!(positions.len(), deltas.len());
-        Self {
+        Ok(Self {
             archetype_id,
             dimension,
             positions,
             deltas,
             cached_magnitude: None,
-        }
+        })
     }
 
     /// Reconstruct the full dense vector: archetype + delta.
@@ -564,7 +649,7 @@ impl ArchetypeRegistry {
     ///
     /// Returns an error if serialization or storage fails.
     pub fn save_to_store(&self, store: &TensorStore) -> Result<(), String> {
-        let bytes = bincode::serialize(self).map_err(|e| e.to_string())?;
+        let bytes = bitcode::serialize(self).map_err(|e| e.to_string())?;
         let mut data = TensorData::new();
         data.set("_bytes", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
@@ -583,7 +668,7 @@ impl ArchetypeRegistry {
         let TensorValue::Scalar(ScalarValue::Bytes(bytes)) = data.get("_bytes")? else {
             return None;
         };
-        bincode::deserialize(bytes).ok()
+        bitcode::deserialize(bytes).ok()
     }
 }
 
@@ -1598,8 +1683,8 @@ mod tests {
         registry.register(vec![0.0, 1.0, 0.0, 0.0]);
         registry.register(vec![0.707, 0.707, 0.0, 0.0]);
 
-        let bytes = bincode::serialize(&registry).unwrap();
-        let restored: ArchetypeRegistry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&registry).unwrap();
+        let restored: ArchetypeRegistry = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.len(), 3);
         assert_eq!(restored.get(0), registry.get(0));
@@ -1738,5 +1823,75 @@ mod tests {
         assert!(bytes > 0);
         // With one 4-element archetype, should have at least 4*4 = 16 bytes for archetype
         assert!(bytes >= 16);
+    }
+
+    // ========================================================================
+    // Security validation tests for integer truncation prevention
+    // ========================================================================
+
+    #[test]
+    fn test_try_from_dense_with_reference_at_max_boundary() {
+        // MAX_DIMENSION is 65535, which is valid
+        let archetype = vec![0.0; MAX_DIMENSION];
+        let dense = vec![0.0; MAX_DIMENSION];
+        let result = DeltaVector::try_from_dense_with_reference(&dense, &archetype, 0, 0.001);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().dimension(), MAX_DIMENSION);
+    }
+
+    #[test]
+    fn test_try_from_dense_with_reference_exceeds_max() {
+        let archetype = vec![0.0; MAX_DIMENSION + 1];
+        let dense = vec![0.0; MAX_DIMENSION + 1];
+        let result = DeltaVector::try_from_dense_with_reference(&dense, &archetype, 0, 0.001);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            DeltaVectorError::DimensionExceeded {
+                dimension: MAX_DIMENSION + 1,
+                max: MAX_DIMENSION
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_from_parts_exceeds_max() {
+        let result = DeltaVector::try_from_parts(0, MAX_DIMENSION + 1, vec![], vec![]);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            DeltaVectorError::DimensionExceeded {
+                dimension: MAX_DIMENSION + 1,
+                max: MAX_DIMENSION
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_from_parts_valid() {
+        let result = DeltaVector::try_from_parts(0, 100, vec![0, 50], vec![1.0, 2.0]);
+        assert!(result.is_ok());
+        let dv = result.unwrap();
+        assert_eq!(dv.dimension(), 100);
+        assert_eq!(dv.nnz(), 2);
+    }
+
+    #[test]
+    fn test_delta_vector_error_display() {
+        let err = DeltaVectorError::DimensionExceeded {
+            dimension: 70000,
+            max: MAX_DIMENSION,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("70000"));
+        assert!(msg.contains("exceeds maximum"));
+        assert!(msg.contains("65535"));
+    }
+
+    #[test]
+    fn test_max_dimension_constant() {
+        // Verify the constant matches u16::MAX
+        assert_eq!(MAX_DIMENSION, u16::MAX as usize);
+        assert_eq!(MAX_DIMENSION, 65535);
     }
 }

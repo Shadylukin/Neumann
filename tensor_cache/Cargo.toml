@@ -16,7 +16,7 @@ tiktoken-rs = "0.6"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
+bitcode = { version = "0.6", features = ["serde"] }
 
 # Data structures
 dashmap = "6"

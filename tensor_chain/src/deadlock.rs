@@ -954,8 +954,8 @@ mod tests {
         ];
 
         for policy in policies {
-            let serialized = bincode::serialize(&policy).unwrap();
-            let deserialized: VictimSelectionPolicy = bincode::deserialize(&serialized).unwrap();
+            let serialized = bitcode::serialize(&policy).unwrap();
+            let deserialized: VictimSelectionPolicy = bitcode::deserialize(&serialized).unwrap();
             assert_eq!(policy, deserialized);
         }
     }

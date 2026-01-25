@@ -4,7 +4,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use tensor_compress::TTConfig;
 use tensor_store::{
     ArchetypeRegistry, BloomFilter, DeltaVector, HNSWIndex, KMeans, KMeansConfig, KMeansInit,
-    ScalarValue, SparseVector, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore,
+    MetadataSlab, ScalarValue, SparseVector, TensorData, TensorStore, TensorValue, TieredConfig,
+    TieredStore,
 };
 
 fn create_test_tensor(id: i64) -> TensorData {
@@ -766,6 +767,156 @@ fn bench_sparse_vector_batch_dot(c: &mut Criterion) {
 
     group.finish();
 }
+
+// ============================================================================
+// MetadataSlab Sharded Benchmarks
+// ============================================================================
+
+fn bench_metadata_concurrent_put(c: &mut Criterion) {
+    let mut group = c.benchmark_group("metadata_slab/concurrent_put");
+
+    // Benchmark with varying thread counts to show scaling
+    for num_threads in [1, 4, 8, 16].iter() {
+        let ops_per_thread = 10_000;
+        let total_ops = num_threads * ops_per_thread;
+
+        group.throughput(Throughput::Elements(total_ops as u64));
+        group.bench_with_input(
+            BenchmarkId::new("threads", num_threads),
+            num_threads,
+            |b, &num_threads| {
+                b.iter(|| {
+                    let slab = Arc::new(MetadataSlab::new());
+                    let mut handles = vec![];
+
+                    // Use different first-byte prefixes to maximize shard distribution
+                    let prefixes = [
+                        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+                        'p',
+                    ];
+
+                    for t in 0..num_threads {
+                        let s = Arc::clone(&slab);
+                        let prefix = prefixes[t % prefixes.len()];
+                        handles.push(thread::spawn(move || {
+                            for i in 0..ops_per_thread {
+                                s.set(
+                                    &format!("{prefix}thread{t}:key{i}"),
+                                    create_test_tensor((t * ops_per_thread + i) as i64),
+                                );
+                            }
+                        }));
+                    }
+
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+
+                    black_box(&slab);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_metadata_concurrent_get(c: &mut Criterion) {
+    let mut group = c.benchmark_group("metadata_slab/concurrent_get");
+
+    // Pre-populate slab with distributed keys
+    let slab = Arc::new(MetadataSlab::new());
+    let prefixes = [
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
+    ];
+
+    for (t, prefix) in prefixes.iter().enumerate() {
+        for i in 0..1000 {
+            slab.set(
+                &format!("{prefix}thread{t}:key{i}"),
+                create_test_tensor((t * 1000 + i) as i64),
+            );
+        }
+    }
+
+    for num_threads in [1, 4, 8, 16].iter() {
+        let ops_per_thread = 10_000;
+        let total_ops = num_threads * ops_per_thread;
+
+        group.throughput(Throughput::Elements(total_ops as u64));
+        group.bench_with_input(
+            BenchmarkId::new("threads", num_threads),
+            num_threads,
+            |b, &num_threads| {
+                b.iter(|| {
+                    let mut handles = vec![];
+
+                    for t in 0..num_threads {
+                        let s = Arc::clone(&slab);
+                        let prefix = prefixes[t % prefixes.len()];
+                        handles.push(thread::spawn(move || {
+                            for i in 0..ops_per_thread {
+                                black_box(s.get(&format!("{prefix}thread{t}:key{}", i % 1000)));
+                            }
+                        }));
+                    }
+
+                    for h in handles {
+                        h.join().unwrap();
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_metadata_scan_prefix(c: &mut Criterion) {
+    let mut group = c.benchmark_group("metadata_slab/scan");
+
+    // Setup slab with distributed keys
+    let slab = MetadataSlab::new();
+    for i in 0..10_000 {
+        let prefix = match i % 4 {
+            0 => "user",
+            1 => "post",
+            2 => "comment",
+            _ => "meta",
+        };
+        slab.set(&format!("{prefix}:{i}"), create_test_tensor(i as i64));
+    }
+
+    // Non-empty prefix scan (single shard)
+    group.bench_function("prefix_scan_2500_of_10k", |b| {
+        b.iter(|| {
+            black_box(slab.scan("user:"));
+        });
+    });
+
+    // Empty prefix scan (merge all shards)
+    group.bench_function("full_scan_10k", |b| {
+        b.iter(|| {
+            black_box(slab.scan(""));
+        });
+    });
+
+    // Prefix count (single shard)
+    group.bench_function("prefix_count_2500_of_10k", |b| {
+        b.iter(|| {
+            black_box(slab.scan_count("user:"));
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    metadata_slab_benches,
+    bench_metadata_concurrent_put,
+    bench_metadata_concurrent_get,
+    bench_metadata_scan_prefix,
+);
 
 criterion_group!(
     benches,
@@ -1683,6 +1834,7 @@ criterion_group!(
 
 criterion_main!(
     benches,
+    metadata_slab_benches,
     sparse_vector_benches,
     delta_vector_benches,
     kmeans_benches,

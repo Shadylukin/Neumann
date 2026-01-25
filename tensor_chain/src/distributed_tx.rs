@@ -94,7 +94,7 @@ impl UndoEntry {
                 key: key.to_string(),
             },
             |data| {
-                let bytes = bincode::serialize(&data).unwrap_or_default();
+                let bytes = bitcode::serialize(&data).unwrap_or_default();
                 Self::Restore {
                     key: key.to_string(),
                     data: bytes,
@@ -111,7 +111,7 @@ impl UndoEntry {
     pub fn apply(&self, store: &TensorStore) -> Result<()> {
         match self {
             Self::Restore { key, data } => {
-                let tensor: TensorData = bincode::deserialize(data)
+                let tensor: TensorData = bitcode::deserialize(data)
                     .map_err(|e| ChainError::SerializationError(e.to_string()))?;
                 store
                     .put(key, tensor)
@@ -1646,7 +1646,7 @@ impl DistributedTxCoordinator {
 
     pub fn save_to_store(&self, node_id: &str, store: &TensorStore) -> Result<()> {
         let state = self.to_state();
-        let bytes = bincode::serialize(&state)?;
+        let bytes = bitcode::serialize(&state)?;
 
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
@@ -1668,7 +1668,7 @@ impl DistributedTxCoordinator {
 
         if let Ok(data) = store.get(&key) {
             if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
-                let state: CoordinatorState = bincode::deserialize(bytes)?;
+                let state: CoordinatorState = bitcode::deserialize(bytes)?;
                 return Ok(Self::with_state(consensus, config, state));
             }
         }
@@ -2301,7 +2301,7 @@ impl TxParticipant {
         store: &TensorStore,
     ) -> Result<()> {
         let state = self.to_state();
-        let bytes = bincode::serialize(&state)?;
+        let bytes = bitcode::serialize(&state)?;
 
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
@@ -2318,7 +2318,7 @@ impl TxParticipant {
 
         if let Ok(data) = store.get(&key) {
             if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
-                if let Ok(state) = bincode::deserialize::<ParticipantState>(bytes) {
+                if let Ok(state) = bitcode::deserialize::<ParticipantState>(bytes) {
                     return Self::with_state(state, store.clone());
                 }
             }
@@ -3578,8 +3578,8 @@ mod tests {
             timeout_ms: 5000,
         };
 
-        let bytes = bincode::serialize(&lock).unwrap();
-        let restored: KeyLock = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&lock).unwrap();
+        let restored: KeyLock = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.key, lock.key);
         assert_eq!(restored.tx_id, lock.tx_id);
@@ -3602,8 +3602,8 @@ mod tests {
             undo_log: Vec::new(),
         };
 
-        let bytes = bincode::serialize(&tx).unwrap();
-        let restored: PreparedTx = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&tx).unwrap();
+        let restored: PreparedTx = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.tx_id, tx.tx_id);
         assert_eq!(restored.lock_handle, tx.lock_handle);
@@ -3634,8 +3634,8 @@ mod tests {
             default_timeout_ms: 30000,
         };
 
-        let bytes = bincode::serialize(&state).unwrap();
-        let restored: SerializableLockState = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
+        let restored: SerializableLockState = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.locks.len(), 1);
         assert_eq!(restored.tx_locks.len(), 1);
@@ -3658,8 +3658,8 @@ mod tests {
             },
         };
 
-        let bytes = bincode::serialize(&state).unwrap();
-        let restored: CoordinatorState = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
+        let restored: CoordinatorState = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.pending.len(), 1);
         assert_eq!(restored.lock_state.default_timeout_ms, 30000);
@@ -3689,8 +3689,8 @@ mod tests {
             },
         };
 
-        let bytes = bincode::serialize(&state).unwrap();
-        let restored: ParticipantState = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
+        let restored: ParticipantState = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(restored.prepared.len(), 1);
         assert!(restored.prepared.contains_key(&1));

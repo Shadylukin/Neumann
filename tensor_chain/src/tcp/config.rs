@@ -952,8 +952,8 @@ mod tests {
     fn test_node_id_verification_serde() {
         // Use bincode for serialization since serde_json isn't a dependency
         let cn = NodeIdVerification::CommonName;
-        let serialized = bincode::serialize(&cn).unwrap();
-        let deserialized: NodeIdVerification = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&cn).unwrap();
+        let deserialized: NodeIdVerification = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, NodeIdVerification::CommonName);
     }
 
@@ -1159,21 +1159,21 @@ mod tests {
     #[test]
     fn test_security_mode_serde() {
         let mode = SecurityMode::Strict;
-        let serialized = bincode::serialize(&mode).unwrap();
-        let deserialized: SecurityMode = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&mode).unwrap();
+        let deserialized: SecurityMode = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, SecurityMode::Strict);
 
         let mode = SecurityMode::Development;
-        let serialized = bincode::serialize(&mode).unwrap();
-        let deserialized: SecurityMode = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&mode).unwrap();
+        let deserialized: SecurityMode = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, SecurityMode::Development);
     }
 
     #[test]
     fn test_security_config_serde() {
         let config = SecurityConfig::permissive();
-        let serialized = bincode::serialize(&config).unwrap();
-        let deserialized: SecurityConfig = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&config).unwrap();
+        let deserialized: SecurityConfig = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized.mode, SecurityMode::Permissive);
         assert!(deserialized.warn_on_insecure);
     }

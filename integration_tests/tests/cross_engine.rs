@@ -60,7 +60,7 @@ fn test_unified_entity_across_engines() {
 
     // 2. Graph neighbors
     let neighbors = graph
-        .neighbors(alice_node, None, Direction::Outgoing)
+        .neighbors(alice_node, None, Direction::Outgoing, None)
         .unwrap();
     assert!(neighbors.iter().any(|n| n.id == bob_node));
 
@@ -118,7 +118,7 @@ fn test_graph_nodes_with_embeddings() {
     for result in &similar {
         let node_id: u64 = result.key.split(':').nth(1).unwrap().parse().unwrap();
         let node = graph.get_node(node_id).unwrap();
-        assert!(node.label == "entity");
+        assert!(node.has_label("entity"));
     }
 }
 
@@ -300,17 +300,17 @@ fn test_node_edge_neighbor_path_cycle() {
 
     // Test neighbors
     let bob_following = graph
-        .neighbors(users["Bob"], None, Direction::Outgoing)
+        .neighbors(users["Bob"], None, Direction::Outgoing, None)
         .unwrap();
     assert!(bob_following.iter().any(|n| n.id == users["Carol"]));
 
     let bob_followers = graph
-        .neighbors(users["Bob"], None, Direction::Incoming)
+        .neighbors(users["Bob"], None, Direction::Incoming, None)
         .unwrap();
     assert!(bob_followers.iter().any(|n| n.id == users["Alice"]));
 
     // Test path finding
-    let path = graph.find_path(users["Alice"], users["Eve"]).unwrap();
+    let path = graph.find_path(users["Alice"], users["Eve"], None).unwrap();
     assert!(!path.nodes.is_empty());
     assert_eq!(path.nodes[0], users["Alice"]);
     assert_eq!(*path.nodes.last().unwrap(), users["Eve"]);
@@ -419,7 +419,7 @@ async fn test_blob_links_to_graph_entities() {
 
     // Verify graph structure
     let doc1_neighbors = graph
-        .neighbors(doc1_node, None, Direction::Outgoing)
+        .neighbors(doc1_node, None, Direction::Outgoing, None)
         .unwrap();
     assert!(doc1_neighbors.iter().any(|n| n.id == blob1_node));
     assert!(doc1_neighbors.iter().any(|n| n.id == doc2_node));
@@ -535,7 +535,7 @@ fn test_cross_engine_data_consistency() {
     // Check graph has nodes with correct IDs
     for node_id in &node_ids {
         let node = graph.get_node(*node_id).unwrap();
-        assert_eq!(node.label, "entity");
+        assert!(node.has_label("entity"));
     }
 
     // Check vectors exist for all entities

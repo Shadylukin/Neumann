@@ -92,14 +92,14 @@ impl ConsistentHashPartitioner {
 
     /// Hash a key to a position on the ring.
     fn hash_key(key: &str) -> u64 {
-        let mut hasher = fxhash::FxHasher64::default();
+        let mut hasher = rustc_hash::FxHasher::default();
         key.hash(&mut hasher);
         hasher.finish()
     }
 
     /// Hash a virtual node identifier to a position on the ring.
     fn hash_vnode(node_id: &str, vnode_index: usize) -> u64 {
-        let mut hasher = fxhash::FxHasher64::default();
+        let mut hasher = rustc_hash::FxHasher::default();
         node_id.hash(&mut hasher);
         vnode_index.hash(&mut hasher);
         hasher.finish()
@@ -285,7 +285,8 @@ mod tests {
 
     #[test]
     fn test_partitioner_multiple_nodes() {
-        let config = ConsistentHashConfig::new("node1").with_virtual_nodes(100);
+        // Use 512 virtual nodes for better distribution with rustc-hash
+        let config = ConsistentHashConfig::new("node1").with_virtual_nodes(512);
         let mut partitioner = ConsistentHashPartitioner::new(config);
 
         partitioner.add_node("node1".to_string());

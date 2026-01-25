@@ -25,7 +25,7 @@ pub enum WalError {
 
     /// Serialization or deserialization failed.
     #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Serialization(#[from] bitcode::Error),
 
     /// CRC32 checksum verification failed.
     #[error("Checksum mismatch at entry {index}: expected {expected:#x}, got {actual:#x}")]
@@ -280,7 +280,7 @@ impl TensorWal {
     /// Returns an error if serialization fails, the entry is too large,
     /// the size limit is exceeded (and auto-rotate is disabled), or I/O fails.
     pub fn append(&mut self, entry: &WalEntry) -> WalResult<()> {
-        let bytes = bincode::serialize(entry)?;
+        let bytes = bitcode::serialize(entry)?;
 
         // Check entry size fits in u32
         let len_u32 = u32::try_from(bytes.len())
@@ -408,7 +408,7 @@ impl TensorWal {
             }
 
             // Deserialize entry
-            match bincode::deserialize::<WalEntry>(&data) {
+            match bitcode::deserialize::<WalEntry>(&data) {
                 Ok(entry) => {
                     entries.push(entry);
                     entry_index += 1;

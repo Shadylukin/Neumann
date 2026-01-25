@@ -98,8 +98,8 @@ fuzz_target!(|input: RaftMembershipInput| {
             }
 
             // Bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&config) {
-                let decoded: Result<RaftMembershipConfig, _> = bincode::deserialize(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&config) {
+                let decoded: Result<RaftMembershipConfig, _> = bitcode::deserialize(&bytes);
                 assert!(
                     decoded.is_ok(),
                     "Failed to deserialize RaftMembershipConfig"
@@ -164,8 +164,8 @@ fuzz_target!(|input: RaftMembershipInput| {
             };
 
             // Bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&change) {
-                let decoded: Result<ConfigChange, _> = bincode::deserialize(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&change) {
+                let decoded: Result<ConfigChange, _> = bitcode::deserialize(&bytes);
                 assert!(decoded.is_ok(), "Failed to deserialize ConfigChange");
                 assert_eq!(decoded.unwrap(), change);
             }
@@ -206,8 +206,8 @@ fuzz_target!(|input: RaftMembershipInput| {
             assert_eq!(all_nodes.len(), unique.len(), "No duplicates allowed");
 
             // Roundtrip should work
-            if let Ok(bytes) = bincode::serialize(&config) {
-                let decoded: Result<RaftMembershipConfig, _> = bincode::deserialize(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&config) {
+                let decoded: Result<RaftMembershipConfig, _> = bitcode::deserialize(&bytes);
                 assert!(decoded.is_ok());
             }
         },

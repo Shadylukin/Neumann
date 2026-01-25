@@ -182,27 +182,932 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="api-reference"><a class="header" href="#api-reference">API Reference</a></h1>
-<p>Full API documentation is generated from source code using rustdoc.</p>
-<h2 id="online-documentation"><a class="header" href="#online-documentation">Online Documentation</a></h2>
-<p>When deployed, the API reference is available at:</p>
+<p>This document provides detailed public API documentation for all Neumann crates.
+For auto-generated rustdoc, see <a href="#building-locally">Building Locally</a>.</p>
+<h2 id="table-of-contents"><a class="header" href="#table-of-contents">Table of Contents</a></h2>
 <ul>
-<li><a href="api/tensor_store/index.html">tensor_store</a> - Core storage layer</li>
-<li><a href="api/relational_engine/index.html">relational_engine</a> - SQL-like tables</li>
-<li><a href="api/graph_engine/index.html">graph_engine</a> - Graph operations</li>
-<li><a href="api/vector_engine/index.html">vector_engine</a> - Embeddings and similarity</li>
-<li><a href="api/tensor_chain/index.html">tensor_chain</a> - Distributed consensus</li>
-<li><a href="api/neumann_parser/index.html">neumann_parser</a> - Query parsing</li>
-<li><a href="api/query_router/index.html">query_router</a> - Query execution</li>
-<li><a href="api/neumann_shell/index.html">neumann_shell</a> - Interactive CLI</li>
-<li><a href="api/tensor_compress/index.html">tensor_compress</a> - Compression algorithms</li>
-<li><a href="api/tensor_vault/index.html">tensor_vault</a> - Encrypted storage</li>
-<li><a href="api/tensor_cache/index.html">tensor_cache</a> - LLM response caching</li>
-<li><a href="api/tensor_blob/index.html">tensor_blob</a> - Blob storage</li>
-<li><a href="api/tensor_checkpoint/index.html">tensor_checkpoint</a> - Snapshots</li>
-<li><a href="api/tensor_unified/index.html">tensor_unified</a> - Multi-engine facade</li>
+<li><a href="#tensor_store">tensor_store</a> - Core storage layer</li>
+<li><a href="#relational_engine">relational_engine</a> - SQL-like tables</li>
+<li><a href="#graph_engine">graph_engine</a> - Graph operations</li>
+<li><a href="#vector_engine">vector_engine</a> - Embeddings and similarity</li>
+<li><a href="#tensor_chain">tensor_chain</a> - Distributed consensus</li>
+<li><a href="#neumann_parser">neumann_parser</a> - Query parsing</li>
+<li><a href="#query_router">query_router</a> - Query execution</li>
+<li><a href="#tensor_cache">tensor_cache</a> - LLM response caching</li>
+<li><a href="#tensor_vault">tensor_vault</a> - Encrypted storage</li>
+<li><a href="#tensor_blob">tensor_blob</a> - Blob storage</li>
+<li><a href="#tensor_checkpoint">tensor_checkpoint</a> - Snapshots</li>
 </ul>
+<hr />
+<h2 id="tensor_store"><a class="header" href="#tensor_store">tensor_store</a></h2>
+<p>Core key-value storage with HNSW indexing, sparse vectors, and tiered storage.</p>
+<h3 id="core-types"><a class="header" href="#core-types">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>TensorStore</code></td><td>Thread-safe key-value store with slab routing</td></tr>
+<tr><td><code>TensorData</code></td><td>HashMap-based entity with typed fields</td></tr>
+<tr><td><code>TensorValue</code></td><td>Field value: Scalar, Vector, Sparse, Pointer(s)</td></tr>
+<tr><td><code>ScalarValue</code></td><td>Null, Bool, Int, Float, String, Bytes</td></tr>
+</tbody></table>
+</div>
+<h3 id="tensorstore"><a class="header" href="#tensorstore">TensorStore</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::{TensorStore, TensorData, TensorValue, ScalarValue};
+
+let store = TensorStore::new();
+
+// Store entity
+let mut data = TensorData::new();
+data.set("name", TensorValue::Scalar(ScalarValue::String("Alice".into())));
+data.set("embedding", TensorValue::Vector(vec![0.1, 0.2, 0.3]));
+store.put("user:1", data)?;
+
+// Retrieve
+let entity = store.get("user:1")?;
+assert!(entity.has("name"));
+
+// Check existence
+store.exists("user:1");  // -&gt; bool
+
+// Delete
+store.delete("user:1")?;
+
+// Scan by prefix
+let count = store.scan_count("user:");
+<span class="boring">}</span></code></pre></pre>
+<h3 id="tensordata"><a class="header" href="#tensordata">TensorData</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut data = TensorData::new();
+
+// Set fields
+data.set("field", TensorValue::Scalar(ScalarValue::Int(42)));
+
+// Get fields
+let value = data.get("field");  // -&gt; Option&lt;&amp;TensorValue&gt;
+
+// Check field existence
+data.has("field");  // -&gt; bool
+
+// Field names
+let fields: Vec&lt;&amp;str&gt; = data.keys().collect();
+<span class="boring">}</span></code></pre></pre>
+<h3 id="hnsw-index"><a class="header" href="#hnsw-index">HNSW Index</a></h3>
+<p>Hierarchical Navigable Small World graph for approximate nearest neighbor search.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::{HNSWIndex, HNSWConfig, DistanceMetric};
+
+// Create with config
+let config = HNSWConfig {
+    m: 16,              // Connections per node
+    ef_construction: 200,
+    ef_search: 50,
+    max_elements: 10000,
+    distance_metric: DistanceMetric::Cosine,
+    ..Default::default()
+};
+let index = HNSWIndex::new(128, config);  // 128 dimensions
+
+// Insert vector
+index.insert("doc:1", &amp;embedding)?;
+
+// Search
+let results = index.search(&amp;query_vector, 10)?;
+for (key, distance) in results {
+    println!("{}: {}", key, distance);
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="sparse-vectors"><a class="header" href="#sparse-vectors">Sparse Vectors</a></h3>
+<p>Memory-efficient sparse embeddings with 15+ distance metrics.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::SparseVector;
+
+// Create from dense (auto-detects sparsity)
+let sparse = SparseVector::from_dense(&amp;[0.0, 0.5, 0.0, 0.3, 0.0]);
+
+// Create from indices and values
+let sparse = SparseVector::new(vec![1, 3], vec![0.5, 0.3], 5)?;
+
+// Operations
+let dense = sparse.to_dense();
+let dot = sparse.dot(&amp;other_sparse);
+let cosine = sparse.cosine_similarity(&amp;other_sparse);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="tiered-storage"><a class="header" href="#tiered-storage">Tiered Storage</a></h3>
+<p>Automatic hot/cold storage with mmap backing.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::{TieredStore, TieredConfig};
+use std::path::Path;
+
+let config = TieredConfig {
+    hot_capacity: 10000,
+    cold_path: Path::new("/data/cold").to_path_buf(),
+    migration_threshold: 0.8,
+    ..Default::default()
+};
+let store = TieredStore::new(config)?;
+
+// Automatic migration based on access patterns
+store.put("key", data)?;
+let value = store.get("key")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="cache-ring"><a class="header" href="#cache-ring">Cache Ring</a></h3>
+<p>Fixed-size eviction cache with multiple strategies.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::{CacheRing, EvictionStrategy};
+
+let cache = CacheRing::new(1000, EvictionStrategy::LRU);
+
+cache.put("key", value);
+let hit = cache.get("key");  // -&gt; Option&lt;V&gt;
+
+// Statistics
+let stats = cache.stats();
+println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="consistent-hash-partitioner"><a class="header" href="#consistent-hash-partitioner">Consistent Hash Partitioner</a></h3>
+<p>Partition routing with virtual nodes.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::{ConsistentHashPartitioner, ConsistentHashConfig};
+
+let config = ConsistentHashConfig {
+    virtual_nodes: 150,
+    replication_factor: 3,
+};
+let partitioner = ConsistentHashPartitioner::new(config);
+
+partitioner.add_node("node1");
+partitioner.add_node("node2");
+
+let partition = partitioner.partition("user:123");
+let replicas = partitioner.replicas("user:123");
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="relational_engine"><a class="header" href="#relational_engine">relational_engine</a></h2>
+<p>SQL-like table operations with SIMD-accelerated filtering.</p>
+<h3 id="core-types-1"><a class="header" href="#core-types-1">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>RelationalEngine</code></td><td>Main engine with TensorStore backend</td></tr>
+<tr><td><code>Schema</code></td><td>Table schema with column definitions</td></tr>
+<tr><td><code>Column</code></td><td>Column name, type, nullability</td></tr>
+<tr><td><code>ColumnType</code></td><td>Int, Float, String, Bool, Bytes, Json</td></tr>
+<tr><td><code>Value</code></td><td>Typed query value</td></tr>
+<tr><td><code>Condition</code></td><td>Composable filter predicate</td></tr>
+<tr><td><code>Row</code></td><td>Row with ID and values</td></tr>
+</tbody></table>
+</div>
+<h3 id="table-operations"><a class="header" href="#table-operations">Table Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{RelationalEngine, Schema, Column, ColumnType};
+
+let engine = RelationalEngine::new();
+
+// Create table
+let schema = Schema::new(vec![
+    Column::new("name", ColumnType::String),
+    Column::new("age", ColumnType::Int),
+    Column::new("email", ColumnType::String).nullable(),
+]);
+engine.create_table("users", schema)?;
+
+// Check existence
+engine.table_exists("users")?;  // -&gt; bool
+
+// List tables
+let tables = engine.list_tables();  // -&gt; Vec&lt;String&gt;
+
+// Get schema
+let schema = engine.get_schema("users")?;
+
+// Row count
+engine.row_count("users")?;  // -&gt; usize
+
+// Drop table
+engine.drop_table("users")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="crud-operations"><a class="header" href="#crud-operations">CRUD Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{Condition, Value};
+use std::collections::HashMap;
+
+// INSERT
+let mut values = HashMap::new();
+values.insert("name".to_string(), Value::String("Alice".into()));
+values.insert("age".to_string(), Value::Int(30));
+let row_id = engine.insert("users", values)?;
+
+// BATCH INSERT (59x faster)
+let rows: Vec&lt;HashMap&lt;String, Value&gt;&gt; = vec![/* ... */];
+let row_ids = engine.batch_insert("users", rows)?;
+
+// SELECT with condition
+let rows = engine.select("users",
+    Condition::Ge("age".into(), Value::Int(18)))?;
+
+// UPDATE
+let mut updates = HashMap::new();
+updates.insert("age".to_string(), Value::Int(31));
+let count = engine.update("users",
+    Condition::Eq("name".into(), Value::String("Alice".into())),
+    updates)?;
+
+// DELETE
+let count = engine.delete_rows("users",
+    Condition::Lt("age".into(), Value::Int(18)))?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="conditions"><a class="header" href="#conditions">Conditions</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{Condition, Value};
+
+// Simple conditions
+Condition::True                           // Match all
+Condition::Eq("col".into(), Value::Int(1))  // col = 1
+Condition::Ne("col".into(), Value::Int(1))  // col != 1
+Condition::Lt("col".into(), Value::Int(10)) // col &lt; 10
+Condition::Le("col".into(), Value::Int(10)) // col &lt;= 10
+Condition::Gt("col".into(), Value::Int(0))  // col &gt; 0
+Condition::Ge("col".into(), Value::Int(0))  // col &gt;= 0
+
+// Compound conditions
+let cond = Condition::Ge("age".into(), Value::Int(18))
+    .and(Condition::Lt("age".into(), Value::Int(65)));
+
+let cond = Condition::Eq("status".into(), Value::String("active".into()))
+    .or(Condition::Gt("priority".into(), Value::Int(5)));
+<span class="boring">}</span></code></pre></pre>
+<h3 id="indexes"><a class="header" href="#indexes">Indexes</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Hash index (O(1) equality)
+engine.create_index("users", "email")?;
+engine.has_index("users", "email");  // -&gt; bool
+engine.drop_index("users", "email")?;
+
+// B-tree index (O(log n) range)
+engine.create_btree_index("users", "age")?;
+engine.has_btree_index("users", "age");  // -&gt; bool
+engine.drop_btree_index("users", "age")?;
+
+// List indexed columns
+engine.get_indexed_columns("users");        // -&gt; Vec&lt;String&gt;
+engine.get_btree_indexed_columns("users");  // -&gt; Vec&lt;String&gt;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="joins"><a class="header" href="#joins">Joins</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// INNER JOIN
+let joined = engine.join("users", "posts", "_id", "user_id")?;
+// -&gt; Vec&lt;(Row, Row)&gt;
+
+// LEFT JOIN
+let joined = engine.left_join("users", "posts", "_id", "user_id")?;
+// -&gt; Vec&lt;(Row, Option&lt;Row&gt;)&gt;
+
+// RIGHT JOIN
+let joined = engine.right_join("users", "posts", "_id", "user_id")?;
+// -&gt; Vec&lt;(Option&lt;Row&gt;, Row)&gt;
+
+// FULL JOIN
+let joined = engine.full_join("users", "posts", "_id", "user_id")?;
+// -&gt; Vec&lt;(Option&lt;Row&gt;, Option&lt;Row&gt;)&gt;
+
+// CROSS JOIN
+let joined = engine.cross_join("users", "posts")?;
+// -&gt; Vec&lt;(Row, Row)&gt;
+
+// NATURAL JOIN
+let joined = engine.natural_join("users", "profiles")?;
+// -&gt; Vec&lt;(Row, Row)&gt;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="aggregates"><a class="header" href="#aggregates">Aggregates</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// COUNT
+let count = engine.count("users", Condition::True)?;
+let count = engine.count_column("users", "email", Condition::True)?;
+
+// SUM
+let total = engine.sum("orders", "amount", Condition::True)?;
+
+// AVG
+let avg = engine.avg("orders", "amount", Condition::True)?;  // Option&lt;f64&gt;
+
+// MIN/MAX
+let min = engine.min("products", "price", Condition::True)?;  // Option&lt;Value&gt;
+let max = engine.max("products", "price", Condition::True)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="transactions"><a class="header" href="#transactions">Transactions</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{TransactionManager, TxPhase};
+
+let tx_manager = TransactionManager::new();
+
+// Begin transaction
+let tx_id = tx_manager.begin();
+
+// Check state
+tx_manager.is_active(tx_id);  // -&gt; bool
+tx_manager.get(tx_id);        // -&gt; Option&lt;TxPhase&gt;
+
+// Acquire row locks
+tx_manager.lock_manager().try_lock(tx_id, &amp;[
+    ("users".to_string(), 1),
+    ("users".to_string(), 2),
+])?;
+
+// Commit or rollback
+tx_manager.set_phase(tx_id, TxPhase::Committed);
+tx_manager.release_locks(tx_id);
+tx_manager.remove(tx_id);
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="graph_engine"><a class="header" href="#graph_engine">graph_engine</a></h2>
+<p>Directed graph operations with BFS traversal and shortest path.</p>
+<h3 id="core-types-2"><a class="header" href="#core-types-2">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>GraphEngine</code></td><td>Main engine with TensorStore backend</td></tr>
+<tr><td><code>Node</code></td><td>Graph node with label and properties</td></tr>
+<tr><td><code>Edge</code></td><td>Directed edge with type and properties</td></tr>
+<tr><td><code>Direction</code></td><td>Outgoing, Incoming, Both</td></tr>
+<tr><td><code>PropertyValue</code></td><td>Null, Int, Float, String, Bool</td></tr>
+<tr><td><code>Path</code></td><td>Sequence of nodes and edges</td></tr>
+</tbody></table>
+</div>
+<h3 id="node-operations"><a class="header" href="#node-operations">Node Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graph_engine::{GraphEngine, PropertyValue};
+use std::collections::HashMap;
+
+let engine = GraphEngine::new();
+
+// Create node
+let mut props = HashMap::new();
+props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+let node_id = engine.create_node("person", props)?;
+
+// Get node
+let node = engine.get_node(node_id)?;
+println!("{}: {:?}", node.label, node.properties);
+
+// Update node
+let mut updates = HashMap::new();
+updates.insert("age".to_string(), PropertyValue::Int(30));
+engine.update_node(node_id, updates)?;
+
+// Delete node
+engine.delete_node(node_id)?;
+
+// Find nodes by label
+let people = engine.find_nodes_by_label("person")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="edge-operations"><a class="header" href="#edge-operations">Edge Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graph_engine::Direction;
+
+// Create edge
+let edge_id = engine.create_edge(from_id, to_id, "follows", HashMap::new())?;
+
+// Get edge
+let edge = engine.get_edge(edge_id)?;
+
+// Get neighbors
+let neighbors = engine.neighbors(node_id, Direction::Outgoing)?;
+let neighbors = engine.neighbors(node_id, Direction::Incoming)?;
+let neighbors = engine.neighbors(node_id, Direction::Both)?;
+
+// Get edges
+let edges = engine.edges(node_id, Direction::Outgoing)?;
+
+// Delete edge
+engine.delete_edge(edge_id)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="traversal"><a class="header" href="#traversal">Traversal</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// BFS traversal
+let visited = engine.bfs(start_id, |node| {
+    // Return true to continue traversal
+    true
+})?;
+
+// Shortest path (Dijkstra)
+let path = engine.shortest_path(from_id, to_id)?;
+if let Some(path) = path {
+    for node_id in path.nodes {
+        println!("-&gt; {}", node_id);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="property-indexes"><a class="header" href="#property-indexes">Property Indexes</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use graph_engine::{IndexTarget, RangeOp};
+
+// Create index on node property
+engine.create_property_index(IndexTarget::Node, "age")?;
+
+// Create index on edge property
+engine.create_property_index(IndexTarget::Edge, "weight")?;
+
+// Range query using index
+let results = engine.find_by_range(
+    IndexTarget::Node,
+    "age",
+    &amp;PropertyValue::Int(18),
+    RangeOp::Ge,
+)?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="vector_engine"><a class="header" href="#vector_engine">vector_engine</a></h2>
+<p>Embedding storage and similarity search.</p>
+<h3 id="core-types-3"><a class="header" href="#core-types-3">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>VectorEngine</code></td><td>Main engine for embedding operations</td></tr>
+<tr><td><code>SearchResult</code></td><td>Key and similarity score</td></tr>
+<tr><td><code>DistanceMetric</code></td><td>Cosine, Euclidean, DotProduct</td></tr>
+</tbody></table>
+</div>
+<h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{VectorEngine, DistanceMetric};
+
+let engine = VectorEngine::new();
+
+// Store embedding (auto-detects sparse)
+engine.store_embedding("doc:1", vec![0.1, 0.2, 0.3])?;
+
+// Get embedding
+let vector = engine.get_embedding("doc:1")?;
+
+// Check existence
+engine.exists("doc:1");  // -&gt; bool
+
+// Delete
+engine.delete_embedding("doc:1")?;
+
+// Count embeddings
+engine.count();  // -&gt; usize
+<span class="boring">}</span></code></pre></pre>
+<h3 id="similarity-search"><a class="header" href="#similarity-search">Similarity Search</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Search similar embeddings
+let query = vec![0.1, 0.2, 0.3];
+let results = engine.search_similar(&amp;query, 10)?;
+
+for result in results {
+    println!("{}: {:.4}", result.key, result.score);
+}
+
+// Search with metric
+let results = engine.search_similar_with_metric(
+    &amp;query,
+    10,
+    DistanceMetric::Euclidean,
+)?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="tensor_chain"><a class="header" href="#tensor_chain">tensor_chain</a></h2>
+<p>Distributed consensus with Raft and 2PC transactions.</p>
+<h3 id="core-types-4"><a class="header" href="#core-types-4">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Chain</code></td><td>Block chain with graph-based linking</td></tr>
+<tr><td><code>Block</code></td><td>Block with header and transactions</td></tr>
+<tr><td><code>Transaction</code></td><td>Put, Delete, Update operations</td></tr>
+<tr><td><code>RaftNode</code></td><td>Raft consensus state machine</td></tr>
+<tr><td><code>DistributedTxCoordinator</code></td><td>2PC transaction coordinator</td></tr>
+</tbody></table>
+</div>
+<h3 id="chain-operations"><a class="header" href="#chain-operations">Chain Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_chain::{Chain, Transaction, Block};
+use graph_engine::GraphEngine;
+use std::sync::Arc;
+
+let graph = Arc::new(GraphEngine::new());
+let chain = Chain::new(graph, "node1".to_string());
+chain.initialize()?;
+
+// Create block
+let builder = chain.new_block()
+    .add_transaction(Transaction::Put {
+        key: "user:1".into(),
+        data: vec![1, 2, 3],
+    })
+    .add_transaction(Transaction::Delete {
+        key: "user:0".into(),
+    });
+
+let block = builder.build();
+chain.append(block)?;
+
+// Query chain
+let height = chain.height();
+let block = chain.get_block(1)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="raft-consensus"><a class="header" href="#raft-consensus">Raft Consensus</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_chain::{RaftNode, RaftConfig, RaftState};
+
+let config = RaftConfig {
+    election_timeout_min: 150,
+    election_timeout_max: 300,
+    heartbeat_interval: 50,
+    ..Default::default()
+};
+
+let raft = RaftNode::new("node1".into(), config);
+
+// State queries
+raft.is_leader();     // -&gt; bool
+raft.current_term();  // -&gt; u64
+raft.state();         // -&gt; RaftState
+
+// Statistics
+let stats = raft.stats();
+<span class="boring">}</span></code></pre></pre>
+<h3 id="distributed-transactions"><a class="header" href="#distributed-transactions">Distributed Transactions</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_chain::{DistributedTxCoordinator, DistributedTxConfig};
+
+let config = DistributedTxConfig {
+    prepare_timeout_ms: 5000,
+    commit_timeout_ms: 5000,
+    max_retries: 3,
+    ..Default::default()
+};
+
+let coordinator = DistributedTxCoordinator::new(config);
+
+// Begin distributed transaction
+let tx_id = coordinator.begin()?;
+
+// Prepare phase
+coordinator.prepare(tx_id, keys, participants).await?;
+
+// Commit phase
+coordinator.commit(tx_id).await?;
+
+// Or abort
+coordinator.abort(tx_id).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="membership-management"><a class="header" href="#membership-management">Membership Management</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_chain::{MembershipManager, ClusterConfig, HealthConfig};
+
+let config = ClusterConfig {
+    local: LocalNodeConfig { id: "node1".into(), addr: "127.0.0.1:9000".parse()? },
+    peers: vec![],
+    health: HealthConfig::default(),
+};
+
+let membership = MembershipManager::new(config);
+
+// Add/remove nodes
+membership.add_node("node2", "127.0.0.1:9001".parse()?)?;
+membership.remove_node("node2")?;
+
+// Health status
+let health = membership.node_health("node2");
+let status = membership.partition_status();
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="neumann_parser"><a class="header" href="#neumann_parser">neumann_parser</a></h2>
+<p>Hand-written recursive descent parser for the Neumann query language.</p>
+<h3 id="core-types-5"><a class="header" href="#core-types-5">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Statement</code></td><td>Parsed statement with span</td></tr>
+<tr><td><code>StatementKind</code></td><td>Select, Insert, Update, Delete, Node, Edge, etc.</td></tr>
+<tr><td><code>Expr</code></td><td>Expression AST node</td></tr>
+<tr><td><code>Token</code></td><td>Lexer token with span</td></tr>
+<tr><td><code>ParseError</code></td><td>Error with source location</td></tr>
+</tbody></table>
+</div>
+<h3 id="parsing"><a class="header" href="#parsing">Parsing</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_parser::{parse, parse_all, parse_expr, tokenize};
+
+// Parse single statement
+let stmt = parse("SELECT * FROM users WHERE id = 1")?;
+
+// Parse multiple statements
+let stmts = parse_all("SELECT 1; SELECT 2")?;
+
+// Parse expression only
+let expr = parse_expr("1 + 2 * 3")?;
+
+// Tokenize
+let tokens = tokenize("SELECT id, name FROM users");
+<span class="boring">}</span></code></pre></pre>
+<h3 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let result = parse("SELCT * FROM users");
+if let Err(err) = result {
+    // Format with source context
+    let formatted = err.format_with_source("SELCT * FROM users");
+    eprintln!("{}", formatted);
+
+    // Access error details
+    println!("Line: {}", err.line());
+    println!("Column: {}", err.column());
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="span-utilities"><a class="header" href="#span-utilities">Span Utilities</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_parser::{line_number, line_col, get_line, BytePos};
+
+let source = "SELECT\nFROM\nWHERE";
+
+// Get line number (1-indexed)
+let line = line_number(source, BytePos(7));  // -&gt; 2
+
+// Get line and column
+let (line, col) = line_col(source, BytePos(7));  // -&gt; (2, 1)
+
+// Get line text
+let text = get_line(source, BytePos(7));  // -&gt; "FROM"
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="query_router"><a class="header" href="#query_router">query_router</a></h2>
+<p>Unified query routing across all engines.</p>
+<h3 id="core-types-6"><a class="header" href="#core-types-6">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>QueryRouter</code></td><td>Main router handling all query types</td></tr>
+<tr><td><code>QueryResult</code></td><td>Result variants for different query types</td></tr>
+<tr><td><code>RouterError</code></td><td>Error types from all engines</td></tr>
+</tbody></table>
+</div>
+<h3 id="query-execution"><a class="header" href="#query-execution">Query Execution</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use query_router::{QueryRouter, QueryResult};
+
+let router = QueryRouter::new();
+
+// Execute query
+let result = router.execute("SELECT * FROM users")?;
+
+match result {
+    QueryResult::Rows(rows) =&gt; { /* relational result */ }
+    QueryResult::Nodes(nodes) =&gt; { /* graph result */ }
+    QueryResult::Similar(results) =&gt; { /* vector result */ }
+    QueryResult::Success(msg) =&gt; { /* command result */ }
+    _ =&gt; {}
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="distributed-queries"><a class="header" href="#distributed-queries">Distributed Queries</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use query_router::{QueryPlanner, MergeStrategy, ResultMerger};
+
+let planner = QueryPlanner::new(partitioner);
+
+// Plan distributed query
+let plan = planner.plan("SELECT * FROM users WHERE region = 'us'")?;
+
+// Execute on shards
+let shard_results = execute_on_shards(&amp;plan).await?;
+
+// Merge results
+let merger = ResultMerger::new(MergeStrategy::Union);
+let final_result = merger.merge(shard_results)?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="tensor_cache"><a class="header" href="#tensor_cache">tensor_cache</a></h2>
+<p>LLM response cache with exact and semantic matching.</p>
+<h3 id="core-types-7"><a class="header" href="#core-types-7">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Cache</code></td><td>Multi-layer LLM response cache</td></tr>
+<tr><td><code>CacheConfig</code></td><td>Configuration for cache behavior</td></tr>
+<tr><td><code>CacheHit</code></td><td>Successful lookup result</td></tr>
+<tr><td><code>CacheLayer</code></td><td>Exact, Semantic, Embedding</td></tr>
+<tr><td><code>EvictionStrategy</code></td><td>LRU, LFU, CostBased, Hybrid</td></tr>
+</tbody></table>
+</div>
+<h3 id="operations-1"><a class="header" href="#operations-1">Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_cache::{Cache, CacheConfig, EvictionStrategy};
+
+let mut config = CacheConfig::default();
+config.embedding_dim = 384;
+config.eviction_strategy = EvictionStrategy::Hybrid;
+let cache = Cache::with_config(config)?;
+
+// Store response
+let embedding = vec![0.1, 0.2, /* ... */];
+cache.put(
+    "What is 2+2?",
+    &amp;embedding,
+    "The answer is 4.",
+    "gpt-4",
+    None,  // version
+)?;
+
+// Lookup (tries exact, then semantic)
+if let Some(hit) = cache.get("What is 2+2?", Some(&amp;embedding)) {
+    println!("Response: {}", hit.response);
+    println!("Layer: {:?}", hit.layer);
+    println!("Cost saved: ${:.4}", hit.cost_saved);
+}
+
+// Statistics
+let stats = cache.stats();
+println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="tensor_vault"><a class="header" href="#tensor_vault">tensor_vault</a></h2>
+<p>Encrypted secret storage with graph-based access control.</p>
+<h3 id="core-types-8"><a class="header" href="#core-types-8">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Vault</code></td><td>Main vault API</td></tr>
+<tr><td><code>VaultConfig</code></td><td>Configuration for security settings</td></tr>
+<tr><td><code>Permission</code></td><td>Read, Write, Admin</td></tr>
+<tr><td><code>MasterKey</code></td><td>Derived encryption key</td></tr>
+</tbody></table>
+</div>
+<h3 id="operations-2"><a class="header" href="#operations-2">Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_vault::{Vault, VaultConfig, Permission};
+
+let config = VaultConfig::default();
+let vault = Vault::new(config)?;
+
+// Store secret
+vault.set("requester", "db/password", b"secret123", Permission::Admin)?;
+
+// Get secret
+let secret = vault.get("requester", "db/password")?;
+
+// Grant access
+vault.grant("admin", "user", "db/password", Permission::Read)?;
+
+// Revoke access
+vault.revoke("admin", "user", "db/password")?;
+
+// List secrets
+let secrets = vault.list("requester", "db/")?;
+
+// Delete secret
+vault.delete("admin", "db/password")?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="tensor_blob"><a class="header" href="#tensor_blob">tensor_blob</a></h2>
+<p>S3-style object storage with content-addressable chunks.</p>
+<h3 id="core-types-9"><a class="header" href="#core-types-9">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>BlobStore</code></td><td>Main blob storage API</td></tr>
+<tr><td><code>BlobConfig</code></td><td>Configuration for chunk size, GC</td></tr>
+<tr><td><code>PutOptions</code></td><td>Options for storing artifacts</td></tr>
+<tr><td><code>ArtifactMetadata</code></td><td>Metadata for stored artifacts</td></tr>
+<tr><td><code>BlobWriter</code></td><td>Streaming upload</td></tr>
+<tr><td><code>BlobReader</code></td><td>Streaming download</td></tr>
+</tbody></table>
+</div>
+<h3 id="operations-3"><a class="header" href="#operations-3">Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_blob::{BlobStore, BlobConfig, PutOptions};
+
+let config = BlobConfig::default();
+let store = BlobStore::new(tensor_store, config).await?;
+
+// Store artifact
+let artifact_id = store.put(
+    "report.pdf",
+    &amp;file_bytes,
+    PutOptions::new()
+        .with_created_by("user:alice")
+        .with_tag("quarterly"),
+).await?;
+
+// Get artifact
+let data = store.get(&amp;artifact_id).await?;
+
+// Streaming upload
+let mut writer = store.writer("large-file.bin", PutOptions::new()).await?;
+writer.write(&amp;chunk1).await?;
+writer.write(&amp;chunk2).await?;
+let artifact_id = writer.finish().await?;
+
+// Streaming download
+let mut reader = store.reader(&amp;artifact_id).await?;
+let chunk = reader.read(1024).await?;
+
+// Delete
+store.delete(&amp;artifact_id).await?;
+
+// Metadata
+let metadata = store.metadata(&amp;artifact_id).await?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="tensor_checkpoint"><a class="header" href="#tensor_checkpoint">tensor_checkpoint</a></h2>
+<p>Snapshot and rollback system.</p>
+<h3 id="core-types-10"><a class="header" href="#core-types-10">Core Types</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>CheckpointManager</code></td><td>Main checkpoint API</td></tr>
+<tr><td><code>CheckpointConfig</code></td><td>Configuration for checkpoints</td></tr>
+<tr><td><code>DestructiveOp</code></td><td>Delete, Update operations</td></tr>
+<tr><td><code>OperationPreview</code></td><td>Preview of affected data</td></tr>
+<tr><td><code>ConfirmationHandler</code></td><td>Custom confirmation logic</td></tr>
+</tbody></table>
+</div>
+<h3 id="operations-4"><a class="header" href="#operations-4">Operations</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_checkpoint::{CheckpointManager, CheckpointConfig, AutoConfirm};
+use std::sync::Arc;
+
+let config = CheckpointConfig::new()
+    .with_max_checkpoints(10)
+    .with_auto_checkpoint(true);
+
+let manager = CheckpointManager::new(blob_store, config).await;
+manager.set_confirmation_handler(Arc::new(AutoConfirm));
+
+// Create checkpoint
+let checkpoint_id = manager.create(Some("before-migration"), &amp;store).await?;
+
+// List checkpoints
+let checkpoints = manager.list().await?;
+
+// Restore from checkpoint
+manager.restore(&amp;checkpoint_id, &amp;mut store).await?;
+
+// Delete checkpoint
+manager.delete(&amp;checkpoint_id).await?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
+<h2 id="common-patterns"><a class="header" href="#common-patterns">Common Patterns</a></h2>
+<h3 id="error-handling-1"><a class="header" href="#error-handling-1">Error Handling</a></h3>
+<p>All crates use the <code>Result</code> type with crate-specific error enums:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use relational_engine::{RelationalEngine, RelationalError};
+
+let result = engine.create_table("users", schema);
+match result {
+    Ok(()) =&gt; println!("Table created"),
+    Err(RelationalError::TableAlreadyExists) =&gt; println!("Already exists"),
+    Err(e) =&gt; eprintln!("Error: {}", e),
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="thread-safety"><a class="header" href="#thread-safety">Thread Safety</a></h3>
+<p>All engines use <code>parking_lot</code> and <code>DashMap</code> for concurrent access:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::sync::Arc;
+use std::thread;
+
+let engine = Arc::new(RelationalEngine::new());
+
+let handles: Vec&lt;_&gt; = (0..4).map(|i| {
+    let engine = Arc::clone(&amp;engine);
+    thread::spawn(move || {
+        engine.insert("users", values).unwrap();
+    })
+}).collect();
+
+for handle in handles {
+    handle.join().unwrap();
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="async-operations"><a class="header" href="#async-operations">Async Operations</a></h3>
+<p><code>tensor_blob</code>, <code>tensor_cache</code>, and <code>tensor_checkpoint</code> use async APIs:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tokio::runtime::Runtime;
+
+let rt = Runtime::new()?;
+rt.block_on(async {
+    let store = BlobStore::new(tensor_store, config).await?;
+    store.put("file.txt", &amp;data, options).await?;
+    Ok(())
+})?;
+<span class="boring">}</span></code></pre></pre>
+<hr />
 <h2 id="building-locally"><a class="header" href="#building-locally">Building Locally</a></h2>
-<p>Generate documentation locally:</p>
+<p>Generate documentation from source:</p>
 <pre><code class="language-bash"># Basic documentation
 cargo doc --workspace --no-deps --open
 
@@ -215,47 +1120,20 @@ RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc \
   -Zrustdoc-scrape-examples \
   --all-features
 </code></pre>
-<h2 id="documentation-standards"><a class="header" href="#documentation-standards">Documentation Standards</a></h2>
-<p>All public items should be documented following these guidelines:</p>
-<h3 id="module-documentation"><a class="header" href="#module-documentation">Module Documentation</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>//! # Module Name
-//!
-//! Brief one-line description.
-//!
-//! ## Overview
-//!
-//! Longer explanation of purpose and design.
-//!
-//! ## Example
-//!
-//! \`\`\`rust
-//! // Example code
-//! \`\`\`
-<span class="boring">}</span></code></pre></pre>
-<h3 id="type-documentation"><a class="header" href="#type-documentation">Type Documentation</a></h3>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>/// Brief description of the type.
-///
-/// Longer explanation if needed.
-///
-/// # Example
-///
-/// \`\`\`rust
-/// let value = MyType::new();
-/// \`\`\`
-pub struct MyType { ... }
-<span class="boring">}</span></code></pre></pre>
-<h3 id="method-documentation"><a class="header" href="#method-documentation">Method Documentation</a></h3>
-<p>Self-explanatory methods (<code>get</code>, <code>set</code>, <code>new</code>, <code>len</code>) don’t need docs. Complex
-methods should explain:</p>
+<h2 id="online-documentation"><a class="header" href="#online-documentation">Online Documentation</a></h2>
+<p>When deployed, the API reference is available at:</p>
 <ul>
-<li>What the method does</li>
-<li>Parameters and return values</li>
-<li>Panics or errors</li>
-<li>Examples for non-obvious usage</li>
+<li><a href="api/tensor_store/index.html">tensor_store</a></li>
+<li><a href="api/relational_engine/index.html">relational_engine</a></li>
+<li><a href="api/graph_engine/index.html">graph_engine</a></li>
+<li><a href="api/vector_engine/index.html">vector_engine</a></li>
+<li><a href="api/tensor_chain/index.html">tensor_chain</a></li>
+<li><a href="api/neumann_parser/index.html">neumann_parser</a></li>
+<li><a href="api/query_router/index.html">query_router</a></li>
+<li><a href="api/tensor_cache/index.html">tensor_cache</a></li>
+<li><a href="api/tensor_vault/index.html">tensor_vault</a></li>
+<li><a href="api/tensor_blob/index.html">tensor_blob</a></li>
+<li><a href="api/tensor_checkpoint/index.html">tensor_checkpoint</a></li>
 </ul>
 
                     </main>

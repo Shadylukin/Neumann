@@ -255,9 +255,9 @@ fuzz_target!(|input: ChecksumInput| {
             let update = fuzz_update.to_delta_update().with_checksum();
 
             // Serialize and deserialize
-            let bytes = bincode::serialize(&update).expect("serialization should succeed");
+            let bytes = bitcode::serialize(&update).expect("serialization should succeed");
             let decoded: DeltaUpdate =
-                bincode::deserialize(&bytes).expect("deserialization should succeed");
+                bitcode::deserialize(&bytes).expect("deserialization should succeed");
 
             // Checksum should survive serialization
             assert_eq!(

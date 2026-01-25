@@ -27,7 +27,7 @@ pub enum FormatError {
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u16),
     #[error("serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Serialization(#[from] bitcode::Error),
     #[error("tensor train error: {0}")]
     TensorTrain(#[from] crate::TTError),
     #[error("io error: {0}")]
@@ -136,13 +136,13 @@ impl CompressedSnapshot {
     /// # Errors
     /// Returns error if serialization fails.
     pub fn serialize(&self) -> Result<Vec<u8>, FormatError> {
-        Ok(bincode::serialize(self)?)
+        Ok(bitcode::serialize(self)?)
     }
 
     /// # Errors
     /// Returns error if deserialization or validation fails.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, FormatError> {
-        let snapshot: Self = bincode::deserialize(bytes)?;
+        let snapshot: Self = bitcode::deserialize(bytes)?;
         snapshot.header.validate()?;
         Ok(snapshot)
     }

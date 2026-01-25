@@ -1439,8 +1439,8 @@ mod tests {
             state_embedding: SparseVector::from_dense(&[0.1, 0.2, 0.3]),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::RequestVote(rv) = decoded {
             assert_eq!(rv.term, 1);
@@ -1459,8 +1459,8 @@ mod tests {
 
         let entry = LogEntry::new(1, 1, block);
 
-        let bytes = bincode::serialize(&entry).unwrap();
-        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
+        let decoded: LogEntry = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.term, 1);
         assert_eq!(decoded.index, 1);
     }
@@ -1475,8 +1475,8 @@ mod tests {
         assert_eq!(config.address, "127.0.0.1:9000");
 
         // Test serialization
-        let bytes = bincode::serialize(&config).unwrap();
-        let decoded: PeerConfig = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&config).unwrap();
+        let decoded: PeerConfig = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.node_id, "peer1");
     }
 
@@ -1488,8 +1488,8 @@ mod tests {
             voter_id: "voter1".to_string(),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::RequestVoteResponse(rvr) = decoded {
             assert_eq!(rvr.term, 5);
@@ -1512,8 +1512,8 @@ mod tests {
             block_embedding: Some(SparseVector::from_dense(&[0.1, 0.2, 0.3])),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::AppendEntries(ae) = decoded {
             assert_eq!(ae.term, 3);
@@ -1534,8 +1534,8 @@ mod tests {
             used_fast_path: true,
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::AppendEntriesResponse(aer) = decoded {
             assert_eq!(aer.term, 3);
@@ -1554,8 +1554,8 @@ mod tests {
             requester_id: "requester".to_string(),
         });
 
-        let bytes = bincode::serialize(&req).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&req).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::BlockRequest(br) = decoded {
             assert_eq!(br.from_height, 10);
@@ -1569,8 +1569,8 @@ mod tests {
             current_height: 25,
         });
 
-        let bytes = bincode::serialize(&resp).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&resp).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::BlockResponse(br) = decoded {
             assert!(br.blocks.is_empty());
@@ -1588,8 +1588,8 @@ mod tests {
             chunk_size: 4096,
         });
 
-        let bytes = bincode::serialize(&req).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&req).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::SnapshotRequest(sr) = decoded {
             assert_eq!(sr.offset, 1000);
@@ -1607,8 +1607,8 @@ mod tests {
             is_last: false,
         });
 
-        let bytes = bincode::serialize(&resp).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&resp).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::SnapshotResponse(sr) = decoded {
             assert_eq!(sr.snapshot_height, 100);
@@ -1621,8 +1621,8 @@ mod tests {
     #[test]
     fn test_ping_pong_serialization() {
         let ping = Message::Ping { term: 42 };
-        let bytes = bincode::serialize(&ping).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&ping).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
         if let Message::Ping { term } = decoded {
             assert_eq!(term, 42);
         } else {
@@ -1630,8 +1630,8 @@ mod tests {
         }
 
         let pong = Message::Pong { term: 42 };
-        let bytes = bincode::serialize(&pong).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&pong).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
         if let Message::Pong { term } = decoded {
             assert_eq!(term, 42);
         } else {
@@ -1655,8 +1655,8 @@ mod tests {
             timeout_ms: 5000,
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::TxPrepare(tp) = decoded {
             assert_eq!(tp.tx_id, 123);
@@ -1679,8 +1679,8 @@ mod tests {
             },
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::TxPrepareResponse(tpr) = decoded {
             assert_eq!(tpr.tx_id, 123);
@@ -1701,15 +1701,15 @@ mod tests {
             delta: SparseVector::from_dense(&[0.1]),
             affected_keys: vec!["k1".to_string()],
         };
-        let bytes = bincode::serialize(&yes).unwrap();
-        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&yes).unwrap();
+        let decoded: TxVote = bitcode::deserialize(&bytes).unwrap();
         assert!(matches!(decoded, TxVote::Yes { .. }));
 
         let no = TxVote::No {
             reason: "test reason".to_string(),
         };
-        let bytes = bincode::serialize(&no).unwrap();
-        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&no).unwrap();
+        let decoded: TxVote = bitcode::deserialize(&bytes).unwrap();
         if let TxVote::No { reason } = decoded {
             assert_eq!(reason, "test reason");
         } else {
@@ -1720,8 +1720,8 @@ mod tests {
             similarity: 0.95,
             conflicting_tx: 999,
         };
-        let bytes = bincode::serialize(&conflict).unwrap();
-        let decoded: TxVote = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&conflict).unwrap();
+        let decoded: TxVote = bitcode::deserialize(&bytes).unwrap();
         if let TxVote::Conflict {
             similarity,
             conflicting_tx,
@@ -1740,8 +1740,8 @@ mod tests {
             tx_id: 100,
             shards: vec![0, 1, 2],
         });
-        let bytes = bincode::serialize(&commit).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&commit).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
         if let Message::TxCommit(tc) = decoded {
             assert_eq!(tc.tx_id, 100);
             assert_eq!(tc.shards, vec![0, 1, 2]);
@@ -1754,8 +1754,8 @@ mod tests {
             reason: "conflict".to_string(),
             shards: vec![0, 1],
         });
-        let bytes = bincode::serialize(&abort).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&abort).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
         if let Message::TxAbort(ta) = decoded {
             assert_eq!(ta.tx_id, 100);
             assert_eq!(ta.reason, "conflict");
@@ -1769,8 +1769,8 @@ mod tests {
             success: true,
             error: None,
         });
-        let bytes = bincode::serialize(&ack).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&ack).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
         if let Message::TxAck(ta) = decoded {
             assert_eq!(ta.tx_id, 100);
             assert!(ta.success);
@@ -1789,8 +1789,8 @@ mod tests {
             error: Some("transaction not found".to_string()),
         };
 
-        let bytes = bincode::serialize(&ack).unwrap();
-        let decoded: TxAckMsg = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&ack).unwrap();
+        let decoded: TxAckMsg = bitcode::deserialize(&bytes).unwrap();
         assert!(!decoded.success);
         assert_eq!(decoded.error, Some("transaction not found".to_string()));
     }
@@ -2741,8 +2741,8 @@ mod tests {
             new_voters: vec!["n2".to_string(), "n3".to_string()],
         };
 
-        let bytes = bincode::serialize(&joint).unwrap();
-        let decoded: JointConfig = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&joint).unwrap();
+        let decoded: JointConfig = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.old_voters.len(), 2);
         assert_eq!(decoded.new_voters.len(), 2);
     }
@@ -2859,8 +2859,8 @@ mod tests {
         ];
 
         for change in changes {
-            let bytes = bincode::serialize(&change).unwrap();
-            let decoded: ConfigChange = bincode::deserialize(&bytes).unwrap();
+            let bytes = bitcode::serialize(&change).unwrap();
+            let decoded: ConfigChange = bitcode::deserialize(&bytes).unwrap();
             assert_eq!(decoded, change);
         }
     }
@@ -2908,8 +2908,8 @@ mod tests {
             node_id: "new_node".to_string(),
         });
 
-        let bytes = bincode::serialize(&entry).unwrap();
-        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
+        let decoded: LogEntry = bitcode::deserialize(&bytes).unwrap();
         assert!(decoded.is_config_change());
     }
 
@@ -2926,8 +2926,8 @@ mod tests {
         );
         let change = CodebookChange::Replace { snapshot };
 
-        let bytes = bincode::serialize(&change).unwrap();
-        let decoded: CodebookChange = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&change).unwrap();
+        let decoded: CodebookChange = bitcode::deserialize(&bytes).unwrap();
         match decoded {
             CodebookChange::Replace { snapshot } => {
                 assert_eq!(snapshot.version, 1);
@@ -2994,8 +2994,8 @@ mod tests {
         let entry =
             LogEntry::new(1, 1, block).with_codebook_change(CodebookChange::replace(snapshot));
 
-        let bytes = bincode::serialize(&entry).unwrap();
-        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
+        let decoded: LogEntry = bitcode::deserialize(&bytes).unwrap();
 
         assert!(decoded.is_codebook_change());
         if let Some(CodebookChange::Replace { snapshot }) = decoded.codebook_change {
@@ -3013,10 +3013,10 @@ mod tests {
 
         // Create entry without codebook_change
         let entry = LogEntry::new(1, 1, block);
-        let bytes = bincode::serialize(&entry).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
 
         // Should deserialize with codebook_change = None
-        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        let decoded: LogEntry = bitcode::deserialize(&bytes).unwrap();
         assert!(!decoded.is_codebook_change());
         assert!(decoded.codebook_change.is_none());
     }
@@ -3208,8 +3208,8 @@ mod tests {
             state_embedding: SparseVector::from_dense(&[0.1, 0.2]),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::PreVote(pv) = decoded {
             assert_eq!(pv.term, 5);
@@ -3227,8 +3227,8 @@ mod tests {
             voter_id: "voter1".to_string(),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::PreVoteResponse(pvr) = decoded {
             assert_eq!(pvr.term, 5);
@@ -3245,8 +3245,8 @@ mod tests {
             leader_id: "leader1".to_string(),
         });
 
-        let bytes = bincode::serialize(&msg).unwrap();
-        let decoded: Message = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
+        let decoded: Message = bitcode::deserialize(&bytes).unwrap();
 
         if let Message::TimeoutNow(tn) = decoded {
             assert_eq!(tn.term, 10);
@@ -3400,15 +3400,15 @@ mod tests {
         let block = crate::block::Block::new(header, vec![]);
 
         let block_data = LogEntryData::Block(Box::new(block));
-        let bytes = bincode::serialize(&block_data).unwrap();
-        let decoded: LogEntryData = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&block_data).unwrap();
+        let decoded: LogEntryData = bitcode::deserialize(&bytes).unwrap();
         assert!(matches!(decoded, LogEntryData::Block(_)));
 
         let config_data = LogEntryData::Config(ConfigChange::AddLearner {
             node_id: "new".to_string(),
         });
-        let bytes = bincode::serialize(&config_data).unwrap();
-        let decoded: LogEntryData = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&config_data).unwrap();
+        let decoded: LogEntryData = bitcode::deserialize(&bytes).unwrap();
         assert!(matches!(decoded, LogEntryData::Config(_)));
     }
 
@@ -3422,8 +3422,8 @@ mod tests {
             timeout_ms: 30000,
         };
 
-        let bytes = bincode::serialize(&req).unwrap();
-        let decoded: QueryRequest = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&req).unwrap();
+        let decoded: QueryRequest = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.query_id, 123);
         assert_eq!(decoded.query, "SELECT * FROM users");
         assert!(decoded.embedding.is_some());
@@ -3440,8 +3440,8 @@ mod tests {
             error: None,
         };
 
-        let bytes = bincode::serialize(&resp).unwrap();
-        let decoded: QueryResponse = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&resp).unwrap();
+        let decoded: QueryResponse = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.query_id, 123);
         assert!(decoded.success);
         assert!(decoded.error.is_none());
@@ -3458,8 +3458,8 @@ mod tests {
             error: Some("table not found".to_string()),
         };
 
-        let bytes = bincode::serialize(&resp).unwrap();
-        let decoded: QueryResponse = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&resp).unwrap();
+        let decoded: QueryResponse = bitcode::deserialize(&bytes).unwrap();
         assert!(!decoded.success);
         assert_eq!(decoded.error, Some("table not found".to_string()));
     }
@@ -3474,8 +3474,8 @@ mod tests {
             data_hash: [42u8; 32],
         };
 
-        let bytes = bincode::serialize(&entry).unwrap();
-        let decoded: MergeDeltaEntry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&entry).unwrap();
+        let decoded: MergeDeltaEntry = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(decoded.key, "test_key");
         assert_eq!(decoded.log_index, 100);
         assert_eq!(decoded.op_type, MergeOpType::Put);
@@ -3493,8 +3493,8 @@ mod tests {
 
         // Test serialization
         for op in [put, delete, update] {
-            let bytes = bincode::serialize(&op).unwrap();
-            let decoded: MergeOpType = bincode::deserialize(&bytes).unwrap();
+            let bytes = bitcode::serialize(&op).unwrap();
+            let decoded: MergeOpType = bitcode::deserialize(&bytes).unwrap();
             assert_eq!(decoded, op);
         }
     }

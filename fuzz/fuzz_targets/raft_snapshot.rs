@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tensor_chain::{MemoryTransport, RaftConfig, RaftNode, SnapshotMetadata};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     /// Last included index
     last_included_index: u64,
@@ -49,12 +50,12 @@ fuzz_target!(|input: FuzzInput| {
         input.size,
     );
 
-    let serialized = match bincode::serialize(&metadata) {
+    let serialized = match bitcode::serialize(&metadata) {
         Ok(bytes) => bytes,
         Err(_) => return, // Invalid serialization, skip
     };
 
-    let deserialized: SnapshotMetadata = match bincode::deserialize(&serialized) {
+    let deserialized: SnapshotMetadata = match bitcode::deserialize(&serialized) {
         Ok(m) => m,
         Err(_) => panic!("Failed to deserialize metadata we just serialized"),
     };

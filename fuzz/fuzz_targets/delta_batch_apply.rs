@@ -12,6 +12,7 @@ use libfuzzer_sys::fuzz_target;
 use tensor_chain::{DeltaReplicationConfig, DeltaReplicationManager};
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     /// Key bytes (converted to string)
     key: Vec<u8>,
@@ -109,12 +110,12 @@ fuzz_target!(|input: FuzzInput| {
         assert_eq!(batch.source, "fuzz_node");
 
         // Verify serialization roundtrip
-        let serialized = match bincode::serialize(&batch) {
+        let serialized = match bitcode::serialize(&batch) {
             Ok(bytes) => bytes,
             Err(_) => return,
         };
 
-        let deserialized: tensor_chain::DeltaBatch = match bincode::deserialize(&serialized) {
+        let deserialized: tensor_chain::DeltaBatch = match bitcode::deserialize(&serialized) {
             Ok(b) => b,
             Err(_) => panic!("Failed to deserialize batch we just serialized"),
         };

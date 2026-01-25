@@ -73,8 +73,8 @@ fuzz_target!(|test_case: TestCase| {
             };
 
             // Test bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&pv) {
-                if let Ok(restored) = bincode::deserialize::<PreVote>(&bytes) {
+            if let Ok(bytes) = bitcode::serialize(&pv) {
+                if let Ok(restored) = bitcode::deserialize::<PreVote>(&bytes) {
                     assert_eq!(restored.term, term);
                     assert_eq!(restored.candidate_id, candidate_id);
                     assert_eq!(restored.last_log_index, last_log_index);
@@ -84,8 +84,8 @@ fuzz_target!(|test_case: TestCase| {
 
             // Test as Message variant
             let msg = Message::PreVote(pv);
-            if let Ok(bytes) = bincode::serialize(&msg) {
-                let _ = bincode::deserialize::<Message>(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&msg) {
+                let _ = bitcode::deserialize::<Message>(&bytes);
             }
         },
 
@@ -103,8 +103,8 @@ fuzz_target!(|test_case: TestCase| {
             };
 
             // Test bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&pvr) {
-                if let Ok(restored) = bincode::deserialize::<PreVoteResponse>(&bytes) {
+            if let Ok(bytes) = bitcode::serialize(&pvr) {
+                if let Ok(restored) = bitcode::deserialize::<PreVoteResponse>(&bytes) {
                     assert_eq!(restored.term, term);
                     assert_eq!(restored.vote_granted, vote_granted);
                     assert_eq!(restored.voter_id, voter_id);
@@ -113,8 +113,8 @@ fuzz_target!(|test_case: TestCase| {
 
             // Test as Message variant
             let msg = Message::PreVoteResponse(pvr);
-            if let Ok(bytes) = bincode::serialize(&msg) {
-                let _ = bincode::deserialize::<Message>(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&msg) {
+                let _ = bitcode::deserialize::<Message>(&bytes);
             }
         },
 
@@ -127,8 +127,8 @@ fuzz_target!(|test_case: TestCase| {
             };
 
             // Test bincode roundtrip
-            if let Ok(bytes) = bincode::serialize(&tn) {
-                if let Ok(restored) = bincode::deserialize::<TimeoutNow>(&bytes) {
+            if let Ok(bytes) = bitcode::serialize(&tn) {
+                if let Ok(restored) = bitcode::deserialize::<TimeoutNow>(&bytes) {
                     assert_eq!(restored.term, term);
                     assert_eq!(restored.leader_id, leader_id);
                 }
@@ -136,18 +136,18 @@ fuzz_target!(|test_case: TestCase| {
 
             // Test as Message variant
             let msg = Message::TimeoutNow(tn);
-            if let Ok(bytes) = bincode::serialize(&msg) {
-                let _ = bincode::deserialize::<Message>(&bytes);
+            if let Ok(bytes) = bitcode::serialize(&msg) {
+                let _ = bitcode::deserialize::<Message>(&bytes);
             }
         },
 
         TestCase::DeserializeArbitrary { bytes } => {
             // Try to deserialize arbitrary bytes as various types
             // Should not panic even on invalid input
-            let _ = bincode::deserialize::<PreVote>(&bytes);
-            let _ = bincode::deserialize::<PreVoteResponse>(&bytes);
-            let _ = bincode::deserialize::<TimeoutNow>(&bytes);
-            let _ = bincode::deserialize::<Message>(&bytes);
+            let _ = bitcode::deserialize::<PreVote>(&bytes);
+            let _ = bitcode::deserialize::<PreVoteResponse>(&bytes);
+            let _ = bitcode::deserialize::<TimeoutNow>(&bytes);
+            let _ = bitcode::deserialize::<Message>(&bytes);
         },
 
         TestCase::MessageVariantRoundtrip { variant } => {
@@ -191,8 +191,8 @@ fuzz_target!(|test_case: TestCase| {
             };
 
             // Test roundtrip
-            if let Ok(bytes) = bincode::serialize(&msg) {
-                if let Ok(restored) = bincode::deserialize::<Message>(&bytes) {
+            if let Ok(bytes) = bitcode::serialize(&msg) {
+                if let Ok(restored) = bitcode::deserialize::<Message>(&bytes) {
                     // Verify the variant matches
                     match (&msg, &restored) {
                         (Message::PreVote(_), Message::PreVote(_)) => {},

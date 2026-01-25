@@ -5,10 +5,10 @@ use tensor_store::ArchetypeRegistry;
 
 fuzz_target!(|data: &[u8]| {
     // Test bincode deserialize on arbitrary bytes
-    if let Ok(registry) = bincode::deserialize::<ArchetypeRegistry>(data) {
+    if let Ok(registry) = bitcode::deserialize::<ArchetypeRegistry>(data) {
         // If deserialize succeeds, serialize should work
-        if let Ok(reserialized) = bincode::serialize(&registry) {
-            if let Ok(registry2) = bincode::deserialize::<ArchetypeRegistry>(&reserialized) {
+        if let Ok(reserialized) = bitcode::serialize(&registry) {
+            if let Ok(registry2) = bitcode::deserialize::<ArchetypeRegistry>(&reserialized) {
                 // Verify key fields match
                 assert_eq!(registry.len(), registry2.len(), "Registry length mismatch");
 

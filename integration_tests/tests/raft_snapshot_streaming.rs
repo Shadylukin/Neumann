@@ -246,7 +246,7 @@ fn test_backwards_compatibility_legacy_format() {
     // Create legacy format snapshot (bincode serialized Vec<LogEntry>)
     let entries: Vec<LogEntry> = (1..=10).map(|i| create_test_log_entry(i, 1)).collect();
 
-    let legacy_data = bincode::serialize(&entries).unwrap();
+    let legacy_data = bitcode::serialize(&entries).unwrap();
 
     // deserialize_entries should handle legacy format
     let restored = deserialize_entries(&legacy_data).unwrap();

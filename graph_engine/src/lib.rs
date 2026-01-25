@@ -6,9 +6,10 @@
 #![allow(clippy::uninlined_format_args)] // Keep format strings readable
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    cmp::Ordering as CmpOrdering,
+    collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use parking_lot::RwLock;
@@ -20,6 +21,17 @@ use tracing::{instrument, warn};
 /// Range comparison operator for property queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Comparison operator for property conditions during traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CompareOp {
+    Eq,
+    Ne,
     Lt,
     Le,
     Gt,
@@ -132,11 +144,192 @@ pub enum Direction {
     Both,
 }
 
+/// A single property condition for filtering nodes or edges during traversal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropertyCondition {
+    pub property: String,
+    pub op: CompareOp,
+    pub value: PropertyValue,
+}
+
+impl PropertyCondition {
+    #[must_use]
+    pub fn new(property: impl Into<String>, op: CompareOp, value: PropertyValue) -> Self {
+        Self {
+            property: property.into(),
+            op,
+            value,
+        }
+    }
+
+    #[must_use]
+    pub fn matches_node(&self, node: &Node) -> bool {
+        self.evaluate_properties(&node.properties)
+    }
+
+    #[must_use]
+    pub fn matches_edge(&self, edge: &Edge) -> bool {
+        self.evaluate_properties(&edge.properties)
+    }
+
+    fn evaluate_properties(&self, props: &HashMap<String, PropertyValue>) -> bool {
+        match props.get(&self.property) {
+            None => {
+                // Missing property: only Ne matches (value is "not equal" to missing)
+                self.op == CompareOp::Ne
+            },
+            Some(prop_val) => self.compare_values(prop_val),
+        }
+    }
+
+    fn compare_values(&self, actual: &PropertyValue) -> bool {
+        match (&self.value, actual) {
+            // Null comparisons: null == null is true for Eq/Le/Ge
+            (PropertyValue::Null, PropertyValue::Null) => {
+                matches!(self.op, CompareOp::Eq | CompareOp::Le | CompareOp::Ge)
+            },
+
+            // Int comparisons
+            (PropertyValue::Int(expected), PropertyValue::Int(actual)) => {
+                self.compare_ordered(actual, expected)
+            },
+
+            // Float comparisons
+            (PropertyValue::Float(expected), PropertyValue::Float(actual)) => {
+                self.compare_floats(*actual, *expected)
+            },
+
+            // Cross-numeric: int vs float
+            (PropertyValue::Int(expected), PropertyValue::Float(actual)) =>
+            {
+                #[allow(clippy::cast_precision_loss)]
+                self.compare_floats(*actual, *expected as f64)
+            },
+            (PropertyValue::Float(expected), PropertyValue::Int(actual)) =>
+            {
+                #[allow(clippy::cast_precision_loss)]
+                self.compare_floats(*actual as f64, *expected)
+            },
+
+            // String comparisons
+            (PropertyValue::String(expected), PropertyValue::String(actual)) => {
+                self.compare_ordered(actual, expected)
+            },
+
+            // Bool comparisons (only Eq/Ne make sense)
+            (PropertyValue::Bool(expected), PropertyValue::Bool(actual)) => match self.op {
+                CompareOp::Eq => actual == expected,
+                CompareOp::Ne => actual != expected,
+                _ => false, // Lt/Le/Gt/Ge don't make sense for bools
+            },
+
+            // Type mismatch: only Ne returns true
+            _ => self.op == CompareOp::Ne,
+        }
+    }
+
+    fn compare_ordered<T: Ord>(&self, actual: &T, expected: &T) -> bool {
+        match self.op {
+            CompareOp::Eq => actual == expected,
+            CompareOp::Ne => actual != expected,
+            CompareOp::Lt => actual < expected,
+            CompareOp::Le => actual <= expected,
+            CompareOp::Gt => actual > expected,
+            CompareOp::Ge => actual >= expected,
+        }
+    }
+
+    fn compare_floats(&self, actual: f64, expected: f64) -> bool {
+        // Handle NaN: NaN is not equal to anything including itself
+        if actual.is_nan() || expected.is_nan() {
+            return self.op == CompareOp::Ne;
+        }
+        match self.op {
+            CompareOp::Eq => (actual - expected).abs() < f64::EPSILON,
+            CompareOp::Ne => (actual - expected).abs() >= f64::EPSILON,
+            CompareOp::Lt => actual < expected,
+            CompareOp::Le => actual <= expected,
+            CompareOp::Gt => actual > expected,
+            CompareOp::Ge => actual >= expected,
+        }
+    }
+}
+
+/// Filter configuration for graph traversal operations.
+#[derive(Debug, Clone, Default)]
+pub struct TraversalFilter {
+    node_conditions: Vec<PropertyCondition>,
+    edge_conditions: Vec<PropertyCondition>,
+}
+
+impl TraversalFilter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn node_eq(self, property: &str, value: PropertyValue) -> Self {
+        self.node_where(property, CompareOp::Eq, value)
+    }
+
+    #[must_use]
+    pub fn node_ne(self, property: &str, value: PropertyValue) -> Self {
+        self.node_where(property, CompareOp::Ne, value)
+    }
+
+    #[must_use]
+    pub fn node_where(mut self, property: &str, op: CompareOp, value: PropertyValue) -> Self {
+        self.node_conditions
+            .push(PropertyCondition::new(property, op, value));
+        self
+    }
+
+    #[must_use]
+    pub fn edge_eq(self, property: &str, value: PropertyValue) -> Self {
+        self.edge_where(property, CompareOp::Eq, value)
+    }
+
+    #[must_use]
+    pub fn edge_ne(self, property: &str, value: PropertyValue) -> Self {
+        self.edge_where(property, CompareOp::Ne, value)
+    }
+
+    #[must_use]
+    pub fn edge_where(mut self, property: &str, op: CompareOp, value: PropertyValue) -> Self {
+        self.edge_conditions
+            .push(PropertyCondition::new(property, op, value));
+        self
+    }
+
+    #[must_use]
+    pub fn matches_node(&self, node: &Node) -> bool {
+        self.node_conditions.iter().all(|c| c.matches_node(node))
+    }
+
+    #[must_use]
+    pub fn matches_edge(&self, edge: &Edge) -> bool {
+        self.edge_conditions.iter().all(|c| c.matches_edge(edge))
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.node_conditions.is_empty() && self.edge_conditions.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: u64,
-    pub label: String,
+    pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
+}
+
+impl Node {
+    #[must_use]
+    pub fn has_label(&self, label: &str) -> bool {
+        self.labels.iter().any(|l| l == label)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,7 +348,193 @@ pub struct Path {
     pub edges: Vec<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A path with accumulated edge weights from Dijkstra's algorithm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeightedPath {
+    pub nodes: Vec<u64>,
+    pub edges: Vec<u64>,
+    pub total_weight: f64,
+}
+
+/// Configuration for all-paths search to prevent memory explosion.
+#[derive(Debug, Clone, Copy)]
+pub struct AllPathsConfig {
+    /// Maximum number of paths to return (default: 1000).
+    pub max_paths: usize,
+    /// Maximum parent entries per node (default: 100).
+    pub max_parents_per_node: usize,
+}
+
+impl Default for AllPathsConfig {
+    fn default() -> Self {
+        Self {
+            max_paths: 1000,
+            max_parents_per_node: 100,
+        }
+    }
+}
+
+/// Collection of all shortest unweighted paths between two nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllPaths {
+    /// All shortest paths (same hop count).
+    pub paths: Vec<Path>,
+    /// Number of hops in each path.
+    pub hop_count: usize,
+}
+
+/// Collection of all shortest weighted paths between two nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AllWeightedPaths {
+    /// All shortest paths (same total weight).
+    pub paths: Vec<WeightedPath>,
+    /// The minimum total weight.
+    pub total_weight: f64,
+}
+
+/// Configuration for variable-length path traversal.
+#[derive(Debug, Clone)]
+pub struct VariableLengthConfig {
+    /// Minimum number of hops (inclusive). Default: 1.
+    pub min_hops: usize,
+    /// Maximum number of hops (inclusive). Default: 5.
+    pub max_hops: usize,
+    /// Direction of traversal. Default: Outgoing.
+    pub direction: Direction,
+    /// Edge type filter. None means all types.
+    pub edge_types: Option<Vec<String>>,
+    /// Maximum paths to return. Default: 1000.
+    pub max_paths: usize,
+    /// Whether to allow cycles in paths. Default: false.
+    pub allow_cycles: bool,
+    /// Property filter for nodes and edges. Default: None (no filtering).
+    pub filter: Option<TraversalFilter>,
+}
+
+impl Default for VariableLengthConfig {
+    fn default() -> Self {
+        Self {
+            min_hops: 1,
+            max_hops: 5,
+            direction: Direction::Outgoing,
+            edge_types: None,
+            max_paths: 1000,
+            allow_cycles: false,
+            filter: None,
+        }
+    }
+}
+
+impl VariableLengthConfig {
+    #[must_use]
+    pub fn with_hops(min: usize, max: usize) -> Self {
+        Self {
+            min_hops: min,
+            max_hops: max.min(20), // Safety cap
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn direction(mut self, dir: Direction) -> Self {
+        self.direction = dir;
+        self
+    }
+
+    #[must_use]
+    pub fn edge_type(mut self, edge_type: &str) -> Self {
+        self.edge_types = Some(vec![edge_type.to_string()]);
+        self
+    }
+
+    #[must_use]
+    pub fn edge_types(mut self, types: &[&str]) -> Self {
+        self.edge_types = Some(types.iter().map(|s| (*s).to_string()).collect());
+        self
+    }
+
+    #[must_use]
+    pub const fn max_paths(mut self, max: usize) -> Self {
+        self.max_paths = max;
+        self
+    }
+
+    #[must_use]
+    pub const fn allow_cycles(mut self, allow: bool) -> Self {
+        self.allow_cycles = allow;
+        self
+    }
+
+    #[must_use]
+    pub fn with_filter(mut self, filter: TraversalFilter) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+}
+
+/// Statistics from path search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PathSearchStats {
+    pub paths_found: usize,
+    pub nodes_explored: usize,
+    pub edges_traversed: usize,
+    pub truncated: bool,
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+}
+
+/// Result of variable-length path search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VariableLengthPaths {
+    pub paths: Vec<Path>,
+    pub stats: PathSearchStats,
+}
+
+impl VariableLengthPaths {
+    #[must_use]
+    pub fn paths_of_length(&self, len: usize) -> Vec<&Path> {
+        self.paths.iter().filter(|p| p.edges.len() == len).collect()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
+/// Min-heap entry for Dijkstra (smallest distance first).
+#[derive(Copy, Clone)]
+struct DijkstraEntry {
+    cost: f64,
+    node_id: u64,
+}
+
+impl PartialEq for DijkstraEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.node_id == other.node_id
+    }
+}
+
+impl Eq for DijkstraEntry {}
+
+impl Ord for DijkstraEntry {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        // Flip ordering for min-heap (smallest cost first)
+        // Use total_cmp for NaN-safe f64 comparison
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| self.node_id.cmp(&other.node_id))
+    }
+}
+
+impl PartialOrd for DijkstraEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GraphError {
     NodeNotFound(u64),
     EdgeNotFound(u64),
@@ -163,6 +542,7 @@ pub enum GraphError {
     PathNotFound,
     IndexAlreadyExists { target: String, property: String },
     IndexNotFound { target: String, property: String },
+    NegativeWeight { edge_id: u64, weight: f64 },
 }
 
 impl std::fmt::Display for GraphError {
@@ -178,11 +558,36 @@ impl std::fmt::Display for GraphError {
             Self::IndexNotFound { target, property } => {
                 write!(f, "Index not found: {target}.{property}")
             },
+            Self::NegativeWeight { edge_id, weight } => {
+                write!(f, "Edge {edge_id} has negative weight: {weight}")
+            },
         }
     }
 }
 
 impl std::error::Error for GraphError {}
+
+impl Eq for GraphError {}
+
+impl Hash for GraphError {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::NodeNotFound(id) | Self::EdgeNotFound(id) => id.hash(state),
+            Self::StorageError(s) => s.hash(state),
+            Self::PathNotFound => {},
+            Self::IndexAlreadyExists { target, property }
+            | Self::IndexNotFound { target, property } => {
+                target.hash(state);
+                property.hash(state);
+            },
+            Self::NegativeWeight { edge_id, weight } => {
+                edge_id.hash(state);
+                weight.to_bits().hash(state);
+            },
+        }
+    }
+}
 
 impl From<TensorStoreError> for GraphError {
     fn from(e: TensorStoreError) -> Self {
@@ -207,6 +612,10 @@ pub struct GraphEngine {
     /// Striped locks for concurrent index updates.
     #[allow(clippy::type_complexity)]
     index_locks: [RwLock<()>; INDEX_LOCK_COUNT],
+    /// Whether the label index has been initialized (for lazy auto-creation).
+    label_index_initialized: AtomicBool,
+    /// Whether the edge type index has been initialized (for lazy auto-creation).
+    edge_type_index_initialized: AtomicBool,
 }
 
 impl std::fmt::Debug for GraphEngine {
@@ -236,6 +645,8 @@ impl GraphEngine {
             edge_counter: AtomicU64::new(0),
             btree_indexes: RwLock::new(HashMap::new()),
             index_locks: create_index_locks(),
+            label_index_initialized: AtomicBool::new(false),
+            edge_type_index_initialized: AtomicBool::new(false),
         }
     }
 
@@ -276,12 +687,21 @@ impl GraphEngine {
         // Rebuild indexes from persistent metadata
         let btree_indexes = Self::rebuild_indexes_from_store(&store);
 
+        // Check if label index was rebuilt
+        let label_index_exists =
+            btree_indexes.contains_key(&(IndexTarget::Node, "_label".to_string()));
+        // Check if edge type index was rebuilt
+        let edge_type_index_exists =
+            btree_indexes.contains_key(&(IndexTarget::Edge, "_edge_type".to_string()));
+
         Self {
             store,
             node_counter: AtomicU64::new(max_node_id),
             edge_counter: AtomicU64::new(max_edge_id),
             btree_indexes: RwLock::new(btree_indexes),
             index_locks: create_index_locks(),
+            label_index_initialized: AtomicBool::new(label_index_exists),
+            edge_type_index_initialized: AtomicBool::new(edge_type_index_exists),
         }
     }
 
@@ -317,25 +737,32 @@ impl GraphEngine {
                         if let Some(id_str) = node_key.strip_prefix("node:") {
                             if let Ok(id) = id_str.parse::<u64>() {
                                 if let Ok(tensor) = store.get(&node_key) {
-                                    // Handle special properties (_label)
-                                    let value = if property == "_label" {
-                                        match tensor.get("_label") {
-                                            Some(TensorValue::Scalar(ScalarValue::String(s))) => {
-                                                Some(OrderedPropertyValue::String(s.clone()))
+                                    // Handle special properties (_label) - support both formats
+                                    if property == "_label" {
+                                        // Try new format first, then fall back to legacy
+                                        let labels = match tensor.get("_labels") {
+                                            Some(TensorValue::Pointers(labels)) => labels.clone(),
+                                            _ => match tensor.get("_label") {
+                                                Some(TensorValue::Scalar(ScalarValue::String(
+                                                    s,
+                                                ))) => {
+                                                    vec![s.clone()]
+                                                },
+                                                _ => Vec::new(),
                                             },
-                                            _ => None,
+                                        };
+                                        for label in labels {
+                                            btree
+                                                .entry(OrderedPropertyValue::String(label))
+                                                .or_default()
+                                                .push(id);
                                         }
                                     } else if let Some(TensorValue::Scalar(scalar)) =
                                         tensor.get(&property)
                                     {
-                                        Some(OrderedPropertyValue::from(
+                                        let ordered_val = OrderedPropertyValue::from(
                                             &PropertyValue::from_scalar(scalar),
-                                        ))
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(ordered_val) = value {
+                                        );
                                         btree.entry(ordered_val).or_default().push(id);
                                     }
                                 }
@@ -421,7 +848,7 @@ impl GraphEngine {
     /// Get the striped lock index for a given id.
     #[inline]
     #[allow(clippy::cast_possible_truncation)]
-    fn lock_index(id: u64) -> usize {
+    const fn lock_index(id: u64) -> usize {
         (id as usize) % INDEX_LOCK_COUNT
     }
 
@@ -452,6 +879,56 @@ impl GraphEngine {
     /// Returns `IndexAlreadyExists` if a label index already exists.
     pub fn create_label_index(&self) -> Result<()> {
         self.create_property_index(IndexTarget::Node, "_label")
+    }
+
+    /// Ensure the label index exists, creating it if necessary.
+    ///
+    /// Uses double-checked locking for thread-safe lazy initialization.
+    fn ensure_label_index(&self) {
+        // Fast path: already initialized
+        if self.label_index_initialized.load(Ordering::Acquire) {
+            return;
+        }
+
+        // Slow path: check and create
+        let key = (IndexTarget::Node, "_label".to_string());
+        {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&key) {
+                self.label_index_initialized.store(true, Ordering::Release);
+                return;
+            }
+        }
+
+        // Create the index (ignore AlreadyExists error from race)
+        let _ = self.create_label_index();
+        self.label_index_initialized.store(true, Ordering::Release);
+    }
+
+    /// Ensure the edge type index exists, creating it if necessary.
+    ///
+    /// Uses double-checked locking for thread-safe lazy initialization.
+    fn ensure_edge_type_index(&self) {
+        // Fast path: already initialized
+        if self.edge_type_index_initialized.load(Ordering::Acquire) {
+            return;
+        }
+
+        // Slow path: check and create
+        let key = (IndexTarget::Edge, "_edge_type".to_string());
+        {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&key) {
+                self.edge_type_index_initialized
+                    .store(true, Ordering::Release);
+                return;
+            }
+        }
+
+        // Create the index (ignore AlreadyExists error from race)
+        let _ = self.create_edge_type_index();
+        self.edge_type_index_initialized
+            .store(true, Ordering::Release);
     }
 
     /// Create an index on edge types for fast type-based lookups.
@@ -555,24 +1032,29 @@ impl GraphEngine {
                     if let Some(id_str) = node_key.strip_prefix("node:") {
                         if let Ok(id) = id_str.parse::<u64>() {
                             if let Ok(tensor) = self.store.get(&node_key) {
-                                let value = if property == "_label" {
-                                    match tensor.get("_label") {
-                                        Some(TensorValue::Scalar(ScalarValue::String(s))) => {
-                                            Some(OrderedPropertyValue::String(s.clone()))
+                                // Handle special properties (_label) - support both formats
+                                if property == "_label" {
+                                    let labels = match tensor.get("_labels") {
+                                        Some(TensorValue::Pointers(labels)) => labels.clone(),
+                                        _ => match tensor.get("_label") {
+                                            Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                                                vec![s.clone()]
+                                            },
+                                            _ => Vec::new(),
                                         },
-                                        _ => None,
+                                    };
+                                    for label in labels {
+                                        btree
+                                            .entry(OrderedPropertyValue::String(label))
+                                            .or_default()
+                                            .push(id);
                                     }
                                 } else if let Some(TensorValue::Scalar(scalar)) =
                                     tensor.get(property)
                                 {
-                                    Some(OrderedPropertyValue::from(&PropertyValue::from_scalar(
-                                        scalar,
-                                    )))
-                                } else {
-                                    None
-                                };
-
-                                if let Some(ordered_val) = value {
+                                    let ordered_val = OrderedPropertyValue::from(
+                                        &PropertyValue::from_scalar(scalar),
+                                    );
                                     btree.entry(ordered_val).or_default().push(id);
                                 }
                             }
@@ -689,20 +1171,22 @@ impl GraphEngine {
     fn index_node_properties(
         &self,
         id: u64,
-        label: &str,
+        labels: &[String],
         properties: &HashMap<String, PropertyValue>,
     ) {
         let indexes = self.btree_indexes.read();
 
-        // Index label if _label index exists
+        // Index each label if _label index exists
         if indexes.contains_key(&(IndexTarget::Node, "_label".to_string())) {
             drop(indexes);
-            self.index_add(
-                IndexTarget::Node,
-                "_label",
-                &OrderedPropertyValue::String(label.to_string()),
-                id,
-            );
+            for label in labels {
+                self.index_add(
+                    IndexTarget::Node,
+                    "_label",
+                    &OrderedPropertyValue::String(label.clone()),
+                    id,
+                );
+            }
         } else {
             drop(indexes);
         }
@@ -725,20 +1209,22 @@ impl GraphEngine {
     fn unindex_node_properties(
         &self,
         id: u64,
-        label: &str,
+        labels: &[String],
         properties: &HashMap<String, PropertyValue>,
     ) {
         let indexes = self.btree_indexes.read();
 
-        // Unindex label if _label index exists
+        // Unindex each label if _label index exists
         if indexes.contains_key(&(IndexTarget::Node, "_label".to_string())) {
             drop(indexes);
-            self.index_remove(
-                IndexTarget::Node,
-                "_label",
-                &OrderedPropertyValue::String(label.to_string()),
-                id,
-            );
+            for label in labels {
+                self.index_remove(
+                    IndexTarget::Node,
+                    "_label",
+                    &OrderedPropertyValue::String(label.clone()),
+                    id,
+                );
+            }
         } else {
             drop(indexes);
         }
@@ -922,12 +1408,82 @@ impl GraphEngine {
     }
 
     /// Find nodes by label. Uses label index if available.
+    /// For nodes with multiple labels, returns any node that has the specified label.
     ///
     /// # Errors
     ///
     /// Returns `StorageError` if the underlying store operation fails.
     pub fn find_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
         self.find_nodes_by_property("_label", &PropertyValue::String(label.to_string()))
+    }
+
+    /// Find nodes that have ALL specified labels (intersection).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_all_labels(&self, labels: &[&str]) -> Result<Vec<Node>> {
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get nodes with the first label
+        let mut result_ids: HashSet<u64> = self
+            .find_nodes_by_label(labels[0])?
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+
+        // Intersect with nodes having each additional label
+        for label in &labels[1..] {
+            let label_ids: HashSet<u64> = self
+                .find_nodes_by_label(label)?
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            result_ids.retain(|id| label_ids.contains(id));
+            if result_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
+
+        // Collect and sort results
+        let mut nodes: Vec<Node> = result_ids
+            .into_iter()
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+        nodes.sort_by_key(|n| n.id);
+        Ok(nodes)
+    }
+
+    /// Find nodes that have ANY of the specified labels (union).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_any_label(&self, labels: &[&str]) -> Result<Vec<Node>> {
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut result_ids: HashSet<u64> = HashSet::new();
+
+        for label in labels {
+            let label_ids: Vec<u64> = self
+                .find_nodes_by_label(label)?
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            result_ids.extend(label_ids);
+        }
+
+        // Collect and sort results
+        let mut nodes: Vec<Node> = result_ids
+            .into_iter()
+            .filter_map(|id| self.get_node(id).ok())
+            .collect();
+        nodes.sort_by_key(|n| n.id);
+        Ok(nodes)
     }
 
     /// Find edges by exact property value match. Uses index if available.
@@ -1042,7 +1598,7 @@ impl GraphEngine {
                     if let Ok(node) = self.get_node(id) {
                         let matches = if property == "_label" {
                             match value {
-                                PropertyValue::String(s) => node.label == *s,
+                                PropertyValue::String(s) => node.has_label(s),
                                 _ => false,
                             }
                         } else {
@@ -1071,13 +1627,22 @@ impl GraphEngine {
             if let Some(id_str) = key.strip_prefix("node:") {
                 if let Ok(id) = id_str.parse::<u64>() {
                     if let Ok(node) = self.get_node(id) {
-                        let prop_value = if property == "_label" {
-                            Some(PropertyValue::String(node.label.clone()))
-                        } else {
-                            node.properties.get(property).cloned()
-                        };
-
-                        if let Some(pv) = prop_value {
+                        // For labels, check if any label matches the range condition
+                        if property == "_label" {
+                            for label in &node.labels {
+                                let ordered_pv = OrderedPropertyValue::String(label.clone());
+                                let matches = match op {
+                                    RangeOp::Lt => ordered_pv < ordered_value,
+                                    RangeOp::Le => ordered_pv <= ordered_value,
+                                    RangeOp::Gt => ordered_pv > ordered_value,
+                                    RangeOp::Ge => ordered_pv >= ordered_value,
+                                };
+                                if matches {
+                                    nodes.push(node);
+                                    break;
+                                }
+                            }
+                        } else if let Some(pv) = node.properties.get(property).cloned() {
                             let ordered_pv = OrderedPropertyValue::from(&pv);
                             let matches = match op {
                                 RangeOp::Lt => ordered_pv < ordered_value,
@@ -1166,8 +1731,19 @@ impl GraphEngine {
         label: impl Into<String>,
         properties: HashMap<String, PropertyValue>,
     ) -> Result<u64> {
+        self.create_node_with_labels(vec![label.into()], properties)
+    }
+
+    #[instrument(skip(self, labels, properties))]
+    pub fn create_node_with_labels(
+        &self,
+        labels: Vec<String>,
+        properties: HashMap<String, PropertyValue>,
+    ) -> Result<u64> {
+        // Ensure label index exists (lazy init on first node creation)
+        self.ensure_label_index();
+
         let id = self.node_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let label = label.into();
 
         let mut tensor = TensorData::new();
         tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
@@ -1175,10 +1751,7 @@ impl GraphEngine {
             "_type",
             TensorValue::Scalar(ScalarValue::String("node".into())),
         );
-        tensor.set(
-            "_label",
-            TensorValue::Scalar(ScalarValue::String(label.clone())),
-        );
+        tensor.set("_labels", TensorValue::Pointers(labels.clone()));
 
         for (key, value) in &properties {
             tensor.set(key, TensorValue::Scalar(value.to_scalar()));
@@ -1193,7 +1766,7 @@ impl GraphEngine {
         self.store.put(Self::incoming_edges_key(id), in_tensor)?;
 
         // Update indexes
-        self.index_node_properties(id, &label, &properties);
+        self.index_node_properties(id, &labels, &properties);
 
         Ok(id)
     }
@@ -1207,6 +1780,9 @@ impl GraphEngine {
         properties: HashMap<String, PropertyValue>,
         directed: bool,
     ) -> Result<u64> {
+        // Ensure edge type index exists (lazy init on first edge creation)
+        self.ensure_edge_type_index();
+
         // Verify both nodes exist
         if !self.node_exists(from) {
             return Err(GraphError::NodeNotFound(from));
@@ -1298,9 +1874,13 @@ impl GraphEngine {
             .get(&Self::node_key(id))
             .map_err(|_| GraphError::NodeNotFound(id))?;
 
-        let label = match tensor.get("_label") {
-            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.clone(),
-            _ => String::new(),
+        // Read labels - support both new format (_labels) and legacy format (_label)
+        let labels = match tensor.get("_labels") {
+            Some(TensorValue::Pointers(labels)) => labels.clone(),
+            _ => match tensor.get("_label") {
+                Some(TensorValue::Scalar(ScalarValue::String(s))) => vec![s.clone()],
+                _ => Vec::new(),
+            },
         };
 
         let mut properties = HashMap::new();
@@ -1315,7 +1895,7 @@ impl GraphEngine {
 
         Ok(Node {
             id,
-            label,
+            labels,
             properties,
         })
     }
@@ -1366,14 +1946,14 @@ impl GraphEngine {
         })
     }
 
-    /// Update a node's label and/or properties.
+    /// Update a node's labels and/or properties.
     ///
-    /// Pass `None` to leave the label unchanged. Properties are merged with
+    /// Pass `None` to leave labels unchanged. Properties are merged with
     /// existing properties; pass `PropertyValue::Null` to remove a property.
     pub fn update_node(
         &self,
         id: u64,
-        label: Option<&str>,
+        labels: Option<Vec<String>>,
         properties: HashMap<String, PropertyValue>,
     ) -> Result<()> {
         // Get old node for index maintenance
@@ -1385,13 +1965,13 @@ impl GraphEngine {
             .get(&key)
             .map_err(|_| GraphError::NodeNotFound(id))?;
 
-        // Unindex old values for changed properties
-        let old_label = old_node.label.clone();
+        // Handle label changes
+        let old_labels = old_node.labels.clone();
         let mut changed_props: HashMap<String, PropertyValue> = HashMap::new();
 
-        if let Some(new_label) = label {
-            if new_label != old_label {
-                // Unindex old label
+        if let Some(ref new_labels) = labels {
+            // Unindex old labels
+            for old_label in &old_labels {
                 self.index_remove(
                     IndexTarget::Node,
                     "_label",
@@ -1399,10 +1979,7 @@ impl GraphEngine {
                     id,
                 );
             }
-            tensor.set(
-                "_label",
-                TensorValue::Scalar(ScalarValue::String(new_label.to_string())),
-            );
+            tensor.set("_labels", TensorValue::Pointers(new_labels.clone()));
         }
 
         for (prop_key, value) in &properties {
@@ -1426,15 +2003,16 @@ impl GraphEngine {
 
         self.store.put(key, tensor)?;
 
-        // Index new values
-        let new_label = label.unwrap_or(&old_label);
-        if label.is_some() && new_label != old_label {
-            self.index_add(
-                IndexTarget::Node,
-                "_label",
-                &OrderedPropertyValue::String(new_label.to_string()),
-                id,
-            );
+        // Index new labels
+        if let Some(ref new_labels) = labels {
+            for new_label in new_labels {
+                self.index_add(
+                    IndexTarget::Node,
+                    "_label",
+                    &OrderedPropertyValue::String(new_label.clone()),
+                    id,
+                );
+            }
         }
 
         for (prop_key, prop_value) in &changed_props {
@@ -1447,6 +2025,84 @@ impl GraphEngine {
         }
 
         Ok(())
+    }
+
+    /// Add a label to an existing node.
+    pub fn add_label(&self, id: u64, label: &str) -> Result<()> {
+        let node = self.get_node(id)?;
+
+        // Check if label already exists
+        if node.has_label(label) {
+            return Ok(());
+        }
+
+        let key = Self::node_key(id);
+        let mut tensor = self
+            .store
+            .get(&key)
+            .map_err(|_| GraphError::NodeNotFound(id))?;
+
+        let mut new_labels = node.labels;
+        new_labels.push(label.to_string());
+        tensor.set("_labels", TensorValue::Pointers(new_labels));
+        self.store.put(key, tensor)?;
+
+        // Update index
+        self.index_add(
+            IndexTarget::Node,
+            "_label",
+            &OrderedPropertyValue::String(label.to_string()),
+            id,
+        );
+
+        Ok(())
+    }
+
+    /// Remove a label from an existing node.
+    pub fn remove_label(&self, id: u64, label: &str) -> Result<()> {
+        let node = self.get_node(id)?;
+
+        // Check if label exists
+        if !node.has_label(label) {
+            return Ok(());
+        }
+
+        let key = Self::node_key(id);
+        let mut tensor = self
+            .store
+            .get(&key)
+            .map_err(|_| GraphError::NodeNotFound(id))?;
+
+        let new_labels: Vec<String> = node
+            .labels
+            .iter()
+            .filter(|l| *l != label)
+            .cloned()
+            .collect();
+        tensor.set("_labels", TensorValue::Pointers(new_labels));
+        self.store.put(key, tensor)?;
+
+        // Update index
+        self.index_remove(
+            IndexTarget::Node,
+            "_label",
+            &OrderedPropertyValue::String(label.to_string()),
+            id,
+        );
+
+        Ok(())
+    }
+
+    /// Get all labels for a node.
+    pub fn get_node_labels(&self, id: u64) -> Result<Vec<String>> {
+        let node = self.get_node(id)?;
+        Ok(node.labels)
+    }
+
+    /// Check if a node has a specific label.
+    pub fn node_has_label(&self, id: u64, label: &str) -> Result<bool> {
+        let node = self.get_node(id)?;
+        Ok(node.has_label(label))
     }
 
     /// Update an edge's properties.
@@ -1532,12 +2188,94 @@ impl GraphEngine {
         Ok(edges)
     }
 
-    #[instrument(skip(self), fields(node_id = node_id))]
+    /// Returns the number of outgoing edges from a node.
+    ///
+    /// Equivalent to Neo4j's `size((n)-->())`.
+    pub fn out_degree(&self, node_id: u64) -> Result<usize> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+        Ok(self.get_edge_list(&Self::outgoing_edges_key(node_id)).len())
+    }
+
+    /// Returns the number of incoming edges to a node.
+    ///
+    /// Equivalent to Neo4j's `size((n)<--())`.
+    pub fn in_degree(&self, node_id: u64) -> Result<usize> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+        Ok(self.get_edge_list(&Self::incoming_edges_key(node_id)).len())
+    }
+
+    /// Returns the total degree of a node (in-degree + out-degree).
+    ///
+    /// For undirected edges, each edge is counted once in outgoing and once in incoming,
+    /// so total degree counts each undirected edge twice (consistent with graph theory).
+    /// Equivalent to Neo4j's `size((n)--())`.
+    pub fn degree(&self, node_id: u64) -> Result<usize> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+        let out = self.get_edge_list(&Self::outgoing_edges_key(node_id)).len();
+        let in_ = self.get_edge_list(&Self::incoming_edges_key(node_id)).len();
+        Ok(out + in_)
+    }
+
+    /// Returns the number of outgoing edges of a specific type from a node.
+    ///
+    /// Equivalent to Neo4j's `size((n)-[:TYPE]->())`.
+    pub fn out_degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+        let count = self
+            .get_edge_list(&Self::outgoing_edges_key(node_id))
+            .into_iter()
+            .filter(|&edge_id| {
+                self.get_edge(edge_id)
+                    .map(|e| e.edge_type == edge_type)
+                    .unwrap_or(false)
+            })
+            .count();
+        Ok(count)
+    }
+
+    /// Returns the number of incoming edges of a specific type to a node.
+    ///
+    /// Equivalent to Neo4j's `size((n)<-[:TYPE]-())`.
+    pub fn in_degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+        let count = self
+            .get_edge_list(&Self::incoming_edges_key(node_id))
+            .into_iter()
+            .filter(|&edge_id| {
+                self.get_edge(edge_id)
+                    .map(|e| e.edge_type == edge_type)
+                    .unwrap_or(false)
+            })
+            .count();
+        Ok(count)
+    }
+
+    /// Returns the total degree of a node for a specific edge type.
+    ///
+    /// Equivalent to Neo4j's `size((n)-[:TYPE]-())`.
+    pub fn degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
+        let out = self.out_degree_by_type(node_id, edge_type)?;
+        let in_ = self.in_degree_by_type(node_id, edge_type)?;
+        Ok(out + in_)
+    }
+
+    #[instrument(skip(self, filter), fields(node_id = node_id))]
     pub fn neighbors(
         &self,
         node_id: u64,
         edge_type: Option<&str>,
         direction: Direction,
+        filter: Option<&TraversalFilter>,
     ) -> Result<Vec<Node>> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -1551,6 +2289,12 @@ impl GraphEngine {
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                        // Apply edge filter
+                        if let Some(f) = filter {
+                            if !f.matches_edge(&edge) {
+                                continue;
+                            }
+                        }
                         // For outgoing, the neighbor is the 'to' node (unless it's us in
                         // undirected)
                         if edge.from == node_id && edge.to != node_id {
@@ -1569,6 +2313,12 @@ impl GraphEngine {
             for edge_id in in_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                        // Apply edge filter
+                        if let Some(f) = filter {
+                            if !f.matches_edge(&edge) {
+                                continue;
+                            }
+                        }
                         if edge.to == node_id && edge.from != node_id {
                             neighbor_ids.insert(edge.from);
                         } else if edge.from == node_id && edge.to != node_id {
@@ -1582,6 +2332,12 @@ impl GraphEngine {
         let mut neighbors = Vec::new();
         for id in neighbor_ids {
             if let Ok(node) = self.get_node(id) {
+                // Apply node filter
+                if let Some(f) = filter {
+                    if !f.matches_node(&node) {
+                        continue;
+                    }
+                }
                 neighbors.push(node);
             }
         }
@@ -1596,6 +2352,7 @@ impl GraphEngine {
         direction: Direction,
         max_depth: usize,
         edge_type: Option<&str>,
+        filter: Option<&TraversalFilter>,
     ) -> Result<Vec<Node>> {
         if !self.node_exists(start) {
             return Err(GraphError::NodeNotFound(start));
@@ -1610,17 +2367,27 @@ impl GraphEngine {
 
         while let Some((current_id, depth)) = queue.pop_front() {
             if let Ok(node) = self.get_node(current_id) {
-                result.push(node);
+                // Apply node filter (except for start node which is always included)
+                let include = if current_id == start {
+                    true
+                } else if let Some(f) = filter {
+                    f.matches_node(&node)
+                } else {
+                    true
+                };
+                if include {
+                    result.push(node);
+                }
             }
 
             if depth >= max_depth {
                 continue;
             }
 
-            let neighbors = self.get_neighbor_ids(current_id, edge_type, direction);
+            let neighbors =
+                self.get_neighbor_ids_filtered(current_id, edge_type, direction, filter);
             for neighbor_id in neighbors {
-                if !visited.contains(&neighbor_id) {
-                    visited.insert(neighbor_id);
+                if visited.insert(neighbor_id) {
                     queue.push_back((neighbor_id, depth + 1));
                 }
             }
@@ -1629,11 +2396,22 @@ impl GraphEngine {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     fn get_neighbor_ids(
         &self,
         node_id: u64,
         edge_type: Option<&str>,
         direction: Direction,
+    ) -> Vec<u64> {
+        self.get_neighbor_ids_filtered(node_id, edge_type, direction, None)
+    }
+
+    fn get_neighbor_ids_filtered(
+        &self,
+        node_id: u64,
+        edge_type: Option<&str>,
+        direction: Direction,
+        filter: Option<&TraversalFilter>,
     ) -> Vec<u64> {
         let mut neighbor_ids = HashSet::new();
 
@@ -1642,6 +2420,12 @@ impl GraphEngine {
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                        // Apply edge filter
+                        if let Some(f) = filter {
+                            if !f.matches_edge(&edge) {
+                                continue;
+                            }
+                        }
                         if edge.from == node_id {
                             neighbor_ids.insert(edge.to);
                         }
@@ -1658,6 +2442,12 @@ impl GraphEngine {
             for edge_id in in_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
+                        // Apply edge filter
+                        if let Some(f) = filter {
+                            if !f.matches_edge(&edge) {
+                                continue;
+                            }
+                        }
                         if edge.to == node_id {
                             neighbor_ids.insert(edge.from);
                         }
@@ -1673,7 +2463,7 @@ impl GraphEngine {
         neighbor_ids.into_iter().collect()
     }
 
-    pub fn find_path(&self, from: u64, to: u64) -> Result<Path> {
+    pub fn find_path(&self, from: u64, to: u64, filter: Option<&TraversalFilter>) -> Result<Path> {
         if !self.node_exists(from) {
             return Err(GraphError::NodeNotFound(from));
         }
@@ -1701,6 +2491,13 @@ impl GraphEngine {
 
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
+                    // Apply edge filter
+                    if let Some(f) = filter {
+                        if !f.matches_edge(&edge) {
+                            continue;
+                        }
+                    }
+
                     let neighbor = if edge.from == current {
                         edge.to
                     } else if !edge.directed && edge.to == current {
@@ -1709,8 +2506,18 @@ impl GraphEngine {
                         continue;
                     };
 
-                    if !visited.contains(&neighbor) {
-                        visited.insert(neighbor);
+                    // Apply node filter to neighbor (except target which we always want to reach)
+                    if neighbor != to {
+                        if let Some(f) = filter {
+                            if let Ok(node) = self.get_node(neighbor) {
+                                if !f.matches_node(&node) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    if visited.insert(neighbor) {
                         parent.insert(neighbor, (current, edge_id));
 
                         if neighbor == to {
@@ -1747,6 +2554,689 @@ impl GraphEngine {
         edges.reverse();
 
         Path { nodes, edges }
+    }
+
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::cast_precision_loss)]
+    fn extract_edge_weight(&self, edge: &Edge, weight_property: &str) -> Result<f64> {
+        match edge.properties.get(weight_property) {
+            Some(PropertyValue::Float(w)) => {
+                if *w < 0.0 {
+                    return Err(GraphError::NegativeWeight {
+                        edge_id: edge.id,
+                        weight: *w,
+                    });
+                }
+                Ok(*w)
+            },
+            Some(PropertyValue::Int(w)) => {
+                if *w < 0 {
+                    return Err(GraphError::NegativeWeight {
+                        edge_id: edge.id,
+                        weight: *w as f64,
+                    });
+                }
+                Ok(*w as f64)
+            },
+            _ => Ok(1.0), // Default weight for missing/non-numeric
+        }
+    }
+
+    /// Find shortest weighted path using Dijkstra's algorithm.
+    ///
+    /// Uses the specified edge property as weight. Missing properties default to 1.0.
+    /// Returns error if any traversed edge has negative weight.
+    #[instrument(skip(self, weight_property), fields(from = from, to = to))]
+    pub fn find_weighted_path(
+        &self,
+        from: u64,
+        to: u64,
+        weight_property: &str,
+    ) -> Result<WeightedPath> {
+        // Validate nodes exist
+        if !self.node_exists(from) {
+            return Err(GraphError::NodeNotFound(from));
+        }
+        if !self.node_exists(to) {
+            return Err(GraphError::NodeNotFound(to));
+        }
+
+        // Same node: zero-cost path
+        if from == to {
+            return Ok(WeightedPath {
+                nodes: vec![from],
+                edges: vec![],
+                total_weight: 0.0,
+            });
+        }
+
+        // Dijkstra's algorithm
+        let mut dist: HashMap<u64, f64> = HashMap::new();
+        let mut parent: HashMap<u64, (u64, u64)> = HashMap::new(); // node -> (parent, edge_id)
+        let mut heap = BinaryHeap::new();
+
+        dist.insert(from, 0.0);
+        heap.push(DijkstraEntry {
+            cost: 0.0,
+            node_id: from,
+        });
+
+        while let Some(DijkstraEntry { cost, node_id }) = heap.pop() {
+            // Early termination
+            if node_id == to {
+                return Ok(self.reconstruct_weighted_path(from, to, &parent, cost));
+            }
+
+            // Skip if we've found a better path
+            if cost > *dist.get(&node_id).unwrap_or(&f64::INFINITY) {
+                continue;
+            }
+
+            // Process outgoing edges
+            for edge_id in self.get_edge_list(&Self::outgoing_edges_key(node_id)) {
+                let edge = self.get_edge(edge_id)?;
+
+                // Determine neighbor (handle directed/undirected)
+                let neighbor = if edge.from == node_id {
+                    edge.to
+                } else if !edge.directed && edge.to == node_id {
+                    edge.from
+                } else {
+                    continue;
+                };
+
+                let weight = self.extract_edge_weight(&edge, weight_property)?;
+                let new_cost = cost + weight;
+
+                if new_cost < *dist.get(&neighbor).unwrap_or(&f64::INFINITY) {
+                    dist.insert(neighbor, new_cost);
+                    parent.insert(neighbor, (node_id, edge_id));
+                    heap.push(DijkstraEntry {
+                        cost: new_cost,
+                        node_id: neighbor,
+                    });
+                }
+            }
+
+            // Also check incoming edges for undirected traversal
+            for edge_id in self.get_edge_list(&Self::incoming_edges_key(node_id)) {
+                let edge = self.get_edge(edge_id)?;
+
+                if edge.directed {
+                    continue; // Can't traverse directed edge backwards
+                }
+
+                let neighbor = if edge.to == node_id {
+                    edge.from
+                } else {
+                    continue;
+                };
+
+                let weight = self.extract_edge_weight(&edge, weight_property)?;
+                let new_cost = cost + weight;
+
+                if new_cost < *dist.get(&neighbor).unwrap_or(&f64::INFINITY) {
+                    dist.insert(neighbor, new_cost);
+                    parent.insert(neighbor, (node_id, edge_id));
+                    heap.push(DijkstraEntry {
+                        cost: new_cost,
+                        node_id: neighbor,
+                    });
+                }
+            }
+        }
+
+        Err(GraphError::PathNotFound)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn reconstruct_weighted_path(
+        &self,
+        from: u64,
+        to: u64,
+        parent: &HashMap<u64, (u64, u64)>,
+        total_weight: f64,
+    ) -> WeightedPath {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut current = to;
+
+        while current != from {
+            nodes.push(current);
+            if let Some((p, edge_id)) = parent.get(&current) {
+                edges.push(*edge_id);
+                current = *p;
+            } else {
+                break;
+            }
+        }
+        nodes.push(from);
+        nodes.reverse();
+        edges.reverse();
+
+        WeightedPath {
+            nodes,
+            edges,
+            total_weight,
+        }
+    }
+
+    /// Find all shortest paths using BFS with multi-parent tracking.
+    ///
+    /// Returns all paths with the minimum hop count between two nodes.
+    /// Use `config` to limit memory usage for graphs with many equal-length paths.
+    #[instrument(skip(self, config), fields(from = from, to = to))]
+    pub fn find_all_paths(
+        &self,
+        from: u64,
+        to: u64,
+        config: Option<AllPathsConfig>,
+    ) -> Result<AllPaths> {
+        if !self.node_exists(from) {
+            return Err(GraphError::NodeNotFound(from));
+        }
+        if !self.node_exists(to) {
+            return Err(GraphError::NodeNotFound(to));
+        }
+
+        if from == to {
+            return Ok(AllPaths {
+                paths: vec![Path {
+                    nodes: vec![from],
+                    edges: vec![],
+                }],
+                hop_count: 0,
+            });
+        }
+
+        let config = config.unwrap_or_default();
+
+        // Level-based BFS with multi-parent tracking
+        let mut visited_level: HashMap<u64, usize> = HashMap::new();
+        let mut parents: HashMap<u64, Vec<(u64, u64)>> = HashMap::new();
+        let mut current_level = VecDeque::new();
+        let mut next_level = VecDeque::new();
+        let mut level = 0usize;
+        let mut destination_level: Option<usize> = None;
+
+        visited_level.insert(from, 0);
+        current_level.push_back(from);
+
+        while !current_level.is_empty() && destination_level.is_none() {
+            level += 1;
+
+            while let Some(current) = current_level.pop_front() {
+                // Process outgoing edges
+                for edge_id in self.get_edge_list(&Self::outgoing_edges_key(current)) {
+                    if let Ok(edge) = self.get_edge(edge_id) {
+                        let neighbor = if edge.from == current {
+                            edge.to
+                        } else if !edge.directed && edge.to == current {
+                            edge.from
+                        } else {
+                            continue;
+                        };
+
+                        match visited_level.get(&neighbor) {
+                            None => {
+                                // First time reaching this node
+                                visited_level.insert(neighbor, level);
+                                parents.insert(neighbor, vec![(current, edge_id)]);
+                                next_level.push_back(neighbor);
+
+                                if neighbor == to {
+                                    destination_level = Some(level);
+                                }
+                            },
+                            Some(&node_level) if node_level == level => {
+                                // Same level - add as additional parent
+                                if let Some(p) = parents.get_mut(&neighbor) {
+                                    if p.len() < config.max_parents_per_node {
+                                        p.push((current, edge_id));
+                                    }
+                                }
+                            },
+                            _ => {}, // Earlier level - skip
+                        }
+                    }
+                }
+            }
+
+            std::mem::swap(&mut current_level, &mut next_level);
+        }
+
+        let hop_count = destination_level.ok_or(GraphError::PathNotFound)?;
+        let paths = self.enumerate_paths(from, to, &parents, config.max_paths);
+
+        Ok(AllPaths { paths, hop_count })
+    }
+
+    #[allow(clippy::unused_self)]
+    fn enumerate_paths(
+        &self,
+        from: u64,
+        to: u64,
+        parents: &HashMap<u64, Vec<(u64, u64)>>,
+        max_paths: usize,
+    ) -> Vec<Path> {
+        let mut paths = Vec::new();
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>)> = vec![(to, vec![to], vec![])];
+
+        while let Some((current, nodes, edges)) = stack.pop() {
+            if paths.len() >= max_paths {
+                break;
+            }
+
+            if current == from {
+                let mut final_nodes = nodes;
+                let mut final_edges = edges;
+                final_nodes.reverse();
+                final_edges.reverse();
+                paths.push(Path {
+                    nodes: final_nodes,
+                    edges: final_edges,
+                });
+            } else if let Some(parent_list) = parents.get(&current) {
+                for (parent, edge_id) in parent_list {
+                    let mut new_nodes = nodes.clone();
+                    new_nodes.push(*parent);
+                    let mut new_edges = edges.clone();
+                    new_edges.push(*edge_id);
+                    stack.push((*parent, new_nodes, new_edges));
+                }
+            }
+        }
+
+        paths
+    }
+
+    /// Find all shortest weighted paths using Dijkstra with multi-parent tracking.
+    ///
+    /// Returns all paths with the minimum total weight between two nodes.
+    /// Use `config` to limit memory usage for graphs with many equal-weight paths.
+    #[allow(clippy::too_many_lines)]
+    #[instrument(skip(self, weight_property, config), fields(from = from, to = to))]
+    pub fn find_all_weighted_paths(
+        &self,
+        from: u64,
+        to: u64,
+        weight_property: &str,
+        config: Option<AllPathsConfig>,
+    ) -> Result<AllWeightedPaths> {
+        const EPSILON: f64 = 1e-10;
+
+        if !self.node_exists(from) {
+            return Err(GraphError::NodeNotFound(from));
+        }
+        if !self.node_exists(to) {
+            return Err(GraphError::NodeNotFound(to));
+        }
+
+        if from == to {
+            return Ok(AllWeightedPaths {
+                paths: vec![WeightedPath {
+                    nodes: vec![from],
+                    edges: vec![],
+                    total_weight: 0.0,
+                }],
+                total_weight: 0.0,
+            });
+        }
+
+        let config = config.unwrap_or_default();
+
+        let mut dist: HashMap<u64, f64> = HashMap::new();
+        let mut parents: HashMap<u64, Vec<(u64, u64)>> = HashMap::new();
+        let mut heap = BinaryHeap::new();
+        let mut destination_cost: Option<f64> = None;
+
+        dist.insert(from, 0.0);
+        heap.push(DijkstraEntry {
+            cost: 0.0,
+            node_id: from,
+        });
+
+        while let Some(DijkstraEntry { cost, node_id }) = heap.pop() {
+            // Stop if we've exceeded destination cost
+            if let Some(dc) = destination_cost {
+                if cost > dc + EPSILON {
+                    break;
+                }
+            }
+
+            // Skip outdated entries
+            if cost > *dist.get(&node_id).unwrap_or(&f64::INFINITY) + EPSILON {
+                continue;
+            }
+
+            // Process outgoing edges
+            for edge_id in self.get_edge_list(&Self::outgoing_edges_key(node_id)) {
+                let edge = self.get_edge(edge_id)?;
+
+                let neighbor = if edge.from == node_id {
+                    edge.to
+                } else if !edge.directed && edge.to == node_id {
+                    edge.from
+                } else {
+                    continue;
+                };
+
+                let weight = self.extract_edge_weight(&edge, weight_property)?;
+                let new_cost = cost + weight;
+                let current_dist = *dist.get(&neighbor).unwrap_or(&f64::INFINITY);
+
+                if new_cost < current_dist - EPSILON {
+                    // Strictly better path
+                    dist.insert(neighbor, new_cost);
+                    parents.insert(neighbor, vec![(node_id, edge_id)]);
+                    heap.push(DijkstraEntry {
+                        cost: new_cost,
+                        node_id: neighbor,
+                    });
+
+                    if neighbor == to {
+                        destination_cost = Some(new_cost);
+                    }
+                } else if (new_cost - current_dist).abs() < EPSILON {
+                    // Equal cost - add parent
+                    if let Some(p) = parents.get_mut(&neighbor) {
+                        if p.len() < config.max_parents_per_node {
+                            p.push((node_id, edge_id));
+                        }
+                    }
+                }
+            }
+
+            // Process incoming edges for undirected
+            for edge_id in self.get_edge_list(&Self::incoming_edges_key(node_id)) {
+                let edge = self.get_edge(edge_id)?;
+
+                if edge.directed {
+                    continue;
+                }
+
+                let neighbor = if edge.to == node_id {
+                    edge.from
+                } else {
+                    continue;
+                };
+
+                let weight = self.extract_edge_weight(&edge, weight_property)?;
+                let new_cost = cost + weight;
+                let current_dist = *dist.get(&neighbor).unwrap_or(&f64::INFINITY);
+
+                if new_cost < current_dist - EPSILON {
+                    dist.insert(neighbor, new_cost);
+                    parents.insert(neighbor, vec![(node_id, edge_id)]);
+                    heap.push(DijkstraEntry {
+                        cost: new_cost,
+                        node_id: neighbor,
+                    });
+
+                    if neighbor == to {
+                        destination_cost = Some(new_cost);
+                    }
+                } else if (new_cost - current_dist).abs() < EPSILON {
+                    if let Some(p) = parents.get_mut(&neighbor) {
+                        if p.len() < config.max_parents_per_node {
+                            p.push((node_id, edge_id));
+                        }
+                    }
+                }
+            }
+        }
+
+        let total_weight = destination_cost.ok_or(GraphError::PathNotFound)?;
+        let paths =
+            self.enumerate_weighted_paths(from, to, &parents, total_weight, config.max_paths);
+
+        Ok(AllWeightedPaths {
+            paths,
+            total_weight,
+        })
+    }
+
+    #[allow(clippy::unused_self)]
+    fn enumerate_weighted_paths(
+        &self,
+        from: u64,
+        to: u64,
+        parents: &HashMap<u64, Vec<(u64, u64)>>,
+        total_weight: f64,
+        max_paths: usize,
+    ) -> Vec<WeightedPath> {
+        let mut paths = Vec::new();
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>)> = vec![(to, vec![to], vec![])];
+
+        while let Some((current, nodes, edges)) = stack.pop() {
+            if paths.len() >= max_paths {
+                break;
+            }
+
+            if current == from {
+                let mut final_nodes = nodes;
+                let mut final_edges = edges;
+                final_nodes.reverse();
+                final_edges.reverse();
+                paths.push(WeightedPath {
+                    nodes: final_nodes,
+                    edges: final_edges,
+                    total_weight,
+                });
+            } else if let Some(parent_list) = parents.get(&current) {
+                for (parent, edge_id) in parent_list {
+                    let mut new_nodes = nodes.clone();
+                    new_nodes.push(*parent);
+                    let mut new_edges = edges.clone();
+                    new_edges.push(*edge_id);
+                    stack.push((*parent, new_nodes, new_edges));
+                }
+            }
+        }
+
+        paths
+    }
+
+    /// Find all paths between two nodes within a hop range.
+    ///
+    /// Unlike `find_path` (shortest path) or `find_all_paths` (all shortest paths),
+    /// this method finds all paths within a specified hop range, supporting
+    /// Neo4j-style variable-length patterns like `[:KNOWS*1..5]`.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::type_complexity)]
+    #[instrument(skip(self, config), fields(from = from, to = to))]
+    pub fn find_variable_paths(
+        &self,
+        from: u64,
+        to: u64,
+        config: VariableLengthConfig,
+    ) -> Result<VariableLengthPaths> {
+        if !self.node_exists(from) {
+            return Err(GraphError::NodeNotFound(from));
+        }
+        if !self.node_exists(to) {
+            return Err(GraphError::NodeNotFound(to));
+        }
+
+        let mut paths = Vec::new();
+        let mut stats = PathSearchStats::default();
+
+        // Handle from == to with min_hops == 0
+        if from == to && config.min_hops == 0 {
+            paths.push(Path {
+                nodes: vec![from],
+                edges: vec![],
+            });
+            stats.paths_found = 1;
+            stats.min_length = Some(0);
+            stats.max_length = Some(0);
+            if config.max_hops == 0 {
+                return Ok(VariableLengthPaths { paths, stats });
+            }
+        }
+
+        // DFS with explicit stack: (current_node, path_nodes, path_edges, visited)
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, HashSet<u64>)> = Vec::new();
+
+        let mut initial_visited = HashSet::new();
+        if !config.allow_cycles {
+            initial_visited.insert(from);
+        }
+        stack.push((from, vec![from], vec![], initial_visited));
+
+        let edge_type_set: Option<HashSet<&str>> = config
+            .edge_types
+            .as_ref()
+            .map(|types| types.iter().map(String::as_str).collect());
+
+        while let Some((current, path_nodes, path_edges, visited)) = stack.pop() {
+            if paths.len() >= config.max_paths {
+                stats.truncated = true;
+                break;
+            }
+
+            let current_depth = path_edges.len();
+            if current_depth >= config.max_hops {
+                continue;
+            }
+
+            stats.nodes_explored += 1;
+
+            let neighbors = self.get_variable_path_neighbors_filtered(
+                current,
+                edge_type_set.as_ref(),
+                config.direction,
+                config.filter.as_ref(),
+            );
+
+            for (neighbor_id, edge_id) in neighbors {
+                stats.edges_traversed += 1;
+
+                if !config.allow_cycles && visited.contains(&neighbor_id) {
+                    continue;
+                }
+
+                // Apply node filter (except for destination which we always want to reach)
+                if neighbor_id != to {
+                    if let Some(ref f) = config.filter {
+                        if let Ok(node) = self.get_node(neighbor_id) {
+                            if !f.matches_node(&node) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                let new_depth = current_depth + 1;
+                let mut new_nodes = path_nodes.clone();
+                let mut new_edges = path_edges.clone();
+                new_nodes.push(neighbor_id);
+                new_edges.push(edge_id);
+
+                // Check if path reaches destination within hop range
+                if neighbor_id == to && new_depth >= config.min_hops {
+                    paths.push(Path {
+                        nodes: new_nodes.clone(),
+                        edges: new_edges.clone(),
+                    });
+                    stats.paths_found += 1;
+                    stats.min_length =
+                        Some(stats.min_length.map_or(new_depth, |m| m.min(new_depth)));
+                    stats.max_length =
+                        Some(stats.max_length.map_or(new_depth, |m| m.max(new_depth)));
+                }
+
+                // Continue exploring if under max_hops
+                if new_depth < config.max_hops {
+                    let mut new_visited = visited.clone();
+                    if !config.allow_cycles {
+                        new_visited.insert(neighbor_id);
+                    }
+                    stack.push((neighbor_id, new_nodes, new_edges, new_visited));
+                }
+            }
+        }
+
+        Ok(VariableLengthPaths { paths, stats })
+    }
+
+    #[allow(dead_code)]
+    fn get_variable_path_neighbors(
+        &self,
+        node_id: u64,
+        edge_types: Option<&HashSet<&str>>,
+        direction: Direction,
+    ) -> Vec<(u64, u64)> {
+        self.get_variable_path_neighbors_filtered(node_id, edge_types, direction, None)
+    }
+
+    fn get_variable_path_neighbors_filtered(
+        &self,
+        node_id: u64,
+        edge_types: Option<&HashSet<&str>>,
+        direction: Direction,
+        filter: Option<&TraversalFilter>,
+    ) -> Vec<(u64, u64)> {
+        let mut results = Vec::new();
+
+        if direction == Direction::Outgoing || direction == Direction::Both {
+            for edge_id in self.get_edge_list(&Self::outgoing_edges_key(node_id)) {
+                if let Ok(edge) = self.get_edge(edge_id) {
+                    if let Some(types) = edge_types {
+                        if !types.contains(edge.edge_type.as_str()) {
+                            continue;
+                        }
+                    }
+                    // Apply edge filter
+                    if let Some(f) = filter {
+                        if !f.matches_edge(&edge) {
+                            continue;
+                        }
+                    }
+                    let neighbor = if edge.from == node_id {
+                        edge.to
+                    } else if !edge.directed && edge.to == node_id {
+                        edge.from
+                    } else {
+                        continue;
+                    };
+                    results.push((neighbor, edge_id));
+                }
+            }
+        }
+
+        if direction == Direction::Incoming || direction == Direction::Both {
+            for edge_id in self.get_edge_list(&Self::incoming_edges_key(node_id)) {
+                if let Ok(edge) = self.get_edge(edge_id) {
+                    if let Some(types) = edge_types {
+                        if !types.contains(edge.edge_type.as_str()) {
+                            continue;
+                        }
+                    }
+                    // Apply edge filter
+                    if let Some(f) = filter {
+                        if !f.matches_edge(&edge) {
+                            continue;
+                        }
+                    }
+                    // For incoming direction, we can traverse incoming edges
+                    let neighbor = if edge.to == node_id {
+                        edge.from
+                    } else if !edge.directed && edge.from == node_id {
+                        edge.to
+                    } else {
+                        continue;
+                    };
+                    // Avoid duplicates when direction is Both and edge is undirected
+                    if direction == Direction::Both && !edge.directed {
+                        continue;
+                    }
+                    results.push((neighbor, edge_id));
+                }
+            }
+        }
+
+        results
     }
 
     /// Returns the number of nodes in the graph.
@@ -1880,7 +3370,7 @@ impl GraphEngine {
         }
 
         // Unindex node properties
-        self.unindex_node_properties(id, &node.label, &node.properties);
+        self.unindex_node_properties(id, &node.labels, &node.properties);
 
         // Delete the node itself and its edge lists
         self.store.delete(&Self::node_key(id))?;
@@ -2159,7 +3649,8 @@ mod tests {
         assert_eq!(id, 1);
 
         let node = engine.get_node(id).unwrap();
-        assert_eq!(node.label, "Person");
+        assert_eq!(node.labels, vec!["Person"]);
+        assert!(node.has_label("Person"));
         assert_eq!(
             node.properties.get("name"),
             Some(&PropertyValue::String("Alice".into()))
@@ -2214,13 +3705,19 @@ mod tests {
             .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
             .unwrap();
 
-        let out_neighbors = engine.neighbors(n1, None, Direction::Outgoing).unwrap();
+        let out_neighbors = engine
+            .neighbors(n1, None, Direction::Outgoing, None)
+            .unwrap();
         assert_eq!(out_neighbors.len(), 2);
 
-        let in_neighbors = engine.neighbors(n1, None, Direction::Incoming).unwrap();
+        let in_neighbors = engine
+            .neighbors(n1, None, Direction::Incoming, None)
+            .unwrap();
         assert_eq!(in_neighbors.len(), 0);
 
-        let n2_in = engine.neighbors(n2, None, Direction::Incoming).unwrap();
+        let n2_in = engine
+            .neighbors(n2, None, Direction::Incoming, None)
+            .unwrap();
         assert_eq!(n2_in.len(), 1);
         assert_eq!(n2_in[0].id, n1);
     }
@@ -2236,11 +3733,11 @@ mod tests {
             .create_edge(n1, n2, "FRIENDS", HashMap::new(), false)
             .unwrap();
 
-        let n1_neighbors = engine.neighbors(n1, None, Direction::Both).unwrap();
+        let n1_neighbors = engine.neighbors(n1, None, Direction::Both, None).unwrap();
         assert_eq!(n1_neighbors.len(), 1);
         assert_eq!(n1_neighbors[0].id, n2);
 
-        let n2_neighbors = engine.neighbors(n2, None, Direction::Both).unwrap();
+        let n2_neighbors = engine.neighbors(n2, None, Direction::Both, None).unwrap();
         assert_eq!(n2_neighbors.len(), 1);
         assert_eq!(n2_neighbors[0].id, n1);
     }
@@ -2261,13 +3758,13 @@ mod tests {
             .unwrap();
 
         let knows = engine
-            .neighbors(n1, Some("KNOWS"), Direction::Outgoing)
+            .neighbors(n1, Some("KNOWS"), Direction::Outgoing, None)
             .unwrap();
         assert_eq!(knows.len(), 1);
         assert_eq!(knows[0].id, n2);
 
         let works = engine
-            .neighbors(n1, Some("WORKS_AT"), Direction::Outgoing)
+            .neighbors(n1, Some("WORKS_AT"), Direction::Outgoing, None)
             .unwrap();
         assert_eq!(works.len(), 1);
         assert_eq!(works[0].id, n3);
@@ -2294,15 +3791,21 @@ mod tests {
             .unwrap();
 
         // Depth 0: only start node
-        let result = engine.traverse(n1, Direction::Outgoing, 0, None).unwrap();
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 0, None, None)
+            .unwrap();
         assert_eq!(result.len(), 1);
 
         // Depth 1: start + direct neighbors
-        let result = engine.traverse(n1, Direction::Outgoing, 1, None).unwrap();
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 1, None, None)
+            .unwrap();
         assert_eq!(result.len(), 2);
 
         // Depth 3: all nodes
-        let result = engine.traverse(n1, Direction::Outgoing, 3, None).unwrap();
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 3, None, None)
+            .unwrap();
         assert_eq!(result.len(), 4);
     }
 
@@ -2326,7 +3829,9 @@ mod tests {
             .unwrap();
 
         // Should not infinite loop, should visit each node once
-        let result = engine.traverse(n1, Direction::Outgoing, 10, None).unwrap();
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 10, None, None)
+            .unwrap();
         assert_eq!(result.len(), 3);
     }
 
@@ -2345,7 +3850,7 @@ mod tests {
             .create_edge(n2, n3, "NEXT", HashMap::new(), true)
             .unwrap();
 
-        let path = engine.find_path(n1, n3).unwrap();
+        let path = engine.find_path(n1, n3, None).unwrap();
         assert_eq!(path.nodes, vec![n1, n2, n3]);
         assert_eq!(path.edges.len(), 2);
     }
@@ -2356,7 +3861,7 @@ mod tests {
 
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
 
-        let path = engine.find_path(n1, n1).unwrap();
+        let path = engine.find_path(n1, n1, None).unwrap();
         assert_eq!(path.nodes, vec![n1]);
         assert!(path.edges.is_empty());
     }
@@ -2368,7 +3873,7 @@ mod tests {
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
         let n2 = engine.create_node("B", HashMap::new()).unwrap();
 
-        let result = engine.find_path(n1, n2);
+        let result = engine.find_path(n1, n2, None);
         assert!(matches!(result, Err(GraphError::PathNotFound)));
     }
 
@@ -2396,7 +3901,7 @@ mod tests {
             .create_edge(n3, n2, "NEXT", HashMap::new(), true)
             .unwrap();
 
-        let path = engine.find_path(n1, n4).unwrap();
+        let path = engine.find_path(n1, n4, None).unwrap();
         // BFS should find shortest path: n1 -> n2 -> n4
         assert_eq!(path.nodes.len(), 3);
         assert_eq!(path.nodes, vec![n1, n2, n4]);
@@ -2424,18 +3929,18 @@ mod tests {
 
         // Traverse from node 0 with depth 10 should get 11 nodes
         let result = engine
-            .traverse(node_ids[0], Direction::Outgoing, 10, None)
+            .traverse(node_ids[0], Direction::Outgoing, 10, None, None)
             .unwrap();
         assert_eq!(result.len(), 11);
 
         // Traverse full chain
         let result = engine
-            .traverse(node_ids[0], Direction::Outgoing, 1000, None)
+            .traverse(node_ids[0], Direction::Outgoing, 1000, None, None)
             .unwrap();
         assert_eq!(result.len(), 1000);
 
         // Find path from 0 to 50
-        let path = engine.find_path(node_ids[0], node_ids[50]).unwrap();
+        let path = engine.find_path(node_ids[0], node_ids[50], None).unwrap();
         assert_eq!(path.nodes.len(), 51);
     }
 
@@ -2458,15 +3963,21 @@ mod tests {
             .unwrap();
 
         // From n1: can reach both n2 (directed out) and n3 (undirected)
-        let from_n1 = engine.neighbors(n1, None, Direction::Outgoing).unwrap();
+        let from_n1 = engine
+            .neighbors(n1, None, Direction::Outgoing, None)
+            .unwrap();
         assert_eq!(from_n1.len(), 2);
 
         // From n2: cannot reach n1 (directed edge goes other way)
-        let from_n2 = engine.neighbors(n2, None, Direction::Outgoing).unwrap();
+        let from_n2 = engine
+            .neighbors(n2, None, Direction::Outgoing, None)
+            .unwrap();
         assert_eq!(from_n2.len(), 0);
 
         // From n3: can reach n1 (undirected)
-        let from_n3 = engine.neighbors(n3, None, Direction::Outgoing).unwrap();
+        let from_n3 = engine
+            .neighbors(n3, None, Direction::Outgoing, None)
+            .unwrap();
         assert_eq!(from_n3.len(), 1);
         assert_eq!(from_n3[0].id, n1);
     }
@@ -2544,14 +4055,14 @@ mod tests {
     #[test]
     fn neighbors_nonexistent_node() {
         let engine = GraphEngine::new();
-        let result = engine.neighbors(999, None, Direction::Both);
+        let result = engine.neighbors(999, None, Direction::Both, None);
         assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
     }
 
     #[test]
     fn traverse_nonexistent_node() {
         let engine = GraphEngine::new();
-        let result = engine.traverse(999, Direction::Both, 5, None);
+        let result = engine.traverse(999, Direction::Both, 5, None, None);
         assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
     }
 
@@ -2560,10 +4071,10 @@ mod tests {
         let engine = GraphEngine::new();
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
 
-        let result = engine.find_path(999, n1);
+        let result = engine.find_path(999, n1, None);
         assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
 
-        let result = engine.find_path(n1, 999);
+        let result = engine.find_path(n1, 999, None);
         assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
     }
 
@@ -2577,7 +4088,7 @@ mod tests {
             .unwrap();
 
         // Self-loop shouldn't appear in neighbors (we filter self)
-        let neighbors = engine.neighbors(n1, None, Direction::Both).unwrap();
+        let neighbors = engine.neighbors(n1, None, Direction::Both, None).unwrap();
         assert_eq!(neighbors.len(), 0);
     }
 
@@ -2605,7 +4116,7 @@ mod tests {
     fn clone_types() {
         let node = Node {
             id: 1,
-            label: "Test".into(),
+            labels: vec!["Test".into()],
             properties: HashMap::new(),
         };
         let _ = node.clone();
@@ -2662,7 +4173,9 @@ mod tests {
             .unwrap();
 
         // Traverse incoming from n3 should find n2 and n1
-        let result = engine.traverse(n3, Direction::Incoming, 10, None).unwrap();
+        let result = engine
+            .traverse(n3, Direction::Incoming, 10, None, None)
+            .unwrap();
         assert_eq!(result.len(), 3);
     }
 
@@ -2683,14 +4196,14 @@ mod tests {
 
         // Get only KNOWS incoming neighbors of n3
         let knows = engine
-            .neighbors(n3, Some("KNOWS"), Direction::Incoming)
+            .neighbors(n3, Some("KNOWS"), Direction::Incoming, None)
             .unwrap();
         assert_eq!(knows.len(), 1);
         assert_eq!(knows[0].id, n1);
 
         // Get only WORKS_WITH incoming neighbors of n3
         let works = engine
-            .neighbors(n3, Some("WORKS_WITH"), Direction::Incoming)
+            .neighbors(n3, Some("WORKS_WITH"), Direction::Incoming, None)
             .unwrap();
         assert_eq!(works.len(), 1);
         assert_eq!(works[0].id, n2);
@@ -2713,11 +4226,11 @@ mod tests {
             .unwrap();
 
         // Should find path n1 -> n2 -> n3
-        let path = engine.find_path(n1, n3).unwrap();
+        let path = engine.find_path(n1, n3, None).unwrap();
         assert_eq!(path.nodes, vec![n1, n2, n3]);
 
         // Should also find reverse path n3 -> n2 -> n1
-        let path_rev = engine.find_path(n3, n1).unwrap();
+        let path_rev = engine.find_path(n3, n1, None).unwrap();
         assert_eq!(path_rev.nodes, vec![n3, n2, n1]);
     }
 
@@ -2745,7 +4258,9 @@ mod tests {
             .unwrap();
 
         // Traverse incoming from n2 with depth 1
-        let result = engine.traverse(n2, Direction::Incoming, 1, None).unwrap();
+        let result = engine
+            .traverse(n2, Direction::Incoming, 1, None, None)
+            .unwrap();
         assert_eq!(result.len(), 3); // n2 + n1 + n3
     }
 
@@ -2763,7 +4278,9 @@ mod tests {
 
         // From n2's perspective with Incoming direction,
         // should still see n1 via the undirected edge
-        let neighbors = engine.neighbors(n2, None, Direction::Incoming).unwrap();
+        let neighbors = engine
+            .neighbors(n2, None, Direction::Incoming, None)
+            .unwrap();
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0].id, n1);
     }
@@ -2786,7 +4303,9 @@ mod tests {
         }
 
         // Verify hub has 150 outgoing edges
-        let neighbors = engine.neighbors(hub, None, Direction::Outgoing).unwrap();
+        let neighbors = engine
+            .neighbors(hub, None, Direction::Outgoing, None)
+            .unwrap();
         assert_eq!(neighbors.len(), 150);
 
         // Delete hub node (should use parallel edge deletion)
@@ -3015,11 +4534,11 @@ mod tests {
         let id = engine.create_node("Person", HashMap::new()).unwrap();
 
         engine
-            .update_node(id, Some("Employee"), HashMap::new())
+            .update_node(id, Some(vec!["Employee".to_string()]), HashMap::new())
             .unwrap();
 
         let node = engine.get_node(id).unwrap();
-        assert_eq!(node.label, "Employee");
+        assert_eq!(node.labels, vec!["Employee"]);
     }
 
     #[test]
@@ -3038,7 +4557,7 @@ mod tests {
         engine.update_node(id, None, updates).unwrap();
 
         let node = engine.get_node(id).unwrap();
-        assert_eq!(node.label, "Person"); // unchanged
+        assert_eq!(node.labels, vec!["Person"]); // unchanged
         assert_eq!(
             node.properties.get("name"),
             Some(&PropertyValue::String("Alice".into()))
@@ -3130,14 +4649,14 @@ mod tests {
         assert!(engine.get_edge(edge_id).is_ok());
         assert_eq!(
             engine
-                .neighbors(n1, None, Direction::Outgoing)
+                .neighbors(n1, None, Direction::Outgoing, None)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
             engine
-                .neighbors(n2, None, Direction::Incoming)
+                .neighbors(n2, None, Direction::Incoming, None)
                 .unwrap()
                 .len(),
             1
@@ -3153,14 +4672,14 @@ mod tests {
         ));
         assert_eq!(
             engine
-                .neighbors(n1, None, Direction::Outgoing)
+                .neighbors(n1, None, Direction::Outgoing, None)
                 .unwrap()
                 .len(),
             0
         );
         assert_eq!(
             engine
-                .neighbors(n2, None, Direction::Incoming)
+                .neighbors(n2, None, Direction::Incoming, None)
                 .unwrap()
                 .len(),
             0
@@ -3183,11 +4702,17 @@ mod tests {
 
         // Both directions should work
         assert_eq!(
-            engine.neighbors(n1, None, Direction::Both).unwrap().len(),
+            engine
+                .neighbors(n1, None, Direction::Both, None)
+                .unwrap()
+                .len(),
             1
         );
         assert_eq!(
-            engine.neighbors(n2, None, Direction::Both).unwrap().len(),
+            engine
+                .neighbors(n2, None, Direction::Both, None)
+                .unwrap()
+                .len(),
             1
         );
 
@@ -3196,11 +4721,17 @@ mod tests {
 
         // Both directions should be empty
         assert_eq!(
-            engine.neighbors(n1, None, Direction::Both).unwrap().len(),
+            engine
+                .neighbors(n1, None, Direction::Both, None)
+                .unwrap()
+                .len(),
             0
         );
         assert_eq!(
-            engine.neighbors(n2, None, Direction::Both).unwrap().len(),
+            engine
+                .neighbors(n2, None, Direction::Both, None)
+                .unwrap()
+                .len(),
             0
         );
     }
@@ -3294,7 +4825,7 @@ mod tests {
         // n1 should have no outgoing neighbors now
         assert_eq!(
             engine
-                .neighbors(n1, None, Direction::Outgoing)
+                .neighbors(n1, None, Direction::Outgoing, None)
                 .unwrap()
                 .len(),
             0
@@ -3303,7 +4834,7 @@ mod tests {
         // n3 should have no incoming neighbors now
         assert_eq!(
             engine
-                .neighbors(n3, None, Direction::Incoming)
+                .neighbors(n3, None, Direction::Incoming, None)
                 .unwrap()
                 .len(),
             0
@@ -3322,12 +4853,12 @@ mod tests {
     fn node_edge_equality() {
         let node1 = Node {
             id: 1,
-            label: "Test".into(),
+            labels: vec!["Test".into()],
             properties: HashMap::new(),
         };
         let node2 = Node {
             id: 1,
-            label: "Test".into(),
+            labels: vec!["Test".into()],
             properties: HashMap::new(),
         };
         assert_eq!(node1, node2);
@@ -3426,11 +4957,12 @@ mod tests {
     fn create_label_index() {
         let engine = GraphEngine::new();
 
+        // With auto-index, label index is created on first node
         engine.create_node("Person", HashMap::new()).unwrap();
         engine.create_node("Person", HashMap::new()).unwrap();
         engine.create_node("Company", HashMap::new()).unwrap();
 
-        engine.create_label_index().unwrap();
+        // Index already exists from auto-creation
         assert!(engine.has_node_index("_label"));
 
         let persons = engine.find_nodes_by_label("Person").unwrap();
@@ -3448,15 +4980,19 @@ mod tests {
         let n2 = engine.create_node("B", HashMap::new()).unwrap();
         let n3 = engine.create_node("C", HashMap::new()).unwrap();
 
+        // Edge type index is auto-created on first edge
+        assert!(!engine.has_edge_index("_edge_type"));
         engine
             .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
             .unwrap();
+        assert!(engine.has_edge_index("_edge_type"));
+
         engine
             .create_edge(n2, n3, "FOLLOWS", HashMap::new(), true)
             .unwrap();
 
-        engine.create_edge_type_index().unwrap();
-        assert!(engine.has_edge_index("_edge_type"));
+        // Manual creation after auto-init returns error
+        assert!(engine.create_edge_type_index().is_err());
 
         let knows = engine.find_edges_by_type("KNOWS").unwrap();
         assert_eq!(knows.len(), 1);
@@ -3469,8 +5005,8 @@ mod tests {
     fn drop_node_index() {
         let engine = GraphEngine::new();
 
+        // Auto-creates label index on first node
         engine.create_node("Person", HashMap::new()).unwrap();
-        engine.create_label_index().unwrap();
 
         assert!(engine.has_node_index("_label"));
         engine.drop_node_index("_label").unwrap();
@@ -3487,7 +5023,7 @@ mod tests {
             .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
             .unwrap();
 
-        engine.create_edge_type_index().unwrap();
+        // Edge type index is auto-created on first edge
         assert!(engine.has_edge_index("_edge_type"));
 
         engine.drop_edge_index("_edge_type").unwrap();
@@ -3720,11 +5256,10 @@ mod tests {
     fn index_updated_on_create_edge() {
         let engine = GraphEngine::new();
 
-        engine.create_edge_type_index().unwrap();
-
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
         let n2 = engine.create_node("B", HashMap::new()).unwrap();
 
+        // Edge type index is auto-created on first edge
         engine
             .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
             .unwrap();
@@ -3774,11 +5309,10 @@ mod tests {
     fn index_updated_on_delete_edge() {
         let engine = GraphEngine::new();
 
-        engine.create_edge_type_index().unwrap();
-
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
         let n2 = engine.create_node("B", HashMap::new()).unwrap();
 
+        // Edge type index is auto-created on first edge
         let edge_id = engine
             .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
             .unwrap();
@@ -3797,12 +5331,12 @@ mod tests {
         let store = TensorStore::new();
         let engine1 = GraphEngine::with_store(store);
 
-        // Create data and index
+        // Create data (auto-creates label index)
         engine1.create_node("Person", HashMap::new()).unwrap();
         engine1.create_node("Person", HashMap::new()).unwrap();
-        engine1.create_label_index().unwrap();
 
         // Verify index works
+        assert!(engine1.has_node_index("_label"));
         let persons = engine1.find_nodes_by_label("Person").unwrap();
         assert_eq!(persons.len(), 2);
 
@@ -4151,6 +5685,7 @@ mod tests {
         let n1 = engine.create_node("A", HashMap::new()).unwrap();
         let n2 = engine.create_node("B", HashMap::new()).unwrap();
 
+        // Edge type index is auto-created on first edge
         engine
             .create_edge(n1, n2, "LIKES", HashMap::new(), true)
             .unwrap();
@@ -4158,14 +5693,14 @@ mod tests {
             .create_edge(n2, n1, "KNOWS", HashMap::new(), true)
             .unwrap();
 
-        engine.create_edge_type_index().unwrap();
-
-        // Verify
+        // Verify index exists
+        assert!(engine.has_edge_index("_edge_type"));
         let likes = engine.find_edges_by_type("LIKES").unwrap();
         assert_eq!(likes.len(), 1);
 
         // Rebuild from store
         let engine2 = GraphEngine::with_store(store);
+        assert!(engine2.has_edge_index("_edge_type"));
         let likes2 = engine2.find_edges_by_type("LIKES").unwrap();
         assert_eq!(likes2.len(), 1);
     }
@@ -4588,5 +6123,2562 @@ mod tests {
             .find_nodes_by_property("optional", &PropertyValue::Null)
             .unwrap();
         assert_eq!(found.len(), 1);
+    }
+
+    // ========== Multiple Labels Tests ==========
+
+    #[test]
+    fn create_node_with_multiple_labels() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(
+                vec!["Person".into(), "Employee".into(), "Manager".into()],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person", "Employee", "Manager"]);
+        assert!(node.has_label("Person"));
+        assert!(node.has_label("Employee"));
+        assert!(node.has_label("Manager"));
+        assert!(!node.has_label("Admin"));
+    }
+
+    #[test]
+    fn create_node_with_empty_labels() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(Vec::new(), HashMap::new())
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.labels.is_empty());
+        assert!(!node.has_label("Anything"));
+    }
+
+    #[test]
+    fn create_node_single_label_backwards_compat() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person"]);
+        assert!(node.has_label("Person"));
+    }
+
+    #[test]
+    fn get_node_returns_all_labels() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["A".into(), "B".into(), "C".into()], HashMap::new())
+            .unwrap();
+
+        let labels = engine.get_node_labels(id).unwrap();
+        assert_eq!(labels, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn add_label_to_existing_node() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine.add_label(id, "Employee").unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person", "Employee"]);
+    }
+
+    #[test]
+    fn add_label_already_present_idempotent() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine.add_label(id, "Person").unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person"]); // not duplicated
+    }
+
+    #[test]
+    fn remove_label_from_node() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+
+        engine.remove_label(id, "Employee").unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person"]);
+        assert!(!node.has_label("Employee"));
+    }
+
+    #[test]
+    fn remove_label_not_present_ok() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine.remove_label(id, "NonExistent").unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Person"]); // unchanged
+    }
+
+    #[test]
+    fn remove_last_label_leaves_empty() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine.remove_label(id, "Person").unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.labels.is_empty());
+    }
+
+    #[test]
+    fn update_node_replaces_all_labels() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+
+        engine
+            .update_node(
+                id,
+                Some(vec!["Admin".into(), "Manager".into()]),
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.labels, vec!["Admin", "Manager"]);
+        assert!(!node.has_label("Person"));
+        assert!(!node.has_label("Employee"));
+    }
+
+    #[test]
+    fn find_nodes_by_label_returns_multi_label_nodes() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        let multi_id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+        engine.create_node("Company", HashMap::new()).unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 2);
+
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert_eq!(employees.len(), 1);
+        assert_eq!(employees[0].id, multi_id);
+    }
+
+    #[test]
+    fn find_nodes_by_all_labels_intersection() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+        let all_three = engine
+            .create_node_with_labels(
+                vec!["Person".into(), "Employee".into(), "Manager".into()],
+                HashMap::new(),
+            )
+            .unwrap();
+
+        let result = engine
+            .find_nodes_by_all_labels(&["Person", "Employee", "Manager"])
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, all_three);
+
+        let result = engine
+            .find_nodes_by_all_labels(&["Person", "Employee"])
+            .unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn find_nodes_by_all_labels_empty_returns_empty() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        let result = engine.find_nodes_by_all_labels(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn find_nodes_by_all_labels_no_match() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Employee", HashMap::new()).unwrap();
+
+        let result = engine
+            .find_nodes_by_all_labels(&["Person", "Employee"])
+            .unwrap();
+        assert!(result.is_empty()); // no node has both
+    }
+
+    #[test]
+    fn find_nodes_by_any_label_union() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Employee", HashMap::new()).unwrap();
+        engine.create_node("Company", HashMap::new()).unwrap();
+
+        let result = engine
+            .find_nodes_by_any_label(&["Person", "Employee"])
+            .unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn node_has_label_true() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["A".into(), "B".into()], HashMap::new())
+            .unwrap();
+
+        assert!(engine.node_has_label(id, "A").unwrap());
+        assert!(engine.node_has_label(id, "B").unwrap());
+    }
+
+    #[test]
+    fn node_has_label_false() {
+        let engine = GraphEngine::new();
+
+        let id = engine.create_node("A", HashMap::new()).unwrap();
+
+        assert!(!engine.node_has_label(id, "B").unwrap());
+    }
+
+    #[test]
+    fn multi_label_node_indexed_under_each_label() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].id, id);
+
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert_eq!(employees.len(), 1);
+        assert_eq!(employees[0].id, id);
+    }
+
+    #[test]
+    fn add_label_updates_index() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        // Before adding label
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert!(employees.is_empty());
+
+        engine.add_label(id, "Employee").unwrap();
+
+        // After adding label
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert_eq!(employees.len(), 1);
+    }
+
+    #[test]
+    fn remove_label_updates_index() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+
+        engine.remove_label(id, "Employee").unwrap();
+
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert!(employees.is_empty());
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 1);
+    }
+
+    #[test]
+    fn delete_node_removes_all_labels_from_index() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+
+        engine.delete_node(id).unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert!(persons.is_empty());
+
+        let employees = engine.find_nodes_by_label("Employee").unwrap();
+        assert!(employees.is_empty());
+    }
+
+    #[test]
+    fn with_store_rebuilds_multi_label_index() {
+        let store = TensorStore::new();
+
+        let engine = GraphEngine::with_store(store.clone());
+        engine.create_label_index().unwrap();
+
+        engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+        drop(engine);
+
+        // Rebuild from store
+        let engine2 = GraphEngine::with_store(store);
+
+        let persons = engine2.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 1);
+
+        let employees = engine2.find_nodes_by_label("Employee").unwrap();
+        assert_eq!(employees.len(), 1);
+    }
+
+    #[test]
+    fn unicode_labels() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["Gebruiker".into(), "Benutzer".into()], HashMap::new())
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.has_label("Gebruiker"));
+        assert!(node.has_label("Benutzer"));
+    }
+
+    #[test]
+    fn empty_string_label() {
+        let engine = GraphEngine::new();
+
+        let id = engine
+            .create_node_with_labels(vec!["".into(), "Valid".into()], HashMap::new())
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.has_label(""));
+        assert!(node.has_label("Valid"));
+    }
+
+    #[test]
+    fn node_has_label_helper_method() {
+        let node = Node {
+            id: 1,
+            labels: vec!["A".into(), "B".into(), "C".into()],
+            properties: HashMap::new(),
+        };
+
+        assert!(node.has_label("A"));
+        assert!(node.has_label("B"));
+        assert!(node.has_label("C"));
+        assert!(!node.has_label("D"));
+        assert!(!node.has_label(""));
+    }
+
+    #[test]
+    fn label_index_auto_created_on_first_node() {
+        let engine = GraphEngine::new();
+
+        // No index initially
+        assert!(!engine.has_node_index("_label"));
+
+        // Create first node
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        // Index now exists
+        assert!(engine.has_node_index("_label"));
+    }
+
+    #[test]
+    fn find_nodes_by_label_uses_auto_index() {
+        let engine = GraphEngine::new();
+
+        // Create nodes (triggers auto-index)
+        for i in 0..100 {
+            let label = if i % 2 == 0 { "Even" } else { "Odd" };
+            engine.create_node(label, HashMap::new()).unwrap();
+        }
+
+        // Query uses index (not scan)
+        assert!(engine.has_node_index("_label"));
+        let evens = engine.find_nodes_by_label("Even").unwrap();
+        assert_eq!(evens.len(), 50);
+    }
+
+    #[test]
+    fn manual_label_index_still_works() {
+        let engine = GraphEngine::new();
+
+        // Manual creation before any nodes
+        engine.create_label_index().unwrap();
+        assert!(engine.has_node_index("_label"));
+
+        // Creating nodes still works
+        engine.create_node("Test", HashMap::new()).unwrap();
+
+        // Second manual call returns error
+        assert!(engine.create_label_index().is_err());
+    }
+
+    #[test]
+    fn label_index_survives_reload() {
+        let store = TensorStore::new();
+
+        {
+            let engine = GraphEngine::with_store(store.clone());
+            engine.create_node("Person", HashMap::new()).unwrap();
+            assert!(engine.has_node_index("_label"));
+        }
+
+        // Reload
+        let engine2 = GraphEngine::with_store(store);
+        assert!(engine2.has_node_index("_label"));
+    }
+
+    #[test]
+    fn edge_type_index_auto_created_on_first_edge() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // No edge type index initially
+        assert!(!engine.has_edge_index("_edge_type"));
+
+        // Create first edge
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Index now exists
+        assert!(engine.has_edge_index("_edge_type"));
+    }
+
+    #[test]
+    fn find_edges_by_type_uses_auto_index() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create edges (triggers auto-index)
+        for i in 0..50 {
+            let edge_type = if i % 2 == 0 { "KNOWS" } else { "FOLLOWS" };
+            engine
+                .create_edge(n1, n2, edge_type, HashMap::new(), true)
+                .unwrap();
+        }
+
+        // Query uses index
+        assert!(engine.has_edge_index("_edge_type"));
+        let knows = engine.find_edges_by_type("KNOWS").unwrap();
+        assert_eq!(knows.len(), 25);
+    }
+
+    #[test]
+    fn manual_edge_type_index_still_works() {
+        let engine = GraphEngine::new();
+
+        // Manual creation before any edges
+        engine.create_edge_type_index().unwrap();
+        assert!(engine.has_edge_index("_edge_type"));
+
+        // Creating edges still works
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Second manual call returns error
+        assert!(engine.create_edge_type_index().is_err());
+    }
+
+    #[test]
+    fn edge_type_index_survives_reload() {
+        let store = TensorStore::new();
+
+        {
+            let engine = GraphEngine::with_store(store.clone());
+            let n1 = engine.create_node("A", HashMap::new()).unwrap();
+            let n2 = engine.create_node("B", HashMap::new()).unwrap();
+            engine
+                .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            assert!(engine.has_edge_index("_edge_type"));
+        }
+
+        // Reload
+        let engine2 = GraphEngine::with_store(store);
+        assert!(engine2.has_edge_index("_edge_type"));
+    }
+
+    #[test]
+    fn find_weighted_path_simple() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Float(1.5));
+        engine.create_edge(n1, n2, "ROAD", props1, true).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Float(2.5));
+        engine.create_edge(n2, n3, "ROAD", props2, true).unwrap();
+
+        let path = engine.find_weighted_path(n1, n3, "weight").unwrap();
+        assert_eq!(path.nodes, vec![n1, n2, n3]);
+        assert_eq!(path.edges.len(), 2);
+        assert!((path.total_weight - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_same_node() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+        let path = engine.find_weighted_path(n1, n1, "weight").unwrap();
+        assert_eq!(path.nodes, vec![n1]);
+        assert!(path.edges.is_empty());
+        assert!((path.total_weight - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_chooses_lighter_route() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        // Direct heavy path: n1 -> n3 (weight 10)
+        let mut heavy = HashMap::new();
+        heavy.insert("weight".to_string(), PropertyValue::Float(10.0));
+        engine.create_edge(n1, n3, "DIRECT", heavy, true).unwrap();
+
+        // Indirect light path: n1 -> n2 -> n3 (weight 1 + 2 = 3)
+        let mut light1 = HashMap::new();
+        light1.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(n1, n2, "ROAD", light1, true).unwrap();
+
+        let mut light2 = HashMap::new();
+        light2.insert("weight".to_string(), PropertyValue::Float(2.0));
+        engine.create_edge(n2, n3, "ROAD", light2, true).unwrap();
+
+        let path = engine.find_weighted_path(n1, n3, "weight").unwrap();
+        assert_eq!(path.nodes, vec![n1, n2, n3]); // Takes lighter route
+        assert!((path.total_weight - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_default_weight() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        // No weight properties - should default to 1.0 each
+        engine
+            .create_edge(n1, n2, "ROAD", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "ROAD", HashMap::new(), true)
+            .unwrap();
+
+        let path = engine.find_weighted_path(n1, n3, "weight").unwrap();
+        assert_eq!(path.nodes.len(), 3);
+        assert!((path.total_weight - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_int_weight() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("cost".to_string(), PropertyValue::Int(5));
+        engine.create_edge(n1, n2, "ROAD", props, true).unwrap();
+
+        let path = engine.find_weighted_path(n1, n2, "cost").unwrap();
+        assert!((path.total_weight - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_negative_weight_error() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(-1.0));
+        engine.create_edge(n1, n2, "ROAD", props, true).unwrap();
+
+        let result = engine.find_weighted_path(n1, n2, "weight");
+        assert!(matches!(result, Err(GraphError::NegativeWeight { .. })));
+    }
+
+    #[test]
+    fn find_weighted_path_not_found() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        // No edge between them
+
+        let result = engine.find_weighted_path(n1, n2, "weight");
+        assert!(matches!(result, Err(GraphError::PathNotFound)));
+    }
+
+    #[test]
+    fn find_weighted_path_node_not_found() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine.find_weighted_path(n1, 999, "weight");
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn find_weighted_path_undirected() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        // Undirected edge n2 <-> n1
+        engine
+            .create_edge(n2, n1, "ROAD", props.clone(), false)
+            .unwrap();
+        // Directed edge n2 -> n3
+        engine.create_edge(n2, n3, "ROAD", props, true).unwrap();
+
+        // Can traverse n1 -> n2 (backwards on undirected) -> n3
+        let path = engine.find_weighted_path(n1, n3, "weight").unwrap();
+        assert_eq!(path.nodes, vec![n1, n2, n3]);
+    }
+
+    #[test]
+    fn find_weighted_path_zero_weight() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(0.0));
+        engine.create_edge(n1, n2, "FREE", props, true).unwrap();
+
+        let path = engine.find_weighted_path(n1, n2, "weight").unwrap();
+        assert!((path.total_weight - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn find_weighted_path_large_graph() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+
+        // Create chain of 100 nodes
+        for i in 0..100 {
+            let label = format!("N{i}");
+            nodes.push(engine.create_node(&label, HashMap::new()).unwrap());
+        }
+
+        // Connect with increasing weights
+        for i in 0..99 {
+            let mut props = HashMap::new();
+            props.insert("weight".to_string(), PropertyValue::Float((i + 1) as f64));
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "NEXT", props, true)
+                .unwrap();
+        }
+
+        let path = engine
+            .find_weighted_path(nodes[0], nodes[99], "weight")
+            .unwrap();
+        assert_eq!(path.nodes.len(), 100);
+        // Sum of 1 + 2 + ... + 99 = 99 * 100 / 2 = 4950
+        assert!((path.total_weight - 4950.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn weighted_path_equality() {
+        let p1 = WeightedPath {
+            nodes: vec![1, 2, 3],
+            edges: vec![10, 20],
+            total_weight: 5.0,
+        };
+        let p2 = p1.clone();
+        assert_eq!(p1, p2);
+    }
+
+    // ==================== find_all_paths tests ====================
+
+    #[test]
+    fn find_all_paths_simple() {
+        // Linear chain: A -> B -> C (only 1 path)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "NEXT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b, c, "NEXT", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a, b, c]);
+    }
+
+    #[test]
+    fn find_all_paths_diamond() {
+        // Diamond: A -> B1 -> C
+        //          A -> B2 -> C
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b1 = engine.create_node("B1", HashMap::new()).unwrap();
+        let b2 = engine.create_node("B2", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b1, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(a, b2, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b1, c, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b2, c, "E", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 2);
+
+        // Both paths should have length 3 nodes
+        for path in &result.paths {
+            assert_eq!(path.nodes.len(), 3);
+            assert_eq!(path.nodes[0], a);
+            assert_eq!(path.nodes[2], c);
+        }
+
+        // Check both middle nodes are present
+        let middles: Vec<u64> = result.paths.iter().map(|p| p.nodes[1]).collect();
+        assert!(middles.contains(&b1));
+        assert!(middles.contains(&b2));
+    }
+
+    #[test]
+    fn find_all_paths_same_node() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine.find_all_paths(a, a, None).unwrap();
+        assert_eq!(result.hop_count, 0);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a]);
+        assert!(result.paths[0].edges.is_empty());
+    }
+
+    #[test]
+    fn find_all_paths_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        // No edge between them
+
+        let result = engine.find_all_paths(a, b, None);
+        assert!(matches!(result, Err(GraphError::PathNotFound)));
+    }
+
+    #[test]
+    fn find_all_paths_node_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine.find_all_paths(a, 999, None);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+
+        let result = engine.find_all_paths(999, a, None);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn find_all_paths_three_parallel() {
+        // A -> B1/B2/B3 -> C (3 paths)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b1 = engine.create_node("B1", HashMap::new()).unwrap();
+        let b2 = engine.create_node("B2", HashMap::new()).unwrap();
+        let b3 = engine.create_node("B3", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b1, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(a, b2, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(a, b3, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b1, c, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b2, c, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b3, c, "E", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 3);
+    }
+
+    #[test]
+    fn find_all_paths_prefers_shorter() {
+        // A -> B -> C (short path, 2 hops)
+        // A -> D -> E -> C (long path, 3 hops)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+        let e = engine.create_node("E", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(a, d, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(d, e, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(e, c, "E", HashMap::new(), true).unwrap();
+
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a, b, c]);
+    }
+
+    #[test]
+    fn find_all_paths_undirected() {
+        // A -- B -- C (undirected)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "E", HashMap::new(), false)
+            .unwrap();
+        engine
+            .create_edge(b, c, "E", HashMap::new(), false)
+            .unwrap();
+
+        // Forward
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 1);
+
+        // Backward
+        let result = engine.find_all_paths(c, a, None).unwrap();
+        assert_eq!(result.hop_count, 2);
+        assert_eq!(result.paths.len(), 1);
+    }
+
+    #[test]
+    fn find_all_paths_with_cycle() {
+        // A -> B -> C with A -> C direct
+        //      ^-------|
+        // The cycle shouldn't cause infinite loop
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(c, a, "E", HashMap::new(), true).unwrap(); // cycle
+        engine.create_edge(a, c, "E", HashMap::new(), true).unwrap(); // direct
+
+        let result = engine.find_all_paths(a, c, None).unwrap();
+        // Shortest path is direct: A -> C (1 hop)
+        assert_eq!(result.hop_count, 1);
+        assert_eq!(result.paths.len(), 1);
+    }
+
+    #[test]
+    fn find_all_paths_max_paths_limit() {
+        // Create a graph with many paths
+        // A -> B1..B10 -> C (10 paths, but limit to 3)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        for i in 0..10 {
+            let b = engine
+                .create_node(&format!("B{i}"), HashMap::new())
+                .unwrap();
+            engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+            engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        }
+
+        let config = AllPathsConfig {
+            max_paths: 3,
+            max_parents_per_node: 100,
+        };
+        let result = engine.find_all_paths(a, c, Some(config)).unwrap();
+        assert_eq!(result.paths.len(), 3);
+    }
+
+    #[test]
+    fn find_all_paths_max_parents_limit() {
+        // A -> B1..B10 -> C, but limit parents per node to 2
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        for i in 0..10 {
+            let b = engine
+                .create_node(&format!("B{i}"), HashMap::new())
+                .unwrap();
+            engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+            engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        }
+
+        let config = AllPathsConfig {
+            max_paths: 1000,
+            max_parents_per_node: 2,
+        };
+        let result = engine.find_all_paths(a, c, Some(config)).unwrap();
+        // Only 2 parents tracked at C, so only 2 paths
+        assert_eq!(result.paths.len(), 2);
+    }
+
+    // ==================== find_all_weighted_paths tests ====================
+
+    #[test]
+    fn find_all_weighted_paths_simple() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(a, b, "E", props.clone(), true).unwrap();
+        engine.create_edge(b, c, "E", props, true).unwrap();
+
+        let result = engine
+            .find_all_weighted_paths(a, c, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 2.0).abs() < f64::EPSILON);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a, b, c]);
+    }
+
+    #[test]
+    fn find_all_weighted_paths_diamond_equal() {
+        // Diamond with equal weights: 2 paths
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b1 = engine.create_node("B1", HashMap::new()).unwrap();
+        let b2 = engine.create_node("B2", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(a, b1, "E", props.clone(), true).unwrap();
+        engine.create_edge(a, b2, "E", props.clone(), true).unwrap();
+        engine.create_edge(b1, c, "E", props.clone(), true).unwrap();
+        engine.create_edge(b2, c, "E", props, true).unwrap();
+
+        let result = engine
+            .find_all_weighted_paths(a, c, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 2.0).abs() < f64::EPSILON);
+        assert_eq!(result.paths.len(), 2);
+    }
+
+    #[test]
+    fn find_all_weighted_paths_one_lighter() {
+        // Diamond with different weights: only 1 lighter path
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b1 = engine.create_node("B1", HashMap::new()).unwrap();
+        let b2 = engine.create_node("B2", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut light = HashMap::new();
+        light.insert("weight".to_string(), PropertyValue::Float(1.0));
+        let mut heavy = HashMap::new();
+        heavy.insert("weight".to_string(), PropertyValue::Float(5.0));
+
+        engine.create_edge(a, b1, "E", light.clone(), true).unwrap();
+        engine.create_edge(b1, c, "E", light, true).unwrap();
+        engine.create_edge(a, b2, "E", heavy.clone(), true).unwrap();
+        engine.create_edge(b2, c, "E", heavy, true).unwrap();
+
+        let result = engine
+            .find_all_weighted_paths(a, c, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 2.0).abs() < f64::EPSILON);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes[1], b1);
+    }
+
+    #[test]
+    fn find_all_weighted_paths_epsilon() {
+        // Test float precision handling
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b1 = engine.create_node("B1", HashMap::new()).unwrap();
+        let b2 = engine.create_node("B2", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Float(1.0));
+        let mut props2 = HashMap::new();
+        // Very close but not exactly equal
+        props2.insert("weight".to_string(), PropertyValue::Float(1.000_000_000_01));
+
+        engine
+            .create_edge(a, b1, "E", props1.clone(), true)
+            .unwrap();
+        engine.create_edge(b1, c, "E", props1, true).unwrap();
+        engine
+            .create_edge(a, b2, "E", props2.clone(), true)
+            .unwrap();
+        engine.create_edge(b2, c, "E", props2, true).unwrap();
+
+        let result = engine
+            .find_all_weighted_paths(a, c, "weight", None)
+            .unwrap();
+        // Both paths should be considered equal weight (within epsilon)
+        assert_eq!(result.paths.len(), 2);
+    }
+
+    #[test]
+    fn find_all_weighted_paths_negative_error() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(-1.0));
+        engine.create_edge(a, b, "E", props, true).unwrap();
+
+        let result = engine.find_all_weighted_paths(a, b, "weight", None);
+        assert!(matches!(result, Err(GraphError::NegativeWeight { .. })));
+    }
+
+    #[test]
+    fn find_all_weighted_paths_same_node() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine
+            .find_all_weighted_paths(a, a, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 0.0).abs() < f64::EPSILON);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a]);
+    }
+
+    #[test]
+    fn find_all_weighted_paths_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        let result = engine.find_all_weighted_paths(a, b, "weight", None);
+        assert!(matches!(result, Err(GraphError::PathNotFound)));
+    }
+
+    #[test]
+    fn find_all_weighted_paths_node_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine.find_all_weighted_paths(a, 999, "weight", None);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+
+        let result = engine.find_all_weighted_paths(999, a, "weight", None);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn find_all_weighted_paths_undirected() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(a, b, "E", props.clone(), false).unwrap();
+        engine.create_edge(b, c, "E", props, false).unwrap();
+
+        // Forward
+        let result = engine
+            .find_all_weighted_paths(a, c, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 2.0).abs() < f64::EPSILON);
+
+        // Backward
+        let result = engine
+            .find_all_weighted_paths(c, a, "weight", None)
+            .unwrap();
+        assert!((result.total_weight - 2.0).abs() < f64::EPSILON);
+    }
+
+    // ==================== Struct tests ====================
+
+    #[test]
+    fn all_paths_equality() {
+        let p1 = AllPaths {
+            paths: vec![Path {
+                nodes: vec![1, 2],
+                edges: vec![10],
+            }],
+            hop_count: 1,
+        };
+        let p2 = p1.clone();
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn all_weighted_paths_equality() {
+        let p1 = AllWeightedPaths {
+            paths: vec![WeightedPath {
+                nodes: vec![1, 2],
+                edges: vec![10],
+                total_weight: 5.0,
+            }],
+            total_weight: 5.0,
+        };
+        let p2 = p1.clone();
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn all_paths_config_default() {
+        let config = AllPathsConfig::default();
+        assert_eq!(config.max_paths, 1000);
+        assert_eq!(config.max_parents_per_node, 100);
+    }
+
+    #[test]
+    fn all_paths_complex_grid() {
+        // 3x3 grid with multiple paths from top-left to bottom-right
+        // Each step right or down is one hop
+        let engine = GraphEngine::new();
+        let mut nodes = [[0u64; 3]; 3];
+
+        // Create nodes
+        for i in 0..3 {
+            for j in 0..3 {
+                nodes[i][j] = engine
+                    .create_node(&format!("N{i}{j}"), HashMap::new())
+                    .unwrap();
+            }
+        }
+
+        // Create horizontal edges
+        for i in 0..3 {
+            for j in 0..2 {
+                engine
+                    .create_edge(nodes[i][j], nodes[i][j + 1], "E", HashMap::new(), true)
+                    .unwrap();
+            }
+        }
+
+        // Create vertical edges
+        for i in 0..2 {
+            for j in 0..3 {
+                engine
+                    .create_edge(nodes[i][j], nodes[i + 1][j], "E", HashMap::new(), true)
+                    .unwrap();
+            }
+        }
+
+        let result = engine
+            .find_all_paths(nodes[0][0], nodes[2][2], None)
+            .unwrap();
+        // Shortest path is 4 hops (2 right + 2 down in any order)
+        assert_eq!(result.hop_count, 4);
+        // Number of paths = C(4,2) = 6 (choose 2 positions for "right" out of 4 moves)
+        assert_eq!(result.paths.len(), 6);
+    }
+
+    // ==================== Variable-length path tests ====================
+
+    #[test]
+    fn variable_paths_simple_chain() {
+        // A -> B -> C -> D
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "NEXT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b, c, "NEXT", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(c, d, "NEXT", HashMap::new(), true)
+            .unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 5);
+        let result = engine.find_variable_paths(a, d, config).unwrap();
+
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a, b, c, d]);
+        assert_eq!(result.paths[0].edges.len(), 3);
+        assert_eq!(result.stats.paths_found, 1);
+        assert_eq!(result.stats.min_length, Some(3));
+        assert_eq!(result.stats.max_length, Some(3));
+        assert!(!result.stats.truncated);
+    }
+
+    #[test]
+    fn variable_paths_exact_hops() {
+        // A -> B -> C, looking for exactly 2 hops
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(2, 2);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.stats.min_length, Some(2));
+        assert_eq!(result.stats.max_length, Some(2));
+    }
+
+    #[test]
+    fn variable_paths_hop_range() {
+        // A -> B -> C, looking for 1-3 hops from A to C
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        // Direct edge from A to C
+        engine.create_edge(a, c, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        // Should find both paths: A->C (1 hop) and A->B->C (2 hops)
+        assert_eq!(result.paths.len(), 2);
+        assert_eq!(result.stats.min_length, Some(1));
+        assert_eq!(result.stats.max_length, Some(2));
+    }
+
+    #[test]
+    fn variable_paths_no_path_in_range() {
+        // A -> B -> C, looking for exactly 1 hop from A to C
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 1);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        assert!(result.is_empty());
+        assert_eq!(result.stats.paths_found, 0);
+    }
+
+    #[test]
+    fn variable_paths_same_node_zero_hops() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let config = VariableLengthConfig::with_hops(0, 0);
+        let result = engine.find_variable_paths(a, a, config).unwrap();
+
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![a]);
+        assert!(result.paths[0].edges.is_empty());
+        assert_eq!(result.stats.min_length, Some(0));
+    }
+
+    #[test]
+    fn variable_paths_diamond() {
+        // A -> B -> D
+        //  \-> C -/
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(a, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, d, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(c, d, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(a, d, config).unwrap();
+
+        // Should find 2 paths: A->B->D and A->C->D
+        assert_eq!(result.paths.len(), 2);
+        assert_eq!(result.stats.min_length, Some(2));
+        assert_eq!(result.stats.max_length, Some(2));
+    }
+
+    #[test]
+    fn variable_paths_multiple_lengths() {
+        // A -> B -> C -> D with direct A -> D edge
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(c, d, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(a, d, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 5);
+        let result = engine.find_variable_paths(a, d, config).unwrap();
+
+        // Should find 2 paths: A->D (1 hop) and A->B->C->D (3 hops)
+        assert_eq!(result.paths.len(), 2);
+        assert_eq!(result.stats.min_length, Some(1));
+        assert_eq!(result.stats.max_length, Some(3));
+
+        let short_paths = result.paths_of_length(1);
+        assert_eq!(short_paths.len(), 1);
+
+        let long_paths = result.paths_of_length(3);
+        assert_eq!(long_paths.len(), 1);
+    }
+
+    #[test]
+    fn variable_paths_edge_type_filter() {
+        // A -> B (KNOWS) -> C (KNOWS)
+        // A -> B (WORKS_WITH) -> C
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b, c, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(a, c, "WORKS_WITH", HashMap::new(), true)
+            .unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3).edge_type("KNOWS");
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        // Should only find A->B->C via KNOWS edges
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].edges.len(), 2);
+    }
+
+    #[test]
+    fn variable_paths_multiple_edge_types() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(b, c, "WORKS_WITH", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(a, c, "LIVES_WITH", HashMap::new(), true)
+            .unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3).edge_types(&["KNOWS", "WORKS_WITH"]);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        // Should find A->B->C via KNOWS and WORKS_WITH, but not A->C via LIVES_WITH
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].edges.len(), 2);
+    }
+
+    #[test]
+    fn variable_paths_direction_incoming() {
+        // A -> B -> C, search from C to A with Incoming direction
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3).direction(Direction::Incoming);
+        let result = engine.find_variable_paths(c, a, config).unwrap();
+
+        // Should find path C->B->A following edges backwards
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].nodes, vec![c, b, a]);
+    }
+
+    #[test]
+    fn variable_paths_max_paths_limit() {
+        // Create a graph with many paths
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let z = engine.create_node("Z", HashMap::new()).unwrap();
+
+        // Create 10 intermediate nodes, each connecting A to Z
+        for i in 0..10 {
+            let n = engine
+                .create_node(&format!("N{i}"), HashMap::new())
+                .unwrap();
+            engine.create_edge(a, n, "E", HashMap::new(), true).unwrap();
+            engine.create_edge(n, z, "E", HashMap::new(), true).unwrap();
+        }
+
+        let config = VariableLengthConfig::with_hops(1, 3).max_paths(5);
+        let result = engine.find_variable_paths(a, z, config).unwrap();
+
+        assert_eq!(result.paths.len(), 5);
+        assert!(result.stats.truncated);
+    }
+
+    #[test]
+    fn variable_paths_cycle_detection() {
+        // A -> B -> C -> A (cycle), looking for paths from A to C
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(c, a, "E", HashMap::new(), true).unwrap();
+
+        // Without allowing cycles
+        let config = VariableLengthConfig::with_hops(1, 5).allow_cycles(false);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+        assert_eq!(result.paths.len(), 1); // Only A->B->C
+
+        // With allowing cycles, we might find more paths via the cycle
+        let config = VariableLengthConfig::with_hops(1, 5).allow_cycles(true);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+        // Could find A->B->C and A->B->C->A->B->C, etc.
+        assert!(result.paths.len() >= 1);
+    }
+
+    #[test]
+    fn variable_paths_node_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let config = VariableLengthConfig::default();
+
+        let result = engine.find_variable_paths(a, 999, config.clone());
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+
+        let result = engine.find_variable_paths(999, a, config);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn variable_paths_undirected() {
+        // A -- B -- C (undirected edges)
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "E", HashMap::new(), false)
+            .unwrap();
+        engine
+            .create_edge(b, c, "E", HashMap::new(), false)
+            .unwrap();
+
+        // Can traverse forward
+        let config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+        assert_eq!(result.paths.len(), 1);
+
+        // Can also traverse backward
+        let config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(c, a, config).unwrap();
+        assert_eq!(result.paths.len(), 1);
+    }
+
+    #[test]
+    fn variable_paths_stats_accuracy() {
+        // A -> B -> C
+        //  \-> D -/
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+
+        engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(a, d, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(b, c, "E", HashMap::new(), true).unwrap();
+        engine.create_edge(d, c, "E", HashMap::new(), true).unwrap();
+
+        let config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(a, c, config).unwrap();
+
+        assert_eq!(result.stats.paths_found, 2);
+        assert!(result.stats.nodes_explored > 0);
+        assert!(result.stats.edges_traversed > 0);
+        assert!(!result.stats.truncated);
+    }
+
+    #[test]
+    fn variable_length_config_default() {
+        let config = VariableLengthConfig::default();
+        assert_eq!(config.min_hops, 1);
+        assert_eq!(config.max_hops, 5);
+        assert_eq!(config.direction, Direction::Outgoing);
+        assert!(config.edge_types.is_none());
+        assert_eq!(config.max_paths, 1000);
+        assert!(!config.allow_cycles);
+    }
+
+    #[test]
+    fn variable_length_config_safety_cap() {
+        // max_hops is capped at 20
+        let config = VariableLengthConfig::with_hops(1, 100);
+        assert_eq!(config.max_hops, 20);
+    }
+
+    #[test]
+    fn variable_length_paths_is_empty() {
+        let empty = VariableLengthPaths {
+            paths: vec![],
+            stats: PathSearchStats::default(),
+        };
+        assert!(empty.is_empty());
+
+        let non_empty = VariableLengthPaths {
+            paths: vec![Path {
+                nodes: vec![1],
+                edges: vec![],
+            }],
+            stats: PathSearchStats::default(),
+        };
+        assert!(!non_empty.is_empty());
+    }
+
+    // Property filtering tests
+
+    #[test]
+    fn property_condition_eq_match() {
+        let cond = PropertyCondition::new("age", CompareOp::Eq, PropertyValue::Int(30));
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        let node = Node {
+            id: 1,
+            labels: vec!["Person".to_string()],
+            properties: props,
+        };
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_eq_no_match() {
+        let cond = PropertyCondition::new("age", CompareOp::Eq, PropertyValue::Int(30));
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(25));
+        let node = Node {
+            id: 1,
+            labels: vec!["Person".to_string()],
+            properties: props,
+        };
+        assert!(!cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_ne_match() {
+        let cond = PropertyCondition::new(
+            "status",
+            CompareOp::Ne,
+            PropertyValue::String("inactive".to_string()),
+        );
+        let mut props = HashMap::new();
+        props.insert(
+            "status".to_string(),
+            PropertyValue::String("active".to_string()),
+        );
+        let node = Node {
+            id: 1,
+            labels: vec!["User".to_string()],
+            properties: props,
+        };
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_ne_missing_property() {
+        let cond = PropertyCondition::new("missing", CompareOp::Ne, PropertyValue::Int(10));
+        let node = Node {
+            id: 1,
+            labels: vec!["Person".to_string()],
+            properties: HashMap::new(),
+        };
+        // Missing property should return true for Ne
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_lt_int() {
+        let cond = PropertyCondition::new("age", CompareOp::Lt, PropertyValue::Int(30));
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(25));
+        let node = Node {
+            id: 1,
+            labels: vec!["Person".to_string()],
+            properties: props,
+        };
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_le_float() {
+        let cond = PropertyCondition::new("weight", CompareOp::Le, PropertyValue::Float(5.0));
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(5.0));
+        let edge = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "CONNECTS".to_string(),
+            properties: props,
+            directed: true,
+        };
+        assert!(cond.matches_edge(&edge));
+    }
+
+    #[test]
+    fn property_condition_gt_string() {
+        let cond = PropertyCondition::new(
+            "name",
+            CompareOp::Gt,
+            PropertyValue::String("Alice".to_string()),
+        );
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+        let node = Node {
+            id: 1,
+            labels: vec!["Person".to_string()],
+            properties: props,
+        };
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_ge_comparison() {
+        let cond = PropertyCondition::new("score", CompareOp::Ge, PropertyValue::Int(100));
+        let mut props1 = HashMap::new();
+        props1.insert("score".to_string(), PropertyValue::Int(100));
+        let node1 = Node {
+            id: 1,
+            labels: vec![],
+            properties: props1,
+        };
+        assert!(cond.matches_node(&node1));
+
+        let mut props2 = HashMap::new();
+        props2.insert("score".to_string(), PropertyValue::Int(150));
+        let node2 = Node {
+            id: 2,
+            labels: vec![],
+            properties: props2,
+        };
+        assert!(cond.matches_node(&node2));
+    }
+
+    #[test]
+    fn traversal_filter_empty_matches_all() {
+        let filter = TraversalFilter::new();
+        assert!(filter.is_empty());
+
+        let node = Node {
+            id: 1,
+            labels: vec!["Any".to_string()],
+            properties: HashMap::new(),
+        };
+        assert!(filter.matches_node(&node));
+
+        let edge = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "ANY".to_string(),
+            properties: HashMap::new(),
+            directed: true,
+        };
+        assert!(filter.matches_edge(&edge));
+    }
+
+    #[test]
+    fn traversal_filter_single_node_condition() {
+        let filter = TraversalFilter::new().node_eq("active", PropertyValue::Bool(true));
+
+        let mut props_active = HashMap::new();
+        props_active.insert("active".to_string(), PropertyValue::Bool(true));
+        let active_node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props_active,
+        };
+        assert!(filter.matches_node(&active_node));
+
+        let mut props_inactive = HashMap::new();
+        props_inactive.insert("active".to_string(), PropertyValue::Bool(false));
+        let inactive_node = Node {
+            id: 2,
+            labels: vec![],
+            properties: props_inactive,
+        };
+        assert!(!filter.matches_node(&inactive_node));
+    }
+
+    #[test]
+    fn traversal_filter_multiple_conditions_and() {
+        let filter = TraversalFilter::new()
+            .node_where("age", CompareOp::Ge, PropertyValue::Int(18))
+            .node_where("age", CompareOp::Lt, PropertyValue::Int(65));
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props,
+        };
+        assert!(filter.matches_node(&node));
+
+        let mut props_too_young = HashMap::new();
+        props_too_young.insert("age".to_string(), PropertyValue::Int(16));
+        let too_young = Node {
+            id: 2,
+            labels: vec![],
+            properties: props_too_young,
+        };
+        assert!(!filter.matches_node(&too_young));
+    }
+
+    #[test]
+    fn traversal_filter_edge_condition() {
+        let filter =
+            TraversalFilter::new().edge_where("weight", CompareOp::Lt, PropertyValue::Float(10.0));
+
+        let mut light_props = HashMap::new();
+        light_props.insert("weight".to_string(), PropertyValue::Float(5.0));
+        let light_edge = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "CONNECTS".to_string(),
+            properties: light_props,
+            directed: true,
+        };
+        assert!(filter.matches_edge(&light_edge));
+
+        let mut heavy_props = HashMap::new();
+        heavy_props.insert("weight".to_string(), PropertyValue::Float(15.0));
+        let heavy_edge = Edge {
+            id: 2,
+            from: 2,
+            to: 3,
+            edge_type: "CONNECTS".to_string(),
+            properties: heavy_props,
+            directed: true,
+        };
+        assert!(!filter.matches_edge(&heavy_edge));
+    }
+
+    #[test]
+    fn traversal_filter_builder_pattern() {
+        let filter = TraversalFilter::new()
+            .node_eq("type", PropertyValue::String("user".to_string()))
+            .node_ne("banned", PropertyValue::Bool(true))
+            .edge_eq("active", PropertyValue::Bool(true));
+
+        assert!(!filter.is_empty());
+    }
+
+    #[test]
+    fn traverse_filtered_by_node_property() {
+        let engine = GraphEngine::new();
+
+        // Create nodes with different ages
+        let mut props30 = HashMap::new();
+        props30.insert("age".to_string(), PropertyValue::Int(30));
+        let n1 = engine.create_node("Person", props30).unwrap();
+
+        let mut props25 = HashMap::new();
+        props25.insert("age".to_string(), PropertyValue::Int(25));
+        let n2 = engine.create_node("Person", props25).unwrap();
+
+        let mut props35 = HashMap::new();
+        props35.insert("age".to_string(), PropertyValue::Int(35));
+        let n3 = engine.create_node("Person", props35).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Filter for age > 28
+        let filter =
+            TraversalFilter::new().node_where("age", CompareOp::Gt, PropertyValue::Int(28));
+
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 2, None, Some(&filter))
+            .unwrap();
+
+        // Should include n1 (start node always included) and n3 (age 35 > 28)
+        // n2 (age 25) should be excluded from results but still traversed through
+        assert!(result.iter().any(|n| n.id == n1));
+        assert!(result.iter().any(|n| n.id == n3));
+        assert!(!result.iter().any(|n| n.id == n2)); // n2 filtered out
+    }
+
+    #[test]
+    fn traverse_filtered_by_edge_property() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let mut light = HashMap::new();
+        light.insert("weight".to_string(), PropertyValue::Float(2.0));
+        engine.create_edge(n1, n2, "EDGE", light, true).unwrap();
+
+        let mut heavy = HashMap::new();
+        heavy.insert("weight".to_string(), PropertyValue::Float(10.0));
+        engine.create_edge(n1, n3, "EDGE", heavy, true).unwrap();
+
+        // Filter for weight < 5.0
+        let filter =
+            TraversalFilter::new().edge_where("weight", CompareOp::Lt, PropertyValue::Float(5.0));
+
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 1, None, Some(&filter))
+            .unwrap();
+
+        // Should include n1 and n2, but not n3 (edge too heavy)
+        assert!(result.iter().any(|n| n.id == n1));
+        assert!(result.iter().any(|n| n.id == n2));
+        assert!(!result.iter().any(|n| n.id == n3));
+    }
+
+    #[test]
+    fn traverse_filtered_combined() {
+        let engine = GraphEngine::new();
+
+        let mut props30 = HashMap::new();
+        props30.insert("age".to_string(), PropertyValue::Int(30));
+        let n1 = engine.create_node("Person", props30).unwrap();
+
+        let mut props40 = HashMap::new();
+        props40.insert("age".to_string(), PropertyValue::Int(40));
+        let n2 = engine.create_node("Person", props40).unwrap();
+
+        let mut props20 = HashMap::new();
+        props20.insert("age".to_string(), PropertyValue::Int(20));
+        let n3 = engine.create_node("Person", props20).unwrap();
+
+        let mut close = HashMap::new();
+        close.insert("distance".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(n1, n2, "KNOWS", close, true).unwrap();
+
+        let mut far = HashMap::new();
+        far.insert("distance".to_string(), PropertyValue::Float(100.0));
+        engine.create_edge(n1, n3, "KNOWS", far, true).unwrap();
+
+        // Filter for age > 25 AND distance < 50
+        let filter = TraversalFilter::new()
+            .node_where("age", CompareOp::Gt, PropertyValue::Int(25))
+            .edge_where("distance", CompareOp::Lt, PropertyValue::Float(50.0));
+
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 1, None, Some(&filter))
+            .unwrap();
+
+        // n1 is start (always included), n2 passes both filters
+        // n3 fails node filter (age 20 < 25) AND edge is filtered out
+        assert!(result.iter().any(|n| n.id == n1));
+        assert!(result.iter().any(|n| n.id == n2));
+        assert!(!result.iter().any(|n| n.id == n3));
+    }
+
+    #[test]
+    fn traverse_filtered_no_matches() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("level".to_string(), PropertyValue::Int(5));
+        let n1 = engine.create_node("Node", props.clone()).unwrap();
+        let n2 = engine.create_node("Node", props).unwrap();
+
+        engine
+            .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+            .unwrap();
+
+        // Filter that matches nothing (level > 100)
+        let filter =
+            TraversalFilter::new().node_where("level", CompareOp::Gt, PropertyValue::Int(100));
+
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 1, None, Some(&filter))
+            .unwrap();
+
+        // Only start node included
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, n1);
+    }
+
+    #[test]
+    fn traverse_filtered_with_edge_type() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let mut active = HashMap::new();
+        active.insert("active".to_string(), PropertyValue::Bool(true));
+        engine
+            .create_edge(n1, n2, "KNOWS", active.clone(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "WORKS_WITH", active, true)
+            .unwrap();
+
+        let filter = TraversalFilter::new().edge_eq("active", PropertyValue::Bool(true));
+
+        // Only traverse KNOWS edges with active=true
+        let result = engine
+            .traverse(n1, Direction::Outgoing, 1, Some("KNOWS"), Some(&filter))
+            .unwrap();
+
+        assert!(result.iter().any(|n| n.id == n1));
+        assert!(result.iter().any(|n| n.id == n2));
+        assert!(!result.iter().any(|n| n.id == n3)); // filtered by edge type
+    }
+
+    #[test]
+    fn find_path_filtered_by_edge() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n4 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create two paths: n1 -> n2 -> n4 (blocked) and n1 -> n3 -> n4 (open)
+        let mut blocked = HashMap::new();
+        blocked.insert("blocked".to_string(), PropertyValue::Bool(true));
+        engine.create_edge(n1, n2, "PATH", blocked, true).unwrap();
+        engine
+            .create_edge(n2, n4, "PATH", HashMap::new(), true)
+            .unwrap();
+
+        let mut open = HashMap::new();
+        open.insert("blocked".to_string(), PropertyValue::Bool(false));
+        engine
+            .create_edge(n1, n3, "PATH", open.clone(), true)
+            .unwrap();
+        engine.create_edge(n3, n4, "PATH", open, true).unwrap();
+
+        // Filter out blocked edges
+        let filter = TraversalFilter::new().edge_ne("blocked", PropertyValue::Bool(true));
+
+        let path = engine.find_path(n1, n4, Some(&filter)).unwrap();
+
+        // Path should go through n3, not n2
+        assert!(path.nodes.contains(&n3));
+        assert!(!path.nodes.contains(&n2));
+    }
+
+    #[test]
+    fn find_path_filtered_no_path() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let mut blocked = HashMap::new();
+        blocked.insert("passable".to_string(), PropertyValue::Bool(false));
+        engine.create_edge(n1, n2, "PATH", blocked, true).unwrap();
+
+        // Filter requires passable=true
+        let filter = TraversalFilter::new().edge_eq("passable", PropertyValue::Bool(true));
+
+        let result = engine.find_path(n1, n2, Some(&filter));
+        assert!(matches!(result, Err(GraphError::PathNotFound)));
+    }
+
+    #[test]
+    fn find_path_filtered_alternate_route() {
+        let engine = GraphEngine::new();
+
+        let start = engine.create_node("Node", HashMap::new()).unwrap();
+        let end = engine.create_node("Node", HashMap::new()).unwrap();
+        let mid1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let mid2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Short path through mid1 with high cost
+        let mut high_cost = HashMap::new();
+        high_cost.insert("cost".to_string(), PropertyValue::Int(100));
+        engine
+            .create_edge(start, mid1, "PATH", high_cost.clone(), true)
+            .unwrap();
+        engine
+            .create_edge(mid1, end, "PATH", high_cost, true)
+            .unwrap();
+
+        // Longer path through mid2 with low cost
+        let mut low_cost = HashMap::new();
+        low_cost.insert("cost".to_string(), PropertyValue::Int(5));
+        engine
+            .create_edge(start, mid2, "PATH", low_cost.clone(), true)
+            .unwrap();
+        engine
+            .create_edge(mid2, end, "PATH", low_cost, true)
+            .unwrap();
+
+        // Filter for cost < 50
+        let filter =
+            TraversalFilter::new().edge_where("cost", CompareOp::Lt, PropertyValue::Int(50));
+
+        let path = engine.find_path(start, end, Some(&filter)).unwrap();
+
+        // Path should go through mid2 (low cost), not mid1 (high cost blocked)
+        assert!(path.nodes.contains(&mid2));
+        assert!(!path.nodes.contains(&mid1));
+    }
+
+    #[test]
+    fn variable_paths_with_filter() {
+        let engine = GraphEngine::new();
+
+        let mut active = HashMap::new();
+        active.insert("active".to_string(), PropertyValue::Bool(true));
+        let n1 = engine.create_node("Node", active.clone()).unwrap();
+        let n2 = engine.create_node("Node", active.clone()).unwrap();
+
+        let mut inactive = HashMap::new();
+        inactive.insert("active".to_string(), PropertyValue::Bool(false));
+        let n3 = engine.create_node("Node", inactive).unwrap();
+
+        let n4 = engine.create_node("Node", active).unwrap();
+
+        // n1 -> n2 -> n4 (all active)
+        // n1 -> n3 -> n4 (n3 is inactive)
+        engine
+            .create_edge(n1, n2, "PATH", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n4, "PATH", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "PATH", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n4, "PATH", HashMap::new(), true)
+            .unwrap();
+
+        let filter = TraversalFilter::new().node_eq("active", PropertyValue::Bool(true));
+
+        let config = VariableLengthConfig::with_hops(1, 3).with_filter(filter);
+
+        let result = engine.find_variable_paths(n1, n4, config).unwrap();
+
+        // Should only find path through n2 (active), not n3 (inactive)
+        assert!(!result.paths.is_empty());
+        for path in &result.paths {
+            assert!(!path.nodes.contains(&n3));
+        }
+    }
+
+    #[test]
+    fn variable_paths_filter_range_ops() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let mut light = HashMap::new();
+        light.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine
+            .create_edge(n1, n2, "E", light.clone(), true)
+            .unwrap();
+        engine.create_edge(n2, n3, "E", light, true).unwrap();
+
+        let mut heavy = HashMap::new();
+        heavy.insert("weight".to_string(), PropertyValue::Float(100.0));
+        engine.create_edge(n1, n3, "E", heavy, true).unwrap();
+
+        let filter =
+            TraversalFilter::new().edge_where("weight", CompareOp::Le, PropertyValue::Float(10.0));
+
+        let config = VariableLengthConfig::with_hops(1, 2).with_filter(filter);
+
+        let result = engine.find_variable_paths(n1, n3, config).unwrap();
+
+        // Should find path n1 -> n2 -> n3, but not direct n1 -> n3 (too heavy)
+        assert!(!result.paths.is_empty());
+        for path in &result.paths {
+            // All paths should be length 2 (through n2)
+            assert_eq!(path.nodes.len(), 3);
+            assert!(path.nodes.contains(&n2));
+        }
+    }
+
+    #[test]
+    fn filter_null_property_value() {
+        let cond = PropertyCondition::new("field", CompareOp::Eq, PropertyValue::Null);
+
+        let mut props_null = HashMap::new();
+        props_null.insert("field".to_string(), PropertyValue::Null);
+        let node_null = Node {
+            id: 1,
+            labels: vec![],
+            properties: props_null,
+        };
+        assert!(cond.matches_node(&node_null));
+
+        let mut props_int = HashMap::new();
+        props_int.insert("field".to_string(), PropertyValue::Int(5));
+        let node_int = Node {
+            id: 2,
+            labels: vec![],
+            properties: props_int,
+        };
+        assert!(!cond.matches_node(&node_int));
+    }
+
+    #[test]
+    fn filter_empty_is_noop() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+            .unwrap();
+
+        let empty_filter = TraversalFilter::new();
+
+        // Traverse with empty filter should behave same as no filter
+        let with_filter = engine
+            .traverse(n1, Direction::Outgoing, 1, None, Some(&empty_filter))
+            .unwrap();
+        let without_filter = engine
+            .traverse(n1, Direction::Outgoing, 1, None, None)
+            .unwrap();
+
+        assert_eq!(with_filter.len(), without_filter.len());
+    }
+
+    #[test]
+    fn neighbors_with_filter() {
+        let engine = GraphEngine::new();
+
+        let mut props30 = HashMap::new();
+        props30.insert("age".to_string(), PropertyValue::Int(30));
+        let n1 = engine.create_node("Person", props30).unwrap();
+
+        let mut props25 = HashMap::new();
+        props25.insert("age".to_string(), PropertyValue::Int(25));
+        let n2 = engine.create_node("Person", props25).unwrap();
+
+        let mut props40 = HashMap::new();
+        props40.insert("age".to_string(), PropertyValue::Int(40));
+        let n3 = engine.create_node("Person", props40).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let filter =
+            TraversalFilter::new().node_where("age", CompareOp::Ge, PropertyValue::Int(30));
+
+        let neighbors = engine
+            .neighbors(n1, None, Direction::Outgoing, Some(&filter))
+            .unwrap();
+
+        // Should only include n3 (age 40), not n2 (age 25)
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0].id, n3);
+    }
+
+    #[test]
+    fn variable_length_config_with_filter() {
+        let filter = TraversalFilter::new().node_eq("active", PropertyValue::Bool(true));
+
+        let config = VariableLengthConfig::with_hops(1, 5)
+            .direction(Direction::Both)
+            .edge_type("KNOWS")
+            .with_filter(filter);
+
+        assert!(config.filter.is_some());
+        assert!(!config.filter.as_ref().unwrap().is_empty());
+    }
+
+    // Degree calculation tests
+
+    #[test]
+    fn out_degree_no_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        assert_eq!(engine.out_degree(n1).unwrap(), 0);
+    }
+
+    #[test]
+    fn in_degree_no_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        assert_eq!(engine.in_degree(n1).unwrap(), 0);
+    }
+
+    #[test]
+    fn degree_no_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        assert_eq!(engine.degree(n1).unwrap(), 0);
+    }
+
+    #[test]
+    fn out_degree_with_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.out_degree(n1).unwrap(), 2);
+        assert_eq!(engine.out_degree(n2).unwrap(), 0);
+        assert_eq!(engine.out_degree(n3).unwrap(), 0);
+    }
+
+    #[test]
+    fn in_degree_with_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.in_degree(n1).unwrap(), 0);
+        assert_eq!(engine.in_degree(n2).unwrap(), 1);
+        assert_eq!(engine.in_degree(n3).unwrap(), 1);
+    }
+
+    #[test]
+    fn degree_with_edges() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n1, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        // n1: 2 outgoing + 1 incoming = 3
+        assert_eq!(engine.degree(n1).unwrap(), 3);
+        // n2: 0 outgoing + 1 incoming = 1
+        assert_eq!(engine.degree(n2).unwrap(), 1);
+        // n3: 1 outgoing + 1 incoming = 2
+        assert_eq!(engine.degree(n3).unwrap(), 2);
+    }
+
+    #[test]
+    fn out_degree_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.out_degree(999);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn in_degree_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.in_degree(999);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn degree_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.degree(999);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn out_degree_by_type_matches() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.out_degree_by_type(n1, "KNOWS").unwrap(), 1);
+        assert_eq!(engine.out_degree_by_type(n1, "FOLLOWS").unwrap(), 1);
+    }
+
+    #[test]
+    fn out_degree_by_type_no_match() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.out_degree_by_type(n1, "FOLLOWS").unwrap(), 0);
+    }
+
+    #[test]
+    fn in_degree_by_type_matches() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n2, n1, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n1, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.in_degree_by_type(n1, "KNOWS").unwrap(), 1);
+        assert_eq!(engine.in_degree_by_type(n1, "FOLLOWS").unwrap(), 1);
+    }
+
+    #[test]
+    fn in_degree_by_type_no_match() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n2, n1, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.in_degree_by_type(n1, "FOLLOWS").unwrap(), 0);
+    }
+
+    #[test]
+    fn degree_by_type_combined() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        // n1 -> n2 (KNOWS)
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        // n3 -> n1 (KNOWS)
+        engine
+            .create_edge(n3, n1, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        // n1 -> n3 (FOLLOWS)
+        engine
+            .create_edge(n1, n3, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        // n1 has 1 outgoing KNOWS + 1 incoming KNOWS = 2
+        assert_eq!(engine.degree_by_type(n1, "KNOWS").unwrap(), 2);
+        // n1 has 1 outgoing FOLLOWS + 0 incoming FOLLOWS = 1
+        assert_eq!(engine.degree_by_type(n1, "FOLLOWS").unwrap(), 1);
+    }
+
+    #[test]
+    fn degree_undirected_edge() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        // Undirected edge: stored in both outgoing and incoming lists for both nodes
+        engine
+            .create_edge(n1, n2, "FRIENDS", HashMap::new(), false)
+            .unwrap();
+
+        // Each node sees the edge in both outgoing and incoming
+        assert_eq!(engine.out_degree(n1).unwrap(), 1);
+        assert_eq!(engine.in_degree(n1).unwrap(), 1);
+        assert_eq!(engine.degree(n1).unwrap(), 2);
+
+        assert_eq!(engine.out_degree(n2).unwrap(), 1);
+        assert_eq!(engine.in_degree(n2).unwrap(), 1);
+        assert_eq!(engine.degree(n2).unwrap(), 2);
+    }
+
+    #[test]
+    fn degree_hub_node() {
+        let engine = GraphEngine::new();
+        let hub = engine.create_node("Hub", HashMap::new()).unwrap();
+
+        // Create 100 nodes connected to the hub
+        for _ in 0..100 {
+            let node = engine.create_node("Spoke", HashMap::new()).unwrap();
+            engine
+                .create_edge(hub, node, "CONNECTS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        assert_eq!(engine.out_degree(hub).unwrap(), 100);
+        assert_eq!(engine.in_degree(hub).unwrap(), 0);
+        assert_eq!(engine.degree(hub).unwrap(), 100);
+    }
+
+    #[test]
+    fn degree_self_loop() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        // Self-loop: same node as source and target
+        engine
+            .create_edge(n1, n1, "SELF", HashMap::new(), true)
+            .unwrap();
+
+        // Self-loop appears in both outgoing and incoming lists
+        assert_eq!(engine.out_degree(n1).unwrap(), 1);
+        assert_eq!(engine.in_degree(n1).unwrap(), 1);
+        assert_eq!(engine.degree(n1).unwrap(), 2);
+    }
+
+    #[test]
+    fn degree_by_type_mixed_types() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        // Create multiple edges of different types
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n2, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n1, "LIKES", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.out_degree_by_type(n1, "KNOWS").unwrap(), 2);
+        assert_eq!(engine.out_degree_by_type(n1, "FOLLOWS").unwrap(), 1);
+        assert_eq!(engine.out_degree_by_type(n1, "LIKES").unwrap(), 0);
+
+        assert_eq!(engine.in_degree_by_type(n1, "KNOWS").unwrap(), 0);
+        assert_eq!(engine.in_degree_by_type(n1, "LIKES").unwrap(), 1);
+
+        assert_eq!(engine.degree_by_type(n1, "KNOWS").unwrap(), 2);
+        assert_eq!(engine.degree_by_type(n1, "LIKES").unwrap(), 1);
+
+        // Total degree for n1: 3 outgoing + 1 incoming = 4
+        assert_eq!(engine.degree(n1).unwrap(), 4);
     }
 }

@@ -201,8 +201,8 @@ impl From<std::io::Error> for TcpError {
     }
 }
 
-impl From<bincode::Error> for TcpError {
-    fn from(err: bincode::Error) -> Self {
+impl From<bitcode::Error> for TcpError {
+    fn from(err: bitcode::Error) -> Self {
         Self::Serialization(err.to_string())
     }
 }
@@ -343,7 +343,7 @@ mod tests {
     fn test_from_bincode_error() {
         // Create a bincode error by deserializing invalid data
         let bad_data = vec![0xff, 0xff, 0xff];
-        let result: std::result::Result<String, bincode::Error> = bincode::deserialize(&bad_data);
+        let result: std::result::Result<String, bitcode::Error> = bitcode::deserialize(&bad_data);
         if let Err(bincode_err) = result {
             let tcp_err: TcpError = bincode_err.into();
             assert!(matches!(tcp_err, TcpError::Serialization(_)));

@@ -156,7 +156,7 @@ fuzz_target!(|input: FramingInput| {
                 assert_eq!(length, encoded.len() - 4);
 
                 // Decode should succeed
-                let decoded: Result<Handshake, _> = bincode::deserialize(&encoded[4..]);
+                let decoded: Result<Handshake, _> = bitcode::deserialize(&encoded[4..]);
                 assert!(decoded.is_ok(), "Failed to decode valid handshake");
             }
         },

@@ -186,23 +186,6 @@
 <p>tensor_chain automatically detects and resolves deadlocks in distributed
 transactions using wait-for graph analysis. This runbook covers monitoring,
 tuning, and manual intervention.</p>
-<h2 id="symptoms"><a class="header" href="#symptoms">Symptoms</a></h2>
-<ul>
-<li>Transactions stuck in prepare or commit phases</li>
-<li>Increased <code>tensor_chain_deadlocks_total</code> rate</li>
-<li>Rising transaction latency without throughput gains</li>
-</ul>
-<h2 id="diagnostic-steps"><a class="header" href="#diagnostic-steps">Diagnostic Steps</a></h2>
-<ol>
-<li>Check deadlock metrics and wait graph size:
-<code>curl -s http://node:9090/metrics | grep tensor_chain_deadlocks</code></li>
-<li>Review logs for detected cycles:
-<code>grep "Deadlock detected" /var/log/neumann/tensor_chain.log</code></li>
-<li>List active deadlocks:
-<code>neumann-admin deadlock list</code></li>
-</ol>
-<h2 id="resolution"><a class="header" href="#resolution">Resolution</a></h2>
-<p>Use automatic detection and, if needed, manual intervention steps below.</p>
 <h2 id="automatic-detection"><a class="header" href="#automatic-detection">Automatic Detection</a></h2>
 <p>Deadlocks are detected within <code>detection_interval_ms</code> (default: 100ms) and
 resolved by aborting a victim transaction based on configured policy.</p>

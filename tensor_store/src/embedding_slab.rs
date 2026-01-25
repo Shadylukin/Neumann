@@ -1075,4 +1075,93 @@ mod tests {
         let _ = slab.entries();
         let _ = slab.snapshot();
     }
+
+    // ========== Phase 3: Negative Path Tests ==========
+
+    #[test]
+    fn test_embedding_error_not_found_explicit() {
+        // Verify NotFound error variant can be constructed and formatted
+        let err = EmbeddingError::NotFound(EntityId::new(12345));
+        let msg = err.to_string();
+        assert!(msg.contains("12345"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_embedding_error_out_of_memory() {
+        // Verify OutOfMemory error variant Display
+        let err = EmbeddingError::OutOfMemory;
+        let msg = err.to_string();
+        assert!(msg.contains("memory"));
+    }
+
+    #[test]
+    fn test_embedding_error_is_std_error() {
+        // Verify EmbeddingError implements std::error::Error
+        let err: Box<dyn std::error::Error> = Box::new(EmbeddingError::DimensionMismatch {
+            expected: 128,
+            actual: 64,
+        });
+        assert!(err.to_string().contains("dimension mismatch"));
+
+        // Test source() returns None (no nested error)
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_embedding_get_nonexistent() {
+        let slab = EmbeddingSlab::new(4, 10);
+
+        // get() on non-existent entity returns None
+        let result = slab.get(EntityId::new(999));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_embedding_error_equality() {
+        let a = EmbeddingError::NotFound(EntityId::new(42));
+        let b = EmbeddingError::NotFound(EntityId::new(42));
+        let c = EmbeddingError::NotFound(EntityId::new(99));
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let d = EmbeddingError::DimensionMismatch {
+            expected: 128,
+            actual: 64,
+        };
+        let e = EmbeddingError::DimensionMismatch {
+            expected: 128,
+            actual: 64,
+        };
+        assert_eq!(d, e);
+    }
+
+    #[test]
+    fn test_embedding_error_debug() {
+        let err = EmbeddingError::OutOfMemory;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("OutOfMemory"));
+    }
+
+    #[test]
+    fn test_compressed_embedding_format_name() {
+        // Test format_name for all compression types
+        let dense = CompressedEmbedding::Dense(vec![1.0, 2.0, 3.0]);
+        assert_eq!(dense.format_name(), "dense");
+
+        let sparse = CompressedEmbedding::Sparse {
+            dimension: 100,
+            positions: vec![0, 50],
+            values: vec![1.0, 2.0],
+        };
+        assert_eq!(sparse.format_name(), "sparse");
+
+        // For TensorTrain, we need to create one via from_dense with a large vector
+        let large: Vec<f32> = (0..768).map(|i| i as f32).collect();
+        let compressed = CompressedEmbedding::from_dense(&large);
+        // May be TensorTrain or Dense depending on config
+        let name = compressed.format_name();
+        assert!(name == "tensor_train" || name == "dense");
+    }
 }

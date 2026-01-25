@@ -17,6 +17,7 @@ use tensor_chain::{
 use tensor_store::SparseVector;
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     /// Message type selector
     message_type: u8,
@@ -122,12 +123,12 @@ fuzz_target!(|input: FuzzInput| {
     };
 
     // Test 1: Serialization roundtrip
-    let serialized = match bincode::serialize(&message) {
+    let serialized = match bitcode::serialize(&message) {
         Ok(bytes) => bytes,
         Err(_) => return,
     };
 
-    let deserialized: Message = match bincode::deserialize(&serialized) {
+    let deserialized: Message = match bitcode::deserialize(&serialized) {
         Ok(m) => m,
         Err(_) => panic!("Failed to deserialize message we just serialized"),
     };

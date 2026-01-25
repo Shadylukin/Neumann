@@ -48,13 +48,13 @@ fuzz_target!(|input: TtInput| {
     };
 
     // Serialize with bincode
-    let bytes = match bincode::serialize(&tt) {
+    let bytes = match bitcode::serialize(&tt) {
         Ok(b) => b,
         Err(_) => return, // Serialization failure is valid for some inputs
     };
 
     // Deserialize
-    let tt2: TTVector = match bincode::deserialize(&bytes) {
+    let tt2: TTVector = match bitcode::deserialize(&bytes) {
         Ok(tt) => tt,
         Err(e) => panic!(
             "deserialization failed after successful serialization: {}",

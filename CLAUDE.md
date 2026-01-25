@@ -14,7 +14,7 @@ This project maintains **production-grade code quality**. All code must pass:
 ```bash
 cargo fmt --check                              # Formatting
 cargo clippy -- -D warnings                    # Lints as errors
-cargo clippy -- -W clippy::pedantic            # Pedantic lints (advisory)
+cargo clippy -- -D clippy::pedantic            # Pedantic lints as errors
 cargo test                                     # All tests pass
 cargo doc --no-deps                            # Documentation builds
 ```

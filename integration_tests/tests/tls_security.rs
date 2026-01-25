@@ -119,8 +119,8 @@ fn test_security_mode_serde_roundtrip() {
     ];
 
     for mode in modes {
-        let serialized = bincode::serialize(&mode).unwrap();
-        let deserialized: SecurityMode = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&mode).unwrap();
+        let deserialized: SecurityMode = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(mode, deserialized);
     }
 }

@@ -405,7 +405,7 @@ fn test_deep_graph_traversal_concurrent() {
         let handle = thread::spawn(move || {
             for _ in 0..10 {
                 // Find path from start to end
-                if let Ok(path) = g.find_path(start_id, end_id) {
+                if let Ok(path) = g.find_path(start_id, end_id, None) {
                     if !path.nodes.is_empty() {
                         found.fetch_add(1, Ordering::SeqCst);
                     }

@@ -134,7 +134,7 @@ fn test_coordinator_crash_during_commit_recovery() {
         }
 
         // Save the modified state directly
-        let bytes = bincode::serialize(&state).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
@@ -184,7 +184,7 @@ fn test_coordinator_crash_with_timeout_recovery() {
         }
 
         // Save the modified state directly
-        let bytes = bincode::serialize(&state).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
         let mut data = TensorData::new();
         data.set("state", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         store
@@ -543,8 +543,8 @@ fn test_coordinator_state_bincode_roundtrip() {
         lock_state: SerializableLockState::new(HashMap::new(), HashMap::new(), 30000),
     };
 
-    let bytes = bincode::serialize(&state).unwrap();
-    let restored: CoordinatorState = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&state).unwrap();
+    let restored: CoordinatorState = bitcode::deserialize(&bytes).unwrap();
 
     assert_eq!(restored.pending.len(), 1);
     assert_eq!(restored.lock_state.default_timeout_ms(), 30000);
@@ -575,8 +575,8 @@ fn test_participant_state_bincode_roundtrip() {
         lock_state: SerializableLockState::new(HashMap::new(), HashMap::new(), 30000),
     };
 
-    let bytes = bincode::serialize(&state).unwrap();
-    let restored: ParticipantState = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&state).unwrap();
+    let restored: ParticipantState = bitcode::deserialize(&bytes).unwrap();
 
     assert_eq!(restored.prepared.len(), 1);
     assert!(restored.prepared.contains_key(&1));
@@ -626,7 +626,7 @@ fn test_coordinator_recovery_during_committing_resends_commit() {
         }
 
         // Save the modified state directly
-        let bytes = bincode::serialize(&state).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
         let mut data = tensor_store::TensorData::new();
         data.set(
             "state",
@@ -967,7 +967,7 @@ fn test_mixed_transaction_states_recovery() {
         }
 
         // Save the modified state
-        let bytes = bincode::serialize(&state).unwrap();
+        let bytes = bitcode::serialize(&state).unwrap();
         let mut data = tensor_store::TensorData::new();
         data.set(
             "state",

@@ -1217,4 +1217,341 @@ mod tests {
         let restored_data = restored.edge_data.get("edge:0:1:friend");
         assert!(restored_data.is_some());
     }
+
+    // ========== Phase 1: Deadlock Detection Tests ==========
+
+    #[test]
+    fn test_concurrent_merge_during_reads() {
+        // 4 reader threads calling outgoing() + 4 writer threads triggering merge
+        // Verifies no deadlock when merge_threshold is low
+        let graph = Arc::new(GraphTensor::with_merge_threshold(10));
+        let mut handles = vec![];
+
+        // Seed with some initial edges
+        for i in 0..20u64 {
+            graph.add_edge(EntityId::new(i), EntityId::new(i + 1), "init", true);
+        }
+
+        // Writer threads that trigger merges
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u64 {
+                    let from = EntityId::new(t * 1000 + i);
+                    let to = EntityId::new(t * 1000 + i + 1);
+                    g.add_edge(from, to, "writes", true);
+                }
+            }));
+        }
+
+        // Reader threads calling outgoing()
+        for _ in 0..4 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..100u64 {
+                    let _ = g.outgoing(EntityId::new(i % 100));
+                    let _ = g.incoming(EntityId::new(i % 100));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify graph is consistent
+        assert!(graph.edge_count() >= 20);
+    }
+
+    #[test]
+    fn test_concurrent_add_delete_same_edge() {
+        // Multiple threads adding edges while others delete
+        // Verifies incoming_index consistency
+        let graph = Arc::new(GraphTensor::with_merge_threshold(100));
+        let mut handles = vec![];
+
+        // Add some initial edges
+        let mut edge_ids = Vec::new();
+        for i in 0..50u64 {
+            let eid = graph.add_edge(EntityId::new(i), EntityId::new(i + 1), "initial", true);
+            edge_ids.push(eid);
+        }
+
+        let edge_ids = Arc::new(edge_ids);
+
+        // Writer threads adding new edges
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u64 {
+                    g.add_edge(
+                        EntityId::new(t * 1000 + i),
+                        EntityId::new(t * 1000 + i + 1),
+                        "added",
+                        true,
+                    );
+                }
+            }));
+        }
+
+        // Deleter threads removing edges
+        for t in 0..2u64 {
+            let g = Arc::clone(&graph);
+            let eids = Arc::clone(&edge_ids);
+            handles.push(thread::spawn(move || {
+                for i in 0..25usize {
+                    let idx = (t as usize * 25 + i) % eids.len();
+                    g.delete_edge(eids[idx]);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify no panic occurred and graph is accessible
+        let _ = graph.edge_count();
+    }
+
+    #[test]
+    fn test_merge_threshold_one_stress() {
+        // Set merge_threshold=1, force merge on every add_edge
+        // 8 threads, 100 operations each
+        let graph = Arc::new(GraphTensor::with_merge_threshold(1));
+        let mut handles = vec![];
+
+        for t in 0..8u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..100u64 {
+                    g.add_edge(
+                        EntityId::new(t * 1000 + i),
+                        EntityId::new(t * 1000 + i + 1),
+                        &format!("type_{}", t),
+                        true,
+                    );
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All edges should be present
+        assert_eq!(graph.edge_count(), 800);
+    }
+
+    #[test]
+    fn test_incoming_index_consistency_under_load() {
+        // After concurrent operations, verify:
+        // outgoing(a) contains (b, eid) <=> incoming(b) contains (a, eid)
+        let graph = Arc::new(GraphTensor::with_merge_threshold(20));
+        let mut handles = vec![];
+
+        // Concurrent additions
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u64 {
+                    g.add_edge(
+                        EntityId::new(t * 100 + i),
+                        EntityId::new(i % 10),
+                        "link",
+                        true,
+                    );
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Force merge to consolidate
+        graph.merge();
+
+        // Verify consistency: for each outgoing edge, incoming should have reverse
+        for from_id in 0..400u64 {
+            let from = EntityId::new(from_id);
+            for (to, edge_id) in graph.outgoing(from) {
+                let incoming_edges = graph.incoming(to);
+                let has_reverse = incoming_edges
+                    .iter()
+                    .any(|(f, e)| *f == from && *e == edge_id);
+                assert!(
+                    has_reverse,
+                    "Missing reverse edge: from={}, to={}, edge_id={}",
+                    from_id,
+                    to.as_u64(),
+                    edge_id.as_u64()
+                );
+            }
+        }
+    }
+
+    // ========== Phase 2: Lock Contention Stress Tests ==========
+
+    #[test]
+    fn test_high_contention_16_threads() {
+        // 16 threads: 4 add_edge, 4 delete_edge, 4 outgoing, 4 incoming
+        // 500 operations per thread
+        let graph = Arc::new(GraphTensor::with_merge_threshold(50));
+        let mut handles = vec![];
+
+        // Seed with initial edges
+        let initial_edges: Vec<EdgeId> = (0..200u64)
+            .map(|i| graph.add_edge(EntityId::new(i), EntityId::new(i + 1), "seed", true))
+            .collect();
+        let initial_edges = Arc::new(initial_edges);
+
+        // 4 add_edge threads
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..500u64 {
+                    g.add_edge(
+                        EntityId::new(t * 10000 + i),
+                        EntityId::new(t * 10000 + i + 1),
+                        "new",
+                        true,
+                    );
+                }
+            }));
+        }
+
+        // 4 delete_edge threads
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            let eids = Arc::clone(&initial_edges);
+            handles.push(thread::spawn(move || {
+                for i in 0..50usize {
+                    let idx = (t as usize * 50 + i) % eids.len();
+                    g.delete_edge(eids[idx]);
+                }
+            }));
+        }
+
+        // 4 outgoing threads
+        for _ in 0..4 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..500u64 {
+                    let _ = g.outgoing(EntityId::new(i % 500));
+                }
+            }));
+        }
+
+        // 4 incoming threads
+        for _ in 0..4 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..500u64 {
+                    let _ = g.incoming(EntityId::new(i % 500));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify no panics and results are consistent
+        let count = graph.edge_count();
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_edge_type_registry_contention() {
+        // 8 threads interning 100 different edge types each
+        // Verify all types retrievable after
+        let graph = Arc::new(GraphTensor::with_merge_threshold(10000));
+        let mut handles = vec![];
+
+        for t in 0..8u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..100u64 {
+                    let edge_type = format!("thread_{}_type_{}", t, i);
+                    g.add_edge(
+                        EntityId::new(t * 1000 + i),
+                        EntityId::new(t * 1000 + i + 1),
+                        &edge_type,
+                        true,
+                    );
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify all 800 edges present
+        assert_eq!(graph.edge_count(), 800);
+
+        // Verify edge types are queryable
+        for t in 0..8u64 {
+            for i in 0..10u64 {
+                // Sample check
+                let edge_type = format!("thread_{}_type_{}", t, i);
+                let exists = graph.edge_exists(
+                    EntityId::new(t * 1000 + i),
+                    EntityId::new(t * 1000 + i + 1),
+                    Some(&edge_type),
+                );
+                assert!(exists, "Missing edge type: {}", edge_type);
+            }
+        }
+    }
+
+    #[test]
+    fn test_snapshot_during_modifications() {
+        // Writer threads + periodic snapshot() calls
+        // Verify snapshot is internally consistent
+        let graph = Arc::new(GraphTensor::with_merge_threshold(20));
+        let mut handles = vec![];
+        let snapshots: Arc<Mutex<Vec<GraphTensorSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Writer threads
+        for t in 0..4u64 {
+            let g = Arc::clone(&graph);
+            handles.push(thread::spawn(move || {
+                for i in 0..200u64 {
+                    g.add_edge(
+                        EntityId::new(t * 1000 + i),
+                        EntityId::new(t * 1000 + i + 1),
+                        "edge",
+                        true,
+                    );
+                }
+            }));
+        }
+
+        // Snapshot thread
+        {
+            let g = Arc::clone(&graph);
+            let snaps = Arc::clone(&snapshots);
+            handles.push(thread::spawn(move || {
+                for _ in 0..10 {
+                    let snap = g.snapshot();
+                    snaps.lock().push(snap);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify all snapshots are valid (can be restored)
+        let snaps = snapshots.lock();
+        for snap in snaps.iter() {
+            let restored = GraphTensor::restore(snap.clone());
+            // Each snapshot should have consistent edge count
+            assert!(restored.edge_count() <= 800);
+        }
+    }
 }

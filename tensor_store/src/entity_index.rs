@@ -11,6 +11,7 @@
 //! A sorted hash index provides O(log n) forward lookups.
 
 use std::{
+    fmt,
     hash::{Hash, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -18,6 +19,74 @@ use std::{
 use parking_lot::RwLock;
 use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
+
+/// Default maximum number of entities (100 million).
+pub const DEFAULT_MAX_ENTITIES: usize = 100_000_000;
+
+/// Error type for entity index operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityIndexError {
+    /// Entity capacity limit has been reached.
+    CapacityExceeded {
+        /// The configured capacity limit.
+        limit: usize,
+        /// The current number of entities.
+        current: usize,
+    },
+}
+
+impl fmt::Display for EntityIndexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CapacityExceeded { limit, current } => {
+                write!(
+                    f,
+                    "entity index capacity exceeded: limit {limit}, current {current}"
+                )
+            },
+        }
+    }
+}
+
+impl std::error::Error for EntityIndexError {}
+
+/// Configuration for `EntityIndex`.
+#[derive(Debug, Clone, Copy)]
+pub struct EntityIndexConfig {
+    /// Maximum number of entities allowed. Set to 0 for unlimited.
+    pub max_entities: usize,
+    /// Initial capacity for the vocabulary vector.
+    pub initial_capacity: usize,
+}
+
+impl Default for EntityIndexConfig {
+    fn default() -> Self {
+        Self {
+            max_entities: DEFAULT_MAX_ENTITIES,
+            initial_capacity: 0,
+        }
+    }
+}
+
+impl EntityIndexConfig {
+    /// Create a config with specified max entities.
+    #[must_use]
+    pub const fn with_max_entities(max_entities: usize) -> Self {
+        Self {
+            max_entities,
+            initial_capacity: 0,
+        }
+    }
+
+    /// Create a config with unlimited entities.
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self {
+            max_entities: 0,
+            initial_capacity: 0,
+        }
+    }
+}
 
 /// Hash a string key to a u64 using `FxHasher`.
 #[inline]
@@ -99,10 +168,15 @@ pub struct EntityIndex {
 
     /// Count of live (non-deleted) entries.
     live_count: AtomicU64,
+
+    /// Maximum number of entities allowed (0 = unlimited).
+    max_entities: usize,
 }
 
 impl EntityIndex {
-    /// Create a new empty `EntityIndex`.
+    /// Create a new empty `EntityIndex` with the default capacity limit.
+    ///
+    /// Uses `DEFAULT_MAX_ENTITIES` (100 million) as the capacity limit.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -110,10 +184,13 @@ impl EntityIndex {
             reverse: RwLock::new(Vec::new()),
             tombstones: RwLock::new(Vec::new()),
             live_count: AtomicU64::new(0),
+            max_entities: DEFAULT_MAX_ENTITIES,
         }
     }
 
     /// Create an `EntityIndex` with pre-allocated capacity.
+    ///
+    /// Uses `DEFAULT_MAX_ENTITIES` (100 million) as the capacity limit.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -121,7 +198,26 @@ impl EntityIndex {
             reverse: RwLock::new(Vec::with_capacity(capacity)),
             tombstones: RwLock::new(Vec::new()),
             live_count: AtomicU64::new(0),
+            max_entities: DEFAULT_MAX_ENTITIES,
         }
+    }
+
+    /// Create an `EntityIndex` with the specified configuration.
+    #[must_use]
+    pub fn with_config(config: EntityIndexConfig) -> Self {
+        Self {
+            vocabulary: RwLock::new(Vec::with_capacity(config.initial_capacity)),
+            reverse: RwLock::new(Vec::with_capacity(config.initial_capacity)),
+            tombstones: RwLock::new(Vec::new()),
+            live_count: AtomicU64::new(0),
+            max_entities: config.max_entities,
+        }
+    }
+
+    /// Returns the maximum number of entities allowed (0 = unlimited).
+    #[must_use]
+    pub const fn max_entities(&self) -> usize {
+        self.max_entities
     }
 
     /// Look up an `EntityId` by key.
@@ -164,15 +260,38 @@ impl EntityIndex {
     /// If the key exists and is not deleted, returns the existing `EntityId`.
     /// Otherwise, appends the key to the vocabulary and returns a new `EntityId`.
     ///
+    /// # Panics
+    ///
+    /// Panics if the entity capacity limit is exceeded.
+    /// Use [`try_get_or_create`](Self::try_get_or_create) for a fallible version.
+    ///
     /// # Performance
     ///
     /// O(log n) amortized. The sorted index insert is O(n) worst case but
     /// amortized O(log n) due to the distribution of hash values.
     #[must_use]
     pub fn get_or_create(&self, key: &str) -> EntityId {
+        self.try_get_or_create(key)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Get or create an `EntityId` for the given key.
+    ///
+    /// If the key exists and is not deleted, returns the existing `EntityId`.
+    /// Otherwise, appends the key to the vocabulary and returns a new `EntityId`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntityIndexError::CapacityExceeded`] if the entity limit is reached.
+    ///
+    /// # Performance
+    ///
+    /// O(log n) amortized. The sorted index insert is O(n) worst case but
+    /// amortized O(log n) due to the distribution of hash values.
+    pub fn try_get_or_create(&self, key: &str) -> Result<EntityId, EntityIndexError> {
         // Fast path: read-only lookup
         if let Some(id) = self.get(key) {
-            return id;
+            return Ok(id);
         }
 
         // Slow path: acquire write locks
@@ -190,12 +309,20 @@ impl EntityIndex {
             if vocab_idx < vocab.len() && vocab[vocab_idx] == key {
                 let entity_id = EntityId(vocab_idx as u64);
                 if !self.is_tombstone(entity_id) {
-                    return entity_id;
+                    return Ok(entity_id);
                 }
                 // Key was deleted, will re-add below
                 break;
             }
             idx += 1;
+        }
+
+        // Check capacity before inserting (0 = unlimited)
+        if self.max_entities > 0 && vocab.len() >= self.max_entities {
+            return Err(EntityIndexError::CapacityExceeded {
+                limit: self.max_entities,
+                current: vocab.len(),
+            });
         }
 
         // Insert new entry
@@ -207,7 +334,7 @@ impl EntityIndex {
         drop(reverse);
         self.live_count.fetch_add(1, Ordering::Relaxed);
 
-        EntityId(new_id)
+        Ok(EntityId(new_id))
     }
 
     /// Get the key for an `EntityId`.
@@ -325,6 +452,7 @@ impl EntityIndex {
             reverse: self.reverse.read().clone(),
             tombstones: self.tombstones.read().clone(),
             live_count: self.live_count.load(Ordering::Relaxed),
+            max_entities: self.max_entities,
         }
     }
 
@@ -336,6 +464,7 @@ impl EntityIndex {
             reverse: RwLock::new(snapshot.reverse),
             tombstones: RwLock::new(snapshot.tombstones),
             live_count: AtomicU64::new(snapshot.live_count),
+            max_entities: snapshot.max_entities,
         }
     }
 
@@ -379,6 +508,12 @@ pub struct EntityIndexSnapshot {
     reverse: Vec<(u64, u32)>,
     tombstones: Vec<u64>,
     live_count: u64,
+    #[serde(default = "default_max_entities")]
+    max_entities: usize,
+}
+
+const fn default_max_entities() -> usize {
+    DEFAULT_MAX_ENTITIES
 }
 
 #[cfg(test)]
@@ -809,5 +944,110 @@ mod tests {
         let index = EntityIndex::default();
         assert_eq!(index.len(), 0);
         assert!(index.is_empty());
+    }
+
+    // ========================================================================
+    // Security validation tests for unbounded allocation prevention
+    // ========================================================================
+
+    #[test]
+    fn test_entity_index_capacity_exceeded() {
+        let config = EntityIndexConfig::with_max_entities(5);
+        let index = EntityIndex::with_config(config);
+
+        // Add 5 entities (should work)
+        for i in 0..5 {
+            let result = index.try_get_or_create(&format!("key:{i}"));
+            assert!(result.is_ok());
+        }
+        assert_eq!(index.len(), 5);
+
+        // Adding 6th should fail
+        let result = index.try_get_or_create("key:5");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            EntityIndexError::CapacityExceeded {
+                limit: 5,
+                current: 5
+            }
+        );
+
+        // Getting an existing key should still work
+        let result = index.try_get_or_create("key:0");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_entity_index_zero_means_unlimited() {
+        let config = EntityIndexConfig::unlimited();
+        let index = EntityIndex::with_config(config);
+        assert_eq!(index.max_entities(), 0);
+
+        // Should allow many entries
+        for i in 0..100 {
+            let result = index.try_get_or_create(&format!("key:{i}"));
+            assert!(result.is_ok());
+        }
+        assert_eq!(index.len(), 100);
+    }
+
+    #[test]
+    fn test_entity_index_default_config() {
+        let config = EntityIndexConfig::default();
+        assert_eq!(config.max_entities, DEFAULT_MAX_ENTITIES);
+        assert_eq!(config.initial_capacity, 0);
+    }
+
+    #[test]
+    fn test_entity_index_try_get_or_create_success() {
+        let index = EntityIndex::new();
+        let result = index.try_get_or_create("test_key");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_u64(), 0);
+
+        // Idempotent
+        let result2 = index.try_get_or_create("test_key");
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap().as_u64(), 0);
+    }
+
+    #[test]
+    fn test_entity_index_error_display() {
+        let err = EntityIndexError::CapacityExceeded {
+            limit: 1000,
+            current: 1000,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("capacity exceeded"));
+        assert!(msg.contains("1000"));
+    }
+
+    #[test]
+    fn test_entity_index_max_entities_getter() {
+        let index = EntityIndex::new();
+        assert_eq!(index.max_entities(), DEFAULT_MAX_ENTITIES);
+
+        let config = EntityIndexConfig::with_max_entities(500);
+        let index2 = EntityIndex::with_config(config);
+        assert_eq!(index2.max_entities(), 500);
+    }
+
+    #[test]
+    fn test_entity_index_snapshot_preserves_max_entities() {
+        let config = EntityIndexConfig::with_max_entities(42);
+        let index = EntityIndex::with_config(config);
+        let _ = index.get_or_create("test");
+
+        let snapshot = index.snapshot();
+        let restored = EntityIndex::restore(snapshot);
+
+        assert_eq!(restored.max_entities(), 42);
+        assert_eq!(restored.len(), 1);
+    }
+
+    #[test]
+    fn test_default_max_entities_constant() {
+        assert_eq!(DEFAULT_MAX_ENTITIES, 100_000_000);
     }
 }

@@ -438,8 +438,8 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let config = RateLimitConfig::aggressive();
-        let encoded = bincode::serialize(&config).unwrap();
-        let decoded: RateLimitConfig = bincode::deserialize(&encoded).unwrap();
+        let encoded = bitcode::serialize(&config).unwrap();
+        let decoded: RateLimitConfig = bitcode::deserialize(&encoded).unwrap();
 
         assert_eq!(decoded.bucket_size, config.bucket_size);
         assert_eq!(decoded.refill_rate, config.refill_rate);

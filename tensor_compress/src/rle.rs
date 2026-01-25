@@ -187,8 +187,8 @@ mod tests {
         let original = vec![1, 1, 2, 2, 2];
         let encoded = rle_encode(&original);
 
-        let bytes = bincode::serialize(&encoded).unwrap();
-        let decoded: RleEncoded<i32> = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&encoded).unwrap();
+        let decoded: RleEncoded<i32> = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(encoded, decoded);
     }

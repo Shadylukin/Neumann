@@ -448,7 +448,7 @@ impl SlabRouter {
             router: router_snapshot,
         };
 
-        bincode::serialize(&v3).map_err(SnapshotFormatError::from)
+        bitcode::serialize(&v3).map_err(SnapshotFormatError::from)
     }
 
     /// Deserialize from bytes (v3 format).
@@ -458,7 +458,7 @@ impl SlabRouter {
     /// Returns [`SnapshotFormatError`] if deserialization or header validation fails.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotFormatError> {
         let v3: snapshot::V3Snapshot =
-            bincode::deserialize(bytes).map_err(SnapshotFormatError::from)?;
+            bitcode::deserialize(bytes).map_err(SnapshotFormatError::from)?;
         v3.header.validate()?;
         Ok(Self::restore(v3.router))
     }
@@ -633,7 +633,14 @@ impl SlabRouter {
                 // Also update embeddings if present
                 if let Some(TensorValue::Vector(vec)) = data.get("_embedding") {
                     let entity_id = self.index.get_or_create(key);
-                    let _ = self.embeddings.set(entity_id, vec);
+                    if let Err(e) = self.embeddings.set(entity_id, vec) {
+                        tracing::warn!(
+                            entity_id = %entity_id.as_u64(),
+                            key = %key,
+                            error = %e,
+                            "Failed to restore embedding during WAL replay"
+                        );
+                    }
                 }
             },
             WalEntry::MetadataDelete { key } => {
@@ -643,7 +650,13 @@ impl SlabRouter {
                 entity_id,
                 embedding,
             } => {
-                let _ = self.embeddings.set(*entity_id, embedding);
+                if let Err(e) = self.embeddings.set(*entity_id, embedding) {
+                    tracing::warn!(
+                        entity_id = %entity_id.as_u64(),
+                        error = %e,
+                        "Failed to restore embedding during WAL replay"
+                    );
+                }
             },
             WalEntry::EmbeddingDelete { entity_id } => {
                 self.embeddings.delete(*entity_id);
@@ -1801,5 +1814,164 @@ mod tests {
         } else {
             panic!("Expected Int value");
         }
+    }
+
+    // ========== Phase 2: Lock Contention Stress Tests ==========
+
+    #[test]
+    fn test_slab_router_high_contention() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // 16 threads: mixed put/get/delete across all slab types
+        let router = Arc::new(SlabRouter::new());
+        let mut handles = vec![];
+
+        // 4 put threads for metadata
+        for t in 0..4u64 {
+            let r = Arc::clone(&router);
+            handles.push(thread::spawn(move || {
+                for i in 0..200u64 {
+                    let mut data = TensorData::new();
+                    data.set(
+                        "value",
+                        TensorValue::Scalar(crate::ScalarValue::Int((t * 1000 + i) as i64)),
+                    );
+                    let _ = r.put(&format!("meta:t{}_i{}", t, i), data);
+                }
+            }));
+        }
+
+        // 4 put threads for embeddings
+        for t in 0..4u64 {
+            let r = Arc::clone(&router);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u64 {
+                    let embedding: Vec<f32> = (0..384).map(|j| (t * 1000 + i + j) as f32).collect();
+                    let mut data = TensorData::new();
+                    data.set("_embedding", TensorValue::Vector(embedding));
+                    let _ = r.put(&format!("emb:t{}_i{}", t, i), data);
+                }
+            }));
+        }
+
+        // 4 get threads
+        for _ in 0..4 {
+            let r = Arc::clone(&router);
+            handles.push(thread::spawn(move || {
+                for i in 0..200u64 {
+                    let _ = r.get(&format!("meta:t0_i{}", i % 200));
+                    let _ = r.exists(&format!("emb:t0_i{}", i % 50));
+                }
+            }));
+        }
+
+        // 4 scan/delete threads
+        for t in 0..4u64 {
+            let r = Arc::clone(&router);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u64 {
+                    let _ = r.scan(&format!("meta:t{}_", t));
+                    // Try delete (may or may not exist)
+                    let _ = r.delete(&format!("meta:t{}_i{}", t, i));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Verify router is still consistent
+        assert!(router.ops_count() > 0);
+    }
+
+    // ========== Phase 3: Negative Path Tests ==========
+
+    #[test]
+    fn test_slab_router_error_not_found() {
+        let router = SlabRouter::new();
+
+        // get() on non-existent key returns proper error
+        let result = router.get("nonexistent_key");
+        assert!(matches!(result, Err(SlabRouterError::NotFound(_))));
+
+        // Verify error message contains the key
+        if let Err(SlabRouterError::NotFound(key)) = result {
+            assert_eq!(key, "nonexistent_key");
+        }
+    }
+
+    #[test]
+    fn test_slab_router_error_not_found_embedding() {
+        let router = SlabRouter::new();
+
+        // get() on non-existent embedding key
+        let result = router.get("emb:nonexistent");
+        assert!(matches!(result, Err(SlabRouterError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_slab_router_delete_not_found() {
+        let router = SlabRouter::new();
+
+        // delete() on non-existent key returns proper error
+        let result = router.delete("nonexistent_key");
+        assert!(matches!(result, Err(SlabRouterError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_slab_router_error_embedding_dimension_mismatch() {
+        let router = SlabRouter::new();
+
+        // First, insert an embedding with correct dimension (384)
+        let embedding: Vec<f32> = (0..384).map(|i| i as f32).collect();
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(embedding));
+        router.put("emb:correct", data).unwrap();
+
+        // Now try to insert an embedding with wrong dimension
+        // The router silently handles this by falling back to metadata only
+        let wrong_embedding: Vec<f32> = (0..128).map(|i| i as f32).collect();
+        let mut wrong_data = TensorData::new();
+        wrong_data.set("_embedding", TensorValue::Vector(wrong_embedding));
+        // This should succeed (falls back to metadata storage)
+        router.put("emb:wrong_dim", wrong_data).unwrap();
+
+        // The key should exist in metadata
+        assert!(router.exists("emb:wrong_dim"));
+    }
+
+    #[test]
+    fn test_slab_router_error_variants_coverage() {
+        // Test all error variant Display implementations
+        let not_found = SlabRouterError::NotFound("key".to_string());
+        assert!(not_found.to_string().contains("not found"));
+        assert!(not_found.to_string().contains("key"));
+
+        let embedding_err = SlabRouterError::EmbeddingError("dim mismatch".to_string());
+        assert!(embedding_err.to_string().contains("embedding"));
+        assert!(embedding_err.to_string().contains("dim mismatch"));
+
+        let graph_err = SlabRouterError::GraphError("cycle detected".to_string());
+        assert!(graph_err.to_string().contains("graph"));
+
+        let relational_err = SlabRouterError::RelationalError("schema error".to_string());
+        assert!(relational_err.to_string().contains("relational"));
+
+        let wal_err = SlabRouterError::WalError("io failure".to_string());
+        assert!(wal_err.to_string().contains("WAL"));
+        assert!(wal_err.to_string().contains("io failure"));
+    }
+
+    #[test]
+    fn test_slab_router_error_is_std_error() {
+        // Verify SlabRouterError implements std::error::Error
+        let err: Box<dyn std::error::Error> =
+            Box::new(SlabRouterError::NotFound("test".to_string()));
+        assert!(err.to_string().contains("not found"));
+
+        // Test source() returns None (no nested error)
+        assert!(err.source().is_none());
     }
 }

@@ -16,6 +16,7 @@ use tensor_chain::{
 use tensor_store::SparseVector;
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 enum FuzzOp {
     BeginTransaction {
         node_idx: u8,
@@ -51,6 +52,7 @@ enum FuzzOp {
 }
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     policy: FuzzVictimPolicy,
     operations: Vec<FuzzOp>,

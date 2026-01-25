@@ -180,8 +180,8 @@ fuzz_target!(|input: SignedGossipInput| {
         }
 
         // Test serialization roundtrip (should never panic)
-        if let Ok(bytes) = bincode::serialize(&signed) {
-            let _: Result<SignedGossipMessage, _> = bincode::deserialize(&bytes);
+        if let Ok(bytes) = bitcode::serialize(&signed) {
+            let _: Result<SignedGossipMessage, _> = bitcode::deserialize(&bytes);
         }
     }
 });

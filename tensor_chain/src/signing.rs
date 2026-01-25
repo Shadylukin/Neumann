@@ -658,7 +658,7 @@ impl SignedGossipMessage {
     ///
     /// Serializes the gossip message and signs it with the given identity.
     pub fn new(identity: &Identity, msg: &GossipMessage, sequence: u64) -> Result<Self> {
-        let payload = bincode::serialize(msg).map_err(|e| {
+        let payload = bitcode::serialize(msg).map_err(|e| {
             ChainError::SerializationError(format!("failed to serialize gossip: {e}"))
         })?;
         let envelope = identity.sign_message(&payload, sequence);
@@ -682,7 +682,7 @@ impl SignedGossipMessage {
         let payload = self.envelope.verify()?;
 
         // Deserialize the gossip message
-        bincode::deserialize(payload).map_err(|e| {
+        bitcode::deserialize(payload).map_err(|e| {
             ChainError::SerializationError(format!("failed to deserialize gossip: {e}"))
         })
     }
@@ -707,7 +707,7 @@ impl SignedGossipMessage {
         let payload = self.envelope.verify_with_tracker(tracker)?;
 
         // Deserialize the gossip message
-        bincode::deserialize(payload).map_err(|e| {
+        bitcode::deserialize(payload).map_err(|e| {
             ChainError::SerializationError(format!("failed to deserialize gossip: {e}"))
         })
     }
@@ -1256,8 +1256,8 @@ mod tests {
         let signed = SignedGossipMessage::new(&identity, &gossip_msg, 1).unwrap();
 
         // Serialize and deserialize
-        let serialized = bincode::serialize(&signed).unwrap();
-        let deserialized: SignedGossipMessage = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&signed).unwrap();
+        let deserialized: SignedGossipMessage = bitcode::deserialize(&serialized).unwrap();
 
         assert_eq!(deserialized.sender(), signed.sender());
         assert_eq!(deserialized.sequence(), signed.sequence());

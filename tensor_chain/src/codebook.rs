@@ -1320,8 +1320,8 @@ mod tests {
             version: 1,
         };
 
-        let bytes = bincode::serialize(&snapshot).unwrap();
-        let restored: GlobalCodebookSnapshot = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&snapshot).unwrap();
+        let restored: GlobalCodebookSnapshot = bitcode::deserialize(&bytes).unwrap();
         assert_eq!(restored.version, 1);
         assert_eq!(restored.dimension, 4);
         assert_eq!(restored.entries.len(), 1);

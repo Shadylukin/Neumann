@@ -3,7 +3,9 @@
 //! Extends `SemanticPartitioner` with explicit Voronoi regions per node,
 //! enabling geometric-aware data distribution and query routing.
 
-use std::{collections::HashMap, sync::RwLock};
+use std::collections::HashMap;
+
+use parking_lot::RwLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -166,12 +168,8 @@ impl VoronoiPartitioner {
     }
 
     /// Add a sample embedding for region computation.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn add_sample(&self, embedding: Vec<f32>) {
-        let mut samples = self.samples.write().unwrap();
+        let mut samples = self.samples.write();
         samples.push(embedding);
 
         // Auto-compute regions if we have enough samples
@@ -183,10 +181,6 @@ impl VoronoiPartitioner {
     }
 
     /// Compute regions from the given sample embeddings.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     #[allow(clippy::cast_precision_loss)] // Volume estimation doesn't need full precision
     pub fn compute_regions_from_samples(&self, samples: &[Vec<f32>]) {
         if samples.is_empty() {
@@ -205,7 +199,7 @@ impl VoronoiPartitioner {
         let centroids = kmeans.fit(samples, k);
 
         // Assign centroids to nodes
-        let mut regions = self.regions.write().unwrap();
+        let mut regions = self.regions.write();
         regions.clear();
 
         for (i, node) in nodes.iter().enumerate() {
@@ -228,7 +222,7 @@ impl VoronoiPartitioner {
         // Update semantic partitioner centroids
         self.semantic.set_centroids(centroids);
 
-        *self.regions_computed.write().unwrap() = true;
+        *self.regions_computed.write() = true;
     }
 
     /// Find the index of the nearest centroid to a point.
@@ -258,12 +252,8 @@ impl VoronoiPartitioner {
     }
 
     /// Get the region containing an embedding.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn region_for_embedding(&self, embedding: &[f32]) -> Option<VoronoiRegion> {
-        let regions = self.regions.read().unwrap();
+        let regions = self.regions.read();
 
         let mut best_region = None;
         let mut best_sim = f32::MIN;
@@ -281,35 +271,23 @@ impl VoronoiPartitioner {
     }
 
     /// Get a node's Voronoi region.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn get_region(&self, node: &PhysicalNodeId) -> Option<VoronoiRegion> {
-        self.regions.read().unwrap().get(node).cloned()
+        self.regions.read().get(node).cloned()
     }
 
     /// Get all regions.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn all_regions(&self) -> Vec<VoronoiRegion> {
-        self.regions.read().unwrap().values().cloned().collect()
+        self.regions.read().values().cloned().collect()
     }
 
     /// Check if regions have been computed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn has_regions(&self) -> bool {
-        *self.regions_computed.read().unwrap()
+        *self.regions_computed.read()
     }
 
     /// Rebalance regions after a node change.
     fn rebalance(&self) {
-        let samples = self.samples.read().unwrap().clone();
+        let samples = self.samples.read().clone();
         if samples.len() >= self.config.min_samples_for_regions {
             self.compute_regions_from_samples(&samples);
         }
@@ -356,7 +334,7 @@ impl Partitioner for VoronoiPartitioner {
 
     fn remove_node(&mut self, node: &PhysicalNodeId) -> Vec<PartitionId> {
         // Remove the region for this node
-        self.regions.write().unwrap().remove(node);
+        self.regions.write().remove(node);
 
         let partitions = self.semantic.remove_node(node);
 
@@ -545,8 +523,8 @@ mod tests {
     #[test]
     fn test_voronoi_region_serde() {
         let region = VoronoiRegion::new("node1".to_string(), vec![1.0, 2.0, 3.0]);
-        let serialized = bincode::serialize(&region).unwrap();
-        let deserialized: VoronoiRegion = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&region).unwrap();
+        let deserialized: VoronoiRegion = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized.owner, region.owner);
         assert_eq!(deserialized.centroid, region.centroid);
     }

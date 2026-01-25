@@ -15,6 +15,7 @@ use tensor_chain::{
 };
 
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 enum ConcurrencyOp {
     Begin { participant_count: u8 },
     TryLock { tx_idx: u8, key_count: u8 },

@@ -1,0 +1,787 @@
+<!DOCTYPE HTML>
+<html lang="en" class="rust sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Neumann Server - Neumann</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Unified tensor-based runtime for relational, graph, and vector data">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "rust";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('rust')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Neumann</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/Shadylukin/Neumann/edit/main/docs/book/src/architecture/neumann-server.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="neumann-server-architecture"><a class="header" href="#neumann-server-architecture">Neumann Server Architecture</a></h1>
+<p>The Neumann Server (<code>neumann_server</code>) provides a gRPC server that exposes the
+Neumann database over the network. It serves as the network gateway for remote
+clients, wrapping the Query Router with authentication, TLS encryption, and
+streaming support for large result sets and blob storage.</p>
+<p>The server follows four design principles: zero-configuration startup (works
+out of the box with sensible defaults), security-first (API key authentication
+with constant-time comparison, TLS support), streaming-native (all large
+operations use gRPC streaming), and health monitoring (automatic failure
+tracking with configurable thresholds).</p>
+<h2 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h2>
+<pre class="mermaid">flowchart TD
+    subgraph Clients
+        CLI[neumann_client]
+        gRPC[gRPC Clients]
+        Web[gRPC-Web Browsers]
+    end
+
+    subgraph NeumannServer
+        QS[QueryService]
+        BS[BlobService]
+        HS[HealthService]
+        RS[ReflectionService]
+        Auth[Auth Middleware]
+        TLS[TLS Layer]
+    end
+
+    subgraph Backend
+        QR[QueryRouter]
+        Blob[BlobStore]
+    end
+
+    CLI --&gt; TLS
+    gRPC --&gt; TLS
+    Web --&gt; TLS
+    TLS --&gt; Auth
+    Auth --&gt; QS
+    Auth --&gt; BS
+    Auth --&gt; HS
+    QS --&gt; QR
+    BS --&gt; Blob
+    RS --&gt; |Service Discovery| gRPC
+</pre>
+<h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>NeumannServer</code></td><td>Main server struct with router, blob store, and configuration</td></tr>
+<tr><td><code>ServerConfig</code></td><td>Configuration for bind address, TLS, auth, and limits</td></tr>
+<tr><td><code>TlsConfig</code></td><td>TLS certificate paths and client certificate settings</td></tr>
+<tr><td><code>AuthConfig</code></td><td>API key list, header name, and anonymous access control</td></tr>
+<tr><td><code>ApiKey</code></td><td>Individual API key with identity and optional description</td></tr>
+<tr><td><code>QueryServiceImpl</code></td><td>gRPC service for query execution with streaming</td></tr>
+<tr><td><code>BlobServiceImpl</code></td><td>gRPC service for artifact storage with streaming</td></tr>
+<tr><td><code>HealthServiceImpl</code></td><td>gRPC service for health checks</td></tr>
+<tr><td><code>HealthState</code></td><td>Shared health state across services</td></tr>
+<tr><td><code>ServerError</code></td><td>Error type for server operations</td></tr>
+</tbody></table>
+</div>
+<h2 id="server-configuration"><a class="header" href="#server-configuration">Server Configuration</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>bind_addr</code></td><td><code>SocketAddr</code></td><td><code>127.0.0.1:9200</code></td><td>Server bind address</td></tr>
+<tr><td><code>tls</code></td><td><code>Option&lt;TlsConfig&gt;</code></td><td><code>None</code></td><td>TLS configuration</td></tr>
+<tr><td><code>auth</code></td><td><code>Option&lt;AuthConfig&gt;</code></td><td><code>None</code></td><td>Authentication configuration</td></tr>
+<tr><td><code>max_message_size</code></td><td><code>usize</code></td><td>64 MB</td><td>Maximum gRPC message size</td></tr>
+<tr><td><code>max_upload_size</code></td><td><code>usize</code></td><td>512 MB</td><td>Maximum blob upload size</td></tr>
+<tr><td><code>enable_grpc_web</code></td><td><code>bool</code></td><td><code>true</code></td><td>Enable gRPC-web for browsers</td></tr>
+<tr><td><code>enable_reflection</code></td><td><code>bool</code></td><td><code>true</code></td><td>Enable service reflection</td></tr>
+<tr><td><code>blob_chunk_size</code></td><td><code>usize</code></td><td>64 KB</td><td>Chunk size for blob streaming</td></tr>
+<tr><td><code>stream_channel_capacity</code></td><td><code>usize</code></td><td>32</td><td>Bounded channel capacity for backpressure</td></tr>
+</tbody></table>
+</div>
+<h3 id="configuration-builder"><a class="header" href="#configuration-builder">Configuration Builder</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_server::{ServerConfig, TlsConfig, AuthConfig, ApiKey};
+use std::path::PathBuf;
+
+let config = ServerConfig::new()
+    .with_bind_addr("0.0.0.0:9443".parse()?)
+    .with_tls(TlsConfig::new(
+        PathBuf::from("server.crt"),
+        PathBuf::from("server.key"),
+    ))
+    .with_auth(
+        AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "sk-prod-key-12345678".to_string(),
+                "service:backend".to_string(),
+            ))
+            .with_anonymous(false)
+    )
+    .with_max_message_size(128 * 1024 * 1024)
+    .with_grpc_web(true)
+    .with_reflection(true);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="tls-configuration"><a class="header" href="#tls-configuration">TLS Configuration</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>cert_path</code></td><td><code>PathBuf</code></td><td>Required</td><td>Path to certificate file (PEM)</td></tr>
+<tr><td><code>key_path</code></td><td><code>PathBuf</code></td><td>Required</td><td>Path to private key file (PEM)</td></tr>
+<tr><td><code>ca_cert_path</code></td><td><code>Option&lt;PathBuf&gt;</code></td><td><code>None</code></td><td>CA certificate for client auth</td></tr>
+<tr><td><code>require_client_cert</code></td><td><code>bool</code></td><td><code>false</code></td><td>Require client certificates</td></tr>
+</tbody></table>
+</div>
+<h3 id="tls-setup-example"><a class="header" href="#tls-setup-example">TLS Setup Example</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use neumann_server::TlsConfig;
+use std::path::PathBuf;
+
+// Basic TLS
+let tls = TlsConfig::new(
+    PathBuf::from("/etc/neumann/server.crt"),
+    PathBuf::from("/etc/neumann/server.key"),
+);
+
+// Mutual TLS (mTLS)
+let tls = TlsConfig::new(
+    PathBuf::from("/etc/neumann/server.crt"),
+    PathBuf::from("/etc/neumann/server.key"),
+)
+.with_ca_cert(PathBuf::from("/etc/neumann/ca.crt"))
+.with_required_client_cert(true);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="authentication"><a class="header" href="#authentication">Authentication</a></h2>
+<h3 id="authconfig-options"><a class="header" href="#authconfig-options">AuthConfig Options</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>api_keys</code></td><td><code>Vec&lt;ApiKey&gt;</code></td><td>Empty</td><td>List of valid API keys</td></tr>
+<tr><td><code>api_key_header</code></td><td><code>String</code></td><td><code>x-api-key</code></td><td>Header name for API key</td></tr>
+<tr><td><code>allow_anonymous</code></td><td><code>bool</code></td><td><code>false</code></td><td>Allow unauthenticated access</td></tr>
+</tbody></table>
+</div>
+<h3 id="api-key-validation"><a class="header" href="#api-key-validation">API Key Validation</a></h3>
+<p>The server uses constant-time comparison to prevent timing attacks. All keys are
+checked regardless of match status to avoid leaking information about valid
+prefixes:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Internal validation logic
+fn validate_key(&amp;self, key: &amp;str) -&gt; Option&lt;&amp;str&gt; {
+    let key_bytes = key.as_bytes();
+    let mut found_identity: Option&lt;&amp;str&gt; = None;
+
+    for api_key in &amp;self.api_keys {
+        let stored_bytes = api_key.key.as_bytes();
+        let max_len = stored_bytes.len().max(key_bytes.len());
+
+        let mut matches: u8 = 1;
+        for i in 0..max_len {
+            let stored_byte = stored_bytes.get(i).copied().unwrap_or(0);
+            let key_byte = key_bytes.get(i).copied().unwrap_or(0);
+            matches &amp;= u8::from(stored_byte == key_byte);
+        }
+
+        let lengths_match = u8::from(stored_bytes.len() == key_bytes.len());
+        matches &amp;= lengths_match;
+
+        if matches == 1 {
+            found_identity = Some(api_key.identity.as_str());
+        }
+    }
+
+    found_identity
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="authentication-flow"><a class="header" href="#authentication-flow">Authentication Flow</a></h3>
+<pre class="mermaid">flowchart TD
+    A[Request arrives] --&gt; B{Auth configured?}
+    B --&gt;|No| C[Allow with no identity]
+    B --&gt;|Yes| D{API key header present?}
+    D --&gt;|No| E{Anonymous allowed?}
+    E --&gt;|Yes| C
+    E --&gt;|No| F[Return UNAUTHENTICATED]
+    D --&gt;|Yes| G{Key valid?}
+    G --&gt;|Yes| H[Allow with identity from key]
+    G --&gt;|No| F
+</pre>
+<h2 id="grpc-services"><a class="header" href="#grpc-services">gRPC Services</a></h2>
+<h3 id="queryservice"><a class="header" href="#queryservice">QueryService</a></h3>
+<p>The QueryService provides query execution with three RPC methods:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Execute</code></td><td>Unary</td><td>Execute single query, return full result</td></tr>
+<tr><td><code>ExecuteStream</code></td><td>Server streaming</td><td>Execute query, stream results chunk by chunk</td></tr>
+<tr><td><code>ExecuteBatch</code></td><td>Unary</td><td>Execute multiple queries, return all results</td></tr>
+</tbody></table>
+</div>
+<h4 id="execute-rpc"><a class="header" href="#execute-rpc">Execute RPC</a></h4>
+<pre><code class="language-protobuf">rpc Execute(QueryRequest) returns (QueryResponse);
+
+message QueryRequest {
+    string query = 1;
+    optional string identity = 2;
+}
+
+message QueryResponse {
+    oneof result {
+        EmptyResult empty = 1;
+        CountResult count = 2;
+        RowsResult rows = 3;
+        NodesResult nodes = 4;
+        EdgesResult edges = 5;
+        PathResult path = 6;
+        SimilarResult similar = 7;
+        TableListResult table_list = 8;
+        BlobResult blob = 9;
+        IdsResult ids = 10;
+    }
+    optional ErrorInfo error = 15;
+}
+</code></pre>
+<h4 id="executestream-rpc"><a class="header" href="#executestream-rpc">ExecuteStream RPC</a></h4>
+<p>For large result sets (rows, nodes, edges, similar items, blobs), the streaming
+RPC sends results one item at a time:</p>
+<pre><code class="language-protobuf">rpc ExecuteStream(QueryRequest) returns (stream QueryResponseChunk);
+
+message QueryResponseChunk {
+    oneof chunk {
+        RowChunk row = 1;
+        NodeChunk node = 2;
+        EdgeChunk edge = 3;
+        SimilarChunk similar_item = 4;
+        bytes blob_data = 5;
+        ErrorInfo error = 15;
+    }
+    bool is_final = 16;
+}
+</code></pre>
+<h4 id="executebatch-rpc"><a class="header" href="#executebatch-rpc">ExecuteBatch RPC</a></h4>
+<pre><code class="language-protobuf">rpc ExecuteBatch(BatchQueryRequest) returns (BatchQueryResponse);
+
+message BatchQueryRequest {
+    repeated QueryRequest queries = 1;
+}
+
+message BatchQueryResponse {
+    repeated QueryResponse results = 1;
+}
+</code></pre>
+<p><strong>Security Note</strong>: In batch execution, the authenticated request identity is
+always used. Per-query identity fields are ignored to prevent privilege
+escalation attacks.</p>
+<h3 id="blobservice"><a class="header" href="#blobservice">BlobService</a></h3>
+<p>The BlobService provides artifact storage with streaming upload/download:</p>
+<div class="table-wrapper"><table><thead><tr><th>Method</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>Upload</code></td><td>Client streaming</td><td>Upload artifact with metadata</td></tr>
+<tr><td><code>Download</code></td><td>Server streaming</td><td>Download artifact in chunks</td></tr>
+<tr><td><code>Delete</code></td><td>Unary</td><td>Delete artifact</td></tr>
+<tr><td><code>GetMetadata</code></td><td>Unary</td><td>Get artifact metadata</td></tr>
+</tbody></table>
+</div>
+<h4 id="upload-protocol"><a class="header" href="#upload-protocol">Upload Protocol</a></h4>
+<pre class="mermaid">sequenceDiagram
+    participant C as Client
+    participant S as BlobService
+
+    C-&gt;&gt;S: UploadMetadata (filename, content_type, tags)
+    C-&gt;&gt;S: Chunk 1
+    C-&gt;&gt;S: Chunk 2
+    C-&gt;&gt;S: ...
+    C-&gt;&gt;S: Chunk N (end stream)
+    S-&gt;&gt;C: UploadResponse (artifact_id, size, checksum)
+</pre>
+<p>The first message must be metadata, followed by data chunks:</p>
+<pre><code class="language-protobuf">rpc Upload(stream BlobUploadRequest) returns (BlobUploadResponse);
+
+message BlobUploadRequest {
+    oneof request {
+        UploadMetadata metadata = 1;
+        bytes chunk = 2;
+    }
+}
+
+message UploadMetadata {
+    string filename = 1;
+    optional string content_type = 2;
+    repeated string tags = 3;
+}
+
+message BlobUploadResponse {
+    string artifact_id = 1;
+    uint64 size = 2;
+    string checksum = 3;
+}
+</code></pre>
+<h4 id="download-protocol"><a class="header" href="#download-protocol">Download Protocol</a></h4>
+<pre><code class="language-protobuf">rpc Download(BlobDownloadRequest) returns (stream BlobDownloadChunk);
+
+message BlobDownloadRequest {
+    string artifact_id = 1;
+}
+
+message BlobDownloadChunk {
+    bytes data = 1;
+    bool is_final = 2;
+}
+</code></pre>
+<h3 id="healthservice"><a class="header" href="#healthservice">HealthService</a></h3>
+<p>The HealthService follows the gRPC health checking protocol:</p>
+<pre><code class="language-protobuf">rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+
+message HealthCheckRequest {
+    optional string service = 1;
+}
+
+message HealthCheckResponse {
+    ServingStatus status = 1;
+}
+
+enum ServingStatus {
+    UNSPECIFIED = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+}
+</code></pre>
+<h4 id="health-check-targets"><a class="header" href="#health-check-targets">Health Check Targets</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Service Name</th><th>Checks</th></tr></thead><tbody>
+<tr><td>Empty or <code>""</code></td><td>Overall server health (all services)</td></tr>
+<tr><td><code>neumann.v1.QueryService</code></td><td>Query service health</td></tr>
+<tr><td><code>neumann.v1.BlobService</code></td><td>Blob service health</td></tr>
+<tr><td>Unknown service</td><td>Returns <code>UNSPECIFIED</code></td></tr>
+</tbody></table>
+</div>
+<h4 id="automatic-health-tracking"><a class="header" href="#automatic-health-tracking">Automatic Health Tracking</a></h4>
+<p>The QueryService tracks consecutive failures and marks itself unhealthy after
+reaching the threshold (default: 5 failures):</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>const FAILURE_THRESHOLD: u32 = 5;
+
+fn record_failure(&amp;self) {
+    let failures = self.consecutive_failures.fetch_add(1, Ordering::SeqCst) + 1;
+    if failures &gt;= FAILURE_THRESHOLD {
+        if let Some(ref health) = self.health_state {
+            health.set_query_service_healthy(false);
+        }
+    }
+}
+
+fn record_success(&amp;self) {
+    self.consecutive_failures.store(0, Ordering::SeqCst);
+    if let Some(ref health) = self.health_state {
+        health.set_query_service_healthy(true);
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="server-lifecycle"><a class="header" href="#server-lifecycle">Server Lifecycle</a></h2>
+<h3 id="startup-sequence"><a class="header" href="#startup-sequence">Startup Sequence</a></h3>
+<pre class="mermaid">flowchart TD
+    A[Create NeumannServer] --&gt; B[Validate configuration]
+    B --&gt; C{TLS configured?}
+    C --&gt;|Yes| D[Load certificates]
+    C --&gt;|No| E[Plain TCP]
+    D --&gt; F[Build TLS config]
+    F --&gt; G[Create services]
+    E --&gt; G
+    G --&gt; H{gRPC-web enabled?}
+    H --&gt;|Yes| I[Add gRPC-web layer]
+    H --&gt;|No| J[Standard gRPC]
+    I --&gt; K{Reflection enabled?}
+    J --&gt; K
+    K --&gt;|Yes| L[Add reflection service]
+    K --&gt;|No| M[Start serving]
+    L --&gt; M
+    M --&gt; N[Accept connections]
+</pre>
+<h3 id="basic-server-setup"><a class="header" href="#basic-server-setup">Basic Server Setup</a></h3>
+<pre><pre class="playground"><code class="language-rust">use neumann_server::{NeumannServer, ServerConfig};
+use query_router::QueryRouter;
+use std::sync::Arc;
+use parking_lot::RwLock;
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Create router
+    let router = Arc::new(RwLock::new(QueryRouter::new()));
+
+    // Create server with default config
+    let server = NeumannServer::new(router, ServerConfig::default());
+
+    // Start serving (blocks until shutdown)
+    server.serve().await?;
+
+    Ok(())
+}</code></pre></pre>
+<h3 id="server-with-shared-storage"><a class="header" href="#server-with-shared-storage">Server with Shared Storage</a></h3>
+<p>For applications that need both query and blob services sharing the same
+storage:</p>
+<pre><pre class="playground"><code class="language-rust">use neumann_server::{NeumannServer, ServerConfig};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let config = ServerConfig::default();
+
+    // Creates QueryRouter and BlobStore sharing the same TensorStore
+    let server = NeumannServer::with_shared_storage(config).await?;
+
+    server.serve().await?;
+
+    Ok(())
+}</code></pre></pre>
+<h3 id="graceful-shutdown"><a class="header" href="#graceful-shutdown">Graceful Shutdown</a></h3>
+<pre><pre class="playground"><code class="language-rust">use tokio::signal;
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let server = NeumannServer::with_shared_storage(ServerConfig::default()).await?;
+
+    // Shutdown on Ctrl+C
+    server.serve_with_shutdown(signal::ctrl_c().map(|_| ())).await?;
+
+    Ok(())
+}</code></pre></pre>
+<h2 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h2>
+<h3 id="server-errors"><a class="header" href="#server-errors">Server Errors</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Error</th><th>Cause</th><th>gRPC Status</th></tr></thead><tbody>
+<tr><td><code>Config</code></td><td>Invalid configuration</td><td><code>INVALID_ARGUMENT</code></td></tr>
+<tr><td><code>Transport</code></td><td>Network/TLS failure</td><td><code>UNAVAILABLE</code></td></tr>
+<tr><td><code>Query</code></td><td>Query execution failed</td><td><code>INVALID_ARGUMENT</code></td></tr>
+<tr><td><code>Auth</code></td><td>Authentication failed</td><td><code>UNAUTHENTICATED</code></td></tr>
+<tr><td><code>Blob</code></td><td>Blob operation failed</td><td><code>INTERNAL</code></td></tr>
+<tr><td><code>Internal</code></td><td>Unexpected server error</td><td><code>INTERNAL</code></td></tr>
+<tr><td><code>InvalidArgument</code></td><td>Bad request data</td><td><code>INVALID_ARGUMENT</code></td></tr>
+<tr><td><code>NotFound</code></td><td>Resource not found</td><td><code>NOT_FOUND</code></td></tr>
+<tr><td><code>PermissionDenied</code></td><td>Access denied</td><td><code>PERMISSION_DENIED</code></td></tr>
+<tr><td><code>Io</code></td><td>I/O error</td><td><code>INTERNAL</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="error-conversion"><a class="header" href="#error-conversion">Error Conversion</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>impl From&lt;ServerError&gt; for Status {
+    fn from(err: ServerError) -&gt; Self {
+        match &amp;err {
+            ServerError::Config(msg) =&gt; Status::invalid_argument(msg),
+            ServerError::Transport(e) =&gt; Status::unavailable(e.to_string()),
+            ServerError::Query(msg) =&gt; Status::invalid_argument(msg),
+            ServerError::Auth(msg) =&gt; Status::unauthenticated(msg),
+            ServerError::Blob(msg) =&gt; Status::internal(msg),
+            ServerError::Internal(msg) =&gt; Status::internal(msg),
+            ServerError::InvalidArgument(msg) =&gt; Status::invalid_argument(msg),
+            ServerError::NotFound(msg) =&gt; Status::not_found(msg),
+            ServerError::PermissionDenied(msg) =&gt; Status::permission_denied(msg),
+            ServerError::Io(e) =&gt; Status::internal(e.to_string()),
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="backpressure-and-flow-control"><a class="header" href="#backpressure-and-flow-control">Backpressure and Flow Control</a></h2>
+<h3 id="streaming-backpressure"><a class="header" href="#streaming-backpressure">Streaming Backpressure</a></h3>
+<p>The server uses bounded channels for streaming responses to prevent memory
+exhaustion:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Default: 32 items buffered
+let (tx, rx) = mpsc::channel(self.stream_channel_capacity);
+
+tokio::spawn(async move {
+    for item in results {
+        // This will block if channel is full, providing backpressure
+        if tx.send(Ok(item)).await.is_err() {
+            // Receiver dropped, stop sending
+            return;
+        }
+    }
+});
+<span class="boring">}</span></code></pre></pre>
+<h3 id="upload-size-limits"><a class="header" href="#upload-size-limits">Upload Size Limits</a></h3>
+<p>The BlobService enforces upload size limits:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>if data.len().saturating_add(chunk.len()) &gt; max_size {
+    return Err(Status::resource_exhausted(format!(
+        "upload exceeds maximum size of {max_size} bytes"
+    )));
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="production-deployment"><a class="header" href="#production-deployment">Production Deployment</a></h2>
+<h3 id="recommended-configuration"><a class="header" href="#recommended-configuration">Recommended Configuration</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = ServerConfig::new()
+    .with_bind_addr("0.0.0.0:9443".parse()?)
+    .with_tls(TlsConfig::new(
+        PathBuf::from("/etc/neumann/tls/server.crt"),
+        PathBuf::from("/etc/neumann/tls/server.key"),
+    ))
+    .with_auth(
+        AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                std::env::var("NEUMANN_API_KEY")?,
+                "service:default".to_string(),
+            ))
+            .with_anonymous(false)
+    )
+    .with_max_message_size(64 * 1024 * 1024)
+    .with_max_upload_size(1024 * 1024 * 1024)  // 1GB
+    .with_stream_channel_capacity(64)
+    .with_grpc_web(true)
+    .with_reflection(false);  // Disable in production
+<span class="boring">}</span></code></pre></pre>
+<h3 id="health-check-integration"><a class="header" href="#health-check-integration">Health Check Integration</a></h3>
+<p>Use health checks with load balancers:</p>
+<pre><code class="language-bash"># grpcurl health check
+grpcurl -plaintext localhost:9200 neumann.v1.Health/Check
+
+# With service name
+grpcurl -plaintext -d '{"service":"neumann.v1.QueryService"}' \
+    localhost:9200 neumann.v1.Health/Check
+</code></pre>
+<h3 id="logging"><a class="header" href="#logging">Logging</a></h3>
+<p>The server uses the <code>tracing</code> crate for structured logging:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tracing_subscriber::FmtSubscriber;
+
+let subscriber = FmtSubscriber::builder()
+    .with_max_level(tracing::Level::INFO)
+    .finish();
+tracing::subscriber::set_global_default(subscriber)?;
+
+// Server logs connection info and errors
+// INFO: Starting Neumann gRPC server with TLS on 0.0.0.0:9443
+// ERROR: Query execution error: table 'users' not found
+<span class="boring">}</span></code></pre></pre>
+<h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>query_router</code></td><td>Query execution backend</td></tr>
+<tr><td><code>tensor_blob</code></td><td>Blob storage backend</td></tr>
+<tr><td><code>tensor_store</code></td><td>Shared storage for both query and blob</td></tr>
+<tr><td><code>tonic</code></td><td>gRPC server framework</td></tr>
+<tr><td><code>tonic-web</code></td><td>gRPC-web layer for browser support</td></tr>
+<tr><td><code>tonic-reflection</code></td><td>Service reflection for debugging</td></tr>
+<tr><td><code>tokio</code></td><td>Async runtime</td></tr>
+<tr><td><code>parking_lot</code></td><td>Thread-safe router access</td></tr>
+<tr><td><code>tracing</code></td><td>Structured logging</td></tr>
+<tr><td><code>thiserror</code></td><td>Error type derivation</td></tr>
+</tbody></table>
+</div>
+<h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Module</th><th>Relationship</th></tr></thead><tbody>
+<tr><td><code>neumann_client</code></td><td>Client SDK for connecting to this server</td></tr>
+<tr><td><code>query_router</code></td><td>Query execution backend</td></tr>
+<tr><td><code>tensor_blob</code></td><td>Blob storage backend</td></tr>
+<tr><td><code>neumann_shell</code></td><td>Interactive CLI (alternative interface)</td></tr>
+</tbody></table>
+</div>
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/neumann-shell.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../architecture/neumann-client.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/neumann-shell.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../architecture/neumann-client.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

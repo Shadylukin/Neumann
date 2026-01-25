@@ -36,8 +36,8 @@ impl From<tensor_store::TensorStoreError> for CacheError {
     }
 }
 
-impl From<bincode::Error> for CacheError {
-    fn from(e: bincode::Error) -> Self {
+impl From<bitcode::Error> for CacheError {
+    fn from(e: bitcode::Error) -> Self {
         Self::SerializationError(e.to_string())
     }
 }
@@ -113,8 +113,8 @@ mod tests {
     #[test]
     fn test_from_bincode_error() {
         let invalid_data = b"not valid bincode";
-        let result: std::result::Result<String, bincode::Error> =
-            bincode::deserialize(invalid_data);
+        let result: std::result::Result<String, bitcode::Error> =
+            bitcode::deserialize(invalid_data);
         if let Err(bincode_err) = result {
             let cache_err: CacheError = bincode_err.into();
             assert!(matches!(cache_err, CacheError::SerializationError(_)));

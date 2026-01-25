@@ -1,12 +1,31 @@
 //! Transaction support for `RelationalEngine`.
 //!
-//! Provides local transaction support with begin/commit/rollback API,
-//! row-level locking, and undo logging for rollback.
+//! Provides ACID transactions with row-level locking and undo logging:
+//! - Begin/commit/rollback API
+//! - Row-level locks with deadlock timeout
+//! - Undo log for automatic rollback
+//!
+//! # Transaction Lifecycle
+//!
+//! | Phase | Description | Transitions |
+//! |-------|-------------|-------------|
+//! | Active | Operations allowed | Committing, Aborting |
+//! | Committing | Finalizing changes | Committed |
+//! | Committed | Changes permanent | (terminal) |
+//! | Aborting | Rolling back | Aborted |
+//! | Aborted | Changes reverted | (terminal) |
+//!
+//! # Lock Semantics
+//!
+//! Row locks are acquired on first write and held until commit/rollback:
+//! - Locks have configurable timeout (default: no timeout)
+//! - Expired locks are automatically cleaned up
+//! - Lock conflicts return `RelationalError::LockConflict`
 
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
@@ -158,6 +177,55 @@ impl RowLock {
     #[must_use]
     pub fn is_expired(&self) -> bool {
         now_epoch_millis().saturating_sub(self.acquired_at_ms) > self.timeout_ms
+    }
+}
+
+/// Monotonic deadline for query timeout checking.
+///
+/// Uses `Instant` for monotonic time that is immune to system clock changes.
+/// This is essential for query timeouts where wall-clock adjustments should
+/// not affect timeout behavior.
+#[derive(Debug, Clone, Copy)]
+pub struct Deadline {
+    deadline: Option<Instant>,
+}
+
+impl Deadline {
+    /// Creates a deadline from a timeout in milliseconds.
+    ///
+    /// Returns a deadline that will expire after the specified duration.
+    /// If `timeout_ms` is `None`, the deadline will never expire.
+    #[must_use]
+    pub fn from_timeout_ms(timeout_ms: Option<u64>) -> Self {
+        Self {
+            deadline: timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms)),
+        }
+    }
+
+    /// Creates a deadline that never expires.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self { deadline: None }
+    }
+
+    /// Returns true if the deadline has expired.
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    /// Returns the remaining time in milliseconds, or `None` if no deadline is set.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn remaining_ms(&self) -> Option<u64> {
+        self.deadline
+            .map(|d| d.saturating_duration_since(Instant::now()).as_millis() as u64)
+    }
+}
+
+impl Default for Deadline {
+    fn default() -> Self {
+        Self::never()
     }
 }
 
@@ -458,12 +526,17 @@ impl TransactionManager {
 }
 
 /// Get current epoch time in milliseconds.
+///
+/// # Panics
+///
+/// Panics if system clock is before UNIX epoch (1970-01-01), indicating
+/// a misconfigured system clock.
 #[allow(clippy::cast_possible_truncation)]
 fn now_epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .expect("system clock is before UNIX epoch (1970-01-01)")
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -706,5 +779,59 @@ mod tests {
         let cleaned = mgr.cleanup_expired();
         assert_eq!(cleaned, 1);
         assert!(!mgr.is_locked("users", 1));
+    }
+
+    #[test]
+    fn test_now_epoch_millis_returns_reasonable_value() {
+        let now = now_epoch_millis();
+        // Should be after 2020-01-01 (1577836800000 ms)
+        assert!(now > 1_577_836_800_000, "epoch time should be after 2020");
+        // Should be before 2100-01-01 (4102444800000 ms)
+        assert!(now < 4_102_444_800_000, "epoch time should be before 2100");
+    }
+
+    #[test]
+    fn test_deadline_from_timeout_ms() {
+        let deadline = Deadline::from_timeout_ms(Some(1000));
+        assert!(!deadline.is_expired());
+        assert!(deadline.remaining_ms().is_some());
+    }
+
+    #[test]
+    fn test_deadline_never_expires() {
+        let deadline = Deadline::never();
+        assert!(!deadline.is_expired());
+        assert!(deadline.remaining_ms().is_none());
+    }
+
+    #[test]
+    fn test_deadline_is_expired() {
+        // Create a deadline that should already be expired
+        let deadline = Deadline::from_timeout_ms(Some(0));
+        // Give it a tiny bit of time to pass
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(deadline.is_expired());
+    }
+
+    #[test]
+    fn test_deadline_default() {
+        let deadline = Deadline::default();
+        assert!(!deadline.is_expired());
+        assert!(deadline.remaining_ms().is_none());
+    }
+
+    #[test]
+    fn test_deadline_none_timeout() {
+        let deadline = Deadline::from_timeout_ms(None);
+        assert!(!deadline.is_expired());
+        assert!(deadline.remaining_ms().is_none());
+    }
+
+    #[test]
+    fn test_zero_timeout_immediate_expiry() {
+        let deadline = Deadline::from_timeout_ms(Some(0));
+        // Wait a tiny bit to ensure the deadline passes
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(deadline.is_expired());
     }
 }

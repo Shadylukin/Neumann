@@ -142,8 +142,8 @@ fn test_compression_config_with_snapshot() {
     };
 
     // Verify serialization
-    let bytes = bincode::serialize(&config).unwrap();
-    let decoded: CompressionConfig = bincode::deserialize(&bytes).unwrap();
+    let bytes = bitcode::serialize(&config).unwrap();
+    let decoded: CompressionConfig = bitcode::deserialize(&bytes).unwrap();
     assert_eq!(config, decoded);
 }
 

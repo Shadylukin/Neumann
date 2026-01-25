@@ -16,7 +16,7 @@ description = "Checkpoint and rollback system for Neumann database"
 tensor_store = { path = "../tensor_store" }
 tensor_blob = { path = "../tensor_blob" }
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
+bitcode = { version = "0.6", features = ["serde"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }

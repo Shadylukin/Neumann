@@ -66,7 +66,7 @@ impl LengthDelimitedCodec {
     }
 
     pub fn encode(&self, msg: &Message) -> TcpResult<Vec<u8>> {
-        let payload = bincode::serialize(msg)?;
+        let payload = bitcode::serialize(msg)?;
 
         if payload.len() > self.max_frame_length {
             return Err(TcpError::MessageTooLarge {
@@ -91,12 +91,12 @@ impl LengthDelimitedCodec {
             });
         }
 
-        let msg: Message = bincode::deserialize(payload)?;
+        let msg: Message = bitcode::deserialize(payload)?;
         Ok(msg)
     }
 
     pub fn encode_v2(&self, msg: &Message) -> TcpResult<Vec<u8>> {
-        let serialized = bincode::serialize(msg)?;
+        let serialized = bitcode::serialize(msg)?;
 
         // Check if we should compress
         let (payload, flags) =
@@ -155,7 +155,7 @@ impl LengthDelimitedCodec {
             });
         }
 
-        let msg: Message = bincode::deserialize(&decompressed)?;
+        let msg: Message = bitcode::deserialize(&decompressed)?;
         Ok(msg)
     }
 
@@ -484,7 +484,7 @@ impl Handshake {
     }
 
     pub fn encode(&self) -> TcpResult<Vec<u8>> {
-        let payload = bincode::serialize(self)?;
+        let payload = bitcode::serialize(self)?;
         let length = payload.len() as u32;
         let mut frame = Vec::with_capacity(4 + payload.len());
         frame.extend_from_slice(&length.to_be_bytes());
@@ -514,7 +514,7 @@ impl Handshake {
 
         // Decode
         let handshake: Handshake =
-            bincode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
+            bitcode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
 
         // Validate protocol version (accept v1 and v2)
         if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
@@ -577,7 +577,7 @@ impl Handshake {
 
         // Decode
         let handshake: Handshake =
-            bincode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
+            bitcode::deserialize(&payload).map_err(|e| TcpError::HandshakeFailed(e.to_string()))?;
 
         // Validate protocol version (accept v1 and v2)
         if handshake.protocol_version < Self::MIN_PROTOCOL_VERSION
@@ -706,7 +706,7 @@ mod tests {
 
         // Decode
         let length = u32::from_be_bytes([encoded[0], encoded[1], encoded[2], encoded[3]]) as usize;
-        let decoded: Handshake = bincode::deserialize(&encoded[4..4 + length]).unwrap();
+        let decoded: Handshake = bitcode::deserialize(&encoded[4..4 + length]).unwrap();
 
         assert_eq!(decoded.node_id, "node1");
         assert_eq!(decoded.protocol_version, Handshake::PROTOCOL_VERSION);
@@ -818,7 +818,7 @@ mod tests {
             capabilities: vec![],
         };
 
-        let payload = bincode::serialize(&handshake).unwrap();
+        let payload = bitcode::serialize(&handshake).unwrap();
         let length = payload.len() as u32;
 
         let mut frame = Vec::new();
@@ -987,7 +987,7 @@ mod tests {
             capabilities: vec![],
         };
 
-        let payload = bincode::serialize(&handshake).unwrap();
+        let payload = bitcode::serialize(&handshake).unwrap();
         let length = payload.len() as u32;
 
         let mut frame = Vec::new();

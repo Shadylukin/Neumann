@@ -182,7 +182,6 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="relational-engine"><a class="header" href="#relational-engine">Relational Engine</a></h1>
-<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p>The Relational Engine (Module 2) provides SQL-like table operations on top of
 the Tensor Store. It implements schema enforcement, composable condition
 predicates, SIMD-accelerated columnar filtering, and both hash and B-tree
@@ -192,7 +191,7 @@ Store, inheriting its thread safety from DashMap. The engine supports all
 standard CRUD operations, six SQL join types, aggregate functions, and batch
 operations for bulk inserts.</p>
 <h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
-<pre class="mermaid">graph TD
+<pre class="mermaid">flowchart TD
     subgraph RelationalEngine
         API[Public API]
         Schema[Schema Validation]
@@ -1050,7 +1049,7 @@ HAVING SUM(quantity) &gt; 100;
 <h3 id="future-considerations"><a class="header" href="#future-considerations">Future Considerations</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Status</th></tr></thead><tbody>
 <tr><td>Query Optimization</td><td>Not implemented</td></tr>
-<tr><td>Transactions</td><td>Not implemented</td></tr>
+<tr><td>Transactions</td><td>Row-level ACID with undo log - see <a href="relational-transactions.html">Transactions</a></td></tr>
 <tr><td>Foreign Keys</td><td>Not implemented</td></tr>
 <tr><td>Subqueries</td><td>Not implemented</td></tr>
 <tr><td>Window Functions</td><td>Not implemented</td></tr>
@@ -1065,7 +1064,7 @@ HAVING SUM(quantity) &gt; 100;
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../architecture/graph-engine.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../architecture/relational-transactions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -1079,7 +1078,7 @@ HAVING SUM(quantity) &gt; 100;
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../architecture/graph-engine.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../architecture/relational-transactions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

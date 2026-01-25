@@ -16,6 +16,7 @@ use tempfile::tempdir;
 
 /// Fuzzable WAL operation sequence
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 enum FuzzWalOp {
     /// Begin a new transaction with participants
     TxBegin {
@@ -68,6 +69,7 @@ impl From<FuzzPhase> for TxPhase {
 
 /// Input for fuzzing
 #[derive(Debug, Arbitrary)]
+#[allow(dead_code)]
 struct FuzzInput {
     operations: Vec<FuzzWalOp>,
 }

@@ -13,7 +13,7 @@ pub struct CheckpointStorage;
 impl CheckpointStorage {
     pub async fn store(state: &CheckpointState, blob: &BlobStore) -> Result<String> {
         let data =
-            bincode::serialize(state).map_err(|e| CheckpointError::Serialization(e.to_string()))?;
+            bitcode::serialize(state).map_err(|e| CheckpointError::Serialization(e.to_string()))?;
 
         let filename = format!("checkpoint_{}.ncp", state.id);
 
@@ -50,7 +50,7 @@ impl CheckpointStorage {
             .await
             .map_err(CheckpointError::Blob)?;
 
-        let state: CheckpointState = bincode::deserialize(&data)
+        let state: CheckpointState = bitcode::deserialize(&data)
             .map_err(|e| CheckpointError::Deserialization(e.to_string()))?;
 
         Ok(state)

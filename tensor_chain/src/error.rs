@@ -217,8 +217,8 @@ pub enum ChainError {
     ClockError(String),
 }
 
-impl From<bincode::Error> for ChainError {
-    fn from(err: bincode::Error) -> Self {
+impl From<bitcode::Error> for ChainError {
+    fn from(err: bitcode::Error) -> Self {
         ChainError::SerializationError(err.to_string())
     }
 }
@@ -352,8 +352,8 @@ mod tests {
 
     #[test]
     fn test_from_bincode_error() {
-        let bincode_err = bincode::serialize(&"test")
-            .and_then(|_| bincode::deserialize::<u64>(b"invalid"))
+        let bincode_err = bitcode::serialize(&"test")
+            .and_then(|_| bitcode::deserialize::<u64>(b"invalid"))
             .unwrap_err();
         let chain_err: ChainError = bincode_err.into();
         assert!(matches!(chain_err, ChainError::SerializationError(_)));

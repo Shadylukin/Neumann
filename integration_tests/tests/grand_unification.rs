@@ -115,7 +115,7 @@ async fn test_the_neumann_protocol() {
 
     // 1. Graph lookup
     let written_papers = graph
-        .neighbors(author_node, Some("WROTE"), Direction::Outgoing)
+        .neighbors(author_node, Some("WROTE"), Direction::Outgoing, None)
         .unwrap();
     assert_eq!(written_papers.len(), 1);
     let target_paper_node_id = written_papers[0].id;

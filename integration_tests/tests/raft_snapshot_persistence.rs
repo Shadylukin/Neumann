@@ -84,7 +84,7 @@ fn test_follower_persists_snapshot() {
 
     // Create valid snapshot data
     let entries: Vec<LogEntry> = (1..=10).map(|i| create_log_entry(i, 1)).collect();
-    let data = bincode::serialize(&entries).unwrap();
+    let data = bitcode::serialize(&entries).unwrap();
     let snapshot_hash = compute_hash(&data);
 
     let metadata = SnapshotMetadata::new(
@@ -114,7 +114,7 @@ fn test_startup_loads_valid_snapshot() {
 
     // Create and persist a valid snapshot
     let entries: Vec<LogEntry> = (1..=5).map(|i| create_log_entry(i, 1)).collect();
-    let data = bincode::serialize(&entries).unwrap();
+    let data = bitcode::serialize(&entries).unwrap();
     let snapshot_hash = compute_hash(&data);
 
     let metadata = SnapshotMetadata::new(
@@ -158,7 +158,7 @@ fn test_startup_rejects_corrupted_snapshot() {
 
     // Create and persist a valid snapshot
     let entries: Vec<LogEntry> = (1..=5).map(|i| create_log_entry(i, 1)).collect();
-    let data = bincode::serialize(&entries).unwrap();
+    let data = bitcode::serialize(&entries).unwrap();
     let snapshot_hash = compute_hash(&data);
 
     let metadata = SnapshotMetadata::new(

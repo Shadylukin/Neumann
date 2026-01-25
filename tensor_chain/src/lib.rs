@@ -2074,8 +2074,8 @@ mod tests {
         let snapshot = metrics.snapshot();
 
         // Serialize with bincode
-        let bytes = bincode::serialize(&snapshot).unwrap();
-        let restored: ChainMetricsSnapshot = bincode::deserialize(&bytes).unwrap();
+        let bytes = bitcode::serialize(&snapshot).unwrap();
+        let restored: ChainMetricsSnapshot = bitcode::deserialize(&bytes).unwrap();
 
         assert_eq!(
             snapshot.raft.heartbeat_successes,

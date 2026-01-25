@@ -4,7 +4,7 @@
 //! Data with similar embeddings is co-located on the same shard, improving
 //! locality for similarity searches and reducing cross-shard queries.
 
-use std::sync::RwLock;
+use parking_lot::RwLock;
 
 use crate::{
     consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner},
@@ -175,16 +175,13 @@ impl SemanticPartitioner {
     /// Routes to the shard with the most similar centroid if similarity
     /// exceeds the threshold. Falls back to consistent hashing otherwise.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal locks are poisoned.
     #[allow(clippy::significant_drop_tightening)] // Locks held during iteration over centroids
     pub fn partition_with_embedding(
         &self,
         key: &str,
         embedding: &[f32],
     ) -> SemanticPartitionResult {
-        let centroids = self.centroids.read().unwrap();
+        let centroids = self.centroids.read();
 
         // Fall back if no centroids or dimension mismatch
         if centroids.is_empty() || embedding.len() != self.config.embedding_dim {
@@ -192,7 +189,7 @@ impl SemanticPartitioner {
         }
 
         // Find nearest centroid
-        let magnitudes = self.centroid_magnitudes.read().unwrap();
+        let magnitudes = self.centroid_magnitudes.read();
         let query_magnitude = simd::magnitude(embedding);
 
         if query_magnitude == 0.0 {
@@ -219,7 +216,7 @@ impl SemanticPartitioner {
 
         // Check if similarity exceeds threshold
         if best_similarity >= self.config.similarity_threshold {
-            let shard_nodes = self.shard_nodes.read().unwrap();
+            let shard_nodes = self.shard_nodes.read();
             if best_shard < shard_nodes.len() {
                 let node = shard_nodes[best_shard].clone();
                 let is_local = node == self.config.local_node;
@@ -236,9 +233,6 @@ impl SemanticPartitioner {
     ///
     /// Returns the number of centroids created.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal locks are poisoned.
     #[allow(clippy::significant_drop_tightening)] // Locks updated atomically
     pub fn initialize_centroids(&self, samples: &[Vec<f32>]) -> usize {
         if samples.is_empty() {
@@ -265,8 +259,8 @@ impl SemanticPartitioner {
         let new_magnitudes: Vec<f32> = new_centroids.iter().map(|c| simd::magnitude(c)).collect();
 
         // Update centroids
-        let mut centroids = self.centroids.write().unwrap();
-        let mut magnitudes = self.centroid_magnitudes.write().unwrap();
+        let mut centroids = self.centroids.write();
+        let mut magnitudes = self.centroid_magnitudes.write();
         *centroids = new_centroids;
         *magnitudes = new_magnitudes;
 
@@ -275,31 +269,24 @@ impl SemanticPartitioner {
 
     /// Set centroids directly (useful for cluster-wide synchronization).
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal locks are poisoned.
     #[allow(clippy::significant_drop_tightening)] // Locks updated atomically
     pub fn set_centroids(&self, new_centroids: Vec<Vec<f32>>) {
         let new_magnitudes: Vec<f32> = new_centroids.iter().map(|c| simd::magnitude(c)).collect();
 
-        let mut centroids = self.centroids.write().unwrap();
-        let mut magnitudes = self.centroid_magnitudes.write().unwrap();
+        let mut centroids = self.centroids.write();
+        let mut magnitudes = self.centroid_magnitudes.write();
         *centroids = new_centroids;
         *magnitudes = new_magnitudes;
     }
 
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
+    /// Returns a clone of the current centroids.
     pub fn centroids(&self) -> Vec<Vec<f32>> {
-        self.centroids.read().unwrap().clone()
+        self.centroids.read().clone()
     }
 
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
+    /// Returns the number of centroids.
     pub fn num_centroids(&self) -> usize {
-        self.centroids.read().unwrap().len()
+        self.centroids.read().len()
     }
 
     /// Returns the embedding dimension.
@@ -317,18 +304,15 @@ impl SemanticPartitioner {
     /// Returns shards with centroid similarity above the threshold,
     /// sorted by similarity (highest first).
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal locks are poisoned.
     #[allow(clippy::significant_drop_tightening)] // Locks held during iteration over centroids
     pub fn shards_for_embedding(&self, embedding: &[f32]) -> Vec<(usize, f32)> {
-        let centroids = self.centroids.read().unwrap();
+        let centroids = self.centroids.read();
 
         if centroids.is_empty() || embedding.len() != self.config.embedding_dim {
             return Vec::new();
         }
 
-        let magnitudes = self.centroid_magnitudes.read().unwrap();
+        let magnitudes = self.centroid_magnitudes.read();
         let query_magnitude = simd::magnitude(embedding);
 
         if query_magnitude == 0.0 {
@@ -360,20 +344,16 @@ impl SemanticPartitioner {
         relevant
     }
 
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
+    /// Returns all shard indices.
     pub fn all_shards(&self) -> Vec<usize> {
-        let shard_nodes = self.shard_nodes.read().unwrap();
+        let shard_nodes = self.shard_nodes.read();
         (0..shard_nodes.len()).collect()
     }
 
-    /// # Panics
-    ///
-    /// Panics if the internal locks are poisoned.
+    /// Returns statistics about the partitioner state.
     pub fn stats(&self) -> SemanticPartitionerStats {
-        let centroids = self.centroids.read().unwrap();
-        let shard_nodes = self.shard_nodes.read().unwrap();
+        let centroids = self.centroids.read();
+        let shard_nodes = self.shard_nodes.read();
 
         SemanticPartitionerStats {
             num_shards: shard_nodes.len(),
@@ -414,7 +394,7 @@ impl Partitioner for SemanticPartitioner {
     fn add_node(&mut self, node: PhysicalNodeId) -> Vec<PartitionId> {
         // Add to shard-node mapping
         {
-            let mut shard_nodes = self.shard_nodes.write().unwrap();
+            let mut shard_nodes = self.shard_nodes.write();
             shard_nodes.push(node.clone());
         }
 
@@ -425,7 +405,7 @@ impl Partitioner for SemanticPartitioner {
     fn remove_node(&mut self, node: &PhysicalNodeId) -> Vec<PartitionId> {
         // Remove from shard-node mapping
         {
-            let mut shard_nodes = self.shard_nodes.write().unwrap();
+            let mut shard_nodes = self.shard_nodes.write();
             shard_nodes.retain(|n| n != node);
         }
 

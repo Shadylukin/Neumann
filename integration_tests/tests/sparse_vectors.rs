@@ -457,7 +457,7 @@ fn test_embedding_slab_sparse_snapshot() {
     let snapshot = slab.snapshot();
 
     // Serialize to check size (sparse should be much smaller)
-    let serialized = bincode::serialize(&snapshot).unwrap();
+    let serialized = bitcode::serialize(&snapshot).unwrap();
     let dense_size = 5 * 100 * 4 + 100; // 5 vectors * 100 floats * 4 bytes + overhead
     assert!(
         serialized.len() < dense_size / 5,

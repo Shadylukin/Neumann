@@ -1278,7 +1278,7 @@ fn bench_gossip_operations(c: &mut Criterion) {
         };
 
         b.iter(|| {
-            let bytes = bincode::serialize(&msg).unwrap();
+            let bytes = bitcode::serialize(&msg).unwrap();
             black_box(bytes)
         })
     });
@@ -1297,10 +1297,10 @@ fn bench_gossip_operations(c: &mut Criterion) {
             states,
             sender_time: 100,
         };
-        let bytes = bincode::serialize(&msg).unwrap();
+        let bytes = bitcode::serialize(&msg).unwrap();
 
         b.iter(|| {
-            let deserialized: GossipMessage = bincode::deserialize(&bytes).unwrap();
+            let deserialized: GossipMessage = bitcode::deserialize(&bytes).unwrap();
             black_box(deserialized)
         })
     });
@@ -1350,7 +1350,7 @@ fn bench_snapshot_operations(c: &mut Criterion) {
         let meta = create_snapshot_metadata();
 
         b.iter(|| {
-            let bytes = bincode::serialize(&meta).unwrap();
+            let bytes = bitcode::serialize(&meta).unwrap();
             black_box(bytes)
         })
     });
@@ -1358,10 +1358,10 @@ fn bench_snapshot_operations(c: &mut Criterion) {
     // Benchmark SnapshotMetadata deserialization
     group.bench_function("snapshot_metadata_deserialize", |b| {
         let meta = create_snapshot_metadata();
-        let bytes = bincode::serialize(&meta).unwrap();
+        let bytes = bitcode::serialize(&meta).unwrap();
 
         b.iter(|| {
-            let deserialized: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+            let deserialized: SnapshotMetadata = bitcode::deserialize(&bytes).unwrap();
             black_box(deserialized)
         })
     });

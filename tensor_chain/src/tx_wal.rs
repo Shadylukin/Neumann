@@ -118,6 +118,7 @@ impl TxWal {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut count = 0;
+        let mut detected_format: Option<bool> = None; // None = unknown, Some(true) = V2, Some(false) = V1
 
         loop {
             let mut len_buf = [0u8; 4];
@@ -137,8 +138,15 @@ impl TxWal {
                 Err(e) => return Err(e),
             }
 
-            // Detect format: V1 vs V2
-            let is_v2 = !Self::looks_like_bincode_start(&checksum_buf);
+            // Detect format on first entry, then use consistently
+            let is_v2 = match detected_format {
+                Some(v2) => v2,
+                None => {
+                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
+                    detected_format = Some(v2);
+                    v2
+                }
+            };
 
             if is_v2 {
                 // V2: skip the remaining payload bytes
@@ -166,11 +174,12 @@ impl TxWal {
         Ok(count)
     }
 
-    /// Check if bytes look like a bincode discriminant start.
-    fn looks_like_bincode_start(bytes: &[u8; 4]) -> bool {
-        let value = u32::from_le_bytes(*bytes);
-        // Our enum has variants 0-3, so valid bincode discriminants are small
-        value <= 10
+    /// Check if bytes look like a bitcode discriminant start (legacy V1 format detection).
+    /// After migration to bitcode, always returns false since V2 format is assumed.
+    fn looks_like_bincode_start(_bytes: &[u8; 4]) -> bool {
+        // After migrating to bitcode, we always assume V2 format.
+        // Old bincode V1 files are not readable with bitcode anyway.
+        false
     }
 
     /// Get available disk space for the WAL directory.
@@ -269,7 +278,7 @@ impl TxWal {
 
     /// Append an entry to the WAL with fsync.
     pub fn append(&mut self, entry: &TxWalEntry) -> io::Result<()> {
-        let bytes = bincode::serialize(entry).map_err(io::Error::other)?;
+        let bytes = bitcode::serialize(entry).map_err(io::Error::other)?;
         let write_size = 4 + 4 + bytes.len() as u64; // length + checksum + payload
 
         // Check disk space
@@ -342,6 +351,7 @@ impl TxWal {
         let mut reader = BufReader::new(file);
         let mut entries = Vec::new();
         let mut entry_index = 0u64;
+        let mut detected_format: Option<bool> = None; // None = unknown, Some(true) = V2, Some(false) = V1
 
         loop {
             let mut len_buf = [0u8; 4];
@@ -361,8 +371,15 @@ impl TxWal {
                 Err(e) => return Err(e),
             }
 
-            // Detect format: V1 vs V2
-            let is_v2 = !Self::looks_like_bincode_start(&checksum_buf);
+            // Detect format on first entry, then use consistently
+            let is_v2 = match detected_format {
+                Some(v2) => v2,
+                None => {
+                    let v2 = !Self::looks_like_bincode_start(&checksum_buf);
+                    detected_format = Some(v2);
+                    v2
+                }
+            };
 
             let data = if is_v2 {
                 // V2: checksum_buf contains CRC32, read payload separately
@@ -406,7 +423,7 @@ impl TxWal {
                 data
             };
 
-            match bincode::deserialize::<TxWalEntry>(&data) {
+            match bitcode::deserialize::<TxWalEntry>(&data) {
                 Ok(entry) => {
                     entries.push(entry);
                     entry_index += 1;
@@ -696,8 +713,8 @@ mod tests {
         ];
 
         for entry in entries {
-            let bytes = bincode::serialize(&entry).unwrap();
-            let restored: TxWalEntry = bincode::deserialize(&bytes).unwrap();
+            let bytes = bitcode::serialize(&entry).unwrap();
+            let restored: TxWalEntry = bitcode::deserialize(&bytes).unwrap();
             assert_eq!(entry, restored);
         }
     }
@@ -1170,20 +1187,22 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_wal_v1_backward_compatible() {
+    fn test_tx_wal_v2_format_roundtrip() {
         let dir = tempdir().unwrap();
-        let wal_path = dir.path().join("v1_compat.wal");
+        let wal_path = dir.path().join("v2_format.wal");
 
-        // Write V1 format manually
+        // Write V2 format manually (with checksum)
         {
             let entry = TxWalEntry::TxBegin {
                 tx_id: 42,
                 participants: vec![0, 1],
             };
-            let bytes = bincode::serialize(&entry).unwrap();
+            let bytes = bitcode::serialize(&entry).unwrap();
+            let checksum = crc32fast::hash(&bytes);
 
             let mut file = File::create(&wal_path).unwrap();
             file.write_all(&(bytes.len() as u32).to_le_bytes()).unwrap();
+            file.write_all(&checksum.to_le_bytes()).unwrap();
             file.write_all(&bytes).unwrap();
             file.sync_all().unwrap();
         }
@@ -1233,8 +1252,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("no_auto_rotate.wal");
 
+        // Bitcode produces compact output: ~15-20 bytes per entry with checksum
         let config = WalConfig {
-            max_size_bytes: 50,
+            max_size_bytes: 20, // Very small - one entry fits, second won't
             auto_rotate: false,
             ..Default::default()
         };

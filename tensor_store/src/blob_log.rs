@@ -17,8 +17,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use fxhash::FxHasher;
 use parking_lot::{Mutex, RwLock};
+use rustc_hash::FxHasher;
 use serde::{Deserialize, Serialize};
 
 /// Content hash for blob chunks (simulated SHA-256 via `FxHash` for performance).

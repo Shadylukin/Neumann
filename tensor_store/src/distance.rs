@@ -415,16 +415,16 @@ mod tests {
     #[test]
     fn metric_serde() {
         let metric = DistanceMetric::Angular;
-        let serialized = bincode::serialize(&metric).unwrap();
-        let deserialized: DistanceMetric = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&metric).unwrap();
+        let deserialized: DistanceMetric = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, metric);
     }
 
     #[test]
     fn config_serde() {
         let config = GeometricConfig::default();
-        let serialized = bincode::serialize(&config).unwrap();
-        let deserialized: GeometricConfig = bincode::deserialize(&serialized).unwrap();
+        let serialized = bitcode::serialize(&config).unwrap();
+        let deserialized: GeometricConfig = bitcode::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, config);
     }
 
