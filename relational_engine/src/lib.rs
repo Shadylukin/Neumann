@@ -401,6 +401,40 @@ mod simd {
         }
 
         #[test]
+        fn test_filter_lt_remainder_match() {
+            // Ensure remainder elements that match are included
+            let values = vec![10, 10, 10, 10, 1]; // 5 elements, position 4 matches
+            let mut bitmap = vec![0u64; 1];
+            filter_lt_i64(&values, 5, &mut bitmap);
+            // Only position 4 (value 1) is < 5
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
+        fn test_filter_le_remainder_match() {
+            let values = vec![10, 10, 10, 10, 5]; // 5 elements, position 4 matches <=
+            let mut bitmap = vec![0u64; 1];
+            filter_le_i64(&values, 5, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
+        fn test_filter_gt_remainder_match() {
+            let values = vec![1, 1, 1, 1, 10]; // 5 elements, position 4 matches >
+            let mut bitmap = vec![0u64; 1];
+            filter_gt_i64(&values, 5, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
+        fn test_filter_ge_remainder_match() {
+            let values = vec![1, 1, 1, 1, 5]; // 5 elements, position 4 matches >=
+            let mut bitmap = vec![0u64; 1];
+            filter_ge_i64(&values, 5, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
         fn test_bitmap_and() {
             let a = [0b1111_0000u64];
             let b = [0b1010_1010u64];
@@ -429,6 +463,30 @@ mod simd {
         fn test_popcount() {
             let bitmap = [0b11110000u64, 0b00001111u64];
             assert_eq!(popcount(&bitmap), 8);
+        }
+
+        #[test]
+        fn test_filter_lt_f64_remainder_match() {
+            let values = vec![10.0, 10.0, 10.0, 10.0, 1.0]; // 5 elements
+            let mut bitmap = vec![0u64; 1];
+            filter_lt_f64(&values, 5.0, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
+        fn test_filter_gt_f64_remainder_match() {
+            let values = vec![1.0, 1.0, 1.0, 1.0, 10.0]; // 5 elements
+            let mut bitmap = vec![0u64; 1];
+            filter_gt_f64(&values, 5.0, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
+        }
+
+        #[test]
+        fn test_filter_eq_f64_remainder_match() {
+            let values = vec![1.0, 1.0, 1.0, 1.0, 5.0]; // 5 elements
+            let mut bitmap = vec![0u64; 1];
+            filter_eq_f64(&values, 5.0, &mut bitmap);
+            assert_eq!(bitmap[0], 0b00010000);
         }
     }
 }
@@ -775,7 +833,9 @@ impl Condition {
             .is_some_and(|o| o != std::cmp::Ordering::Less)
     }
 
+    /// Evaluate this condition against a tensor record.
     #[cfg(feature = "test-internals")]
+    #[must_use]
     pub fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
         self.evaluate_tensor_impl(tensor)
     }
@@ -12176,6 +12236,143 @@ mod tests {
 
         assert_eq!(success.load(Ordering::SeqCst), 1);
         assert_eq!(error.load(Ordering::SeqCst), 9);
+    }
+
+    mod condition_tensor_tests {
+        use super::*;
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        fn make_test_tensor(id: i64, val: i64) -> TensorData {
+            let mut data = TensorData::new();
+            data.set("_id".to_string(), TensorValue::Scalar(ScalarValue::Int(id)));
+            data.set(
+                "val".to_string(),
+                TensorValue::Scalar(ScalarValue::Int(val)),
+            );
+            data
+        }
+
+        #[test]
+        fn test_condition_tensor_true() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::True.evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_eq() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Eq("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+            assert!(!Condition::Eq("val".to_string(), Value::Int(99)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_ne() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Ne("val".to_string(), Value::Int(99)).evaluate_tensor(&tensor));
+            assert!(!Condition::Ne("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_lt() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Lt("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+            assert!(!Condition::Lt("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_le() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Le("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+            assert!(Condition::Le("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_gt() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Gt("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+            assert!(!Condition::Gt("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_ge() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(Condition::Ge("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+            assert!(Condition::Ge("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_and() {
+            let tensor = make_test_tensor(1, 42);
+            let cond = Condition::And(
+                Box::new(Condition::Gt("val".to_string(), Value::Int(30))),
+                Box::new(Condition::Lt("val".to_string(), Value::Int(50))),
+            );
+            assert!(cond.evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_or() {
+            let tensor = make_test_tensor(1, 42);
+            let cond = Condition::Or(
+                Box::new(Condition::Eq("val".to_string(), Value::Int(99))),
+                Box::new(Condition::Eq("val".to_string(), Value::Int(42))),
+            );
+            assert!(cond.evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_id_field() {
+            let tensor = make_test_tensor(100, 42);
+            assert!(Condition::Eq("_id".to_string(), Value::Int(100)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_missing_column() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(!Condition::Eq("missing".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_float() {
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "score".to_string(),
+                TensorValue::Scalar(ScalarValue::Float(3.14)),
+            );
+            assert!(Condition::Eq("score".to_string(), Value::Float(3.14)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_string() {
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "name".to_string(),
+                TensorValue::Scalar(ScalarValue::String("test".to_string())),
+            );
+            assert!(
+                Condition::Eq("name".to_string(), Value::String("test".to_string()))
+                    .evaluate_tensor(&tensor)
+            );
+        }
+
+        #[test]
+        fn test_condition_tensor_missing_id() {
+            let mut tensor = TensorData::new();
+            tensor.set("val".to_string(), TensorValue::Scalar(ScalarValue::Int(42)));
+            assert!(!Condition::Eq("_id".to_string(), Value::Int(1)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_le_missing() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(!Condition::Le("missing".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+        }
+
+        #[test]
+        fn test_condition_tensor_ge_missing() {
+            let tensor = make_test_tensor(1, 42);
+            assert!(!Condition::Ge("missing".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+        }
     }
 }
 
