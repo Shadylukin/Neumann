@@ -984,6 +984,11 @@ pub enum RelationalError {
         /// Maximum allowed size.
         max: usize,
     },
+    /// Index data is corrupted.
+    IndexCorrupted {
+        /// Description of the corruption.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for RelationalError {
@@ -1049,6 +1054,9 @@ impl std::fmt::Display for RelationalError {
                     f,
                     "{operation} result too large: {actual} rows exceeds maximum of {max}"
                 )
+            },
+            Self::IndexCorrupted { reason } => {
+                write!(f, "Index data corrupted: {reason}")
             },
         }
     }
@@ -1808,7 +1816,7 @@ impl RelationalEngine {
         let schema = self.get_schema(table)?;
 
         // Index lookup path: get row_ids from index, then fetch from slab
-        if let Some(row_ids) = self.try_index_lookup(table, &condition) {
+        if let Some(row_ids) = self.try_index_lookup(table, &condition)? {
             // Convert 1-based row_ids to 0-based slab indices
             let indices: Vec<usize> = row_ids.iter().map(|id| (*id - 1) as usize).collect();
             let slab_rows = self
@@ -1870,25 +1878,29 @@ impl RelationalEngine {
         Row { id, values }
     }
 
-    fn try_index_lookup(&self, table: &str, condition: &Condition) -> Option<Vec<u64>> {
+    fn try_index_lookup(&self, table: &str, condition: &Condition) -> Result<Option<Vec<u64>>> {
         match condition {
             Condition::Eq(column, value) => self.index_lookup(table, column, value),
             Condition::Lt(column, value) => {
-                self.btree_range_lookup(table, column, value, RangeOp::Lt)
+                Ok(self.btree_range_lookup(table, column, value, RangeOp::Lt))
             },
             Condition::Le(column, value) => {
-                self.btree_range_lookup(table, column, value, RangeOp::Le)
+                Ok(self.btree_range_lookup(table, column, value, RangeOp::Le))
             },
             Condition::Gt(column, value) => {
-                self.btree_range_lookup(table, column, value, RangeOp::Gt)
+                Ok(self.btree_range_lookup(table, column, value, RangeOp::Gt))
             },
             Condition::Ge(column, value) => {
-                self.btree_range_lookup(table, column, value, RangeOp::Ge)
+                Ok(self.btree_range_lookup(table, column, value, RangeOp::Ge))
             },
-            Condition::And(a, b) => self
-                .try_index_lookup(table, a)
-                .or_else(|| self.try_index_lookup(table, b)),
-            _ => None,
+            Condition::And(a, b) => {
+                let a_result = self.try_index_lookup(table, a)?;
+                if a_result.is_some() {
+                    return Ok(a_result);
+                }
+                self.try_index_lookup(table, b)
+            },
+            _ => Ok(None),
         }
     }
 
@@ -2867,10 +2879,10 @@ impl RelationalEngine {
         let lock = self.acquire_index_lock(&key);
         let _guard = lock.write();
 
-        let mut ids: Vec<u64> = self
-            .store
-            .get(&key)
-            .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor));
+        let mut ids: Vec<u64> = match self.store.get(&key) {
+            Ok(tensor) => Self::tensor_to_id_list(&tensor)?,
+            Err(_) => Vec::new(),
+        };
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
@@ -2889,7 +2901,7 @@ impl RelationalEngine {
         let _guard = lock.write();
 
         if let Ok(tensor) = self.store.get(&key) {
-            let mut ids = Self::tensor_to_id_list(&tensor);
+            let mut ids = Self::tensor_to_id_list(&tensor)?;
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
@@ -2902,35 +2914,50 @@ impl RelationalEngine {
         Ok(())
     }
 
-    fn index_lookup(&self, table: &str, column: &str, value: &Value) -> Option<Vec<u64>> {
+    fn index_lookup(&self, table: &str, column: &str, value: &Value) -> Result<Option<Vec<u64>>> {
         if !self.has_index(table, column) {
-            return None;
+            return Ok(None);
         }
 
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
 
         // Index exists but may have no entries for this value
-        Some(
-            self.store
-                .get(&key)
-                .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor)),
-        )
+        let ids = match self.store.get(&key) {
+            Ok(tensor) => Self::tensor_to_id_list(&tensor)?,
+            Err(_) => Vec::new(),
+        };
+        Ok(Some(ids))
     }
 
-    fn tensor_to_id_list(tensor: &TensorData) -> Vec<u64> {
+    fn tensor_to_id_list(tensor: &TensorData) -> Result<Vec<u64>> {
         match tensor.get("ids") {
-            Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => bytes
-                .chunks_exact(8)
-                .map(|chunk| {
-                    let arr: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
-                    u64::from_le_bytes(arr)
-                })
-                .collect(),
+            Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
+                if bytes.len() % 8 != 0 {
+                    return Err(RelationalError::IndexCorrupted {
+                        reason: format!(
+                            "ID list has {} bytes, expected multiple of 8",
+                            bytes.len()
+                        ),
+                    });
+                }
+                Ok(bytes
+                    .chunks_exact(8)
+                    .map(|chunk| {
+                        let arr: [u8; 8] = chunk
+                            .try_into()
+                            .expect("chunks_exact(8) guarantees 8-byte slices");
+                        u64::from_le_bytes(arr)
+                    })
+                    .collect())
+            },
             // Legacy format fallback for existing data
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            Some(TensorValue::Vector(v)) => v.iter().map(|f| *f as u64).collect(),
-            _ => Vec::new(),
+            Some(TensorValue::Vector(v)) => Ok(v.iter().map(|f| *f as u64).collect()),
+            Some(other) => Err(RelationalError::IndexCorrupted {
+                reason: format!("expected Bytes or Vector for 'ids', got {other:?}"),
+            }),
+            None => Ok(Vec::new()),
         }
     }
 
@@ -2971,10 +2998,10 @@ impl RelationalEngine {
         }
 
         // Update TensorStore (now protected by per-key lock)
-        let mut ids: Vec<u64> = self
-            .store
-            .get(&store_key)
-            .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor));
+        let mut ids: Vec<u64> = match self.store.get(&store_key) {
+            Ok(tensor) => Self::tensor_to_id_list(&tensor)?,
+            Err(_) => Vec::new(),
+        };
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
@@ -3015,7 +3042,7 @@ impl RelationalEngine {
 
         // Update TensorStore (now protected by per-key lock)
         if let Ok(tensor) = self.store.get(&store_key) {
-            let mut ids = Self::tensor_to_id_list(&tensor);
+            let mut ids = Self::tensor_to_id_list(&tensor)?;
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
@@ -8791,6 +8818,77 @@ mod tests {
         assert!(msg.contains("CROSS JOIN"));
         assert!(msg.contains("2000000"));
         assert!(msg.contains("1000000"));
+    }
+
+    #[test]
+    fn test_error_display_index_corrupted() {
+        let err = RelationalError::IndexCorrupted {
+            reason: "ID list has 7 bytes, expected multiple of 8".to_string(),
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("Index data corrupted"));
+        assert!(msg.contains("7 bytes"));
+    }
+
+    #[test]
+    fn test_tensor_to_id_list_corrupted_bytes() {
+        // Create a TensorData with corrupted bytes (not a multiple of 8)
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "ids",
+            TensorValue::Scalar(ScalarValue::Bytes(vec![1, 2, 3, 4, 5, 6, 7])),
+        );
+
+        let result = RelationalEngine::tensor_to_id_list(&tensor);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RelationalError::IndexCorrupted { .. }));
+    }
+
+    #[test]
+    fn test_tensor_to_id_list_wrong_type() {
+        // Create a TensorData with wrong type for "ids"
+        let mut tensor = TensorData::new();
+        tensor.set("ids", TensorValue::Scalar(ScalarValue::Int(42)));
+
+        let result = RelationalEngine::tensor_to_id_list(&tensor);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RelationalError::IndexCorrupted { .. }));
+    }
+
+    #[test]
+    fn test_tensor_to_id_list_valid_bytes() {
+        // Create a TensorData with valid bytes (multiple of 8)
+        let mut tensor = TensorData::new();
+        let ids: Vec<u64> = vec![1, 2, 3];
+        let bytes: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+        tensor.set("ids", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
+
+        let result = RelationalEngine::tensor_to_id_list(&tensor);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_tensor_to_id_list_empty() {
+        // Create a TensorData with no "ids" field
+        let tensor = TensorData::new();
+
+        let result = RelationalEngine::tensor_to_id_list(&tensor);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_tensor_to_id_list_legacy_vector_format() {
+        // Create a TensorData with legacy Vector format
+        let mut tensor = TensorData::new();
+        tensor.set("ids", TensorValue::Vector(vec![1.0, 2.0, 3.0]));
+
+        let result = RelationalEngine::tensor_to_id_list(&tensor);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![1, 2, 3]);
     }
 
     // ========== Schema Bridge Conversion Tests ==========
