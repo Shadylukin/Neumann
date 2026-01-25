@@ -10,7 +10,16 @@ use std::{
     collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
+
+#[allow(clippy::cast_possible_truncation)] // Millis since epoch won't overflow u64 until year 584 million
+fn current_timestamp_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -323,12 +332,34 @@ pub struct Node {
     pub id: u64,
     pub labels: Vec<String>,
     pub properties: HashMap<String, PropertyValue>,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
 }
 
 impl Node {
     #[must_use]
     pub fn has_label(&self, label: &str) -> bool {
         self.labels.iter().any(|l| l == label)
+    }
+
+    #[must_use]
+    pub const fn created_at_millis(&self) -> Option<u64> {
+        self.created_at
+    }
+
+    #[must_use]
+    pub const fn updated_at_millis(&self) -> Option<u64> {
+        self.updated_at
+    }
+
+    #[must_use]
+    pub const fn last_modified_millis(&self) -> Option<u64> {
+        match self.updated_at {
+            Some(u) => Some(u),
+            None => self.created_at,
+        }
     }
 }
 
@@ -340,6 +371,30 @@ pub struct Edge {
     pub edge_type: String,
     pub properties: HashMap<String, PropertyValue>,
     pub directed: bool,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
+}
+
+impl Edge {
+    #[must_use]
+    pub const fn created_at_millis(&self) -> Option<u64> {
+        self.created_at
+    }
+
+    #[must_use]
+    pub const fn updated_at_millis(&self) -> Option<u64> {
+        self.updated_at
+    }
+
+    #[must_use]
+    pub const fn last_modified_millis(&self) -> Option<u64> {
+        match self.updated_at {
+            Some(u) => Some(u),
+            None => self.created_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1752,6 +1807,10 @@ impl GraphEngine {
             TensorValue::Scalar(ScalarValue::String("node".into())),
         );
         tensor.set("_labels", TensorValue::Pointers(labels.clone()));
+        tensor.set(
+            "_created_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
 
         for (key, value) in &properties {
             tensor.set(key, TensorValue::Scalar(value.to_scalar()));
@@ -1809,6 +1868,10 @@ impl GraphEngine {
         tensor.set(
             "_directed",
             TensorValue::Scalar(ScalarValue::Bool(directed)),
+        );
+        tensor.set(
+            "_created_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
         );
 
         for (key, value) in &properties {
@@ -1893,10 +1956,21 @@ impl GraphEngine {
             }
         }
 
+        let created_at = match tensor.get("_created_at") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            _ => None,
+        };
+        let updated_at = match tensor.get("_updated_at") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            _ => None,
+        };
+
         Ok(Node {
             id,
             labels,
             properties,
+            created_at,
+            updated_at,
         })
     }
 
@@ -1936,6 +2010,15 @@ impl GraphEngine {
             }
         }
 
+        let created_at = match tensor.get("_created_at") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            _ => None,
+        };
+        let updated_at = match tensor.get("_updated_at") {
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            _ => None,
+        };
+
         Ok(Edge {
             id,
             from,
@@ -1943,6 +2026,8 @@ impl GraphEngine {
             edge_type,
             properties,
             directed,
+            created_at,
+            updated_at,
         })
     }
 
@@ -2001,6 +2086,11 @@ impl GraphEngine {
             }
         }
 
+        tensor.set(
+            "_updated_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
+
         self.store.put(key, tensor)?;
 
         // Index new labels
@@ -2045,6 +2135,10 @@ impl GraphEngine {
         let mut new_labels = node.labels;
         new_labels.push(label.to_string());
         tensor.set("_labels", TensorValue::Pointers(new_labels));
+        tensor.set(
+            "_updated_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
         self.store.put(key, tensor)?;
 
         // Update index
@@ -2080,6 +2174,10 @@ impl GraphEngine {
             .cloned()
             .collect();
         tensor.set("_labels", TensorValue::Pointers(new_labels));
+        tensor.set(
+            "_updated_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
         self.store.put(key, tensor)?;
 
         // Update index
@@ -2140,6 +2238,11 @@ impl GraphEngine {
                 changed_props.insert(prop_key.clone(), value.clone());
             }
         }
+
+        tensor.set(
+            "_updated_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
 
         self.store.put(key, tensor)?;
 
@@ -4160,6 +4263,8 @@ mod tests {
             id: 1,
             labels: vec!["Test".into()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         let _ = node.clone();
 
@@ -4170,6 +4275,8 @@ mod tests {
             edge_type: "TEST".into(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         let _ = edge.clone();
 
@@ -4897,11 +5004,15 @@ mod tests {
             id: 1,
             labels: vec!["Test".into()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         let node2 = Node {
             id: 1,
             labels: vec!["Test".into()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         assert_eq!(node1, node2);
 
@@ -4912,6 +5023,8 @@ mod tests {
             edge_type: "E".into(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         let edge2 = Edge {
             id: 1,
@@ -4920,6 +5033,8 @@ mod tests {
             edge_type: "E".into(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         assert_eq!(edge1, edge2);
     }
@@ -6542,6 +6657,8 @@ mod tests {
             id: 1,
             labels: vec!["A".into(), "B".into(), "C".into()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         assert!(node.has_label("A"));
@@ -7781,6 +7898,8 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node));
     }
@@ -7794,6 +7913,8 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(!cond.matches_node(&node));
     }
@@ -7814,6 +7935,8 @@ mod tests {
             id: 1,
             labels: vec!["User".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node));
     }
@@ -7825,6 +7948,8 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         // Missing property should return true for Ne
         assert!(cond.matches_node(&node));
@@ -7839,6 +7964,8 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node));
     }
@@ -7855,6 +7982,8 @@ mod tests {
             edge_type: "CONNECTS".to_string(),
             properties: props,
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_edge(&edge));
     }
@@ -7872,6 +8001,8 @@ mod tests {
             id: 1,
             labels: vec!["Person".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node));
     }
@@ -7885,6 +8016,8 @@ mod tests {
             id: 1,
             labels: vec![],
             properties: props1,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node1));
 
@@ -7894,6 +8027,8 @@ mod tests {
             id: 2,
             labels: vec![],
             properties: props2,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node2));
     }
@@ -7907,6 +8042,8 @@ mod tests {
             id: 1,
             labels: vec!["Any".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         assert!(filter.matches_node(&node));
 
@@ -7917,6 +8054,8 @@ mod tests {
             edge_type: "ANY".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         assert!(filter.matches_edge(&edge));
     }
@@ -7931,6 +8070,8 @@ mod tests {
             id: 1,
             labels: vec![],
             properties: props_active,
+            created_at: None,
+            updated_at: None,
         };
         assert!(filter.matches_node(&active_node));
 
@@ -7940,6 +8081,8 @@ mod tests {
             id: 2,
             labels: vec![],
             properties: props_inactive,
+            created_at: None,
+            updated_at: None,
         };
         assert!(!filter.matches_node(&inactive_node));
     }
@@ -7956,6 +8099,8 @@ mod tests {
             id: 1,
             labels: vec![],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
         assert!(filter.matches_node(&node));
 
@@ -7965,6 +8110,8 @@ mod tests {
             id: 2,
             labels: vec![],
             properties: props_too_young,
+            created_at: None,
+            updated_at: None,
         };
         assert!(!filter.matches_node(&too_young));
     }
@@ -7983,6 +8130,8 @@ mod tests {
             edge_type: "CONNECTS".to_string(),
             properties: light_props,
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         assert!(filter.matches_edge(&light_edge));
 
@@ -7995,6 +8144,8 @@ mod tests {
             edge_type: "CONNECTS".to_string(),
             properties: heavy_props,
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
         assert!(!filter.matches_edge(&heavy_edge));
     }
@@ -8353,6 +8504,8 @@ mod tests {
             id: 1,
             labels: vec![],
             properties: props_null,
+            created_at: None,
+            updated_at: None,
         };
         assert!(cond.matches_node(&node_null));
 
@@ -8362,6 +8515,8 @@ mod tests {
             id: 2,
             labels: vec![],
             properties: props_int,
+            created_at: None,
+            updated_at: None,
         };
         assert!(!cond.matches_node(&node_int));
     }
@@ -8983,6 +9138,251 @@ mod tests {
         // Verify sorted
         for i in 1..nodes.len() {
             assert!(nodes[i - 1].id < nodes[i].id);
+        }
+    }
+
+    // ========== Timestamp Tests ==========
+
+    #[test]
+    fn node_created_at_is_set() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(id).unwrap();
+        assert!(node.created_at.is_some());
+    }
+
+    #[test]
+    fn edge_created_at_is_set() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let eid = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge = engine.get_edge(eid).unwrap();
+        assert!(edge.created_at.is_some());
+    }
+
+    #[test]
+    fn node_created_at_is_recent() {
+        let before = current_timestamp_millis();
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+        let after = current_timestamp_millis();
+        let node = engine.get_node(id).unwrap();
+        let ts = node.created_at.unwrap();
+        assert!(ts >= before && ts <= after);
+    }
+
+    #[test]
+    fn edge_created_at_is_recent() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let before = current_timestamp_millis();
+        let eid = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let after = current_timestamp_millis();
+        let edge = engine.get_edge(eid).unwrap();
+        let ts = edge.created_at.unwrap();
+        assert!(ts >= before && ts <= after);
+    }
+
+    #[test]
+    fn node_update_sets_updated_at() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+        let node_before = engine.get_node(id).unwrap();
+        assert!(node_before.updated_at.is_none());
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        engine.update_node(id, None, props).unwrap();
+
+        let node_after = engine.get_node(id).unwrap();
+        assert!(node_after.updated_at.is_some());
+    }
+
+    #[test]
+    fn edge_update_sets_updated_at() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let eid = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge_before = engine.get_edge(eid).unwrap();
+        assert!(edge_before.updated_at.is_none());
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(42));
+        engine.update_edge(eid, props).unwrap();
+
+        let edge_after = engine.get_edge(eid).unwrap();
+        assert!(edge_after.updated_at.is_some());
+    }
+
+    #[test]
+    fn node_add_label_sets_updated_at() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+        let node_before = engine.get_node(id).unwrap();
+        assert!(node_before.updated_at.is_none());
+
+        engine.add_label(id, "Employee").unwrap();
+
+        let node_after = engine.get_node(id).unwrap();
+        assert!(node_after.updated_at.is_some());
+    }
+
+    #[test]
+    fn node_remove_label_sets_updated_at() {
+        let engine = GraphEngine::new();
+        let id = engine
+            .create_node_with_labels(vec!["Person".into(), "Employee".into()], HashMap::new())
+            .unwrap();
+        let node_before = engine.get_node(id).unwrap();
+        assert!(node_before.updated_at.is_none());
+
+        engine.remove_label(id, "Employee").unwrap();
+
+        let node_after = engine.get_node(id).unwrap();
+        assert!(node_after.updated_at.is_some());
+    }
+
+    #[test]
+    fn updated_at_greater_than_created_at() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Bob".into()));
+        engine.update_node(id, None, props).unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.updated_at.unwrap() > node.created_at.unwrap());
+    }
+
+    #[test]
+    fn node_last_modified_prefers_updated() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        engine.update_node(id, None, props).unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.last_modified_millis(), node.updated_at);
+    }
+
+    #[test]
+    fn edge_last_modified_prefers_updated() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let eid = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(10));
+        engine.update_edge(eid, props).unwrap();
+
+        let edge = engine.get_edge(eid).unwrap();
+        assert_eq!(edge.last_modified_millis(), edge.updated_at);
+    }
+
+    #[test]
+    fn last_modified_returns_created_when_no_update() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.last_modified_millis(), node.created_at);
+    }
+
+    #[test]
+    fn legacy_node_without_timestamps_returns_none() {
+        // Simulate a legacy node by directly putting data without timestamps
+        let store = TensorStore::new();
+        let engine = GraphEngine::with_store(store);
+
+        // Manually create a node without timestamps (simulating legacy data)
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(999)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("node".into())),
+        );
+        tensor.set("_labels", TensorValue::Pointers(vec!["Legacy".into()]));
+        engine.store.put("node:999".to_string(), tensor).unwrap();
+
+        let node = engine.get_node(999).unwrap();
+        assert!(node.created_at.is_none());
+        assert!(node.updated_at.is_none());
+    }
+
+    #[test]
+    fn legacy_edge_without_timestamps_returns_none() {
+        let store = TensorStore::new();
+        let engine = GraphEngine::with_store(store);
+
+        // Create nodes first
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Manually create an edge without timestamps (simulating legacy data)
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(888)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(n1 as i64)));
+        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(n2 as i64)));
+        tensor.set(
+            "_edge_type",
+            TensorValue::Scalar(ScalarValue::String("LEGACY".into())),
+        );
+        tensor.set("_directed", TensorValue::Scalar(ScalarValue::Bool(true)));
+        engine.store.put("edge:888".to_string(), tensor).unwrap();
+
+        let edge = engine.get_edge(888).unwrap();
+        assert!(edge.created_at.is_none());
+        assert!(edge.updated_at.is_none());
+    }
+
+    #[test]
+    fn concurrent_creates_have_timestamps() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let eng = Arc::clone(&engine);
+            handles.push(thread::spawn(move || {
+                let id = eng.create_node("Concurrent", HashMap::new()).unwrap();
+                let node = eng.get_node(id).unwrap();
+                assert!(node.created_at.is_some());
+                id
+            }));
+        }
+
+        let ids: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(ids.len(), 10);
+
+        for id in ids {
+            let node = engine.get_node(id).unwrap();
+            assert!(node.created_at.is_some());
         }
     }
 }
