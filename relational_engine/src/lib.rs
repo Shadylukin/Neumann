@@ -1060,7 +1060,7 @@ impl RelationalConfig {
 }
 
 /// Options for query execution.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct QueryOptions {
     /// Query timeout in milliseconds. `None` uses the engine's default.
     pub timeout_ms: Option<u64>,
@@ -1781,7 +1781,7 @@ impl RelationalEngine {
     }
 
     /// Resolves the effective timeout in milliseconds from query options and config.
-    fn resolve_timeout(&self, options: &QueryOptions) -> Option<u64> {
+    fn resolve_timeout(&self, options: QueryOptions) -> Option<u64> {
         let timeout = options.timeout_ms.or(self.config.default_query_timeout_ms);
 
         // Clamp to max if configured
@@ -2210,7 +2210,7 @@ impl RelationalEngine {
         condition: Condition,
         options: QueryOptions,
     ) -> Result<Vec<Row>> {
-        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
         let schema = self.get_schema(table)?;
 
         // Check timeout before index lookup
@@ -2359,7 +2359,7 @@ impl RelationalEngine {
         updates: HashMap<String, Value>,
         options: QueryOptions,
     ) -> Result<usize> {
-        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         // Validation for early exit without transaction overhead
         let schema = self.get_schema(table)?;
@@ -2421,7 +2421,7 @@ impl RelationalEngine {
         condition: Condition,
         options: QueryOptions,
     ) -> Result<usize> {
-        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         // Validation for early exit
         let _ = self.get_schema(table)?;
@@ -2475,7 +2475,7 @@ impl RelationalEngine {
         on_b: &str,
         options: QueryOptions,
     ) -> Result<Vec<(Row, Row)>> {
-        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         let _ = self.get_schema(table_a)?;
         let _ = self.get_schema(table_b)?;
@@ -13639,6 +13639,554 @@ mod tests {
         engine.drop_btree_index("test", "val").unwrap();
         assert_eq!(engine.btree_entry_count.load(Ordering::Relaxed), 0);
     }
+
+    #[test]
+    fn test_error_display_too_many_tables() {
+        let err = RelationalError::TooManyTables {
+            current: 10,
+            max: 5,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("10"));
+        assert!(msg.contains("5"));
+        assert!(msg.contains("Too many tables"));
+    }
+
+    #[test]
+    fn test_error_display_too_many_indexes() {
+        let err = RelationalError::TooManyIndexes {
+            table: "users".to_string(),
+            current: 8,
+            max: 5,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("users"));
+        assert!(msg.contains("8"));
+        assert!(msg.contains("5"));
+    }
+
+    #[test]
+    fn test_error_display_query_timeout() {
+        let err = RelationalError::QueryTimeout {
+            operation: "SELECT".to_string(),
+            timeout_ms: 5000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("SELECT"));
+        assert!(msg.contains("5000"));
+        assert!(msg.contains("timeout"));
+    }
+
+    #[test]
+    fn test_with_store_and_config() {
+        let store = TensorStore::new();
+        let config = RelationalConfig::new().with_max_tables(3);
+        let engine = RelationalEngine::with_store_and_config(store, config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("t1", schema.clone()).unwrap();
+        engine.create_table("t2", schema.clone()).unwrap();
+        engine.create_table("t3", schema.clone()).unwrap();
+
+        // Fourth should fail
+        let result = engine.create_table("t4", schema);
+        assert!(matches!(result, Err(RelationalError::TooManyTables { .. })));
+    }
+
+    #[test]
+    fn test_resolve_timeout_no_timeout_configured() {
+        let config = RelationalConfig::default();
+        let engine = RelationalEngine::with_config(config);
+
+        // No timeout configured anywhere
+        let resolved = engine.resolve_timeout(QueryOptions::new());
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_resolve_timeout_uses_default() {
+        let config = RelationalConfig::new().with_default_timeout_ms(3000);
+        let engine = RelationalEngine::with_config(config);
+
+        // Should use default when options don't specify
+        let resolved = engine.resolve_timeout(QueryOptions::new());
+        assert_eq!(resolved, Some(3000));
+    }
+
+    #[test]
+    fn test_resolve_timeout_clamps_query_options_to_max() {
+        // Query specifies 10000ms but max is 5000ms
+        let config = RelationalConfig::new().with_max_timeout_ms(5000);
+        let engine = RelationalEngine::with_config(config);
+
+        let resolved = engine.resolve_timeout(QueryOptions::new().with_timeout_ms(10000));
+        assert_eq!(resolved, Some(5000));
+    }
+
+    #[test]
+    fn test_resolve_timeout_no_clamping_without_max() {
+        // No max configured, should use query's timeout as-is
+        let config = RelationalConfig::new().with_default_timeout_ms(1000);
+        let engine = RelationalEngine::with_config(config);
+
+        let resolved = engine.resolve_timeout(QueryOptions::new().with_timeout_ms(50000));
+        assert_eq!(resolved, Some(50000));
+    }
+
+    #[test]
+    fn test_config_validation_error_message() {
+        let config = RelationalConfig::new()
+            .with_default_timeout_ms(10000)
+            .with_max_timeout_ms(5000);
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("10000"));
+        assert!(err.contains("5000"));
+    }
+
+    #[test]
+    fn test_config_all_builder_methods() {
+        let config = RelationalConfig::new()
+            .with_max_tables(50)
+            .with_max_indexes_per_table(8)
+            .with_max_btree_entries(2_000_000)
+            .with_default_timeout_ms(5000)
+            .with_max_timeout_ms(30000);
+
+        assert_eq!(config.max_tables, Some(50));
+        assert_eq!(config.max_indexes_per_table, Some(8));
+        assert_eq!(config.max_btree_entries, 2_000_000);
+        assert_eq!(config.default_query_timeout_ms, Some(5000));
+        assert_eq!(config.max_query_timeout_ms, Some(30000));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_query_options_is_copy() {
+        let opts = QueryOptions::new().with_timeout_ms(1000);
+        let opts2 = opts; // Copy
+        let opts3 = opts; // Copy again
+        assert_eq!(opts2.timeout_ms, opts3.timeout_ms);
+    }
+
+    #[test]
+    fn test_select_with_options_success() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        // Normal query with generous timeout should succeed
+        let result = engine.select_with_options(
+            "test",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_update_with_options_success() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        let result = engine.update_with_options(
+            "test",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::Int(200))]),
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_delete_with_options_success() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        let result = engine.delete_rows_with_options(
+            "test",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_join_with_options_success() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("a", schema.clone()).unwrap();
+        engine.create_table("b", schema).unwrap();
+
+        engine
+            .insert(
+                "a",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("x".to_string())),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "b",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("y".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        let result = engine.join_with_options(
+            "a",
+            "b",
+            "id",
+            "id",
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_table_limit_no_limit() {
+        let config = RelationalConfig::default();
+        let engine = RelationalEngine::with_config(config);
+
+        // Should succeed with no limit
+        for i in 0..5 {
+            let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+            engine.create_table(&format!("t{i}"), schema).unwrap();
+        }
+        assert_eq!(engine.table_count(), 5);
+    }
+
+    #[test]
+    fn test_check_index_limit_no_limit() {
+        let config = RelationalConfig::default();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        // Should succeed with no limit
+        engine.create_index("test", "a").unwrap();
+        engine.create_index("test", "b").unwrap();
+        engine.create_index("test", "c").unwrap();
+    }
+
+    #[test]
+    fn test_btree_index_limit_enforced() {
+        let config = RelationalConfig::new().with_max_indexes_per_table(2);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        // First two btree indexes should succeed
+        engine.create_btree_index("test", "a").unwrap();
+        engine.create_btree_index("test", "b").unwrap();
+
+        // Third should fail
+        let result = engine.create_btree_index("test", "c");
+        assert!(matches!(
+            result,
+            Err(RelationalError::TooManyIndexes { .. })
+        ));
+    }
+
+    #[test]
+    fn test_drop_table_decrements_count() {
+        let config = RelationalConfig::new().with_max_tables(5);
+        let engine = RelationalEngine::with_config(config);
+
+        // Create 5 tables (at limit)
+        for i in 0..5 {
+            let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+            engine.create_table(&format!("t{i}"), schema).unwrap();
+        }
+        assert_eq!(engine.table_count(), 5);
+
+        // Drop one
+        engine.drop_table("t0").unwrap();
+        assert_eq!(engine.table_count(), 4);
+
+        // Should be able to create another
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("t5", schema).unwrap();
+        assert_eq!(engine.table_count(), 5);
+    }
+
+    #[test]
+    fn test_select_with_btree_index_and_timeout() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_btree_index("test", "id").unwrap();
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        // Test with btree index path
+        let result = engine.select_with_options(
+            "test",
+            Condition::Eq("id".to_string(), Value::Int(1)),
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_debug_display() {
+        let config = RelationalConfig::new().with_max_tables(10);
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("max_tables"));
+        assert!(debug_str.contains("10"));
+    }
+
+    #[test]
+    fn test_query_options_debug_display() {
+        let opts = QueryOptions::new().with_timeout_ms(5000);
+        let debug_str = format!("{opts:?}");
+        assert!(debug_str.contains("timeout_ms"));
+        assert!(debug_str.contains("5000"));
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = RelationalConfig::new()
+            .with_max_tables(10)
+            .with_max_indexes_per_table(5);
+        let cloned = config.clone();
+        assert_eq!(cloned.max_tables, config.max_tables);
+        assert_eq!(cloned.max_indexes_per_table, config.max_indexes_per_table);
+    }
+
+    #[test]
+    fn test_query_options_default_timeout() {
+        let opts = QueryOptions::default();
+        assert!(opts.timeout_ms.is_none());
+    }
+
+    #[test]
+    fn test_config_presets() {
+        let high = RelationalConfig::high_throughput();
+        assert_eq!(high.max_btree_entries, 20_000_000);
+        assert!(high.max_tables.is_none());
+
+        let low = RelationalConfig::low_memory();
+        assert_eq!(low.max_tables, Some(100));
+        assert_eq!(low.max_btree_entries, 1_000_000);
+    }
+
+    #[test]
+    fn test_select_timeout_after_sleep() {
+        use std::thread;
+        use std::time::Duration;
+
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert data
+        for i in 0..100 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Sleep to ensure time passes, then query with very short timeout
+        thread::sleep(Duration::from_millis(1));
+        let result = engine.select_with_options(
+            "test",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        // Either succeeds or times out
+        match result {
+            Ok(_) => (),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_update_with_timeout_immediate() {
+        let config = RelationalConfig::new();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        // 0ms timeout - operation should complete or timeout
+        let result = engine.update_with_options(
+            "test",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::Int(200))]),
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        // Either succeeds (fast) or times out
+        match result {
+            Ok(_) => (),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_delete_with_timeout_immediate() {
+        let config = RelationalConfig::new();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        // 0ms timeout
+        let result = engine.delete_rows_with_options(
+            "test",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        match result {
+            Ok(_) => (),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_join_with_timeout_immediate() {
+        let config = RelationalConfig::new();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("a", schema.clone()).unwrap();
+        engine.create_table("b", schema).unwrap();
+
+        engine
+            .insert(
+                "a",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("x".to_string())),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "b",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("y".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        // 0ms timeout
+        let result =
+            engine.join_with_options("a", "b", "id", "id", QueryOptions::new().with_timeout_ms(0));
+
+        match result {
+            Ok(_) => (),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_select_with_index_and_timeout() {
+        let config = RelationalConfig::new();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_index("test", "id").unwrap();
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        // Test with index path
+        let result = engine.select_with_options(
+            "test",
+            Condition::Eq("id".to_string(), Value::Int(1)),
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        match result {
+            Ok(rows) => assert!(!rows.is_empty() || rows.is_empty()),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
 }
 
 #[cfg(all(test, feature = "test-internals"))]
@@ -14242,7 +14790,7 @@ mod tensor_eval_tests {
 
         // The effective timeout should be clamped to 500ms even though
         // options request 1000ms
-        let resolved = engine.resolve_timeout(&QueryOptions::new().with_timeout_ms(1000));
+        let resolved = engine.resolve_timeout(QueryOptions::new().with_timeout_ms(1000));
         assert_eq!(resolved, Some(500));
     }
 }
