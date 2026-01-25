@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }
+parking_lot = "0.12"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"

@@ -1,12 +1,98 @@
+// Pedantic lint configuration for graph_engine
+#![allow(clippy::cast_possible_wrap)] // u64 IDs won't exceed i64::MAX
+#![allow(clippy::cast_sign_loss)] // i64 values from store are always non-negative IDs
+#![allow(clippy::needless_pass_by_value)] // HashMap ownership is intentional for API design
+#![allow(clippy::missing_errors_doc)] // Error conditions are self-evident from Result types
+#![allow(clippy::uninlined_format_args)] // Keep format strings readable
+
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    hash::{Hash, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 use tracing::{instrument, warn};
+
+/// Range comparison operator for property queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Target of an index (node or edge properties).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IndexTarget {
+    Node,
+    Edge,
+}
+
+/// Wrapper for f64 that provides total ordering (NaN sorts first).
+#[derive(Debug, Clone, Copy)]
+pub struct OrderedFloat(pub f64);
+
+impl PartialEq for OrderedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for OrderedFloat {}
+
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // NaN sorts first (smallest), then normal ordering
+        match (self.0.is_nan(), other.0.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => self
+                .0
+                .partial_cmp(&other.0)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        }
+    }
+}
+
+impl Hash for OrderedFloat {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+/// Property value with total ordering for `BTreeMap` indexes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OrderedPropertyValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(OrderedFloat),
+    String(String),
+}
+
+impl From<&PropertyValue> for OrderedPropertyValue {
+    fn from(v: &PropertyValue) -> Self {
+        match v {
+            PropertyValue::Null => Self::Null,
+            PropertyValue::Bool(b) => Self::Bool(*b),
+            PropertyValue::Int(i) => Self::Int(*i),
+            PropertyValue::Float(f) => Self::Float(OrderedFloat(*f)),
+            PropertyValue::String(s) => Self::String(s.clone()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
@@ -75,6 +161,8 @@ pub enum GraphError {
     EdgeNotFound(u64),
     StorageError(String),
     PathNotFound,
+    IndexAlreadyExists { target: String, property: String },
+    IndexNotFound { target: String, property: String },
 }
 
 impl std::fmt::Display for GraphError {
@@ -84,6 +172,12 @@ impl std::fmt::Display for GraphError {
             Self::EdgeNotFound(id) => write!(f, "Edge not found: {id}"),
             Self::StorageError(e) => write!(f, "Storage error: {e}"),
             Self::PathNotFound => write!(f, "No path found between nodes"),
+            Self::IndexAlreadyExists { target, property } => {
+                write!(f, "Index already exists: {target}.{property}")
+            },
+            Self::IndexNotFound { target, property } => {
+                write!(f, "Index not found: {target}.{property}")
+            },
         }
     }
 }
@@ -98,19 +192,37 @@ impl From<TensorStoreError> for GraphError {
 
 pub type Result<T> = std::result::Result<T, GraphError>;
 
+/// Number of striped locks for index operations.
+const INDEX_LOCK_COUNT: usize = 64;
+
+/// Type alias for the `BTreeMap` index structure.
+type PropertyIndex = BTreeMap<OrderedPropertyValue, Vec<u64>>;
+
 pub struct GraphEngine {
     store: TensorStore,
     node_counter: AtomicU64,
     edge_counter: AtomicU64,
+    /// In-memory `BTreeMap` indexes for O(log n) property lookups.
+    btree_indexes: RwLock<HashMap<(IndexTarget, String), PropertyIndex>>,
+    /// Striped locks for concurrent index updates.
+    #[allow(clippy::type_complexity)]
+    index_locks: [RwLock<()>; INDEX_LOCK_COUNT],
 }
 
 impl std::fmt::Debug for GraphEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let index_count = self.btree_indexes.read().len();
         f.debug_struct("GraphEngine")
             .field("node_counter", &self.node_counter.load(Ordering::Relaxed))
             .field("edge_counter", &self.edge_counter.load(Ordering::Relaxed))
+            .field("index_count", &index_count)
             .finish_non_exhaustive()
     }
+}
+
+/// Creates array of `RwLock`s for striped locking.
+fn create_index_locks() -> [RwLock<()>; INDEX_LOCK_COUNT] {
+    std::array::from_fn(|_| RwLock::new(()))
 }
 
 impl GraphEngine {
@@ -122,13 +234,16 @@ impl GraphEngine {
             store: TensorStore::new(),
             node_counter: AtomicU64::new(0),
             edge_counter: AtomicU64::new(0),
+            btree_indexes: RwLock::new(HashMap::new()),
+            index_locks: create_index_locks(),
         }
     }
 
     /// Create a `GraphEngine` with an existing store.
     ///
     /// This scans the store to initialize node/edge counters correctly,
-    /// avoiding ID collisions with existing data.
+    /// avoiding ID collisions with existing data. Also rebuilds any
+    /// persisted indexes from stored metadata.
     #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         let mut max_node_id = 0u64;
@@ -158,11 +273,114 @@ impl GraphEngine {
             }
         }
 
+        // Rebuild indexes from persistent metadata
+        let btree_indexes = Self::rebuild_indexes_from_store(&store);
+
         Self {
             store,
             node_counter: AtomicU64::new(max_node_id),
             edge_counter: AtomicU64::new(max_edge_id),
+            btree_indexes: RwLock::new(btree_indexes),
+            index_locks: create_index_locks(),
         }
+    }
+
+    /// Rebuild in-memory indexes from persistent store metadata.
+    fn rebuild_indexes_from_store(
+        store: &TensorStore,
+    ) -> HashMap<(IndexTarget, String), PropertyIndex> {
+        let mut indexes = HashMap::new();
+
+        // Scan for index metadata keys: _graph_idx:node:{property} or _graph_idx:edge:{property}
+        for key in store.scan("_graph_idx:") {
+            let parts: Vec<&str> = key.splitn(3, ':').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+
+            let target = match parts[1] {
+                "node" => IndexTarget::Node,
+                "edge" => IndexTarget::Edge,
+                _ => continue,
+            };
+            let property = parts[2].to_string();
+
+            // Rebuild the BTreeMap index by scanning all nodes/edges
+            let mut btree: PropertyIndex = BTreeMap::new();
+
+            match target {
+                IndexTarget::Node => {
+                    for node_key in store.scan("node:") {
+                        if node_key.contains(":out") || node_key.contains(":in") {
+                            continue;
+                        }
+                        if let Some(id_str) = node_key.strip_prefix("node:") {
+                            if let Ok(id) = id_str.parse::<u64>() {
+                                if let Ok(tensor) = store.get(&node_key) {
+                                    // Handle special properties (_label)
+                                    let value = if property == "_label" {
+                                        match tensor.get("_label") {
+                                            Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                                                Some(OrderedPropertyValue::String(s.clone()))
+                                            },
+                                            _ => None,
+                                        }
+                                    } else if let Some(TensorValue::Scalar(scalar)) =
+                                        tensor.get(&property)
+                                    {
+                                        Some(OrderedPropertyValue::from(
+                                            &PropertyValue::from_scalar(scalar),
+                                        ))
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(ordered_val) = value {
+                                        btree.entry(ordered_val).or_default().push(id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                IndexTarget::Edge => {
+                    for edge_key in store.scan("edge:") {
+                        if let Some(id_str) = edge_key.strip_prefix("edge:") {
+                            // Only handle "edge:N" format (classic mode)
+                            if let Ok(id) = id_str.parse::<u64>() {
+                                if let Ok(tensor) = store.get(&edge_key) {
+                                    // Handle special properties (_edge_type)
+                                    let value = if property == "_edge_type" {
+                                        match tensor.get("_edge_type") {
+                                            Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                                                Some(OrderedPropertyValue::String(s.clone()))
+                                            },
+                                            _ => None,
+                                        }
+                                    } else if let Some(TensorValue::Scalar(scalar)) =
+                                        tensor.get(&property)
+                                    {
+                                        Some(OrderedPropertyValue::from(
+                                            &PropertyValue::from_scalar(scalar),
+                                        ))
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(ordered_val) = value {
+                                        btree.entry(ordered_val).or_default().push(id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+
+            indexes.insert((target, property), btree);
+        }
+
+        indexes
     }
 
     /// Access the underlying store.
@@ -191,6 +409,757 @@ impl GraphEngine {
         format!("node:{node_id}:in")
     }
 
+    #[inline]
+    fn index_metadata_key(target: IndexTarget, property: &str) -> String {
+        let target_str = match target {
+            IndexTarget::Node => "node",
+            IndexTarget::Edge => "edge",
+        };
+        format!("_graph_idx:{target_str}:{property}")
+    }
+
+    /// Get the striped lock index for a given id.
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)]
+    fn lock_index(id: u64) -> usize {
+        (id as usize) % INDEX_LOCK_COUNT
+    }
+
+    // ========== Index CRUD Methods ==========
+
+    /// Create an index on a node property for O(log n) lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexAlreadyExists` if an index already exists for this property.
+    pub fn create_node_property_index(&self, property: &str) -> Result<()> {
+        self.create_property_index(IndexTarget::Node, property)
+    }
+
+    /// Create an index on an edge property for O(log n) lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexAlreadyExists` if an index already exists for this property.
+    pub fn create_edge_property_index(&self, property: &str) -> Result<()> {
+        self.create_property_index(IndexTarget::Edge, property)
+    }
+
+    /// Create an index on node labels for fast label-based lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexAlreadyExists` if a label index already exists.
+    pub fn create_label_index(&self) -> Result<()> {
+        self.create_property_index(IndexTarget::Node, "_label")
+    }
+
+    /// Create an index on edge types for fast type-based lookups.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexAlreadyExists` if an edge type index already exists.
+    pub fn create_edge_type_index(&self) -> Result<()> {
+        self.create_property_index(IndexTarget::Edge, "_edge_type")
+    }
+
+    /// Drop a node property index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexNotFound` if no index exists for this property.
+    pub fn drop_node_index(&self, property: &str) -> Result<()> {
+        self.drop_property_index(IndexTarget::Node, property)
+    }
+
+    /// Drop an edge property index.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexNotFound` if no index exists for this property.
+    pub fn drop_edge_index(&self, property: &str) -> Result<()> {
+        self.drop_property_index(IndexTarget::Edge, property)
+    }
+
+    /// Check if a node property index exists.
+    #[must_use]
+    pub fn has_node_index(&self, property: &str) -> bool {
+        self.btree_indexes
+            .read()
+            .contains_key(&(IndexTarget::Node, property.to_string()))
+    }
+
+    /// Check if an edge property index exists.
+    #[must_use]
+    pub fn has_edge_index(&self, property: &str) -> bool {
+        self.btree_indexes
+            .read()
+            .contains_key(&(IndexTarget::Edge, property.to_string()))
+    }
+
+    /// Get list of indexed node properties.
+    #[must_use]
+    pub fn get_indexed_node_properties(&self) -> Vec<String> {
+        self.btree_indexes
+            .read()
+            .keys()
+            .filter_map(|(target, prop)| {
+                if *target == IndexTarget::Node {
+                    Some(prop.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Get list of indexed edge properties.
+    #[must_use]
+    pub fn get_indexed_edge_properties(&self) -> Vec<String> {
+        self.btree_indexes
+            .read()
+            .keys()
+            .filter_map(|(target, prop)| {
+                if *target == IndexTarget::Edge {
+                    Some(prop.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn create_property_index(&self, target: IndexTarget, property: &str) -> Result<()> {
+        let key = (target, property.to_string());
+
+        // Check if index already exists
+        {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&key) {
+                return Err(GraphError::IndexAlreadyExists {
+                    target: format!("{target:?}"),
+                    property: property.to_string(),
+                });
+            }
+        }
+
+        // Build the index by scanning all nodes/edges
+        let mut btree: PropertyIndex = BTreeMap::new();
+
+        match target {
+            IndexTarget::Node => {
+                for node_key in self.store.scan("node:") {
+                    if node_key.contains(":out") || node_key.contains(":in") {
+                        continue;
+                    }
+                    if let Some(id_str) = node_key.strip_prefix("node:") {
+                        if let Ok(id) = id_str.parse::<u64>() {
+                            if let Ok(tensor) = self.store.get(&node_key) {
+                                let value = if property == "_label" {
+                                    match tensor.get("_label") {
+                                        Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                                            Some(OrderedPropertyValue::String(s.clone()))
+                                        },
+                                        _ => None,
+                                    }
+                                } else if let Some(TensorValue::Scalar(scalar)) =
+                                    tensor.get(property)
+                                {
+                                    Some(OrderedPropertyValue::from(&PropertyValue::from_scalar(
+                                        scalar,
+                                    )))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(ordered_val) = value {
+                                    btree.entry(ordered_val).or_default().push(id);
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            IndexTarget::Edge => {
+                for edge_key in self.store.scan("edge:") {
+                    if let Some(id_str) = edge_key.strip_prefix("edge:") {
+                        if let Ok(id) = id_str.parse::<u64>() {
+                            if let Ok(tensor) = self.store.get(&edge_key) {
+                                let value = if property == "_edge_type" {
+                                    match tensor.get("_edge_type") {
+                                        Some(TensorValue::Scalar(ScalarValue::String(s))) => {
+                                            Some(OrderedPropertyValue::String(s.clone()))
+                                        },
+                                        _ => None,
+                                    }
+                                } else if let Some(TensorValue::Scalar(scalar)) =
+                                    tensor.get(property)
+                                {
+                                    Some(OrderedPropertyValue::from(&PropertyValue::from_scalar(
+                                        scalar,
+                                    )))
+                                } else {
+                                    None
+                                };
+
+                                if let Some(ordered_val) = value {
+                                    btree.entry(ordered_val).or_default().push(id);
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        // Persist index metadata
+        let metadata_key = Self::index_metadata_key(target, property);
+        let mut metadata = TensorData::new();
+        metadata.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("index".into())),
+        );
+        self.store.put(metadata_key, metadata)?;
+
+        // Insert into in-memory index
+        self.btree_indexes.write().insert(key, btree);
+
+        Ok(())
+    }
+
+    fn drop_property_index(&self, target: IndexTarget, property: &str) -> Result<()> {
+        let key = (target, property.to_string());
+
+        // Remove from in-memory index
+        let removed = self.btree_indexes.write().remove(&key).is_some();
+
+        if !removed {
+            return Err(GraphError::IndexNotFound {
+                target: format!("{target:?}"),
+                property: property.to_string(),
+            });
+        }
+
+        // Remove persistent metadata
+        let metadata_key = Self::index_metadata_key(target, property);
+        self.store.delete(&metadata_key)?;
+
+        Ok(())
+    }
+
+    // ========== Internal Index Maintenance ==========
+
+    fn index_add(
+        &self,
+        target: IndexTarget,
+        property: &str,
+        value: &OrderedPropertyValue,
+        id: u64,
+    ) {
+        let key = (target, property.to_string());
+        let _lock = self.index_locks[Self::lock_index(id)].write();
+
+        let mut indexes = self.btree_indexes.write();
+        if let Some(btree) = indexes.get_mut(&key) {
+            btree.entry(value.clone()).or_default().push(id);
+        }
+    }
+
+    fn index_remove(
+        &self,
+        target: IndexTarget,
+        property: &str,
+        value: &OrderedPropertyValue,
+        id: u64,
+    ) {
+        let key = (target, property.to_string());
+        let _lock = self.index_locks[Self::lock_index(id)].write();
+
+        let mut indexes = self.btree_indexes.write();
+        if let Some(btree) = indexes.get_mut(&key) {
+            if let Some(ids) = btree.get_mut(value) {
+                ids.retain(|&x| x != id);
+                if ids.is_empty() {
+                    btree.remove(value);
+                }
+            }
+        }
+    }
+
+    fn index_node_properties(
+        &self,
+        id: u64,
+        label: &str,
+        properties: &HashMap<String, PropertyValue>,
+    ) {
+        let indexes = self.btree_indexes.read();
+
+        // Index label if _label index exists
+        if indexes.contains_key(&(IndexTarget::Node, "_label".to_string())) {
+            drop(indexes);
+            self.index_add(
+                IndexTarget::Node,
+                "_label",
+                &OrderedPropertyValue::String(label.to_string()),
+                id,
+            );
+        } else {
+            drop(indexes);
+        }
+
+        // Index each property that has an index
+        for (prop_name, prop_value) in properties {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&(IndexTarget::Node, prop_name.clone())) {
+                drop(indexes);
+                self.index_add(
+                    IndexTarget::Node,
+                    prop_name,
+                    &OrderedPropertyValue::from(prop_value),
+                    id,
+                );
+            }
+        }
+    }
+
+    fn unindex_node_properties(
+        &self,
+        id: u64,
+        label: &str,
+        properties: &HashMap<String, PropertyValue>,
+    ) {
+        let indexes = self.btree_indexes.read();
+
+        // Unindex label if _label index exists
+        if indexes.contains_key(&(IndexTarget::Node, "_label".to_string())) {
+            drop(indexes);
+            self.index_remove(
+                IndexTarget::Node,
+                "_label",
+                &OrderedPropertyValue::String(label.to_string()),
+                id,
+            );
+        } else {
+            drop(indexes);
+        }
+
+        // Unindex each property that has an index
+        for (prop_name, prop_value) in properties {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&(IndexTarget::Node, prop_name.clone())) {
+                drop(indexes);
+                self.index_remove(
+                    IndexTarget::Node,
+                    prop_name,
+                    &OrderedPropertyValue::from(prop_value),
+                    id,
+                );
+            }
+        }
+    }
+
+    fn index_edge_properties(
+        &self,
+        id: u64,
+        edge_type: &str,
+        properties: &HashMap<String, PropertyValue>,
+    ) {
+        let indexes = self.btree_indexes.read();
+
+        // Index edge_type if _edge_type index exists
+        if indexes.contains_key(&(IndexTarget::Edge, "_edge_type".to_string())) {
+            drop(indexes);
+            self.index_add(
+                IndexTarget::Edge,
+                "_edge_type",
+                &OrderedPropertyValue::String(edge_type.to_string()),
+                id,
+            );
+        } else {
+            drop(indexes);
+        }
+
+        // Index each property that has an index
+        for (prop_name, prop_value) in properties {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&(IndexTarget::Edge, prop_name.clone())) {
+                drop(indexes);
+                self.index_add(
+                    IndexTarget::Edge,
+                    prop_name,
+                    &OrderedPropertyValue::from(prop_value),
+                    id,
+                );
+            }
+        }
+    }
+
+    fn unindex_edge_properties(
+        &self,
+        id: u64,
+        edge_type: &str,
+        properties: &HashMap<String, PropertyValue>,
+    ) {
+        let indexes = self.btree_indexes.read();
+
+        // Unindex edge_type if _edge_type index exists
+        if indexes.contains_key(&(IndexTarget::Edge, "_edge_type".to_string())) {
+            drop(indexes);
+            self.index_remove(
+                IndexTarget::Edge,
+                "_edge_type",
+                &OrderedPropertyValue::String(edge_type.to_string()),
+                id,
+            );
+        } else {
+            drop(indexes);
+        }
+
+        // Unindex each property that has an index
+        for (prop_name, prop_value) in properties {
+            let indexes = self.btree_indexes.read();
+            if indexes.contains_key(&(IndexTarget::Edge, prop_name.clone())) {
+                drop(indexes);
+                self.index_remove(
+                    IndexTarget::Edge,
+                    prop_name,
+                    &OrderedPropertyValue::from(prop_value),
+                    id,
+                );
+            }
+        }
+    }
+
+    // ========== Index-Accelerated Queries ==========
+
+    /// Find nodes by exact property value match. Uses index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_property(
+        &self,
+        property: &str,
+        value: &PropertyValue,
+    ) -> Result<Vec<Node>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Node, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        if let Some(btree) = indexes.get(&key) {
+            // Use index
+            let ids = btree.get(&ordered_value).cloned().unwrap_or_default();
+            drop(indexes);
+
+            let mut nodes = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(node) = self.get_node(id) {
+                    nodes.push(node);
+                }
+            }
+            nodes.sort_by_key(|n| n.id);
+            return Ok(nodes);
+        }
+        drop(indexes);
+
+        // Fallback to scan
+        Ok(self.scan_nodes_by_property(property, value))
+    }
+
+    /// Find nodes using a range comparison. Uses index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_where(
+        &self,
+        property: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+    ) -> Result<Vec<Node>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Node, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        if let Some(btree) = indexes.get(&key) {
+            // Use index range query
+            let ids: Vec<u64> = match op {
+                RangeOp::Lt => btree
+                    .range(..ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Le => btree
+                    .range(..=ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Gt => btree
+                    .range((
+                        std::ops::Bound::Excluded(ordered_value),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Ge => btree
+                    .range(ordered_value..)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+            };
+            drop(indexes);
+
+            let mut nodes = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(node) = self.get_node(id) {
+                    nodes.push(node);
+                }
+            }
+            nodes.sort_by_key(|n| n.id);
+            return Ok(nodes);
+        }
+        drop(indexes);
+
+        // Fallback to scan
+        Ok(self.scan_nodes_where(property, op, value))
+    }
+
+    /// Find nodes by label. Uses label index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_nodes_by_label(&self, label: &str) -> Result<Vec<Node>> {
+        self.find_nodes_by_property("_label", &PropertyValue::String(label.to_string()))
+    }
+
+    /// Find edges by exact property value match. Uses index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_by_property(
+        &self,
+        property: &str,
+        value: &PropertyValue,
+    ) -> Result<Vec<Edge>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Edge, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        if let Some(btree) = indexes.get(&key) {
+            // Use index
+            let ids = btree.get(&ordered_value).cloned().unwrap_or_default();
+            drop(indexes);
+
+            let mut edges = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(edge) = self.get_edge(id) {
+                    edges.push(edge);
+                }
+            }
+            edges.sort_by_key(|e| e.id);
+            return Ok(edges);
+        }
+        drop(indexes);
+
+        // Fallback to scan
+        Ok(self.scan_edges_by_property(property, value))
+    }
+
+    /// Find edges using a range comparison. Uses index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_where(
+        &self,
+        property: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+    ) -> Result<Vec<Edge>> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let key = (IndexTarget::Edge, property.to_string());
+
+        let indexes = self.btree_indexes.read();
+        if let Some(btree) = indexes.get(&key) {
+            // Use index range query
+            let ids: Vec<u64> = match op {
+                RangeOp::Lt => btree
+                    .range(..ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Le => btree
+                    .range(..=ordered_value)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Gt => btree
+                    .range((
+                        std::ops::Bound::Excluded(ordered_value),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+                RangeOp::Ge => btree
+                    .range(ordered_value..)
+                    .flat_map(|(_, ids)| ids.iter().copied())
+                    .collect(),
+            };
+            drop(indexes);
+
+            let mut edges = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Ok(edge) = self.get_edge(id) {
+                    edges.push(edge);
+                }
+            }
+            edges.sort_by_key(|e| e.id);
+            return Ok(edges);
+        }
+        drop(indexes);
+
+        // Fallback to scan
+        Ok(self.scan_edges_where(property, op, value))
+    }
+
+    /// Find edges by type. Uses edge type index if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn find_edges_by_type(&self, edge_type: &str) -> Result<Vec<Edge>> {
+        self.find_edges_by_property("_edge_type", &PropertyValue::String(edge_type.to_string()))
+    }
+
+    // ========== Scan Fallbacks ==========
+
+    fn scan_nodes_by_property(&self, property: &str, value: &PropertyValue) -> Vec<Node> {
+        let mut nodes = Vec::new();
+
+        for key in self.store.scan("node:") {
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(node) = self.get_node(id) {
+                        let matches = if property == "_label" {
+                            match value {
+                                PropertyValue::String(s) => node.label == *s,
+                                _ => false,
+                            }
+                        } else {
+                            node.properties.get(property) == Some(value)
+                        };
+                        if matches {
+                            nodes.push(node);
+                        }
+                    }
+                }
+            }
+        }
+
+        nodes.sort_by_key(|n| n.id);
+        nodes
+    }
+
+    fn scan_nodes_where(&self, property: &str, op: RangeOp, value: &PropertyValue) -> Vec<Node> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let mut nodes = Vec::new();
+
+        for key in self.store.scan("node:") {
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(node) = self.get_node(id) {
+                        let prop_value = if property == "_label" {
+                            Some(PropertyValue::String(node.label.clone()))
+                        } else {
+                            node.properties.get(property).cloned()
+                        };
+
+                        if let Some(pv) = prop_value {
+                            let ordered_pv = OrderedPropertyValue::from(&pv);
+                            let matches = match op {
+                                RangeOp::Lt => ordered_pv < ordered_value,
+                                RangeOp::Le => ordered_pv <= ordered_value,
+                                RangeOp::Gt => ordered_pv > ordered_value,
+                                RangeOp::Ge => ordered_pv >= ordered_value,
+                            };
+                            if matches {
+                                nodes.push(node);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        nodes.sort_by_key(|n| n.id);
+        nodes
+    }
+
+    fn scan_edges_by_property(&self, property: &str, value: &PropertyValue) -> Vec<Edge> {
+        let mut edges = Vec::new();
+
+        for key in self.store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(edge) = self.get_edge(id) {
+                        let matches = if property == "_edge_type" {
+                            match value {
+                                PropertyValue::String(s) => edge.edge_type == *s,
+                                _ => false,
+                            }
+                        } else {
+                            edge.properties.get(property) == Some(value)
+                        };
+                        if matches {
+                            edges.push(edge);
+                        }
+                    }
+                }
+            }
+        }
+
+        edges.sort_by_key(|e| e.id);
+        edges
+    }
+
+    fn scan_edges_where(&self, property: &str, op: RangeOp, value: &PropertyValue) -> Vec<Edge> {
+        let ordered_value = OrderedPropertyValue::from(value);
+        let mut edges = Vec::new();
+
+        for key in self.store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    if let Ok(edge) = self.get_edge(id) {
+                        let prop_value = if property == "_edge_type" {
+                            Some(PropertyValue::String(edge.edge_type.clone()))
+                        } else {
+                            edge.properties.get(property).cloned()
+                        };
+
+                        if let Some(pv) = prop_value {
+                            let ordered_pv = OrderedPropertyValue::from(&pv);
+                            let matches = match op {
+                                RangeOp::Lt => ordered_pv < ordered_value,
+                                RangeOp::Le => ordered_pv <= ordered_value,
+                                RangeOp::Gt => ordered_pv > ordered_value,
+                                RangeOp::Ge => ordered_pv >= ordered_value,
+                            };
+                            if matches {
+                                edges.push(edge);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        edges.sort_by_key(|e| e.id);
+        edges
+    }
+
     #[instrument(skip(self, label, properties))]
     pub fn create_node(
         &self,
@@ -206,7 +1175,10 @@ impl GraphEngine {
             "_type",
             TensorValue::Scalar(ScalarValue::String("node".into())),
         );
-        tensor.set("_label", TensorValue::Scalar(ScalarValue::String(label)));
+        tensor.set(
+            "_label",
+            TensorValue::Scalar(ScalarValue::String(label.clone())),
+        );
 
         for (key, value) in &properties {
             tensor.set(key, TensorValue::Scalar(value.to_scalar()));
@@ -219,6 +1191,9 @@ impl GraphEngine {
         let in_tensor = TensorData::new();
         self.store.put(Self::outgoing_edges_key(id), out_tensor)?;
         self.store.put(Self::incoming_edges_key(id), in_tensor)?;
+
+        // Update indexes
+        self.index_node_properties(id, &label, &properties);
 
         Ok(id)
     }
@@ -253,7 +1228,7 @@ impl GraphEngine {
         tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to as i64)));
         tensor.set(
             "_edge_type",
-            TensorValue::Scalar(ScalarValue::String(edge_type)),
+            TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
         );
         tensor.set(
             "_directed",
@@ -277,6 +1252,9 @@ impl GraphEngine {
             self.add_edge_to_list(Self::incoming_edges_key(from), id)?;
         }
 
+        // Update indexes
+        self.index_edge_properties(id, &edge_type, &properties);
+
         Ok(id)
     }
 
@@ -293,10 +1271,9 @@ impl GraphEngine {
         Ok(())
     }
 
-    fn get_edge_list(&self, key: &str) -> Result<Vec<u64>> {
-        let tensor = match self.store.get(key) {
-            Ok(t) => t,
-            Err(_) => return Ok(Vec::new()),
+    fn get_edge_list(&self, key: &str) -> Vec<u64> {
+        let Ok(tensor) = self.store.get(key) else {
+            return Vec::new();
         };
 
         let mut edges = Vec::new();
@@ -307,7 +1284,7 @@ impl GraphEngine {
                 }
             }
         }
-        Ok(edges)
+        edges
     }
 
     pub fn node_exists(&self, id: u64) -> bool {
@@ -399,13 +1376,29 @@ impl GraphEngine {
         label: Option<&str>,
         properties: HashMap<String, PropertyValue>,
     ) -> Result<()> {
+        // Get old node for index maintenance
+        let old_node = self.get_node(id)?;
+
         let key = Self::node_key(id);
         let mut tensor = self
             .store
             .get(&key)
             .map_err(|_| GraphError::NodeNotFound(id))?;
 
+        // Unindex old values for changed properties
+        let old_label = old_node.label.clone();
+        let mut changed_props: HashMap<String, PropertyValue> = HashMap::new();
+
         if let Some(new_label) = label {
+            if new_label != old_label {
+                // Unindex old label
+                self.index_remove(
+                    IndexTarget::Node,
+                    "_label",
+                    &OrderedPropertyValue::String(old_label.clone()),
+                    id,
+                );
+            }
             tensor.set(
                 "_label",
                 TensorValue::Scalar(ScalarValue::String(new_label.to_string())),
@@ -413,14 +1406,46 @@ impl GraphEngine {
         }
 
         for (prop_key, value) in &properties {
+            // Unindex old value if it exists
+            if let Some(old_value) = old_node.properties.get(prop_key) {
+                self.index_remove(
+                    IndexTarget::Node,
+                    prop_key,
+                    &OrderedPropertyValue::from(old_value),
+                    id,
+                );
+            }
+
             if value == &PropertyValue::Null {
                 tensor.remove(prop_key);
             } else {
                 tensor.set(prop_key, TensorValue::Scalar(value.to_scalar()));
+                changed_props.insert(prop_key.clone(), value.clone());
             }
         }
 
         self.store.put(key, tensor)?;
+
+        // Index new values
+        let new_label = label.unwrap_or(&old_label);
+        if label.is_some() && new_label != old_label {
+            self.index_add(
+                IndexTarget::Node,
+                "_label",
+                &OrderedPropertyValue::String(new_label.to_string()),
+                id,
+            );
+        }
+
+        for (prop_key, prop_value) in &changed_props {
+            self.index_add(
+                IndexTarget::Node,
+                prop_key,
+                &OrderedPropertyValue::from(prop_value),
+                id,
+            );
+        }
+
         Ok(())
     }
 
@@ -430,21 +1455,48 @@ impl GraphEngine {
     /// to remove a property. The edge type, from/to nodes, and directedness cannot
     /// be changed after creation.
     pub fn update_edge(&self, id: u64, properties: HashMap<String, PropertyValue>) -> Result<()> {
+        // Get old edge for index maintenance
+        let old_edge = self.get_edge(id)?;
+
         let key = Self::edge_key(id);
         let mut tensor = self
             .store
             .get(&key)
             .map_err(|_| GraphError::EdgeNotFound(id))?;
 
+        let mut changed_props: HashMap<String, PropertyValue> = HashMap::new();
+
         for (prop_key, value) in &properties {
+            // Unindex old value if it exists
+            if let Some(old_value) = old_edge.properties.get(prop_key) {
+                self.index_remove(
+                    IndexTarget::Edge,
+                    prop_key,
+                    &OrderedPropertyValue::from(old_value),
+                    id,
+                );
+            }
+
             if value == &PropertyValue::Null {
                 tensor.remove(prop_key);
             } else {
                 tensor.set(prop_key, TensorValue::Scalar(value.to_scalar()));
+                changed_props.insert(prop_key.clone(), value.clone());
             }
         }
 
         self.store.put(key, tensor)?;
+
+        // Index new values
+        for (prop_key, prop_value) in &changed_props {
+            self.index_add(
+                IndexTarget::Edge,
+                prop_key,
+                &OrderedPropertyValue::from(prop_value),
+                id,
+            );
+        }
+
         Ok(())
     }
 
@@ -457,13 +1509,13 @@ impl GraphEngine {
         let mut edge_ids = HashSet::new();
 
         if direction == Direction::Outgoing || direction == Direction::Both {
-            for id in self.get_edge_list(&Self::outgoing_edges_key(node_id))? {
+            for id in self.get_edge_list(&Self::outgoing_edges_key(node_id)) {
                 edge_ids.insert(id);
             }
         }
 
         if direction == Direction::Incoming || direction == Direction::Both {
-            for id in self.get_edge_list(&Self::incoming_edges_key(node_id))? {
+            for id in self.get_edge_list(&Self::incoming_edges_key(node_id)) {
                 edge_ids.insert(id);
             }
         }
@@ -495,7 +1547,7 @@ impl GraphEngine {
 
         // Get outgoing neighbors
         if direction == Direction::Outgoing || direction == Direction::Both {
-            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(node_id))?;
+            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(node_id));
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
@@ -513,7 +1565,7 @@ impl GraphEngine {
 
         // Get incoming neighbors
         if direction == Direction::Incoming || direction == Direction::Both {
-            let in_edges = self.get_edge_list(&Self::incoming_edges_key(node_id))?;
+            let in_edges = self.get_edge_list(&Self::incoming_edges_key(node_id));
             for edge_id in in_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
@@ -565,7 +1617,7 @@ impl GraphEngine {
                 continue;
             }
 
-            let neighbors = self.get_neighbor_ids(current_id, edge_type, direction)?;
+            let neighbors = self.get_neighbor_ids(current_id, edge_type, direction);
             for neighbor_id in neighbors {
                 if !visited.contains(&neighbor_id) {
                     visited.insert(neighbor_id);
@@ -582,11 +1634,11 @@ impl GraphEngine {
         node_id: u64,
         edge_type: Option<&str>,
         direction: Direction,
-    ) -> Result<Vec<u64>> {
+    ) -> Vec<u64> {
         let mut neighbor_ids = HashSet::new();
 
         if direction == Direction::Outgoing || direction == Direction::Both {
-            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(node_id))?;
+            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(node_id));
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
@@ -602,7 +1654,7 @@ impl GraphEngine {
         }
 
         if direction == Direction::Incoming || direction == Direction::Both {
-            let in_edges = self.get_edge_list(&Self::incoming_edges_key(node_id))?;
+            let in_edges = self.get_edge_list(&Self::incoming_edges_key(node_id));
             for edge_id in in_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
                     if edge_type.is_none() || edge_type == Some(&edge.edge_type) {
@@ -618,7 +1670,7 @@ impl GraphEngine {
         }
 
         neighbor_ids.remove(&node_id);
-        Ok(neighbor_ids.into_iter().collect())
+        neighbor_ids.into_iter().collect()
     }
 
     pub fn find_path(&self, from: u64, to: u64) -> Result<Path> {
@@ -645,7 +1697,7 @@ impl GraphEngine {
         visited.insert(from);
 
         while let Some(current) = queue.pop_front() {
-            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(current))?;
+            let out_edges = self.get_edge_list(&Self::outgoing_edges_key(current));
 
             for edge_id in out_edges {
                 if let Ok(edge) = self.get_edge(edge_id) {
@@ -674,6 +1726,7 @@ impl GraphEngine {
         Err(GraphError::PathNotFound)
     }
 
+    #[allow(clippy::unused_self)]
     fn reconstruct_path(&self, from: u64, to: u64, parent: &HashMap<u64, (u64, u64)>) -> Path {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
@@ -729,6 +1782,9 @@ impl GraphEngine {
     pub fn delete_edge(&self, edge_id: u64) -> Result<()> {
         let edge = self.get_edge(edge_id)?;
 
+        // Unindex edge properties
+        self.unindex_edge_properties(edge_id, &edge.edge_type, &edge.properties);
+
         // Remove from 'from' node's outgoing list
         self.remove_edge_from_list(&Self::outgoing_edges_key(edge.from), edge_id)?;
 
@@ -756,13 +1812,12 @@ impl GraphEngine {
     }
 
     pub fn delete_node(&self, id: u64) -> Result<()> {
-        if !self.node_exists(id) {
-            return Err(GraphError::NodeNotFound(id));
-        }
+        // Get node for index cleanup before deletion
+        let node = self.get_node(id)?;
 
         // Get all edges connected to this node
-        let out_edges = self.get_edge_list(&Self::outgoing_edges_key(id))?;
-        let in_edges = self.get_edge_list(&Self::incoming_edges_key(id))?;
+        let out_edges = self.get_edge_list(&Self::outgoing_edges_key(id));
+        let in_edges = self.get_edge_list(&Self::incoming_edges_key(id));
 
         // Collect unique edge IDs
         let mut all_edge_ids: HashSet<u64> = out_edges.into_iter().collect();
@@ -774,6 +1829,9 @@ impl GraphEngine {
             let edges_to_delete: Vec<_> = all_edge_ids.iter().copied().collect();
             edges_to_delete.par_iter().for_each(|edge_id| {
                 if let Ok(edge) = self.get_edge(*edge_id) {
+                    // Unindex edge properties
+                    self.unindex_edge_properties(*edge_id, &edge.edge_type, &edge.properties);
+
                     // Clean up the OTHER node's edge list (not the one we're deleting)
                     let other_node = if edge.from == id { edge.to } else { edge.from };
 
@@ -801,6 +1859,9 @@ impl GraphEngine {
         } else {
             for edge_id in all_edge_ids {
                 if let Ok(edge) = self.get_edge(edge_id) {
+                    // Unindex edge properties
+                    self.unindex_edge_properties(edge_id, &edge.edge_type, &edge.properties);
+
                     let other_node = if edge.from == id { edge.to } else { edge.from };
 
                     if edge.from == id {
@@ -817,6 +1878,9 @@ impl GraphEngine {
                 self.store.delete(&Self::edge_key(edge_id)).ok();
             }
         }
+
+        // Unindex node properties
+        self.unindex_node_properties(id, &node.label, &node.properties);
 
         // Delete the node itself and its edge lists
         self.store.delete(&Self::node_key(id))?;
@@ -2308,5 +3372,1221 @@ mod tests {
         errors.insert(GraphError::NodeNotFound(1));
         errors.insert(GraphError::EdgeNotFound(2));
         assert_eq!(errors.len(), 2);
+    }
+
+    // ========== Property Index Tests ==========
+
+    #[test]
+    fn create_node_property_index() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        engine.create_node("Person", props).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("age".to_string(), PropertyValue::Int(25));
+        engine.create_node("Person", props2).unwrap();
+
+        // Create index
+        engine.create_node_property_index("age").unwrap();
+        assert!(engine.has_node_index("age"));
+
+        // Query using index
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(30))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, 1);
+    }
+
+    #[test]
+    fn create_edge_property_index() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.5));
+        engine.create_edge(n1, n2, "CONNECTS", props, true).unwrap();
+
+        // Create index
+        engine.create_edge_property_index("weight").unwrap();
+        assert!(engine.has_edge_index("weight"));
+
+        // Query using index
+        let edges = engine
+            .find_edges_by_property("weight", &PropertyValue::Float(1.5))
+            .unwrap();
+        assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn create_label_index() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Company", HashMap::new()).unwrap();
+
+        engine.create_label_index().unwrap();
+        assert!(engine.has_node_index("_label"));
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 2);
+
+        let companies = engine.find_nodes_by_label("Company").unwrap();
+        assert_eq!(companies.len(), 1);
+    }
+
+    #[test]
+    fn create_edge_type_index() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        engine.create_edge_type_index().unwrap();
+        assert!(engine.has_edge_index("_edge_type"));
+
+        let knows = engine.find_edges_by_type("KNOWS").unwrap();
+        assert_eq!(knows.len(), 1);
+
+        let follows = engine.find_edges_by_type("FOLLOWS").unwrap();
+        assert_eq!(follows.len(), 1);
+    }
+
+    #[test]
+    fn drop_node_index() {
+        let engine = GraphEngine::new();
+
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_label_index().unwrap();
+
+        assert!(engine.has_node_index("_label"));
+        engine.drop_node_index("_label").unwrap();
+        assert!(!engine.has_node_index("_label"));
+    }
+
+    #[test]
+    fn drop_edge_index() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        engine.create_edge_type_index().unwrap();
+        assert!(engine.has_edge_index("_edge_type"));
+
+        engine.drop_edge_index("_edge_type").unwrap();
+        assert!(!engine.has_edge_index("_edge_type"));
+    }
+
+    #[test]
+    fn index_already_exists_error() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+        let result = engine.create_label_index();
+
+        assert!(matches!(result, Err(GraphError::IndexAlreadyExists { .. })));
+    }
+
+    #[test]
+    fn drop_nonexistent_index_error() {
+        let engine = GraphEngine::new();
+
+        let result = engine.drop_node_index("nonexistent");
+        assert!(matches!(result, Err(GraphError::IndexNotFound { .. })));
+    }
+
+    #[test]
+    fn find_nodes_by_property_int() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        engine.create_node("Person", props).unwrap();
+
+        engine.create_node_property_index("age").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(30))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn find_nodes_by_property_string() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        engine.create_node("Person", props).unwrap();
+
+        engine.create_node_property_index("name").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("name", &PropertyValue::String("Alice".to_string()))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn find_nodes_by_property_float() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Float(3.14));
+        engine.create_node("Person", props).unwrap();
+
+        engine.create_node_property_index("score").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("score", &PropertyValue::Float(3.14))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn find_nodes_by_property_bool() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("active".to_string(), PropertyValue::Bool(true));
+        engine.create_node("Person", props).unwrap();
+
+        engine.create_node_property_index("active").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("active", &PropertyValue::Bool(true))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn find_nodes_where_lt() {
+        let engine = GraphEngine::new();
+
+        for i in 1..=10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_where("value", RangeOp::Lt, &PropertyValue::Int(5))
+            .unwrap();
+        assert_eq!(nodes.len(), 4); // 1, 2, 3, 4
+    }
+
+    #[test]
+    fn find_nodes_where_le() {
+        let engine = GraphEngine::new();
+
+        for i in 1..=10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_where("value", RangeOp::Le, &PropertyValue::Int(5))
+            .unwrap();
+        assert_eq!(nodes.len(), 5); // 1, 2, 3, 4, 5
+    }
+
+    #[test]
+    fn find_nodes_where_gt() {
+        let engine = GraphEngine::new();
+
+        for i in 1..=10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_where("value", RangeOp::Gt, &PropertyValue::Int(5))
+            .unwrap();
+        assert_eq!(nodes.len(), 5); // 6, 7, 8, 9, 10
+    }
+
+    #[test]
+    fn find_nodes_where_ge() {
+        let engine = GraphEngine::new();
+
+        for i in 1..=10 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_where("value", RangeOp::Ge, &PropertyValue::Int(5))
+            .unwrap();
+        assert_eq!(nodes.len(), 6); // 5, 6, 7, 8, 9, 10
+    }
+
+    #[test]
+    fn index_updated_on_create_node() {
+        let engine = GraphEngine::new();
+
+        // Create index first
+        engine.create_label_index().unwrap();
+
+        // Create node after index exists
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 1);
+    }
+
+    #[test]
+    fn index_updated_on_update_node() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        let id = engine.create_node("Person", props).unwrap();
+
+        engine.create_node_property_index("age").unwrap();
+
+        // Verify initial state
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(30))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+
+        // Update the property
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), PropertyValue::Int(31));
+        engine.update_node(id, None, updates).unwrap();
+
+        // Old value should not be found
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(30))
+            .unwrap();
+        assert_eq!(nodes.len(), 0);
+
+        // New value should be found
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(31))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn index_updated_on_delete_node() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 1);
+
+        engine.delete_node(id).unwrap();
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 0);
+    }
+
+    #[test]
+    fn index_updated_on_create_edge() {
+        let engine = GraphEngine::new();
+
+        engine.create_edge_type_index().unwrap();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let edges = engine.find_edges_by_type("KNOWS").unwrap();
+        assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn index_updated_on_update_edge() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        let edge_id = engine.create_edge(n1, n2, "CONN", props, true).unwrap();
+
+        engine.create_edge_property_index("weight").unwrap();
+
+        // Verify initial
+        let edges = engine
+            .find_edges_by_property("weight", &PropertyValue::Float(1.0))
+            .unwrap();
+        assert_eq!(edges.len(), 1);
+
+        // Update
+        let mut updates = HashMap::new();
+        updates.insert("weight".to_string(), PropertyValue::Float(2.0));
+        engine.update_edge(edge_id, updates).unwrap();
+
+        // Old value gone
+        let edges = engine
+            .find_edges_by_property("weight", &PropertyValue::Float(1.0))
+            .unwrap();
+        assert_eq!(edges.len(), 0);
+
+        // New value present
+        let edges = engine
+            .find_edges_by_property("weight", &PropertyValue::Float(2.0))
+            .unwrap();
+        assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn index_updated_on_delete_edge() {
+        let engine = GraphEngine::new();
+
+        engine.create_edge_type_index().unwrap();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let edge_id = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let edges = engine.find_edges_by_type("KNOWS").unwrap();
+        assert_eq!(edges.len(), 1);
+
+        engine.delete_edge(edge_id).unwrap();
+
+        let edges = engine.find_edges_by_type("KNOWS").unwrap();
+        assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn index_rebuilt_from_store() {
+        let store = TensorStore::new();
+        let engine1 = GraphEngine::with_store(store);
+
+        // Create data and index
+        engine1.create_node("Person", HashMap::new()).unwrap();
+        engine1.create_node("Person", HashMap::new()).unwrap();
+        engine1.create_label_index().unwrap();
+
+        // Verify index works
+        let persons = engine1.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 2);
+
+        // Create new engine from same store (simulates restart)
+        let store2 = engine1.store().clone();
+        let engine2 = GraphEngine::with_store(store2);
+
+        // Index should be rebuilt
+        assert!(engine2.has_node_index("_label"));
+        let persons = engine2.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 2);
+    }
+
+    #[test]
+    fn query_without_index_falls_back_to_scan() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        engine.create_node("Person", props).unwrap();
+
+        // No index created - should fall back to scan
+        let nodes = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(30))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn range_query_without_index_falls_back_to_scan() {
+        let engine = GraphEngine::new();
+
+        for i in 1..=5 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+
+        // No index - should fall back to scan
+        let nodes = engine
+            .find_nodes_where("value", RangeOp::Lt, &PropertyValue::Int(3))
+            .unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn find_no_match_returns_empty() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        let companies = engine.find_nodes_by_label("Company").unwrap();
+        assert!(companies.is_empty());
+    }
+
+    #[test]
+    fn find_multiple_matches() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+
+        for _ in 0..5 {
+            engine.create_node("Person", HashMap::new()).unwrap();
+        }
+
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 5);
+    }
+
+    #[test]
+    fn float_nan_handling() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("value".to_string(), PropertyValue::Float(f64::NAN));
+        engine.create_node("Node", props).unwrap();
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("value", &PropertyValue::Float(f64::NAN))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn float_infinity_handling() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("value".to_string(), PropertyValue::Float(f64::INFINITY));
+        engine.create_node("Node", props).unwrap();
+
+        engine.create_node_property_index("value").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("value", &PropertyValue::Float(f64::INFINITY))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn empty_property_value() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String(String::new()));
+        engine.create_node("Node", props).unwrap();
+
+        engine.create_node_property_index("name").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property("name", &PropertyValue::String(String::new()))
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn unicode_string_handling() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Hello Unicode Test".to_string()),
+        );
+        engine.create_node("Node", props).unwrap();
+
+        engine.create_node_property_index("name").unwrap();
+
+        let nodes = engine
+            .find_nodes_by_property(
+                "name",
+                &PropertyValue::String("Hello Unicode Test".to_string()),
+            )
+            .unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn get_indexed_properties() {
+        let engine = GraphEngine::new();
+
+        engine.create_label_index().unwrap();
+        engine.create_node_property_index("age").unwrap();
+        engine.create_edge_type_index().unwrap();
+
+        let node_props = engine.get_indexed_node_properties();
+        assert_eq!(node_props.len(), 2);
+        assert!(node_props.contains(&"_label".to_string()));
+        assert!(node_props.contains(&"age".to_string()));
+
+        let edge_props = engine.get_indexed_edge_properties();
+        assert_eq!(edge_props.len(), 1);
+        assert!(edge_props.contains(&"_edge_type".to_string()));
+    }
+
+    #[test]
+    fn ordered_float_ordering() {
+        // Test that NaN sorts first
+        let nan = OrderedFloat(f64::NAN);
+        let one = OrderedFloat(1.0);
+        let two = OrderedFloat(2.0);
+
+        assert!(nan < one);
+        assert!(one < two);
+        assert!(nan < two);
+    }
+
+    #[test]
+    fn index_error_display() {
+        let e1 = GraphError::IndexAlreadyExists {
+            target: "Node".to_string(),
+            property: "age".to_string(),
+        };
+        assert!(format!("{}", e1).contains("Node"));
+        assert!(format!("{}", e1).contains("age"));
+
+        let e2 = GraphError::IndexNotFound {
+            target: "Edge".to_string(),
+            property: "weight".to_string(),
+        };
+        assert!(format!("{}", e2).contains("Edge"));
+        assert!(format!("{}", e2).contains("weight"));
+    }
+
+    #[test]
+    fn concurrent_index_reads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create nodes and index
+        for i in 0..100 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Node", props).unwrap();
+        }
+        engine.create_node_property_index("value").unwrap();
+
+        // Spawn multiple readers
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let eng = Arc::clone(&engine);
+                thread::spawn(move || {
+                    let nodes = eng
+                        .find_nodes_by_property("value", &PropertyValue::Int(i * 10))
+                        .unwrap();
+                    assert_eq!(nodes.len(), 1);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_index_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        engine.create_label_index().unwrap();
+
+        // Spawn multiple writers
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                thread::spawn(move || {
+                    for _ in 0..10 {
+                        eng.create_node("Person", HashMap::new()).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Should have 100 persons
+        let persons = engine.find_nodes_by_label("Person").unwrap();
+        assert_eq!(persons.len(), 100);
+    }
+
+    // ========== Additional Coverage Tests ==========
+
+    #[test]
+    fn ordered_float_equality() {
+        // Test PartialEq implementation
+        let a = OrderedFloat(1.5);
+        let b = OrderedFloat(1.5);
+        let c = OrderedFloat(2.5);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        // Test NaN equality (NaN == NaN for OrderedFloat)
+        let nan1 = OrderedFloat(f64::NAN);
+        let nan2 = OrderedFloat(f64::NAN);
+        assert_eq!(nan1, nan2);
+    }
+
+    #[test]
+    fn ordered_float_greater_than_nan() {
+        // Test that regular float is Greater than NaN
+        let nan = OrderedFloat(f64::NAN);
+        let regular = OrderedFloat(1.0);
+        assert!(regular > nan); // This tests the (false, true) => Greater case
+    }
+
+    #[test]
+    fn ordered_float_hash() {
+        use std::collections::HashMap;
+        // Test Hash implementation by using OrderedFloat as HashMap key
+        let mut map: HashMap<OrderedFloat, i32> = HashMap::new();
+        map.insert(OrderedFloat(1.5), 1);
+        map.insert(OrderedFloat(2.5), 2);
+        map.insert(OrderedFloat(f64::NAN), 3);
+
+        assert_eq!(map.get(&OrderedFloat(1.5)), Some(&1));
+        assert_eq!(map.get(&OrderedFloat(2.5)), Some(&2));
+        assert_eq!(map.get(&OrderedFloat(f64::NAN)), Some(&3));
+    }
+
+    #[test]
+    fn ordered_property_value_null() {
+        // Test PropertyValue::Null conversion
+        let null = PropertyValue::Null;
+        let ordered = OrderedPropertyValue::from(&null);
+        assert_eq!(ordered, OrderedPropertyValue::Null);
+    }
+
+    #[test]
+    fn with_store_rebuilds_edge_indexes() {
+        // Test that edge indexes are rebuilt from store
+        let store = TensorStore::new();
+
+        // Create engine, add data, create edge index
+        let engine = GraphEngine::with_store(store.clone());
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(10));
+        engine
+            .create_edge(n1, n2, "CONNECTS", props.clone(), true)
+            .unwrap();
+
+        props.insert("weight".to_string(), PropertyValue::Int(20));
+        engine.create_edge(n2, n1, "CONNECTS", props, true).unwrap();
+
+        // Create edge property index
+        engine.create_edge_property_index("weight").unwrap();
+
+        // Verify index works
+        let edges = engine
+            .find_edges_by_property("weight", &PropertyValue::Int(10))
+            .unwrap();
+        assert_eq!(edges.len(), 1);
+
+        // Create new engine from same store - should rebuild indexes
+        let engine2 = GraphEngine::with_store(store);
+
+        // Verify index was rebuilt
+        let edges2 = engine2
+            .find_edges_by_property("weight", &PropertyValue::Int(10))
+            .unwrap();
+        assert_eq!(edges2.len(), 1);
+
+        let edges3 = engine2
+            .find_edges_by_property("weight", &PropertyValue::Int(20))
+            .unwrap();
+        assert_eq!(edges3.len(), 1);
+    }
+
+    #[test]
+    fn with_store_rebuilds_edge_type_index() {
+        // Test edge type index rebuilding
+        let store = TensorStore::new();
+
+        let engine = GraphEngine::with_store(store.clone());
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "LIKES", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n1, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        engine.create_edge_type_index().unwrap();
+
+        // Verify
+        let likes = engine.find_edges_by_type("LIKES").unwrap();
+        assert_eq!(likes.len(), 1);
+
+        // Rebuild from store
+        let engine2 = GraphEngine::with_store(store);
+        let likes2 = engine2.find_edges_by_type("LIKES").unwrap();
+        assert_eq!(likes2.len(), 1);
+    }
+
+    #[test]
+    fn create_node_after_property_index_exists() {
+        // Test that creating nodes after index exists updates the index
+        let engine = GraphEngine::new();
+
+        // Create property index FIRST
+        engine.create_node_property_index("age").unwrap();
+
+        // Now create nodes with that property
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(25));
+        engine.create_node("Person", props).unwrap();
+
+        props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        engine.create_node("Person", props).unwrap();
+
+        // Find using index
+        let found = engine
+            .find_nodes_by_property("age", &PropertyValue::Int(25))
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].properties.get("age"),
+            Some(&PropertyValue::Int(25))
+        );
+    }
+
+    #[test]
+    fn delete_node_removes_from_property_index() {
+        // Test that deleting node removes from property index
+        let engine = GraphEngine::new();
+
+        // Create property index first
+        engine.create_node_property_index("name").unwrap();
+
+        // Create nodes
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        let id1 = engine.create_node("Person", props).unwrap();
+
+        props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+        engine.create_node("Person", props).unwrap();
+
+        // Verify both are indexed
+        let alice = engine
+            .find_nodes_by_property("name", &PropertyValue::String("Alice".to_string()))
+            .unwrap();
+        assert_eq!(alice.len(), 1);
+
+        // Delete Alice
+        engine.delete_node(id1).unwrap();
+
+        // Verify Alice is no longer found
+        let alice_after = engine
+            .find_nodes_by_property("name", &PropertyValue::String("Alice".to_string()))
+            .unwrap();
+        assert!(alice_after.is_empty());
+
+        // Bob should still be there
+        let bob = engine
+            .find_nodes_by_property("name", &PropertyValue::String("Bob".to_string()))
+            .unwrap();
+        assert_eq!(bob.len(), 1);
+    }
+
+    #[test]
+    fn create_edge_after_property_index_exists() {
+        // Test creating edges after edge property index exists
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create edge property index FIRST
+        engine.create_edge_property_index("weight").unwrap();
+
+        // Now create edges with that property
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(100));
+        engine.create_edge(n1, n2, "CONNECTS", props, true).unwrap();
+
+        // Find using index
+        let found = engine
+            .find_edges_by_property("weight", &PropertyValue::Int(100))
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].properties.get("weight"),
+            Some(&PropertyValue::Int(100))
+        );
+    }
+
+    #[test]
+    fn delete_edge_removes_from_property_index() {
+        // Test that deleting edge removes from property index
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create edge property index first
+        engine.create_edge_property_index("priority").unwrap();
+
+        // Create edges
+        let mut props = HashMap::new();
+        props.insert("priority".to_string(), PropertyValue::Int(1));
+        let e1 = engine.create_edge(n1, n2, "LINK", props, true).unwrap();
+
+        props = HashMap::new();
+        props.insert("priority".to_string(), PropertyValue::Int(2));
+        engine.create_edge(n2, n1, "LINK", props, true).unwrap();
+
+        // Verify both indexed
+        let p1 = engine
+            .find_edges_by_property("priority", &PropertyValue::Int(1))
+            .unwrap();
+        assert_eq!(p1.len(), 1);
+
+        // Delete first edge
+        engine.delete_edge(e1).unwrap();
+
+        // Verify it's gone from index
+        let p1_after = engine
+            .find_edges_by_property("priority", &PropertyValue::Int(1))
+            .unwrap();
+        assert!(p1_after.is_empty());
+
+        // Second edge should still be there
+        let p2 = engine
+            .find_edges_by_property("priority", &PropertyValue::Int(2))
+            .unwrap();
+        assert_eq!(p2.len(), 1);
+    }
+
+    #[test]
+    fn find_edges_where_with_index() {
+        // Test range queries on edge properties with index
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        // Create edge property index first
+        engine.create_edge_property_index("cost").unwrap();
+
+        // Create edges with different costs
+        let mut props = HashMap::new();
+        props.insert("cost".to_string(), PropertyValue::Int(10));
+        engine.create_edge(n1, n2, "PATH", props, true).unwrap();
+
+        props = HashMap::new();
+        props.insert("cost".to_string(), PropertyValue::Int(20));
+        engine.create_edge(n2, n3, "PATH", props, true).unwrap();
+
+        props = HashMap::new();
+        props.insert("cost".to_string(), PropertyValue::Int(30));
+        engine.create_edge(n1, n3, "PATH", props, true).unwrap();
+
+        // Test Lt
+        let lt20 = engine
+            .find_edges_where("cost", RangeOp::Lt, &PropertyValue::Int(20))
+            .unwrap();
+        assert_eq!(lt20.len(), 1);
+        assert_eq!(
+            lt20[0].properties.get("cost"),
+            Some(&PropertyValue::Int(10))
+        );
+
+        // Test Le
+        let le20 = engine
+            .find_edges_where("cost", RangeOp::Le, &PropertyValue::Int(20))
+            .unwrap();
+        assert_eq!(le20.len(), 2);
+
+        // Test Gt
+        let gt20 = engine
+            .find_edges_where("cost", RangeOp::Gt, &PropertyValue::Int(20))
+            .unwrap();
+        assert_eq!(gt20.len(), 1);
+        assert_eq!(
+            gt20[0].properties.get("cost"),
+            Some(&PropertyValue::Int(30))
+        );
+
+        // Test Ge
+        let ge20 = engine
+            .find_edges_where("cost", RangeOp::Ge, &PropertyValue::Int(20))
+            .unwrap();
+        assert_eq!(ge20.len(), 2);
+    }
+
+    #[test]
+    fn find_edges_where_scan_fallback() {
+        // Test range queries on edge properties without index (scan fallback)
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create edges WITHOUT index
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Int(5));
+        engine.create_edge(n1, n2, "RATED", props, true).unwrap();
+
+        props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Int(8));
+        engine.create_edge(n2, n1, "RATED", props, true).unwrap();
+
+        // Query without index should still work via scan
+        let high = engine
+            .find_edges_where("score", RangeOp::Gt, &PropertyValue::Int(6))
+            .unwrap();
+        assert_eq!(high.len(), 1);
+        assert_eq!(
+            high[0].properties.get("score"),
+            Some(&PropertyValue::Int(8))
+        );
+    }
+
+    #[test]
+    fn find_edges_by_property_with_index() {
+        // Test exact match on edge property with index
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create index first
+        engine.create_edge_property_index("status").unwrap();
+
+        // Create edges
+        let mut props = HashMap::new();
+        props.insert(
+            "status".to_string(),
+            PropertyValue::String("active".to_string()),
+        );
+        engine.create_edge(n1, n2, "CONN", props, true).unwrap();
+
+        props = HashMap::new();
+        props.insert(
+            "status".to_string(),
+            PropertyValue::String("inactive".to_string()),
+        );
+        engine.create_edge(n2, n1, "CONN", props, true).unwrap();
+
+        // Find with index
+        let active = engine
+            .find_edges_by_property("status", &PropertyValue::String("active".to_string()))
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            active[0].properties.get("status"),
+            Some(&PropertyValue::String("active".to_string()))
+        );
+    }
+
+    #[test]
+    fn find_edges_by_property_scan_fallback() {
+        // Test exact match without index (scan)
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create edges without index
+        let mut props = HashMap::new();
+        props.insert(
+            "color".to_string(),
+            PropertyValue::String("red".to_string()),
+        );
+        engine.create_edge(n1, n2, "HAS", props, true).unwrap();
+
+        // Find without index
+        let red = engine
+            .find_edges_by_property("color", &PropertyValue::String("red".to_string()))
+            .unwrap();
+        assert_eq!(red.len(), 1);
+    }
+
+    #[test]
+    fn with_store_rebuilds_node_property_index() {
+        // Test that node property indexes are rebuilt from store
+        let store = TensorStore::new();
+
+        let engine = GraphEngine::with_store(store.clone());
+
+        // Create property index and add nodes
+        engine.create_node_property_index("score").unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Int(100));
+        engine.create_node("Player", props).unwrap();
+
+        props = HashMap::new();
+        props.insert("score".to_string(), PropertyValue::Int(200));
+        engine.create_node("Player", props).unwrap();
+
+        // Rebuild from store
+        let engine2 = GraphEngine::with_store(store);
+
+        // Verify index works
+        let high_score = engine2
+            .find_nodes_by_property("score", &PropertyValue::Int(200))
+            .unwrap();
+        assert_eq!(high_score.len(), 1);
+    }
+
+    #[test]
+    fn with_store_no_indexes() {
+        // Test with_store when there are no indexes
+        let store = TensorStore::new();
+
+        let engine = GraphEngine::with_store(store.clone());
+        engine.create_node("Test", HashMap::new()).unwrap();
+
+        // Rebuild - should work fine with no indexes
+        let engine2 = GraphEngine::with_store(store);
+        assert_eq!(engine2.node_count(), 1);
+    }
+
+    #[test]
+    fn update_node_with_indexed_property() {
+        // Test that updating a node updates the property index
+        let engine = GraphEngine::new();
+
+        // Create property index first
+        engine.create_node_property_index("level").unwrap();
+
+        // Create node
+        let mut props = HashMap::new();
+        props.insert("level".to_string(), PropertyValue::Int(1));
+        let id = engine.create_node("Player", props).unwrap();
+
+        // Verify initial index
+        let level1 = engine
+            .find_nodes_by_property("level", &PropertyValue::Int(1))
+            .unwrap();
+        assert_eq!(level1.len(), 1);
+
+        // Update node
+        let mut new_props = HashMap::new();
+        new_props.insert("level".to_string(), PropertyValue::Int(2));
+        engine.update_node(id, None, new_props).unwrap();
+
+        // Old value should not be found
+        let level1_after = engine
+            .find_nodes_by_property("level", &PropertyValue::Int(1))
+            .unwrap();
+        assert!(level1_after.is_empty());
+
+        // New value should be found
+        let level2 = engine
+            .find_nodes_by_property("level", &PropertyValue::Int(2))
+            .unwrap();
+        assert_eq!(level2.len(), 1);
+    }
+
+    #[test]
+    fn update_edge_with_indexed_property() {
+        // Test that updating an edge updates the property index
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create property index first
+        engine.create_edge_property_index("version").unwrap();
+
+        // Create edge
+        let mut props = HashMap::new();
+        props.insert("version".to_string(), PropertyValue::Int(1));
+        let eid = engine.create_edge(n1, n2, "LINK", props, true).unwrap();
+
+        // Verify initial index
+        let v1 = engine
+            .find_edges_by_property("version", &PropertyValue::Int(1))
+            .unwrap();
+        assert_eq!(v1.len(), 1);
+
+        // Update edge
+        let mut new_props = HashMap::new();
+        new_props.insert("version".to_string(), PropertyValue::Int(2));
+        engine.update_edge(eid, new_props).unwrap();
+
+        // Old value should not be found
+        let v1_after = engine
+            .find_edges_by_property("version", &PropertyValue::Int(1))
+            .unwrap();
+        assert!(v1_after.is_empty());
+
+        // New value should be found
+        let v2 = engine
+            .find_edges_by_property("version", &PropertyValue::Int(2))
+            .unwrap();
+        assert_eq!(v2.len(), 1);
+    }
+
+    #[test]
+    fn find_nodes_by_null_property() {
+        // Test finding nodes with Null property value
+        let engine = GraphEngine::new();
+
+        engine.create_node_property_index("optional").unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("optional".to_string(), PropertyValue::Null);
+        engine.create_node("Item", props).unwrap();
+
+        let found = engine
+            .find_nodes_by_property("optional", &PropertyValue::Null)
+            .unwrap();
+        assert_eq!(found.len(), 1);
     }
 }
