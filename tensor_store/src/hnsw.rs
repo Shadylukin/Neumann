@@ -84,6 +84,34 @@ impl std::fmt::Display for EmbeddingStorageError {
 
 impl std::error::Error for EmbeddingStorageError {}
 
+/// Distance metric for HNSW index operations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HNSWDistanceMetric {
+    /// Cosine distance: `1 - cosine_similarity`. Range `[0, 2]`.
+    #[default]
+    Cosine,
+    /// Euclidean distance (L2). Range `[0, inf)`.
+    Euclidean,
+    /// Negative dot product (for maximum inner product search). Range `(-inf, inf)`.
+    DotProduct,
+}
+
+impl HNSWDistanceMetric {
+    /// Convert internal distance to similarity score for output.
+    ///
+    /// - Cosine: `similarity = 1 - distance`
+    /// - Euclidean: `similarity = 1 / (1 + distance)`
+    /// - `DotProduct`: `similarity = -distance` (restores positive dot product)
+    #[must_use]
+    pub fn to_similarity(self, distance: f32) -> f32 {
+        match self {
+            Self::Cosine => 1.0 - distance,
+            Self::Euclidean => 1.0 / (1.0 + distance),
+            Self::DotProduct => -distance,
+        }
+    }
+}
+
 /// SIMD-accelerated vector operations for cosine similarity.
 pub mod simd {
     use wide::f32x8;
@@ -152,6 +180,38 @@ pub mod simd {
     #[must_use]
     pub fn magnitude(v: &[f32]) -> f32 {
         sum_of_squares(v).sqrt()
+    }
+
+    /// Compute Euclidean distance (L2) using SIMD.
+    #[inline]
+    #[must_use]
+    pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
+        let chunks = a.len() / 8;
+        let remainder = a.len() % 8;
+
+        let mut sum = f32x8::ZERO;
+
+        // Process 8 elements at a time
+        for i in 0..chunks {
+            let offset = i * 8;
+            let va = f32x8::from(&a[offset..offset + 8]);
+            let vb = f32x8::from(&b[offset..offset + 8]);
+            let diff = va - vb;
+            sum += diff * diff;
+        }
+
+        // Sum the SIMD lanes
+        let arr: [f32; 8] = sum.into();
+        let mut result: f32 = arr.iter().sum();
+
+        // Handle remainder with scalar operations
+        let start = chunks * 8;
+        for i in 0..remainder {
+            let diff = a[start + i] - b[start + i];
+            result += diff * diff;
+        }
+
+        result.sqrt()
     }
 }
 
@@ -579,6 +639,80 @@ impl EmbeddingStorage {
         1.0 - (dot / (mag_self * mag_query))
     }
 
+    /// Compute Euclidean distance (L2) with a dense query.
+    #[inline]
+    #[must_use]
+    pub fn euclidean_distance_dense(&self, query: &[f32]) -> f32 {
+        match self {
+            Self::Dense(v) => simd::euclidean_distance(v, query),
+            Self::Sparse(s) => {
+                // Compute L2 distance between sparse and dense
+                let sparse_as_dense = s.to_dense();
+                simd::euclidean_distance(&sparse_as_dense, query)
+            },
+            Self::Delta(_) => f32::MAX, // Unsupported without registry
+            Self::TensorTrain(cached) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                simd::euclidean_distance(&reconstructed, query)
+            },
+        }
+    }
+
+    /// Compute Euclidean distance (L2) with a sparse query.
+    #[inline]
+    #[must_use]
+    pub fn euclidean_distance_sparse(&self, query: &SparseVector) -> f32 {
+        match self {
+            Self::Dense(v) => {
+                let query_dense = query.to_dense();
+                simd::euclidean_distance(v, &query_dense)
+            },
+            Self::Sparse(s) => s.euclidean_distance(query),
+            Self::Delta(_) => f32::MAX, // Unsupported without registry
+            Self::TensorTrain(cached) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                let query_dense = query.to_dense();
+                simd::euclidean_distance(&reconstructed, &query_dense)
+            },
+        }
+    }
+
+    /// Compute dot product distance (negative dot product for min-heap).
+    #[inline]
+    #[must_use]
+    pub fn dot_product_distance_dense(&self, query: &[f32]) -> f32 {
+        -self.dot_with_dense(query)
+    }
+
+    /// Compute dot product distance with a sparse query.
+    #[inline]
+    #[must_use]
+    pub fn dot_product_distance_sparse(&self, query: &SparseVector) -> f32 {
+        -self.dot_with_sparse(query)
+    }
+
+    /// Compute distance using the specified metric with a dense query.
+    #[inline]
+    #[must_use]
+    pub fn distance_dense(&self, query: &[f32], metric: HNSWDistanceMetric) -> f32 {
+        match metric {
+            HNSWDistanceMetric::Cosine => self.cosine_distance_dense(query),
+            HNSWDistanceMetric::Euclidean => self.euclidean_distance_dense(query),
+            HNSWDistanceMetric::DotProduct => self.dot_product_distance_dense(query),
+        }
+    }
+
+    /// Compute distance using the specified metric with a sparse query.
+    #[inline]
+    #[must_use]
+    pub fn distance_sparse(&self, query: &SparseVector, metric: HNSWDistanceMetric) -> f32 {
+        match metric {
+            HNSWDistanceMetric::Cosine => self.cosine_distance_sparse(query),
+            HNSWDistanceMetric::Euclidean => self.euclidean_distance_sparse(query),
+            HNSWDistanceMetric::DotProduct => self.dot_product_distance_sparse(query),
+        }
+    }
+
     /// Compute cosine distance (1 - similarity) with a TT query.
     ///
     /// Uses native TT operations for TT-TT comparisons (zero allocation).
@@ -831,6 +965,8 @@ pub struct HNSWConfig {
     /// Maximum number of nodes allowed in the index (0 = unlimited).
     /// Default: 10,000,000 (10M nodes) to prevent memory exhaustion.
     pub max_nodes: usize,
+    /// Distance metric for similarity computation (default: Cosine).
+    pub distance_metric: HNSWDistanceMetric,
 }
 
 impl Default for HNSWConfig {
@@ -845,6 +981,7 @@ impl Default for HNSWConfig {
             ml: 1.0 / (m as f64).ln(),
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000, // 10M nodes default limit
+            distance_metric: HNSWDistanceMetric::default(),
         }
     }
 }
@@ -878,6 +1015,7 @@ impl HNSWConfig {
             ml: 1.0 / 32.0_f64.ln(),
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000,
+            distance_metric: HNSWDistanceMetric::default(),
         }
     }
 
@@ -892,7 +1030,15 @@ impl HNSWConfig {
             ml: 1.0 / 8.0_f64.ln(),
             sparsity_threshold: 0.5,
             max_nodes: 10_000_000,
+            distance_metric: HNSWDistanceMetric::default(),
         }
+    }
+
+    /// Set the distance metric for this configuration.
+    #[must_use]
+    pub const fn with_distance_metric(mut self, metric: HNSWDistanceMetric) -> Self {
+        self.distance_metric = metric;
+        self
     }
 }
 
@@ -1291,6 +1437,7 @@ impl HNSWIndex {
         }
 
         let nodes = self.nodes.read();
+        let metric = self.config.distance_metric;
 
         // Always use dense path for insertion - TT native operations are O(r^4) per
         // distance computation which is too slow for HNSW's many distance calls.
@@ -1300,7 +1447,7 @@ impl HNSWIndex {
         let mut current_node = entry_id;
 
         for layer in (node_level + 1..=current_max).rev() {
-            current_node = self.search_layer_greedy(&nodes, &query, current_node, layer);
+            current_node = self.search_layer_greedy(&nodes, &query, current_node, layer, metric);
         }
 
         let connect_from = node_level.min(current_max);
@@ -1311,6 +1458,7 @@ impl HNSWIndex {
                 current_node,
                 self.config.ef_construction,
                 layer,
+                metric,
             );
 
             let m = if layer == 0 {
@@ -1393,6 +1541,7 @@ impl HNSWIndex {
 
         let nodes = self.nodes.read();
         let max_layer = self.max_layer.load(AtomicOrdering::Relaxed);
+        let metric = self.config.distance_metric;
 
         // Descend from top layer to layer 1 (greedy search)
         let mut current_node = entry_id;
@@ -1400,7 +1549,7 @@ impl HNSWIndex {
             if let Some(ref stats) = self.access_stats {
                 stats.record_layer_traversal(layer);
             }
-            current_node = self.search_layer_greedy(&nodes, query, current_node, layer);
+            current_node = self.search_layer_greedy(&nodes, query, current_node, layer, metric);
         }
 
         // Track layer 0 traversal
@@ -1411,14 +1560,14 @@ impl HNSWIndex {
         }
 
         // At layer 0, do full search
-        let candidates = self.search_layer(&nodes, query, current_node, ef.max(k), 0);
+        let candidates = self.search_layer(&nodes, query, current_node, ef.max(k), 0, metric);
         drop(nodes);
 
         // Return top k with similarity scores (converted from distance)
         candidates
             .into_iter()
             .take(k)
-            .map(|n| (n.id, 1.0 - n.distance)) // distance = 1 - similarity
+            .map(|n| (n.id, metric.to_similarity(n.distance)))
             .collect()
     }
 
@@ -1446,6 +1595,7 @@ impl HNSWIndex {
 
         let nodes = self.nodes.read();
         let max_layer = self.max_layer.load(AtomicOrdering::Relaxed);
+        let metric = self.config.distance_metric;
 
         // Descend from top layer to layer 1 (greedy search)
         let mut current_node = entry_id;
@@ -1453,7 +1603,8 @@ impl HNSWIndex {
             if let Some(ref stats) = self.access_stats {
                 stats.record_layer_traversal(layer);
             }
-            current_node = self.search_layer_greedy_sparse(&nodes, query, current_node, layer);
+            current_node =
+                self.search_layer_greedy_sparse(&nodes, query, current_node, layer, metric);
         }
 
         // Track layer 0 traversal
@@ -1463,14 +1614,15 @@ impl HNSWIndex {
         }
 
         // At layer 0, do full search
-        let candidates = self.search_layer_sparse(&nodes, query, current_node, ef.max(k), 0);
+        let candidates =
+            self.search_layer_sparse(&nodes, query, current_node, ef.max(k), 0, metric);
         drop(nodes);
 
         // Return top k with similarity scores (converted from distance)
         candidates
             .into_iter()
             .take(k)
-            .map(|n| (n.id, 1.0 - n.distance))
+            .map(|n| (n.id, metric.to_similarity(n.distance)))
             .collect()
     }
 
@@ -1482,16 +1634,17 @@ impl HNSWIndex {
         query: &[f32],
         entry_id: usize,
         layer: usize,
+        metric: HNSWDistanceMetric,
     ) -> usize {
         let mut current = entry_id;
-        let mut current_dist = nodes[current].embedding.cosine_distance_dense(query);
+        let mut current_dist = nodes[current].embedding.distance_dense(query, metric);
 
         loop {
             let neighbor_ids = nodes[current].neighbors[layer].read().get();
             let mut changed = false;
 
             for neighbor_id in neighbor_ids {
-                let dist = nodes[neighbor_id].embedding.cosine_distance_dense(query);
+                let dist = nodes[neighbor_id].embedding.distance_dense(query, metric);
                 if dist < current_dist {
                     current = neighbor_id;
                     current_dist = dist;
@@ -1515,16 +1668,17 @@ impl HNSWIndex {
         query: &SparseVector,
         entry_id: usize,
         layer: usize,
+        metric: HNSWDistanceMetric,
     ) -> usize {
         let mut current = entry_id;
-        let mut current_dist = nodes[current].embedding.cosine_distance_sparse(query);
+        let mut current_dist = nodes[current].embedding.distance_sparse(query, metric);
 
         loop {
             let neighbor_ids = nodes[current].neighbors[layer].read().get();
             let mut changed = false;
 
             for neighbor_id in neighbor_ids {
-                let dist = nodes[neighbor_id].embedding.cosine_distance_sparse(query);
+                let dist = nodes[neighbor_id].embedding.distance_sparse(query, metric);
                 if dist < current_dist {
                     current = neighbor_id;
                     current_dist = dist;
@@ -1587,12 +1741,13 @@ impl HNSWIndex {
         entry_id: usize,
         ef: usize,
         layer: usize,
+        metric: HNSWDistanceMetric,
     ) -> Vec<Neighbor> {
         let mut visited = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new(); // min-heap (closest first)
         let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new(); // max-heap (furthest first)
 
-        let entry_dist = nodes[entry_id].embedding.cosine_distance_dense(query);
+        let entry_dist = nodes[entry_id].embedding.distance_dense(query, metric);
         visited.insert(entry_id);
         candidates.push(Neighbor::new(entry_id, entry_dist));
         results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
@@ -1611,7 +1766,7 @@ impl HNSWIndex {
             let neighbor_ids = nodes[current.id].neighbors[layer].read().get();
             for neighbor_id in neighbor_ids {
                 if visited.insert(neighbor_id) {
-                    let dist = nodes[neighbor_id].embedding.cosine_distance_dense(query);
+                    let dist = nodes[neighbor_id].embedding.distance_dense(query, metric);
 
                     // Add to results if closer than worst, or if we don't have ef results yet
                     let should_add = results.len() < ef
@@ -1649,12 +1804,13 @@ impl HNSWIndex {
         entry_id: usize,
         ef: usize,
         layer: usize,
+        metric: HNSWDistanceMetric,
     ) -> Vec<Neighbor> {
         let mut visited = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new();
         let mut results: BinaryHeap<MaxNeighbor> = BinaryHeap::new();
 
-        let entry_dist = nodes[entry_id].embedding.cosine_distance_sparse(query);
+        let entry_dist = nodes[entry_id].embedding.distance_sparse(query, metric);
         visited.insert(entry_id);
         candidates.push(Neighbor::new(entry_id, entry_dist));
         results.push(MaxNeighbor(Neighbor::new(entry_id, entry_dist)));
@@ -1671,7 +1827,7 @@ impl HNSWIndex {
             let neighbor_ids = nodes[current.id].neighbors[layer].read().get();
             for neighbor_id in neighbor_ids {
                 if visited.insert(neighbor_id) {
-                    let dist = nodes[neighbor_id].embedding.cosine_distance_sparse(query);
+                    let dist = nodes[neighbor_id].embedding.distance_sparse(query, metric);
 
                     let should_add = results.len() < ef
                         || results.peek().is_none_or(|worst| dist < worst.0.distance);
@@ -1713,14 +1869,33 @@ impl HNSWIndex {
         })
     }
 
-    /// Compute distance between two embeddings.
+    /// Compute distance between two embeddings using the configured metric.
     ///
     /// # Errors
     ///
     /// Returns an error if either embedding is Delta storage (requires registry).
     #[inline]
-    #[allow(clippy::unused_self)] // Method for API consistency
     fn try_distance_embeddings(
+        &self,
+        a: &EmbeddingStorage,
+        b: &EmbeddingStorage,
+    ) -> Result<f32, EmbeddingStorageError> {
+        // Handle Delta storage first (unsupported)
+        if matches!(a, EmbeddingStorage::Delta(_)) || matches!(b, EmbeddingStorage::Delta(_)) {
+            return Err(EmbeddingStorageError::DeltaNotSupported);
+        }
+
+        match self.config.distance_metric {
+            HNSWDistanceMetric::Cosine => self.try_cosine_distance(a, b),
+            HNSWDistanceMetric::Euclidean => self.try_euclidean_distance(a, b),
+            HNSWDistanceMetric::DotProduct => self.try_dot_product_distance(a, b),
+        }
+    }
+
+    /// Compute cosine distance between two embeddings.
+    #[inline]
+    #[allow(clippy::unused_self)]
+    fn try_cosine_distance(
         &self,
         a: &EmbeddingStorage,
         b: &EmbeddingStorage,
@@ -1743,11 +1918,7 @@ impl HNSWIndex {
             | (EmbeddingStorage::Sparse(s), EmbeddingStorage::Dense(v)) => {
                 Ok(s.cosine_distance_dense(v))
             },
-            // TensorTrain to TensorTrain: reconstruct to dense for fast SIMD distance.
-            // Native tt_dot_product is O(r^4) per call which is too slow for HNSW's
-            // many distance computations. Reconstruction is O(n*r^2), SIMD dot is O(n).
             (EmbeddingStorage::TensorTrain(cached_a), EmbeddingStorage::TensorTrain(cached_b)) => {
-                // Use cached norms to avoid recomputation
                 if cached_a.norm < 1e-10 || cached_b.norm < 1e-10 {
                     return Ok(1.0);
                 }
@@ -1756,7 +1927,6 @@ impl HNSWIndex {
                 let dot = simd::dot_product(&dense_a, &dense_b);
                 Ok(1.0 - (dot / (cached_a.norm * cached_b.norm)))
             },
-            // TensorTrain to Dense: reconstruct TT
             (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Dense(v))
             | (EmbeddingStorage::Dense(v), EmbeddingStorage::TensorTrain(cached)) => {
                 let reconstructed = tt_reconstruct(&cached.tt);
@@ -1769,13 +1939,89 @@ impl HNSWIndex {
                     Ok(1.0 - (dot / (mag_a * mag_b)))
                 }
             },
-            // TensorTrain to Sparse: reconstruct TT
             (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Sparse(s))
             | (EmbeddingStorage::Sparse(s), EmbeddingStorage::TensorTrain(cached)) => {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 Ok(s.cosine_distance_dense(&reconstructed))
             },
-            // Delta storage: return error (Delta vectors should be rejected at insertion)
+            (EmbeddingStorage::Delta(_), _) | (_, EmbeddingStorage::Delta(_)) => {
+                Err(EmbeddingStorageError::DeltaNotSupported)
+            },
+        }
+    }
+
+    /// Compute Euclidean distance between two embeddings.
+    #[inline]
+    #[allow(clippy::unused_self)]
+    fn try_euclidean_distance(
+        &self,
+        a: &EmbeddingStorage,
+        b: &EmbeddingStorage,
+    ) -> Result<f32, EmbeddingStorageError> {
+        match (a, b) {
+            (EmbeddingStorage::Dense(va), EmbeddingStorage::Dense(vb)) => {
+                Ok(simd::euclidean_distance(va, vb))
+            },
+            (EmbeddingStorage::Sparse(sa), EmbeddingStorage::Sparse(sb)) => {
+                Ok(sa.euclidean_distance(sb))
+            },
+            (EmbeddingStorage::Dense(v), EmbeddingStorage::Sparse(s))
+            | (EmbeddingStorage::Sparse(s), EmbeddingStorage::Dense(v)) => {
+                let sparse_dense = s.to_dense();
+                Ok(simd::euclidean_distance(&sparse_dense, v))
+            },
+            (EmbeddingStorage::TensorTrain(cached_a), EmbeddingStorage::TensorTrain(cached_b)) => {
+                let dense_a = tt_reconstruct(&cached_a.tt);
+                let dense_b = tt_reconstruct(&cached_b.tt);
+                Ok(simd::euclidean_distance(&dense_a, &dense_b))
+            },
+            (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Dense(v))
+            | (EmbeddingStorage::Dense(v), EmbeddingStorage::TensorTrain(cached)) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                Ok(simd::euclidean_distance(&reconstructed, v))
+            },
+            (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Sparse(s))
+            | (EmbeddingStorage::Sparse(s), EmbeddingStorage::TensorTrain(cached)) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                let sparse_dense = s.to_dense();
+                Ok(simd::euclidean_distance(&reconstructed, &sparse_dense))
+            },
+            (EmbeddingStorage::Delta(_), _) | (_, EmbeddingStorage::Delta(_)) => {
+                Err(EmbeddingStorageError::DeltaNotSupported)
+            },
+        }
+    }
+
+    /// Compute dot product distance (negative dot product) between two embeddings.
+    #[inline]
+    #[allow(clippy::unused_self)]
+    fn try_dot_product_distance(
+        &self,
+        a: &EmbeddingStorage,
+        b: &EmbeddingStorage,
+    ) -> Result<f32, EmbeddingStorageError> {
+        match (a, b) {
+            (EmbeddingStorage::Dense(va), EmbeddingStorage::Dense(vb)) => {
+                Ok(-simd::dot_product(va, vb))
+            },
+            (EmbeddingStorage::Sparse(sa), EmbeddingStorage::Sparse(sb)) => Ok(-sa.dot(sb)),
+            (EmbeddingStorage::Dense(v), EmbeddingStorage::Sparse(s))
+            | (EmbeddingStorage::Sparse(s), EmbeddingStorage::Dense(v)) => Ok(-s.dot_dense(v)),
+            (EmbeddingStorage::TensorTrain(cached_a), EmbeddingStorage::TensorTrain(cached_b)) => {
+                let dense_a = tt_reconstruct(&cached_a.tt);
+                let dense_b = tt_reconstruct(&cached_b.tt);
+                Ok(-simd::dot_product(&dense_a, &dense_b))
+            },
+            (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Dense(v))
+            | (EmbeddingStorage::Dense(v), EmbeddingStorage::TensorTrain(cached)) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                Ok(-simd::dot_product(&reconstructed, v))
+            },
+            (EmbeddingStorage::TensorTrain(cached), EmbeddingStorage::Sparse(s))
+            | (EmbeddingStorage::Sparse(s), EmbeddingStorage::TensorTrain(cached)) => {
+                let reconstructed = tt_reconstruct(&cached.tt);
+                Ok(-s.dot_dense(&reconstructed))
+            },
             (EmbeddingStorage::Delta(_), _) | (_, EmbeddingStorage::Delta(_)) => {
                 Err(EmbeddingStorageError::DeltaNotSupported)
             },
@@ -3913,5 +4159,252 @@ mod tests {
             result.unwrap_err(),
             EmbeddingStorageError::DeltaNotSupported
         );
+    }
+
+    // ==================== HNSWDistanceMetric tests ====================
+
+    #[test]
+    fn test_hnsw_distance_metric_default_is_cosine() {
+        let config = HNSWConfig::default();
+        assert_eq!(config.distance_metric, HNSWDistanceMetric::Cosine);
+    }
+
+    #[test]
+    fn test_hnsw_config_with_distance_metric() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        assert_eq!(config.distance_metric, HNSWDistanceMetric::Euclidean);
+
+        let config2 = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        assert_eq!(config2.distance_metric, HNSWDistanceMetric::DotProduct);
+    }
+
+    #[test]
+    fn test_hnsw_metric_to_similarity_cosine() {
+        let metric = HNSWDistanceMetric::Cosine;
+        assert!((metric.to_similarity(0.3) - 0.7).abs() < 1e-6);
+        assert!((metric.to_similarity(0.0) - 1.0).abs() < 1e-6);
+        assert!((metric.to_similarity(1.0) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hnsw_metric_to_similarity_euclidean() {
+        let metric = HNSWDistanceMetric::Euclidean;
+        assert!((metric.to_similarity(0.0) - 1.0).abs() < 1e-6);
+        assert!((metric.to_similarity(1.0) - 0.5).abs() < 1e-6);
+        assert!((metric.to_similarity(3.0) - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hnsw_metric_to_similarity_dot_product() {
+        let metric = HNSWDistanceMetric::DotProduct;
+        assert!((metric.to_similarity(-5.0) - 5.0).abs() < 1e-6);
+        assert!((metric.to_similarity(-10.0) - 10.0).abs() < 1e-6);
+        assert!((metric.to_similarity(0.0) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_simd_euclidean_distance_basic() {
+        let a = vec![0.0; 16];
+        let b = vec![1.0; 16];
+        let dist = simd::euclidean_distance(&a, &b);
+        assert!((dist - 4.0).abs() < 1e-6); // sqrt(16) = 4
+    }
+
+    #[test]
+    fn test_simd_euclidean_distance_3_4_5_triangle() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        let dist = simd::euclidean_distance(&a, &b);
+        assert!((dist - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_simd_euclidean_distance_identical() {
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let dist = simd::euclidean_distance(&v, &v);
+        assert!(dist.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_euclidean_distance_dense_identical() {
+        let v = vec![1.0, 2.0, 3.0];
+        let storage = EmbeddingStorage::Dense(v.clone());
+        assert!(storage.euclidean_distance_dense(&v).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_euclidean_distance_dense_3_4_5() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        let storage = EmbeddingStorage::Dense(a);
+        assert!((storage.euclidean_distance_dense(&b) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_euclidean_distance_sparse() {
+        let s1 = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+        let s2 = SparseVector::from_dense(&[0.0, 1.0, 0.0]);
+        let storage = EmbeddingStorage::Sparse(s1);
+        // Distance = sqrt(1^2 + 1^2) = sqrt(2)
+        let dist = storage.euclidean_distance_sparse(&s2);
+        assert!((dist - 2.0_f32.sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dot_product_distance_dense() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![4.0, 5.0, 6.0];
+        let storage = EmbeddingStorage::Dense(a);
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((storage.dot_product_distance_dense(&b) - (-32.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dot_product_distance_sparse() {
+        let s1 = SparseVector::from_dense(&[1.0, 2.0, 3.0]);
+        let s2 = SparseVector::from_dense(&[4.0, 5.0, 6.0]);
+        let storage = EmbeddingStorage::Sparse(s1);
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((storage.dot_product_distance_sparse(&s2) - (-32.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_distance_dense_dispatch() {
+        let storage = EmbeddingStorage::Dense(vec![1.0, 0.0, 0.0]);
+        let query = vec![1.0, 0.0, 0.0];
+
+        // Cosine distance to same vector = 0
+        let cosine_dist = storage.distance_dense(&query, HNSWDistanceMetric::Cosine);
+        assert!(cosine_dist.abs() < 1e-6);
+
+        // Euclidean distance to same vector = 0
+        let euclidean_dist = storage.distance_dense(&query, HNSWDistanceMetric::Euclidean);
+        assert!(euclidean_dist.abs() < 1e-6);
+
+        // Dot product distance = -1 (since dot product = 1)
+        let dot_dist = storage.distance_dense(&query, HNSWDistanceMetric::DotProduct);
+        assert!((dot_dist - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_distance_sparse_dispatch() {
+        let storage = EmbeddingStorage::Sparse(SparseVector::from_dense(&[1.0, 0.0, 0.0]));
+        let query = SparseVector::from_dense(&[1.0, 0.0, 0.0]);
+
+        // Cosine distance to same vector = 0
+        let cosine_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Cosine);
+        assert!(cosine_dist.abs() < 1e-6);
+
+        // Euclidean distance to same vector = 0
+        let euclidean_dist = storage.distance_sparse(&query, HNSWDistanceMetric::Euclidean);
+        assert!(euclidean_dist.abs() < 1e-6);
+
+        // Dot product distance = -1
+        let dot_dist = storage.distance_sparse(&query, HNSWDistanceMetric::DotProduct);
+        assert!((dot_dist - (-1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hnsw_search_euclidean_basic() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        index.insert(vec![0.0, 0.0]); // ID 0
+        index.insert(vec![1.0, 0.0]); // ID 1
+        index.insert(vec![10.0, 0.0]); // ID 2
+
+        let results = index.search(&[0.5, 0.0], 2);
+        assert_eq!(results.len(), 2);
+        // Closest to [0.5, 0] are [0, 0] (dist=0.5) and [1, 0] (dist=0.5)
+        assert!(results.iter().any(|(id, _)| *id == 0 || *id == 1));
+    }
+
+    #[test]
+    fn test_hnsw_search_dot_product_basic() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        index.insert(vec![1.0, 0.0]); // ID 0, dot with [1,0] = 1
+        index.insert(vec![2.0, 0.0]); // ID 1, dot with [1,0] = 2 (highest)
+        index.insert(vec![0.5, 0.0]); // ID 2, dot with [1,0] = 0.5
+
+        let results = index.search(&[1.0, 0.0], 3);
+        assert_eq!(results.len(), 3);
+        // ID 1 should have highest similarity (highest dot product)
+        assert_eq!(results[0].0, 1);
+    }
+
+    #[test]
+    fn test_hnsw_euclidean_similarity_conversion() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+
+        index.insert(vec![0.0, 0.0]); // ID 0
+        index.insert(vec![1.0, 0.0]); // ID 1, distance = 1
+
+        let results = index.search(&[0.0, 0.0], 2);
+        // ID 0 should have similarity 1.0 (distance 0 -> 1/(1+0) = 1)
+        // ID 1 should have similarity 0.5 (distance 1 -> 1/(1+1) = 0.5)
+        let id0_result = results.iter().find(|(id, _)| *id == 0).unwrap();
+        let id1_result = results.iter().find(|(id, _)| *id == 1).unwrap();
+        assert!((id0_result.1 - 1.0).abs() < 1e-6);
+        assert!((id1_result.1 - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hnsw_dot_product_similarity_conversion() {
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+
+        index.insert(vec![3.0, 0.0]); // ID 0, dot = 3
+        index.insert(vec![5.0, 0.0]); // ID 1, dot = 5
+
+        let results = index.search(&[1.0, 0.0], 2);
+        // Similarity should equal the dot product value
+        let id0_result = results.iter().find(|(id, _)| *id == 0).unwrap();
+        let id1_result = results.iter().find(|(id, _)| *id == 1).unwrap();
+        assert!((id0_result.1 - 3.0).abs() < 1e-6);
+        assert!((id1_result.1 - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_try_distance_embeddings_euclidean() {
+        let a = EmbeddingStorage::Dense(vec![0.0, 0.0]);
+        let b = EmbeddingStorage::Dense(vec![3.0, 4.0]);
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::Euclidean);
+        let index = HNSWIndex::with_config(config);
+        let result = index.try_distance_embeddings(&a, &b);
+        assert!(result.is_ok());
+        assert!((result.unwrap() - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_try_distance_embeddings_dot_product() {
+        let a = EmbeddingStorage::Dense(vec![1.0, 2.0, 3.0]);
+        let b = EmbeddingStorage::Dense(vec![4.0, 5.0, 6.0]);
+
+        let config = HNSWConfig::default().with_distance_metric(HNSWDistanceMetric::DotProduct);
+        let index = HNSWIndex::with_config(config);
+        let result = index.try_distance_embeddings(&a, &b);
+        assert!(result.is_ok());
+        // dot = 4 + 10 + 18 = 32, distance = -32
+        assert!((result.unwrap() - (-32.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_euclidean_zero_vector() {
+        let zero = EmbeddingStorage::Dense(vec![0.0, 0.0, 0.0]);
+        let query = vec![1.0, 0.0, 0.0];
+        let dist = zero.euclidean_distance_dense(&query);
+        assert!((dist - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dot_product_zero_vector() {
+        let zero = EmbeddingStorage::Dense(vec![0.0, 0.0, 0.0]);
+        let query = vec![1.0, 2.0, 3.0];
+        let dist = zero.dot_product_distance_dense(&query);
+        assert!(dist.abs() < 1e-6); // -0 = 0
     }
 }

@@ -117,7 +117,10 @@ pub use entity_index::{
     DEFAULT_MAX_ENTITIES,
 };
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};
-pub use hnsw::{EmbeddingStorage, EmbeddingStorageError, HNSWConfig, HNSWIndex, HNSWMemoryStats};
+pub use hnsw::{
+    EmbeddingStorage, EmbeddingStorageError, HNSWConfig, HNSWDistanceMetric, HNSWIndex,
+    HNSWMemoryStats,
+};
 pub use instrumentation::{
     HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
 };
