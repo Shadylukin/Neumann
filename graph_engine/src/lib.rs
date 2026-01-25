@@ -6,7 +6,7 @@ use std::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
@@ -46,14 +46,14 @@ pub enum Direction {
     Both,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: u64,
     pub label: String,
     pub properties: HashMap<String, PropertyValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub id: u64,
     pub from: u64,
@@ -63,13 +63,13 @@ pub struct Edge {
     pub directed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Path {
     pub nodes: Vec<u64>,
     pub edges: Vec<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GraphError {
     NodeNotFound(u64),
     EdgeNotFound(u64),
@@ -104,6 +104,15 @@ pub struct GraphEngine {
     edge_counter: AtomicU64,
 }
 
+impl std::fmt::Debug for GraphEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphEngine")
+            .field("node_counter", &self.node_counter.load(Ordering::Relaxed))
+            .field("edge_counter", &self.edge_counter.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 impl GraphEngine {
     const PARALLEL_THRESHOLD: usize = 100;
 
@@ -116,12 +125,43 @@ impl GraphEngine {
         }
     }
 
+    /// Create a `GraphEngine` with an existing store.
+    ///
+    /// This scans the store to initialize node/edge counters correctly,
+    /// avoiding ID collisions with existing data.
     #[must_use]
-    pub const fn with_store(store: TensorStore) -> Self {
+    pub fn with_store(store: TensorStore) -> Self {
+        let mut max_node_id = 0u64;
+        let mut max_edge_id = 0u64;
+
+        // Scan for existing nodes to find max ID
+        for key in store.scan("node:") {
+            // Skip edge list keys like "node:1:out" and "node:1:in"
+            if key.contains(":out") || key.contains(":in") {
+                continue;
+            }
+            if let Some(id_str) = key.strip_prefix("node:") {
+                if let Ok(id) = id_str.parse::<u64>() {
+                    max_node_id = max_node_id.max(id);
+                }
+            }
+        }
+
+        // Scan for existing edges to find max ID
+        for key in store.scan("edge:") {
+            if let Some(id_str) = key.strip_prefix("edge:") {
+                // Handle both "edge:123" and "edge:type:123" formats
+                let id_part = id_str.rsplit(':').next().unwrap_or(id_str);
+                if let Ok(id) = id_part.parse::<u64>() {
+                    max_edge_id = max_edge_id.max(id);
+                }
+            }
+        }
+
         Self {
             store,
-            node_counter: AtomicU64::new(0),
-            edge_counter: AtomicU64::new(0),
+            node_counter: AtomicU64::new(max_node_id),
+            edge_counter: AtomicU64::new(max_edge_id),
         }
     }
 
@@ -131,18 +171,22 @@ impl GraphEngine {
         &self.store
     }
 
+    #[inline]
     fn node_key(id: u64) -> String {
         format!("node:{id}")
     }
 
+    #[inline]
     fn edge_key(id: u64) -> String {
         format!("edge:{id}")
     }
 
+    #[inline]
     fn outgoing_edges_key(node_id: u64) -> String {
         format!("node:{node_id}:out")
     }
 
+    #[inline]
     fn incoming_edges_key(node_id: u64) -> String {
         format!("node:{node_id}:in")
     }
@@ -343,6 +387,97 @@ impl GraphEngine {
             properties,
             directed,
         })
+    }
+
+    /// Update a node's label and/or properties.
+    ///
+    /// Pass `None` to leave the label unchanged. Properties are merged with
+    /// existing properties; pass `PropertyValue::Null` to remove a property.
+    pub fn update_node(
+        &self,
+        id: u64,
+        label: Option<&str>,
+        properties: HashMap<String, PropertyValue>,
+    ) -> Result<()> {
+        let key = Self::node_key(id);
+        let mut tensor = self
+            .store
+            .get(&key)
+            .map_err(|_| GraphError::NodeNotFound(id))?;
+
+        if let Some(new_label) = label {
+            tensor.set(
+                "_label",
+                TensorValue::Scalar(ScalarValue::String(new_label.to_string())),
+            );
+        }
+
+        for (prop_key, value) in &properties {
+            if value == &PropertyValue::Null {
+                tensor.remove(prop_key);
+            } else {
+                tensor.set(prop_key, TensorValue::Scalar(value.to_scalar()));
+            }
+        }
+
+        self.store.put(key, tensor)?;
+        Ok(())
+    }
+
+    /// Update an edge's properties.
+    ///
+    /// Properties are merged with existing properties; pass `PropertyValue::Null`
+    /// to remove a property. The edge type, from/to nodes, and directedness cannot
+    /// be changed after creation.
+    pub fn update_edge(&self, id: u64, properties: HashMap<String, PropertyValue>) -> Result<()> {
+        let key = Self::edge_key(id);
+        let mut tensor = self
+            .store
+            .get(&key)
+            .map_err(|_| GraphError::EdgeNotFound(id))?;
+
+        for (prop_key, value) in &properties {
+            if value == &PropertyValue::Null {
+                tensor.remove(prop_key);
+            } else {
+                tensor.set(prop_key, TensorValue::Scalar(value.to_scalar()));
+            }
+        }
+
+        self.store.put(key, tensor)?;
+        Ok(())
+    }
+
+    /// Returns all edges connected to a node.
+    pub fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
+        if !self.node_exists(node_id) {
+            return Err(GraphError::NodeNotFound(node_id));
+        }
+
+        let mut edge_ids = HashSet::new();
+
+        if direction == Direction::Outgoing || direction == Direction::Both {
+            for id in self.get_edge_list(&Self::outgoing_edges_key(node_id))? {
+                edge_ids.insert(id);
+            }
+        }
+
+        if direction == Direction::Incoming || direction == Direction::Both {
+            for id in self.get_edge_list(&Self::incoming_edges_key(node_id))? {
+                edge_ids.insert(id);
+            }
+        }
+
+        let mut edges = Vec::with_capacity(edge_ids.len());
+        for id in edge_ids {
+            if let Ok(edge) = self.get_edge(id) {
+                edges.push(edge);
+            } else {
+                warn!(edge_id = id, "orphaned edge ID in edge list");
+            }
+        }
+        edges.sort_by_key(|e| e.id);
+        Ok(edges)
     }
 
     #[instrument(skip(self), fields(node_id = node_id))]
@@ -561,8 +696,63 @@ impl GraphEngine {
         Path { nodes, edges }
     }
 
+    /// Returns the number of nodes in the graph.
+    ///
+    /// Each node creates 3 keys: `node:N`, `node:N:out`, `node:N:in`.
+    /// We count only keys matching `node:N` (no colons after the ID).
     pub fn node_count(&self) -> usize {
-        self.store.scan_count("node:") - self.store.scan_count("node:") / 3 * 2
+        self.store
+            .scan("node:")
+            .into_iter()
+            .filter(|k| {
+                // Only count "node:N" keys, not "node:N:out" or "node:N:in"
+                let suffix = k.strip_prefix("node:").unwrap_or("");
+                !suffix.contains(':')
+            })
+            .count()
+    }
+
+    /// Returns the number of edges in the graph (classic edge mode only).
+    pub fn edge_count(&self) -> usize {
+        self.store
+            .scan("edge:")
+            .into_iter()
+            .filter(|k| {
+                // Only count "edge:N" keys (classic mode), not "edge:type:N" (entity mode)
+                let suffix = k.strip_prefix("edge:").unwrap_or("");
+                suffix.parse::<u64>().is_ok()
+            })
+            .count()
+    }
+
+    /// Delete an edge by ID, cleaning up edge lists on both connected nodes.
+    pub fn delete_edge(&self, edge_id: u64) -> Result<()> {
+        let edge = self.get_edge(edge_id)?;
+
+        // Remove from 'from' node's outgoing list
+        self.remove_edge_from_list(&Self::outgoing_edges_key(edge.from), edge_id)?;
+
+        // Remove from 'to' node's incoming list
+        self.remove_edge_from_list(&Self::incoming_edges_key(edge.to), edge_id)?;
+
+        // For undirected edges, also remove reverse connections
+        if !edge.directed {
+            self.remove_edge_from_list(&Self::outgoing_edges_key(edge.to), edge_id)?;
+            self.remove_edge_from_list(&Self::incoming_edges_key(edge.from), edge_id)?;
+        }
+
+        // Delete the edge itself
+        self.store.delete(&Self::edge_key(edge_id))?;
+        Ok(())
+    }
+
+    fn remove_edge_from_list(&self, key: &str, edge_id: u64) -> Result<()> {
+        if let Ok(mut tensor) = self.store.get(key) {
+            let edge_key = format!("e{}", edge_id);
+            tensor.remove(&edge_key);
+            self.store.put(key, tensor)?;
+        }
+        Ok(())
     }
 
     pub fn delete_node(&self, id: u64) -> Result<()> {
@@ -570,25 +760,65 @@ impl GraphEngine {
             return Err(GraphError::NodeNotFound(id));
         }
 
-        // Delete edges connected to this node
+        // Get all edges connected to this node
         let out_edges = self.get_edge_list(&Self::outgoing_edges_key(id))?;
         let in_edges = self.get_edge_list(&Self::incoming_edges_key(id))?;
 
-        // Collect all edge IDs to delete
-        let all_edges: Vec<u64> = out_edges.into_iter().chain(in_edges).collect();
+        // Collect unique edge IDs
+        let mut all_edge_ids: HashSet<u64> = out_edges.into_iter().collect();
+        all_edge_ids.extend(in_edges);
 
-        // Parallel deletion for high-degree nodes
-        // Edge may not exist - delete is idempotent
-        if all_edges.len() >= Self::PARALLEL_THRESHOLD {
-            all_edges.par_iter().for_each(|edge_id| {
+        // Delete each edge properly (removes from other nodes' edge lists)
+        if all_edge_ids.len() >= Self::PARALLEL_THRESHOLD {
+            // For high-degree nodes, batch the cleanup
+            let edges_to_delete: Vec<_> = all_edge_ids.iter().copied().collect();
+            edges_to_delete.par_iter().for_each(|edge_id| {
+                if let Ok(edge) = self.get_edge(*edge_id) {
+                    // Clean up the OTHER node's edge list (not the one we're deleting)
+                    let other_node = if edge.from == id { edge.to } else { edge.from };
+
+                    if edge.from == id {
+                        // We're the 'from' node, clean up 'to' node's incoming list
+                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), *edge_id)
+                            .ok();
+                    }
+                    if edge.to == id {
+                        // We're the 'to' node, clean up 'from' node's outgoing list
+                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), *edge_id)
+                            .ok();
+                    }
+                    // For undirected edges, also clean up reverse
+                    if !edge.directed && other_node != id {
+                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), *edge_id)
+                            .ok();
+                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), *edge_id)
+                            .ok();
+                    }
+                }
+                // Delete the edge record
                 self.store.delete(&Self::edge_key(*edge_id)).ok();
             });
         } else {
-            for edge_id in all_edges {
+            for edge_id in all_edge_ids {
+                if let Ok(edge) = self.get_edge(edge_id) {
+                    let other_node = if edge.from == id { edge.to } else { edge.from };
+
+                    if edge.from == id {
+                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), edge_id)?;
+                    }
+                    if edge.to == id {
+                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), edge_id)?;
+                    }
+                    if !edge.directed && other_node != id {
+                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), edge_id)?;
+                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), edge_id)?;
+                    }
+                }
                 self.store.delete(&Self::edge_key(edge_id)).ok();
             }
         }
 
+        // Delete the node itself and its edge lists
         self.store.delete(&Self::node_key(id))?;
         self.store.delete(&Self::outgoing_edges_key(id))?;
         self.store.delete(&Self::incoming_edges_key(id))?;
@@ -1682,5 +1912,401 @@ mod tests {
         let engine = GraphEngine::new();
         let result = engine.get_entity_outgoing("nonexistent:entity");
         assert!(result.is_err());
+    }
+
+    // New tests for production readiness fixes
+
+    #[test]
+    fn with_store_initializes_counters() {
+        let store = TensorStore::new();
+
+        // Pre-populate with nodes and edges
+        let engine1 = GraphEngine::with_store(store);
+        let n1 = engine1.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine1.create_node("B", HashMap::new()).unwrap();
+        engine1
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 2);
+
+        // Create a new engine with the same store
+        let store2 = engine1.store().clone();
+        let engine2 = GraphEngine::with_store(store2);
+
+        // New IDs should not collide
+        let n3 = engine2.create_node("C", HashMap::new()).unwrap();
+        assert_eq!(n3, 3);
+
+        let edge2 = engine2
+            .create_edge(n2, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        assert_eq!(edge2, 2);
+    }
+
+    #[test]
+    fn update_node_label() {
+        let engine = GraphEngine::new();
+        let id = engine.create_node("Person", HashMap::new()).unwrap();
+
+        engine
+            .update_node(id, Some("Employee"), HashMap::new())
+            .unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.label, "Employee");
+    }
+
+    #[test]
+    fn update_node_properties() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        props.insert("age".to_string(), PropertyValue::Int(30));
+
+        let id = engine.create_node("Person", props).unwrap();
+
+        // Update and add properties
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), PropertyValue::Int(31));
+        updates.insert("city".to_string(), PropertyValue::String("NYC".into()));
+        engine.update_node(id, None, updates).unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert_eq!(node.label, "Person"); // unchanged
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&PropertyValue::String("Alice".into()))
+        );
+        assert_eq!(node.properties.get("age"), Some(&PropertyValue::Int(31)));
+        assert_eq!(
+            node.properties.get("city"),
+            Some(&PropertyValue::String("NYC".into()))
+        );
+    }
+
+    #[test]
+    fn update_node_remove_property() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        props.insert(
+            "temp".to_string(),
+            PropertyValue::String("remove me".into()),
+        );
+
+        let id = engine.create_node("Person", props).unwrap();
+
+        // Remove property by setting to Null
+        let mut updates = HashMap::new();
+        updates.insert("temp".to_string(), PropertyValue::Null);
+        engine.update_node(id, None, updates).unwrap();
+
+        let node = engine.get_node(id).unwrap();
+        assert!(node.properties.get("name").is_some());
+        assert!(node.properties.get("temp").is_none());
+    }
+
+    #[test]
+    fn update_node_nonexistent() {
+        let engine = GraphEngine::new();
+        let result = engine.update_node(999, None, HashMap::new());
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn update_edge_properties() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        let edge_id = engine.create_edge(n1, n2, "CONNECTS", props, true).unwrap();
+
+        // Update edge properties
+        let mut updates = HashMap::new();
+        updates.insert("weight".to_string(), PropertyValue::Float(2.5));
+        updates.insert(
+            "label".to_string(),
+            PropertyValue::String("important".into()),
+        );
+        engine.update_edge(edge_id, updates).unwrap();
+
+        let edge = engine.get_edge(edge_id).unwrap();
+        assert_eq!(
+            edge.properties.get("weight"),
+            Some(&PropertyValue::Float(2.5))
+        );
+        assert_eq!(
+            edge.properties.get("label"),
+            Some(&PropertyValue::String("important".into()))
+        );
+    }
+
+    #[test]
+    fn update_edge_nonexistent() {
+        let engine = GraphEngine::new();
+        let result = engine.update_edge(999, HashMap::new());
+        assert!(matches!(result, Err(GraphError::EdgeNotFound(999))));
+    }
+
+    #[test]
+    fn delete_edge_directed() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let edge_id = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Verify edge exists
+        assert!(engine.get_edge(edge_id).is_ok());
+        assert_eq!(
+            engine
+                .neighbors(n1, None, Direction::Outgoing)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            engine
+                .neighbors(n2, None, Direction::Incoming)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Delete edge
+        engine.delete_edge(edge_id).unwrap();
+
+        // Verify edge is gone
+        assert!(matches!(
+            engine.get_edge(edge_id),
+            Err(GraphError::EdgeNotFound(_))
+        ));
+        assert_eq!(
+            engine
+                .neighbors(n1, None, Direction::Outgoing)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            engine
+                .neighbors(n2, None, Direction::Incoming)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // Nodes should still exist
+        assert!(engine.node_exists(n1));
+        assert!(engine.node_exists(n2));
+    }
+
+    #[test]
+    fn delete_edge_undirected() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let edge_id = engine
+            .create_edge(n1, n2, "FRIENDS", HashMap::new(), false)
+            .unwrap();
+
+        // Both directions should work
+        assert_eq!(
+            engine.neighbors(n1, None, Direction::Both).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            engine.neighbors(n2, None, Direction::Both).unwrap().len(),
+            1
+        );
+
+        // Delete edge
+        engine.delete_edge(edge_id).unwrap();
+
+        // Both directions should be empty
+        assert_eq!(
+            engine.neighbors(n1, None, Direction::Both).unwrap().len(),
+            0
+        );
+        assert_eq!(
+            engine.neighbors(n2, None, Direction::Both).unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn delete_edge_nonexistent() {
+        let engine = GraphEngine::new();
+        let result = engine.delete_edge(999);
+        assert!(matches!(result, Err(GraphError::EdgeNotFound(999))));
+    }
+
+    #[test]
+    fn edge_count() {
+        let engine = GraphEngine::new();
+
+        assert_eq!(engine.edge_count(), 0);
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "E1", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "E2", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "E3", HashMap::new(), false)
+            .unwrap();
+
+        assert_eq!(engine.edge_count(), 3);
+    }
+
+    #[test]
+    fn edges_of_node() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let e1 = engine
+            .create_edge(n1, n2, "OUT", HashMap::new(), true)
+            .unwrap();
+        let e2 = engine
+            .create_edge(n3, n1, "IN", HashMap::new(), true)
+            .unwrap();
+
+        // Outgoing only
+        let out_edges = engine.edges_of(n1, Direction::Outgoing).unwrap();
+        assert_eq!(out_edges.len(), 1);
+        assert_eq!(out_edges[0].id, e1);
+
+        // Incoming only
+        let in_edges = engine.edges_of(n1, Direction::Incoming).unwrap();
+        assert_eq!(in_edges.len(), 1);
+        assert_eq!(in_edges[0].id, e2);
+
+        // Both
+        let all_edges = engine.edges_of(n1, Direction::Both).unwrap();
+        assert_eq!(all_edges.len(), 2);
+    }
+
+    #[test]
+    fn edges_of_nonexistent_node() {
+        let engine = GraphEngine::new();
+        let result = engine.edges_of(999, Direction::Both);
+        assert!(matches!(result, Err(GraphError::NodeNotFound(999))));
+    }
+
+    #[test]
+    fn delete_node_cleans_up_other_nodes_edge_lists() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        // n1 -> n2 -> n3
+        engine
+            .create_edge(n1, n2, "E", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "E", HashMap::new(), true)
+            .unwrap();
+
+        // Delete n2 (the middle node)
+        engine.delete_node(n2).unwrap();
+
+        // n1 should have no outgoing neighbors now
+        assert_eq!(
+            engine
+                .neighbors(n1, None, Direction::Outgoing)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // n3 should have no incoming neighbors now
+        assert_eq!(
+            engine
+                .neighbors(n3, None, Direction::Incoming)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn graph_engine_debug() {
+        let engine = GraphEngine::new();
+        let debug_str = format!("{:?}", engine);
+        assert!(debug_str.contains("GraphEngine"));
+        assert!(debug_str.contains("node_counter"));
+    }
+
+    #[test]
+    fn node_edge_equality() {
+        let node1 = Node {
+            id: 1,
+            label: "Test".into(),
+            properties: HashMap::new(),
+        };
+        let node2 = Node {
+            id: 1,
+            label: "Test".into(),
+            properties: HashMap::new(),
+        };
+        assert_eq!(node1, node2);
+
+        let edge1 = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "E".into(),
+            properties: HashMap::new(),
+            directed: true,
+        };
+        let edge2 = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "E".into(),
+            properties: HashMap::new(),
+            directed: true,
+        };
+        assert_eq!(edge1, edge2);
+    }
+
+    #[test]
+    fn path_equality() {
+        let path1 = Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![1, 2],
+        };
+        let path2 = Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![1, 2],
+        };
+        assert_eq!(path1, path2);
+    }
+
+    #[test]
+    fn graph_error_hash() {
+        use std::collections::HashSet;
+        let mut errors = HashSet::new();
+        errors.insert(GraphError::NodeNotFound(1));
+        errors.insert(GraphError::NodeNotFound(1));
+        errors.insert(GraphError::EdgeNotFound(2));
+        assert_eq!(errors.len(), 2);
     }
 }
