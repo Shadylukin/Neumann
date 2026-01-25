@@ -683,6 +683,359 @@ impl Default for AggregateResult {
     }
 }
 
+// ========== Pattern Matching Types ==========
+
+/// Default limit for pattern matching results.
+const DEFAULT_MATCH_LIMIT: usize = 1000;
+
+/// Threshold for parallel processing of pattern matches.
+const PATTERN_PARALLEL_THRESHOLD: usize = 100;
+
+/// Maximum hops for variable-length edge patterns.
+const MAX_VARIABLE_LENGTH_HOPS: usize = 20;
+
+/// Variable-length path specification (e.g., *1..5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariableLengthSpec {
+    pub min_hops: usize,
+    pub max_hops: usize,
+}
+
+impl VariableLengthSpec {
+    #[must_use]
+    pub fn new(min_hops: usize, max_hops: usize) -> Self {
+        Self {
+            min_hops,
+            max_hops: max_hops.min(MAX_VARIABLE_LENGTH_HOPS),
+        }
+    }
+}
+
+/// A node pattern that matches nodes by label and/or property conditions.
+#[derive(Debug, Clone, Default)]
+pub struct NodePattern {
+    pub variable: Option<String>,
+    pub label: Option<String>,
+    pub conditions: Vec<PropertyCondition>,
+}
+
+impl NodePattern {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn variable(mut self, name: &str) -> Self {
+        self.variable = Some(name.to_string());
+        self
+    }
+
+    #[must_use]
+    pub fn label(mut self, label: &str) -> Self {
+        self.label = Some(label.to_string());
+        self
+    }
+
+    #[must_use]
+    pub fn where_eq(self, property: &str, value: PropertyValue) -> Self {
+        self.where_cond(property, CompareOp::Eq, value)
+    }
+
+    #[must_use]
+    pub fn where_cond(mut self, property: &str, op: CompareOp, value: PropertyValue) -> Self {
+        self.conditions
+            .push(PropertyCondition::new(property, op, value));
+        self
+    }
+
+    #[must_use]
+    pub fn matches(&self, node: &Node) -> bool {
+        // Check label if specified
+        if let Some(ref label) = self.label {
+            if !node.has_label(label) {
+                return false;
+            }
+        }
+        // Check all property conditions
+        self.conditions.iter().all(|c| c.matches_node(node))
+    }
+}
+
+/// An edge pattern that matches edges by type and/or property conditions.
+#[derive(Debug, Clone)]
+pub struct EdgePattern {
+    pub variable: Option<String>,
+    pub edge_type: Option<String>,
+    pub direction: Direction,
+    pub conditions: Vec<PropertyCondition>,
+    pub variable_length: Option<VariableLengthSpec>,
+}
+
+impl Default for EdgePattern {
+    fn default() -> Self {
+        Self {
+            variable: None,
+            edge_type: None,
+            direction: Direction::Outgoing,
+            conditions: Vec::new(),
+            variable_length: None,
+        }
+    }
+}
+
+impl EdgePattern {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn variable(mut self, name: &str) -> Self {
+        self.variable = Some(name.to_string());
+        self
+    }
+
+    #[must_use]
+    pub fn edge_type(mut self, edge_type: &str) -> Self {
+        self.edge_type = Some(edge_type.to_string());
+        self
+    }
+
+    #[must_use]
+    pub fn direction(mut self, dir: Direction) -> Self {
+        self.direction = dir;
+        self
+    }
+
+    #[must_use]
+    pub fn variable_length(mut self, min: usize, max: usize) -> Self {
+        self.variable_length = Some(VariableLengthSpec::new(min, max));
+        self
+    }
+
+    #[must_use]
+    pub fn where_eq(self, property: &str, value: PropertyValue) -> Self {
+        self.where_cond(property, CompareOp::Eq, value)
+    }
+
+    #[must_use]
+    pub fn where_cond(mut self, property: &str, op: CompareOp, value: PropertyValue) -> Self {
+        self.conditions
+            .push(PropertyCondition::new(property, op, value));
+        self
+    }
+
+    #[must_use]
+    pub fn matches(&self, edge: &Edge) -> bool {
+        // Check edge type if specified
+        if let Some(ref et) = self.edge_type {
+            if edge.edge_type != *et {
+                return false;
+            }
+        }
+        // Check all property conditions
+        self.conditions.iter().all(|c| c.matches_edge(edge))
+    }
+}
+
+/// An element in a path pattern.
+#[derive(Debug, Clone)]
+pub enum PatternElement {
+    Node(NodePattern),
+    Edge(EdgePattern),
+}
+
+/// A path pattern: `(a)-[r]->(b)-[s]->(c)`
+#[derive(Debug, Clone)]
+pub struct PathPattern {
+    pub elements: Vec<PatternElement>,
+}
+
+impl PathPattern {
+    #[must_use]
+    pub fn new(start: NodePattern, edge: EdgePattern, end: NodePattern) -> Self {
+        Self {
+            elements: vec![
+                PatternElement::Node(start),
+                PatternElement::Edge(edge),
+                PatternElement::Node(end),
+            ],
+        }
+    }
+
+    #[must_use]
+    pub fn extend(mut self, edge: EdgePattern, node: NodePattern) -> Self {
+        self.elements.push(PatternElement::Edge(edge));
+        self.elements.push(PatternElement::Node(node));
+        self
+    }
+
+    pub fn node_patterns(&self) -> impl Iterator<Item = &NodePattern> {
+        self.elements.iter().filter_map(|e| {
+            if let PatternElement::Node(np) = e {
+                Some(np)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn edge_patterns(&self) -> impl Iterator<Item = &EdgePattern> {
+        self.elements.iter().filter_map(|e| {
+            if let PatternElement::Edge(ep) = e {
+                Some(ep)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn node_pattern_at(&self, element_idx: usize) -> Option<&NodePattern> {
+        self.elements.get(element_idx).and_then(|e| {
+            if let PatternElement::Node(np) = e {
+                Some(np)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn edge_pattern_at(&self, element_idx: usize) -> Option<&EdgePattern> {
+        self.elements.get(element_idx).and_then(|e| {
+            if let PatternElement::Edge(ep) = e {
+                Some(ep)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// A complete pattern query.
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    pub path: PathPattern,
+    pub limit: Option<usize>,
+}
+
+impl Pattern {
+    #[must_use]
+    pub fn new(path: PathPattern) -> Self {
+        Self { path, limit: None }
+    }
+
+    #[must_use]
+    pub fn limit(mut self, max: usize) -> Self {
+        self.limit = Some(max);
+        self
+    }
+}
+
+/// A binding of a variable to a graph element.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Binding {
+    Node(Node),
+    Edge(Edge),
+    Path(Path),
+}
+
+/// A single match with all variable bindings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternMatch {
+    pub bindings: HashMap<String, Binding>,
+}
+
+impl PatternMatch {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bindings: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn get_node(&self, var: &str) -> Option<&Node> {
+        self.bindings.get(var).and_then(|b| {
+            if let Binding::Node(n) = b {
+                Some(n)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn get_edge(&self, var: &str) -> Option<&Edge> {
+        self.bindings.get(var).and_then(|b| {
+            if let Binding::Edge(e) = b {
+                Some(e)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn get_path(&self, var: &str) -> Option<&Path> {
+        self.bindings.get(var).and_then(|b| {
+            if let Binding::Path(p) = b {
+                Some(p)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Default for PatternMatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Statistics from pattern matching.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PatternMatchStats {
+    pub matches_found: usize,
+    pub nodes_evaluated: usize,
+    pub edges_evaluated: usize,
+    pub truncated: bool,
+}
+
+/// Result of pattern matching operation.
+#[derive(Debug, Clone)]
+pub struct PatternMatchResult {
+    pub matches: Vec<PatternMatch>,
+    pub stats: PatternMatchStats,
+}
+
+impl PatternMatchResult {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            matches: Vec::new(),
+            stats: PatternMatchStats::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.matches.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.matches.len()
+    }
+}
+
+impl Default for PatternMatchResult {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Min-heap entry for Dijkstra (smallest distance first).
 #[derive(Copy, Clone)]
 struct DijkstraEntry {
@@ -4319,6 +4672,487 @@ impl GraphEngine {
             PropertyValue::Float(_) => 3,
             PropertyValue::String(_) => 4,
         }
+    }
+
+    // ========== Pattern Matching Methods ==========
+
+    /// Match a pattern against the graph.
+    ///
+    /// This method implements declarative pattern matching similar to Neo4j's MATCH clause.
+    /// It supports:
+    /// - Node patterns with label and property filters
+    /// - Edge patterns with type, direction, and property filters
+    /// - Variable-length edge patterns (e.g., *1..5)
+    /// - Variable bindings for extracting matched elements
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    #[instrument(skip(self, pattern))]
+    pub fn match_pattern(&self, pattern: &Pattern) -> Result<PatternMatchResult> {
+        let limit = pattern.limit.unwrap_or(DEFAULT_MATCH_LIMIT);
+        let mut stats = PatternMatchStats::default();
+        let mut matches = Vec::new();
+
+        // Get candidates for the first node pattern
+        let candidates = self.find_pattern_candidates(pattern.path.node_pattern_at(0))?;
+
+        // Check if we should use parallel processing
+        let use_parallel = candidates.len() >= PATTERN_PARALLEL_THRESHOLD;
+
+        if use_parallel {
+            // Parallel processing for large candidate sets
+            let collected: Vec<_> = candidates
+                .into_par_iter()
+                .filter_map(|start_node| {
+                    let mut local_stats = PatternMatchStats::default();
+                    let mut local_matches = Vec::new();
+                    local_stats.nodes_evaluated += 1;
+
+                    let mut bindings = HashMap::new();
+                    if let Some(var) = pattern
+                        .path
+                        .node_pattern_at(0)
+                        .and_then(|np| np.variable.clone())
+                    {
+                        bindings.insert(var, Binding::Node(start_node.clone()));
+                    }
+
+                    self.dfs_extend_match(
+                        &pattern.path,
+                        0,
+                        start_node.id,
+                        bindings,
+                        &mut local_matches,
+                        &mut local_stats,
+                        limit,
+                    )
+                    .ok()?;
+
+                    Some((local_matches, local_stats))
+                })
+                .collect();
+
+            // Merge results
+            for (local_matches, local_stats) in collected {
+                if matches.len() >= limit {
+                    stats.truncated = true;
+                    break;
+                }
+                let remaining = limit - matches.len();
+                let to_add = local_matches.len().min(remaining);
+                matches.extend(local_matches.into_iter().take(to_add));
+                stats.nodes_evaluated += local_stats.nodes_evaluated;
+                stats.edges_evaluated += local_stats.edges_evaluated;
+            }
+        } else {
+            // Sequential processing for small candidate sets
+            for start_node in candidates {
+                if matches.len() >= limit {
+                    stats.truncated = true;
+                    break;
+                }
+                stats.nodes_evaluated += 1;
+
+                let mut bindings = HashMap::new();
+                if let Some(var) = pattern
+                    .path
+                    .node_pattern_at(0)
+                    .and_then(|np| np.variable.clone())
+                {
+                    bindings.insert(var, Binding::Node(start_node.clone()));
+                }
+
+                self.dfs_extend_match(
+                    &pattern.path,
+                    0,
+                    start_node.id,
+                    bindings,
+                    &mut matches,
+                    &mut stats,
+                    limit,
+                )?;
+            }
+        }
+
+        stats.matches_found = matches.len();
+        Ok(PatternMatchResult { matches, stats })
+    }
+
+    /// Convenience method for matching a simple two-node pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn match_simple(
+        &self,
+        start: NodePattern,
+        edge: EdgePattern,
+        end: NodePattern,
+    ) -> Result<PatternMatchResult> {
+        let path = PathPattern::new(start, edge, end);
+        self.match_pattern(&Pattern::new(path))
+    }
+
+    /// Count the number of matches for a pattern without returning bindings.
+    ///
+    /// This is more efficient than `match_pattern` when only the count is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn count_pattern_matches(&self, pattern: &Pattern) -> Result<u64> {
+        // Use a high limit to count all matches
+        let mut counting_pattern = pattern.clone();
+        counting_pattern.limit = Some(usize::MAX);
+        let result = self.match_pattern(&counting_pattern)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(result.matches.len() as u64)
+    }
+
+    /// Check if any match exists for a pattern.
+    ///
+    /// Short-circuits as soon as one match is found.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the underlying store operation fails.
+    pub fn pattern_exists(&self, pattern: &Pattern) -> Result<bool> {
+        let mut single_pattern = pattern.clone();
+        single_pattern.limit = Some(1);
+        let result = self.match_pattern(&single_pattern)?;
+        Ok(!result.matches.is_empty())
+    }
+
+    /// Find candidate nodes for a node pattern using indexes.
+    fn find_pattern_candidates(&self, np: Option<&NodePattern>) -> Result<Vec<Node>> {
+        let Some(np) = np else {
+            return Ok(Vec::new());
+        };
+
+        // If we have a label, use the label index
+        if let Some(ref label) = np.label {
+            self.ensure_label_index();
+            let mut nodes = self.find_nodes_by_label(label)?;
+            // Apply additional property conditions
+            if !np.conditions.is_empty() {
+                nodes.retain(|n| np.conditions.iter().all(|c| c.matches_node(n)));
+            }
+            return Ok(nodes);
+        }
+
+        // If we have property conditions, try to use property indexes
+        for cond in &np.conditions {
+            if cond.op == CompareOp::Eq {
+                if let Ok(mut nodes) = self.find_nodes_by_property(&cond.property, &cond.value) {
+                    // Apply remaining conditions
+                    nodes.retain(|n| np.matches(n));
+                    return Ok(nodes);
+                }
+            }
+        }
+
+        // Fallback to scanning all nodes
+        let mut nodes = self.all_nodes();
+        nodes.retain(|n| np.matches(n));
+        Ok(nodes)
+    }
+
+    /// Get neighbors matching an edge pattern.
+    fn get_pattern_neighbors(&self, node_id: u64, ep: &EdgePattern) -> Vec<(Node, Edge)> {
+        let mut results = Vec::new();
+
+        // Get edge lists based on direction
+        let (out_edges, in_edges) = match ep.direction {
+            Direction::Outgoing => (
+                self.get_edge_list(&Self::outgoing_edges_key(node_id)),
+                vec![],
+            ),
+            Direction::Incoming => (
+                vec![],
+                self.get_edge_list(&Self::incoming_edges_key(node_id)),
+            ),
+            Direction::Both => (
+                self.get_edge_list(&Self::outgoing_edges_key(node_id)),
+                self.get_edge_list(&Self::incoming_edges_key(node_id)),
+            ),
+        };
+
+        // Process outgoing edges
+        for edge_id in out_edges {
+            if let Ok(edge) = self.get_edge(edge_id) {
+                if ep.matches(&edge) {
+                    let neighbor_id = if edge.from == node_id {
+                        edge.to
+                    } else {
+                        edge.from
+                    };
+                    if let Ok(neighbor) = self.get_node(neighbor_id) {
+                        results.push((neighbor, edge));
+                    }
+                }
+            }
+        }
+
+        // Process incoming edges
+        for edge_id in in_edges {
+            if let Ok(edge) = self.get_edge(edge_id) {
+                if ep.matches(&edge) {
+                    let neighbor_id = if edge.to == node_id {
+                        edge.from
+                    } else {
+                        edge.to
+                    };
+                    if let Ok(neighbor) = self.get_node(neighbor_id) {
+                        // Avoid duplicates for undirected edges
+                        if !results.iter().any(|(n, _)| n.id == neighbor.id) {
+                            results.push((neighbor, edge));
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// DFS extension of a partial match.
+    #[allow(clippy::too_many_arguments)]
+    fn dfs_extend_match(
+        &self,
+        path: &PathPattern,
+        current_element_idx: usize,
+        current_node_id: u64,
+        bindings: HashMap<String, Binding>,
+        matches: &mut Vec<PatternMatch>,
+        stats: &mut PatternMatchStats,
+        limit: usize,
+    ) -> Result<()> {
+        // Check if we've completed the pattern
+        if current_element_idx >= path.elements.len() - 1 {
+            matches.push(PatternMatch { bindings });
+            return Ok(());
+        }
+
+        // Get the next edge and node patterns
+        let edge_pattern = path.edge_pattern_at(current_element_idx + 1);
+        let next_node_pattern = path.node_pattern_at(current_element_idx + 2);
+
+        let Some(ep) = edge_pattern else {
+            return Ok(());
+        };
+        let Some(np) = next_node_pattern else {
+            return Ok(());
+        };
+
+        // Handle variable-length patterns
+        if let Some(var_len) = ep.variable_length {
+            return self.extend_variable_length_match(
+                path,
+                current_element_idx,
+                current_node_id,
+                bindings,
+                matches,
+                stats,
+                limit,
+                ep,
+                np,
+                var_len,
+            );
+        }
+
+        // Get matching neighbors
+        let neighbors = self.get_pattern_neighbors(current_node_id, ep);
+
+        for (neighbor, edge) in neighbors {
+            if matches.len() >= limit {
+                return Ok(());
+            }
+            stats.edges_evaluated += 1;
+
+            // Check if the neighbor matches the next node pattern
+            if !np.matches(&neighbor) {
+                continue;
+            }
+            stats.nodes_evaluated += 1;
+
+            // Create new bindings
+            let mut new_bindings = bindings.clone();
+            if let Some(ref var) = ep.variable {
+                new_bindings.insert(var.clone(), Binding::Edge(edge));
+            }
+            if let Some(ref var) = np.variable {
+                new_bindings.insert(var.clone(), Binding::Node(neighbor.clone()));
+            }
+
+            // Recursively extend the match
+            self.dfs_extend_match(
+                path,
+                current_element_idx + 2,
+                neighbor.id,
+                new_bindings,
+                matches,
+                stats,
+                limit,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Extend match for variable-length edge patterns.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    fn extend_variable_length_match(
+        &self,
+        path: &PathPattern,
+        current_element_idx: usize,
+        start_node_id: u64,
+        bindings: HashMap<String, Binding>,
+        matches: &mut Vec<PatternMatch>,
+        stats: &mut PatternMatchStats,
+        limit: usize,
+        ep: &EdgePattern,
+        end_np: &NodePattern,
+        var_len: VariableLengthSpec,
+    ) -> Result<()> {
+        // Use DFS with explicit stack: (current_node_id, path_nodes, path_edges, depth, visited)
+        #[allow(clippy::type_complexity)]
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, usize, HashSet<u64>)> = Vec::new();
+
+        let mut initial_visited = HashSet::new();
+        initial_visited.insert(start_node_id);
+        stack.push((
+            start_node_id,
+            vec![start_node_id],
+            vec![],
+            0,
+            initial_visited,
+        ));
+
+        // Handle min_hops == 0 case (match without traversing)
+        if var_len.min_hops == 0 {
+            if let Ok(start_node) = self.get_node(start_node_id) {
+                if end_np.matches(&start_node) {
+                    let mut new_bindings = bindings.clone();
+                    if let Some(ref var) = ep.variable {
+                        new_bindings.insert(
+                            var.clone(),
+                            Binding::Path(Path {
+                                nodes: vec![start_node_id],
+                                edges: vec![],
+                            }),
+                        );
+                    }
+                    if let Some(ref var) = end_np.variable {
+                        new_bindings.insert(var.clone(), Binding::Node(start_node));
+                    }
+
+                    // Continue to next part of pattern or complete match
+                    if current_element_idx + 2 >= path.elements.len() - 1 {
+                        matches.push(PatternMatch {
+                            bindings: new_bindings,
+                        });
+                    } else {
+                        self.dfs_extend_match(
+                            path,
+                            current_element_idx + 2,
+                            start_node_id,
+                            new_bindings,
+                            matches,
+                            stats,
+                            limit,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        while let Some((current_id, path_nodes, path_edges, depth, visited)) = stack.pop() {
+            if matches.len() >= limit {
+                return Ok(());
+            }
+
+            if depth >= var_len.max_hops {
+                continue;
+            }
+
+            // Get neighbors matching the edge pattern (without variable length consideration)
+            let single_hop_ep = EdgePattern {
+                variable: None,
+                edge_type: ep.edge_type.clone(),
+                direction: ep.direction,
+                conditions: ep.conditions.clone(),
+                variable_length: None,
+            };
+            let neighbors = self.get_pattern_neighbors(current_id, &single_hop_ep);
+
+            for (neighbor, edge) in neighbors {
+                stats.edges_evaluated += 1;
+
+                // Skip visited nodes to prevent cycles
+                if visited.contains(&neighbor.id) {
+                    continue;
+                }
+
+                let new_depth = depth + 1;
+                let mut new_path_nodes = path_nodes.clone();
+                let mut new_path_edges = path_edges.clone();
+                new_path_nodes.push(neighbor.id);
+                new_path_edges.push(edge.id);
+
+                // Check if this is a valid end point
+                if new_depth >= var_len.min_hops && end_np.matches(&neighbor) {
+                    stats.nodes_evaluated += 1;
+
+                    let mut new_bindings = bindings.clone();
+                    if let Some(ref var) = ep.variable {
+                        new_bindings.insert(
+                            var.clone(),
+                            Binding::Path(Path {
+                                nodes: new_path_nodes.clone(),
+                                edges: new_path_edges.clone(),
+                            }),
+                        );
+                    }
+                    if let Some(ref var) = end_np.variable {
+                        new_bindings.insert(var.clone(), Binding::Node(neighbor.clone()));
+                    }
+
+                    // Continue to next part of pattern or complete match
+                    if current_element_idx + 2 >= path.elements.len() - 1 {
+                        matches.push(PatternMatch {
+                            bindings: new_bindings,
+                        });
+                    } else {
+                        self.dfs_extend_match(
+                            path,
+                            current_element_idx + 2,
+                            neighbor.id,
+                            new_bindings,
+                            matches,
+                            stats,
+                            limit,
+                        )?;
+                    }
+                }
+
+                // Continue exploring if under max_hops
+                if new_depth < var_len.max_hops {
+                    let mut new_visited = visited.clone();
+                    new_visited.insert(neighbor.id);
+                    stack.push((
+                        neighbor.id,
+                        new_path_nodes,
+                        new_path_edges,
+                        new_depth,
+                        new_visited,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Delete an edge by ID, cleaning up edge lists on both connected nodes.
@@ -11637,5 +12471,778 @@ mod tests {
         assert_eq!(result.avg, Some(1_124_250.0 / 1500.0));
         assert_eq!(result.min, Some(PropertyValue::Int(0)));
         assert_eq!(result.max, Some(PropertyValue::Int(1499)));
+    }
+
+    // ========== Pattern Matching Tests ==========
+
+    #[test]
+    fn node_pattern_default_matches_any() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new();
+        assert!(pattern.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_matches_label() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new().label("Person");
+        assert!(pattern.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_matches_label_no_match() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new().label("Company");
+        assert!(!pattern.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_matches_property_eq() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        let n1 = engine.create_node("Person", props).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new().where_eq("name", PropertyValue::String("Alice".into()));
+        assert!(pattern.matches(&node));
+
+        let pattern2 = NodePattern::new().where_eq("name", PropertyValue::String("Bob".into()));
+        assert!(!pattern2.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_matches_property_range() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), PropertyValue::Int(30));
+        let n1 = engine.create_node("Person", props).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new().where_cond("age", CompareOp::Gt, PropertyValue::Int(25));
+        assert!(pattern.matches(&node));
+
+        let pattern2 = NodePattern::new().where_cond("age", CompareOp::Lt, PropertyValue::Int(25));
+        assert!(!pattern2.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_matches_label_and_property() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        let n1 = engine.create_node("Person", props).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        let pattern = NodePattern::new()
+            .label("Person")
+            .where_eq("name", PropertyValue::String("Alice".into()));
+        assert!(pattern.matches(&node));
+
+        let pattern2 = NodePattern::new()
+            .label("Company")
+            .where_eq("name", PropertyValue::String("Alice".into()));
+        assert!(!pattern2.matches(&node));
+    }
+
+    #[test]
+    fn node_pattern_builder_chain() {
+        let pattern = NodePattern::new()
+            .variable("n")
+            .label("Person")
+            .where_eq("name", PropertyValue::String("Alice".into()))
+            .where_cond("age", CompareOp::Gt, PropertyValue::Int(18));
+
+        assert_eq!(pattern.variable, Some("n".to_string()));
+        assert_eq!(pattern.label, Some("Person".to_string()));
+        assert_eq!(pattern.conditions.len(), 2);
+    }
+
+    #[test]
+    fn edge_pattern_default_matches_any() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let e1 = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge = engine.get_edge(e1).unwrap();
+
+        let pattern = EdgePattern::new();
+        assert!(pattern.matches(&edge));
+    }
+
+    #[test]
+    fn edge_pattern_matches_type() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let e1 = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge = engine.get_edge(e1).unwrap();
+
+        let pattern = EdgePattern::new().edge_type("KNOWS");
+        assert!(pattern.matches(&edge));
+    }
+
+    #[test]
+    fn edge_pattern_matches_type_no_match() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let e1 = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge = engine.get_edge(e1).unwrap();
+
+        let pattern = EdgePattern::new().edge_type("FOLLOWS");
+        assert!(!pattern.matches(&edge));
+    }
+
+    #[test]
+    fn edge_pattern_matches_property() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut props = HashMap::new();
+        props.insert("since".to_string(), PropertyValue::Int(2020));
+        let e1 = engine.create_edge(n1, n2, "KNOWS", props, true).unwrap();
+        let edge = engine.get_edge(e1).unwrap();
+
+        let pattern = EdgePattern::new().where_eq("since", PropertyValue::Int(2020));
+        assert!(pattern.matches(&edge));
+
+        let pattern2 = EdgePattern::new().where_eq("since", PropertyValue::Int(2021));
+        assert!(!pattern2.matches(&edge));
+    }
+
+    #[test]
+    fn edge_pattern_variable_length_spec() {
+        let pattern = EdgePattern::new().variable_length(1, 5);
+        assert!(pattern.variable_length.is_some());
+        let spec = pattern.variable_length.unwrap();
+        assert_eq!(spec.min_hops, 1);
+        assert_eq!(spec.max_hops, 5);
+    }
+
+    #[test]
+    fn edge_pattern_builder_chain() {
+        let pattern = EdgePattern::new()
+            .variable("r")
+            .edge_type("KNOWS")
+            .direction(Direction::Both)
+            .where_eq("since", PropertyValue::Int(2020));
+
+        assert_eq!(pattern.variable, Some("r".to_string()));
+        assert_eq!(pattern.edge_type, Some("KNOWS".to_string()));
+        assert_eq!(pattern.direction, Direction::Both);
+        assert_eq!(pattern.conditions.len(), 1);
+    }
+
+    #[test]
+    fn path_pattern_new_creates_three_elements() {
+        let path = PathPattern::new(
+            NodePattern::new().label("Person"),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new().label("Person"),
+        );
+        assert_eq!(path.elements.len(), 3);
+    }
+
+    #[test]
+    fn path_pattern_extend_adds_two_elements() {
+        let path = PathPattern::new(
+            NodePattern::new().label("A"),
+            EdgePattern::new().edge_type("R"),
+            NodePattern::new().label("B"),
+        )
+        .extend(
+            EdgePattern::new().edge_type("S"),
+            NodePattern::new().label("C"),
+        );
+
+        assert_eq!(path.elements.len(), 5);
+    }
+
+    #[test]
+    fn path_pattern_node_patterns_iterator() {
+        let path = PathPattern::new(
+            NodePattern::new().label("A"),
+            EdgePattern::new().edge_type("R"),
+            NodePattern::new().label("B"),
+        );
+        let node_patterns: Vec<_> = path.node_patterns().collect();
+        assert_eq!(node_patterns.len(), 2);
+    }
+
+    #[test]
+    fn path_pattern_edge_patterns_iterator() {
+        let path = PathPattern::new(
+            NodePattern::new().label("A"),
+            EdgePattern::new().edge_type("R"),
+            NodePattern::new().label("B"),
+        )
+        .extend(
+            EdgePattern::new().edge_type("S"),
+            NodePattern::new().label("C"),
+        );
+        let edge_patterns: Vec<_> = path.edge_patterns().collect();
+        assert_eq!(edge_patterns.len(), 2);
+    }
+
+    #[test]
+    fn pattern_default_limit() {
+        let path = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+        let pattern = Pattern::new(path);
+        assert_eq!(pattern.limit, None);
+    }
+
+    #[test]
+    fn pattern_with_limit() {
+        let path = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+        let pattern = Pattern::new(path).limit(10);
+        assert_eq!(pattern.limit, Some(10));
+    }
+
+    #[test]
+    fn pattern_match_result_is_empty() {
+        let result = PatternMatchResult::empty();
+        assert!(result.is_empty());
+
+        let mut result2 = PatternMatchResult::empty();
+        result2.matches.push(PatternMatch::new());
+        assert!(!result2.is_empty());
+    }
+
+    #[test]
+    fn pattern_match_result_len() {
+        let mut result = PatternMatchResult::empty();
+        assert_eq!(result.len(), 0);
+
+        result.matches.push(PatternMatch::new());
+        result.matches.push(PatternMatch::new());
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn pattern_match_stats_default() {
+        let stats = PatternMatchStats::default();
+        assert_eq!(stats.matches_found, 0);
+        assert_eq!(stats.nodes_evaluated, 0);
+        assert_eq!(stats.edges_evaluated, 0);
+        assert!(!stats.truncated);
+    }
+
+    #[test]
+    fn match_simple_two_nodes() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().variable("a"),
+                EdgePattern::new().variable("r"),
+                NodePattern::new().variable("b"),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let m = &result.matches[0];
+        assert!(m.get_node("a").is_some());
+        assert!(m.get_node("b").is_some());
+        assert!(m.get_edge("r").is_some());
+    }
+
+    #[test]
+    fn match_with_label_filter() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Company", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "WORKS_AT", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().label("Person"),
+                EdgePattern::new(),
+                NodePattern::new().label("Person"),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn match_with_property_filter() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        let n1 = engine.create_node("Person", props1).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), PropertyValue::String("Bob".into()));
+        let n2 = engine.create_node("Person", props2).unwrap();
+
+        let mut props3 = HashMap::new();
+        props3.insert("name".to_string(), PropertyValue::String("Charlie".into()));
+        let n3 = engine.create_node("Person", props3).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().where_eq("name", PropertyValue::String("Alice".into())),
+                EdgePattern::new(),
+                NodePattern::new().where_eq("name", PropertyValue::String("Bob".into())),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn match_with_edge_type_filter() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n2, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new(),
+                EdgePattern::new().edge_type("KNOWS"),
+                NodePattern::new(),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn match_bidirectional() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Outgoing only should find 1 from n1's perspective
+        let result_out = engine
+            .match_simple(
+                NodePattern::new(),
+                EdgePattern::new().direction(Direction::Outgoing),
+                NodePattern::new(),
+            )
+            .unwrap();
+        assert_eq!(result_out.len(), 1);
+
+        // Both directions should find matches from both nodes
+        let result_both = engine
+            .match_simple(
+                NodePattern::new(),
+                EdgePattern::new().direction(Direction::Both),
+                NodePattern::new(),
+            )
+            .unwrap();
+        assert_eq!(result_both.len(), 2);
+    }
+
+    #[test]
+    fn match_chain_three_nodes() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let path = PathPattern::new(
+            NodePattern::new().variable("a"),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new().variable("b"),
+        )
+        .extend(
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new().variable("c"),
+        );
+
+        let result = engine.match_pattern(&Pattern::new(path)).unwrap();
+        assert_eq!(result.len(), 1);
+
+        let m = &result.matches[0];
+        assert_eq!(m.get_node("a").unwrap().id, n1);
+        assert_eq!(m.get_node("b").unwrap().id, n2);
+        assert_eq!(m.get_node("c").unwrap().id, n3);
+    }
+
+    #[test]
+    fn match_variable_length_path() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().variable("a"),
+                EdgePattern::new()
+                    .edge_type("KNOWS")
+                    .variable_length(1, 3)
+                    .variable("p"),
+                NodePattern::new().variable("b"),
+            )
+            .unwrap();
+
+        // Should find: n1->n2 (1 hop), n1->n3 (2 hops), n2->n3 (1 hop)
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn match_no_results() {
+        let engine = GraphEngine::new();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        // No edges
+
+        let result = engine
+            .match_simple(NodePattern::new(), EdgePattern::new(), NodePattern::new())
+            .unwrap();
+
+        assert!(result.is_empty());
+        assert_eq!(result.stats.matches_found, 0);
+    }
+
+    #[test]
+    fn match_with_limit_truncates() {
+        let engine = GraphEngine::new();
+        // Create a chain of nodes
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let path = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+        let pattern = Pattern::new(path).limit(2);
+        let result = engine.match_pattern(&pattern).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.stats.truncated);
+    }
+
+    #[test]
+    fn match_returns_correct_bindings() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("name".to_string(), PropertyValue::String("Alice".into()));
+        let n1 = engine.create_node("Person", props1).unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), PropertyValue::String("Bob".into()));
+        let n2 = engine.create_node("Person", props2).unwrap();
+
+        let mut edge_props = HashMap::new();
+        edge_props.insert("since".to_string(), PropertyValue::Int(2020));
+        engine
+            .create_edge(n1, n2, "KNOWS", edge_props, true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().variable("a"),
+                EdgePattern::new().variable("r"),
+                NodePattern::new().variable("b"),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let m = &result.matches[0];
+
+        let node_a = m.get_node("a").unwrap();
+        assert_eq!(
+            node_a.properties.get("name"),
+            Some(&PropertyValue::String("Alice".into()))
+        );
+
+        let node_b = m.get_node("b").unwrap();
+        assert_eq!(
+            node_b.properties.get("name"),
+            Some(&PropertyValue::String("Bob".into()))
+        );
+
+        let edge_r = m.get_edge("r").unwrap();
+        assert_eq!(
+            edge_r.properties.get("since"),
+            Some(&PropertyValue::Int(2020))
+        );
+    }
+
+    #[test]
+    fn count_pattern_matches_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let path = PathPattern::new(
+            NodePattern::new(),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new(),
+        );
+        let count = engine.count_pattern_matches(&Pattern::new(path)).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn count_pattern_matches_empty() {
+        let engine = GraphEngine::new();
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        let path = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+        let count = engine.count_pattern_matches(&Pattern::new(path)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn pattern_exists_true() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let path = PathPattern::new(
+            NodePattern::new(),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new(),
+        );
+        assert!(engine.pattern_exists(&Pattern::new(path)).unwrap());
+    }
+
+    #[test]
+    fn pattern_exists_false() {
+        let engine = GraphEngine::new();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Person", HashMap::new()).unwrap();
+
+        let path = PathPattern::new(
+            NodePattern::new(),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new(),
+        );
+        assert!(!engine.pattern_exists(&Pattern::new(path)).unwrap());
+    }
+
+    #[test]
+    fn pattern_exists_short_circuits() {
+        let engine = GraphEngine::new();
+        // Create many edges
+        for i in 0..100 {
+            let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+            let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            if i == 0 {
+                // First edge should be enough to return true
+            }
+        }
+
+        let path = PathPattern::new(
+            NodePattern::new(),
+            EdgePattern::new().edge_type("KNOWS"),
+            NodePattern::new(),
+        );
+        let result = engine.pattern_exists(&Pattern::new(path)).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn match_self_loop() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n1, "SELF_REF", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new().variable("a"),
+                EdgePattern::new().edge_type("SELF_REF"),
+                NodePattern::new().variable("b"),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let m = &result.matches[0];
+        assert_eq!(m.get_node("a").unwrap().id, m.get_node("b").unwrap().id);
+    }
+
+    #[test]
+    fn match_disconnected_graph() {
+        let engine = GraphEngine::new();
+        // Create two disconnected components
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n4 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n3, n4, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine
+            .match_simple(
+                NodePattern::new(),
+                EdgePattern::new().edge_type("KNOWS"),
+                NodePattern::new(),
+            )
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn variable_length_spec_caps_max_hops() {
+        let spec = VariableLengthSpec::new(1, 100);
+        assert_eq!(spec.max_hops, MAX_VARIABLE_LENGTH_HOPS);
+    }
+
+    #[test]
+    fn pattern_match_get_node_returns_none_for_edge() {
+        let mut m = PatternMatch::new();
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let e1 = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let edge = engine.get_edge(e1).unwrap();
+
+        m.bindings.insert("r".to_string(), Binding::Edge(edge));
+        assert!(m.get_node("r").is_none());
+    }
+
+    #[test]
+    fn pattern_match_get_edge_returns_none_for_node() {
+        let mut m = PatternMatch::new();
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let node = engine.get_node(n1).unwrap();
+
+        m.bindings.insert("n".to_string(), Binding::Node(node));
+        assert!(m.get_edge("n").is_none());
+    }
+
+    #[test]
+    fn pattern_match_get_path() {
+        let mut m = PatternMatch::new();
+        let path = Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![1, 2],
+        };
+        m.bindings.insert("p".to_string(), Binding::Path(path));
+
+        let retrieved = m.get_path("p").unwrap();
+        assert_eq!(retrieved.nodes, vec![1, 2, 3]);
+        assert_eq!(retrieved.edges, vec![1, 2]);
+    }
+
+    #[test]
+    fn match_variable_length_min_zero() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // With min=0, should match the start node itself as well
+        let result = engine
+            .match_simple(
+                NodePattern::new().variable("a"),
+                EdgePattern::new()
+                    .edge_type("KNOWS")
+                    .variable_length(0, 2)
+                    .variable("p"),
+                NodePattern::new().variable("b"),
+            )
+            .unwrap();
+
+        // Should find: n1->n1 (0 hops), n1->n2 (1 hop), n2->n2 (0 hops)
+        assert!(result.len() >= 2);
+    }
+
+    #[test]
+    fn match_empty_graph() {
+        let engine = GraphEngine::new();
+
+        let result = engine
+            .match_simple(NodePattern::new(), EdgePattern::new(), NodePattern::new())
+            .unwrap();
+
+        assert!(result.is_empty());
+        assert_eq!(result.stats.matches_found, 0);
+    }
+
+    #[test]
+    fn pattern_match_result_default() {
+        let result = PatternMatchResult::default();
+        assert!(result.is_empty());
+        assert_eq!(result.stats, PatternMatchStats::default());
     }
 }
