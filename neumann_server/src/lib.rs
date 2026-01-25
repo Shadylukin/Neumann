@@ -51,10 +51,12 @@
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::use_self)]
 
+pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod convert;
 pub mod error;
+pub mod rate_limit;
 pub mod service;
 
 /// Generated protobuf types.
@@ -79,8 +81,10 @@ use query_router::QueryRouter;
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
 
+pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ServerConfig, TlsConfig};
 pub use error::{Result, ServerError};
+pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
 pub use service::{BlobServiceImpl, HealthServiceImpl, HealthState, QueryServiceImpl};
 
 use proto::blob_service_server::BlobServiceServer;
@@ -92,16 +96,30 @@ pub struct NeumannServer {
     router: Arc<RwLock<QueryRouter>>,
     blob_store: Option<Arc<Mutex<BlobStore>>>,
     config: ServerConfig,
+    rate_limiter: Option<Arc<RateLimiter>>,
+    audit_logger: Option<Arc<AuditLogger>>,
 }
 
 impl NeumannServer {
     /// Create a new server with the given router and configuration.
     #[must_use]
-    pub const fn new(router: Arc<RwLock<QueryRouter>>, config: ServerConfig) -> Self {
+    pub fn new(router: Arc<RwLock<QueryRouter>>, config: ServerConfig) -> Self {
+        let rate_limiter = config
+            .rate_limit
+            .as_ref()
+            .map(|c| Arc::new(RateLimiter::new(c.clone())));
+
+        let audit_logger = config
+            .audit
+            .as_ref()
+            .map(|c| Arc::new(AuditLogger::new(c.clone())));
+
         Self {
             router,
             blob_store: None,
             config,
+            rate_limiter,
+            audit_logger,
         }
     }
 
@@ -121,10 +139,22 @@ impl NeumannServer {
             .await
             .map_err(|e| ServerError::Internal(e.to_string()))?;
 
+        let rate_limiter = config
+            .rate_limit
+            .as_ref()
+            .map(|c| Arc::new(RateLimiter::new(c.clone())));
+
+        let audit_logger = config
+            .audit
+            .as_ref()
+            .map(|c| Arc::new(AuditLogger::new(c.clone())));
+
         Ok(Self {
             router,
             blob_store: Some(Arc::new(Mutex::new(blob_store))),
             config,
+            rate_limiter,
+            audit_logger,
         })
     }
 
@@ -196,12 +226,14 @@ impl NeumannServer {
         // Create shared health state
         let health_state = Arc::new(HealthState::new());
 
-        // Create services with configuration and health monitoring
-        let query_service = QueryServiceImpl::with_health_state(
+        // Create services with configuration, health monitoring, rate limiting, and audit
+        let query_service = QueryServiceImpl::with_full_config(
             Arc::clone(&self.router),
             self.config.auth.clone(),
             self.config.stream_channel_capacity,
             Arc::clone(&health_state),
+            self.rate_limiter.clone(),
+            self.audit_logger.clone(),
         );
 
         let health_service = HealthServiceImpl::with_state(Arc::clone(&health_state));
@@ -247,7 +279,12 @@ impl NeumannServer {
 
         // Build blob service if store is available
         let blob_svc = self.blob_store.map(|store| {
-            let blob_service = BlobServiceImpl::with_config(store, &self.config);
+            let blob_service = BlobServiceImpl::with_full_config(
+                store,
+                &self.config,
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+            );
             tracing::info!("Blob service enabled");
             BlobServiceServer::new(blob_service)
         });
@@ -309,12 +346,14 @@ impl NeumannServer {
         // Create shared health state
         let health_state = Arc::new(HealthState::new());
 
-        // Create services with configuration and health monitoring
-        let query_service = QueryServiceImpl::with_health_state(
+        // Create services with configuration, health monitoring, rate limiting, and audit
+        let query_service = QueryServiceImpl::with_full_config(
             Arc::clone(&self.router),
             self.config.auth.clone(),
             self.config.stream_channel_capacity,
             Arc::clone(&health_state),
+            self.rate_limiter.clone(),
+            self.audit_logger.clone(),
         );
 
         let health_service = HealthServiceImpl::with_state(Arc::clone(&health_state));
@@ -358,7 +397,12 @@ impl NeumannServer {
 
         // Build blob service if store is available
         let blob_svc = self.blob_store.map(|store| {
-            let blob_service = BlobServiceImpl::with_config(store, &self.config);
+            let blob_service = BlobServiceImpl::with_full_config(
+                store,
+                &self.config,
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+            );
             BlobServiceServer::new(blob_service)
         });
 

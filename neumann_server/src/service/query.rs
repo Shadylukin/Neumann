@@ -11,6 +11,7 @@ use tonic::{Request, Response, Status};
 
 use query_router::{QueryResult, QueryRouter};
 
+use crate::audit::{AuditEvent, AuditLogger};
 use crate::auth;
 use crate::config::AuthConfig;
 use crate::convert::{
@@ -20,6 +21,7 @@ use crate::proto::{
     self, query_service_server::QueryService, BatchQueryRequest, BatchQueryResponse, QueryRequest,
     QueryResponse, QueryResponseChunk,
 };
+use crate::rate_limit::{Operation, RateLimiter};
 use crate::service::health::HealthState;
 
 /// Default channel capacity for streaming responses.
@@ -35,6 +37,8 @@ pub struct QueryServiceImpl {
     stream_channel_capacity: usize,
     health_state: Option<Arc<HealthState>>,
     consecutive_failures: AtomicU32,
+    rate_limiter: Option<Arc<RateLimiter>>,
+    audit_logger: Option<Arc<AuditLogger>>,
 }
 
 impl QueryServiceImpl {
@@ -47,6 +51,8 @@ impl QueryServiceImpl {
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
             health_state: None,
             consecutive_failures: AtomicU32::new(0),
+            rate_limiter: None,
+            audit_logger: None,
         }
     }
 
@@ -59,6 +65,8 @@ impl QueryServiceImpl {
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
             health_state: None,
             consecutive_failures: AtomicU32::new(0),
+            rate_limiter: None,
+            audit_logger: None,
         }
     }
 
@@ -75,6 +83,8 @@ impl QueryServiceImpl {
             stream_channel_capacity,
             health_state: None,
             consecutive_failures: AtomicU32::new(0),
+            rate_limiter: None,
+            audit_logger: None,
         }
     }
 
@@ -92,6 +102,29 @@ impl QueryServiceImpl {
             stream_channel_capacity,
             health_state: Some(health_state),
             consecutive_failures: AtomicU32::new(0),
+            rate_limiter: None,
+            audit_logger: None,
+        }
+    }
+
+    /// Create a new query service with all options including rate limiting and audit logging.
+    #[must_use]
+    pub fn with_full_config(
+        router: Arc<RwLock<QueryRouter>>,
+        auth_config: Option<AuthConfig>,
+        stream_channel_capacity: usize,
+        health_state: Arc<HealthState>,
+        rate_limiter: Option<Arc<RateLimiter>>,
+        audit_logger: Option<Arc<AuditLogger>>,
+    ) -> Self {
+        Self {
+            router,
+            auth_config,
+            stream_channel_capacity,
+            health_state: Some(health_state),
+            consecutive_failures: AtomicU32::new(0),
+            rate_limiter,
+            audit_logger,
         }
     }
 
@@ -146,17 +179,51 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
-        // Validate authentication
-        let identity = auth::extract_identity(
+        // Validate authentication with rate limiting and audit
+        let identity = auth::validate_request_with_audit(
             &request,
-            request.get_ref().identity.as_deref(),
             &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
         )?;
+
+        // Check query-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::Query) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "query".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
 
         let query = &request.get_ref().query;
         tracing::debug!("Executing query: {}", query);
 
-        match self.execute_query(query, identity.as_deref()) {
+        let result = self.execute_query(query, identity.as_deref());
+
+        // Audit the query execution
+        if let Some(ref logger) = self.audit_logger {
+            if logger.config().log_queries {
+                logger.record(
+                    AuditEvent::QueryExecuted {
+                        identity: identity.clone(),
+                        query: query.clone(),
+                    },
+                    None,
+                );
+            }
+        }
+
+        match result {
             Ok(result) => Ok(Response::new(query_result_to_proto(result))),
             Err(status) => Err(status),
         }
@@ -169,15 +236,47 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<Self::ExecuteStreamStream>, Status> {
-        // Validate authentication
-        let identity = auth::extract_identity(
+        // Validate authentication with rate limiting and audit
+        let identity = auth::validate_request_with_audit(
             &request,
-            request.get_ref().identity.as_deref(),
             &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
         )?;
+
+        // Check query-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::Query) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "query".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
 
         let query = &request.get_ref().query;
         tracing::debug!("Executing streaming query: {}", query);
+
+        // Audit the query execution
+        if let Some(ref logger) = self.audit_logger {
+            if logger.config().log_queries {
+                logger.record(
+                    AuditEvent::QueryExecuted {
+                        identity: identity.clone(),
+                        query: query.clone(),
+                    },
+                    None,
+                );
+            }
+        }
 
         let result = self.execute_query(query, identity.as_deref())?;
 
@@ -298,8 +397,13 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<BatchQueryRequest>,
     ) -> Result<Response<BatchQueryResponse>, Status> {
-        // Validate authentication at request level first
-        let request_identity = auth::validate_request(&request, &self.auth_config)?;
+        // Validate authentication with rate limiting and audit
+        let request_identity = auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        )?;
 
         let batch = request.into_inner();
         let mut results = Vec::with_capacity(batch.queries.len());
@@ -309,6 +413,37 @@ impl QueryService for QueryServiceImpl {
             // Query-level identity is ignored to prevent privilege escalation
             // where a client could authenticate as user A but execute as user B.
             let identity = request_identity.clone();
+
+            // Check query-specific rate limit for each query in batch
+            if let Some(ref limiter) = self.rate_limiter {
+                if let Some(ref id) = identity {
+                    if let Err(msg) = limiter.check_and_record(id, Operation::Query) {
+                        if let Some(ref logger) = self.audit_logger {
+                            logger.record(
+                                AuditEvent::RateLimited {
+                                    identity: id.clone(),
+                                    operation: "query".to_string(),
+                                },
+                                None,
+                            );
+                        }
+                        return Err(Status::resource_exhausted(msg));
+                    }
+                }
+            }
+
+            // Audit the query execution
+            if let Some(ref logger) = self.audit_logger {
+                if logger.config().log_queries {
+                    logger.record(
+                        AuditEvent::QueryExecuted {
+                            identity: identity.clone(),
+                            query: query_request.query.clone(),
+                        },
+                        None,
+                    );
+                }
+            }
 
             let response = match self.execute_query(&query_request.query, identity.as_deref()) {
                 Ok(result) => query_result_to_proto(result),

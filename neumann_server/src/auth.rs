@@ -2,7 +2,9 @@
 
 use tonic::{Request, Status};
 
+use crate::audit::{AuditEvent, AuditLogger};
 use crate::config::AuthConfig;
+use crate::rate_limit::{Operation, RateLimiter};
 
 /// Extension type to carry authenticated identity through the request.
 #[derive(Debug, Clone)]
@@ -57,6 +59,67 @@ pub fn extract_identity<T>(
 
     // Query-level identity overrides if present
     Ok(query_identity.map(ToString::to_string).or(request_identity))
+}
+
+/// Validate request with rate limiting and audit logging.
+///
+/// This function combines authentication validation with rate limiting and audit logging.
+/// It returns the authenticated identity if successful.
+pub fn validate_request_with_audit<T>(
+    request: &Request<T>,
+    auth_config: &Option<AuthConfig>,
+    rate_limiter: Option<&RateLimiter>,
+    audit_logger: Option<&AuditLogger>,
+) -> Result<Option<String>, Status> {
+    let remote_addr = request.remote_addr().map(|a| a.to_string());
+
+    // Validate authentication
+    let result = validate_request(request, auth_config);
+
+    // Audit the result
+    if let Some(logger) = audit_logger {
+        match &result {
+            Ok(Some(identity)) => {
+                logger.record(
+                    AuditEvent::AuthSuccess {
+                        identity: identity.clone(),
+                    },
+                    remote_addr.as_deref(),
+                );
+            },
+            Ok(None) => {
+                // Anonymous access - no need to log
+            },
+            Err(status) => {
+                logger.record(
+                    AuditEvent::AuthFailure {
+                        reason: status.message().to_string(),
+                    },
+                    remote_addr.as_deref(),
+                );
+            },
+        }
+    }
+
+    // Check rate limit for authenticated identity
+    if let Ok(Some(ref identity)) = result {
+        if let Some(limiter) = rate_limiter {
+            if let Err(msg) = limiter.check_and_record(identity, Operation::Request) {
+                if let Some(logger) = audit_logger {
+                    logger.record(
+                        AuditEvent::RateLimited {
+                            identity: identity.clone(),
+                            operation: "request".to_string(),
+                        },
+                        remote_addr.as_deref(),
+                    );
+                }
+                return Err(Status::resource_exhausted(msg));
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -190,5 +253,143 @@ mod tests {
         let result = validate_request(&request, &Some(auth_config));
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some("user:alice".to_string()));
+    }
+
+    #[test]
+    fn test_validate_with_rate_limit_success() {
+        use crate::rate_limit::RateLimitConfig;
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let limiter = RateLimiter::new(RateLimitConfig::default());
+        let request = create_request_with_key("test-api-key-12345678");
+
+        let result =
+            validate_request_with_audit(&request, &Some(auth_config), Some(&limiter), None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("user:alice".to_string()));
+    }
+
+    #[test]
+    fn test_validate_with_rate_limit_exceeded() {
+        use crate::rate_limit::RateLimitConfig;
+        use std::time::Duration;
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let limiter = RateLimiter::new(
+            RateLimitConfig::new()
+                .with_max_requests(1)
+                .with_window(Duration::from_secs(60)),
+        );
+
+        // First request succeeds
+        let request = create_request_with_key("test-api-key-12345678");
+        let result =
+            validate_request_with_audit(&request, &Some(auth_config.clone()), Some(&limiter), None);
+        assert!(result.is_ok());
+
+        // Second request should fail
+        let request = create_request_with_key("test-api-key-12345678");
+        let result =
+            validate_request_with_audit(&request, &Some(auth_config), Some(&limiter), None);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn test_validate_with_audit_logging() {
+        use crate::audit::AuditConfig;
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let logger = AuditLogger::new(AuditConfig::default());
+        let request = create_request_with_key("test-api-key-12345678");
+
+        let result = validate_request_with_audit(&request, &Some(auth_config), None, Some(&logger));
+        assert!(result.is_ok());
+
+        // Check audit log
+        assert_eq!(logger.count(), 1);
+        let entries = logger.by_identity("user:alice");
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_auth_failure_audited() {
+        use crate::audit::AuditConfig;
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let logger = AuditLogger::new(AuditConfig::default());
+        let request = create_request_with_key("wrong-key");
+
+        let result = validate_request_with_audit(&request, &Some(auth_config), None, Some(&logger));
+        assert!(result.is_err());
+
+        // Auth failure should be logged
+        assert_eq!(logger.count(), 1);
+    }
+
+    #[test]
+    fn test_rate_limit_audited() {
+        use crate::audit::AuditConfig;
+        use crate::rate_limit::RateLimitConfig;
+        use std::time::Duration;
+
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+
+        let limiter = RateLimiter::new(
+            RateLimitConfig::new()
+                .with_max_requests(1)
+                .with_window(Duration::from_secs(60)),
+        );
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        // First request succeeds
+        let request = create_request_with_key("test-api-key-12345678");
+        let _ = validate_request_with_audit(
+            &request,
+            &Some(auth_config.clone()),
+            Some(&limiter),
+            Some(&logger),
+        );
+
+        // Second request should be rate limited
+        let request = create_request_with_key("test-api-key-12345678");
+        let _ = validate_request_with_audit(
+            &request,
+            &Some(auth_config),
+            Some(&limiter),
+            Some(&logger),
+        );
+
+        // Should have 2 auth success + 1 rate limited
+        assert_eq!(logger.count(), 3);
     }
 }

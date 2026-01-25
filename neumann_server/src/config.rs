@@ -3,7 +3,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use crate::audit::AuditConfig;
 use crate::error::{Result, ServerError};
+use crate::rate_limit::RateLimitConfig;
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -26,6 +28,10 @@ pub struct ServerConfig {
     pub blob_chunk_size: usize,
     /// Channel capacity for streaming responses (backpressure control).
     pub stream_channel_capacity: usize,
+    /// Rate limiting configuration (optional).
+    pub rate_limit: Option<RateLimitConfig>,
+    /// Audit logging configuration (optional).
+    pub audit: Option<AuditConfig>,
 }
 
 impl Default for ServerConfig {
@@ -43,6 +49,8 @@ impl Default for ServerConfig {
             enable_reflection: true,
             blob_chunk_size: 64 * 1024,  // 64KB chunks for streaming
             stream_channel_capacity: 32, // Bounded channel for backpressure
+            rate_limit: None,
+            audit: None,
         }
     }
 }
@@ -117,6 +125,20 @@ impl ServerConfig {
     #[must_use]
     pub fn with_stream_channel_capacity(mut self, capacity: usize) -> Self {
         self.stream_channel_capacity = capacity;
+        self
+    }
+
+    /// Set rate limiting configuration.
+    #[must_use]
+    pub fn with_rate_limit(mut self, config: RateLimitConfig) -> Self {
+        self.rate_limit = Some(config);
+        self
+    }
+
+    /// Set audit logging configuration.
+    #[must_use]
+    pub fn with_audit(mut self, config: AuditConfig) -> Self {
+        self.audit = Some(config);
         self
     }
 
@@ -592,5 +614,43 @@ mod tests {
             allow_anonymous: true,
         };
         assert!(auth.validate().is_err());
+    }
+
+    #[test]
+    fn test_server_config_with_rate_limit() {
+        let config = ServerConfig::new().with_rate_limit(RateLimitConfig::default());
+
+        assert!(config.rate_limit.is_some());
+        let rate_limit = config.rate_limit.as_ref().unwrap();
+        assert_eq!(rate_limit.max_requests, 1000);
+    }
+
+    #[test]
+    fn test_server_config_with_audit() {
+        let config = ServerConfig::new().with_audit(AuditConfig::default());
+
+        assert!(config.audit.is_some());
+        let audit = config.audit.as_ref().unwrap();
+        assert!(audit.enabled);
+    }
+
+    #[test]
+    fn test_server_config_with_both() {
+        let config = ServerConfig::new()
+            .with_rate_limit(RateLimitConfig::strict())
+            .with_audit(AuditConfig::default().with_query_logging());
+
+        assert!(config.rate_limit.is_some());
+        assert!(config.audit.is_some());
+        assert_eq!(config.rate_limit.as_ref().unwrap().max_requests, 10);
+        assert!(config.audit.as_ref().unwrap().log_queries);
+    }
+
+    #[test]
+    fn test_default_config_no_rate_limit_or_audit() {
+        let config = ServerConfig::default();
+
+        assert!(config.rate_limit.is_none());
+        assert!(config.audit.is_none());
     }
 }

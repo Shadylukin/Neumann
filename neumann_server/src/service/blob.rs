@@ -11,6 +11,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use tensor_blob::BlobStore;
 
+use crate::audit::{AuditEvent, AuditLogger};
 use crate::auth;
 use crate::config::{AuthConfig, ServerConfig};
 use crate::convert::{blob_metadata_to_proto, upload_metadata_to_put_options};
@@ -19,6 +20,7 @@ use crate::proto::{
     BlobDownloadChunk, BlobDownloadRequest, BlobMetadataRequest, BlobUploadRequest,
     BlobUploadResponse,
 };
+use crate::rate_limit::{Operation, RateLimiter};
 
 /// Implementation of the BlobService gRPC service.
 pub struct BlobServiceImpl {
@@ -27,6 +29,8 @@ pub struct BlobServiceImpl {
     auth_config: Option<AuthConfig>,
     max_upload_size: usize,
     stream_channel_capacity: usize,
+    rate_limiter: Option<Arc<RateLimiter>>,
+    audit_logger: Option<Arc<AuditLogger>>,
 }
 
 /// Default maximum upload size: 512MB
@@ -45,6 +49,8 @@ impl BlobServiceImpl {
             auth_config: None,
             max_upload_size: DEFAULT_MAX_UPLOAD_SIZE,
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
+            rate_limiter: None,
+            audit_logger: None,
         }
     }
 
@@ -57,6 +63,8 @@ impl BlobServiceImpl {
             auth_config: config.auth.clone(),
             max_upload_size: config.max_upload_size,
             stream_channel_capacity: config.stream_channel_capacity,
+            rate_limiter: None,
+            audit_logger: None,
         }
     }
 
@@ -69,6 +77,27 @@ impl BlobServiceImpl {
             auth_config: Some(auth_config),
             max_upload_size: DEFAULT_MAX_UPLOAD_SIZE,
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
+            rate_limiter: None,
+            audit_logger: None,
+        }
+    }
+
+    /// Create a new blob service with full configuration including rate limiting and audit.
+    #[must_use]
+    pub fn with_full_config(
+        blob_store: Arc<Mutex<BlobStore>>,
+        config: &ServerConfig,
+        rate_limiter: Option<Arc<RateLimiter>>,
+        audit_logger: Option<Arc<AuditLogger>>,
+    ) -> Self {
+        Self {
+            blob_store,
+            chunk_size: config.blob_chunk_size,
+            auth_config: config.auth.clone(),
+            max_upload_size: config.max_upload_size,
+            stream_channel_capacity: config.stream_channel_capacity,
+            rate_limiter,
+            audit_logger,
         }
     }
 
@@ -86,8 +115,31 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<Streaming<BlobUploadRequest>>,
     ) -> Result<Response<BlobUploadResponse>, Status> {
-        // Validate authentication
-        let _identity = auth::validate_request(&request, &self.auth_config)?;
+        // Validate authentication with rate limiting and audit
+        let identity = auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        )?;
+
+        // Check blob-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::BlobOp) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "blob_op".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
 
         let mut stream = request.into_inner();
 
@@ -156,6 +208,18 @@ impl BlobService for BlobServiceImpl {
             Status::internal("internal storage error")
         })?;
 
+        // Audit the upload
+        if let Some(ref logger) = self.audit_logger {
+            logger.record(
+                AuditEvent::BlobUpload {
+                    identity: identity.clone(),
+                    artifact_id: artifact_id.clone(),
+                    size: meta.size,
+                },
+                None,
+            );
+        }
+
         Ok(Response::new(BlobUploadResponse {
             artifact_id,
             size: meta.size as u64,
@@ -170,8 +234,31 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobDownloadRequest>,
     ) -> Result<Response<Self::DownloadStream>, Status> {
-        // Validate authentication
-        let _identity = auth::validate_request(&request, &self.auth_config)?;
+        // Validate authentication with rate limiting and audit
+        let identity = auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        )?;
+
+        // Check blob-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::BlobOp) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "blob_op".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
 
         let artifact_id = request.into_inner().artifact_id;
         let chunk_size = self.chunk_size;
@@ -188,6 +275,17 @@ impl BlobService for BlobServiceImpl {
         })?;
 
         drop(store); // Release lock before streaming
+
+        // Audit the download
+        if let Some(ref logger) = self.audit_logger {
+            logger.record(
+                AuditEvent::BlobDownload {
+                    identity: identity.clone(),
+                    artifact_id: artifact_id.clone(),
+                },
+                None,
+            );
+        }
 
         let (tx, rx) = mpsc::channel(self.stream_channel_capacity);
 
@@ -218,8 +316,31 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobDeleteRequest>,
     ) -> Result<Response<BlobDeleteResponse>, Status> {
-        // Validate authentication
-        let _identity = auth::validate_request(&request, &self.auth_config)?;
+        // Validate authentication with rate limiting and audit
+        let identity = auth::validate_request_with_audit(
+            &request,
+            &self.auth_config,
+            self.rate_limiter.as_deref(),
+            self.audit_logger.as_deref(),
+        )?;
+
+        // Check blob-specific rate limit
+        if let Some(ref limiter) = self.rate_limiter {
+            if let Some(ref id) = identity {
+                if let Err(msg) = limiter.check_and_record(id, Operation::BlobOp) {
+                    if let Some(ref logger) = self.audit_logger {
+                        logger.record(
+                            AuditEvent::RateLimited {
+                                identity: id.clone(),
+                                operation: "blob_op".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    return Err(Status::resource_exhausted(msg));
+                }
+            }
+        }
 
         let artifact_id = request.into_inner().artifact_id;
 
@@ -233,6 +354,17 @@ impl BlobService for BlobServiceImpl {
             }
         })?;
 
+        // Audit the deletion
+        if let Some(ref logger) = self.audit_logger {
+            logger.record(
+                AuditEvent::BlobDelete {
+                    identity: identity.clone(),
+                    artifact_id: artifact_id.clone(),
+                },
+                None,
+            );
+        }
+
         Ok(Response::new(BlobDeleteResponse { success: true }))
     }
 
@@ -240,7 +372,7 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobMetadataRequest>,
     ) -> Result<Response<ArtifactInfo>, Status> {
-        // Validate authentication
+        // Validate authentication (no rate limit for metadata - read-only operation)
         let _identity = auth::validate_request(&request, &self.auth_config)?;
 
         let artifact_id = request.into_inner().artifact_id;

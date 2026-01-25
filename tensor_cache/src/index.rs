@@ -235,7 +235,7 @@ impl CacheIndex {
                         let raw = metric.compute(&query_sparse, &stored_sparse);
                         metric.to_similarity(raw)
                     },
-                    EmbeddingStorage::TensorTrain(_) => {
+                    EmbeddingStorage::TensorTrain(_) | EmbeddingStorage::Quantized(_) => {
                         // Reconstruct to dense, then sparse for metric computation
                         let dense = embedding.to_dense();
                         let stored_sparse = SparseVector::from_dense(&dense);
@@ -335,7 +335,7 @@ impl CacheIndex {
                         let raw = metric.compute(query, &stored_sparse);
                         metric.to_similarity(raw)
                     },
-                    EmbeddingStorage::TensorTrain(_) => {
+                    EmbeddingStorage::TensorTrain(_) | EmbeddingStorage::Quantized(_) => {
                         // Reconstruct to dense, then sparse for metric computation
                         let dense = embedding.to_dense();
                         let stored_sparse = SparseVector::from_dense(&dense);

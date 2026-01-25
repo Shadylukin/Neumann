@@ -46,6 +46,10 @@ pub enum ServerError {
     /// I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Rate limit exceeded.
+    #[error("rate limit exceeded: {0}")]
+    RateLimited(String),
 }
 
 impl From<ServerError> for Status {
@@ -61,6 +65,7 @@ impl From<ServerError> for Status {
             ServerError::NotFound(msg) => Status::not_found(msg.clone()),
             ServerError::PermissionDenied(msg) => Status::permission_denied(msg.clone()),
             ServerError::Io(e) => Status::internal(e.to_string()),
+            ServerError::RateLimited(msg) => Status::resource_exhausted(msg.clone()),
         }
     }
 }
@@ -147,5 +152,18 @@ mod tests {
 
         let err = ServerError::Query("test query error".to_string());
         assert_eq!(err.to_string(), "query error: test query error");
+    }
+
+    #[test]
+    fn test_rate_limited_to_status() {
+        let err = ServerError::RateLimited("too many requests".to_string());
+        let status: Status = err.into();
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn test_rate_limited_error_display() {
+        let err = ServerError::RateLimited("too many requests".to_string());
+        assert_eq!(err.to_string(), "rate limit exceeded: too many requests");
     }
 }

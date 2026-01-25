@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use neumann_server::{NeumannServer, ServerConfig, ServerError};
+use neumann_server::{NeumannServer, ServerConfig};
 use parking_lot::RwLock;
 use query_router::QueryRouter;
 use tokio::sync::oneshot;

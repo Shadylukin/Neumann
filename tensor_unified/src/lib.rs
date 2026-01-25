@@ -190,7 +190,7 @@ pub trait Unified {
 impl Unified for Node {
     fn as_unified(&self) -> UnifiedItem {
         let mut item = UnifiedItem::new("graph", self.id.to_string());
-        item.set("label", &self.labels.join(":"));
+        item.set("label", self.labels.join(":"));
         for (k, v) in &self.properties {
             item.set(k.clone(), format!("{:?}", v));
         }
@@ -476,7 +476,7 @@ impl UnifiedEngine {
             }
 
             let mut item = UnifiedItem::new("graph", node.id.to_string());
-            item.set("label", &node.labels.join(":"));
+            item.set("label", node.labels.join(":"));
             for (k, v) in &node.properties {
                 item.set(k.clone(), format!("{:?}", v));
             }
