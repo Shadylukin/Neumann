@@ -638,6 +638,51 @@ impl<T> Default for PagedResult<T> {
     }
 }
 
+/// Result of an aggregation operation on graph data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AggregateResult {
+    /// Number of items that matched the criteria.
+    pub count: u64,
+    /// Sum of numeric property values (None if no numeric values).
+    pub sum: Option<f64>,
+    /// Average of numeric property values (None if no numeric values).
+    pub avg: Option<f64>,
+    /// Minimum property value found (None if no values).
+    pub min: Option<PropertyValue>,
+    /// Maximum property value found (None if no values).
+    pub max: Option<PropertyValue>,
+}
+
+impl AggregateResult {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            count: 0,
+            sum: None,
+            avg: None,
+            min: None,
+            max: None,
+        }
+    }
+
+    #[must_use]
+    pub fn count_only(count: u64) -> Self {
+        Self {
+            count,
+            sum: None,
+            avg: None,
+            min: None,
+            max: None,
+        }
+    }
+}
+
+impl Default for AggregateResult {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 /// Min-heap entry for Dijkstra (smallest distance first).
 #[derive(Copy, Clone)]
 struct DijkstraEntry {
@@ -772,6 +817,7 @@ fn create_index_locks() -> [RwLock<()>; INDEX_LOCK_COUNT] {
 
 impl GraphEngine {
     const PARALLEL_THRESHOLD: usize = 100;
+    const AGGREGATE_PARALLEL_THRESHOLD: usize = 1000;
 
     #[must_use]
     pub fn new() -> Self {
@@ -4067,6 +4113,212 @@ impl GraphEngine {
                 suffix.parse::<u64>().is_ok()
             })
             .count()
+    }
+
+    // ========== Aggregation Methods ==========
+
+    /// Returns the total count of nodes.
+    #[must_use]
+    pub fn count_nodes(&self) -> u64 {
+        self.node_count() as u64
+    }
+
+    /// Returns the count of nodes with a specific label.
+    pub fn count_nodes_by_label(&self, label: &str) -> Result<u64> {
+        Ok(self.find_nodes_by_label(label)?.len() as u64)
+    }
+
+    /// Returns the total count of edges.
+    #[must_use]
+    pub fn count_edges(&self) -> u64 {
+        self.edge_count() as u64
+    }
+
+    /// Returns the count of edges with a specific type.
+    pub fn count_edges_by_type(&self, edge_type: &str) -> Result<u64> {
+        Ok(self.find_edges_by_type(edge_type)?.len() as u64)
+    }
+
+    /// Aggregates a property across all nodes.
+    #[must_use]
+    pub fn aggregate_node_property(&self, property: &str) -> AggregateResult {
+        let nodes = self.all_nodes();
+        Self::aggregate_property_values(nodes.iter().filter_map(|n| n.properties.get(property)))
+    }
+
+    /// Aggregates a property across nodes with a specific label.
+    pub fn aggregate_node_property_by_label(
+        &self,
+        label: &str,
+        property: &str,
+    ) -> Result<AggregateResult> {
+        let nodes = self.find_nodes_by_label(label)?;
+        Ok(Self::aggregate_property_values(
+            nodes.iter().filter_map(|n| n.properties.get(property)),
+        ))
+    }
+
+    /// Aggregates a property across nodes matching a filter condition.
+    pub fn aggregate_node_property_where(
+        &self,
+        filter_prop: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+        agg_prop: &str,
+    ) -> Result<AggregateResult> {
+        let nodes = self.find_nodes_where(filter_prop, op, value)?;
+        Ok(Self::aggregate_property_values(
+            nodes.iter().filter_map(|n| n.properties.get(agg_prop)),
+        ))
+    }
+
+    /// Aggregates a property across all edges.
+    #[must_use]
+    pub fn aggregate_edge_property(&self, property: &str) -> AggregateResult {
+        let edges = self.all_edges();
+        Self::aggregate_property_values(edges.iter().filter_map(|e| e.properties.get(property)))
+    }
+
+    /// Aggregates a property across edges with a specific type.
+    pub fn aggregate_edge_property_by_type(
+        &self,
+        edge_type: &str,
+        property: &str,
+    ) -> Result<AggregateResult> {
+        let edges = self.find_edges_by_type(edge_type)?;
+        Ok(Self::aggregate_property_values(
+            edges.iter().filter_map(|e| e.properties.get(property)),
+        ))
+    }
+
+    /// Aggregates a property across edges matching a filter condition.
+    pub fn aggregate_edge_property_where(
+        &self,
+        filter_prop: &str,
+        op: RangeOp,
+        value: &PropertyValue,
+        agg_prop: &str,
+    ) -> Result<AggregateResult> {
+        let edges = self.find_edges_where(filter_prop, op, value)?;
+        Ok(Self::aggregate_property_values(
+            edges.iter().filter_map(|e| e.properties.get(agg_prop)),
+        ))
+    }
+
+    /// Returns the sum of a numeric property across all nodes.
+    #[must_use]
+    pub fn sum_node_property(&self, property: &str) -> Option<f64> {
+        self.aggregate_node_property(property).sum
+    }
+
+    /// Returns the average of a numeric property across all nodes.
+    #[must_use]
+    pub fn avg_node_property(&self, property: &str) -> Option<f64> {
+        self.aggregate_node_property(property).avg
+    }
+
+    /// Returns the sum of a numeric property across all edges.
+    #[must_use]
+    pub fn sum_edge_property(&self, property: &str) -> Option<f64> {
+        self.aggregate_edge_property(property).sum
+    }
+
+    /// Returns the average of a numeric property across all edges.
+    #[must_use]
+    pub fn avg_edge_property(&self, property: &str) -> Option<f64> {
+        self.aggregate_edge_property(property).avg
+    }
+
+    /// Core aggregation logic over property values.
+    #[allow(clippy::cast_precision_loss)] // Intentional for aggregation: values near i64::MAX are uncommon
+    fn aggregate_property_values<'a>(
+        values: impl Iterator<Item = &'a PropertyValue>,
+    ) -> AggregateResult {
+        let values: Vec<&PropertyValue> = values.collect();
+
+        if values.is_empty() {
+            return AggregateResult::empty();
+        }
+
+        let count = values.len() as u64;
+
+        // Extract numeric values for sum/avg
+        let numeric: Vec<f64> = values
+            .iter()
+            .filter_map(|v| match v {
+                PropertyValue::Int(i) => Some(*i as f64),
+                PropertyValue::Float(f) => Some(*f),
+                _ => None,
+            })
+            .collect();
+
+        let (sum, avg) = if numeric.is_empty() {
+            (None, None)
+        } else if numeric.len() >= Self::AGGREGATE_PARALLEL_THRESHOLD {
+            // Parallel aggregation for large datasets
+            let total: f64 = numeric.par_iter().sum();
+            (Some(total), Some(total / numeric.len() as f64))
+        } else {
+            // Sequential aggregation
+            let total: f64 = numeric.iter().sum();
+            (Some(total), Some(total / numeric.len() as f64))
+        };
+
+        // Find min/max across all comparable values
+        let min = values
+            .iter()
+            .copied()
+            .min_by(Self::compare_property_values)
+            .cloned();
+        let max = values
+            .iter()
+            .copied()
+            .max_by(Self::compare_property_values)
+            .cloned();
+
+        AggregateResult {
+            count,
+            sum,
+            avg,
+            min,
+            max,
+        }
+    }
+
+    /// Comparison function for `PropertyValue` ordering.
+    #[allow(clippy::trivially_copy_pass_by_ref)] // Required by min_by/max_by iterator adapters
+    #[allow(clippy::cast_precision_loss)] // Intentional for mixed Int/Float comparison
+    fn compare_property_values(a: &&PropertyValue, b: &&PropertyValue) -> CmpOrdering {
+        match (a, b) {
+            (PropertyValue::Null, PropertyValue::Null) => CmpOrdering::Equal,
+            (PropertyValue::Null, _) => CmpOrdering::Less,
+            (_, PropertyValue::Null) => CmpOrdering::Greater,
+            (PropertyValue::Int(x), PropertyValue::Int(y)) => x.cmp(y),
+            (PropertyValue::Float(x), PropertyValue::Float(y)) => {
+                x.partial_cmp(y).unwrap_or(CmpOrdering::Equal)
+            },
+            (PropertyValue::Int(x), PropertyValue::Float(y)) => {
+                (*x as f64).partial_cmp(y).unwrap_or(CmpOrdering::Equal)
+            },
+            (PropertyValue::Float(x), PropertyValue::Int(y)) => {
+                x.partial_cmp(&(*y as f64)).unwrap_or(CmpOrdering::Equal)
+            },
+            (PropertyValue::String(x), PropertyValue::String(y)) => x.cmp(y),
+            (PropertyValue::Bool(x), PropertyValue::Bool(y)) => x.cmp(y),
+            // Different types: use type ordinal for consistent ordering
+            _ => Self::property_value_type_ordinal(a).cmp(&Self::property_value_type_ordinal(b)),
+        }
+    }
+
+    /// Returns a numeric ordinal for property value types for consistent ordering.
+    const fn property_value_type_ordinal(v: &PropertyValue) -> u8 {
+        match v {
+            PropertyValue::Null => 0,
+            PropertyValue::Bool(_) => 1,
+            PropertyValue::Int(_) => 2,
+            PropertyValue::Float(_) => 3,
+            PropertyValue::String(_) => 4,
+        }
     }
 
     /// Delete an edge by ID, cleaning up edge lists on both connected nodes.
@@ -10851,5 +11103,539 @@ mod tests {
             .unwrap();
         assert!(result.is_empty());
         assert_eq!(result.total_count, Some(0));
+    }
+
+    // ========== Aggregation Tests ==========
+
+    #[test]
+    fn aggregate_result_empty() {
+        let result = AggregateResult::empty();
+        assert_eq!(result.count, 0);
+        assert!(result.sum.is_none());
+        assert!(result.avg.is_none());
+        assert!(result.min.is_none());
+        assert!(result.max.is_none());
+    }
+
+    #[test]
+    fn aggregate_result_count_only() {
+        let result = AggregateResult::count_only(42);
+        assert_eq!(result.count, 42);
+        assert!(result.sum.is_none());
+        assert!(result.avg.is_none());
+        assert!(result.min.is_none());
+        assert!(result.max.is_none());
+    }
+
+    #[test]
+    fn aggregate_result_default() {
+        let result = AggregateResult::default();
+        assert_eq!(result, AggregateResult::empty());
+    }
+
+    #[test]
+    fn count_nodes_empty_graph() {
+        let engine = GraphEngine::new();
+        assert_eq!(engine.count_nodes(), 0);
+    }
+
+    #[test]
+    fn count_nodes_basic() {
+        let engine = GraphEngine::new();
+        engine.create_node("A", HashMap::new()).unwrap();
+        engine.create_node("B", HashMap::new()).unwrap();
+        engine.create_node("A", HashMap::new()).unwrap();
+        assert_eq!(engine.count_nodes(), 3);
+    }
+
+    #[test]
+    fn count_nodes_by_label_basic() {
+        let engine = GraphEngine::new();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        engine.create_node("Company", HashMap::new()).unwrap();
+
+        assert_eq!(engine.count_nodes_by_label("Person").unwrap(), 2);
+        assert_eq!(engine.count_nodes_by_label("Company").unwrap(), 1);
+    }
+
+    #[test]
+    fn count_nodes_by_label_no_match() {
+        let engine = GraphEngine::new();
+        engine.create_node("Person", HashMap::new()).unwrap();
+        assert_eq!(engine.count_nodes_by_label("NonExistent").unwrap(), 0);
+    }
+
+    #[test]
+    fn count_edges_empty_graph() {
+        let engine = GraphEngine::new();
+        assert_eq!(engine.count_edges(), 0);
+    }
+
+    #[test]
+    fn count_edges_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n1, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+        assert_eq!(engine.count_edges(), 2);
+    }
+
+    #[test]
+    fn count_edges_by_type_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n1, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n2, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        assert_eq!(engine.count_edges_by_type("KNOWS").unwrap(), 2);
+        assert_eq!(engine.count_edges_by_type("FOLLOWS").unwrap(), 1);
+    }
+
+    #[test]
+    fn count_edges_by_type_no_match() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        assert_eq!(engine.count_edges_by_type("NonExistent").unwrap(), 0);
+    }
+
+    #[test]
+    fn aggregate_node_property_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.aggregate_node_property("age");
+        assert_eq!(result, AggregateResult::empty());
+    }
+
+    #[test]
+    fn aggregate_node_property_int_values() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("age".to_string(), PropertyValue::Int(20));
+        let mut props2 = HashMap::new();
+        props2.insert("age".to_string(), PropertyValue::Int(30));
+        let mut props3 = HashMap::new();
+        props3.insert("age".to_string(), PropertyValue::Int(40));
+
+        engine.create_node("Person", props1).unwrap();
+        engine.create_node("Person", props2).unwrap();
+        engine.create_node("Person", props3).unwrap();
+
+        let result = engine.aggregate_node_property("age");
+        assert_eq!(result.count, 3);
+        assert_eq!(result.sum, Some(90.0));
+        assert_eq!(result.avg, Some(30.0));
+        assert_eq!(result.min, Some(PropertyValue::Int(20)));
+        assert_eq!(result.max, Some(PropertyValue::Int(40)));
+    }
+
+    #[test]
+    fn aggregate_node_property_float_values() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("score".to_string(), PropertyValue::Float(1.5));
+        let mut props2 = HashMap::new();
+        props2.insert("score".to_string(), PropertyValue::Float(2.5));
+
+        engine.create_node("Item", props1).unwrap();
+        engine.create_node("Item", props2).unwrap();
+
+        let result = engine.aggregate_node_property("score");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(4.0));
+        assert_eq!(result.avg, Some(2.0));
+        assert_eq!(result.min, Some(PropertyValue::Float(1.5)));
+        assert_eq!(result.max, Some(PropertyValue::Float(2.5)));
+    }
+
+    #[test]
+    fn aggregate_node_property_mixed_numeric() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Float(20.5));
+
+        engine.create_node("Data", props1).unwrap();
+        engine.create_node("Data", props2).unwrap();
+
+        let result = engine.aggregate_node_property("value");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(30.5));
+        assert_eq!(result.avg, Some(15.25));
+    }
+
+    #[test]
+    fn aggregate_node_property_non_numeric() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+
+        engine.create_node("Person", props1).unwrap();
+        engine.create_node("Person", props2).unwrap();
+
+        let result = engine.aggregate_node_property("name");
+        assert_eq!(result.count, 2);
+        assert!(result.sum.is_none());
+        assert!(result.avg.is_none());
+        assert_eq!(result.min, Some(PropertyValue::String("Alice".to_string())));
+        assert_eq!(result.max, Some(PropertyValue::String("Bob".to_string())));
+    }
+
+    #[test]
+    fn aggregate_node_property_with_nulls() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Null);
+        let mut props3 = HashMap::new();
+        props3.insert("value".to_string(), PropertyValue::Int(20));
+
+        engine.create_node("Data", props1).unwrap();
+        engine.create_node("Data", props2).unwrap();
+        engine.create_node("Data", props3).unwrap();
+
+        let result = engine.aggregate_node_property("value");
+        assert_eq!(result.count, 3);
+        assert_eq!(result.sum, Some(30.0));
+        assert_eq!(result.avg, Some(15.0));
+        assert_eq!(result.min, Some(PropertyValue::Null));
+        assert_eq!(result.max, Some(PropertyValue::Int(20)));
+    }
+
+    #[test]
+    fn aggregate_node_property_by_label() {
+        let engine = GraphEngine::new();
+        let mut person1 = HashMap::new();
+        person1.insert("age".to_string(), PropertyValue::Int(25));
+        let mut person2 = HashMap::new();
+        person2.insert("age".to_string(), PropertyValue::Int(35));
+        let mut company = HashMap::new();
+        company.insert("age".to_string(), PropertyValue::Int(100));
+
+        engine.create_node("Person", person1).unwrap();
+        engine.create_node("Person", person2).unwrap();
+        engine.create_node("Company", company).unwrap();
+
+        let result = engine
+            .aggregate_node_property_by_label("Person", "age")
+            .unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(60.0));
+        assert_eq!(result.avg, Some(30.0));
+    }
+
+    #[test]
+    fn aggregate_node_property_where() {
+        let engine = GraphEngine::new();
+        engine.create_node_property_index("age").unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("age".to_string(), PropertyValue::Int(20));
+        props1.insert("score".to_string(), PropertyValue::Int(80));
+        let mut props2 = HashMap::new();
+        props2.insert("age".to_string(), PropertyValue::Int(30));
+        props2.insert("score".to_string(), PropertyValue::Int(90));
+        let mut props3 = HashMap::new();
+        props3.insert("age".to_string(), PropertyValue::Int(40));
+        props3.insert("score".to_string(), PropertyValue::Int(70));
+
+        engine.create_node("Person", props1).unwrap();
+        engine.create_node("Person", props2).unwrap();
+        engine.create_node("Person", props3).unwrap();
+
+        let result = engine
+            .aggregate_node_property_where("age", RangeOp::Gt, &PropertyValue::Int(25), "score")
+            .unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(160.0));
+        assert_eq!(result.avg, Some(80.0));
+    }
+
+    #[test]
+    fn aggregate_edge_property_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Int(5));
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Int(10));
+
+        engine.create_edge(n1, n2, "CONN", props1, true).unwrap();
+        engine.create_edge(n2, n1, "CONN", props2, true).unwrap();
+
+        let result = engine.aggregate_edge_property("weight");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(15.0));
+        assert_eq!(result.avg, Some(7.5));
+    }
+
+    #[test]
+    fn aggregate_edge_property_by_type() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("strength".to_string(), PropertyValue::Int(10));
+        let mut props2 = HashMap::new();
+        props2.insert("strength".to_string(), PropertyValue::Int(20));
+        let mut props3 = HashMap::new();
+        props3.insert("strength".to_string(), PropertyValue::Int(100));
+
+        engine.create_edge(n1, n2, "KNOWS", props1, true).unwrap();
+        engine.create_edge(n2, n1, "KNOWS", props2, true).unwrap();
+        engine.create_edge(n1, n2, "FOLLOWS", props3, true).unwrap();
+
+        let result = engine
+            .aggregate_edge_property_by_type("KNOWS", "strength")
+            .unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(30.0));
+        assert_eq!(result.avg, Some(15.0));
+    }
+
+    #[test]
+    fn aggregate_edge_property_where() {
+        let engine = GraphEngine::new();
+        engine.create_edge_property_index("weight").unwrap();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Int(5));
+        props1.insert("cost".to_string(), PropertyValue::Int(100));
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Int(15));
+        props2.insert("cost".to_string(), PropertyValue::Int(200));
+        let mut props3 = HashMap::new();
+        props3.insert("weight".to_string(), PropertyValue::Int(25));
+        props3.insert("cost".to_string(), PropertyValue::Int(300));
+
+        engine.create_edge(n1, n2, "CONN", props1, true).unwrap();
+        engine.create_edge(n2, n1, "CONN", props2, true).unwrap();
+        engine.create_edge(n1, n2, "CONN", props3, true).unwrap();
+
+        let result = engine
+            .aggregate_edge_property_where("weight", RangeOp::Ge, &PropertyValue::Int(15), "cost")
+            .unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.sum, Some(500.0));
+        assert_eq!(result.avg, Some(250.0));
+    }
+
+    #[test]
+    fn sum_node_property_basic() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Int(20));
+
+        engine.create_node("N", props1).unwrap();
+        engine.create_node("N", props2).unwrap();
+
+        assert_eq!(engine.sum_node_property("value"), Some(30.0));
+    }
+
+    #[test]
+    fn avg_node_property_basic() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Int(30));
+
+        engine.create_node("N", props1).unwrap();
+        engine.create_node("N", props2).unwrap();
+
+        assert_eq!(engine.avg_node_property("value"), Some(20.0));
+    }
+
+    #[test]
+    fn sum_edge_property_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Float(1.5));
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Float(2.5));
+
+        engine.create_edge(n1, n2, "E", props1, true).unwrap();
+        engine.create_edge(n2, n1, "E", props2, true).unwrap();
+
+        assert_eq!(engine.sum_edge_property("weight"), Some(4.0));
+    }
+
+    #[test]
+    fn avg_edge_property_basic() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("weight".to_string(), PropertyValue::Float(2.0));
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Float(4.0));
+
+        engine.create_edge(n1, n2, "E", props1, true).unwrap();
+        engine.create_edge(n2, n1, "E", props2, true).unwrap();
+
+        assert_eq!(engine.avg_edge_property("weight"), Some(3.0));
+    }
+
+    #[test]
+    fn aggregate_finds_min_int() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(50));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props3 = HashMap::new();
+        props3.insert("value".to_string(), PropertyValue::Int(30));
+
+        engine.create_node("N", props1).unwrap();
+        engine.create_node("N", props2).unwrap();
+        engine.create_node("N", props3).unwrap();
+
+        let result = engine.aggregate_node_property("value");
+        assert_eq!(result.min, Some(PropertyValue::Int(10)));
+    }
+
+    #[test]
+    fn aggregate_finds_max_int() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("value".to_string(), PropertyValue::Int(50));
+        let mut props2 = HashMap::new();
+        props2.insert("value".to_string(), PropertyValue::Int(10));
+        let mut props3 = HashMap::new();
+        props3.insert("value".to_string(), PropertyValue::Int(30));
+
+        engine.create_node("N", props1).unwrap();
+        engine.create_node("N", props2).unwrap();
+        engine.create_node("N", props3).unwrap();
+
+        let result = engine.aggregate_node_property("value");
+        assert_eq!(result.max, Some(PropertyValue::Int(50)));
+    }
+
+    #[test]
+    fn aggregate_finds_min_string() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "name".to_string(),
+            PropertyValue::String("Zebra".to_string()),
+        );
+        let mut props2 = HashMap::new();
+        props2.insert(
+            "name".to_string(),
+            PropertyValue::String("Apple".to_string()),
+        );
+        let mut props3 = HashMap::new();
+        props3.insert(
+            "name".to_string(),
+            PropertyValue::String("Mango".to_string()),
+        );
+
+        engine.create_node("Item", props1).unwrap();
+        engine.create_node("Item", props2).unwrap();
+        engine.create_node("Item", props3).unwrap();
+
+        let result = engine.aggregate_node_property("name");
+        assert_eq!(result.min, Some(PropertyValue::String("Apple".to_string())));
+        assert_eq!(result.max, Some(PropertyValue::String("Zebra".to_string())));
+    }
+
+    #[test]
+    fn aggregate_finds_max_float() {
+        let engine = GraphEngine::new();
+        let mut props1 = HashMap::new();
+        props1.insert("score".to_string(), PropertyValue::Float(1.1));
+        let mut props2 = HashMap::new();
+        props2.insert("score".to_string(), PropertyValue::Float(9.9));
+        let mut props3 = HashMap::new();
+        props3.insert("score".to_string(), PropertyValue::Float(5.5));
+
+        engine.create_node("Item", props1).unwrap();
+        engine.create_node("Item", props2).unwrap();
+        engine.create_node("Item", props3).unwrap();
+
+        let result = engine.aggregate_node_property("score");
+        assert_eq!(result.max, Some(PropertyValue::Float(9.9)));
+    }
+
+    #[test]
+    fn aggregate_empty_property_name() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("".to_string(), PropertyValue::Int(42));
+        engine.create_node("N", props).unwrap();
+
+        let result = engine.aggregate_node_property("");
+        assert_eq!(result.count, 1);
+        assert_eq!(result.sum, Some(42.0));
+    }
+
+    #[test]
+    fn aggregate_nonexistent_property() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("test".to_string()),
+        );
+        engine.create_node("N", props).unwrap();
+
+        let result = engine.aggregate_node_property("nonexistent");
+        assert_eq!(result, AggregateResult::empty());
+    }
+
+    #[test]
+    fn aggregate_large_dataset_parallel() {
+        let engine = GraphEngine::new();
+
+        // Create more than AGGREGATE_PARALLEL_THRESHOLD nodes
+        for i in 0..1500 {
+            let mut props = HashMap::new();
+            props.insert("value".to_string(), PropertyValue::Int(i));
+            engine.create_node("Data", props).unwrap();
+        }
+
+        let result = engine.aggregate_node_property("value");
+        assert_eq!(result.count, 1500);
+        // Sum of 0..1500 = n*(n-1)/2 = 1500*1499/2 = 1124250
+        assert_eq!(result.sum, Some(1_124_250.0));
+        assert_eq!(result.avg, Some(1_124_250.0 / 1500.0));
+        assert_eq!(result.min, Some(PropertyValue::Int(0)));
+        assert_eq!(result.max, Some(PropertyValue::Int(1499)));
     }
 }
