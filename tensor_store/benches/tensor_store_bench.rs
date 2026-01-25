@@ -1821,6 +1821,171 @@ fn bench_hnsw_insert_auto(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================
+// Scalar Quantization Benchmarks
+// ============================================================
+
+fn bench_hnsw_insert_quantized(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/insert/quantized");
+
+    for &(dim, size) in &[(128, 1000), (768, 1000), (768, 5000)] {
+        let vectors: Vec<Vec<f32>> = (0..size)
+            .map(|i| generate_random_vector(dim, i as u64))
+            .collect();
+
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("{dim}d"), size),
+            &vectors,
+            |b, vecs| {
+                b.iter(|| {
+                    let index = HNSWIndex::new();
+                    for v in vecs {
+                        black_box(index.insert_quantized(v));
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_hnsw_search_quantized(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/search/quantized");
+
+    for &size in &[1000, 5000, 10000] {
+        let index = HNSWIndex::new();
+        for i in 0..size {
+            let v = generate_random_vector(768, i as u64);
+            index.insert_quantized(&v);
+        }
+
+        let query = generate_random_vector(768, 99999);
+
+        for &k in &[10, 50, 100] {
+            group.bench_with_input(
+                BenchmarkId::new(format!("n{size}_k{k}"), size),
+                &query,
+                |b, q| {
+                    b.iter(|| black_box(index.search(q, k)));
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+fn bench_hnsw_quantized_vs_dense(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/quantized_vs_dense");
+
+    let vectors: Vec<Vec<f32>> = (0..1000)
+        .map(|i| generate_random_vector(768, i as u64))
+        .collect();
+    let query = generate_random_vector(768, 99999);
+
+    // Dense insert
+    group.throughput(Throughput::Elements(1000));
+    group.bench_function("insert_dense_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                black_box(index.insert(v.clone()));
+            }
+        });
+    });
+
+    // Quantized insert
+    group.bench_function("insert_quantized_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                black_box(index.insert_quantized(v));
+            }
+        });
+    });
+
+    // Dense search
+    let index_dense = HNSWIndex::new();
+    for v in &vectors {
+        index_dense.insert(v.clone());
+    }
+    group.bench_function("search_dense_k10", |b| {
+        b.iter(|| black_box(index_dense.search(&query, 10)));
+    });
+
+    // Quantized search
+    let index_quantized = HNSWIndex::new();
+    for v in &vectors {
+        index_quantized.insert_quantized(v);
+    }
+    group.bench_function("search_quantized_k10", |b| {
+        b.iter(|| black_box(index_quantized.search(&query, 10)));
+    });
+
+    group.finish();
+}
+
+fn bench_hnsw_memory_quantized(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/memory/quantized");
+
+    let vectors: Vec<Vec<f32>> = (0..1000)
+        .map(|i| generate_random_vector(768, i as u64))
+        .collect();
+
+    group.bench_function("dense_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                index.insert(v.clone());
+            }
+            let stats = index.memory_stats();
+            black_box(stats.embedding_bytes)
+        });
+    });
+
+    group.bench_function("quantized_1000x768", |b| {
+        b.iter(|| {
+            let index = HNSWIndex::new();
+            for v in &vectors {
+                index.insert_quantized(v);
+            }
+            let stats = index.memory_stats();
+            black_box(stats.embedding_bytes)
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_hnsw_mixed_storage(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hnsw/mixed_storage");
+
+    let vectors: Vec<Vec<f32>> = (0..1000)
+        .map(|i| generate_random_vector(768, i as u64))
+        .collect();
+    let query = generate_random_vector(768, 99999);
+
+    // Mixed: 50% dense, 50% quantized
+    let index = HNSWIndex::new();
+    for (i, v) in vectors.iter().enumerate() {
+        if i % 2 == 0 {
+            index.insert(v.clone());
+        } else {
+            index.insert_quantized(v);
+        }
+    }
+
+    group.bench_function("search_mixed_k10", |b| {
+        b.iter(|| black_box(index.search(&query, 10)));
+    });
+
+    group.bench_function("search_mixed_k50", |b| {
+        b.iter(|| black_box(index.search(&query, 50)));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     hnsw_benches,
     bench_hnsw_insert_dense,
@@ -1832,6 +1997,15 @@ criterion_group!(
     bench_hnsw_insert_auto,
 );
 
+criterion_group!(
+    hnsw_quantized_benches,
+    bench_hnsw_insert_quantized,
+    bench_hnsw_search_quantized,
+    bench_hnsw_quantized_vs_dense,
+    bench_hnsw_memory_quantized,
+    bench_hnsw_mixed_storage,
+);
+
 criterion_main!(
     benches,
     metadata_slab_benches,
@@ -1839,5 +2013,6 @@ criterion_main!(
     delta_vector_benches,
     kmeans_benches,
     tiered_benches,
-    hnsw_benches
+    hnsw_benches,
+    hnsw_quantized_benches
 );

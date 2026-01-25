@@ -119,7 +119,7 @@ pub use entity_index::{
 pub use graph_tensor::{EdgeId, GraphTensor, GraphTensorSnapshot};
 pub use hnsw::{
     EmbeddingStorage, EmbeddingStorageError, HNSWConfig, HNSWDistanceMetric, HNSWIndex,
-    HNSWMemoryStats,
+    HNSWMemoryStats, ScalarQuantizedVector,
 };
 pub use instrumentation::{
     HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
