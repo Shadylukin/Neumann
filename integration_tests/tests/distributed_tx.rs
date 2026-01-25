@@ -433,7 +433,7 @@ fn test_coordinator_orthogonal_merge_success() {
 
 #[test]
 fn test_participant_prepare_commit() {
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     let request = PrepareRequest {
         tx_id: 42,
@@ -459,7 +459,7 @@ fn test_participant_prepare_commit() {
 
 #[test]
 fn test_participant_prepare_abort() {
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     let request = PrepareRequest {
         tx_id: 42,
@@ -483,7 +483,7 @@ fn test_participant_prepare_abort() {
 
 #[test]
 fn test_participant_conflict_on_locked_key() {
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     // First prepare
     let request1 = PrepareRequest {
@@ -523,7 +523,7 @@ fn test_participant_conflict_on_locked_key() {
 
 #[test]
 fn test_participant_stale_cleanup() {
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     let request = PrepareRequest {
         tx_id: 1,

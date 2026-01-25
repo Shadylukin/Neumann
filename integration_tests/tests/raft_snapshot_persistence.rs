@@ -208,14 +208,14 @@ fn test_startup_rejects_corrupted_snapshot() {
 fn test_snapshot_roundtrip_integrity() {
     let store = TensorStore::new();
 
-    // Create leader with entries
+    // Create leader with entries (single-node cluster for propose to work without quorum issues)
     let transport1 = Arc::new(MemoryTransport::new("leader".to_string()));
     let mut config = RaftConfig::default();
     config.snapshot_threshold = 5;
 
     let leader = Arc::new(RaftNode::with_store(
         "leader".to_string(),
-        vec!["follower".to_string()],
+        vec![],
         transport1,
         config.clone(),
         &store,

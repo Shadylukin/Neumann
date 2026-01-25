@@ -23,9 +23,13 @@ use serde::{Deserialize, Serialize};
 /// Range operation for B-tree index queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeOp {
+    /// Less than.
     Lt,
+    /// Less than or equal.
     Le,
+    /// Greater than.
     Gt,
+    /// Greater than or equal.
     Ge,
 }
 
@@ -34,11 +38,13 @@ pub enum RangeOp {
 pub struct RowId(pub u64);
 
 impl RowId {
+    /// Creates a new row ID.
     #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
+    /// Returns the underlying u64 value.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0
@@ -62,21 +68,33 @@ impl From<u64> for RowId {
 /// Column data type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
+    /// 64-bit signed integer.
     Int,
+    /// 64-bit floating point.
     Float,
+    /// UTF-8 string.
     String,
+    /// Boolean.
     Bool,
+    /// Binary data.
+    Bytes,
+    /// JSON string.
+    Json,
 }
 
 /// Column definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnDef {
+    /// Column name.
     pub name: String,
+    /// Column data type.
     pub col_type: ColumnType,
+    /// Whether null values are allowed.
     pub nullable: bool,
 }
 
 impl ColumnDef {
+    /// Creates a new column definition.
     #[must_use]
     pub fn new(name: &str, col_type: ColumnType, nullable: bool) -> Self {
         Self {
@@ -90,11 +108,14 @@ impl ColumnDef {
 /// Table schema definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSchema {
+    /// Column definitions.
     pub columns: Vec<ColumnDef>,
+    /// Primary key column name.
     pub primary_key: Option<String>,
 }
 
 impl TableSchema {
+    /// Creates a schema with no primary key.
     #[must_use]
     pub const fn new(columns: Vec<ColumnDef>) -> Self {
         Self {
@@ -103,12 +124,14 @@ impl TableSchema {
         }
     }
 
+    /// Sets the primary key column.
     #[must_use]
     pub fn with_primary_key(mut self, column: &str) -> Self {
         self.primary_key = Some(column.to_string());
         self
     }
 
+    /// Finds the index of a column by name.
     #[must_use]
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
@@ -118,14 +141,24 @@ impl TableSchema {
 /// Column value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ColumnValue {
+    /// Null/missing value.
     Null,
+    /// 64-bit signed integer.
     Int(i64),
+    /// 64-bit floating point.
     Float(f64),
+    /// UTF-8 string.
     String(String),
+    /// Boolean.
     Bool(bool),
+    /// Binary data.
+    Bytes(Vec<u8>),
+    /// JSON string.
+    Json(String),
 }
 
 impl ColumnValue {
+    /// Returns true if this is a null value.
     #[must_use]
     pub const fn is_null(&self) -> bool {
         matches!(self, Self::Null)
@@ -142,6 +175,8 @@ enum ColumnStorage {
     Float(Vec<f64>),
     String(Vec<Option<String>>),
     Bool(BitVec),
+    Bytes(Vec<Option<Vec<u8>>>),
+    Json(Vec<Option<String>>),
 }
 
 impl ColumnStorage {
@@ -151,9 +186,12 @@ impl ColumnStorage {
             ColumnType::Float => Self::Float(Vec::with_capacity(capacity)),
             ColumnType::String => Self::String(Vec::with_capacity(capacity)),
             ColumnType::Bool => Self::Bool(BitVec::with_capacity(capacity)),
+            ColumnType::Bytes => Self::Bytes(Vec::with_capacity(capacity)),
+            ColumnType::Json => Self::Json(Vec::with_capacity(capacity)),
         }
     }
 
+    #[allow(clippy::match_same_arms)]
     fn push(&mut self, value: &ColumnValue) {
         match (self, value) {
             (Self::Int(v), ColumnValue::Int(i)) => v.push(*i),
@@ -164,6 +202,10 @@ impl ColumnStorage {
             (Self::String(v), ColumnValue::Null) => v.push(None),
             (Self::Bool(v), ColumnValue::Bool(b)) => v.push(*b),
             (Self::Bool(v), ColumnValue::Null) => v.push(false),
+            (Self::Bytes(v), ColumnValue::Bytes(b)) => v.push(Some(b.clone())),
+            (Self::Bytes(v), ColumnValue::Null) => v.push(None),
+            (Self::Json(v), ColumnValue::Json(j)) => v.push(Some(j.clone())),
+            (Self::Json(v), ColumnValue::Null) => v.push(None),
             _ => {}, // Type mismatch - should be validated before
         }
     }
@@ -183,6 +225,66 @@ impl ColumnStorage {
             Self::Bool(v) => v
                 .get(idx)
                 .map_or(ColumnValue::Null, |b| ColumnValue::Bool(*b)),
+            Self::Bytes(v) => v
+                .get(idx)
+                .and_then(Clone::clone)
+                .map_or(ColumnValue::Null, ColumnValue::Bytes),
+            Self::Json(v) => v
+                .get(idx)
+                .and_then(Clone::clone)
+                .map_or(ColumnValue::Null, ColumnValue::Json),
+        }
+    }
+
+    #[allow(clippy::match_same_arms)]
+    fn set(&mut self, idx: usize, value: &ColumnValue) {
+        match (self, value) {
+            (Self::Int(v), ColumnValue::Int(i)) => {
+                if idx < v.len() {
+                    v[idx] = *i;
+                }
+            },
+            (Self::Float(v), ColumnValue::Float(f)) => {
+                if idx < v.len() {
+                    v[idx] = *f;
+                }
+            },
+            (Self::String(v), ColumnValue::String(s)) => {
+                if idx < v.len() {
+                    v[idx] = Some(s.clone());
+                }
+            },
+            (Self::String(v), ColumnValue::Null) => {
+                if idx < v.len() {
+                    v[idx] = None;
+                }
+            },
+            (Self::Bool(v), ColumnValue::Bool(b)) => {
+                if idx < v.len() {
+                    v.set(idx, *b);
+                }
+            },
+            (Self::Bytes(v), ColumnValue::Bytes(b)) => {
+                if idx < v.len() {
+                    v[idx] = Some(b.clone());
+                }
+            },
+            (Self::Bytes(v), ColumnValue::Null) => {
+                if idx < v.len() {
+                    v[idx] = None;
+                }
+            },
+            (Self::Json(v), ColumnValue::Json(j)) => {
+                if idx < v.len() {
+                    v[idx] = Some(j.clone());
+                }
+            },
+            (Self::Json(v), ColumnValue::Null) => {
+                if idx < v.len() {
+                    v[idx] = None;
+                }
+            },
+            _ => {}, // Type mismatch - should be validated before
         }
     }
 }
@@ -411,6 +513,123 @@ impl TableStorage {
         }
         result
     }
+
+    fn update(&mut self, row_id: RowId, updates: &[(String, ColumnValue)]) -> bool {
+        let idx = row_id.as_index();
+        if idx >= self.total_rows || !self.alive[idx] {
+            return false;
+        }
+
+        for (col_name, value) in updates {
+            if let Some(col_idx) = self.schema.column_index(col_name) {
+                self.columns[col_idx].set(idx, value);
+                self.null_bitmaps[col_idx].set(idx, value.is_null());
+            }
+        }
+        true
+    }
+
+    fn restore_row(&mut self, row_id: RowId, values: &[ColumnValue]) -> bool {
+        let idx = row_id.as_index();
+        if idx >= self.total_rows || !self.alive[idx] {
+            return false;
+        }
+        if values.len() != self.schema.columns.len() {
+            return false;
+        }
+
+        for (col_idx, value) in values.iter().enumerate() {
+            self.columns[col_idx].set(idx, value);
+            self.null_bitmaps[col_idx].set(idx, value.is_null());
+        }
+        true
+    }
+
+    fn restore_deleted_row(&mut self, row_id: RowId, values: &[ColumnValue]) -> bool {
+        let idx = row_id.as_index();
+        if idx >= self.total_rows || self.alive[idx] {
+            // Row doesn't exist or is already alive
+            return false;
+        }
+        if values.len() != self.schema.columns.len() {
+            return false;
+        }
+
+        // Mark as alive
+        self.alive.set(idx, true);
+        self.live_rows += 1;
+
+        // Restore values
+        for (col_idx, value) in values.iter().enumerate() {
+            self.columns[col_idx].set(idx, value);
+            self.null_bitmaps[col_idx].set(idx, value.is_null());
+        }
+        true
+    }
+
+    fn get_rows_by_indices(&self, indices: &[usize]) -> Vec<(RowId, Row)> {
+        let mut results = Vec::with_capacity(indices.len());
+        for &idx in indices {
+            if idx < self.total_rows && self.alive[idx] {
+                let row: Row = self
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(col_idx, col)| {
+                        if self.null_bitmaps[col_idx][idx] {
+                            ColumnValue::Null
+                        } else {
+                            col.get(idx)
+                        }
+                    })
+                    .collect();
+                results.push((RowId::new(idx as u64), row));
+            }
+        }
+        results
+    }
+
+    fn get_int_column(&self, column: &str) -> Option<(&[i64], Vec<u64>, Vec<u64>)> {
+        let col_idx = self.schema.column_index(column)?;
+        if let ColumnStorage::Int(values) = &self.columns[col_idx] {
+            let alive_words = self.alive_as_words();
+            let null_words = self.null_bitmap_as_words(col_idx);
+            Some((values.as_slice(), alive_words, null_words))
+        } else {
+            None
+        }
+    }
+
+    fn get_float_column(&self, column: &str) -> Option<(&[f64], Vec<u64>, Vec<u64>)> {
+        let col_idx = self.schema.column_index(column)?;
+        if let ColumnStorage::Float(values) = &self.columns[col_idx] {
+            let alive_words = self.alive_as_words();
+            let null_words = self.null_bitmap_as_words(col_idx);
+            Some((values.as_slice(), alive_words, null_words))
+        } else {
+            None
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn alive_as_words(&self) -> Vec<u64> {
+        // BitVec uses usize storage; on 64-bit we can cast directly
+        self.alive
+            .as_raw_slice()
+            .iter()
+            .map(|&word| word as u64)
+            .collect()
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn null_bitmap_as_words(&self, col_idx: usize) -> Vec<u64> {
+        // BitVec uses usize storage; on 64-bit we can cast directly
+        self.null_bitmaps[col_idx]
+            .as_raw_slice()
+            .iter()
+            .map(|&word| word as u64)
+            .collect()
+    }
 }
 
 /// Columnar storage for relational tables.
@@ -424,6 +643,7 @@ pub struct RelationalSlab {
 }
 
 impl RelationalSlab {
+    /// Creates an empty relational slab.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -706,13 +926,156 @@ impl RelationalSlab {
         }
     }
 
-    /// Restore from a snapshot.
+    /// Restores from a snapshot.
     #[must_use]
     pub fn restore(snapshot: RelationalSlabSnapshot) -> Self {
         Self {
             tables: RwLock::new(snapshot.tables),
             next_table_id: AtomicU64::new(0),
         }
+    }
+
+    /// Update a row's columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or the row was not found.
+    pub fn update_row(
+        &self,
+        table: &str,
+        row_id: RowId,
+        updates: &[(String, ColumnValue)],
+    ) -> Result<(), RelationalError> {
+        let mut tables = self.tables.write();
+        let storage = tables
+            .get_mut(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        if !storage.update(row_id, updates) {
+            return Err(RelationalError::RowNotFound(row_id));
+        }
+        drop(tables);
+        Ok(())
+    }
+
+    /// Restore all columns of a row to given values (for transaction rollback).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist, the row was not found,
+    /// or the values count doesn't match the schema.
+    pub fn restore_row(
+        &self,
+        table: &str,
+        row_id: RowId,
+        values: &[ColumnValue],
+    ) -> Result<(), RelationalError> {
+        let mut tables = self.tables.write();
+        let storage = tables
+            .get_mut(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        if !storage.restore_row(row_id, values) {
+            return Err(RelationalError::RowNotFound(row_id));
+        }
+        drop(tables);
+        Ok(())
+    }
+
+    /// Restore a deleted row (for transaction rollback).
+    ///
+    /// Marks the row as alive and restores its values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist, the row was not deleted,
+    /// or the values count doesn't match the schema.
+    pub fn restore_deleted_row(
+        &self,
+        table: &str,
+        row_id: RowId,
+        values: &[ColumnValue],
+    ) -> Result<(), RelationalError> {
+        let mut tables = self.tables.write();
+        let storage = tables
+            .get_mut(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        if !storage.restore_deleted_row(row_id, values) {
+            return Err(RelationalError::RowNotFound(row_id));
+        }
+        drop(tables);
+        Ok(())
+    }
+
+    /// Get multiple rows by their indices.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist.
+    pub fn get_rows_by_indices(
+        &self,
+        table: &str,
+        indices: &[usize],
+    ) -> Result<Vec<(RowId, Row)>, RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        let result = storage.get_rows_by_indices(indices);
+        drop(tables);
+        Ok(result)
+    }
+
+    /// Get an integer column's raw data along with alive and null bitmaps.
+    ///
+    /// Returns `(values, alive_bitmap_words, null_bitmap_words)` where bitmaps
+    /// are packed as 64-bit words for SIMD operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or the column is not an int type.
+    #[allow(clippy::type_complexity, clippy::significant_drop_tightening)]
+    pub fn get_int_column(
+        &self,
+        table: &str,
+        column: &str,
+    ) -> Result<(Vec<i64>, Vec<u64>, Vec<u64>), RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        storage
+            .get_int_column(column)
+            .map(|(values, alive, nulls)| (values.to_vec(), alive, nulls))
+            .ok_or_else(|| RelationalError::ColumnNotFound(column.to_string()))
+    }
+
+    /// Get a float column's raw data along with alive and null bitmaps.
+    ///
+    /// Returns `(values, alive_bitmap_words, null_bitmap_words)` where bitmaps
+    /// are packed as 64-bit words for SIMD operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or the column is not a float type.
+    #[allow(clippy::type_complexity, clippy::significant_drop_tightening)]
+    pub fn get_float_column(
+        &self,
+        table: &str,
+        column: &str,
+    ) -> Result<(Vec<f64>, Vec<u64>, Vec<u64>), RelationalError> {
+        let tables = self.tables.read();
+        let storage = tables
+            .get(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        storage
+            .get_float_column(column)
+            .map(|(values, alive, nulls)| (values.to_vec(), alive, nulls))
+            .ok_or_else(|| RelationalError::ColumnNotFound(column.to_string()))
     }
 }
 
@@ -725,10 +1088,23 @@ impl Default for RelationalSlab {
 /// Errors from `RelationalSlab` operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationalError {
+    /// Table does not exist.
     TableNotFound(String),
+    /// Table already exists.
     TableExists(String),
-    ColumnMismatch { expected: usize, actual: usize },
+    /// Row has wrong number of columns.
+    ColumnMismatch {
+        /// Expected column count.
+        expected: usize,
+        /// Actual column count.
+        actual: usize,
+    },
+    /// Index creation failed.
     IndexCreationFailed(String),
+    /// Row does not exist or was deleted.
+    RowNotFound(RowId),
+    /// Column does not exist or wrong type.
+    ColumnNotFound(String),
 }
 
 impl std::fmt::Display for RelationalError {
@@ -742,6 +1118,8 @@ impl std::fmt::Display for RelationalError {
             Self::IndexCreationFailed(col) => {
                 write!(f, "index creation failed for column: {col}")
             },
+            Self::RowNotFound(row_id) => write!(f, "row not found: {}", row_id.0),
+            Self::ColumnNotFound(col) => write!(f, "column not found: {col}"),
         }
     }
 }
@@ -1513,5 +1891,597 @@ mod tests {
             "Range query took {:?}, expected < 5ms",
             elapsed
         );
+    }
+
+    // Tests for new column types (Bytes, Json)
+
+    #[test]
+    fn test_bytes_column() {
+        let slab = RelationalSlab::new();
+        let schema = TableSchema::new(vec![
+            ColumnDef::new("id", ColumnType::Int, false),
+            ColumnDef::new("data", ColumnType::Bytes, true),
+        ]);
+        slab.create_table("bindata", schema).unwrap();
+
+        let row1 = vec![
+            ColumnValue::Int(1),
+            ColumnValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+        ];
+        let row2 = vec![ColumnValue::Int(2), ColumnValue::Null];
+
+        let id1 = slab.insert("bindata", row1).unwrap();
+        let id2 = slab.insert("bindata", row2).unwrap();
+
+        let retrieved1 = slab.get("bindata", id1).unwrap().unwrap();
+        assert_eq!(
+            retrieved1[1],
+            ColumnValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])
+        );
+
+        let retrieved2 = slab.get("bindata", id2).unwrap().unwrap();
+        assert_eq!(retrieved2[1], ColumnValue::Null);
+    }
+
+    #[test]
+    fn test_json_column() {
+        let slab = RelationalSlab::new();
+        let schema = TableSchema::new(vec![
+            ColumnDef::new("id", ColumnType::Int, false),
+            ColumnDef::new("metadata", ColumnType::Json, true),
+        ]);
+        slab.create_table("jsondata", schema).unwrap();
+
+        let json_str = r#"{"name": "test", "value": 42}"#.to_string();
+        let row1 = vec![ColumnValue::Int(1), ColumnValue::Json(json_str.clone())];
+        let row2 = vec![ColumnValue::Int(2), ColumnValue::Null];
+
+        let id1 = slab.insert("jsondata", row1).unwrap();
+        let id2 = slab.insert("jsondata", row2).unwrap();
+
+        let retrieved1 = slab.get("jsondata", id1).unwrap().unwrap();
+        assert_eq!(retrieved1[1], ColumnValue::Json(json_str));
+
+        let retrieved2 = slab.get("jsondata", id2).unwrap().unwrap();
+        assert_eq!(retrieved2[1], ColumnValue::Null);
+    }
+
+    // Tests for update_row
+
+    #[test]
+    fn test_update_row() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Update name and age
+        let updates = vec![
+            ("name".to_string(), ColumnValue::String("Bob".to_string())),
+            ("age".to_string(), ColumnValue::Int(35)),
+        ];
+        slab.update_row("users", row_id, &updates).unwrap();
+
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[0], ColumnValue::Int(1)); // id unchanged
+        assert_eq!(retrieved[1], ColumnValue::String("Bob".to_string()));
+        assert_eq!(retrieved[2], ColumnValue::Int(35));
+    }
+
+    #[test]
+    fn test_update_row_to_null() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Update name to null
+        let updates = vec![("name".to_string(), ColumnValue::Null)];
+        slab.update_row("users", row_id, &updates).unwrap();
+
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[1], ColumnValue::Null);
+    }
+
+    #[test]
+    fn test_update_row_not_found() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let updates = vec![("name".to_string(), ColumnValue::String("Bob".to_string()))];
+        let result = slab.update_row("users", RowId::new(999), &updates);
+
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    #[test]
+    fn test_update_deleted_row() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        slab.delete("users", row_id).unwrap();
+
+        let updates = vec![("name".to_string(), ColumnValue::String("Bob".to_string()))];
+        let result = slab.update_row("users", row_id, &updates);
+
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    // Tests for restore_row
+
+    #[test]
+    fn test_restore_row() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Modify the row
+        let updates = vec![
+            ("name".to_string(), ColumnValue::String("Bob".to_string())),
+            ("age".to_string(), ColumnValue::Int(35)),
+        ];
+        slab.update_row("users", row_id, &updates).unwrap();
+
+        // Restore to original values
+        let original = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+        ];
+        slab.restore_row("users", row_id, &original).unwrap();
+
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[0], ColumnValue::Int(1));
+        assert_eq!(retrieved[1], ColumnValue::String("Alice".to_string()));
+        assert_eq!(retrieved[2], ColumnValue::Int(30));
+    }
+
+    #[test]
+    fn test_restore_row_table_not_found() {
+        let slab = RelationalSlab::new();
+        let values = vec![ColumnValue::Int(1)];
+        let result = slab.restore_row("nonexistent", RowId::new(0), &values);
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn test_restore_row_not_found() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let values = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+        ];
+        let result = slab.restore_row("users", RowId::new(999), &values);
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    #[test]
+    fn test_restore_row_wrong_column_count() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Try to restore with wrong number of columns
+        let values = vec![ColumnValue::Int(1), ColumnValue::Int(2)]; // Only 2 instead of 3
+        let result = slab.restore_row("users", row_id, &values);
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    // Tests for restore_deleted_row
+
+    #[test]
+    fn test_restore_deleted_row() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Delete the row
+        slab.delete("users", row_id).unwrap();
+        assert!(slab.get("users", row_id).unwrap().is_none());
+
+        // Restore it
+        let values = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+        ];
+        slab.restore_deleted_row("users", row_id, &values).unwrap();
+
+        // Row should be back
+        let retrieved = slab.get("users", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[0], ColumnValue::Int(1));
+        assert_eq!(retrieved[1], ColumnValue::String("Alice".to_string()));
+        assert_eq!(retrieved[2], ColumnValue::Int(30));
+    }
+
+    #[test]
+    fn test_restore_deleted_row_table_not_found() {
+        let slab = RelationalSlab::new();
+        let values = vec![ColumnValue::Int(1)];
+        let result = slab.restore_deleted_row("nonexistent", RowId::new(0), &values);
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn test_restore_deleted_row_not_deleted() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        // Try to restore a non-deleted row
+        let values = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+        ];
+        let result = slab.restore_deleted_row("users", row_id, &values);
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    #[test]
+    fn test_restore_deleted_row_wrong_column_count() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        slab.delete("users", row_id).unwrap();
+
+        // Try to restore with wrong number of columns
+        let values = vec![ColumnValue::Int(1)]; // Only 1 instead of 3
+        let result = slab.restore_deleted_row("users", row_id, &values);
+        assert!(matches!(result, Err(RelationalError::RowNotFound(_))));
+    }
+
+    #[test]
+    fn test_restore_deleted_row_updates_live_count() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let row_id = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        assert_eq!(slab.row_count("users").unwrap(), 1);
+
+        slab.delete("users", row_id).unwrap();
+        assert_eq!(slab.row_count("users").unwrap(), 0);
+
+        let values = vec![
+            ColumnValue::Int(1),
+            ColumnValue::String("Alice".to_string()),
+            ColumnValue::Int(30),
+        ];
+        slab.restore_deleted_row("users", row_id, &values).unwrap();
+        assert_eq!(slab.row_count("users").unwrap(), 1);
+    }
+
+    // Tests for get_rows_by_indices
+
+    #[test]
+    fn test_get_rows_by_indices() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        slab.insert("users", create_test_row(2, "Bob", 25)).unwrap();
+        slab.insert("users", create_test_row(3, "Charlie", 35))
+            .unwrap();
+
+        let results = slab.get_rows_by_indices("users", &[0, 2]).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, RowId::new(0));
+        assert_eq!(results[0].1[0], ColumnValue::Int(1));
+        assert_eq!(results[1].0, RowId::new(2));
+        assert_eq!(results[1].1[0], ColumnValue::Int(3));
+    }
+
+    #[test]
+    fn test_get_rows_by_indices_with_deleted() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let id1 = slab
+            .insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+        slab.insert("users", create_test_row(2, "Bob", 25)).unwrap();
+        slab.insert("users", create_test_row(3, "Charlie", 35))
+            .unwrap();
+
+        slab.delete("users", id1).unwrap();
+
+        let results = slab.get_rows_by_indices("users", &[0, 1, 2]).unwrap();
+
+        // Should only return 2 rows (index 0 was deleted)
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_get_rows_by_indices_empty() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let results = slab.get_rows_by_indices("users", &[]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_rows_by_indices_out_of_bounds() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let results = slab.get_rows_by_indices("users", &[0, 100, 200]).unwrap();
+
+        // Should only return the valid index
+        assert_eq!(results.len(), 1);
+    }
+
+    // Tests for get_int_column
+
+    #[test]
+    fn test_get_int_column() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(10, "Alice", 30))
+            .unwrap();
+        slab.insert("users", create_test_row(20, "Bob", 25))
+            .unwrap();
+        slab.insert("users", create_test_row(30, "Charlie", 35))
+            .unwrap();
+
+        let (values, alive, _nulls) = slab.get_int_column("users", "id").unwrap();
+
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0], 10);
+        assert_eq!(values[1], 20);
+        assert_eq!(values[2], 30);
+        assert!(!alive.is_empty());
+    }
+
+    #[test]
+    fn test_get_int_column_with_deleted() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let id1 = slab
+            .insert("users", create_test_row(10, "Alice", 30))
+            .unwrap();
+        slab.insert("users", create_test_row(20, "Bob", 25))
+            .unwrap();
+
+        slab.delete("users", id1).unwrap();
+
+        let (values, alive, _nulls) = slab.get_int_column("users", "id").unwrap();
+
+        // Values still there, but alive bitmap reflects deletion
+        assert_eq!(values.len(), 2);
+        // First bit in alive should be 0 (deleted)
+        assert_eq!(alive[0] & 1, 0);
+    }
+
+    #[test]
+    fn test_get_int_column_wrong_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let result = slab.get_int_column("users", "name");
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    #[test]
+    fn test_get_int_column_not_found() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        let result = slab.get_int_column("users", "nonexistent");
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    // Tests for get_float_column
+
+    #[test]
+    fn test_get_float_column() {
+        let slab = RelationalSlab::new();
+        let schema = TableSchema::new(vec![
+            ColumnDef::new("id", ColumnType::Int, false),
+            ColumnDef::new("score", ColumnType::Float, false),
+        ]);
+        slab.create_table("scores", schema).unwrap();
+
+        slab.insert(
+            "scores",
+            vec![ColumnValue::Int(1), ColumnValue::Float(95.5)],
+        )
+        .unwrap();
+        slab.insert(
+            "scores",
+            vec![ColumnValue::Int(2), ColumnValue::Float(87.3)],
+        )
+        .unwrap();
+
+        let (values, alive, _nulls) = slab.get_float_column("scores", "score").unwrap();
+
+        assert_eq!(values.len(), 2);
+        assert!((values[0] - 95.5).abs() < f64::EPSILON);
+        assert!((values[1] - 87.3).abs() < f64::EPSILON);
+        assert!(!alive.is_empty());
+    }
+
+    #[test]
+    fn test_get_float_column_wrong_type() {
+        let slab = RelationalSlab::new();
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        slab.insert("users", create_test_row(1, "Alice", 30))
+            .unwrap();
+
+        let result = slab.get_float_column("users", "id");
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+    }
+
+    // Tests for error types
+
+    #[test]
+    fn test_row_not_found_error_display() {
+        let err = RelationalError::RowNotFound(RowId::new(42));
+        assert_eq!(format!("{err}"), "row not found: 42");
+    }
+
+    #[test]
+    fn test_column_not_found_error_display() {
+        let err = RelationalError::ColumnNotFound("missing".to_string());
+        assert_eq!(format!("{err}"), "column not found: missing");
+    }
+
+    // Tests for bytes/json update
+
+    #[test]
+    fn test_update_bytes_column() {
+        let slab = RelationalSlab::new();
+        let schema = TableSchema::new(vec![
+            ColumnDef::new("id", ColumnType::Int, false),
+            ColumnDef::new("data", ColumnType::Bytes, true),
+        ]);
+        slab.create_table("bindata", schema).unwrap();
+
+        let row_id = slab
+            .insert(
+                "bindata",
+                vec![ColumnValue::Int(1), ColumnValue::Bytes(vec![1, 2, 3])],
+            )
+            .unwrap();
+
+        let updates = vec![("data".to_string(), ColumnValue::Bytes(vec![4, 5, 6, 7]))];
+        slab.update_row("bindata", row_id, &updates).unwrap();
+
+        let retrieved = slab.get("bindata", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[1], ColumnValue::Bytes(vec![4, 5, 6, 7]));
+    }
+
+    #[test]
+    fn test_update_json_column() {
+        let slab = RelationalSlab::new();
+        let schema = TableSchema::new(vec![
+            ColumnDef::new("id", ColumnType::Int, false),
+            ColumnDef::new("meta", ColumnType::Json, true),
+        ]);
+        slab.create_table("jsondata", schema).unwrap();
+
+        let row_id = slab
+            .insert(
+                "jsondata",
+                vec![
+                    ColumnValue::Int(1),
+                    ColumnValue::Json(r#"{"a":1}"#.to_string()),
+                ],
+            )
+            .unwrap();
+
+        let updates = vec![(
+            "meta".to_string(),
+            ColumnValue::Json(r#"{"b":2}"#.to_string()),
+        )];
+        slab.update_row("jsondata", row_id, &updates).unwrap();
+
+        let retrieved = slab.get("jsondata", row_id).unwrap().unwrap();
+        assert_eq!(retrieved[1], ColumnValue::Json(r#"{"b":2}"#.to_string()));
+    }
+
+    // Concurrent tests for new methods
+
+    #[test]
+    fn test_concurrent_update_row() {
+        let slab = Arc::new(RelationalSlab::new());
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        // Insert 100 rows
+        for i in 0..100 {
+            slab.insert("users", create_test_row(i, &format!("User{i}"), 20))
+                .unwrap();
+        }
+
+        // Spawn threads to update rows concurrently
+        let handles: Vec<_> = (0..10)
+            .map(|t| {
+                let slab = Arc::clone(&slab);
+                thread::spawn(move || {
+                    for i in 0..10 {
+                        let row_id = RowId::new((t * 10 + i) as u64);
+                        let updates = vec![(
+                            "age".to_string(),
+                            ColumnValue::Int(100 + (t * 10 + i) as i64),
+                        )];
+                        slab.update_row("users", row_id, &updates).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Verify all updates
+        for i in 0..100 {
+            let row = slab.get("users", RowId::new(i)).unwrap().unwrap();
+            assert_eq!(row[2], ColumnValue::Int(100 + i as i64));
+        }
+    }
+
+    #[test]
+    fn test_concurrent_get_rows_by_indices() {
+        let slab = Arc::new(RelationalSlab::new());
+        slab.create_table("users", create_test_schema()).unwrap();
+
+        for i in 0..100 {
+            slab.insert("users", create_test_row(i, &format!("User{i}"), 20))
+                .unwrap();
+        }
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let slab = Arc::clone(&slab);
+                thread::spawn(move || {
+                    let indices: Vec<usize> = (0..100).step_by(2).collect();
+                    let results = slab.get_rows_by_indices("users", &indices).unwrap();
+                    assert_eq!(results.len(), 50);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

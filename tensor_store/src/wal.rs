@@ -19,30 +19,48 @@ use crate::{EntityId, TensorData};
 /// WAL-specific errors.
 #[derive(Debug, Error)]
 pub enum WalError {
+    /// I/O operation failed.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// Serialization or deserialization failed.
     #[error("Serialization error: {0}")]
     Serialization(#[from] bincode::Error),
 
+    /// CRC32 checksum verification failed.
     #[error("Checksum mismatch at entry {index}: expected {expected:#x}, got {actual:#x}")]
     ChecksumMismatch {
+        /// Entry index where mismatch occurred.
         index: usize,
+        /// Expected checksum.
         expected: u32,
+        /// Actual checksum.
         actual: u32,
     },
 
+    /// WAL file size exceeds configured limit.
     #[error("WAL size limit exceeded: {current} >= {limit}")]
-    SizeLimitExceeded { current: u64, limit: u64 },
+    SizeLimitExceeded {
+        /// Current WAL size in bytes.
+        current: u64,
+        /// Maximum allowed size.
+        limit: u64,
+    },
 
+    /// Operation requires an active transaction.
     #[error("No active transaction")]
     NoActiveTransaction,
 
+    /// Attempted to start a transaction while one is active.
     #[error("Transaction already active: {0}")]
     TransactionAlreadyActive(u64),
 
+    /// Entry size exceeds `u32::MAX`.
     #[error("Entry too large: {size} bytes exceeds u32::MAX")]
-    EntryTooLarge { size: usize },
+    EntryTooLarge {
+        /// Entry size in bytes.
+        size: usize,
+    },
 }
 
 /// Result type for WAL operations.
@@ -52,37 +70,70 @@ pub type WalResult<T> = Result<T, WalError>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WalEntry {
     /// Set metadata key-value pair.
-    MetadataSet { key: String, data: TensorData },
+    MetadataSet {
+        /// Metadata key.
+        key: String,
+        /// Metadata value.
+        data: TensorData,
+    },
 
     /// Delete metadata key.
-    MetadataDelete { key: String },
+    MetadataDelete {
+        /// Metadata key to delete.
+        key: String,
+    },
 
     /// Set embedding for an entity.
     EmbeddingSet {
+        /// Entity ID.
         entity_id: EntityId,
+        /// Embedding vector.
         embedding: Vec<f32>,
     },
 
     /// Delete embedding for an entity.
-    EmbeddingDelete { entity_id: EntityId },
+    EmbeddingDelete {
+        /// Entity ID.
+        entity_id: EntityId,
+    },
 
     /// Create entity in index.
-    EntityCreate { key: String, entity_id: EntityId },
+    EntityCreate {
+        /// Entity key.
+        key: String,
+        /// Assigned entity ID.
+        entity_id: EntityId,
+    },
 
     /// Remove entity from index.
-    EntityRemove { key: String },
+    EntityRemove {
+        /// Entity key to remove.
+        key: String,
+    },
 
     /// Begin a transaction.
-    TxBegin { tx_id: u64 },
+    TxBegin {
+        /// Transaction ID.
+        tx_id: u64,
+    },
 
     /// Commit a transaction.
-    TxCommit { tx_id: u64 },
+    TxCommit {
+        /// Transaction ID.
+        tx_id: u64,
+    },
 
     /// Abort a transaction.
-    TxAbort { tx_id: u64 },
+    TxAbort {
+        /// Transaction ID.
+        tx_id: u64,
+    },
 
     /// Checkpoint marker (WAL can be truncated after this).
-    Checkpoint { snapshot_id: u64 },
+    Checkpoint {
+        /// Snapshot ID.
+        snapshot_id: u64,
+    },
 }
 
 /// WAL configuration.

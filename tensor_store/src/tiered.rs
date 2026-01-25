@@ -1,3 +1,14 @@
+//! Two-tier hot/cold storage with automatic data migration.
+//!
+//! Combines fast in-memory storage (hot tier) with memory-mapped file
+//! storage (cold tier) to balance performance and memory usage.
+//!
+//! # Design
+//!
+//! - **Hot tier**: In-memory [`TensorStore`] for frequently accessed data
+//! - **Cold tier**: Memory-mapped files for infrequently accessed data
+//! - **Auto-migration**: Access patterns tracked to move data between tiers
+
 use std::{
     collections::HashSet,
     hash::{Hash, Hasher},
@@ -15,11 +26,16 @@ use crate::{
     TensorData, TensorStore, TensorStoreError,
 };
 
+/// Errors from tiered storage operations.
 #[derive(Debug)]
 pub enum TieredError {
+    /// Error from underlying `TensorStore`.
     Store(TensorStoreError),
+    /// Error from memory-mapped storage.
     Mmap(MmapError),
+    /// I/O error.
     Io(std::io::Error),
+    /// Cold storage not configured.
     NotConfigured,
 }
 
@@ -54,6 +70,7 @@ impl From<std::io::Error> for TieredError {
     }
 }
 
+/// Result type for tiered storage operations.
 pub type Result<T> = std::result::Result<T, TieredError>;
 
 /// Configuration for tiered storage.
@@ -80,12 +97,19 @@ impl Default for TieredConfig {
 /// Statistics about tiered storage.
 #[derive(Debug, Clone)]
 pub struct TieredStats {
+    /// Number of entries in hot tier.
     pub hot_count: usize,
+    /// Number of entries in cold tier.
     pub cold_count: usize,
+    /// Total lookups to hot tier.
     pub hot_lookups: u64,
+    /// Total lookups to cold tier.
     pub cold_lookups: u64,
+    /// Successful hits in cold tier.
     pub cold_hits: u64,
+    /// Entries migrated from hot to cold.
     pub migrations_to_cold: u64,
+    /// Entries promoted from cold to hot.
     pub migrations_to_hot: u64,
 }
 

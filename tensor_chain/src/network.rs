@@ -284,6 +284,9 @@ pub struct LogEntry {
     /// Optional config change (for joint consensus membership changes).
     #[serde(default)]
     pub config_change: Option<ConfigChange>,
+    /// Optional codebook change (for consensus on quantization vocabulary).
+    #[serde(default)]
+    pub codebook_change: Option<CodebookChange>,
 }
 
 impl LogEntry {
@@ -293,6 +296,7 @@ impl LogEntry {
             index,
             block,
             config_change: None,
+            codebook_change: None,
         }
     }
 
@@ -302,11 +306,32 @@ impl LogEntry {
             index,
             block: Block::default(),
             config_change: Some(change),
+            codebook_change: None,
+        }
+    }
+
+    pub fn codebook(term: u64, index: u64, change: CodebookChange) -> Self {
+        Self {
+            term,
+            index,
+            block: Block::default(),
+            config_change: None,
+            codebook_change: Some(change),
         }
     }
 
     pub fn is_config_change(&self) -> bool {
         self.config_change.is_some()
+    }
+
+    pub fn is_codebook_change(&self) -> bool {
+        self.codebook_change.is_some()
+    }
+
+    /// Add a codebook change to this log entry (builder pattern).
+    pub fn with_codebook_change(mut self, change: CodebookChange) -> Self {
+        self.codebook_change = Some(change);
+        self
     }
 }
 
@@ -531,6 +556,25 @@ impl ConfigChange {
             additions,
             removals,
         }
+    }
+}
+
+/// Codebook change operations for Raft replication.
+///
+/// The global codebook stores the shared semantic vocabulary used for state
+/// quantization and fast-path validation. Changes to the codebook must be
+/// replicated through Raft to ensure all nodes have consistent state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CodebookChange {
+    /// Replace the entire global codebook.
+    Replace {
+        snapshot: crate::codebook::GlobalCodebookSnapshot,
+    },
+}
+
+impl CodebookChange {
+    pub fn replace(snapshot: crate::codebook::GlobalCodebookSnapshot) -> Self {
+        Self::Replace { snapshot }
     }
 }
 
@@ -2240,7 +2284,7 @@ mod tests {
 
         use crate::{block::Transaction, distributed_tx::TxParticipant};
 
-        let participant = Arc::new(TxParticipant::new());
+        let participant = Arc::new(TxParticipant::new_in_memory());
         let handler = TxHandler::new(participant);
 
         let prepare_msg = Message::TxPrepare(TxPrepareMsg {
@@ -2272,7 +2316,7 @@ mod tests {
 
         use crate::{block::Transaction, distributed_tx::TxParticipant};
 
-        let participant = Arc::new(TxParticipant::new());
+        let participant = Arc::new(TxParticipant::new_in_memory());
         let handler = TxHandler::new(participant.clone());
 
         // First prepare
@@ -2312,7 +2356,7 @@ mod tests {
 
         use crate::{block::Transaction, distributed_tx::TxParticipant};
 
-        let participant = Arc::new(TxParticipant::new());
+        let participant = Arc::new(TxParticipant::new_in_memory());
         let handler = TxHandler::new(participant.clone());
 
         // First prepare
@@ -2356,7 +2400,7 @@ mod tests {
 
         use crate::distributed_tx::TxParticipant;
 
-        let participant = Arc::new(TxParticipant::new());
+        let participant = Arc::new(TxParticipant::new_in_memory());
         let handler = TxHandler::new(participant);
 
         let ping_msg = Message::Ping { term: 1 };
@@ -2370,7 +2414,7 @@ mod tests {
 
         use crate::{block::Transaction, distributed_tx::TxParticipant};
 
-        let participant = Arc::new(TxParticipant::new());
+        let participant = Arc::new(TxParticipant::new_in_memory());
         let handler = TxHandler::new(participant);
 
         // First prepare succeeds
@@ -2867,6 +2911,114 @@ mod tests {
         let bytes = bincode::serialize(&entry).unwrap();
         let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
         assert!(decoded.is_config_change());
+    }
+
+    // ========== CodebookChange Tests ==========
+
+    #[test]
+    fn test_codebook_change_serialization() {
+        use crate::codebook::{CodebookEntry, GlobalCodebookSnapshot};
+
+        let snapshot = GlobalCodebookSnapshot::new(
+            4,
+            vec![CodebookEntry::new(0, vec![1.0, 0.0, 0.0, 0.0])],
+            1,
+        );
+        let change = CodebookChange::Replace { snapshot };
+
+        let bytes = bincode::serialize(&change).unwrap();
+        let decoded: CodebookChange = bincode::deserialize(&bytes).unwrap();
+        match decoded {
+            CodebookChange::Replace { snapshot } => {
+                assert_eq!(snapshot.version, 1);
+                assert_eq!(snapshot.dimension, 4);
+            },
+        }
+    }
+
+    #[test]
+    fn test_codebook_change_replace_constructor() {
+        use crate::codebook::GlobalCodebookSnapshot;
+
+        let snapshot = GlobalCodebookSnapshot::empty(2);
+        let change = CodebookChange::replace(snapshot.clone());
+
+        let CodebookChange::Replace { snapshot: s } = change;
+        assert_eq!(s, snapshot);
+    }
+
+    #[test]
+    fn test_log_entry_codebook() {
+        use crate::codebook::GlobalCodebookSnapshot;
+
+        let snapshot = GlobalCodebookSnapshot::empty(4);
+        let entry = LogEntry::codebook(1, 1, CodebookChange::replace(snapshot));
+
+        assert_eq!(entry.term, 1);
+        assert_eq!(entry.index, 1);
+        assert!(!entry.is_config_change());
+        assert!(entry.is_codebook_change());
+        assert!(entry.codebook_change.is_some());
+    }
+
+    #[test]
+    fn test_log_entry_with_codebook_change() {
+        use crate::block::BlockHeader;
+        use crate::codebook::GlobalCodebookSnapshot;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        let snapshot = GlobalCodebookSnapshot::new(2, vec![], 5);
+        let entry =
+            LogEntry::new(1, 1, block).with_codebook_change(CodebookChange::replace(snapshot));
+
+        assert!(!entry.is_config_change());
+        assert!(entry.is_codebook_change());
+        if let Some(CodebookChange::Replace { snapshot }) = entry.codebook_change {
+            assert_eq!(snapshot.version, 5);
+        } else {
+            panic!("Expected Replace variant");
+        }
+    }
+
+    #[test]
+    fn test_log_entry_codebook_change_serialization() {
+        use crate::block::BlockHeader;
+        use crate::codebook::GlobalCodebookSnapshot;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        let snapshot = GlobalCodebookSnapshot::new(2, vec![], 42);
+        let entry =
+            LogEntry::new(1, 1, block).with_codebook_change(CodebookChange::replace(snapshot));
+
+        let bytes = bincode::serialize(&entry).unwrap();
+        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+
+        assert!(decoded.is_codebook_change());
+        if let Some(CodebookChange::Replace { snapshot }) = decoded.codebook_change {
+            assert_eq!(snapshot.version, 42);
+        }
+    }
+
+    #[test]
+    fn test_log_entry_backward_compatible() {
+        // Simulate deserializing old LogEntry without codebook_change field
+        use crate::block::BlockHeader;
+
+        let header = BlockHeader::new(1, [0u8; 32], [0u8; 32], [0u8; 32], "proposer".to_string());
+        let block = crate::block::Block::new(header, vec![]);
+
+        // Create entry without codebook_change
+        let entry = LogEntry::new(1, 1, block);
+        let bytes = bincode::serialize(&entry).unwrap();
+
+        // Should deserialize with codebook_change = None
+        let decoded: LogEntry = bincode::deserialize(&bytes).unwrap();
+        assert!(!decoded.is_codebook_change());
+        assert!(decoded.codebook_change.is_none());
     }
 
     #[test]

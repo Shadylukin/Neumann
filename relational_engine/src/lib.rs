@@ -1,14 +1,36 @@
+//! SQL-like relational engine with SIMD-accelerated filtering.
+//!
+//! Provides table storage, indexing, and query execution on top of
+//! `tensor_store::RelationalSlab` for columnar storage.
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU64, Ordering},
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)] // Used in Phase 3 integration
+use tensor_store::RelationalSlab;
+pub use tensor_store::{
+    ColumnDef as SlabColumnDef, ColumnType as SlabColumnType, ColumnValue as SlabColumnValue,
+    RowId as SlabRowId, TableSchema as SlabTableSchema, WalConfig,
+};
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
+use tracing::instrument;
+
+pub mod transaction;
+pub use transaction::{
+    IndexChange, LockConflictInfo, RowLock, RowLockManager, Transaction, TransactionManager,
+    TxPhase, UndoEntry,
+};
 
 mod simd {
     use wide::{f64x4, i64x4, CmpEq, CmpGt, CmpLt};
@@ -205,7 +227,6 @@ mod simd {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn filter_lt_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
         let chunks = values.len() / 4;
         let threshold_vec = f64x4::splat(threshold);
@@ -238,7 +259,6 @@ mod simd {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn filter_gt_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
         let chunks = values.len() / 4;
         let threshold_vec = f64x4::splat(threshold);
@@ -271,7 +291,6 @@ mod simd {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn filter_eq_f64(values: &[f64], threshold: f64, result: &mut [u64]) {
         let chunks = values.len() / 4;
         let threshold_vec = f64x4::splat(threshold);
@@ -318,7 +337,6 @@ mod simd {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub fn popcount(bitmap: &[u64]) -> usize {
         bitmap.iter().map(|w| w.count_ones() as usize).sum()
     }
@@ -338,7 +356,7 @@ mod simd {
     }
 
     #[inline]
-    pub fn bitmap_words(n: usize) -> usize {
+    pub const fn bitmap_words(n: usize) -> usize {
         n.div_ceil(64)
     }
 
@@ -415,22 +433,32 @@ mod simd {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Column data type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
+    /// 64-bit signed integer.
     Int,
+    /// 64-bit floating point.
     Float,
+    /// UTF-8 string.
     String,
+    /// Boolean.
     Bool,
 }
 
+/// Column definition with name, type, and nullability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
+    /// Column name.
     pub name: String,
+    /// Column data type.
     pub column_type: ColumnType,
+    /// Whether null values are allowed.
     pub nullable: bool,
 }
 
 impl Column {
+    /// Creates a non-nullable column.
     pub fn new(name: impl Into<String>, column_type: ColumnType) -> Self {
         Self {
             name: name.into(),
@@ -439,102 +467,106 @@ impl Column {
         }
     }
 
-    pub fn nullable(mut self) -> Self {
+    /// Makes this column nullable.
+    #[must_use]
+    pub const fn nullable(mut self) -> Self {
         self.nullable = true;
         self
     }
 }
 
+/// Table schema defining column structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
+    /// Ordered list of columns.
     pub columns: Vec<Column>,
 }
 
 impl Schema {
-    pub fn new(columns: Vec<Column>) -> Self {
+    /// Creates a schema from columns.
+    #[must_use]
+    pub const fn new(columns: Vec<Column>) -> Self {
         Self { columns }
     }
 
+    /// Finds a column by name.
+    #[must_use]
     pub fn get_column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name == name)
     }
 }
 
+/// Query value type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
+    /// Null value.
     Null,
+    /// 64-bit signed integer.
     Int(i64),
+    /// 64-bit floating point.
     Float(f64),
+    /// UTF-8 string.
     String(String),
+    /// Boolean.
     Bool(bool),
 }
 
 impl Value {
-    fn to_scalar(&self) -> ScalarValue {
-        match self {
-            Value::Null => ScalarValue::Null,
-            Value::Int(v) => ScalarValue::Int(*v),
-            Value::Float(v) => ScalarValue::Float(*v),
-            Value::String(v) => ScalarValue::String(v.clone()),
-            Value::Bool(v) => ScalarValue::Bool(*v),
-        }
-    }
-
     fn from_scalar(scalar: &ScalarValue) -> Self {
         match scalar {
-            ScalarValue::Null => Value::Null,
-            ScalarValue::Int(v) => Value::Int(*v),
-            ScalarValue::Float(v) => Value::Float(*v),
-            ScalarValue::String(v) => Value::String(v.clone()),
-            ScalarValue::Bool(v) => Value::Bool(*v),
-            ScalarValue::Bytes(_) => Value::Null,
+            ScalarValue::Int(v) => Self::Int(*v),
+            ScalarValue::Float(v) => Self::Float(*v),
+            ScalarValue::String(v) => Self::String(v.clone()),
+            ScalarValue::Bool(v) => Self::Bool(*v),
+            ScalarValue::Null | ScalarValue::Bytes(_) => Self::Null,
         }
     }
 
-    fn matches_type(&self, column_type: &ColumnType) -> bool {
+    const fn matches_type(&self, column_type: &ColumnType) -> bool {
         matches!(
             (self, column_type),
-            (Value::Null, _)
-                | (Value::Int(_), ColumnType::Int)
-                | (Value::Float(_), ColumnType::Float)
-                | (Value::String(_), ColumnType::String)
-                | (Value::Bool(_), ColumnType::Bool)
+            (Self::Null, _)
+                | (Self::Int(_), ColumnType::Int)
+                | (Self::Float(_), ColumnType::Float)
+                | (Self::String(_), ColumnType::String)
+                | (Self::Bool(_), ColumnType::Bool)
         )
     }
 
     fn hash_key(&self) -> String {
         match self {
-            Value::Null => "null".to_string(),
-            Value::Int(v) => format!("i:{}", v),
-            Value::Float(v) => format!("f:{}", v.to_bits()),
-            Value::String(v) => {
+            Self::Null => "null".to_string(),
+            Self::Int(v) => format!("i:{v}"),
+            Self::Float(v) => format!("f:{}", v.to_bits()),
+            Self::String(v) => {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 v.hash(&mut hasher);
                 format!("s:{:x}", hasher.finish())
             },
-            Value::Bool(v) => format!("b:{}", v),
+            Self::Bool(v) => format!("b:{v}"),
         }
     }
 
-    fn partial_cmp_value(&self, other: &Value) -> Option<std::cmp::Ordering> {
+    fn partial_cmp_value(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
-            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
-            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
-            (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+            (Self::Int(a), Self::Int(b)) => Some(a.cmp(b)),
+            (Self::Float(a), Self::Float(b)) => a.partial_cmp(b),
+            (Self::String(a), Self::String(b)) => Some(a.cmp(b)),
             _ => None,
         }
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Math guarantees valid u64 range
     fn sortable_key(&self) -> String {
         match self {
-            Value::Null => "0".to_string(),
-            Value::Int(v) => {
+            Self::Null => "0".to_string(),
+            Self::Int(v) => {
                 // Encode i64 as hex with offset to handle negative numbers
                 // Add i64::MAX + 1 to shift range from [-2^63, 2^63-1] to [0, 2^64-1]
-                let unsigned = (*v as i128 + (i64::MAX as i128) + 1) as u64;
-                format!("i{:016x}", unsigned)
+                let unsigned = (i128::from(*v) + i128::from(i64::MAX) + 1) as u64;
+                format!("i{unsigned:016x}")
             },
-            Value::Float(v) => {
+            Self::Float(v) => {
                 // IEEE 754 float bit encoding with sign handling for correct ordering
                 let bits = v.to_bits();
                 let sortable = if *v >= 0.0 {
@@ -542,10 +574,10 @@ impl Value {
                 } else {
                     !bits // Flip all bits for negative
                 };
-                format!("f{:016x}", sortable)
+                format!("f{sortable:016x}")
             },
-            Value::String(v) => format!("s{}", v),
-            Value::Bool(v) => {
+            Self::String(v) => format!("s{v}"),
+            Self::Bool(v) => {
                 if *v {
                     "b1".to_string()
                 } else {
@@ -555,19 +587,84 @@ impl Value {
         }
     }
 
+    /// Returns true if this value is "truthy" (non-null, non-zero, non-empty).
+    #[must_use]
     pub fn is_truthy(&self) -> bool {
         match self {
-            Value::Null => false,
-            Value::Bool(b) => *b,
-            Value::Int(i) => *i != 0,
-            Value::Float(f) => *f != 0.0,
-            Value::String(s) => !s.is_empty(),
+            Self::Null => false,
+            Self::Bool(b) => *b,
+            Self::Int(i) => *i != 0,
+            Self::Float(f) => *f != 0.0,
+            Self::String(s) => !s.is_empty(),
         }
     }
 }
 
+// Schema bridge: conversions between relational_engine types and RelationalSlab types
+
+impl From<&ColumnType> for SlabColumnType {
+    fn from(ct: &ColumnType) -> Self {
+        match ct {
+            ColumnType::Int => Self::Int,
+            ColumnType::Float => Self::Float,
+            ColumnType::String => Self::String,
+            ColumnType::Bool => Self::Bool,
+        }
+    }
+}
+
+impl From<&SlabColumnType> for ColumnType {
+    fn from(ct: &SlabColumnType) -> Self {
+        match ct {
+            SlabColumnType::Int => Self::Int,
+            SlabColumnType::Float => Self::Float,
+            SlabColumnType::Bool => Self::Bool,
+            SlabColumnType::String | SlabColumnType::Bytes | SlabColumnType::Json => Self::String,
+        }
+    }
+}
+
+impl From<&Schema> for SlabTableSchema {
+    fn from(schema: &Schema) -> Self {
+        let columns = schema
+            .columns
+            .iter()
+            .map(|c| SlabColumnDef::new(&c.name, (&c.column_type).into(), c.nullable))
+            .collect();
+        Self::new(columns)
+    }
+}
+
+impl From<&Value> for SlabColumnValue {
+    fn from(v: &Value) -> Self {
+        match v {
+            Value::Null => Self::Null,
+            Value::Int(i) => Self::Int(*i),
+            Value::Float(f) => Self::Float(*f),
+            Value::String(s) => Self::String(s.clone()),
+            Value::Bool(b) => Self::Bool(*b),
+        }
+    }
+}
+
+impl From<SlabColumnValue> for Value {
+    fn from(cv: SlabColumnValue) -> Self {
+        match cv {
+            SlabColumnValue::Null => Self::Null,
+            SlabColumnValue::Int(i) => Self::Int(i),
+            SlabColumnValue::Float(f) => Self::Float(f),
+            SlabColumnValue::String(s) => Self::String(s),
+            SlabColumnValue::Bool(b) => Self::Bool(b),
+            SlabColumnValue::Bytes(b) => Self::String(format!("{b:?}")),
+            SlabColumnValue::Json(j) => Self::String(j),
+        }
+    }
+}
+
+/// A row with ID and column values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Row {
+    /// Unique row identifier.
     pub id: u64,
     /// Column values stored as ordered pairs for faster iteration.
     /// Use `get()` for single-column access, or iterate directly for bulk access.
@@ -575,6 +672,8 @@ pub struct Row {
 }
 
 impl Row {
+    /// Gets a column value by name.
+    #[must_use]
     pub fn get(&self, column: &str) -> Option<&Value> {
         if column == "_id" {
             return None;
@@ -585,6 +684,9 @@ impl Row {
             .map(|(_, v)| v)
     }
 
+    /// Gets a column value by name, including the special `_id` column.
+    #[must_use]
+    #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
     pub fn get_with_id(&self, column: &str) -> Option<Value> {
         if column == "_id" {
             return Some(Value::Int(self.id as i64));
@@ -595,67 +697,82 @@ impl Row {
             .map(|(_, v)| v.clone())
     }
 
+    /// Returns true if this row has the given column.
+    #[must_use]
     pub fn contains(&self, column: &str) -> bool {
         self.values.iter().any(|(k, _)| k == column)
     }
 }
 
+/// Query filter condition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Condition {
+    /// Equality: column = value.
     Eq(String, Value),
+    /// Not equal: column != value.
     Ne(String, Value),
+    /// Less than: column < value.
     Lt(String, Value),
+    /// Less than or equal: column <= value.
     Le(String, Value),
+    /// Greater than: column > value.
     Gt(String, Value),
+    /// Greater than or equal: column >= value.
     Ge(String, Value),
-    And(Box<Condition>, Box<Condition>),
-    Or(Box<Condition>, Box<Condition>),
+    /// Logical AND of two conditions.
+    And(Box<Self>, Box<Self>),
+    /// Logical OR of two conditions.
+    Or(Box<Self>, Box<Self>),
+    /// Always true (matches all rows).
     True,
 }
 
 impl Condition {
-    pub fn and(self, other: Condition) -> Condition {
-        Condition::And(Box::new(self), Box::new(other))
+    /// Combines this condition with another using AND.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        Self::And(Box::new(self), Box::new(other))
     }
 
-    pub fn or(self, other: Condition) -> Condition {
-        Condition::Or(Box::new(self), Box::new(other))
+    /// Combines this condition with another using OR.
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self::Or(Box::new(self), Box::new(other))
     }
 
+    /// Evaluates this condition against a row.
+    #[must_use]
     pub fn evaluate(&self, row: &Row) -> bool {
         use std::cmp::Ordering;
         match self {
-            Condition::True => true,
-            Condition::Eq(col, val) => row.get_with_id(col).as_ref() == Some(val),
-            Condition::Ne(col, val) => row.get_with_id(col).as_ref() != Some(val),
-            Condition::Lt(col, val) => self.compare_ord(row, col, val, Ordering::Less),
-            Condition::Le(col, val) => self.compare_ord_le(row, col, val),
-            Condition::Gt(col, val) => self.compare_ord(row, col, val, Ordering::Greater),
-            Condition::Ge(col, val) => self.compare_ord_ge(row, col, val),
-            Condition::And(a, b) => a.evaluate(row) && b.evaluate(row),
-            Condition::Or(a, b) => a.evaluate(row) || b.evaluate(row),
+            Self::True => true,
+            Self::Eq(col, val) => row.get_with_id(col).as_ref() == Some(val),
+            Self::Ne(col, val) => row.get_with_id(col).as_ref() != Some(val),
+            Self::Lt(col, val) => Self::compare_ord(row, col, val, Ordering::Less),
+            Self::Le(col, val) => Self::compare_ord_le(row, col, val),
+            Self::Gt(col, val) => Self::compare_ord(row, col, val, Ordering::Greater),
+            Self::Ge(col, val) => Self::compare_ord_ge(row, col, val),
+            Self::And(a, b) => a.evaluate(row) && b.evaluate(row),
+            Self::Or(a, b) => a.evaluate(row) || b.evaluate(row),
         }
     }
 
-    fn compare_ord(&self, row: &Row, col: &str, val: &Value, ord: std::cmp::Ordering) -> bool {
+    fn compare_ord(row: &Row, col: &str, val: &Value, ord: std::cmp::Ordering) -> bool {
         row.get_with_id(col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o == ord)
-            .unwrap_or(false)
+            .is_some_and(|o| o == ord)
     }
 
-    fn compare_ord_le(&self, row: &Row, col: &str, val: &Value) -> bool {
+    fn compare_ord_le(row: &Row, col: &str, val: &Value) -> bool {
         row.get_with_id(col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o != std::cmp::Ordering::Greater)
-            .unwrap_or(false)
+            .is_some_and(|o| o != std::cmp::Ordering::Greater)
     }
 
-    fn compare_ord_ge(&self, row: &Row, col: &str, val: &Value) -> bool {
+    fn compare_ord_ge(row: &Row, col: &str, val: &Value) -> bool {
         row.get_with_id(col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o != std::cmp::Ordering::Less)
-            .unwrap_or(false)
+            .is_some_and(|o| o != std::cmp::Ordering::Less)
     }
 
     #[cfg(feature = "test-internals")]
@@ -668,23 +785,23 @@ impl Condition {
         self.evaluate_tensor_impl(tensor)
     }
 
+    #[allow(dead_code)] // Legacy method for TensorData evaluation
     fn evaluate_tensor_impl(&self, tensor: &TensorData) -> bool {
         use std::cmp::Ordering;
         match self {
-            Condition::True => true,
-            Condition::Eq(col, val) => Self::tensor_field_eq(tensor, col, val),
-            Condition::Ne(col, val) => !Self::tensor_field_eq(tensor, col, val),
-            Condition::Lt(col, val) => Self::tensor_compare_ord(tensor, col, val, Ordering::Less),
-            Condition::Le(col, val) => Self::tensor_compare_le(tensor, col, val),
-            Condition::Gt(col, val) => {
-                Self::tensor_compare_ord(tensor, col, val, Ordering::Greater)
-            },
-            Condition::Ge(col, val) => Self::tensor_compare_ge(tensor, col, val),
-            Condition::And(a, b) => a.evaluate_tensor(tensor) && b.evaluate_tensor(tensor),
-            Condition::Or(a, b) => a.evaluate_tensor(tensor) || b.evaluate_tensor(tensor),
+            Self::True => true,
+            Self::Eq(col, val) => Self::tensor_field_eq(tensor, col, val),
+            Self::Ne(col, val) => !Self::tensor_field_eq(tensor, col, val),
+            Self::Lt(col, val) => Self::tensor_compare_ord(tensor, col, val, Ordering::Less),
+            Self::Le(col, val) => Self::tensor_compare_le(tensor, col, val),
+            Self::Gt(col, val) => Self::tensor_compare_ord(tensor, col, val, Ordering::Greater),
+            Self::Ge(col, val) => Self::tensor_compare_ge(tensor, col, val),
+            Self::And(a, b) => a.evaluate_tensor(tensor) && b.evaluate_tensor(tensor),
+            Self::Or(a, b) => a.evaluate_tensor(tensor) || b.evaluate_tensor(tensor),
         }
     }
 
+    #[allow(dead_code)]
     fn tensor_get_value(tensor: &TensorData, col: &str) -> Option<Value> {
         if col == "_id" {
             if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = tensor.get("_id") {
@@ -699,10 +816,12 @@ impl Condition {
         }
     }
 
+    #[allow(dead_code)]
     fn tensor_field_eq(tensor: &TensorData, col: &str, val: &Value) -> bool {
         Self::tensor_get_value(tensor, col).as_ref() == Some(val)
     }
 
+    #[allow(dead_code)]
     fn tensor_compare_ord(
         tensor: &TensorData,
         col: &str,
@@ -711,67 +830,166 @@ impl Condition {
     ) -> bool {
         Self::tensor_get_value(tensor, col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o == ord)
-            .unwrap_or(false)
+            .is_some_and(|o| o == ord)
     }
 
+    #[allow(dead_code)]
     fn tensor_compare_le(tensor: &TensorData, col: &str, val: &Value) -> bool {
         Self::tensor_get_value(tensor, col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o != std::cmp::Ordering::Greater)
-            .unwrap_or(false)
+            .is_some_and(|o| o != std::cmp::Ordering::Greater)
     }
 
+    #[allow(dead_code)]
     fn tensor_compare_ge(tensor: &TensorData, col: &str, val: &Value) -> bool {
         Self::tensor_get_value(tensor, col)
             .and_then(|v| v.partial_cmp_value(val))
-            .map(|o| o != std::cmp::Ordering::Less)
-            .unwrap_or(false)
+            .is_some_and(|o| o != std::cmp::Ordering::Less)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Errors from relational engine operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationalError {
+    /// Table does not exist.
     TableNotFound(String),
+    /// Table already exists.
     TableAlreadyExists(String),
+    /// Column does not exist.
     ColumnNotFound(String),
+    /// Value type doesn't match column type.
     TypeMismatch {
+        /// Column name.
         column: String,
+        /// Expected type.
         expected: ColumnType,
     },
+    /// Null value in non-nullable column.
     NullNotAllowed(String),
+    /// Index already exists.
     IndexAlreadyExists {
+        /// Table name.
         table: String,
+        /// Column name.
         column: String,
     },
+    /// Index does not exist.
     IndexNotFound {
+        /// Table name.
         table: String,
+        /// Column name.
         column: String,
     },
+    /// Underlying storage error.
     StorageError(String),
+    /// Invalid table or column name.
+    InvalidName(String),
+    /// Transaction not found.
+    TransactionNotFound(u64),
+    /// Transaction is not active (already committed or aborted).
+    TransactionInactive(u64),
+    /// Lock conflict with another transaction.
+    LockConflict {
+        /// Transaction requesting the lock.
+        tx_id: u64,
+        /// Transaction holding the lock.
+        blocking_tx: u64,
+        /// Table name.
+        table: String,
+        /// Row identifier.
+        row_id: u64,
+    },
+    /// Lock acquisition timed out.
+    LockTimeout {
+        /// Transaction ID.
+        tx_id: u64,
+        /// Table name.
+        table: String,
+        /// Row identifiers.
+        row_ids: Vec<u64>,
+    },
+    /// Rollback failed.
+    RollbackFailed {
+        /// Transaction ID.
+        tx_id: u64,
+        /// Failure reason.
+        reason: String,
+    },
+    /// Result set exceeds the maximum allowed size.
+    ResultTooLarge {
+        /// Operation name.
+        operation: String,
+        /// Actual result size.
+        actual: usize,
+        /// Maximum allowed size.
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for RelationalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RelationalError::TableNotFound(t) => write!(f, "Table not found: {}", t),
-            RelationalError::TableAlreadyExists(t) => write!(f, "Table already exists: {}", t),
-            RelationalError::ColumnNotFound(c) => write!(f, "Column not found: {}", c),
-            RelationalError::TypeMismatch { column, expected } => {
+            Self::TableNotFound(t) => write!(f, "Table not found: {t}"),
+            Self::TableAlreadyExists(t) => write!(f, "Table already exists: {t}"),
+            Self::ColumnNotFound(c) => write!(f, "Column not found: {c}"),
+            Self::TypeMismatch { column, expected } => {
                 write!(
                     f,
-                    "Type mismatch for column {}: expected {:?}",
-                    column, expected
+                    "Type mismatch for column {column}: expected {expected:?}"
                 )
             },
-            RelationalError::NullNotAllowed(c) => write!(f, "Null not allowed for column: {}", c),
-            RelationalError::IndexAlreadyExists { table, column } => {
-                write!(f, "Index already exists on {}.{}", table, column)
+            Self::NullNotAllowed(c) => write!(f, "Null not allowed for column: {c}"),
+            Self::IndexAlreadyExists { table, column } => {
+                write!(f, "Index already exists on {table}.{column}")
             },
-            RelationalError::IndexNotFound { table, column } => {
-                write!(f, "Index not found on {}.{}", table, column)
+            Self::IndexNotFound { table, column } => {
+                write!(f, "Index not found on {table}.{column}")
             },
-            RelationalError::StorageError(e) => write!(f, "Storage error: {}", e),
+            Self::StorageError(e) => write!(f, "Storage error: {e}"),
+            Self::InvalidName(msg) => write!(f, "Invalid name: {msg}"),
+            Self::TransactionNotFound(tx_id) => {
+                write!(f, "Transaction not found: {tx_id}")
+            },
+            Self::TransactionInactive(tx_id) => {
+                write!(f, "Transaction not active: {tx_id}")
+            },
+            Self::LockConflict {
+                tx_id,
+                blocking_tx,
+                table,
+                row_id,
+            } => {
+                write!(
+                    f,
+                    "Lock conflict: tx {tx_id} blocked by tx {blocking_tx} on {table}.{row_id}"
+                )
+            },
+            Self::LockTimeout {
+                tx_id,
+                table,
+                row_ids,
+            } => {
+                write!(
+                    f,
+                    "Lock timeout: tx {} waiting for {} rows in {}",
+                    tx_id,
+                    row_ids.len(),
+                    table
+                )
+            },
+            Self::RollbackFailed { tx_id, reason } => {
+                write!(f, "Rollback failed for tx {tx_id}: {reason}")
+            },
+            Self::ResultTooLarge {
+                operation,
+                actual,
+                max,
+            } => {
+                write!(
+                    f,
+                    "{operation} result too large: {actual} rows exceeds maximum of {max}"
+                )
+            },
         }
     }
 }
@@ -780,10 +998,11 @@ impl std::error::Error for RelationalError {}
 
 impl From<TensorStoreError> for RelationalError {
     fn from(e: TensorStoreError) -> Self {
-        RelationalError::StorageError(e.to_string())
+        Self::StorageError(e.to_string())
     }
 }
 
+/// Result type alias for relational engine operations.
 pub type Result<T> = std::result::Result<T, RelationalError>;
 
 #[derive(Debug, Clone)]
@@ -799,16 +1018,16 @@ pub(crate) enum ColumnValues {
 
 #[allow(dead_code)]
 impl ColumnValues {
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
-            ColumnValues::Int(v) => v.len(),
-            ColumnValues::Float(v) => v.len(),
-            ColumnValues::String { indices, .. } => indices.len(),
-            ColumnValues::Bool(v) => v.len() * 64, // approximate
+            Self::Int(v) => v.len(),
+            Self::Float(v) => v.len(),
+            Self::String { indices, .. } => indices.len(),
+            Self::Bool(v) => v.len() * 64, // approximate
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
@@ -823,38 +1042,45 @@ pub(crate) enum NullBitmap {
 impl NullBitmap {
     pub fn is_null(&self, idx: usize) -> bool {
         match self {
-            NullBitmap::None => false,
-            NullBitmap::Dense(bitmap) => {
+            Self::None => false,
+            Self::Dense(bitmap) => {
                 let word_idx = idx / 64;
                 let bit_idx = idx % 64;
                 word_idx < bitmap.len() && (bitmap[word_idx] & (1u64 << bit_idx)) != 0
             },
-            NullBitmap::Sparse(positions) => positions.binary_search(&(idx as u64)).is_ok(),
+            Self::Sparse(positions) => positions.binary_search(&(idx as u64)).is_ok(),
         }
     }
 
     pub fn null_count(&self) -> usize {
         match self {
-            NullBitmap::None => 0,
-            NullBitmap::Dense(bitmap) => bitmap.iter().map(|w| w.count_ones() as usize).sum(),
-            NullBitmap::Sparse(positions) => positions.len(),
+            Self::None => 0,
+            Self::Dense(bitmap) => bitmap.iter().map(|w| w.count_ones() as usize).sum(),
+            Self::Sparse(positions) => positions.len(),
         }
     }
 }
 
+/// Column data with values and null tracking.
 #[derive(Debug, Clone)]
 pub struct ColumnData {
+    #[allow(dead_code)] // Used in future WAL integration
     name: String,
+    /// Row identifiers for each value.
     pub row_ids: Vec<u64>,
     nulls: NullBitmap,
     values: ColumnValues,
 }
 
 impl ColumnData {
+    /// Returns the number of null values.
+    #[must_use]
     pub fn null_count(&self) -> usize {
         self.nulls.null_count()
     }
 
+    /// Gets a value at the given index.
+    #[must_use]
     #[inline]
     pub fn get_value(&self, idx: usize) -> Option<Value> {
         if self.nulls.is_null(idx) {
@@ -902,7 +1128,7 @@ impl SelectionVector {
         }
     }
 
-    pub fn from_bitmap(bitmap: Vec<u64>, row_count: usize) -> Self {
+    pub const fn from_bitmap(bitmap: Vec<u64>, row_count: usize) -> Self {
         Self { bitmap, row_count }
     }
 
@@ -931,55 +1157,77 @@ impl SelectionVector {
         simd::selected_indices(&self.bitmap, self.row_count)
     }
 
-    pub fn intersect(&self, other: &SelectionVector) -> SelectionVector {
+    pub fn intersect(&self, other: &Self) -> Self {
         let mut result = vec![0u64; self.bitmap.len()];
         simd::bitmap_and(&self.bitmap, &other.bitmap, &mut result);
-        SelectionVector {
+        Self {
             bitmap: result,
             row_count: self.row_count,
         }
     }
 
-    pub fn union(&self, other: &SelectionVector) -> SelectionVector {
+    pub fn union(&self, other: &Self) -> Self {
         let mut result = vec![0u64; self.bitmap.len()];
         simd::bitmap_or(&self.bitmap, &other.bitmap, &mut result);
-        SelectionVector {
+        Self {
             bitmap: result,
             row_count: self.row_count,
         }
     }
 }
 
+/// Options for columnar scan operations.
 #[derive(Debug, Clone, Default)]
 pub struct ColumnarScanOptions {
+    /// Columns to include (None = all columns).
     pub projection: Option<Vec<String>>,
+    /// Prefer columnar storage path when available.
     pub prefer_columnar: bool,
 }
 
-/// Key for in-memory B-tree indexes: (table, column) -> BTreeMap<value, row_ids>
+/// Key for in-memory B-tree indexes: (table, column) -> `BTreeMap<value, row_ids>`
 type BTreeIndexKey = (String, String);
 
+/// SQL-like relational database engine.
+///
+/// Provides tables, indexes, and SIMD-accelerated queries.
 pub struct RelationalEngine {
     store: TensorStore,
     row_counters: DashMap<String, AtomicU64>,
     /// In-memory B-tree indexes for O(log n) range queries.
-    /// Maps (table, column) to a BTreeMap of value -> row_ids.
+    /// Maps (table, column) to a `BTreeMap` of value -> `row_ids`.
     btree_indexes: RwLock<HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>>>,
+    /// Whether WAL is enabled for crash-safe writes.
+    is_durable: bool,
+    /// Transaction manager for local transactions.
+    tx_manager: TransactionManager,
+    /// Serializes DDL operations to prevent TOCTOU races.
+    ddl_lock: RwLock<()>,
+    /// Per-key locks for atomic index entry updates.
+    index_locks: DashMap<String, Arc<RwLock<()>>>,
 }
 
 /// Ordered key for B-tree indexes with correct comparison semantics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OrderedKey {
+    /// Null value (sorts first).
     Null,
+    /// Boolean value.
     Bool(bool),
+    /// 64-bit signed integer.
     Int(i64),
+    /// Floating point with total ordering.
     Float(OrderedFloat),
+    /// UTF-8 string.
     String(String),
 }
 
 /// Wrapper for f64 that implements total ordering (NaN is less than all values).
 #[derive(Debug, Clone, Copy)]
-pub struct OrderedFloat(pub f64);
+pub struct OrderedFloat(
+    /// The wrapped f64 value.
+    pub f64,
+);
 
 impl PartialEq for OrderedFloat {
     fn eq(&self, other: &Self) -> bool {
@@ -1012,11 +1260,11 @@ impl Ord for OrderedFloat {
 impl OrderedKey {
     fn from_value(value: &Value) -> Self {
         match value {
-            Value::Null => OrderedKey::Null,
-            Value::Bool(b) => OrderedKey::Bool(*b),
-            Value::Int(i) => OrderedKey::Int(*i),
-            Value::Float(f) => OrderedKey::Float(OrderedFloat(*f)),
-            Value::String(s) => OrderedKey::String(s.clone()),
+            Value::Null => Self::Null,
+            Value::Bool(b) => Self::Bool(*b),
+            Value::Int(i) => Self::Int(*i),
+            Value::Float(f) => Self::Float(OrderedFloat(*f)),
+            Value::String(s) => Self::String(s.clone()),
         }
     }
 }
@@ -1025,73 +1273,218 @@ impl RelationalEngine {
     /// Threshold for parallel operations (below this, sequential is faster)
     const PARALLEL_THRESHOLD: usize = 1000;
 
+    /// Maximum rows in cross join result (prevents memory exhaustion).
+    const MAX_CROSS_JOIN_ROWS: usize = 1_000_000;
+
+    /// Creates a new in-memory relational engine.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
+            is_durable: false,
+            tx_manager: TransactionManager::new(),
+            ddl_lock: RwLock::new(()),
+            index_locks: DashMap::new(),
         }
     }
 
+    /// Creates an engine with an existing store.
+    #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             store,
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
+            is_durable: false,
+            tx_manager: TransactionManager::new(),
+            ddl_lock: RwLock::new(()),
+            index_locks: DashMap::new(),
         }
     }
 
-    pub fn store(&self) -> &TensorStore {
+    /// Create a durable engine with Write-Ahead Log for crash safety.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the WAL file cannot be created or opened.
+    pub fn open_durable<P: AsRef<Path>>(wal_path: P, config: WalConfig) -> std::io::Result<Self> {
+        let store = TensorStore::open_durable(wal_path, config)?;
+        Ok(Self {
+            store,
+            row_counters: DashMap::new(),
+            btree_indexes: RwLock::new(HashMap::new()),
+            is_durable: true,
+            tx_manager: TransactionManager::new(),
+            ddl_lock: RwLock::new(()),
+            index_locks: DashMap::new(),
+        })
+    }
+
+    /// Recover a durable engine from WAL after crash.
+    ///
+    /// # Errors
+    /// Returns `RelationalError::StorageError` if WAL recovery fails.
+    pub fn recover<P: AsRef<Path>>(
+        wal_path: P,
+        config: &WalConfig,
+        snapshot_path: Option<&Path>,
+    ) -> std::result::Result<Self, RelationalError> {
+        let store = TensorStore::recover(wal_path, config, snapshot_path)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+        Ok(Self {
+            store,
+            row_counters: DashMap::new(),
+            btree_indexes: RwLock::new(HashMap::new()),
+            is_durable: true,
+            tx_manager: TransactionManager::new(),
+            ddl_lock: RwLock::new(()),
+            index_locks: DashMap::new(),
+        })
+    }
+
+    /// Returns a reference to the underlying tensor store.
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 
+    /// Access the underlying `RelationalSlab` for direct columnar operations.
+    fn slab(&self) -> &RelationalSlab {
+        &self.store.router().relations
+    }
+
+    fn acquire_index_lock(&self, key: &str) -> Arc<RwLock<()>> {
+        self.index_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(())))
+            .clone()
+    }
+
+    fn put_maybe_durable(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
+        let key = key.into();
+        if self.is_durable {
+            self.store
+                .put_durable(&key, tensor)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))
+        } else {
+            self.store
+                .put(&key, tensor)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))
+        }
+    }
+
+    fn delete_maybe_durable(&self, key: &str) -> Result<()> {
+        if self.is_durable {
+            self.store
+                .delete_durable(key)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))
+        } else {
+            self.store
+                .delete(key)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))
+        }
+    }
+
+    const MAX_NAME_LENGTH: usize = 255;
+
+    fn validate_name(name: &str, kind: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(RelationalError::InvalidName(format!(
+                "{kind} name cannot be empty"
+            )));
+        }
+        if name.len() > Self::MAX_NAME_LENGTH {
+            return Err(RelationalError::InvalidName(format!(
+                "{} name exceeds {} characters",
+                kind,
+                Self::MAX_NAME_LENGTH
+            )));
+        }
+        if name.starts_with('_') {
+            return Err(RelationalError::InvalidName(format!(
+                "{kind} name cannot start with underscore (reserved)"
+            )));
+        }
+        if name.contains(':') {
+            return Err(RelationalError::InvalidName(format!(
+                "{kind} name cannot contain colon"
+            )));
+        }
+        if name.contains(',') {
+            return Err(RelationalError::InvalidName(format!(
+                "{kind} name cannot contain comma"
+            )));
+        }
+        Ok(())
+    }
+
     fn table_meta_key(name: &str) -> String {
-        format!("_meta:table:{}", name)
+        format!("_meta:table:{name}")
     }
 
     fn row_key(table: &str, id: u64) -> String {
-        format!("{}:{}", table, id)
+        format!("{table}:{id}")
     }
 
     fn row_prefix(table: &str) -> String {
-        format!("{}:", table)
+        format!("{table}:")
     }
 
     fn index_meta_key(table: &str, column: &str) -> String {
-        format!("_idx:{}:{}", table, column)
+        format!("_idx:{table}:{column}")
     }
 
     fn index_entry_key(table: &str, column: &str, value_hash: &str) -> String {
-        format!("_idx:{}:{}:{}", table, column, value_hash)
+        format!("_idx:{table}:{column}:{value_hash}")
     }
 
     fn index_prefix(table: &str, column: &str) -> String {
-        format!("_idx:{}:{}:", table, column)
+        format!("_idx:{table}:{column}:")
     }
 
     fn all_indexes_prefix(table: &str) -> String {
-        format!("_idx:{}:", table)
+        format!("_idx:{table}:")
     }
 
     fn btree_meta_key(table: &str, column: &str) -> String {
-        format!("_btree:{}:{}", table, column)
+        format!("_btree:{table}:{column}")
     }
 
     fn btree_entry_key(table: &str, column: &str, sortable_value: &str) -> String {
-        format!("_btree:{}:{}:{}", table, column, sortable_value)
+        format!("_btree:{table}:{column}:{sortable_value}")
     }
 
     fn btree_prefix(table: &str, column: &str) -> String {
-        format!("_btree:{}:{}:", table, column)
+        format!("_btree:{table}:{column}:")
     }
 
+    /// # Errors
+    /// Returns `InvalidName` if table/column names exceed 255 chars or are empty.
+    /// Returns `TableAlreadyExists` if the table already exists.
+    /// Returns `StorageError` if the underlying storage fails.
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn create_table(&self, name: &str, schema: Schema) -> Result<()> {
+        Self::validate_name(name, "Table")?;
+        for col in &schema.columns {
+            Self::validate_name(&col.name, "Column")?;
+        }
+
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
+
         let meta_key = Self::table_meta_key(name);
 
         if self.store.exists(&meta_key) {
             return Err(RelationalError::TableAlreadyExists(name.to_string()));
         }
 
+        // Create table in RelationalSlab for columnar storage
+        let slab_schema: SlabTableSchema = (&schema).into();
+        self.slab()
+            .create_table(name, slab_schema)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        // Store metadata in TensorStore for backward compatibility
         let mut meta = TensorData::new();
         meta.set(
             "_type",
@@ -1125,7 +1518,7 @@ impl RelationalEngine {
             );
         }
 
-        self.store.put(meta_key, meta)?;
+        self.put_maybe_durable(meta_key, meta)?;
 
         self.row_counters
             .insert(name.to_string(), AtomicU64::new(0));
@@ -1133,6 +1526,8 @@ impl RelationalEngine {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` if the table does not exist.
     pub fn get_schema(&self, table: &str) -> Result<Schema> {
         let meta_key = Self::table_meta_key(table);
         let meta = self
@@ -1150,15 +1545,15 @@ impl RelationalEngine {
             if col_name.is_empty() {
                 continue;
             }
-            let col_key = format!("_col:{}", col_name);
+            let col_key = format!("_col:{col_name}");
             if let Some(TensorValue::Scalar(ScalarValue::String(type_str))) = meta.get(&col_key) {
                 let parts: Vec<&str> = type_str.split(':').collect();
                 if parts.len() == 2 {
                     let column_type = match parts[0] {
                         "int" => ColumnType::Int,
                         "float" => ColumnType::Float,
-                        "string" => ColumnType::String,
                         "bool" => ColumnType::Bool,
+                        // "string" and unknown types default to String
                         _ => ColumnType::String,
                     };
                     let nullable = parts[1] == "null";
@@ -1174,6 +1569,7 @@ impl RelationalEngine {
         Ok(Schema::new(columns))
     }
 
+    /// Returns a list of all table names.
     pub fn list_tables(&self) -> Vec<String> {
         self.store
             .scan("_meta:table:")
@@ -1182,14 +1578,11 @@ impl RelationalEngine {
             .collect()
     }
 
-    fn next_row_id(&self, table: &str) -> u64 {
-        self.row_counters
-            .entry(table.to_string())
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::Relaxed)
-            + 1
-    }
-
+    /// # Errors
+    /// Returns `TableNotFound`, `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs are monotonic from 1, won't exceed i64::MAX
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, values), fields(table = %table))]
     pub fn insert(&self, table: &str, values: HashMap<String, Value>) -> Result<u64> {
         let schema = self.get_schema(table)?;
 
@@ -1212,17 +1605,31 @@ impl RelationalEngine {
             }
         }
 
-        let row_id = self.next_row_id(table);
-        let key = Self::row_key(table, row_id);
+        // Build slab row in column order
+        let slab_row: Vec<SlabColumnValue> = schema
+            .columns
+            .iter()
+            .map(|col| {
+                values
+                    .get(&col.name)
+                    .map_or(SlabColumnValue::Null, std::convert::Into::into)
+            })
+            .collect();
 
-        let mut tensor = TensorData::new();
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(row_id as i64)));
+        // Insert into RelationalSlab (returns slab's row ID)
+        let slab_row_id = self
+            .slab()
+            .insert(table, slab_row)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
-        for (col_name, value) in &values {
-            tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
-        }
+        // Use slab's row ID + 1 for our row_id (slab is 0-based, we use 1-based)
+        let row_id = slab_row_id.as_u64() + 1;
 
-        self.store.put(key, tensor)?;
+        // Update row counter to stay in sync
+        self.row_counters
+            .entry(table.to_string())
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_max(row_id, Ordering::Relaxed);
 
         let indexed_columns = self.get_table_indexes(table);
         for col in &indexed_columns {
@@ -1245,6 +1652,9 @@ impl RelationalEngine {
         Ok(row_id)
     }
 
+    /// # Errors
+    /// Returns `TableNotFound`, `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs are monotonic from 1, won't exceed i64::MAX
     pub fn batch_insert(&self, table: &str, rows: Vec<HashMap<String, Value>>) -> Result<Vec<u64>> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -1281,18 +1691,32 @@ impl RelationalEngine {
         let mut row_ids = Vec::with_capacity(rows.len());
 
         for values in rows {
-            let row_id = self.next_row_id(table);
-            let key = Self::row_key(table, row_id);
+            // Build slab row in column order
+            let slab_row: Vec<SlabColumnValue> = schema
+                .columns
+                .iter()
+                .map(|col| {
+                    values
+                        .get(&col.name)
+                        .map_or(SlabColumnValue::Null, std::convert::Into::into)
+                })
+                .collect();
 
-            let mut tensor = TensorData::new();
-            tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(row_id as i64)));
+            // Insert into slab
+            let slab_row_id = self
+                .slab()
+                .insert(table, slab_row)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
-            for (col_name, value) in &values {
-                tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
-            }
+            let row_id = slab_row_id.as_u64() + 1; // Convert 0-based to 1-based
 
-            self.store.put(key, tensor)?;
+            // Update row counter
+            self.row_counters
+                .entry(table.to_string())
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_max(row_id, Ordering::Relaxed);
 
+            // Update indexes
             for col in &indexed_columns {
                 if col == "_id" {
                     self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
@@ -1315,56 +1739,75 @@ impl RelationalEngine {
         Ok(row_ids)
     }
 
-    fn tensor_to_row(&self, tensor: &TensorData) -> Option<Row> {
-        let id = match tensor.get("_id") {
-            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
-            _ => return None,
-        };
-
-        let mut values = Vec::with_capacity(tensor.len().saturating_sub(1));
-        for key in tensor.keys() {
-            if key.starts_with('_') {
-                continue;
-            }
-            if let Some(TensorValue::Scalar(scalar)) = tensor.get(key) {
-                values.push((key.clone(), Value::from_scalar(scalar)));
-            }
-        }
-
-        Some(Row { id, values })
-    }
-
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
+    #[allow(clippy::cast_possible_truncation)] // Row IDs fit in usize on 64-bit platforms
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, condition), fields(table = %table))]
     pub fn select(&self, table: &str, condition: Condition) -> Result<Vec<Row>> {
-        let _ = self.get_schema(table)?;
+        let schema = self.get_schema(table)?;
 
+        // Index lookup path: get row_ids from index, then fetch from slab
         if let Some(row_ids) = self.try_index_lookup(table, &condition) {
-            let mut rows = Vec::with_capacity(row_ids.len());
-            for row_id in row_ids {
-                let key = Self::row_key(table, row_id);
-                if let Ok(tensor) = self.store.get(&key) {
-                    if condition.evaluate_tensor(&tensor) {
-                        if let Some(row) = self.tensor_to_row(&tensor) {
-                            rows.push(row);
-                        }
+            // Convert 1-based row_ids to 0-based slab indices
+            let indices: Vec<usize> = row_ids.iter().map(|id| (*id - 1) as usize).collect();
+            let slab_rows = self
+                .slab()
+                .get_rows_by_indices(table, &indices)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+            let mut rows: Vec<Row> = slab_rows
+                .into_iter()
+                .filter_map(|(row_id, slab_row)| {
+                    let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                    if condition.evaluate(&row) {
+                        Some(row)
+                    } else {
+                        None
                     }
-                }
-            }
+                })
+                .collect();
             rows.sort_by_key(|r| r.id);
             return Ok(rows);
         }
 
-        let prefix = Self::row_prefix(table);
+        // Full scan path: scan slab and filter
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
-        let mut rows: Vec<Row> = self.store.scan_filter_map(&prefix, |_key, tensor| {
-            if condition.evaluate_tensor(tensor) {
-                self.tensor_to_row(tensor)
-            } else {
-                None
-            }
-        });
+        let mut rows: Vec<Row> = slab_rows
+            .into_iter()
+            .filter_map(|(row_id, slab_row)| {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                if condition.evaluate(&row) {
+                    Some(row)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         rows.sort_by_key(|r| r.id);
         Ok(rows)
+    }
+
+    fn slab_row_to_engine_row(
+        schema: &Schema,
+        row_id: SlabRowId,
+        slab_row: Vec<SlabColumnValue>,
+    ) -> Row {
+        let id = row_id.as_u64() + 1; // Convert 0-based to 1-based
+        let values: Vec<(String, Value)> = slab_row
+            .into_iter()
+            .enumerate()
+            .map(|(col_idx, value)| {
+                let col_name = schema.columns[col_idx].name.clone();
+                (col_name, value.into())
+            })
+            .collect();
+        Row { id, values }
     }
 
     fn try_index_lookup(&self, table: &str, condition: &Condition) -> Option<Vec<u64>> {
@@ -1382,17 +1825,16 @@ impl RelationalEngine {
             Condition::Ge(column, value) => {
                 self.btree_range_lookup(table, column, value, RangeOp::Ge)
             },
-            Condition::And(a, b) => {
-                if let Some(ids_a) = self.try_index_lookup(table, a) {
-                    Some(ids_a)
-                } else {
-                    self.try_index_lookup(table, b)
-                }
-            },
+            Condition::And(a, b) => self
+                .try_index_lookup(table, a)
+                .or_else(|| self.try_index_lookup(table, b)),
             _ => None,
         }
     }
 
+    /// # Errors
+    /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`, or `StorageError`.
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn update(
         &self,
         table: &str,
@@ -1420,19 +1862,33 @@ impl RelationalEngine {
 
         let indexed_columns = self.get_table_indexes(table);
         let btree_columns = self.get_table_btree_indexes(table);
-        let prefix = Self::row_prefix(table);
 
-        let matching_rows: Vec<(String, TensorData, Row)> =
-            self.store.scan_filter_map(&prefix, |key, tensor| {
-                let row = self.tensor_to_row(tensor)?;
+        // Scan slab to find matching rows
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let matching_rows: Vec<(SlabRowId, Row)> = slab_rows
+            .into_iter()
+            .filter_map(|(row_id, slab_row)| {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
                 if condition.evaluate(&row) {
-                    Some((key.to_string(), tensor.clone(), row))
+                    Some((row_id, row))
                 } else {
                     None
                 }
-            });
+            })
+            .collect();
 
-        for (key, tensor, row) in &matching_rows {
+        // Convert updates to slab format
+        let slab_updates: Vec<(String, SlabColumnValue)> = updates
+            .iter()
+            .map(|(col, val)| (col.clone(), val.into()))
+            .collect();
+
+        for (slab_row_id, row) in &matching_rows {
+            // Update indexes
             for col in &indexed_columns {
                 if let Some(new_value) = updates.get(col) {
                     if let Some(old_value) = row.get_with_id(col) {
@@ -1451,32 +1907,43 @@ impl RelationalEngine {
                 }
             }
 
-            let mut new_tensor = tensor.clone();
-            for (col_name, value) in &updates {
-                new_tensor.set(col_name, TensorValue::Scalar(value.to_scalar()));
-            }
-            self.store.put(key, new_tensor)?;
+            // Update the row in slab
+            self.slab()
+                .update_row(table, *slab_row_id, &slab_updates)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
         }
 
         Ok(matching_rows.len())
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
-        let _ = self.get_schema(table)?;
+        let schema = self.get_schema(table)?;
 
         let indexed_columns = self.get_table_indexes(table);
         let btree_columns = self.get_table_btree_indexes(table);
-        let prefix = Self::row_prefix(table);
 
-        let to_delete: Vec<(String, Row)> = self.store.scan_filter_map(&prefix, |key, tensor| {
-            let row = self.tensor_to_row(tensor)?;
-            if condition.evaluate(&row) {
-                Some((key.to_string(), row))
-            } else {
-                None
-            }
-        });
+        // Scan slab to find matching rows
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
+        let to_delete: Vec<(SlabRowId, Row)> = slab_rows
+            .into_iter()
+            .filter_map(|(row_id, slab_row)| {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                if condition.evaluate(&row) {
+                    Some((row_id, row))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Remove from indexes
         for (_, row) in &to_delete {
             for col in &indexed_columns {
                 if let Some(value) = row.get_with_id(col) {
@@ -1492,16 +1959,11 @@ impl RelationalEngine {
 
         let count = to_delete.len();
 
-        if count >= Self::PARALLEL_THRESHOLD {
-            to_delete.par_iter().try_for_each(|(key, _)| {
-                self.store
-                    .delete(key)
-                    .map_err(|e| RelationalError::StorageError(e.to_string()))
-            })?;
-        } else {
-            for (key, _) in to_delete {
-                self.store.delete(&key)?;
-            }
+        // Delete from slab
+        for (slab_row_id, _) in &to_delete {
+            self.slab()
+                .delete(table, *slab_row_id)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
         }
 
         Ok(count)
@@ -1509,6 +1971,9 @@ impl RelationalEngine {
 
     /// Hash join: O(n+m) instead of O(n*m) nested loop join.
     /// Builds a hash index on the right table, then probes from the left.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn join(
         &self,
         table_a: &str,
@@ -1542,9 +2007,9 @@ impl RelationalEngine {
                                 indices
                                     .iter()
                                     .filter_map(|&i| {
-                                        let row_b = &rows_b[i];
-                                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
-                                            Some((row_a.clone(), row_b.clone()))
+                                        let matched = &rows_b[i];
+                                        if matched.get_with_id(on_b).as_ref() == Some(&val) {
+                                            Some((row_a.clone(), matched.clone()))
                                         } else {
                                             None
                                         }
@@ -1563,9 +2028,9 @@ impl RelationalEngine {
                     let hash = val.hash_key();
                     if let Some(indices) = index.get(&hash) {
                         for &i in indices {
-                            let row_b = &rows_b[i];
-                            if row_b.get_with_id(on_b).as_ref() == Some(&val) {
-                                results.push((row_a.clone(), row_b.clone()));
+                            let matched = &rows_b[i];
+                            if matched.get_with_id(on_b).as_ref() == Some(&val) {
+                                results.push((row_a.clone(), matched.clone()));
                             }
                         }
                     }
@@ -1577,8 +2042,11 @@ impl RelationalEngine {
         Ok(results)
     }
 
-    /// LEFT JOIN: Returns all rows from table_a, with matching rows from table_b.
-    /// If no match, the table_b side is None.
+    /// LEFT JOIN: Returns all rows from `table_a`, with matching rows from `table_b`.
+    /// If no match, the `table_b` side is `None`.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn left_join(
         &self,
         table_a: &str,
@@ -1601,19 +2069,19 @@ impl RelationalEngine {
 
         let mut results = Vec::with_capacity(rows_a.len());
         for row_a in &rows_a {
-            let mut matched = false;
+            let mut found = false;
             if let Some(val) = row_a.get_with_id(on_a) {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
-                        let row_b = &rows_b[i];
-                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
-                            results.push((row_a.clone(), Some(row_b.clone())));
-                            matched = true;
+                        let found_row = &rows_b[i];
+                        if found_row.get_with_id(on_b).as_ref() == Some(&val) {
+                            results.push((row_a.clone(), Some(found_row.clone())));
+                            found = true;
                         }
                     }
                 }
             }
-            if !matched {
+            if !found {
                 results.push((row_a.clone(), None));
             }
         }
@@ -1621,8 +2089,11 @@ impl RelationalEngine {
         Ok(results)
     }
 
-    /// RIGHT JOIN: Returns all rows from table_b, with matching rows from table_a.
-    /// If no match, the table_a side is None.
+    /// RIGHT JOIN: Returns all rows from `table_b`, with matching rows from `table_a`.
+    /// If no match, the `table_a` side is `None`.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn right_join(
         &self,
         table_a: &str,
@@ -1645,19 +2116,19 @@ impl RelationalEngine {
 
         let mut results = Vec::with_capacity(rows_b.len());
         for row_b in &rows_b {
-            let mut matched = false;
+            let mut found = false;
             if let Some(val) = row_b.get_with_id(on_b) {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
-                        let row_a = &rows_a[i];
-                        if row_a.get_with_id(on_a).as_ref() == Some(&val) {
-                            results.push((Some(row_a.clone()), row_b.clone()));
-                            matched = true;
+                        let found_row = &rows_a[i];
+                        if found_row.get_with_id(on_a).as_ref() == Some(&val) {
+                            results.push((Some(found_row.clone()), row_b.clone()));
+                            found = true;
                         }
                     }
                 }
             }
-            if !matched {
+            if !found {
                 results.push((None, row_b.clone()));
             }
         }
@@ -1667,6 +2138,9 @@ impl RelationalEngine {
 
     /// FULL OUTER JOIN: Returns all rows from both tables.
     /// Rows that don't match get None on the non-matching side.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn full_join(
         &self,
         table_a: &str,
@@ -1691,20 +2165,20 @@ impl RelationalEngine {
         let mut results = Vec::with_capacity(rows_a.len() + rows_b.len());
 
         for row_a in &rows_a {
-            let mut matched = false;
+            let mut found = false;
             if let Some(val) = row_a.get_with_id(on_a) {
                 if let Some(indices) = index.get(&val.hash_key()) {
                     for &i in indices {
-                        let row_b = &rows_b[i];
-                        if row_b.get_with_id(on_b).as_ref() == Some(&val) {
-                            results.push((Some(row_a.clone()), Some(row_b.clone())));
+                        let found_row = &rows_b[i];
+                        if found_row.get_with_id(on_b).as_ref() == Some(&val) {
+                            results.push((Some(row_a.clone()), Some(found_row.clone())));
                             matched_b.insert(i);
-                            matched = true;
+                            found = true;
                         }
                     }
                 }
             }
-            if !matched {
+            if !found {
                 results.push((Some(row_a.clone()), None));
             }
         }
@@ -1719,7 +2193,10 @@ impl RelationalEngine {
     }
 
     /// CROSS JOIN: Returns the cartesian product of both tables.
-    /// Every row from table_a is paired with every row from table_b.
+    /// Every row from `table_a` is paired with every row from `table_b`.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
     pub fn cross_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let _ = self.get_schema(table_a)?;
         let _ = self.get_schema(table_b)?;
@@ -1727,7 +2204,17 @@ impl RelationalEngine {
         let rows_a = self.select(table_a, Condition::True)?;
         let rows_b = self.select(table_b, Condition::True)?;
 
-        let mut results = Vec::with_capacity(rows_a.len() * rows_b.len());
+        // Check result size before allocation
+        let result_size = rows_a.len().saturating_mul(rows_b.len());
+        if result_size > Self::MAX_CROSS_JOIN_ROWS {
+            return Err(RelationalError::ResultTooLarge {
+                operation: "CROSS JOIN".to_string(),
+                actual: result_size,
+                max: Self::MAX_CROSS_JOIN_ROWS,
+            });
+        }
+
+        let mut results = Vec::with_capacity(result_size);
         for row_a in &rows_a {
             for row_b in &rows_b {
                 results.push((row_a.clone(), row_b.clone()));
@@ -1739,6 +2226,9 @@ impl RelationalEngine {
 
     /// NATURAL JOIN: Joins on all columns with the same name.
     /// Returns rows where all common columns have equal values.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
     pub fn natural_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let schema_a = self.get_schema(table_a)?;
         let schema_b = self.get_schema(table_b)?;
@@ -1787,12 +2277,12 @@ impl RelationalEngine {
 
             if let Some(indices) = index.get(&composite_key) {
                 for &i in indices {
-                    let row_b = &rows_b[i];
+                    let candidate = &rows_b[i];
                     let all_match = common_cols
                         .iter()
-                        .all(|col| row_a.get_with_id(col) == row_b.get_with_id(col));
+                        .all(|col| row_a.get_with_id(col) == candidate.get_with_id(col));
                     if all_match {
-                        results.push((row_a.clone(), row_b.clone()));
+                        results.push((row_a.clone(), candidate.clone()));
                     }
                 }
             }
@@ -1801,24 +2291,27 @@ impl RelationalEngine {
         Ok(results)
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn count(&self, table: &str, condition: Condition) -> Result<u64> {
         let rows = self.select(table, condition)?;
         Ok(rows.len() as u64)
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn count_column(&self, table: &str, column: &str, condition: Condition) -> Result<u64> {
         let rows = self.select(table, condition)?;
         let count = rows
             .iter()
-            .filter(|row| {
-                row.get(column)
-                    .map(|v| !matches!(v, Value::Null))
-                    .unwrap_or(false)
-            })
+            .filter(|row| row.get(column).is_some_and(|v| !matches!(v, Value::Null)))
             .count();
         Ok(count as u64)
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
+    #[allow(clippy::cast_precision_loss)] // Aggregate functions accept f64 precision loss
     pub fn sum(&self, table: &str, column: &str, condition: Condition) -> Result<f64> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -1827,13 +2320,11 @@ impl RelationalEngine {
             let total: f64 = rows
                 .par_iter()
                 .map(|row| {
-                    row.get(&col)
-                        .map(|val| match val {
-                            Value::Int(i) => *i as f64,
-                            Value::Float(f) => *f,
-                            _ => 0.0,
-                        })
-                        .unwrap_or(0.0)
+                    row.get(&col).map_or(0.0, |val| match val {
+                        Value::Int(i) => *i as f64,
+                        Value::Float(f) => *f,
+                        _ => 0.0,
+                    })
                 })
                 .sum();
             Ok(total)
@@ -1852,6 +2343,9 @@ impl RelationalEngine {
         }
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
+    #[allow(clippy::cast_precision_loss)] // Aggregate functions accept f64 precision loss
     pub fn avg(&self, table: &str, column: &str, condition: Condition) -> Result<Option<f64>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -1859,13 +2353,11 @@ impl RelationalEngine {
         let (total, count) = if rows.len() >= Self::PARALLEL_THRESHOLD {
             rows.par_iter()
                 .map(|row| {
-                    row.get(&col)
-                        .map(|val| match val {
-                            Value::Int(i) => (*i as f64, 1u64),
-                            Value::Float(f) => (*f, 1u64),
-                            _ => (0.0, 0u64),
-                        })
-                        .unwrap_or((0.0, 0u64))
+                    row.get(&col).map_or((0.0, 0u64), |val| match val {
+                        Value::Int(i) => (*i as f64, 1u64),
+                        Value::Float(f) => (*f, 1u64),
+                        _ => (0.0, 0u64),
+                    })
                 })
                 .reduce(|| (0.0, 0u64), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2))
         } else {
@@ -1896,6 +2388,8 @@ impl RelationalEngine {
         }
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -1943,6 +2437,8 @@ impl RelationalEngine {
         }
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn max(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -1990,56 +2486,82 @@ impl RelationalEngine {
         }
     }
 
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn drop_table(&self, table: &str) -> Result<()> {
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
+
         let meta_key = Self::table_meta_key(table);
 
         if !self.store.exists(&meta_key) {
             return Err(RelationalError::TableNotFound(table.to_string()));
         }
 
+        // Drop from RelationalSlab
+        let _ = self.slab().drop_table(table); // Ignore error if table doesn't exist in slab
+
         let prefix = Self::row_prefix(table);
         let keys = self.store.scan(&prefix);
         for key in keys {
-            self.store.delete(&key)?;
+            self.delete_maybe_durable(&key)?;
         }
 
         let idx_prefix = Self::all_indexes_prefix(table);
         let idx_keys = self.store.scan(&idx_prefix);
         for key in idx_keys {
-            self.store.delete(&key)?;
+            self.delete_maybe_durable(&key)?;
         }
 
-        let btree_prefix = format!("_btree:{}:", table);
+        let btree_prefix = format!("_btree:{table}:");
         let btree_keys = self.store.scan(&btree_prefix);
         for key in btree_keys {
-            self.store.delete(&key)?;
+            self.delete_maybe_durable(&key)?;
         }
 
-        self.store.delete(&meta_key)?;
+        self.delete_maybe_durable(&meta_key)?;
 
         self.row_counters.remove(table);
 
         Ok(())
     }
 
+    /// Returns true if the table exists.
     pub fn table_exists(&self, table: &str) -> bool {
         let meta_key = Self::table_meta_key(table);
         self.store.exists(&meta_key)
     }
 
+    /// Returns the number of rows in the table.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn row_count(&self, table: &str) -> Result<usize> {
         let _ = self.get_schema(table)?;
-        let prefix = Self::row_prefix(table);
-        Ok(self.store.scan_count(&prefix))
+        self.slab()
+            .row_count(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))
     }
 
     /// Create a hash index on a column for fast equality lookups.
+    ///
+    /// # Errors
+    /// Returns `InvalidName`, `TableNotFound`, `ColumnNotFound`, `IndexAlreadyExists`, or `StorageError`.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
     pub fn create_index(&self, table: &str, column: &str) -> Result<()> {
+        // Allow _id as a special case (system column)
+        if column != "_id" {
+            Self::validate_name(column, "Column")?;
+        }
+
         let schema = self.get_schema(table)?;
 
         if column != "_id" && schema.get_column(column).is_none() {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
+
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
 
         let meta_key = Self::index_meta_key(table, column);
         if self.store.exists(&meta_key) {
@@ -2064,15 +2586,28 @@ impl RelationalEngine {
         );
         self.store.put(&meta_key, meta)?;
 
-        let prefix = Self::row_prefix(table);
-        let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
-            let row = self.tensor_to_row(tensor)?;
-            let value = row.get_with_id(column)?;
-            Some((value, row.id))
-        });
+        // Build index from slab data
+        let col_idx = schema
+            .columns
+            .iter()
+            .position(|c| c.name == column)
+            .or_else(|| (column == "_id").then_some(usize::MAX));
 
-        for (value, row_id) in entries {
-            self.index_add(table, column, &value, row_id)?;
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        for (row_id, slab_row) in slab_rows {
+            let engine_row_id = row_id.as_u64() + 1; // Convert 0-based to 1-based
+            let value = if column == "_id" {
+                Value::Int(engine_row_id as i64)
+            } else if let Some(idx) = col_idx {
+                slab_row.get(idx).map_or(Value::Null, |v| v.clone().into())
+            } else {
+                continue;
+            };
+            self.index_add(table, column, &value, engine_row_id)?;
         }
 
         Ok(())
@@ -2080,12 +2615,24 @@ impl RelationalEngine {
 
     /// Create a B-tree index on a column for fast range queries.
     /// B-tree indexes accelerate Lt, Le, Gt, Ge conditions with O(log n) lookup.
+    ///
+    /// # Errors
+    /// Returns `InvalidName`, `TableNotFound`, `ColumnNotFound`, `IndexAlreadyExists`, or `StorageError`.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
     pub fn create_btree_index(&self, table: &str, column: &str) -> Result<()> {
+        // Allow _id as a special case (system column)
+        if column != "_id" {
+            Self::validate_name(column, "Column")?;
+        }
+
         let schema = self.get_schema(table)?;
 
         if column != "_id" && schema.get_column(column).is_none() {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
+
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
 
         let meta_key = Self::btree_meta_key(table, column);
         if self.store.exists(&meta_key) {
@@ -2115,27 +2662,48 @@ impl RelationalEngine {
             self.btree_indexes.write().entry(key).or_default();
         }
 
-        let prefix = Self::row_prefix(table);
-        let entries: Vec<(Value, u64)> = self.store.scan_filter_map(&prefix, |_key, tensor| {
-            let row = self.tensor_to_row(tensor)?;
-            let value = row.get_with_id(column)?;
-            Some((value, row.id))
-        });
+        // Build index from slab data
+        let col_idx = schema
+            .columns
+            .iter()
+            .position(|c| c.name == column)
+            .or_else(|| (column == "_id").then_some(usize::MAX));
 
-        for (value, row_id) in entries {
-            self.btree_index_add(table, column, &value, row_id)?;
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        for (row_id, slab_row) in slab_rows {
+            let engine_row_id = row_id.as_u64() + 1; // Convert 0-based to 1-based
+            let value = if column == "_id" {
+                Value::Int(engine_row_id as i64)
+            } else if let Some(idx) = col_idx {
+                slab_row.get(idx).map_or(Value::Null, |v| v.clone().into())
+            } else {
+                continue;
+            };
+            self.btree_index_add(table, column, &value, engine_row_id)?;
         }
 
         Ok(())
     }
 
+    /// Returns true if a B-tree index exists on the column.
     pub fn has_btree_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::btree_meta_key(table, column);
         self.store.exists(&meta_key)
     }
 
+    /// Drops a B-tree index from a column.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `IndexNotFound`, or `StorageError`.
     pub fn drop_btree_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
+
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
 
         let meta_key = Self::btree_meta_key(table, column);
         if !self.store.exists(&meta_key) {
@@ -2161,6 +2729,7 @@ impl RelationalEngine {
         Ok(())
     }
 
+    /// Returns columns that have B-tree indexes.
     pub fn get_btree_indexed_columns(&self, table: &str) -> Vec<String> {
         let prefix = "_btree:".to_string() + table + ":";
         self.store
@@ -2177,8 +2746,15 @@ impl RelationalEngine {
             .collect()
     }
 
+    /// Drops a hash index from a column.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `IndexNotFound`, or `StorageError`.
     pub fn drop_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
+
+        // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
+        let _ddl_guard = self.ddl_lock.write();
 
         let meta_key = Self::index_meta_key(table, column);
         if !self.store.exists(&meta_key) {
@@ -2199,13 +2775,15 @@ impl RelationalEngine {
         Ok(())
     }
 
+    /// Returns true if a hash index exists on the column.
     pub fn has_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::index_meta_key(table, column);
         self.store.exists(&meta_key)
     }
 
+    /// Returns columns that have hash indexes.
     pub fn get_indexed_columns(&self, table: &str) -> Vec<String> {
-        let prefix = format!("_idx:{}:", table);
+        let prefix = format!("_idx:{table}:");
         let mut columns = HashSet::new();
 
         for key in self.store.scan(&prefix) {
@@ -2225,15 +2803,18 @@ impl RelationalEngine {
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
 
-        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&key) {
-            self.tensor_to_id_list(&tensor)
-        } else {
-            Vec::new()
-        };
+        // Atomic: acquire per-key lock before read-modify-write
+        let lock = self.acquire_index_lock(&key);
+        let _guard = lock.write();
+
+        let mut ids: Vec<u64> = self
+            .store
+            .get(&key)
+            .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor));
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
-            self.store.put(&key, self.id_list_to_tensor(&ids))?;
+            self.store.put(&key, Self::id_list_to_tensor(&ids))?;
         }
 
         Ok(())
@@ -2243,14 +2824,18 @@ impl RelationalEngine {
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
 
+        // Atomic: acquire per-key lock before read-modify-write
+        let lock = self.acquire_index_lock(&key);
+        let _guard = lock.write();
+
         if let Ok(tensor) = self.store.get(&key) {
-            let mut ids = self.tensor_to_id_list(&tensor);
+            let mut ids = Self::tensor_to_id_list(&tensor);
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
                 self.store.delete(&key)?;
             } else {
-                self.store.put(&key, self.id_list_to_tensor(&ids))?;
+                self.store.put(&key, Self::id_list_to_tensor(&ids))?;
             }
         }
 
@@ -2265,26 +2850,34 @@ impl RelationalEngine {
         let value_hash = value.hash_key();
         let key = Self::index_entry_key(table, column, &value_hash);
 
-        if let Ok(tensor) = self.store.get(&key) {
-            Some(self.tensor_to_id_list(&tensor))
-        } else {
-            Some(Vec::new()) // Index exists but no entries for this value
-        }
+        // Index exists but may have no entries for this value
+        Some(
+            self.store
+                .get(&key)
+                .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor)),
+        )
     }
 
-    fn tensor_to_id_list(&self, tensor: &TensorData) -> Vec<u64> {
+    fn tensor_to_id_list(tensor: &TensorData) -> Vec<u64> {
         match tensor.get("ids") {
+            Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => bytes
+                .chunks_exact(8)
+                .map(|chunk| {
+                    let arr: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
+                    u64::from_le_bytes(arr)
+                })
+                .collect(),
+            // Legacy format fallback for existing data
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             Some(TensorValue::Vector(v)) => v.iter().map(|f| *f as u64).collect(),
             _ => Vec::new(),
         }
     }
 
-    fn id_list_to_tensor(&self, ids: &[u64]) -> TensorData {
+    fn id_list_to_tensor(ids: &[u64]) -> TensorData {
         let mut tensor = TensorData::new();
-        tensor.set(
-            "ids",
-            TensorValue::Vector(ids.iter().map(|&id| id as f32).collect()),
-        );
+        let bytes: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+        tensor.set("ids", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
         tensor
     }
 
@@ -2296,10 +2889,18 @@ impl RelationalEngine {
         self.get_btree_indexed_columns(table)
     }
 
+    #[allow(clippy::significant_drop_tightening)] // Lock scope is intentional for atomicity
     fn btree_index_add(&self, table: &str, column: &str, value: &Value, row_id: u64) -> Result<()> {
         let key = (table.to_string(), column.to_string());
         let ordered_key = OrderedKey::from_value(value);
+        let sortable = value.sortable_key();
+        let store_key = Self::btree_entry_key(table, column, &sortable);
 
+        // Atomic: acquire per-key lock for TensorStore update
+        let lock = self.acquire_index_lock(&store_key);
+        let _guard = lock.write();
+
+        // Update in-memory BTreeMap (protected by btree_indexes RwLock)
         {
             let mut indexes = self.btree_indexes.write();
             let btree = indexes.entry(key).or_default();
@@ -2309,18 +2910,15 @@ impl RelationalEngine {
             }
         }
 
-        let sortable = value.sortable_key();
-        let store_key = Self::btree_entry_key(table, column, &sortable);
-
-        let mut ids: Vec<u64> = if let Ok(tensor) = self.store.get(&store_key) {
-            self.tensor_to_id_list(&tensor)
-        } else {
-            Vec::new()
-        };
+        // Update TensorStore (now protected by per-key lock)
+        let mut ids: Vec<u64> = self
+            .store
+            .get(&store_key)
+            .map_or_else(|_| Vec::new(), |tensor| Self::tensor_to_id_list(&tensor));
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
-            self.store.put(&store_key, self.id_list_to_tensor(&ids))?;
+            self.store.put(&store_key, Self::id_list_to_tensor(&ids))?;
         }
 
         Ok(())
@@ -2335,7 +2933,14 @@ impl RelationalEngine {
     ) -> Result<()> {
         let key = (table.to_string(), column.to_string());
         let ordered_key = OrderedKey::from_value(value);
+        let sortable = value.sortable_key();
+        let store_key = Self::btree_entry_key(table, column, &sortable);
 
+        // Atomic: acquire per-key lock for TensorStore update
+        let lock = self.acquire_index_lock(&store_key);
+        let _guard = lock.write();
+
+        // Update in-memory BTreeMap
         {
             let mut indexes = self.btree_indexes.write();
             if let Some(btree) = indexes.get_mut(&key) {
@@ -2348,17 +2953,15 @@ impl RelationalEngine {
             }
         }
 
-        let sortable = value.sortable_key();
-        let store_key = Self::btree_entry_key(table, column, &sortable);
-
+        // Update TensorStore (now protected by per-key lock)
         if let Ok(tensor) = self.store.get(&store_key) {
-            let mut ids = self.tensor_to_id_list(&tensor);
+            let mut ids = Self::tensor_to_id_list(&tensor);
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
                 self.store.delete(&store_key)?;
             } else {
-                self.store.put(&store_key, self.id_list_to_tensor(&ids))?;
+                self.store.put(&store_key, Self::id_list_to_tensor(&ids))?;
             }
         }
 
@@ -2366,7 +2969,8 @@ impl RelationalEngine {
     }
 
     /// B-tree range lookup: returns row IDs matching the range condition.
-    /// Uses in-memory BTreeMap for O(log n) range operations.
+    /// Uses in-memory `BTreeMap` for O(log n) range operations.
+    #[allow(clippy::significant_drop_tightening)] // Lock scope is intentional for atomicity
     fn btree_range_lookup(
         &self,
         table: &str,
@@ -2413,29 +3017,38 @@ impl RelationalEngine {
     }
 
     fn column_data_key(table: &str, column: &str) -> String {
-        format!("_col:{}:{}:data", table, column)
+        format!("_col:{table}:{column}:data")
     }
 
     fn column_ids_key(table: &str, column: &str) -> String {
-        format!("_col:{}:{}:ids", table, column)
+        format!("_col:{table}:{column}:ids")
     }
 
     fn column_nulls_key(table: &str, column: &str) -> String {
-        format!("_col:{}:{}:nulls", table, column)
+        format!("_col:{table}:{column}:nulls")
     }
 
     fn column_meta_key(table: &str, column: &str) -> String {
-        format!("_col:{}:{}:meta", table, column)
+        format!("_col:{table}:{column}:meta")
     }
 
+    /// Returns true if column data is stored in columnar format.
     pub fn has_columnar_data(&self, table: &str, column: &str) -> bool {
-        let meta_key = Self::column_meta_key(table, column);
-        self.store.exists(&meta_key)
+        // With slab integration, all columns are stored in columnar format
+        // Check if the table exists and has the column
+        self.slab()
+            .get_schema(table)
+            .is_some_and(|s| s.columns.iter().any(|c| c.name == column))
     }
 
     /// Materialize specified columns into columnar format.
     /// This extracts column data from row storage into contiguous vectors.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `ColumnNotFound`.
     pub fn materialize_columns(&self, table: &str, columns: &[&str]) -> Result<()> {
+        // With RelationalSlab integration, data is already stored in columnar format.
+        // This method now just validates inputs for backward compatibility.
         let schema = self.get_schema(table)?;
 
         for col_name in columns {
@@ -2444,165 +3057,10 @@ impl RelationalEngine {
             }
         }
 
-        let prefix = Self::row_prefix(table);
-        let keys = self.store.scan(&prefix);
-
-        for col_name in columns {
-            let col = schema
-                .get_column(col_name)
-                .ok_or_else(|| RelationalError::ColumnNotFound(col_name.to_string()))?;
-            let column_data = self.extract_column_data(&keys, col_name, &col.column_type)?;
-            self.store_column_data(table, &column_data)?;
-        }
-
         Ok(())
     }
 
-    fn extract_column_data(
-        &self,
-        row_keys: &[String],
-        column: &str,
-        col_type: &ColumnType,
-    ) -> Result<ColumnData> {
-        let mut row_ids = Vec::with_capacity(row_keys.len());
-        let mut null_positions = Vec::new();
-
-        match col_type {
-            ColumnType::Int => {
-                let mut values = Vec::with_capacity(row_keys.len());
-                for (idx, key) in row_keys.iter().enumerate() {
-                    if let Ok(tensor) = self.store.get(key) {
-                        let row_id = match tensor.get("_id") {
-                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
-                            _ => continue,
-                        };
-                        row_ids.push(row_id);
-
-                        match tensor.get(column) {
-                            Some(TensorValue::Scalar(ScalarValue::Int(v))) => {
-                                values.push(*v);
-                            },
-                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
-                                null_positions.push(idx as u64);
-                                values.push(0); // placeholder
-                            },
-                            _ => {
-                                values.push(0);
-                            },
-                        }
-                    }
-                }
-                Ok(ColumnData {
-                    name: column.to_string(),
-                    row_ids,
-                    nulls: Self::build_null_bitmap(null_positions, values.len()),
-                    values: ColumnValues::Int(values),
-                })
-            },
-            ColumnType::Float => {
-                let mut values = Vec::with_capacity(row_keys.len());
-                for (idx, key) in row_keys.iter().enumerate() {
-                    if let Ok(tensor) = self.store.get(key) {
-                        let row_id = match tensor.get("_id") {
-                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
-                            _ => continue,
-                        };
-                        row_ids.push(row_id);
-
-                        match tensor.get(column) {
-                            Some(TensorValue::Scalar(ScalarValue::Float(v))) => {
-                                values.push(*v);
-                            },
-                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
-                                null_positions.push(idx as u64);
-                                values.push(0.0);
-                            },
-                            _ => {
-                                values.push(0.0);
-                            },
-                        }
-                    }
-                }
-                Ok(ColumnData {
-                    name: column.to_string(),
-                    row_ids,
-                    nulls: Self::build_null_bitmap(null_positions, values.len()),
-                    values: ColumnValues::Float(values),
-                })
-            },
-            ColumnType::String => {
-                let mut dict: Vec<String> = Vec::new();
-                let mut dict_map: HashMap<String, u32> = HashMap::new();
-                let mut indices = Vec::with_capacity(row_keys.len());
-
-                for (idx, key) in row_keys.iter().enumerate() {
-                    if let Ok(tensor) = self.store.get(key) {
-                        let row_id = match tensor.get("_id") {
-                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
-                            _ => continue,
-                        };
-                        row_ids.push(row_id);
-
-                        match tensor.get(column) {
-                            Some(TensorValue::Scalar(ScalarValue::String(v))) => {
-                                let dict_idx = *dict_map.entry(v.clone()).or_insert_with(|| {
-                                    let idx = dict.len() as u32;
-                                    dict.push(v.clone());
-                                    idx
-                                });
-                                indices.push(dict_idx);
-                            },
-                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
-                                null_positions.push(idx as u64);
-                                indices.push(u32::MAX); // null marker
-                            },
-                            _ => {
-                                indices.push(u32::MAX);
-                            },
-                        }
-                    }
-                }
-                Ok(ColumnData {
-                    name: column.to_string(),
-                    row_ids,
-                    nulls: Self::build_null_bitmap(null_positions, indices.len()),
-                    values: ColumnValues::String { dict, indices },
-                })
-            },
-            ColumnType::Bool => {
-                let word_count = row_keys.len().div_ceil(64);
-                let mut values = vec![0u64; word_count];
-
-                for (idx, key) in row_keys.iter().enumerate() {
-                    if let Ok(tensor) = self.store.get(key) {
-                        let row_id = match tensor.get("_id") {
-                            Some(TensorValue::Scalar(ScalarValue::Int(id))) => *id as u64,
-                            _ => continue,
-                        };
-                        row_ids.push(row_id);
-
-                        match tensor.get(column) {
-                            Some(TensorValue::Scalar(ScalarValue::Bool(true))) => {
-                                values[idx / 64] |= 1u64 << (idx % 64);
-                            },
-                            Some(TensorValue::Scalar(ScalarValue::Null)) | None => {
-                                null_positions.push(idx as u64);
-                            },
-                            _ => {},
-                        }
-                    }
-                }
-                let row_count = row_ids.len();
-                Ok(ColumnData {
-                    name: column.to_string(),
-                    row_ids,
-                    nulls: Self::build_null_bitmap(null_positions, row_count),
-                    values: ColumnValues::Bool(values),
-                })
-            },
-        }
-    }
-
+    #[allow(clippy::cast_possible_truncation)] // Null positions fit in usize on 64-bit platforms
     fn build_null_bitmap(null_positions: Vec<u64>, row_count: usize) -> NullBitmap {
         if null_positions.is_empty() {
             return NullBitmap::None;
@@ -2622,187 +3080,108 @@ impl RelationalEngine {
         }
     }
 
-    fn store_column_data(&self, table: &str, column_data: &ColumnData) -> Result<()> {
-        let column = &column_data.name;
-
-        let ids_key = Self::column_ids_key(table, column);
-        let ids_vec: Vec<f32> = column_data.row_ids.iter().map(|&id| id as f32).collect();
-        let mut ids_tensor = TensorData::new();
-        ids_tensor.set("ids", TensorValue::Vector(ids_vec));
-        self.store.put(ids_key, ids_tensor)?;
-
-        let nulls_key = Self::column_nulls_key(table, column);
-        let mut nulls_tensor = TensorData::new();
-        match &column_data.nulls {
-            NullBitmap::None => {
-                nulls_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("none".to_string())),
-                );
-            },
-            NullBitmap::Sparse(positions) => {
-                nulls_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("sparse".to_string())),
-                );
-                let pos_vec: Vec<f32> = positions.iter().map(|&p| p as f32).collect();
-                nulls_tensor.set("positions", TensorValue::Vector(pos_vec));
-            },
-            NullBitmap::Dense(bitmap) => {
-                nulls_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("dense".to_string())),
-                );
-                let bitmap_vec: Vec<f32> = bitmap.iter().map(|&w| w as f32).collect();
-                nulls_tensor.set("bitmap", TensorValue::Vector(bitmap_vec));
-            },
-        }
-        self.store.put(nulls_key, nulls_tensor)?;
-
-        let data_key = Self::column_data_key(table, column);
-        let mut data_tensor = TensorData::new();
-        match &column_data.values {
-            ColumnValues::Int(values) => {
-                data_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("int".to_string())),
-                );
-                let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-                data_tensor.set("data", TensorValue::Scalar(ScalarValue::Bytes(bytes)));
-            },
-            ColumnValues::Float(values) => {
-                data_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("float".to_string())),
-                );
-                let float_vec: Vec<f32> = values.iter().map(|&v| v as f32).collect();
-                data_tensor.set("data", TensorValue::Vector(float_vec));
-            },
-            ColumnValues::String { dict, indices } => {
-                data_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("string".to_string())),
-                );
-                data_tensor.set(
-                    "dict",
-                    TensorValue::Scalar(ScalarValue::String(dict.join("\x00"))),
-                );
-                let indices_vec: Vec<f32> = indices.iter().map(|&i| i as f32).collect();
-                data_tensor.set("indices", TensorValue::Vector(indices_vec));
-            },
-            ColumnValues::Bool(bitmap) => {
-                data_tensor.set(
-                    "type",
-                    TensorValue::Scalar(ScalarValue::String("bool".to_string())),
-                );
-                let bitmap_vec: Vec<f32> = bitmap.iter().map(|&w| w as f32).collect();
-                data_tensor.set("data", TensorValue::Vector(bitmap_vec));
-            },
-        }
-        self.store.put(data_key, data_tensor)?;
-
-        let meta_key = Self::column_meta_key(table, column);
-        let mut meta_tensor = TensorData::new();
-        meta_tensor.set(
-            "row_count",
-            TensorValue::Scalar(ScalarValue::Int(column_data.row_ids.len() as i64)),
-        );
-        self.store.put(meta_key, meta_tensor)?;
-
-        Ok(())
-    }
-
+    /// # Errors
+    /// Returns `TableNotFound`, `ColumnNotFound`, or `StorageError`.
+    #[allow(clippy::cast_possible_truncation)] // Dict indices fit in u32; row counts fit in u64
     pub fn load_column_data(&self, table: &str, column: &str) -> Result<ColumnData> {
-        let ids_key = Self::column_ids_key(table, column);
-        let ids_tensor = self
-            .store
-            .get(&ids_key)
-            .map_err(|_| RelationalError::ColumnNotFound(column.to_string()))?;
-        let row_ids: Vec<u64> = match ids_tensor.get("ids") {
-            Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
-            _ => return Err(RelationalError::ColumnNotFound(column.to_string())),
-        };
+        // With slab integration, extract column data directly from slab's columnar storage
+        let schema = self.get_schema(table)?;
+        let col_idx = schema
+            .columns
+            .iter()
+            .position(|c| c.name == column)
+            .ok_or_else(|| RelationalError::ColumnNotFound(column.to_string()))?;
+        let col_type = &schema.columns[col_idx].column_type;
 
-        let nulls_key = Self::column_nulls_key(table, column);
-        let nulls = if let Ok(nulls_tensor) = self.store.get(&nulls_key) {
-            match nulls_tensor.get("type") {
-                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "none" => {
-                    NullBitmap::None
-                },
-                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "sparse" => {
-                    let positions: Vec<u64> = match nulls_tensor.get("positions") {
-                        Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
-                        _ => vec![],
-                    };
-                    NullBitmap::Sparse(positions)
-                },
-                Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "dense" => {
-                    let bitmap: Vec<u64> = match nulls_tensor.get("bitmap") {
-                        Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u64).collect(),
-                        _ => vec![],
-                    };
-                    NullBitmap::Dense(bitmap)
-                },
-                _ => NullBitmap::None,
-            }
-        } else {
-            NullBitmap::None
-        };
+        // Scan all rows from slab
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
 
-        let data_key = Self::column_data_key(table, column);
-        let data_tensor = self
-            .store
-            .get(&data_key)
-            .map_err(|_| RelationalError::ColumnNotFound(column.to_string()))?;
+        let row_count = slab_rows.len();
+        let mut row_ids = Vec::with_capacity(row_count);
+        let mut null_positions = Vec::new();
 
-        let values = match data_tensor.get("type") {
-            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "int" => {
-                match data_tensor.get("data") {
-                    Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) => {
-                        let values: Vec<i64> = bytes
-                            .chunks_exact(8)
-                            .map(|chunk| {
-                                // chunks_exact guarantees 8 bytes, but handle gracefully
-                                let arr: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
-                                i64::from_le_bytes(arr)
-                            })
-                            .collect();
-                        ColumnValues::Int(values)
-                    },
-                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+        // Extract column values based on type
+        let values = match col_type {
+            ColumnType::Int => {
+                let mut values = Vec::with_capacity(row_count);
+                for (idx, (row_id, row)) in slab_rows.iter().enumerate() {
+                    row_ids.push(row_id.as_u64() + 1);
+                    match &row[col_idx] {
+                        SlabColumnValue::Int(v) => values.push(*v),
+                        SlabColumnValue::Null => {
+                            values.push(0);
+                            null_positions.push(idx as u64);
+                        },
+                        _ => values.push(0),
+                    }
                 }
+                ColumnValues::Int(values)
             },
-            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "float" => {
-                match data_tensor.get("data") {
-                    Some(TensorValue::Vector(v)) => {
-                        ColumnValues::Float(v.iter().map(|&f| f as f64).collect())
-                    },
-                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+            ColumnType::Float => {
+                let mut values = Vec::with_capacity(row_count);
+                for (idx, (row_id, row)) in slab_rows.iter().enumerate() {
+                    row_ids.push(row_id.as_u64() + 1);
+                    match &row[col_idx] {
+                        SlabColumnValue::Float(v) => values.push(*v),
+                        SlabColumnValue::Null => {
+                            values.push(0.0);
+                            null_positions.push(idx as u64);
+                        },
+                        _ => values.push(0.0),
+                    }
                 }
+                ColumnValues::Float(values)
             },
-            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "string" => {
-                let dict: Vec<String> = match data_tensor.get("dict") {
-                    Some(TensorValue::Scalar(ScalarValue::String(s))) => {
-                        s.split('\x00').map(String::from).collect()
-                    },
-                    _ => vec![],
-                };
-                let indices: Vec<u32> = match data_tensor.get("indices") {
-                    Some(TensorValue::Vector(v)) => v.iter().map(|&f| f as u32).collect(),
-                    _ => vec![],
-                };
+            ColumnType::String => {
+                let mut dict = Vec::new();
+                let mut indices = Vec::with_capacity(row_count);
+                let mut dict_map: std::collections::HashMap<String, u32> =
+                    std::collections::HashMap::new();
+                for (idx, (row_id, row)) in slab_rows.iter().enumerate() {
+                    row_ids.push(row_id.as_u64() + 1);
+                    match &row[col_idx] {
+                        SlabColumnValue::String(s) => {
+                            let dict_idx = *dict_map.entry(s.clone()).or_insert_with(|| {
+                                let idx = dict.len() as u32;
+                                dict.push(s.clone());
+                                idx
+                            });
+                            indices.push(dict_idx);
+                        },
+                        SlabColumnValue::Null => {
+                            indices.push(0);
+                            null_positions.push(idx as u64);
+                        },
+                        _ => indices.push(0),
+                    }
+                }
                 ColumnValues::String { dict, indices }
             },
-            Some(TensorValue::Scalar(ScalarValue::String(t))) if t == "bool" => {
-                match data_tensor.get("data") {
-                    Some(TensorValue::Vector(v)) => {
-                        ColumnValues::Bool(v.iter().map(|&f| f as u64).collect())
-                    },
-                    _ => return Err(RelationalError::StorageError("Invalid column data".into())),
+            ColumnType::Bool => {
+                let word_count = row_count.div_ceil(64);
+                let mut bitmap = vec![0u64; word_count];
+                for (idx, (row_id, row)) in slab_rows.iter().enumerate() {
+                    row_ids.push(row_id.as_u64() + 1);
+                    match &row[col_idx] {
+                        SlabColumnValue::Bool(b) => {
+                            if *b {
+                                bitmap[idx / 64] |= 1u64 << (idx % 64);
+                            }
+                        },
+                        SlabColumnValue::Null => {
+                            null_positions.push(idx as u64);
+                        },
+                        _ => {},
+                    }
                 }
+                ColumnValues::Bool(bitmap)
             },
-            _ => return Err(RelationalError::StorageError("Unknown column type".into())),
         };
+
+        let nulls = Self::build_null_bitmap(null_positions, row_count);
 
         Ok(ColumnData {
             name: column.to_string(),
@@ -2812,6 +3191,8 @@ impl RelationalEngine {
         })
     }
 
+    /// # Errors
+    /// This function cannot fail - returns `Ok(())` unconditionally.
     pub fn drop_columnar_data(&self, table: &str, column: &str) -> Result<()> {
         // Column data may not exist - delete is idempotent
         self.store
@@ -2829,9 +3210,13 @@ impl RelationalEngine {
 
     /// Select with columnar scan and projection support.
     ///
-    /// If columnar data is available and options.prefer_columnar is true,
+    /// If columnar data is available and `options.prefer_columnar` is true,
     /// uses SIMD-accelerated vectorized filtering. Otherwise falls back to
     /// row-based scan with projection.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, or `StorageError`.
+    #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn select_columnar(
         &self,
         table: &str,
@@ -2886,23 +3271,26 @@ impl RelationalEngine {
         condition: Condition,
         options: ColumnarScanOptions,
     ) -> Result<Vec<Row>> {
+        // Try slab-based SIMD filtering first (Phase 4 integration)
+        if let Some(rows) = self.try_slab_select(table, &condition, &options) {
+            return Ok(rows);
+        }
+
+        // Fall back to legacy columnar path
         let filter_columns = Self::extract_filter_columns(&condition);
 
-        let projection_columns: Vec<String> = match &options.projection {
-            Some(cols) => cols.clone(),
-            None => {
-                let schema_key = format!("{}:_schema", table);
-                match self.store.get(&schema_key) {
-                    Ok(tensor) => tensor
-                        .keys()
-                        .filter(|k| !k.starts_with('_'))
-                        .cloned()
-                        .collect(),
-                    Err(_) => {
-                        return self.select_with_projection(table, condition, options.projection)
-                    },
-                }
-            },
+        let projection_columns: Vec<String> = if let Some(cols) = &options.projection {
+            cols.clone()
+        } else {
+            let schema_key = format!("{table}:_schema");
+            match self.store.get(&schema_key) {
+                Ok(tensor) => tensor
+                    .keys()
+                    .filter(|k| !k.starts_with('_'))
+                    .cloned()
+                    .collect(),
+                Err(_) => return self.select_with_projection(table, condition, options.projection),
+            }
         };
 
         let mut all_needed: Vec<String> = filter_columns.clone();
@@ -2926,17 +3314,13 @@ impl RelationalEngine {
             column_map.insert(first_col.clone(), col_data);
         }
 
-        let row_count = column_map
-            .values()
-            .next()
-            .map(|c| c.row_ids.len())
-            .unwrap_or(0);
+        let row_count = column_map.values().next().map_or(0, |c| c.row_ids.len());
 
         if row_count == 0 {
             return Ok(Vec::new());
         }
 
-        let selection = self.apply_vectorized_filter(&column_map, &condition, row_count)?;
+        let selection = Self::apply_vectorized_filter(&column_map, &condition, row_count)?;
 
         let row_ids: Vec<u64> = column_map
             .values()
@@ -2957,22 +3341,25 @@ impl RelationalEngine {
                 &column_map,
                 &row_ids,
                 &selected_indices,
-                &options.projection,
+                options.projection.as_ref(),
             ))
         } else {
-            self.materialize_selected_rows(table, &row_ids, &selected_indices, options.projection)
+            Ok(self.materialize_selected_rows(
+                table,
+                &row_ids,
+                &selected_indices,
+                options.projection,
+            ))
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Exhaustive match over all Condition variants
     fn apply_vectorized_filter(
-        &self,
         columns: &HashMap<String, ColumnData>,
         condition: &Condition,
         row_count: usize,
     ) -> Result<SelectionVector> {
         match condition {
-            Condition::True => Ok(SelectionVector::all(row_count)),
-
             Condition::Eq(col, Value::Int(val)) => {
                 let col_data = columns
                     .get(col)
@@ -3076,14 +3463,14 @@ impl RelationalEngine {
             },
 
             Condition::And(a, b) => {
-                let sel_a = self.apply_vectorized_filter(columns, a, row_count)?;
-                let sel_b = self.apply_vectorized_filter(columns, b, row_count)?;
+                let sel_a = Self::apply_vectorized_filter(columns, a, row_count)?;
+                let sel_b = Self::apply_vectorized_filter(columns, b, row_count)?;
                 Ok(sel_a.intersect(&sel_b))
             },
 
             Condition::Or(a, b) => {
-                let sel_a = self.apply_vectorized_filter(columns, a, row_count)?;
-                let sel_b = self.apply_vectorized_filter(columns, b, row_count)?;
+                let sel_a = Self::apply_vectorized_filter(columns, a, row_count)?;
+                let sel_b = Self::apply_vectorized_filter(columns, b, row_count)?;
                 Ok(sel_a.union(&sel_b))
             },
 
@@ -3092,13 +3479,231 @@ impl RelationalEngine {
         }
     }
 
+    /// Try to execute select using `RelationalSlab` directly.
+    /// Returns `Some(rows)` if successful, `None` if slab path not available.
+    fn try_slab_select(
+        &self,
+        table: &str,
+        condition: &Condition,
+        options: &ColumnarScanOptions,
+    ) -> Option<Vec<Row>> {
+        // Get selection from slab-based SIMD filtering
+        let (selection, _row_count) = self.apply_slab_vectorized_filter(table, condition)?;
+
+        // Get selected row indices
+        let indices = selection.selected_indices();
+
+        // Fetch rows from slab
+        let slab_rows = self.slab().get_rows_by_indices(table, &indices).ok()?;
+
+        // Get schema for column name mapping
+        let schema = self.slab().get_schema(table)?;
+
+        // Convert slab rows to engine rows
+        let rows: Vec<Row> = slab_rows
+            .into_iter()
+            .map(|(row_id, slab_row)| {
+                let id = row_id.as_u64() + 1; // Convert 0-based to 1-based
+                let values: Vec<(String, Value)> = slab_row
+                    .into_iter()
+                    .enumerate()
+                    .map(|(col_idx, value)| {
+                        let col_name = schema.columns[col_idx].name.clone();
+                        (col_name, value.into())
+                    })
+                    .collect();
+                Row { id, values }
+            })
+            .collect();
+
+        // Apply projection if specified
+        if let Some(proj_cols) = &options.projection {
+            Some(
+                rows.into_iter()
+                    .map(|row| {
+                        let values: Vec<(String, Value)> = row
+                            .values
+                            .into_iter()
+                            .filter(|(name, _)| proj_cols.contains(name))
+                            .collect();
+                        Row { id: row.id, values }
+                    })
+                    .collect(),
+            )
+        } else {
+            Some(rows)
+        }
+    }
+
+    /// Apply SIMD filtering directly on `RelationalSlab`'s columnar data.
+    /// Returns `(SelectionVector, row_count)` if successful, `None` if slab doesn't support the condition.
+    #[allow(clippy::too_many_lines)] // Exhaustive match over all Condition variants
+    fn apply_slab_vectorized_filter(
+        &self,
+        table: &str,
+        condition: &Condition,
+    ) -> Option<(SelectionVector, usize)> {
+        match condition {
+            Condition::True => {
+                // Get row count from slab
+                let row_count = self.slab().row_count(table).ok()?;
+                Some((SelectionVector::all(row_count), row_count))
+            },
+
+            Condition::Eq(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_eq_i64(&values, *val, &mut bitmap);
+                // AND with alive bitmap to exclude deleted rows
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Ne(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_ne_i64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Lt(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_lt_i64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Le(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_le_i64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Gt(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_gt_i64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Ge(col, Value::Int(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_int_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_ge_i64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Lt(col, Value::Float(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_float_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_lt_f64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Gt(col, Value::Float(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_float_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_gt_f64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::Eq(col, Value::Float(val)) => {
+                let (values, alive_words, _null_words) =
+                    self.slab().get_float_column(table, col).ok()?;
+                let row_count = values.len();
+                if row_count == 0 {
+                    return Some((SelectionVector::none(0), 0));
+                }
+                let mut bitmap = vec![0u64; simd::bitmap_words(row_count)];
+                simd::filter_eq_f64(&values, *val, &mut bitmap);
+                Self::apply_alive_mask(&mut bitmap, &alive_words);
+                Some((SelectionVector::from_bitmap(bitmap, row_count), row_count))
+            },
+
+            Condition::And(a, b) => {
+                let (sel_a, count_a) = self.apply_slab_vectorized_filter(table, a)?;
+                let (sel_b, _) = self.apply_slab_vectorized_filter(table, b)?;
+                Some((sel_a.intersect(&sel_b), count_a))
+            },
+
+            Condition::Or(a, b) => {
+                let (sel_a, count_a) = self.apply_slab_vectorized_filter(table, a)?;
+                let (sel_b, _) = self.apply_slab_vectorized_filter(table, b)?;
+                Some((sel_a.union(&sel_b), count_a))
+            },
+
+            // Unsupported conditions - fall back to legacy path
+            _ => None,
+        }
+    }
+
+    /// Apply alive bitmap mask to filter result (AND operation).
+    fn apply_alive_mask(bitmap: &mut [u64], alive_words: &[u64]) {
+        for (i, word) in bitmap.iter_mut().enumerate() {
+            if i < alive_words.len() {
+                *word &= alive_words[i];
+            } else {
+                *word = 0;
+            }
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // projection is used optionally, ownership is fine
     fn materialize_selected_rows(
         &self,
         table: &str,
         row_ids: &[u64],
         selected_indices: &[usize],
         projection: Option<Vec<String>>,
-    ) -> Result<Vec<Row>> {
+    ) -> Vec<Row> {
         let mut rows = Vec::with_capacity(selected_indices.len());
 
         for &idx in selected_indices {
@@ -3139,7 +3744,7 @@ impl RelationalEngine {
         }
 
         rows.sort_by_key(|r| r.id);
-        Ok(rows)
+        rows
     }
 
     /// Build rows purely from columnar data without touching row storage.
@@ -3147,20 +3752,21 @@ impl RelationalEngine {
         columns: &HashMap<String, ColumnData>,
         row_ids: &[u64],
         selected_indices: &[usize],
-        projection: &Option<Vec<String>>,
+        projection: Option<&Vec<String>>,
     ) -> Vec<Row> {
         let num_rows = selected_indices.len();
         let mut rows = Vec::with_capacity(num_rows);
 
         // Pre-resolve column references to avoid repeated HashMap lookups
-        let col_refs: Vec<(&str, &ColumnData)> = match projection {
-            Some(cols) => cols
-                .iter()
-                .filter(|c| *c != "_id")
-                .filter_map(|c| columns.get(c).map(|data| (c.as_str(), data)))
-                .collect(),
-            None => columns.iter().map(|(k, v)| (k.as_str(), v)).collect(),
-        };
+        let col_refs: Vec<(&str, &ColumnData)> = projection.map_or_else(
+            || columns.iter().map(|(k, v)| (k.as_str(), v)).collect(),
+            |cols| {
+                cols.iter()
+                    .filter(|c| *c != "_id")
+                    .filter_map(|c| columns.get(c).map(|data| (c.as_str(), data)))
+                    .collect()
+            },
+        );
 
         for &idx in selected_indices {
             if idx >= row_ids.len() {
@@ -3194,6 +3800,9 @@ impl RelationalEngine {
     }
 
     /// Row-based select with projection (fallback path).
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` or `StorageError`.
     pub fn select_with_projection(
         &self,
         table: &str,
@@ -3221,6 +3830,533 @@ impl RelationalEngine {
                 .collect()),
             None => Ok(rows),
         }
+    }
+
+    // ==================== Transaction API ====================
+
+    /// Begin a new transaction.
+    pub fn begin_transaction(&self) -> u64 {
+        self.tx_manager.begin()
+    }
+
+    /// Get the transaction manager for advanced use cases.
+    pub const fn tx_manager(&self) -> &TransactionManager {
+        &self.tx_manager
+    }
+
+    /// Check if a transaction is active.
+    pub fn is_transaction_active(&self, tx_id: u64) -> bool {
+        self.tx_manager.is_active(tx_id)
+    }
+
+    /// Commit a transaction, making all changes permanent.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound` or `TransactionInactive`.
+    pub fn commit(&self, tx_id: u64) -> Result<()> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        // Mark as committing
+        self.tx_manager.set_phase(tx_id, TxPhase::Committing);
+
+        // Release locks
+        self.tx_manager.release_locks(tx_id);
+
+        // Mark as committed and remove
+        self.tx_manager.set_phase(tx_id, TxPhase::Committed);
+        self.tx_manager.remove(tx_id);
+
+        Ok(())
+    }
+
+    /// Rollback a transaction, undoing all changes.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound`, `TransactionInactive`, or `StorageError`.
+    pub fn rollback(&self, tx_id: u64) -> Result<()> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        // Mark as aborting
+        self.tx_manager.set_phase(tx_id, TxPhase::Aborting);
+
+        // Get undo log
+        let undo_log = self.tx_manager.get_undo_log(tx_id).unwrap_or_default();
+
+        // Apply undo entries in reverse order
+        for entry in undo_log.into_iter().rev() {
+            self.apply_undo_entry(&entry)?;
+        }
+
+        // Release locks
+        self.tx_manager.release_locks(tx_id);
+
+        // Mark as aborted and remove
+        self.tx_manager.set_phase(tx_id, TxPhase::Aborted);
+        self.tx_manager.remove(tx_id);
+
+        Ok(())
+    }
+
+    /// Apply a single undo entry during rollback.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
+    fn apply_undo_entry(&self, entry: &UndoEntry) -> Result<()> {
+        match entry {
+            UndoEntry::InsertedRow {
+                table,
+                slab_row_id,
+                row_id,
+            } => {
+                // Undo insert: delete the row
+                self.slab()
+                    .delete(table, *slab_row_id)
+                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+                // Remove from indexes
+                let indexed_columns = self.get_table_indexes(table);
+                let btree_columns = self.get_table_btree_indexes(table);
+
+                // Get row values for index removal
+                if let Ok(Some(slab_row)) = self.slab().get(table, *slab_row_id) {
+                    let schema = self.get_schema(table)?;
+                    for col in &indexed_columns {
+                        if col == "_id" {
+                            self.index_remove(table, col, &Value::Int(*row_id as i64), *row_id)?;
+                        } else if let Some(col_idx) =
+                            schema.columns.iter().position(|c| &c.name == col)
+                        {
+                            let value: Value = slab_row[col_idx].clone().into();
+                            self.index_remove(table, col, &value, *row_id)?;
+                        }
+                    }
+                    for col in &btree_columns {
+                        if col == "_id" {
+                            self.btree_index_remove(
+                                table,
+                                col,
+                                &Value::Int(*row_id as i64),
+                                *row_id,
+                            )?;
+                        } else if let Some(col_idx) =
+                            schema.columns.iter().position(|c| &c.name == col)
+                        {
+                            let value: Value = slab_row[col_idx].clone().into();
+                            self.btree_index_remove(table, col, &value, *row_id)?;
+                        }
+                    }
+                }
+            },
+            UndoEntry::UpdatedRow {
+                table,
+                slab_row_id,
+                row_id,
+                old_values,
+                index_changes,
+            } => {
+                // Undo update: restore old values
+                self.slab()
+                    .restore_row(table, *slab_row_id, old_values)
+                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+                // Revert index changes
+                for change in index_changes {
+                    // Remove new value, add old value
+                    self.index_remove(table, &change.column, &change.new_value, *row_id)?;
+                    self.index_add(table, &change.column, &change.old_value, *row_id)?;
+                    self.btree_index_remove(table, &change.column, &change.new_value, *row_id)?;
+                    self.btree_index_add(table, &change.column, &change.old_value, *row_id)?;
+                }
+            },
+            UndoEntry::DeletedRow {
+                table,
+                slab_row_id,
+                row_id,
+                old_values,
+                index_entries,
+            } => {
+                // Undo delete: restore the row
+                self.slab()
+                    .restore_deleted_row(table, *slab_row_id, old_values)
+                    .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+                // Restore index entries
+                for (col, value) in index_entries {
+                    self.index_add(table, col, value, *row_id)?;
+                    self.btree_index_add(table, col, value, *row_id)?;
+                }
+            },
+        }
+        Ok(())
+    }
+
+    /// Insert a row within a transaction.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`,
+    /// `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
+    #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    pub fn tx_insert(
+        &self,
+        tx_id: u64,
+        table: &str,
+        values: HashMap<String, Value>,
+    ) -> Result<u64> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        let schema = self.get_schema(table)?;
+
+        // Validate values
+        for col in &schema.columns {
+            let value = values.get(&col.name);
+            match value {
+                None | Some(Value::Null) => {
+                    if !col.nullable {
+                        return Err(RelationalError::NullNotAllowed(col.name.clone()));
+                    }
+                },
+                Some(v) => {
+                    if !v.matches_type(&col.column_type) {
+                        return Err(RelationalError::TypeMismatch {
+                            column: col.name.clone(),
+                            expected: col.column_type.clone(),
+                        });
+                    }
+                },
+            }
+        }
+
+        // Build slab row
+        let slab_row: Vec<SlabColumnValue> = schema
+            .columns
+            .iter()
+            .map(|col| {
+                values
+                    .get(&col.name)
+                    .map_or(SlabColumnValue::Null, std::convert::Into::into)
+            })
+            .collect();
+
+        // Insert into slab
+        let slab_row_id = self
+            .slab()
+            .insert(table, slab_row)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let row_id = slab_row_id.as_u64() + 1;
+
+        // Update row counter
+        self.row_counters
+            .entry(table.to_string())
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_max(row_id, Ordering::Relaxed);
+
+        // Update indexes
+        let indexed_columns = self.get_table_indexes(table);
+        for col in &indexed_columns {
+            if col == "_id" {
+                self.index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+            } else if let Some(value) = values.get(col) {
+                self.index_add(table, col, value, row_id)?;
+            }
+        }
+
+        let btree_columns = self.get_table_btree_indexes(table);
+        for col in &btree_columns {
+            if col == "_id" {
+                self.btree_index_add(table, col, &Value::Int(row_id as i64), row_id)?;
+            } else if let Some(value) = values.get(col) {
+                self.btree_index_add(table, col, value, row_id)?;
+            }
+        }
+
+        // Record undo entry
+        self.tx_manager.record_undo(
+            tx_id,
+            UndoEntry::InsertedRow {
+                table: table.to_string(),
+                slab_row_id,
+                row_id,
+            },
+        );
+
+        Ok(row_id)
+    }
+
+    /// Update rows within a transaction.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`,
+    /// `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`, `LockConflict`, or `StorageError`.
+    #[allow(clippy::too_many_lines)] // Transaction update logic is inherently complex
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    pub fn tx_update(
+        &self,
+        tx_id: u64,
+        table: &str,
+        condition: Condition,
+        updates: HashMap<String, Value>,
+    ) -> Result<usize> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        let schema = self.get_schema(table)?;
+
+        // Validate updates
+        for (col_name, value) in &updates {
+            let col = schema
+                .get_column(col_name)
+                .ok_or_else(|| RelationalError::ColumnNotFound(col_name.clone()))?;
+
+            if !value.matches_type(&col.column_type) && *value != Value::Null {
+                return Err(RelationalError::TypeMismatch {
+                    column: col_name.clone(),
+                    expected: col.column_type.clone(),
+                });
+            }
+
+            if *value == Value::Null && !col.nullable {
+                return Err(RelationalError::NullNotAllowed(col_name.clone()));
+            }
+        }
+
+        let indexed_columns = self.get_table_indexes(table);
+        let btree_columns = self.get_table_btree_indexes(table);
+
+        // Scan to find matching rows
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let matching_rows: Vec<(SlabRowId, Row, Vec<SlabColumnValue>)> = slab_rows
+            .into_iter()
+            .filter_map(|(row_id, slab_row)| {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row.clone());
+                if condition.evaluate(&row) {
+                    Some((row_id, row, slab_row))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Acquire locks on all matching rows
+        let rows_to_lock: Vec<(String, u64)> = matching_rows
+            .iter()
+            .map(|(_, row, _)| (table.to_string(), row.id))
+            .collect();
+
+        if !rows_to_lock.is_empty() {
+            self.tx_manager
+                .lock_manager()
+                .try_lock(tx_id, &rows_to_lock)
+                .map_err(|info| RelationalError::LockConflict {
+                    tx_id,
+                    blocking_tx: info.blocking_tx,
+                    table: info.table,
+                    row_id: info.row_id,
+                })?;
+        }
+
+        // Convert updates to slab format
+        let slab_updates: Vec<(String, SlabColumnValue)> = updates
+            .iter()
+            .map(|(col, val)| (col.clone(), val.into()))
+            .collect();
+
+        for (slab_row_id, row, old_slab_values) in &matching_rows {
+            // Capture index changes for undo
+            let mut index_changes = Vec::new();
+            for col in indexed_columns.iter().chain(btree_columns.iter()) {
+                if let Some(new_value) = updates.get(col) {
+                    if let Some(old_value) = row.get_with_id(col) {
+                        index_changes.push(IndexChange {
+                            column: col.clone(),
+                            old_value: old_value.clone(),
+                            new_value: new_value.clone(),
+                        });
+                    }
+                }
+            }
+
+            // Record undo entry BEFORE making changes
+            self.tx_manager.record_undo(
+                tx_id,
+                UndoEntry::UpdatedRow {
+                    table: table.to_string(),
+                    slab_row_id: *slab_row_id,
+                    row_id: row.id,
+                    old_values: old_slab_values.clone(),
+                    index_changes,
+                },
+            );
+
+            // Update indexes
+            for col in &indexed_columns {
+                if let Some(new_value) = updates.get(col) {
+                    if let Some(old_value) = row.get_with_id(col) {
+                        self.index_remove(table, col, &old_value, row.id)?;
+                    }
+                    self.index_add(table, col, new_value, row.id)?;
+                }
+            }
+
+            for col in &btree_columns {
+                if let Some(new_value) = updates.get(col) {
+                    if let Some(old_value) = row.get_with_id(col) {
+                        self.btree_index_remove(table, col, &old_value, row.id)?;
+                    }
+                    self.btree_index_add(table, col, new_value, row.id)?;
+                }
+            }
+
+            // Update the row in slab
+            self.slab()
+                .update_row(table, *slab_row_id, &slab_updates)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+        }
+
+        Ok(matching_rows.len())
+    }
+
+    /// Delete rows within a transaction.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`,
+    /// `LockConflict`, or `StorageError`.
+    #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    pub fn tx_delete(&self, tx_id: u64, table: &str, condition: Condition) -> Result<usize> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        let schema = self.get_schema(table)?;
+
+        let indexed_columns = self.get_table_indexes(table);
+        let btree_columns = self.get_table_btree_indexes(table);
+
+        // Scan to find matching rows
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let to_delete: Vec<(SlabRowId, Row, Vec<SlabColumnValue>)> = slab_rows
+            .into_iter()
+            .filter_map(|(row_id, slab_row)| {
+                let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row.clone());
+                if condition.evaluate(&row) {
+                    Some((row_id, row, slab_row))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Acquire locks on all rows to delete
+        let rows_to_lock: Vec<(String, u64)> = to_delete
+            .iter()
+            .map(|(_, row, _)| (table.to_string(), row.id))
+            .collect();
+
+        if !rows_to_lock.is_empty() {
+            self.tx_manager
+                .lock_manager()
+                .try_lock(tx_id, &rows_to_lock)
+                .map_err(|info| RelationalError::LockConflict {
+                    tx_id,
+                    blocking_tx: info.blocking_tx,
+                    table: info.table,
+                    row_id: info.row_id,
+                })?;
+        }
+
+        for (slab_row_id, row, old_slab_values) in &to_delete {
+            // Capture index entries for undo
+            let mut index_entries: Vec<(String, Value)> = Vec::new();
+            for col in indexed_columns.iter().chain(btree_columns.iter()) {
+                if let Some(value) = row.get_with_id(col) {
+                    index_entries.push((col.clone(), value));
+                }
+            }
+
+            // Record undo entry BEFORE making changes
+            self.tx_manager.record_undo(
+                tx_id,
+                UndoEntry::DeletedRow {
+                    table: table.to_string(),
+                    slab_row_id: *slab_row_id,
+                    row_id: row.id,
+                    old_values: old_slab_values.clone(),
+                    index_entries,
+                },
+            );
+
+            // Remove from indexes
+            for col in &indexed_columns {
+                if let Some(value) = row.get_with_id(col) {
+                    self.index_remove(table, col, &value, row.id)?;
+                }
+            }
+            for col in &btree_columns {
+                if let Some(value) = row.get_with_id(col) {
+                    self.btree_index_remove(table, col, &value, row.id)?;
+                }
+            }
+
+            // Delete from slab
+            self.slab()
+                .delete(table, *slab_row_id)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+        }
+
+        Ok(to_delete.len())
+    }
+
+    /// Select rows within a transaction (read-committed isolation).
+    ///
+    /// In read-committed isolation, reads see committed data only.
+    /// No read locks are acquired.
+    ///
+    /// # Errors
+    /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`, or `StorageError`.
+    pub fn tx_select(&self, tx_id: u64, table: &str, condition: Condition) -> Result<Vec<Row>> {
+        if !self.tx_manager.is_active(tx_id) {
+            if self.tx_manager.get(tx_id).is_none() {
+                return Err(RelationalError::TransactionNotFound(tx_id));
+            }
+            return Err(RelationalError::TransactionInactive(tx_id));
+        }
+
+        // For read-committed isolation, just delegate to regular select
+        self.select(table, condition)
+    }
+
+    /// Get the number of active transactions.
+    pub fn active_transaction_count(&self) -> usize {
+        self.tx_manager.active_count()
     }
 }
 
@@ -4207,40 +5343,25 @@ mod tests {
 
     #[test]
     fn next_row_id_without_counter_initialized() {
-        // Use with_store to create engine without going through create_table
-        let store = TensorStore::new();
+        // Test that row counter is properly initialized when inserting
+        let engine = RelationalEngine::new();
 
-        // Manually insert table metadata without initializing the counter
-        let mut meta = TensorData::new();
-        meta.set(
-            "_type",
-            TensorValue::Scalar(ScalarValue::String("table".into())),
-        );
-        meta.set(
-            "_name",
-            TensorValue::Scalar(ScalarValue::String("manual_table".into())),
-        );
-        meta.set(
-            "_columns",
-            TensorValue::Scalar(ScalarValue::String("name,age".into())),
-        );
-        meta.set(
-            "_col:name",
-            TensorValue::Scalar(ScalarValue::String("string:notnull".into())),
-        );
-        meta.set(
-            "_col:age",
-            TensorValue::Scalar(ScalarValue::String("int:notnull".into())),
-        );
-        store.put("_meta:table:manual_table", meta).unwrap();
+        // Create table properly (initializes both slab and metadata)
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("manual_table", schema).unwrap();
 
-        let engine = RelationalEngine::with_store(store);
+        // Clear the row counter to simulate uninitialized state
+        engine.row_counters.remove("manual_table");
 
-        // Now insert - this should trigger the else branch in next_row_id
+        // Now insert - this should handle the case where counter doesn't exist
         let mut values = HashMap::new();
         values.insert("name".to_string(), Value::String("Test".into()));
         values.insert("age".to_string(), Value::Int(30));
         let id = engine.insert("manual_table", values).unwrap();
+        // With slab integration, ID is slab's row_id + 1 (0-based to 1-based)
         assert_eq!(id, 1);
     }
 
@@ -5227,11 +6348,14 @@ mod tests {
         values.insert("age".to_string(), Value::Int(30));
         engine.insert("users", values).unwrap();
 
-        engine.materialize_columns("users", &["age"]).unwrap();
+        // With slab-based storage, data is always columnar
         assert!(engine.has_columnar_data("users", "age"));
 
+        // drop_columnar_data is now a no-op (slab is always columnar)
         engine.drop_columnar_data("users", "age").unwrap();
-        assert!(!engine.has_columnar_data("users", "age"));
+
+        // Column still exists in schema, so columnar data is still available
+        assert!(engine.has_columnar_data("users", "age"));
     }
 
     #[test]
@@ -5736,12 +6860,16 @@ mod tests {
     }
 
     #[test]
-    fn load_column_data_not_materialized() {
+    fn load_column_data_empty_table() {
         let engine = RelationalEngine::new();
         create_users_table(&engine);
 
+        // With slab-based storage, load_column_data works even on empty tables
+        // It returns empty column data rather than an error
         let result = engine.load_column_data("users", "age");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        let col_data = result.unwrap();
+        assert_eq!(col_data.row_ids.len(), 0);
     }
 
     #[test]
@@ -6706,5 +7834,4697 @@ mod tests {
         // Compare int column with string value
         let condition2 = Condition::Eq("age".to_string(), Value::String("twenty".into()));
         assert!(!condition2.evaluate(&row));
+    }
+
+    #[test]
+    fn test_invalid_table_name_empty() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        let result = engine.create_table("", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_invalid_table_name_colon() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        let result = engine.create_table("foo:bar", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_invalid_table_name_comma() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        let result = engine.create_table("foo,bar", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_invalid_table_name_underscore_prefix() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        let result = engine.create_table("_reserved", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_invalid_column_name_colon() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("col:umn", ColumnType::Int)]);
+        let result = engine.create_table("test", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_invalid_column_name_underscore_prefix() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("_reserved", ColumnType::Int)]);
+        let result = engine.create_table("test", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_valid_names_accepted() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("user_name", ColumnType::String),
+            Column::new("Age123", ColumnType::Int),
+        ]);
+        let result = engine.create_table("my_table", schema);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_index_column_validation() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // _id is allowed as a special case
+        let result = engine.create_index("test", "_id");
+        assert!(result.is_ok());
+    }
+
+    // ==================== Transaction Tests ====================
+
+    #[test]
+    fn test_transaction_begin_commit() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+        assert!(engine.is_transaction_active(tx));
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+
+        let row_id = engine.tx_insert(tx, "users", values).unwrap();
+        assert_eq!(row_id, 1);
+
+        engine.commit(tx).unwrap();
+        assert!(!engine.is_transaction_active(tx));
+
+        // Row should still exist after commit
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_transaction_rollback_insert() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+
+        engine.tx_insert(tx, "users", values).unwrap();
+
+        // Verify row exists before rollback
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        // Rollback
+        engine.rollback(tx).unwrap();
+
+        // Row should be gone after rollback
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_transaction_rollback_update() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert initial row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx = engine.begin_transaction();
+
+        // Update the row
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(31));
+        engine
+            .tx_update(tx, "users", Condition::True, updates)
+            .unwrap();
+
+        // Verify update before rollback
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows[0].get("age"), Some(&Value::Int(31)));
+
+        // Rollback
+        engine.rollback(tx).unwrap();
+
+        // Age should be restored to 30
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows[0].get("age"), Some(&Value::Int(30)));
+    }
+
+    #[test]
+    fn test_transaction_rollback_delete() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert initial row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx = engine.begin_transaction();
+
+        // Delete the row
+        engine.tx_delete(tx, "users", Condition::True).unwrap();
+
+        // Verify deletion before rollback
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+
+        // Rollback
+        engine.rollback(tx).unwrap();
+
+        // Row should be restored
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::String("Alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_transaction_multiple_inserts_rollback() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.tx_insert(tx, "users", values).unwrap();
+        }
+
+        // Verify all rows exist
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+
+        // Rollback
+        engine.rollback(tx).unwrap();
+
+        // All rows should be gone
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_transaction_not_found() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let result = engine.commit(999);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(999))
+        ));
+
+        let result = engine.rollback(999);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(999))
+        ));
+    }
+
+    #[test]
+    fn test_transaction_inactive_after_commit() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+        engine.commit(tx).unwrap();
+
+        // Second commit should fail - transaction is removed
+        let result = engine.commit(tx);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_transaction_inactive_after_rollback() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+        engine.rollback(tx).unwrap();
+
+        // Operations after rollback should fail
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+
+        let result = engine.tx_insert(tx, "users", values);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_lock_conflict() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert a row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx1 = engine.begin_transaction();
+        let tx2 = engine.begin_transaction();
+
+        // tx1 updates the row (acquires lock)
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(31));
+        engine
+            .tx_update(tx1, "users", Condition::True, updates.clone())
+            .unwrap();
+
+        // tx2 tries to update the same row (should fail)
+        let result = engine.tx_update(tx2, "users", Condition::True, updates);
+        assert!(matches!(result, Err(RelationalError::LockConflict { .. })));
+
+        // Clean up
+        engine.rollback(tx1).unwrap();
+        engine.rollback(tx2).unwrap();
+    }
+
+    #[test]
+    fn test_lock_released_after_commit() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert a row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx1 = engine.begin_transaction();
+
+        // tx1 updates the row
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(31));
+        engine
+            .tx_update(tx1, "users", Condition::True, updates)
+            .unwrap();
+        engine.commit(tx1).unwrap();
+
+        // tx2 should now be able to update
+        let tx2 = engine.begin_transaction();
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(32));
+        let result = engine.tx_update(tx2, "users", Condition::True, updates);
+        assert!(result.is_ok());
+
+        engine.commit(tx2).unwrap();
+
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows[0].get("age"), Some(&Value::Int(32)));
+    }
+
+    #[test]
+    fn test_lock_released_after_rollback() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert a row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx1 = engine.begin_transaction();
+
+        // tx1 updates the row
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(31));
+        engine
+            .tx_update(tx1, "users", Condition::True, updates)
+            .unwrap();
+        engine.rollback(tx1).unwrap();
+
+        // tx2 should now be able to update
+        let tx2 = engine.begin_transaction();
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(32));
+        let result = engine.tx_update(tx2, "users", Condition::True, updates);
+        assert!(result.is_ok());
+
+        engine.commit(tx2).unwrap();
+
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows[0].get("age"), Some(&Value::Int(32)));
+    }
+
+    #[test]
+    fn test_tx_select() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert some rows
+        for i in 0..3 {
+            let mut values = HashMap::new();
+            values.insert("name".to_string(), Value::String(format!("User{}", i)));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            engine.insert("users", values).unwrap();
+        }
+
+        let tx = engine.begin_transaction();
+
+        let rows = engine.tx_select(tx, "users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 3);
+
+        let rows = engine
+            .tx_select(
+                tx,
+                "users",
+                Condition::Eq("name".to_string(), Value::String("User1".to_string())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        engine.commit(tx).unwrap();
+    }
+
+    #[test]
+    fn test_tx_delete_with_lock() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert a row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx1 = engine.begin_transaction();
+        let tx2 = engine.begin_transaction();
+
+        // tx1 updates the row (acquires lock but row stays visible)
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::Int(31));
+        engine
+            .tx_update(tx1, "users", Condition::True, updates)
+            .unwrap();
+
+        // tx2 tries to delete (should fail due to lock held by tx1)
+        let result = engine.tx_delete(tx2, "users", Condition::True);
+        assert!(matches!(result, Err(RelationalError::LockConflict { .. })));
+
+        engine.commit(tx1).unwrap();
+        engine.rollback(tx2).unwrap();
+
+        let rows = engine.select("users", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("age"), Some(&Value::Int(31)));
+    }
+
+    #[test]
+    fn test_active_transaction_count() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        assert_eq!(engine.active_transaction_count(), 0);
+
+        let tx1 = engine.begin_transaction();
+        assert_eq!(engine.active_transaction_count(), 1);
+
+        let tx2 = engine.begin_transaction();
+        assert_eq!(engine.active_transaction_count(), 2);
+
+        engine.commit(tx1).unwrap();
+        assert_eq!(engine.active_transaction_count(), 1);
+
+        engine.rollback(tx2).unwrap();
+        assert_eq!(engine.active_transaction_count(), 0);
+    }
+
+    #[test]
+    fn test_tx_insert_validation() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        let tx = engine.begin_transaction();
+
+        // Missing required column
+        let mut values = HashMap::new();
+        values.insert("age".to_string(), Value::Int(30));
+        // name is required but missing
+
+        let result = engine.tx_insert(tx, "users", values);
+        assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
+
+        engine.rollback(tx).unwrap();
+    }
+
+    #[test]
+    fn test_tx_update_validation() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+
+        // Insert a row
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.insert("users", values).unwrap();
+
+        let tx = engine.begin_transaction();
+
+        // Try to update with wrong type
+        let mut updates = HashMap::new();
+        updates.insert("age".to_string(), Value::String("not a number".to_string()));
+
+        let result = engine.tx_update(tx, "users", Condition::True, updates);
+        assert!(matches!(result, Err(RelationalError::TypeMismatch { .. })));
+
+        engine.rollback(tx).unwrap();
+    }
+
+    #[test]
+    fn test_transaction_with_index() {
+        let engine = RelationalEngine::new();
+        create_users_table(&engine);
+        engine.create_index("users", "name").unwrap();
+
+        let tx = engine.begin_transaction();
+
+        let mut values = HashMap::new();
+        values.insert("name".to_string(), Value::String("Alice".to_string()));
+        values.insert("age".to_string(), Value::Int(30));
+        engine.tx_insert(tx, "users", values).unwrap();
+
+        // Rollback should also clean up index entries
+        engine.rollback(tx).unwrap();
+
+        // Verify index is clean by checking lookup returns nothing
+        let rows = engine
+            .select(
+                "users",
+                Condition::Eq("name".to_string(), Value::String("Alice".to_string())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_cross_join_limit_exceeded() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("large_a", schema.clone()).unwrap();
+        engine.create_table("large_b", schema).unwrap();
+
+        // 1001 x 1001 = 1_002_001 > 1_000_000
+        for i in 0..1001 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("large_a", values.clone()).unwrap();
+            engine.insert("large_b", values).unwrap();
+        }
+
+        let result = engine.cross_join("large_a", "large_b");
+        assert!(matches!(
+            result,
+            Err(RelationalError::ResultTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn test_cross_join_at_limit_succeeds() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("limit_a", schema.clone()).unwrap();
+        engine.create_table("limit_b", schema).unwrap();
+
+        // 1000 x 1000 = 1_000_000 (exactly at limit)
+        for i in 0..1000 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("limit_a", values.clone()).unwrap();
+            engine.insert("limit_b", values).unwrap();
+        }
+
+        let result = engine.cross_join("limit_a", "limit_b");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_natural_join_no_common_columns_respects_limit() {
+        let engine = RelationalEngine::new();
+        let schema_a = Schema::new(vec![Column::new("a_col", ColumnType::Int)]);
+        let schema_b = Schema::new(vec![Column::new("b_col", ColumnType::Int)]);
+        engine.create_table("no_common_a", schema_a).unwrap();
+        engine.create_table("no_common_b", schema_b).unwrap();
+
+        for i in 0..1001 {
+            engine
+                .insert(
+                    "no_common_a",
+                    HashMap::from([("a_col".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+            engine
+                .insert(
+                    "no_common_b",
+                    HashMap::from([("b_col".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Falls back to cross_join, should hit limit
+        let result = engine.natural_join("no_common_a", "no_common_b");
+        assert!(matches!(
+            result,
+            Err(RelationalError::ResultTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn test_table_name_length_limit() {
+        let engine = RelationalEngine::new();
+        let long_name = "a".repeat(256);
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+
+        let result = engine.create_table(&long_name, schema);
+        assert!(matches!(
+            result,
+            Err(RelationalError::InvalidName(msg)) if msg.contains("255")
+        ));
+    }
+
+    #[test]
+    fn test_column_name_length_limit() {
+        let engine = RelationalEngine::new();
+        let long_col = "c".repeat(256);
+        let schema = Schema::new(vec![Column::new(&long_col, ColumnType::Int)]);
+
+        let result = engine.create_table("test_tbl", schema);
+        assert!(matches!(result, Err(RelationalError::InvalidName(_))));
+    }
+
+    #[test]
+    fn test_name_at_max_length_succeeds() {
+        let engine = RelationalEngine::new();
+        let max_name = "a".repeat(255);
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+
+        assert!(engine.create_table(&max_name, schema).is_ok());
+    }
+
+    // ========== SIMD Filter Tests ==========
+
+    #[test]
+    fn test_simd_filter_lt_f64() {
+        let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_lt_f64(&values, 5.0, &mut result);
+
+        // Values 0,1,2,3,4 < 5.0
+        for i in 0..5 {
+            assert!((result[0] & (1u64 << i)) != 0, "Expected bit {} set", i);
+        }
+        for i in 5..10 {
+            assert!((result[0] & (1u64 << i)) == 0, "Expected bit {} unset", i);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_gt_f64() {
+        let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_gt_f64(&values, 5.0, &mut result);
+
+        // Values 6,7,8,9 > 5.0
+        for i in 0..6 {
+            assert!((result[0] & (1u64 << i)) == 0, "Expected bit {} unset", i);
+        }
+        for i in 6..10 {
+            assert!((result[0] & (1u64 << i)) != 0, "Expected bit {} set", i);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_eq_f64() {
+        let values = vec![1.0, 2.0, 3.0, 2.0, 5.0, 2.0, 7.0, 8.0];
+        let mut result = vec![0u64; 1];
+        simd::filter_eq_f64(&values, 2.0, &mut result);
+
+        // Indices 1, 3, 5 have value 2.0
+        assert!((result[0] & (1u64 << 1)) != 0);
+        assert!((result[0] & (1u64 << 3)) != 0);
+        assert!((result[0] & (1u64 << 5)) != 0);
+        assert!((result[0] & (1u64 << 0)) == 0);
+        assert!((result[0] & (1u64 << 2)) == 0);
+    }
+
+    #[test]
+    fn test_simd_filter_lt_f64_non_aligned() {
+        // Test with non-4-aligned length to cover remainder loop
+        let values: Vec<f64> = (0..7).map(|i| i as f64).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_lt_f64(&values, 3.0, &mut result);
+
+        // 0, 1, 2 < 3.0
+        assert_eq!(result[0] & 0b111, 0b111);
+        assert!((result[0] & (1u64 << 3)) == 0);
+    }
+
+    #[test]
+    fn test_simd_filter_gt_f64_non_aligned() {
+        let values: Vec<f64> = (0..5).map(|i| i as f64).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_gt_f64(&values, 2.0, &mut result);
+
+        // 3, 4 > 2.0
+        assert!((result[0] & (1u64 << 3)) != 0);
+        assert!((result[0] & (1u64 << 4)) != 0);
+    }
+
+    #[test]
+    fn test_simd_filter_eq_f64_non_aligned() {
+        let values = vec![1.0, 2.0, 2.0, 4.0, 5.0];
+        let mut result = vec![0u64; 1];
+        simd::filter_eq_f64(&values, 2.0, &mut result);
+
+        assert!((result[0] & (1u64 << 1)) != 0);
+        assert!((result[0] & (1u64 << 2)) != 0);
+    }
+
+    // ========== Value Method Tests ==========
+
+    #[test]
+    fn test_value_is_truthy() {
+        assert!(!Value::Null.is_truthy());
+        assert!(!Value::Bool(false).is_truthy());
+        assert!(Value::Bool(true).is_truthy());
+        assert!(!Value::Int(0).is_truthy());
+        assert!(Value::Int(1).is_truthy());
+        assert!(Value::Int(-1).is_truthy());
+        assert!(!Value::Float(0.0).is_truthy());
+        assert!(Value::Float(1.0).is_truthy());
+        assert!(!Value::String(String::new()).is_truthy());
+        assert!(Value::String("hello".to_string()).is_truthy());
+    }
+
+    #[test]
+    fn test_value_hash_key() {
+        let null_key = Value::Null.hash_key();
+        assert_eq!(null_key, "null");
+
+        let int_key = Value::Int(42).hash_key();
+        assert!(int_key.starts_with("i:"));
+
+        let float_key = Value::Float(3.14).hash_key();
+        assert!(float_key.starts_with("f:"));
+
+        let string_key = Value::String("test".to_string()).hash_key();
+        assert!(string_key.starts_with("s:"));
+
+        let bool_key = Value::Bool(true).hash_key();
+        assert!(bool_key.starts_with("b:"));
+    }
+
+    #[test]
+    fn test_value_sortable_key() {
+        let null_key = Value::Null.sortable_key();
+        assert_eq!(null_key, "0");
+
+        let int_key = Value::Int(100).sortable_key();
+        assert!(int_key.starts_with("i"));
+
+        let float_key = Value::Float(1.5).sortable_key();
+        assert!(float_key.starts_with("f"));
+
+        let string_key = Value::String("abc".to_string()).sortable_key();
+        assert_eq!(string_key, "sabc");
+
+        let true_key = Value::Bool(true).sortable_key();
+        assert_eq!(true_key, "b1");
+
+        let false_key = Value::Bool(false).sortable_key();
+        assert_eq!(false_key, "b0");
+    }
+
+    #[test]
+    fn test_value_sortable_key_ordering() {
+        // Test that sortable keys maintain correct ordering
+        let neg_key = Value::Int(-100).sortable_key();
+        let zero_key = Value::Int(0).sortable_key();
+        let pos_key = Value::Int(100).sortable_key();
+        assert!(neg_key < zero_key);
+        assert!(zero_key < pos_key);
+
+        // Float ordering
+        let neg_float = Value::Float(-1.0).sortable_key();
+        let zero_float = Value::Float(0.0).sortable_key();
+        let pos_float = Value::Float(1.0).sortable_key();
+        assert!(neg_float < zero_float);
+        assert!(zero_float < pos_float);
+    }
+
+    #[test]
+    fn test_value_partial_cmp() {
+        assert_eq!(
+            Value::Int(5).partial_cmp_value(&Value::Int(3)),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            Value::Float(1.0).partial_cmp_value(&Value::Float(2.0)),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            Value::String("a".to_string()).partial_cmp_value(&Value::String("b".to_string())),
+            Some(std::cmp::Ordering::Less)
+        );
+        // Mismatched types return None
+        assert_eq!(
+            Value::Int(5).partial_cmp_value(&Value::String("5".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn test_value_matches_type() {
+        assert!(Value::Null.matches_type(&ColumnType::Int)); // Null matches any
+        assert!(Value::Int(42).matches_type(&ColumnType::Int));
+        assert!(!Value::Int(42).matches_type(&ColumnType::String));
+        assert!(Value::Float(1.0).matches_type(&ColumnType::Float));
+        assert!(Value::String("x".to_string()).matches_type(&ColumnType::String));
+        assert!(Value::Bool(true).matches_type(&ColumnType::Bool));
+    }
+
+    // ========== Error Display Tests ==========
+
+    #[test]
+    fn test_error_display_table_not_found() {
+        let err = RelationalError::TableNotFound("users".to_string());
+        assert_eq!(format!("{}", err), "Table not found: users");
+    }
+
+    #[test]
+    fn test_error_display_table_already_exists() {
+        let err = RelationalError::TableAlreadyExists("users".to_string());
+        assert_eq!(format!("{}", err), "Table already exists: users");
+    }
+
+    #[test]
+    fn test_error_display_column_not_found() {
+        let err = RelationalError::ColumnNotFound("age".to_string());
+        assert_eq!(format!("{}", err), "Column not found: age");
+    }
+
+    #[test]
+    fn test_error_display_type_mismatch() {
+        let err = RelationalError::TypeMismatch {
+            column: "age".to_string(),
+            expected: ColumnType::Int,
+        };
+        assert!(format!("{}", err).contains("Type mismatch"));
+    }
+
+    #[test]
+    fn test_error_display_null_not_allowed() {
+        let err = RelationalError::NullNotAllowed("name".to_string());
+        assert!(format!("{}", err).contains("Null not allowed"));
+    }
+
+    #[test]
+    fn test_error_display_index_already_exists() {
+        let err = RelationalError::IndexAlreadyExists {
+            table: "users".to_string(),
+            column: "email".to_string(),
+        };
+        assert!(format!("{}", err).contains("Index already exists"));
+    }
+
+    #[test]
+    fn test_error_display_index_not_found() {
+        let err = RelationalError::IndexNotFound {
+            table: "users".to_string(),
+            column: "email".to_string(),
+        };
+        assert!(format!("{}", err).contains("Index not found"));
+    }
+
+    #[test]
+    fn test_error_display_storage_error() {
+        let err = RelationalError::StorageError("disk full".to_string());
+        assert!(format!("{}", err).contains("Storage error"));
+    }
+
+    #[test]
+    fn test_error_display_transaction_not_found() {
+        let err = RelationalError::TransactionNotFound(123);
+        assert!(format!("{}", err).contains("Transaction not found: 123"));
+    }
+
+    #[test]
+    fn test_error_display_transaction_inactive() {
+        let err = RelationalError::TransactionInactive(456);
+        assert!(format!("{}", err).contains("Transaction not active: 456"));
+    }
+
+    #[test]
+    fn test_error_display_lock_conflict() {
+        let err = RelationalError::LockConflict {
+            tx_id: 1,
+            blocking_tx: 2,
+            table: "users".to_string(),
+            row_id: 100,
+        };
+        assert!(format!("{}", err).contains("Lock conflict"));
+    }
+
+    #[test]
+    fn test_error_display_lock_timeout() {
+        let err = RelationalError::LockTimeout {
+            tx_id: 1,
+            table: "users".to_string(),
+            row_ids: vec![1, 2, 3],
+        };
+        assert!(format!("{}", err).contains("Lock timeout"));
+    }
+
+    #[test]
+    fn test_error_display_rollback_failed() {
+        let err = RelationalError::RollbackFailed {
+            tx_id: 1,
+            reason: "storage failure".to_string(),
+        };
+        assert!(format!("{}", err).contains("Rollback failed"));
+    }
+
+    #[test]
+    fn test_error_display_result_too_large() {
+        let err = RelationalError::ResultTooLarge {
+            operation: "CROSS JOIN".to_string(),
+            actual: 2_000_000,
+            max: 1_000_000,
+        };
+        let msg = format!("{}", err);
+        assert!(msg.contains("CROSS JOIN"));
+        assert!(msg.contains("2000000"));
+        assert!(msg.contains("1000000"));
+    }
+
+    // ========== Schema Bridge Conversion Tests ==========
+
+    #[test]
+    fn test_column_type_to_slab_column_type() {
+        assert_eq!(SlabColumnType::from(&ColumnType::Int), SlabColumnType::Int);
+        assert_eq!(
+            SlabColumnType::from(&ColumnType::Float),
+            SlabColumnType::Float
+        );
+        assert_eq!(
+            SlabColumnType::from(&ColumnType::String),
+            SlabColumnType::String
+        );
+        assert_eq!(
+            SlabColumnType::from(&ColumnType::Bool),
+            SlabColumnType::Bool
+        );
+    }
+
+    #[test]
+    fn test_slab_column_type_to_column_type() {
+        assert_eq!(ColumnType::from(&SlabColumnType::Int), ColumnType::Int);
+        assert_eq!(ColumnType::from(&SlabColumnType::Float), ColumnType::Float);
+        assert_eq!(
+            ColumnType::from(&SlabColumnType::String),
+            ColumnType::String
+        );
+        assert_eq!(ColumnType::from(&SlabColumnType::Bool), ColumnType::Bool);
+        assert_eq!(ColumnType::from(&SlabColumnType::Bytes), ColumnType::String);
+        assert_eq!(ColumnType::from(&SlabColumnType::Json), ColumnType::String);
+    }
+
+    #[test]
+    fn test_schema_to_slab_table_schema() {
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String).nullable(),
+        ]);
+        let slab_schema: SlabTableSchema = (&schema).into();
+        assert_eq!(slab_schema.columns.len(), 2);
+    }
+
+    #[test]
+    fn test_value_to_slab_column_value() {
+        assert_eq!(SlabColumnValue::from(&Value::Null), SlabColumnValue::Null);
+        assert_eq!(
+            SlabColumnValue::from(&Value::Int(42)),
+            SlabColumnValue::Int(42)
+        );
+        assert_eq!(
+            SlabColumnValue::from(&Value::Float(3.14)),
+            SlabColumnValue::Float(3.14)
+        );
+        assert_eq!(
+            SlabColumnValue::from(&Value::String("test".to_string())),
+            SlabColumnValue::String("test".to_string())
+        );
+        assert_eq!(
+            SlabColumnValue::from(&Value::Bool(true)),
+            SlabColumnValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_slab_column_value_to_value() {
+        assert_eq!(Value::from(SlabColumnValue::Null), Value::Null);
+        assert_eq!(Value::from(SlabColumnValue::Int(42)), Value::Int(42));
+        assert_eq!(
+            Value::from(SlabColumnValue::Float(3.14)),
+            Value::Float(3.14)
+        );
+        assert_eq!(
+            Value::from(SlabColumnValue::String("test".to_string())),
+            Value::String("test".to_string())
+        );
+        assert_eq!(Value::from(SlabColumnValue::Bool(true)), Value::Bool(true));
+        // Bytes converts to string representation
+        let bytes_val = Value::from(SlabColumnValue::Bytes(vec![1, 2, 3]));
+        assert!(matches!(bytes_val, Value::String(_)));
+        // Json converts to string
+        let json_val = Value::from(SlabColumnValue::Json(r#"{"key": "value"}"#.to_string()));
+        assert_eq!(json_val, Value::String(r#"{"key": "value"}"#.to_string()));
+    }
+
+    // ========== OrderedFloat Tests ==========
+
+    #[test]
+    fn test_ordered_float_eq() {
+        let a = OrderedFloat(1.0);
+        let b = OrderedFloat(1.0);
+        let c = OrderedFloat(2.0);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_ordered_float_ord() {
+        let a = OrderedFloat(1.0);
+        let b = OrderedFloat(2.0);
+        let nan = OrderedFloat(f64::NAN);
+
+        assert!(a < b);
+        assert!(nan < a); // NaN is less than all values
+    }
+
+    #[test]
+    fn test_ordered_key_ordering() {
+        // Null < Bool < Int < Float < String
+        let null = OrderedKey::Null;
+        let bool_val = OrderedKey::Bool(false);
+        let int_val = OrderedKey::Int(0);
+        let float_val = OrderedKey::Float(OrderedFloat(0.0));
+        let str_val = OrderedKey::String(String::new());
+
+        assert!(null < bool_val);
+        assert!(bool_val < int_val);
+        assert!(int_val < float_val);
+        assert!(float_val < str_val);
+    }
+
+    // ========== Row Tests ==========
+
+    #[test]
+    fn test_row_get() {
+        let row = Row {
+            id: 1,
+            values: vec![
+                ("name".to_string(), Value::String("Alice".to_string())),
+                ("age".to_string(), Value::Int(30)),
+            ],
+        };
+
+        assert_eq!(row.get("name"), Some(&Value::String("Alice".to_string())));
+        assert_eq!(row.get("age"), Some(&Value::Int(30)));
+        assert_eq!(row.get("missing"), None);
+        assert_eq!(row.get("_id"), None); // Special _id handling
+    }
+
+    #[test]
+    fn test_row_get_with_id() {
+        let row = Row {
+            id: 42,
+            values: vec![("name".to_string(), Value::String("Bob".to_string()))],
+        };
+
+        assert_eq!(row.get_with_id("_id"), Some(Value::Int(42)));
+        assert_eq!(
+            row.get_with_id("name"),
+            Some(Value::String("Bob".to_string()))
+        );
+        assert_eq!(row.get_with_id("missing"), None);
+    }
+
+    // ========== NullBitmap Tests ==========
+
+    #[test]
+    fn test_null_bitmap_none() {
+        let bitmap = NullBitmap::None;
+        assert_eq!(bitmap.null_count(), 0);
+        assert!(!bitmap.is_null(0));
+        assert!(!bitmap.is_null(99));
+    }
+
+    #[test]
+    fn test_null_bitmap_dense() {
+        // Positions 0, 2, 5 are null (bits set)
+        let bitmap = NullBitmap::Dense(vec![0b100101]);
+        assert_eq!(bitmap.null_count(), 3);
+        assert!(bitmap.is_null(0));
+        assert!(!bitmap.is_null(1));
+        assert!(bitmap.is_null(2));
+        assert!(bitmap.is_null(5));
+    }
+
+    #[test]
+    fn test_null_bitmap_sparse() {
+        // Sparse positions list
+        let bitmap = NullBitmap::Sparse(vec![1, 5, 10]);
+        assert_eq!(bitmap.null_count(), 3);
+        assert!(bitmap.is_null(1));
+        assert!(bitmap.is_null(5));
+        assert!(bitmap.is_null(10));
+        assert!(!bitmap.is_null(0));
+        assert!(!bitmap.is_null(3));
+    }
+
+    // ========== SelectionVector Tests ==========
+
+    #[test]
+    fn test_selection_vector_all() {
+        let sv = SelectionVector::all(10);
+        assert_eq!(sv.count(), 10);
+        for i in 0..10 {
+            assert!(sv.is_selected(i));
+        }
+        assert!(!sv.is_selected(10)); // out of bounds
+    }
+
+    #[test]
+    fn test_selection_vector_none() {
+        let sv = SelectionVector::none(10);
+        assert_eq!(sv.count(), 0);
+        for i in 0..10 {
+            assert!(!sv.is_selected(i));
+        }
+    }
+
+    #[test]
+    fn test_selection_vector_from_bitmap() {
+        let bitmap = vec![0b1010u64]; // positions 1 and 3 selected
+        let sv = SelectionVector::from_bitmap(bitmap, 8);
+        assert!(sv.is_selected(1));
+        assert!(sv.is_selected(3));
+        assert!(!sv.is_selected(0));
+        assert!(!sv.is_selected(2));
+    }
+
+    #[test]
+    fn test_selection_vector_intersect() {
+        let sv1 = SelectionVector::from_bitmap(vec![0b1111], 8);
+        let sv2 = SelectionVector::from_bitmap(vec![0b1010], 8);
+        let result = sv1.intersect(&sv2);
+        assert!(result.is_selected(1));
+        assert!(result.is_selected(3));
+        assert!(!result.is_selected(0));
+        assert!(!result.is_selected(2));
+    }
+
+    #[test]
+    fn test_selection_vector_union() {
+        let sv1 = SelectionVector::from_bitmap(vec![0b0101], 8);
+        let sv2 = SelectionVector::from_bitmap(vec![0b1010], 8);
+        let result = sv1.union(&sv2);
+        for i in 0..4 {
+            assert!(result.is_selected(i));
+        }
+    }
+
+    #[test]
+    fn test_selection_vector_selected_indices() {
+        let sv = SelectionVector::from_bitmap(vec![0b10100101], 8);
+        let indices = sv.selected_indices();
+        assert_eq!(indices, vec![0, 2, 5, 7]);
+    }
+
+    #[test]
+    fn test_selection_vector_bitmap_mut() {
+        let mut sv = SelectionVector::none(64);
+        sv.bitmap_mut()[0] = 0b11110000;
+        assert!(!sv.is_selected(0));
+        assert!(sv.is_selected(4));
+    }
+
+    // ========== ColumnData Tests ==========
+
+    #[test]
+    fn test_column_data_get_value_int() {
+        let col = ColumnData {
+            name: "age".to_string(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Int(vec![25, 30, 35]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Int(25)));
+        assert_eq!(col.get_value(1), Some(Value::Int(30)));
+        assert_eq!(col.get_value(2), Some(Value::Int(35)));
+        assert_eq!(col.null_count(), 0);
+    }
+
+    #[test]
+    fn test_column_data_get_value_float() {
+        let col = ColumnData {
+            name: "score".to_string(),
+            row_ids: vec![1, 2],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Float(vec![1.5, 2.5]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Float(1.5)));
+        assert_eq!(col.get_value(1), Some(Value::Float(2.5)));
+    }
+
+    #[test]
+    fn test_column_data_get_value_string() {
+        let col = ColumnData {
+            name: "name".to_string(),
+            row_ids: vec![1, 2],
+            nulls: NullBitmap::None,
+            values: ColumnValues::String {
+                dict: vec!["Alice".to_string(), "Bob".to_string()],
+                indices: vec![0, 1],
+            },
+        };
+        assert_eq!(col.get_value(0), Some(Value::String("Alice".to_string())));
+        assert_eq!(col.get_value(1), Some(Value::String("Bob".to_string())));
+    }
+
+    #[test]
+    fn test_column_data_get_value_bool() {
+        let col = ColumnData {
+            name: "active".to_string(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::None,
+            values: ColumnValues::Bool(vec![0b101]), // true, false, true
+        };
+        assert_eq!(col.get_value(0), Some(Value::Bool(true)));
+        assert_eq!(col.get_value(1), Some(Value::Bool(false)));
+        assert_eq!(col.get_value(2), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn test_column_data_with_nulls() {
+        // Position 1 is null (bit 1 is set = 0b10)
+        let col = ColumnData {
+            name: "age".to_string(),
+            row_ids: vec![1, 2, 3],
+            nulls: NullBitmap::Dense(vec![0b010]),
+            values: ColumnValues::Int(vec![25, 0, 35]),
+        };
+        assert_eq!(col.get_value(0), Some(Value::Int(25)));
+        assert_eq!(col.get_value(1), Some(Value::Null));
+        assert_eq!(col.get_value(2), Some(Value::Int(35)));
+        assert_eq!(col.null_count(), 1);
+    }
+
+    // ========== Condition Range Tests ==========
+
+    #[test]
+    fn test_condition_range_le() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("score", ColumnType::Float),
+        ]);
+        engine.create_table("scores", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "scores",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("score".to_string(), Value::Float(i as f64)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "scores",
+                Condition::Le("score".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 6); // 0, 1, 2, 3, 4, 5
+    }
+
+    #[test]
+    fn test_condition_range_ge() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("vals", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("vals", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("vals", Condition::Ge("val".to_string(), Value::Int(7)))
+            .unwrap();
+        assert_eq!(rows.len(), 3); // 7, 8, 9
+    }
+
+    #[test]
+    fn test_condition_range_ne() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("vals", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert("vals", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("vals", Condition::Ne("val".to_string(), Value::Int(2)))
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 0, 1, 3, 4
+    }
+
+    // ========== ColumnarScanOptions Tests ==========
+
+    #[test]
+    fn test_columnar_scan_options_default() {
+        let opts = ColumnarScanOptions::default();
+        assert!(opts.projection.is_none());
+        assert!(!opts.prefer_columnar);
+    }
+
+    #[test]
+    fn test_columnar_scan_options_with_projection() {
+        let opts = ColumnarScanOptions {
+            projection: Some(vec!["name".to_string(), "age".to_string()]),
+            prefer_columnar: true,
+        };
+        assert_eq!(opts.projection.as_ref().unwrap().len(), 2);
+        assert!(opts.prefer_columnar);
+    }
+
+    // ========== Storage Error Conversion Test ==========
+
+    #[test]
+    fn test_storage_error_from_tensor_store() {
+        use tensor_store::TensorStoreError;
+        let store_err = TensorStoreError::NotFound("test".to_string());
+        let rel_err: RelationalError = store_err.into();
+        assert!(matches!(rel_err, RelationalError::StorageError(_)));
+    }
+
+    // ========== Float Filtering Edge Cases ==========
+
+    #[test]
+    fn test_select_float_conditions() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("price", ColumnType::Float),
+        ]);
+        engine.create_table("products", schema).unwrap();
+
+        let prices = [1.0, 2.5, 3.0, 4.5, 5.0, 6.5, 7.0, 8.5, 9.0, 10.0];
+        for (i, &price) in prices.iter().enumerate() {
+            engine
+                .insert(
+                    "products",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i as i64)),
+                        ("price".to_string(), Value::Float(price)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Test Lt
+        let lt_rows = engine
+            .select(
+                "products",
+                Condition::Lt("price".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(lt_rows.len(), 4); // 1.0, 2.5, 3.0, 4.5
+
+        // Test Gt
+        let gt_rows = engine
+            .select(
+                "products",
+                Condition::Gt("price".to_string(), Value::Float(7.0)),
+            )
+            .unwrap();
+        assert_eq!(gt_rows.len(), 3); // 8.5, 9.0, 10.0
+
+        // Test Eq
+        let eq_rows = engine
+            .select(
+                "products",
+                Condition::Eq("price".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(eq_rows.len(), 1);
+    }
+
+    // ========== Value from_scalar Tests ==========
+
+    #[test]
+    fn test_value_from_scalar() {
+        use tensor_store::ScalarValue;
+
+        let null_val = Value::from_scalar(&ScalarValue::Null);
+        assert_eq!(null_val, Value::Null);
+
+        let int_val = Value::from_scalar(&ScalarValue::Int(42));
+        assert_eq!(int_val, Value::Int(42));
+
+        let float_val = Value::from_scalar(&ScalarValue::Float(3.14));
+        assert_eq!(float_val, Value::Float(3.14));
+
+        let str_val = Value::from_scalar(&ScalarValue::String("test".to_string()));
+        assert_eq!(str_val, Value::String("test".to_string()));
+
+        let bool_val = Value::from_scalar(&ScalarValue::Bool(true));
+        assert_eq!(bool_val, Value::Bool(true));
+
+        // Bytes converts to Null
+        let bytes_val = Value::from_scalar(&ScalarValue::Bytes(vec![1, 2, 3]));
+        assert_eq!(bytes_val, Value::Null);
+    }
+
+    // ========== Selection Vector Large Tests ==========
+
+    #[test]
+    fn test_selection_vector_all_large() {
+        // Test with more than 64 elements
+        let sv = SelectionVector::all(100);
+        assert_eq!(sv.count(), 100);
+        assert!(sv.is_selected(0));
+        assert!(sv.is_selected(63));
+        assert!(sv.is_selected(64));
+        assert!(sv.is_selected(99));
+        assert!(!sv.is_selected(100));
+    }
+
+    #[test]
+    fn test_selection_vector_non_aligned() {
+        // Test with non-64-aligned count
+        let sv = SelectionVector::all(70);
+        assert_eq!(sv.count(), 70);
+        assert!(sv.is_selected(69));
+        assert!(!sv.is_selected(70));
+    }
+
+    // ========== SIMD i64 Filter Tests ==========
+
+    #[test]
+    fn test_simd_filter_lt_i64() {
+        let values: Vec<i64> = (0..10).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_lt_i64(&values, 5, &mut result);
+
+        // 0,1,2,3,4 < 5
+        for i in 0..5 {
+            assert!((result[0] & (1u64 << i)) != 0);
+        }
+        for i in 5..10 {
+            assert!((result[0] & (1u64 << i)) == 0);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_le_i64() {
+        let values: Vec<i64> = (0..10).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_le_i64(&values, 5, &mut result);
+
+        // 0,1,2,3,4,5 <= 5
+        for i in 0..6 {
+            assert!((result[0] & (1u64 << i)) != 0);
+        }
+        for i in 6..10 {
+            assert!((result[0] & (1u64 << i)) == 0);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_gt_i64() {
+        let values: Vec<i64> = (0..10).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_gt_i64(&values, 5, &mut result);
+
+        // 6,7,8,9 > 5
+        for i in 0..6 {
+            assert!((result[0] & (1u64 << i)) == 0);
+        }
+        for i in 6..10 {
+            assert!((result[0] & (1u64 << i)) != 0);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_ge_i64() {
+        let values: Vec<i64> = (0..10).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_ge_i64(&values, 5, &mut result);
+
+        // 5,6,7,8,9 >= 5
+        for i in 0..5 {
+            assert!((result[0] & (1u64 << i)) == 0);
+        }
+        for i in 5..10 {
+            assert!((result[0] & (1u64 << i)) != 0);
+        }
+    }
+
+    #[test]
+    fn test_simd_filter_eq_i64() {
+        let values = vec![1, 2, 3, 2, 5, 2, 7, 8];
+        let mut result = vec![0u64; 1];
+        simd::filter_eq_i64(&values, 2, &mut result);
+
+        // Indices 1, 3, 5 have value 2
+        assert!((result[0] & (1u64 << 1)) != 0);
+        assert!((result[0] & (1u64 << 3)) != 0);
+        assert!((result[0] & (1u64 << 5)) != 0);
+    }
+
+    #[test]
+    fn test_simd_filter_i64_non_aligned() {
+        // Test with non-4-aligned length to cover remainder loop
+        let values: Vec<i64> = (0..7).collect();
+        let mut result = vec![0u64; 1];
+        simd::filter_lt_i64(&values, 3, &mut result);
+
+        // 0, 1, 2 < 3
+        assert_eq!(result[0] & 0b111, 0b111);
+        assert!((result[0] & (1u64 << 3)) == 0);
+    }
+
+    // ========== OrderedFloat Edge Cases ==========
+
+    #[test]
+    fn test_ordered_float_nan_comparison() {
+        let nan1 = OrderedFloat(f64::NAN);
+        let nan2 = OrderedFloat(f64::NAN);
+        let regular = OrderedFloat(1.0);
+
+        // NaN == NaN for OrderedFloat
+        assert_eq!(nan1.cmp(&nan2), std::cmp::Ordering::Equal);
+        // NaN < regular
+        assert_eq!(nan1.cmp(&regular), std::cmp::Ordering::Less);
+        // regular > NaN
+        assert_eq!(regular.cmp(&nan1), std::cmp::Ordering::Greater);
+    }
+
+    // ========== OrderedKey::from_value ==========
+
+    #[test]
+    fn test_ordered_key_from_value() {
+        let null_key = OrderedKey::from_value(&Value::Null);
+        assert_eq!(null_key, OrderedKey::Null);
+
+        let bool_key = OrderedKey::from_value(&Value::Bool(true));
+        assert_eq!(bool_key, OrderedKey::Bool(true));
+
+        let int_key = OrderedKey::from_value(&Value::Int(42));
+        assert_eq!(int_key, OrderedKey::Int(42));
+
+        let float_key = OrderedKey::from_value(&Value::Float(3.14));
+        assert!(matches!(float_key, OrderedKey::Float(_)));
+
+        let string_key = OrderedKey::from_value(&Value::String("test".to_string()));
+        assert_eq!(string_key, OrderedKey::String("test".to_string()));
+    }
+
+    // ========== More Int Condition Tests (for SIMD paths) ==========
+
+    #[test]
+    fn test_select_int_le_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("ints", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("ints", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("ints", Condition::Le("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 6); // 0,1,2,3,4,5
+    }
+
+    #[test]
+    fn test_select_int_gt_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("ints", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("ints", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("ints", Condition::Gt("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 6,7,8,9
+    }
+
+    #[test]
+    fn test_select_int_ge_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("ints", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("ints", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("ints", Condition::Ge("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 5); // 5,6,7,8,9
+    }
+
+    #[test]
+    fn test_select_int_eq_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("ints", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("ints", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let rows = engine
+            .select("ints", Condition::Eq("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // ========== Float Le/Ge Condition Tests ==========
+
+    #[test]
+    fn test_select_float_le_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("floats", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "floats",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "floats",
+                Condition::Le("val".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 6); // 0,1,2,3,4,5
+    }
+
+    #[test]
+    fn test_select_float_ge_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("floats", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "floats",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "floats",
+                Condition::Ge("val".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5); // 5,6,7,8,9
+    }
+
+    // ========== Durable Engine Tests ==========
+
+    #[test]
+    fn test_open_durable_engine() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        let config = tensor_store::WalConfig::default();
+        let engine = RelationalEngine::open_durable(&wal_path, config);
+        assert!(engine.is_ok());
+    }
+
+    #[test]
+    fn test_recover_engine() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // First create a durable engine
+        let config = tensor_store::WalConfig::default();
+        {
+            let _engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+            // Engine drops, WAL is closed
+        }
+
+        // Recover
+        let recovered = RelationalEngine::recover(&wal_path, &config, None);
+        assert!(recovered.is_ok());
+    }
+
+    #[test]
+    fn test_durable_insert_and_delete() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("durable.wal");
+
+        let config = tensor_store::WalConfig::default();
+        let engine = RelationalEngine::open_durable(&wal_path, config).unwrap();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("durable_test", schema).unwrap();
+
+        engine
+            .insert(
+                "durable_test",
+                HashMap::from([("id".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        let rows = engine.select("durable_test", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        engine
+            .delete_rows(
+                "durable_test",
+                Condition::Eq("id".to_string(), Value::Int(1)),
+            )
+            .unwrap();
+
+        let rows = engine.select("durable_test", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    // ========== Transaction Manager with_timeout ==========
+
+    #[test]
+    fn test_transaction_manager_with_timeout() {
+        use crate::transaction::TransactionManager;
+        use std::time::Duration;
+
+        let mgr = TransactionManager::with_timeout(Duration::from_secs(30));
+        let tx = mgr.begin();
+        assert!(mgr.is_active(tx));
+    }
+
+    // ========== SIMD Bitmap Operations ==========
+
+    #[test]
+    fn test_simd_popcount() {
+        let bitmap = vec![0b11111111u64, 0b00001111u64];
+        assert_eq!(simd::popcount(&bitmap), 12);
+    }
+
+    #[test]
+    fn test_simd_bitmap_words() {
+        assert_eq!(simd::bitmap_words(0), 0);
+        assert_eq!(simd::bitmap_words(1), 1);
+        assert_eq!(simd::bitmap_words(64), 1);
+        assert_eq!(simd::bitmap_words(65), 2);
+        assert_eq!(simd::bitmap_words(128), 2);
+    }
+
+    #[test]
+    fn test_simd_selected_indices() {
+        let bitmap = vec![0b10100101u64];
+        let indices = simd::selected_indices(&bitmap, 8);
+        assert_eq!(indices, vec![0, 2, 5, 7]);
+    }
+
+    // ========== Complex Condition Tests ==========
+
+    #[test]
+    fn test_complex_and_or_conditions() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("complex", schema).unwrap();
+
+        for a in 0..5 {
+            for b in 0..5 {
+                engine
+                    .insert(
+                        "complex",
+                        HashMap::from([
+                            ("a".to_string(), Value::Int(a)),
+                            ("b".to_string(), Value::Int(b)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+        }
+
+        // (a < 2) AND (b > 2)
+        let cond = Condition::And(
+            Box::new(Condition::Lt("a".to_string(), Value::Int(2))),
+            Box::new(Condition::Gt("b".to_string(), Value::Int(2))),
+        );
+        let rows = engine.select("complex", cond).unwrap();
+        // a in {0, 1}, b in {3, 4} => 2 * 2 = 4 rows
+        assert_eq!(rows.len(), 4);
+
+        // (a == 0) OR (b == 0)
+        let cond = Condition::Or(
+            Box::new(Condition::Eq("a".to_string(), Value::Int(0))),
+            Box::new(Condition::Eq("b".to_string(), Value::Int(0))),
+        );
+        let rows = engine.select("complex", cond).unwrap();
+        // a=0: 5 rows, b=0: 5 rows, overlap: 1 row => 9 rows
+        assert_eq!(rows.len(), 9);
+    }
+
+    // ========== Row Key Helper Tests ==========
+
+    #[test]
+    fn test_row_key_format() {
+        let key = RelationalEngine::row_key("users", 42);
+        assert_eq!(key, "users:42");
+    }
+
+    #[test]
+    fn test_row_prefix_format() {
+        let prefix = RelationalEngine::row_prefix("users");
+        assert_eq!(prefix, "users:");
+    }
+
+    #[test]
+    fn test_table_meta_key_format() {
+        let key = RelationalEngine::table_meta_key("users");
+        assert_eq!(key, "_meta:table:users");
+    }
+
+    #[test]
+    fn test_index_meta_key_format() {
+        let key = RelationalEngine::index_meta_key("users", "email");
+        assert_eq!(key, "_idx:users:email");
+    }
+
+    // ========== Batch Insert Tests ==========
+
+    #[test]
+    fn test_batch_insert_basic() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("batch_test", schema).unwrap();
+
+        let rows = vec![
+            HashMap::from([
+                ("id".to_string(), Value::Int(1)),
+                ("name".to_string(), Value::String("Alice".to_string())),
+            ]),
+            HashMap::from([
+                ("id".to_string(), Value::Int(2)),
+                ("name".to_string(), Value::String("Bob".to_string())),
+            ]),
+            HashMap::from([
+                ("id".to_string(), Value::Int(3)),
+                ("name".to_string(), Value::String("Carol".to_string())),
+            ]),
+        ];
+
+        let ids = engine.batch_insert("batch_test", rows).unwrap();
+        assert_eq!(ids.len(), 3);
+
+        let result = engine.select("batch_test", Condition::True).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn test_batch_insert_empty() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("empty_batch", schema).unwrap();
+
+        let ids = engine.batch_insert("empty_batch", vec![]).unwrap();
+        assert_eq!(ids.len(), 0);
+    }
+
+    #[test]
+    fn test_batch_insert_with_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("batch_idx", schema).unwrap();
+        engine.create_index("batch_idx", "val").unwrap();
+
+        let rows: Vec<_> = (0..10)
+            .map(|i| {
+                HashMap::from([
+                    ("id".to_string(), Value::Int(i)),
+                    ("val".to_string(), Value::Int(i % 3)),
+                ])
+            })
+            .collect();
+
+        engine.batch_insert("batch_idx", rows).unwrap();
+
+        let result = engine
+            .select("batch_idx", Condition::Eq("val".to_string(), Value::Int(0)))
+            .unwrap();
+        // i = 0, 3, 6, 9 have val = 0
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_batch_insert_with_btree_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("score", ColumnType::Int),
+        ]);
+        engine.create_table("batch_btree", schema).unwrap();
+        engine.create_btree_index("batch_btree", "score").unwrap();
+
+        let rows: Vec<_> = (0..20)
+            .map(|i| {
+                HashMap::from([
+                    ("id".to_string(), Value::Int(i)),
+                    ("score".to_string(), Value::Int(i)),
+                ])
+            })
+            .collect();
+
+        engine.batch_insert("batch_btree", rows).unwrap();
+
+        let result = engine
+            .select(
+                "batch_btree",
+                Condition::Gt("score".to_string(), Value::Int(15)),
+            )
+            .unwrap();
+        // 16, 17, 18, 19 > 15
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_batch_insert_null_validation() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("required", ColumnType::Int)]);
+        engine.create_table("batch_null", schema).unwrap();
+
+        let rows = vec![
+            HashMap::from([("required".to_string(), Value::Int(1))]),
+            HashMap::new(), // Missing required field
+        ];
+
+        let result = engine.batch_insert("batch_null", rows);
+        assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
+    }
+
+    #[test]
+    fn test_batch_insert_type_validation() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("num", ColumnType::Int)]);
+        engine.create_table("batch_type", schema).unwrap();
+
+        let rows = vec![
+            HashMap::from([("num".to_string(), Value::Int(1))]),
+            HashMap::from([("num".to_string(), Value::String("not an int".to_string()))]),
+        ];
+
+        let result = engine.batch_insert("batch_type", rows);
+        assert!(matches!(result, Err(RelationalError::TypeMismatch { .. })));
+    }
+
+    // ========== List Tables Tests ==========
+
+    #[test]
+    fn test_list_tables() {
+        let engine = RelationalEngine::new();
+
+        // Initially no tables
+        let tables = engine.list_tables();
+        assert_eq!(tables.len(), 0);
+
+        // Add tables
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("table_a", schema.clone()).unwrap();
+        engine.create_table("table_b", schema.clone()).unwrap();
+        engine.create_table("table_c", schema).unwrap();
+
+        let tables = engine.list_tables();
+        assert_eq!(tables.len(), 3);
+        assert!(tables.contains(&"table_a".to_string()));
+        assert!(tables.contains(&"table_b".to_string()));
+        assert!(tables.contains(&"table_c".to_string()));
+    }
+
+    // ========== BTree Index Range Query Tests ==========
+
+    #[test]
+    fn test_btree_index_range_lt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("btree_lt", schema).unwrap();
+        engine.create_btree_index("btree_lt", "val").unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "btree_lt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("btree_lt", Condition::Lt("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(result.len(), 5); // 0,1,2,3,4
+    }
+
+    #[test]
+    fn test_btree_index_range_le() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("btree_le", schema).unwrap();
+        engine.create_btree_index("btree_le", "val").unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "btree_le",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("btree_le", Condition::Le("val".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(result.len(), 6); // 0,1,2,3,4,5
+    }
+
+    #[test]
+    fn test_btree_index_range_gt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("btree_gt", schema).unwrap();
+        engine.create_btree_index("btree_gt", "val").unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "btree_gt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("btree_gt", Condition::Gt("val".to_string(), Value::Int(15)))
+            .unwrap();
+        assert_eq!(result.len(), 4); // 16,17,18,19
+    }
+
+    #[test]
+    fn test_btree_index_range_ge() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("btree_ge", schema).unwrap();
+        engine.create_btree_index("btree_ge", "val").unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "btree_ge",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("btree_ge", Condition::Ge("val".to_string(), Value::Int(15)))
+            .unwrap();
+        assert_eq!(result.len(), 5); // 15,16,17,18,19
+    }
+
+    #[test]
+    fn test_index_lookup_with_and_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("and_idx", schema).unwrap();
+        engine.create_index("and_idx", "a").unwrap();
+
+        for a in 0..5 {
+            for b in 0..5 {
+                engine
+                    .insert(
+                        "and_idx",
+                        HashMap::from([
+                            ("a".to_string(), Value::Int(a)),
+                            ("b".to_string(), Value::Int(b)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+        }
+
+        // (a == 2) AND (b < 3)
+        let cond = Condition::And(
+            Box::new(Condition::Eq("a".to_string(), Value::Int(2))),
+            Box::new(Condition::Lt("b".to_string(), Value::Int(3))),
+        );
+        let rows = engine.select("and_idx", cond).unwrap();
+        // a=2: 5 rows, b<3: 3 rows => 3 matching rows
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_btree_index_with_and_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("btree_and", schema).unwrap();
+        engine.create_btree_index("btree_and", "a").unwrap();
+
+        for a in 0..10 {
+            for b in 0..10 {
+                engine
+                    .insert(
+                        "btree_and",
+                        HashMap::from([
+                            ("a".to_string(), Value::Int(a)),
+                            ("b".to_string(), Value::Int(b)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+        }
+
+        // (a < 3) AND (b > 5)
+        let cond = Condition::And(
+            Box::new(Condition::Lt("a".to_string(), Value::Int(3))),
+            Box::new(Condition::Gt("b".to_string(), Value::Int(5))),
+        );
+        let rows = engine.select("btree_and", cond).unwrap();
+        // a in {0,1,2}: 30 rows, b in {6,7,8,9}: 4 each => 3*4 = 12 rows
+        assert_eq!(rows.len(), 12);
+    }
+
+    // ========== Index with _id Tests ==========
+
+    #[test]
+    fn test_index_on_id_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("id_idx", schema).unwrap();
+        engine.create_index("id_idx", "_id").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "id_idx",
+                    HashMap::from([("name".to_string(), Value::String(format!("user{}", i)))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("id_idx", Condition::Eq("_id".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, 5);
+    }
+
+    #[test]
+    fn test_btree_index_on_id_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("btree_id", schema).unwrap();
+        engine.create_btree_index("btree_id", "_id").unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "btree_id",
+                    HashMap::from([("name".to_string(), Value::String(format!("user{}", i)))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select("btree_id", Condition::Lt("_id".to_string(), Value::Int(6)))
+            .unwrap();
+        assert_eq!(result.len(), 5); // ids 1,2,3,4,5 < 6
+    }
+
+    // ========== Drop Index Tests ==========
+
+    #[test]
+    fn test_drop_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("drop_idx", schema).unwrap();
+        engine.create_index("drop_idx", "val").unwrap();
+
+        // Insert some data
+        for i in 0..5 {
+            engine
+                .insert(
+                    "drop_idx",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Drop the index
+        let result = engine.drop_index("drop_idx", "val");
+        assert!(result.is_ok());
+
+        // Query should still work (full scan)
+        let rows = engine
+            .select("drop_idx", Condition::Eq("val".to_string(), Value::Int(2)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_drop_btree_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("drop_btree", schema).unwrap();
+        engine.create_btree_index("drop_btree", "val").unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "drop_btree",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine.drop_btree_index("drop_btree", "val");
+        assert!(result.is_ok());
+
+        let rows = engine
+            .select(
+                "drop_btree",
+                Condition::Lt("val".to_string(), Value::Int(3)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    // ========== Update with Index Tests ==========
+
+    #[test]
+    fn test_update_with_hash_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("update_idx", schema).unwrap();
+        engine.create_index("update_idx", "val").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "update_idx",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("val".to_string(), Value::Int(i % 3)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Update rows where val = 0 to val = 99
+        let updated = engine
+            .update(
+                "update_idx",
+                Condition::Eq("val".to_string(), Value::Int(0)),
+                HashMap::from([("val".to_string(), Value::Int(99))]),
+            )
+            .unwrap();
+        assert!(updated > 0);
+
+        // Old value should return 0 rows
+        let result = engine
+            .select(
+                "update_idx",
+                Condition::Eq("val".to_string(), Value::Int(0)),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 0);
+
+        // New value should have the updated rows
+        let result = engine
+            .select(
+                "update_idx",
+                Condition::Eq("val".to_string(), Value::Int(99)),
+            )
+            .unwrap();
+        assert_eq!(result.len(), updated);
+    }
+
+    // ========== Columnar Scan Tests ==========
+
+    #[test]
+    fn test_select_columnar() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("columnar", schema).unwrap();
+
+        for i in 0..100 {
+            engine
+                .insert(
+                    "columnar",
+                    HashMap::from([
+                        ("a".to_string(), Value::Int(i)),
+                        ("b".to_string(), Value::Int(i * 2)),
+                        ("c".to_string(), Value::Int(i * 3)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let opts = ColumnarScanOptions {
+            projection: Some(vec!["a".to_string(), "b".to_string()]),
+            prefer_columnar: true,
+        };
+
+        let result = engine
+            .select_columnar(
+                "columnar",
+                Condition::Lt("a".to_string(), Value::Int(10)),
+                opts,
+            )
+            .unwrap();
+        assert_eq!(result.len(), 10);
+    }
+
+    // ========== Aggregation Tests ==========
+
+    #[test]
+    fn test_count_rows() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("count_test", schema).unwrap();
+
+        for i in 0..50 {
+            engine
+                .insert(
+                    "count_test",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let count = engine.count("count_test", Condition::True).unwrap();
+        assert_eq!(count, 50);
+
+        let count = engine
+            .count(
+                "count_test",
+                Condition::Lt("val".to_string(), Value::Int(10)),
+            )
+            .unwrap();
+        assert_eq!(count, 10);
+    }
+
+    #[test]
+    fn test_sum_aggregate() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("sum_test", schema).unwrap();
+
+        for i in 1..=10 {
+            engine
+                .insert(
+                    "sum_test",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let sum = engine.sum("sum_test", "val", Condition::True).unwrap();
+        // 1+2+3+4+5+6+7+8+9+10 = 55
+        assert_eq!(sum, 55.0);
+    }
+
+    #[test]
+    fn test_avg_aggregate() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("avg_test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "avg_test",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let avg = engine.avg("avg_test", "val", Condition::True).unwrap();
+        // (0+1+2+3+4+5+6+7+8+9)/10 = 4.5
+        assert!((avg.unwrap() - 4.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_min_aggregate() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("min_test", schema).unwrap();
+
+        for i in [5, 3, 8, 1, 9, 2] {
+            engine
+                .insert(
+                    "min_test",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let min = engine.min("min_test", "val", Condition::True).unwrap();
+        assert_eq!(min, Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn test_max_aggregate() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("max_test", schema).unwrap();
+
+        for i in [5, 3, 8, 1, 9, 2] {
+            engine
+                .insert(
+                    "max_test",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let max = engine.max("max_test", "val", Condition::True).unwrap();
+        assert_eq!(max, Some(Value::Int(9)));
+    }
+
+    #[test]
+    fn test_count_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("cnt_col", schema).unwrap();
+
+        engine
+            .insert(
+                "cnt_col",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+        engine
+            .insert("cnt_col", HashMap::from([("val".to_string(), Value::Null)]))
+            .unwrap();
+        engine
+            .insert(
+                "cnt_col",
+                HashMap::from([("val".to_string(), Value::Int(3))]),
+            )
+            .unwrap();
+
+        // count_column should exclude nulls
+        let count = engine
+            .count_column("cnt_col", "val", Condition::True)
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_parallel_sum_threshold() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("psum", schema).unwrap();
+
+        // Insert 1001 rows to trigger parallel path (>= 1000)
+        for i in 0..1001 {
+            engine
+                .insert("psum", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let sum = engine.sum("psum", "val", Condition::True).unwrap();
+        // Sum of 0..1001 = 1001 * 1000 / 2 = 500500
+        assert_eq!(sum, 500500.0);
+    }
+
+    #[test]
+    fn test_parallel_avg_threshold() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("pavg", schema).unwrap();
+
+        // Insert 1001 rows to trigger parallel path (>= 1000)
+        for i in 0..1001 {
+            engine
+                .insert(
+                    "pavg",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let avg = engine.avg("pavg", "val", Condition::True).unwrap().unwrap();
+        // Avg of 0..1001 = 500.0
+        assert!((avg - 500.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parallel_min_threshold() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("pmin", schema).unwrap();
+
+        // Insert 1001 rows to trigger parallel path (>= 1000)
+        for i in 0..1001 {
+            engine
+                .insert(
+                    "pmin",
+                    HashMap::from([("val".to_string(), Value::Int(1000 - i))]),
+                )
+                .unwrap();
+        }
+
+        let min = engine.min("pmin", "val", Condition::True).unwrap();
+        assert_eq!(min, Some(Value::Int(0)));
+    }
+
+    #[test]
+    fn test_parallel_max_threshold() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("pmax", schema).unwrap();
+
+        // Insert 1001 rows to trigger parallel path (>= 1000)
+        for i in 0..1001 {
+            engine
+                .insert("pmax", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let max = engine.max("pmax", "val", Condition::True).unwrap();
+        assert_eq!(max, Some(Value::Int(1000)));
+    }
+
+    #[test]
+    fn test_tx_rollback_inserted_row() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_rb_ins", schema).unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_insert(
+                tx_id,
+                "tx_rb_ins",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        // Verify row exists before rollback
+        let rows = engine.select("tx_rb_ins", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+
+        // Rollback
+        engine.rollback(tx_id).unwrap();
+
+        // Verify row is removed
+        let rows = engine.select("tx_rb_ins", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_tx_rollback_updated_row() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_rb_upd", schema).unwrap();
+
+        // Insert initial row
+        engine
+            .insert(
+                "tx_rb_upd",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_update(
+                tx_id,
+                "tx_rb_upd",
+                Condition::True,
+                HashMap::from([("val".to_string(), Value::Int(99))]),
+            )
+            .unwrap();
+
+        // Verify updated value
+        let rows = engine.select("tx_rb_upd", Condition::True).unwrap();
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(99)));
+
+        // Rollback
+        engine.rollback(tx_id).unwrap();
+
+        // Verify original value restored
+        let rows = engine.select("tx_rb_upd", Condition::True).unwrap();
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_tx_rollback_deleted_row() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_rb_del", schema).unwrap();
+
+        // Insert initial row
+        engine
+            .insert(
+                "tx_rb_del",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_delete(tx_id, "tx_rb_del", Condition::True)
+            .unwrap();
+
+        // Verify row deleted
+        let rows = engine.select("tx_rb_del", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+
+        // Rollback
+        engine.rollback(tx_id).unwrap();
+
+        // Verify row restored
+        let rows = engine.select("tx_rb_del", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn test_tx_not_found_commit() {
+        let engine = RelationalEngine::new();
+        let result = engine.commit(99999);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(99999))
+        ));
+    }
+
+    #[test]
+    fn test_tx_not_found_rollback() {
+        let engine = RelationalEngine::new();
+        let result = engine.rollback(99999);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(99999))
+        ));
+    }
+
+    #[test]
+    fn test_tx_inactive_commit() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_inact", schema).unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine.commit(tx_id).unwrap();
+
+        // Second commit should fail
+        let result = engine.commit(tx_id);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_float_lt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("slab_flt_lt", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_flt_lt",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_flt_lt",
+                Condition::Lt("val".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5); // 0, 1, 2, 3, 4
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_float_gt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("slab_flt_gt", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_flt_gt",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_flt_gt",
+                Condition::Gt("val".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 6, 7, 8, 9
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_float_eq() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("slab_flt_eq", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_flt_eq",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_flt_eq",
+                Condition::Eq("val".to_string(), Value::Float(5.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_int_ne() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_int_ne", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_int_ne",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_int_ne",
+                Condition::Ne("val".to_string(), Value::Int(5)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 9); // All except 5
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_int_le() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_int_le", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_int_le",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_int_le",
+                Condition::Le("val".to_string(), Value::Int(5)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 6); // 0, 1, 2, 3, 4, 5
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_int_ge() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_int_ge", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_int_ge",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_int_ge",
+                Condition::Ge("val".to_string(), Value::Int(5)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5); // 5, 6, 7, 8, 9
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_int_lt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_int_lt", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_int_lt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_int_lt",
+                Condition::Lt("val".to_string(), Value::Int(5)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5); // 0, 1, 2, 3, 4
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_int_gt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_int_gt", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_int_gt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "slab_int_gt",
+                Condition::Gt("val".to_string(), Value::Int(5)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 6, 7, 8, 9
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_and() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_and", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_and",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let cond = Condition::And(
+            Box::new(Condition::Gt("val".to_string(), Value::Int(3))),
+            Box::new(Condition::Lt("val".to_string(), Value::Int(7))),
+        );
+        let rows = engine.select("slab_and", cond).unwrap();
+        assert_eq!(rows.len(), 3); // 4, 5, 6
+    }
+
+    #[test]
+    fn test_slab_vectorized_filter_or() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("slab_or", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "slab_or",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let cond = Condition::Or(
+            Box::new(Condition::Lt("val".to_string(), Value::Int(2))),
+            Box::new(Condition::Gt("val".to_string(), Value::Int(7))),
+        );
+        let rows = engine.select("slab_or", cond).unwrap();
+        assert_eq!(rows.len(), 4); // 0, 1, 8, 9
+    }
+
+    #[test]
+    fn test_natural_join_missing_column() {
+        let engine = RelationalEngine::new();
+        let schema_a = Schema::new(vec![
+            Column::new("id", ColumnType::Int).nullable(),
+            Column::new("val", ColumnType::Int),
+        ]);
+        let schema_b = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("other", ColumnType::Int),
+        ]);
+
+        engine.create_table("nj_miss_a", schema_a).unwrap();
+        engine.create_table("nj_miss_b", schema_b).unwrap();
+
+        // Insert with null for common column 'id'
+        engine
+            .insert(
+                "nj_miss_a",
+                HashMap::from([
+                    ("id".to_string(), Value::Null),
+                    ("val".to_string(), Value::Int(1)),
+                ]),
+            )
+            .unwrap();
+
+        engine
+            .insert(
+                "nj_miss_b",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("other".to_string(), Value::Int(2)),
+                ]),
+            )
+            .unwrap();
+
+        // Natural join with null on join column should not match non-null
+        let results = engine.natural_join("nj_miss_a", "nj_miss_b").unwrap();
+        // Actually nulls don't match non-nulls, so should be 0
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_sum_with_float_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("sum_float", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "sum_float",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64 * 1.5))]),
+                )
+                .unwrap();
+        }
+
+        let sum = engine.sum("sum_float", "val", Condition::True).unwrap();
+        // 0 + 1.5 + 3 + 4.5 + 6 = 15.0
+        assert!((sum - 15.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_avg_empty_table() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("avg_empty", schema).unwrap();
+
+        let avg = engine.avg("avg_empty", "val", Condition::True).unwrap();
+        assert_eq!(avg, None);
+    }
+
+    #[test]
+    fn test_min_float_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("min_float", schema).unwrap();
+
+        for v in [5.5, 3.3, 8.8, 1.1, 9.9] {
+            engine
+                .insert(
+                    "min_float",
+                    HashMap::from([("val".to_string(), Value::Float(v))]),
+                )
+                .unwrap();
+        }
+
+        let min = engine.min("min_float", "val", Condition::True).unwrap();
+        assert_eq!(min, Some(Value::Float(1.1)));
+    }
+
+    #[test]
+    fn test_max_float_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("max_float", schema).unwrap();
+
+        for v in [5.5, 3.3, 8.8, 1.1, 9.9] {
+            engine
+                .insert(
+                    "max_float",
+                    HashMap::from([("val".to_string(), Value::Float(v))]),
+                )
+                .unwrap();
+        }
+
+        let max = engine.max("max_float", "val", Condition::True).unwrap();
+        assert_eq!(max, Some(Value::Float(9.9)));
+    }
+
+    #[test]
+    fn test_columnar_select_with_projection() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("col_proj", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "col_proj",
+                    HashMap::from([
+                        ("a".to_string(), Value::Int(i)),
+                        ("b".to_string(), Value::Int(i * 2)),
+                        ("c".to_string(), Value::Int(i * 3)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let opts = ColumnarScanOptions {
+            projection: Some(vec!["a".to_string(), "c".to_string()]),
+            ..Default::default()
+        };
+        let rows = engine
+            .select_columnar("col_proj", Condition::True, opts)
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        // Should only have 'a' and 'c' columns
+        for row in &rows {
+            assert!(row.get("a").is_some());
+            assert!(row.get("c").is_some());
+            assert!(row.get("b").is_none());
+        }
+    }
+
+    #[test]
+    fn test_tx_rollback_with_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_rb_idx", schema).unwrap();
+        engine.create_index("tx_rb_idx", "val").unwrap();
+
+        // Insert initial row
+        engine
+            .insert(
+                "tx_rb_idx",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+
+        // Insert another row in transaction
+        engine
+            .tx_insert(
+                tx_id,
+                "tx_rb_idx",
+                HashMap::from([("val".to_string(), Value::Int(20))]),
+            )
+            .unwrap();
+
+        // Rollback
+        engine.rollback(tx_id).unwrap();
+
+        // Verify only initial row exists
+        let rows = engine.select("tx_rb_idx", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_tx_rollback_with_btree_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_rb_btree", schema).unwrap();
+        engine.create_btree_index("tx_rb_btree", "val").unwrap();
+
+        // Insert initial row
+        engine
+            .insert(
+                "tx_rb_btree",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+
+        // Update row in transaction
+        engine
+            .tx_update(
+                tx_id,
+                "tx_rb_btree",
+                Condition::True,
+                HashMap::from([("val".to_string(), Value::Int(99))]),
+            )
+            .unwrap();
+
+        // Rollback
+        engine.rollback(tx_id).unwrap();
+
+        // Verify original value restored
+        let rows = engine.select("tx_rb_btree", Condition::True).unwrap();
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_empty_row_count_selection() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("empty_sel", schema).unwrap();
+
+        // Columnar select on empty table
+        let rows = engine
+            .select_columnar("empty_sel", Condition::True, ColumnarScanOptions::default())
+            .unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_tx_update_not_found() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_upd_nf", schema).unwrap();
+
+        let result = engine.tx_update(
+            99999,
+            "tx_upd_nf",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::Int(42))]),
+        );
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(99999))
+        ));
+    }
+
+    #[test]
+    fn test_tx_delete_not_found() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_del_nf", schema).unwrap();
+
+        let result = engine.tx_delete(99999, "tx_del_nf", Condition::True);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(99999))
+        ));
+    }
+
+    #[test]
+    fn test_tx_insert_not_found() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_ins_nf", schema).unwrap();
+
+        let result = engine.tx_insert(
+            99999,
+            "tx_ins_nf",
+            HashMap::from([("val".to_string(), Value::Int(42))]),
+        );
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(99999))
+        ));
+    }
+
+    #[test]
+    fn test_tx_insert_with_index_on_id() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_ins_id_idx", schema).unwrap();
+        engine.create_index("tx_ins_id_idx", "_id").unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_insert(
+                tx_id,
+                "tx_ins_id_idx",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+        engine.commit(tx_id).unwrap();
+
+        let rows = engine.select("tx_ins_id_idx", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_tx_insert_with_btree_index_on_id() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_ins_bt_id", schema).unwrap();
+        engine.create_btree_index("tx_ins_bt_id", "_id").unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_insert(
+                tx_id,
+                "tx_ins_bt_id",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+        engine.commit(tx_id).unwrap();
+
+        let rows = engine.select("tx_ins_bt_id", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_rollback_insert_with_id_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("rb_ins_id", schema).unwrap();
+        engine.create_index("rb_ins_id", "_id").unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_insert(
+                tx_id,
+                "rb_ins_id",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        engine.rollback(tx_id).unwrap();
+
+        let rows = engine.select("rb_ins_id", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_rollback_update_with_id_btree() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("rb_upd_bt", schema).unwrap();
+        engine.create_btree_index("rb_upd_bt", "_id").unwrap();
+
+        engine
+            .insert(
+                "rb_upd_bt",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_update(
+                tx_id,
+                "rb_upd_bt",
+                Condition::True,
+                HashMap::from([("val".to_string(), Value::Int(99))]),
+            )
+            .unwrap();
+
+        engine.rollback(tx_id).unwrap();
+
+        let rows = engine.select("rb_upd_bt", Condition::True).unwrap();
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_rollback_delete_with_indexes() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("rb_del_idx", schema).unwrap();
+        engine.create_index("rb_del_idx", "val").unwrap();
+        engine.create_btree_index("rb_del_idx", "val").unwrap();
+
+        engine
+            .insert(
+                "rb_del_idx",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine
+            .tx_delete(tx_id, "rb_del_idx", Condition::True)
+            .unwrap();
+
+        engine.rollback(tx_id).unwrap();
+
+        let rows = engine.select("rb_del_idx", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn test_sum_with_non_numeric_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::String)]);
+        engine.create_table("sum_str", schema).unwrap();
+
+        engine
+            .insert(
+                "sum_str",
+                HashMap::from([("val".to_string(), Value::String("hello".to_string()))]),
+            )
+            .unwrap();
+
+        // sum on string column returns 0
+        let sum = engine.sum("sum_str", "val", Condition::True).unwrap();
+        assert_eq!(sum, 0.0);
+    }
+
+    #[test]
+    fn test_avg_with_non_numeric_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::String)]);
+        engine.create_table("avg_str", schema).unwrap();
+
+        engine
+            .insert(
+                "avg_str",
+                HashMap::from([("val".to_string(), Value::String("hello".to_string()))]),
+            )
+            .unwrap();
+
+        // avg on string column returns None (no numeric values)
+        let avg = engine.avg("avg_str", "val", Condition::True).unwrap();
+        assert_eq!(avg, None);
+    }
+
+    #[test]
+    fn test_min_empty_table() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("min_empty", schema).unwrap();
+
+        let min = engine.min("min_empty", "val", Condition::True).unwrap();
+        assert_eq!(min, None);
+    }
+
+    #[test]
+    fn test_max_empty_table() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("max_empty", schema).unwrap();
+
+        let max = engine.max("max_empty", "val", Condition::True).unwrap();
+        assert_eq!(max, None);
+    }
+
+    #[test]
+    fn test_columnar_scan_with_null_int() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("col_null_int", schema).unwrap();
+
+        engine
+            .insert(
+                "col_null_int",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "col_null_int",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "col_null_int",
+                HashMap::from([("val".to_string(), Value::Int(3))]),
+            )
+            .unwrap();
+
+        let rows = engine.select("col_null_int", Condition::True).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_columnar_scan_with_null_float() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float).nullable()]);
+        engine.create_table("col_null_flt", schema).unwrap();
+
+        engine
+            .insert(
+                "col_null_flt",
+                HashMap::from([("val".to_string(), Value::Float(1.1))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "col_null_flt",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "col_null_flt",
+                HashMap::from([("val".to_string(), Value::Float(3.3))]),
+            )
+            .unwrap();
+
+        let rows = engine.select("col_null_flt", Condition::True).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_tx_is_active() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_active", schema).unwrap();
+
+        let tx_id = engine.begin_transaction();
+        assert!(engine.is_transaction_active(tx_id));
+
+        engine.commit(tx_id).unwrap();
+        assert!(!engine.is_transaction_active(tx_id));
+    }
+
+    #[test]
+    fn test_parallel_join_large() {
+        let engine = RelationalEngine::new();
+        let schema_a = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        let schema_b = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("other", ColumnType::Int),
+        ]);
+
+        engine.create_table("pjoin_a", schema_a).unwrap();
+        engine.create_table("pjoin_b", schema_b).unwrap();
+
+        // Insert enough rows to trigger parallel path (>= 1000)
+        for i in 0..1001 {
+            engine
+                .insert(
+                    "pjoin_a",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("val".to_string(), Value::Int(i * 2)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "pjoin_b",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("other".to_string(), Value::Int(i + 100)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let results = engine.natural_join("pjoin_a", "pjoin_b").unwrap();
+        assert_eq!(results.len(), 10);
+    }
+
+    #[test]
+    fn test_select_with_condition_on_deleted_rows() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("del_cond", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "del_cond",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Delete some rows
+        engine
+            .delete_rows("del_cond", Condition::Lt("val".to_string(), Value::Int(3)))
+            .unwrap();
+
+        // Select remaining rows
+        let rows = engine.select("del_cond", Condition::True).unwrap();
+        assert_eq!(rows.len(), 2); // Only 3, 4 remain
+    }
+
+    #[test]
+    fn test_result_too_large_error_display() {
+        let err = RelationalError::ResultTooLarge {
+            operation: "CROSS JOIN".to_string(),
+            actual: 2000000,
+            max: 1000000,
+        };
+        let display = format!("{}", err);
+        assert!(display.contains("CROSS JOIN"));
+        assert!(display.contains("2000000"));
+        assert!(display.contains("1000000"));
+    }
+
+    #[test]
+    fn test_select_with_string_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("str_cond", schema).unwrap();
+
+        engine
+            .insert(
+                "str_cond",
+                HashMap::from([("name".to_string(), Value::String("alice".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "str_cond",
+                HashMap::from([("name".to_string(), Value::String("bob".to_string()))]),
+            )
+            .unwrap();
+
+        let rows = engine
+            .select(
+                "str_cond",
+                Condition::Eq("name".to_string(), Value::String("alice".to_string())),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_tx_update_column_not_found() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_upd_cnf", schema).unwrap();
+
+        engine
+            .insert(
+                "tx_upd_cnf",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        let result = engine.tx_update(
+            tx_id,
+            "tx_upd_cnf",
+            Condition::True,
+            HashMap::from([("nonexistent".to_string(), Value::Int(42))]),
+        );
+        assert!(matches!(result, Err(RelationalError::ColumnNotFound(_))));
+        engine.rollback(tx_id).unwrap();
+    }
+
+    #[test]
+    fn test_tx_update_type_mismatch() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_upd_type", schema).unwrap();
+
+        engine
+            .insert(
+                "tx_upd_type",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        let result = engine.tx_update(
+            tx_id,
+            "tx_upd_type",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::String("wrong".to_string()))]),
+        );
+        assert!(matches!(result, Err(RelationalError::TypeMismatch { .. })));
+        engine.rollback(tx_id).unwrap();
+    }
+
+    #[test]
+    fn test_tx_update_null_not_allowed() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_upd_null", schema).unwrap();
+
+        engine
+            .insert(
+                "tx_upd_null",
+                HashMap::from([("val".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+        let result = engine.tx_update(
+            tx_id,
+            "tx_upd_null",
+            Condition::True,
+            HashMap::from([("val".to_string(), Value::Null)]),
+        );
+        assert!(matches!(result, Err(RelationalError::NullNotAllowed(_))));
+        engine.rollback(tx_id).unwrap();
+    }
+
+    #[test]
+    fn test_tx_inactive_rollback() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("tx_inact_rb", schema).unwrap();
+
+        let tx_id = engine.begin_transaction();
+        engine.commit(tx_id).unwrap();
+
+        // Rollback after commit should fail
+        let result = engine.rollback(tx_id);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TransactionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_min_with_null_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("min_nulls", schema).unwrap();
+
+        engine
+            .insert(
+                "min_nulls",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "min_nulls",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "min_nulls",
+                HashMap::from([("val".to_string(), Value::Int(5))]),
+            )
+            .unwrap();
+
+        let min = engine.min("min_nulls", "val", Condition::True).unwrap();
+        assert_eq!(min, Some(Value::Int(5)));
+    }
+
+    #[test]
+    fn test_max_with_null_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("max_nulls", schema).unwrap();
+
+        engine
+            .insert(
+                "max_nulls",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "max_nulls",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "max_nulls",
+                HashMap::from([("val".to_string(), Value::Int(5))]),
+            )
+            .unwrap();
+
+        let max = engine.max("max_nulls", "val", Condition::True).unwrap();
+        assert_eq!(max, Some(Value::Int(10)));
+    }
+
+    #[test]
+    fn test_sum_with_null_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("sum_nulls", schema).unwrap();
+
+        engine
+            .insert(
+                "sum_nulls",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "sum_nulls",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "sum_nulls",
+                HashMap::from([("val".to_string(), Value::Int(5))]),
+            )
+            .unwrap();
+
+        let sum = engine.sum("sum_nulls", "val", Condition::True).unwrap();
+        assert_eq!(sum, 15.0);
+    }
+
+    #[test]
+    fn test_avg_with_null_values() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float).nullable()]);
+        engine.create_table("avg_nulls", schema).unwrap();
+
+        engine
+            .insert(
+                "avg_nulls",
+                HashMap::from([("val".to_string(), Value::Null)]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "avg_nulls",
+                HashMap::from([("val".to_string(), Value::Float(10.0))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "avg_nulls",
+                HashMap::from([("val".to_string(), Value::Float(20.0))]),
+            )
+            .unwrap();
+
+        let avg = engine.avg("avg_nulls", "val", Condition::True).unwrap();
+        // Only non-null values count: (10 + 20) / 2 = 15
+        assert!(avg.is_some());
+    }
+
+    #[test]
+    fn test_min_string() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::String)]);
+        engine.create_table("min_str", schema).unwrap();
+
+        engine
+            .insert(
+                "min_str",
+                HashMap::from([("val".to_string(), Value::String("banana".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "min_str",
+                HashMap::from([("val".to_string(), Value::String("apple".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "min_str",
+                HashMap::from([("val".to_string(), Value::String("cherry".to_string()))]),
+            )
+            .unwrap();
+
+        let min = engine.min("min_str", "val", Condition::True).unwrap();
+        assert_eq!(min, Some(Value::String("apple".to_string())));
+    }
+
+    #[test]
+    fn test_max_string() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::String)]);
+        engine.create_table("max_str", schema).unwrap();
+
+        engine
+            .insert(
+                "max_str",
+                HashMap::from([("val".to_string(), Value::String("banana".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "max_str",
+                HashMap::from([("val".to_string(), Value::String("apple".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "max_str",
+                HashMap::from([("val".to_string(), Value::String("cherry".to_string()))]),
+            )
+            .unwrap();
+
+        let max = engine.max("max_str", "val", Condition::True).unwrap();
+        assert_eq!(max, Some(Value::String("cherry".to_string())));
+    }
+
+    #[test]
+    fn test_update_with_condition_no_match() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("upd_no_match", schema).unwrap();
+
+        engine
+            .insert(
+                "upd_no_match",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        // Update with condition that doesn't match
+        let updated = engine
+            .update(
+                "upd_no_match",
+                Condition::Eq("val".to_string(), Value::Int(99)),
+                HashMap::from([("val".to_string(), Value::Int(20))]),
+            )
+            .unwrap();
+        assert_eq!(updated, 0);
+
+        // Value should remain unchanged
+        let rows = engine.select("upd_no_match", Condition::True).unwrap();
+        assert_eq!(rows[0].get("val"), Some(&Value::Int(10)));
+    }
+
+    #[test]
+    fn test_delete_with_condition_no_match() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("del_no_match", schema).unwrap();
+
+        engine
+            .insert(
+                "del_no_match",
+                HashMap::from([("val".to_string(), Value::Int(10))]),
+            )
+            .unwrap();
+
+        // Delete with condition that doesn't match
+        let deleted = engine
+            .delete_rows(
+                "del_no_match",
+                Condition::Eq("val".to_string(), Value::Int(99)),
+            )
+            .unwrap();
+        assert_eq!(deleted, 0);
+
+        // Row should still exist
+        let rows = engine.select("del_no_match", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_lt() {
+        // Test with 5 elements (not divisible by 4) to hit remainder loop
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_lt", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_lt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_lt",
+                Condition::Lt("val".to_string(), Value::Int(3)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3); // 0, 1, 2
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_le() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_le", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_le",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_le",
+                Condition::Le("val".to_string(), Value::Int(3)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 0, 1, 2, 3
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_gt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_gt", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_gt",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_gt",
+                Condition::Gt("val".to_string(), Value::Int(2)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2); // 3, 4
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_ge() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_ge", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_ge",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_ge",
+                Condition::Ge("val".to_string(), Value::Int(2)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3); // 2, 3, 4
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_eq() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_eq", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_eq",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_eq",
+                Condition::Eq("val".to_string(), Value::Int(4)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_simd_filter_non_aligned_ne() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("simd_na_ne", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_na_ne",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_na_ne",
+                Condition::Ne("val".to_string(), Value::Int(4)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4); // 0, 1, 2, 3
+    }
+
+    #[test]
+    fn test_simd_filter_float_non_aligned_lt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("simd_fna_lt", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_fna_lt",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_fna_lt",
+                Condition::Lt("val".to_string(), Value::Float(3.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3); // 0, 1, 2
+    }
+
+    #[test]
+    fn test_simd_filter_float_non_aligned_gt() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("simd_fna_gt", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_fna_gt",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_fna_gt",
+                Condition::Gt("val".to_string(), Value::Float(2.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2); // 3, 4
+    }
+
+    #[test]
+    fn test_simd_filter_float_non_aligned_eq() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("simd_fna_eq", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "simd_fna_eq",
+                    HashMap::from([("val".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine
+            .select(
+                "simd_fna_eq",
+                Condition::Eq("val".to_string(), Value::Float(4.0)),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_invalid_name_error_display() {
+        let err = RelationalError::InvalidName("test message".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Invalid name"));
+        assert!(display.contains("test message"));
+    }
+
+    #[test]
+    fn test_durable_engine_delete() {
+        use tensor_store::WalConfig;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal_path = temp_dir.path().join("test_del.wal");
+        let config = WalConfig::default();
+
+        let engine = RelationalEngine::open_durable(&wal_path, config).unwrap();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("dur_del", schema).unwrap();
+
+        engine
+            .insert(
+                "dur_del",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        // Delete row using durable engine
+        let deleted = engine.delete_rows("dur_del", Condition::True).unwrap();
+        assert_eq!(deleted, 1);
+
+        let rows = engine.select("dur_del", Condition::True).unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn test_durable_engine_drop_table() {
+        use tensor_store::WalConfig;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let wal_path = temp_dir.path().join("test_drop.wal");
+        let config = WalConfig::default();
+
+        let engine = RelationalEngine::open_durable(&wal_path, config).unwrap();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("dur_drop", schema).unwrap();
+
+        engine
+            .insert(
+                "dur_drop",
+                HashMap::from([("val".to_string(), Value::Int(42))]),
+            )
+            .unwrap();
+
+        // Drop the table using durable engine
+        engine.drop_table("dur_drop").unwrap();
+
+        // Verify table is gone
+        let result = engine.select("dur_drop", Condition::True);
+        assert!(matches!(result, Err(RelationalError::TableNotFound(_))));
+    }
+
+    #[test]
+    fn test_concurrent_create_table_same_name() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let success = Arc::new(AtomicUsize::new(0));
+        let error = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                let e = Arc::clone(&error);
+                thread::spawn(move || {
+                    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+                    match eng.create_table("contested", schema) {
+                        Ok(()) => {
+                            s.fetch_add(1, Ordering::SeqCst);
+                        },
+                        Err(RelationalError::TableAlreadyExists(_)) => {
+                            e.fetch_add(1, Ordering::SeqCst);
+                        },
+                        Err(err) => panic!("unexpected error: {err:?}"),
+                    };
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 1);
+        assert_eq!(error.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn test_concurrent_create_index_same_column() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("idx_test", schema).unwrap();
+
+        let success = Arc::new(AtomicUsize::new(0));
+        let error = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                let e = Arc::clone(&error);
+                thread::spawn(move || match eng.create_index("idx_test", "value") {
+                    Ok(()) => {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(RelationalError::IndexAlreadyExists { .. }) => {
+                        e.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(err) => panic!("unexpected error: {err:?}"),
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 1);
+        assert_eq!(error.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn test_concurrent_create_btree_index_same_column() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("btree_test", schema).unwrap();
+
+        let success = Arc::new(AtomicUsize::new(0));
+        let error = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                let e = Arc::clone(&error);
+                thread::spawn(
+                    move || match eng.create_btree_index("btree_test", "value") {
+                        Ok(()) => {
+                            s.fetch_add(1, Ordering::SeqCst);
+                        },
+                        Err(RelationalError::IndexAlreadyExists { .. }) => {
+                            e.fetch_add(1, Ordering::SeqCst);
+                        },
+                        Err(err) => panic!("unexpected error: {err:?}"),
+                    },
+                )
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 1);
+        assert_eq!(error.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn test_concurrent_drop_table_same_name() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("drop_test", schema).unwrap();
+
+        let success = Arc::new(AtomicUsize::new(0));
+        let error = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                let e = Arc::clone(&error);
+                thread::spawn(move || match eng.drop_table("drop_test") {
+                    Ok(()) => {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(RelationalError::TableNotFound(_)) => {
+                        e.fetch_add(1, Ordering::SeqCst);
+                    },
+                    Err(err) => panic!("unexpected error: {err:?}"),
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 1);
+        assert_eq!(error.load(Ordering::SeqCst), 9);
+    }
+}
+
+#[cfg(all(test, feature = "test-internals"))]
+mod tensor_eval_tests {
+    use super::*;
+    use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+    fn make_tensor(id: i64, val: i64) -> TensorData {
+        let mut data = TensorData::new();
+        data.set("_id".to_string(), TensorValue::Scalar(ScalarValue::Int(id)));
+        data.set(
+            "val".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(val)),
+        );
+        data
+    }
+
+    fn make_tensor_float(id: i64, val: f64) -> TensorData {
+        let mut data = TensorData::new();
+        data.set("_id".to_string(), TensorValue::Scalar(ScalarValue::Int(id)));
+        data.set(
+            "val".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(val)),
+        );
+        data
+    }
+
+    fn make_tensor_str(id: i64, val: &str) -> TensorData {
+        let mut data = TensorData::new();
+        data.set("_id".to_string(), TensorValue::Scalar(ScalarValue::Int(id)));
+        data.set(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String(val.to_string())),
+        );
+        data
+    }
+
+    #[test]
+    fn test_tensor_eval_true() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::True.evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_eq_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Eq("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Eq("val".to_string(), Value::Int(99)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_ne_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Ne("val".to_string(), Value::Int(99)).evaluate_tensor(&tensor));
+        assert!(!Condition::Ne("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_lt_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Lt("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+        assert!(!Condition::Lt("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Lt("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_le_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Le("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+        assert!(Condition::Le("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Le("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_gt_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Gt("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+        assert!(!Condition::Gt("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Gt("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_ge_int() {
+        let tensor = make_tensor(1, 42);
+        assert!(Condition::Ge("val".to_string(), Value::Int(30)).evaluate_tensor(&tensor));
+        assert!(Condition::Ge("val".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Ge("val".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_and() {
+        let tensor = make_tensor(1, 42);
+        let cond = Condition::And(
+            Box::new(Condition::Gt("val".to_string(), Value::Int(30))),
+            Box::new(Condition::Lt("val".to_string(), Value::Int(50))),
+        );
+        assert!(cond.evaluate_tensor(&tensor));
+
+        let cond2 = Condition::And(
+            Box::new(Condition::Gt("val".to_string(), Value::Int(50))),
+            Box::new(Condition::Lt("val".to_string(), Value::Int(60))),
+        );
+        assert!(!cond2.evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_or() {
+        let tensor = make_tensor(1, 42);
+        let cond = Condition::Or(
+            Box::new(Condition::Lt("val".to_string(), Value::Int(30))),
+            Box::new(Condition::Gt("val".to_string(), Value::Int(40))),
+        );
+        assert!(cond.evaluate_tensor(&tensor));
+
+        let cond2 = Condition::Or(
+            Box::new(Condition::Lt("val".to_string(), Value::Int(30))),
+            Box::new(Condition::Gt("val".to_string(), Value::Int(50))),
+        );
+        assert!(!cond2.evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_id_field() {
+        let tensor = make_tensor(99, 42);
+        assert!(Condition::Eq("_id".to_string(), Value::Int(99)).evaluate_tensor(&tensor));
+        assert!(!Condition::Eq("_id".to_string(), Value::Int(1)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_float() {
+        let tensor = make_tensor_float(1, 3.14);
+        assert!(Condition::Lt("val".to_string(), Value::Float(4.0)).evaluate_tensor(&tensor));
+        assert!(Condition::Gt("val".to_string(), Value::Float(3.0)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_missing_column() {
+        let tensor = make_tensor(1, 42);
+        // Missing column should return false for comparisons
+        assert!(!Condition::Eq("nonexistent".to_string(), Value::Int(42)).evaluate_tensor(&tensor));
+        assert!(!Condition::Lt("nonexistent".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_string() {
+        let tensor = make_tensor_str(1, "hello");
+        assert!(
+            Condition::Eq("name".to_string(), Value::String("hello".to_string()))
+                .evaluate_tensor(&tensor)
+        );
+        assert!(
+            !Condition::Eq("name".to_string(), Value::String("world".to_string()))
+                .evaluate_tensor(&tensor)
+        );
+    }
+
+    #[test]
+    fn test_tensor_eval_missing_id() {
+        // Tensor without _id field
+        let mut data = TensorData::new();
+        data.set("val".to_string(), TensorValue::Scalar(ScalarValue::Int(42)));
+
+        // Checking _id on tensor without _id should return false
+        assert!(!Condition::Eq("_id".to_string(), Value::Int(1)).evaluate_tensor(&data));
+    }
+
+    #[test]
+    fn test_tensor_eval_non_int_id() {
+        // Tensor with _id as string (not int)
+        let mut data = TensorData::new();
+        data.set(
+            "_id".to_string(),
+            TensorValue::Scalar(ScalarValue::String("not_an_int".to_string())),
+        );
+
+        // Checking _id should return false since it's not an Int
+        assert!(!Condition::Eq("_id".to_string(), Value::Int(1)).evaluate_tensor(&data));
+    }
+
+    #[test]
+    fn test_tensor_eval_le_missing_column() {
+        let tensor = make_tensor(1, 42);
+        assert!(!Condition::Le("nonexistent".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_ge_missing_column() {
+        let tensor = make_tensor(1, 42);
+        assert!(!Condition::Ge("nonexistent".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_gt_missing_column() {
+        let tensor = make_tensor(1, 42);
+        assert!(!Condition::Gt("nonexistent".to_string(), Value::Int(50)).evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_tensor_eval_nested_and_or() {
+        let tensor = make_tensor(1, 42);
+        // Complex condition: (val > 30 AND val < 50) OR val == 100
+        let cond = Condition::Or(
+            Box::new(Condition::And(
+                Box::new(Condition::Gt("val".to_string(), Value::Int(30))),
+                Box::new(Condition::Lt("val".to_string(), Value::Int(50))),
+            )),
+            Box::new(Condition::Eq("val".to_string(), Value::Int(100))),
+        );
+        assert!(cond.evaluate_tensor(&tensor));
+    }
+
+    #[test]
+    fn test_concurrent_index_add_same_value() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("category", ColumnType::String)]);
+        engine.create_table("items", schema).unwrap();
+        engine.create_index("items", "category").unwrap();
+
+        let success = Arc::new(AtomicUsize::new(0));
+
+        // 100 threads all inserting rows with same category value
+        let handles: Vec<_> = (0..100)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                thread::spawn(move || {
+                    let row = HashMap::from([(
+                        "category".to_string(),
+                        Value::String("same_category".to_string()),
+                    )]);
+                    if eng.insert("items", row).is_ok() {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 100);
+
+        // Verify ALL 100 rows are findable via index
+        let results = engine
+            .select_with_condition(
+                "items",
+                Condition::Eq(
+                    "category".to_string(),
+                    Value::String("same_category".to_string()),
+                ),
+            )
+            .unwrap();
+        assert_eq!(results.len(), 100, "All 100 rows should be indexed");
+    }
+
+    #[test]
+    fn test_concurrent_btree_index_add_same_value() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("score", ColumnType::Int)]);
+        engine.create_table("scores", schema).unwrap();
+        engine.create_btree_index("scores", "score").unwrap();
+
+        let success = Arc::new(AtomicUsize::new(0));
+
+        // 100 threads all inserting rows with same score value
+        let handles: Vec<_> = (0..100)
+            .map(|_| {
+                let eng = Arc::clone(&engine);
+                let s = Arc::clone(&success);
+                thread::spawn(move || {
+                    let row = HashMap::from([("score".to_string(), Value::Int(42))]);
+                    if eng.insert("scores", row).is_ok() {
+                        s.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(success.load(Ordering::SeqCst), 100);
+
+        // Verify ALL 100 rows are findable via btree index
+        let results = engine
+            .select_with_condition("scores", Condition::Eq("score".to_string(), Value::Int(42)))
+            .unwrap();
+        assert_eq!(results.len(), 100, "All 100 rows should be indexed");
+    }
+
+    #[test]
+    fn test_concurrent_index_add_remove() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let engine = Arc::new(RelationalEngine::new());
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_index("test", "val").unwrap();
+
+        // Insert initial rows
+        for i in 0..50 {
+            engine
+                .insert("test", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Concurrent inserts and deletes
+        let handles: Vec<_> = (0..20)
+            .map(|i| {
+                let eng = Arc::clone(&engine);
+                thread::spawn(move || {
+                    // Insert new rows
+                    for j in 0..5 {
+                        let _ = eng.insert(
+                            "test",
+                            HashMap::from([("val".to_string(), Value::Int(100 + i * 5 + j))]),
+                        );
+                    }
+                    // Delete some existing rows
+                    let _ = eng.delete(
+                        "test",
+                        Condition::Eq("val".to_string(), Value::Int(i64::from(i))),
+                    );
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Engine should remain consistent - no panics or lost data
+        let count = engine.row_count("test").unwrap();
+        assert!(count > 0, "Table should have rows");
     }
 }

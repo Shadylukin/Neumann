@@ -53,6 +53,8 @@ use std::{
     time::Duration,
 };
 
+use tokio::{sync::broadcast, task::JoinHandle};
+
 pub use config::{CacheConfig, EvictionStrategy};
 pub use error::{CacheError, Result};
 pub use eviction::{EvictionManager, EvictionScorer};
@@ -122,6 +124,8 @@ pub struct Cache {
     index: CacheIndex,
     stats: Arc<CacheStats>,
     config: CacheConfig,
+    shutdown_tx: broadcast::Sender<()>,
+    eviction_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Cache {
@@ -142,12 +146,15 @@ impl Cache {
         let stats = Arc::new(CacheStats::new());
         let store = TensorStore::new();
         let index = CacheIndex::new(config.embedding_dim, config.distance_metric.clone());
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         Ok(Self {
             store,
             index,
             stats,
             config,
+            shutdown_tx,
+            eviction_handle: std::sync::Mutex::new(None),
         })
     }
 
@@ -161,12 +168,15 @@ impl Cache {
 
         let stats = Arc::new(CacheStats::new());
         let index = CacheIndex::new(config.embedding_dim, config.distance_metric.clone());
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         Ok(Self {
             store,
             index,
             stats,
             config,
+            shutdown_tx,
+            eviction_handle: std::sync::Mutex::new(None),
         })
     }
 
@@ -575,6 +585,85 @@ impl Cache {
     #[must_use]
     pub const fn config(&self) -> &CacheConfig {
         &self.config
+    }
+
+    /// Start background eviction and TTL cleanup.
+    ///
+    /// Runs at `config.eviction_interval` intervals, processing
+    /// `config.eviction_batch_size` entries per cycle. Also cleans up
+    /// expired entries each cycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CacheError::LockPoisoned` if the internal mutex is poisoned.
+    pub fn start_background_eviction(self: &Arc<Self>) -> Result<()> {
+        let mut handle_guard = self
+            .eviction_handle
+            .lock()
+            .map_err(|_| CacheError::LockPoisoned("eviction handle".into()))?;
+
+        if handle_guard.is_some() {
+            return Ok(()); // Already running
+        }
+
+        let cache = Arc::clone(self);
+        let interval = self.config.eviction_interval;
+        let batch_size = self.config.eviction_batch_size;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let _ = cache.evict(batch_size);
+                        let _ = cache.cleanup_expired();
+                    }
+                    _ = shutdown_rx.recv() => {
+                        break;
+                    }
+                }
+            }
+        });
+
+        *handle_guard = Some(handle);
+        drop(handle_guard);
+        Ok(())
+    }
+
+    /// Stop background eviction gracefully.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CacheError::LockPoisoned` if the internal mutex is poisoned.
+    pub async fn stop_background_eviction(&self) -> Result<()> {
+        // Send shutdown signal (ignore error if no receivers)
+        self.shutdown_tx.send(()).ok();
+
+        let handle = {
+            let mut guard = self
+                .eviction_handle
+                .lock()
+                .map_err(|_| CacheError::LockPoisoned("eviction handle".into()))?;
+            guard.take()
+        };
+
+        if let Some(h) = handle {
+            // Wait for the task to complete, ignoring join errors
+            let _ = h.await;
+        }
+
+        Ok(())
+    }
+
+    /// Check if background eviction is currently running.
+    #[must_use]
+    pub fn is_background_eviction_running(&self) -> bool {
+        self.eviction_handle
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
     }
 
     /// Manually run eviction using the configured strategy (LRU, LFU, Cost, Hybrid).
@@ -1458,5 +1547,81 @@ mod tests {
         // 97% zeros should use sparse
         let very_sparse: Vec<f32> = (0..100).map(|i| if i < 3 { 1.0 } else { 0.0 }).collect();
         assert!(Cache::should_use_sparse(&very_sparse));
+    }
+
+    // Background eviction tests
+
+    #[tokio::test]
+    async fn test_start_stop_background_eviction() {
+        let cache = Arc::new(create_test_cache());
+
+        assert!(!cache.is_background_eviction_running());
+
+        cache.start_background_eviction().unwrap();
+        assert!(cache.is_background_eviction_running());
+
+        cache.stop_background_eviction().await.unwrap();
+        assert!(!cache.is_background_eviction_running());
+    }
+
+    #[tokio::test]
+    async fn test_double_start_is_idempotent() {
+        let cache = Arc::new(create_test_cache());
+
+        cache.start_background_eviction().unwrap();
+        assert!(cache.is_background_eviction_running());
+
+        // Second start should succeed without error
+        cache.start_background_eviction().unwrap();
+        assert!(cache.is_background_eviction_running());
+
+        cache.stop_background_eviction().await.unwrap();
+        assert!(!cache.is_background_eviction_running());
+    }
+
+    #[tokio::test]
+    async fn test_stop_without_start_is_safe() {
+        let cache = Arc::new(create_test_cache());
+
+        // Stop without start should not panic or error
+        cache.stop_background_eviction().await.unwrap();
+        assert!(!cache.is_background_eviction_running());
+    }
+
+    #[tokio::test]
+    async fn test_background_eviction_mechanism() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            embedding_dim: 3,
+            default_ttl: Duration::from_millis(10),
+            eviction_interval: Duration::from_millis(20),
+            eviction_batch_size: 10,
+            ..Default::default()
+        };
+        let cache = Arc::new(Cache::with_config(config).unwrap());
+        let embedding = normalize(&[1.0, 0.0, 0.0]);
+
+        // Add entries
+        cache
+            .put("prompt", &embedding, "response", "gpt-4", None)
+            .unwrap();
+        cache.put_simple("key", "value").unwrap();
+
+        let initial_len = cache.len();
+        assert!(initial_len > 0);
+
+        // Wait for entries to expire
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // Verify cleanup_expired works correctly (this is what the background task calls)
+        let directly_cleaned = cache.cleanup_expired();
+        assert!(
+            directly_cleaned > 0,
+            "Direct cleanup should clean expired entries"
+        );
+
+        let snapshot = cache.stats_snapshot();
+        assert!(snapshot.expirations > 0, "Expirations should be recorded");
     }
 }

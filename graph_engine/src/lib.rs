@@ -6,6 +6,7 @@ use std::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tensor_store::{fields, ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
+use tracing::instrument;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
@@ -19,22 +20,21 @@ pub enum PropertyValue {
 impl PropertyValue {
     fn to_scalar(&self) -> ScalarValue {
         match self {
-            PropertyValue::Null => ScalarValue::Null,
-            PropertyValue::Int(v) => ScalarValue::Int(*v),
-            PropertyValue::Float(v) => ScalarValue::Float(*v),
-            PropertyValue::String(v) => ScalarValue::String(v.clone()),
-            PropertyValue::Bool(v) => ScalarValue::Bool(*v),
+            Self::Null => ScalarValue::Null,
+            Self::Int(v) => ScalarValue::Int(*v),
+            Self::Float(v) => ScalarValue::Float(*v),
+            Self::String(v) => ScalarValue::String(v.clone()),
+            Self::Bool(v) => ScalarValue::Bool(*v),
         }
     }
 
     fn from_scalar(scalar: &ScalarValue) -> Self {
         match scalar {
-            ScalarValue::Null => PropertyValue::Null,
-            ScalarValue::Int(v) => PropertyValue::Int(*v),
-            ScalarValue::Float(v) => PropertyValue::Float(*v),
-            ScalarValue::String(v) => PropertyValue::String(v.clone()),
-            ScalarValue::Bool(v) => PropertyValue::Bool(*v),
-            ScalarValue::Bytes(_) => PropertyValue::Null,
+            ScalarValue::Int(v) => Self::Int(*v),
+            ScalarValue::Float(v) => Self::Float(*v),
+            ScalarValue::String(v) => Self::String(v.clone()),
+            ScalarValue::Bool(v) => Self::Bool(*v),
+            ScalarValue::Null | ScalarValue::Bytes(_) => Self::Null,
         }
     }
 }
@@ -69,7 +69,7 @@ pub struct Path {
     pub edges: Vec<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphError {
     NodeNotFound(u64),
     EdgeNotFound(u64),
@@ -80,10 +80,10 @@ pub enum GraphError {
 impl std::fmt::Display for GraphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GraphError::NodeNotFound(id) => write!(f, "Node not found: {}", id),
-            GraphError::EdgeNotFound(id) => write!(f, "Edge not found: {}", id),
-            GraphError::StorageError(e) => write!(f, "Storage error: {}", e),
-            GraphError::PathNotFound => write!(f, "No path found between nodes"),
+            Self::NodeNotFound(id) => write!(f, "Node not found: {id}"),
+            Self::EdgeNotFound(id) => write!(f, "Edge not found: {id}"),
+            Self::StorageError(e) => write!(f, "Storage error: {e}"),
+            Self::PathNotFound => write!(f, "No path found between nodes"),
         }
     }
 }
@@ -92,7 +92,7 @@ impl std::error::Error for GraphError {}
 
 impl From<TensorStoreError> for GraphError {
     fn from(e: TensorStoreError) -> Self {
-        GraphError::StorageError(e.to_string())
+        Self::StorageError(e.to_string())
     }
 }
 
@@ -107,6 +107,7 @@ pub struct GraphEngine {
 impl GraphEngine {
     const PARALLEL_THRESHOLD: usize = 100;
 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
@@ -115,7 +116,8 @@ impl GraphEngine {
         }
     }
 
-    pub fn with_store(store: TensorStore) -> Self {
+    #[must_use]
+    pub const fn with_store(store: TensorStore) -> Self {
         Self {
             store,
             node_counter: AtomicU64::new(0),
@@ -124,26 +126,28 @@ impl GraphEngine {
     }
 
     /// Access the underlying store.
-    pub fn store(&self) -> &TensorStore {
+    #[must_use]
+    pub const fn store(&self) -> &TensorStore {
         &self.store
     }
 
     fn node_key(id: u64) -> String {
-        format!("node:{}", id)
+        format!("node:{id}")
     }
 
     fn edge_key(id: u64) -> String {
-        format!("edge:{}", id)
+        format!("edge:{id}")
     }
 
     fn outgoing_edges_key(node_id: u64) -> String {
-        format!("node:{}:out", node_id)
+        format!("node:{node_id}:out")
     }
 
     fn incoming_edges_key(node_id: u64) -> String {
-        format!("node:{}:in", node_id)
+        format!("node:{node_id}:in")
     }
 
+    #[instrument(skip(self, label, properties))]
     pub fn create_node(
         &self,
         label: impl Into<String>,
@@ -175,6 +179,7 @@ impl GraphEngine {
         Ok(id)
     }
 
+    #[instrument(skip(self, edge_type, properties), fields(from = from, to = to))]
     pub fn create_edge(
         &self,
         from: u64,
@@ -265,6 +270,7 @@ impl GraphEngine {
         self.store.exists(&Self::node_key(id))
     }
 
+    #[instrument(skip(self), fields(node_id = id))]
     pub fn get_node(&self, id: u64) -> Result<Node> {
         let tensor = self
             .store
@@ -339,6 +345,7 @@ impl GraphEngine {
         })
     }
 
+    #[instrument(skip(self), fields(node_id = node_id))]
     pub fn neighbors(
         &self,
         node_id: u64,

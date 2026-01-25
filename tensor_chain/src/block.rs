@@ -239,6 +239,7 @@ pub enum Transaction {
 }
 
 impl Transaction {
+    /// Returns the logical key affected by this transaction (used for locking).
     pub fn affected_key(&self) -> &str {
         match self {
             Transaction::Put { key, .. } => key,
@@ -250,6 +251,33 @@ impl Transaction {
             Transaction::TableInsert { table, .. } => table,
             Transaction::TableUpdate { table, .. } => table,
             Transaction::TableDelete { table, .. } => table,
+        }
+    }
+
+    /// Returns the actual storage key used in `TensorStore` for this transaction.
+    ///
+    /// This differs from `affected_key()` for transaction types that transform
+    /// keys before storage (e.g., Embed uses "emb:{key}", NodeCreate uses "node:{key}").
+    #[must_use]
+    pub fn storage_key(&self) -> String {
+        match self {
+            Transaction::Put { key, .. } | Transaction::Delete { key } => key.clone(),
+            Transaction::Embed { key, .. } => format!("emb:{key}"),
+            Transaction::NodeCreate { key, .. } | Transaction::NodeDelete { key } => {
+                format!("node:{key}")
+            },
+            Transaction::EdgeCreate {
+                from,
+                to,
+                edge_type,
+            } => {
+                format!("edge:{from}:{to}:{edge_type}")
+            },
+            Transaction::TableInsert { table, .. }
+            | Transaction::TableUpdate { table, .. }
+            | Transaction::TableDelete { table, .. } => {
+                format!("table:{table}")
+            },
         }
     }
 
@@ -1120,5 +1148,88 @@ mod tests {
         let header2 = BlockHeader::new(2, [0u8; 32], [0u8; 32], [0u8; 32], "node1".to_string());
 
         assert_ne!(header1.signing_bytes(), header2.signing_bytes());
+    }
+
+    // === storage_key() tests ===
+
+    #[test]
+    fn test_storage_key_put() {
+        let tx = Transaction::Put {
+            key: "mykey".into(),
+            data: vec![],
+        };
+        assert_eq!(tx.storage_key(), "mykey");
+    }
+
+    #[test]
+    fn test_storage_key_delete() {
+        let tx = Transaction::Delete {
+            key: "mykey".into(),
+        };
+        assert_eq!(tx.storage_key(), "mykey");
+    }
+
+    #[test]
+    fn test_storage_key_embed() {
+        let tx = Transaction::Embed {
+            key: "doc1".into(),
+            vector: vec![1.0],
+        };
+        assert_eq!(tx.storage_key(), "emb:doc1");
+    }
+
+    #[test]
+    fn test_storage_key_node_create() {
+        let tx = Transaction::NodeCreate {
+            key: "user1".into(),
+            label: "Person".into(),
+        };
+        assert_eq!(tx.storage_key(), "node:user1");
+    }
+
+    #[test]
+    fn test_storage_key_node_delete() {
+        let tx = Transaction::NodeDelete {
+            key: "user1".into(),
+        };
+        assert_eq!(tx.storage_key(), "node:user1");
+    }
+
+    #[test]
+    fn test_storage_key_edge_create() {
+        let tx = Transaction::EdgeCreate {
+            from: "a".into(),
+            to: "b".into(),
+            edge_type: "knows".into(),
+        };
+        assert_eq!(tx.storage_key(), "edge:a:b:knows");
+    }
+
+    #[test]
+    fn test_storage_key_table_insert() {
+        let tx = Transaction::TableInsert {
+            table: "users".into(),
+            values: vec![],
+        };
+        assert_eq!(tx.storage_key(), "table:users");
+    }
+
+    #[test]
+    fn test_storage_key_table_update() {
+        let tx = Transaction::TableUpdate {
+            table: "users".into(),
+            row_id: 42,
+            values: vec![],
+        };
+        assert_eq!(tx.storage_key(), "table:users");
+    }
+
+    #[test]
+    fn test_storage_key_table_delete() {
+        let tx = Transaction::TableDelete {
+            table: "users".into(),
+            row_id: 42,
+        };
+        assert_eq!(tx.storage_key(), "table:users");
     }
 }

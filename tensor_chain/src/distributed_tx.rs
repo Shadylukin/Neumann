@@ -72,6 +72,68 @@ pub enum TxPhase {
     Aborted,
 }
 
+/// Undo entry capturing the previous state of a key for rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UndoEntry {
+    /// Key existed before - restore this value on rollback.
+    Restore {
+        key: String,
+        /// Bincode-serialized `TensorData`.
+        data: Vec<u8>,
+    },
+    /// Key did not exist before - delete on rollback.
+    Delete { key: String },
+}
+
+impl UndoEntry {
+    /// Capture the current state of a key from the store.
+    #[must_use]
+    pub fn capture(key: &str, store: &TensorStore) -> Self {
+        store.get(key).map_or_else(
+            |_| Self::Delete {
+                key: key.to_string(),
+            },
+            |data| {
+                let bytes = bincode::serialize(&data).unwrap_or_default();
+                Self::Restore {
+                    key: key.to_string(),
+                    data: bytes,
+                }
+            },
+        )
+    }
+
+    /// Apply this undo entry to restore the previous state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deserialization or store write fails.
+    pub fn apply(&self, store: &TensorStore) -> Result<()> {
+        match self {
+            Self::Restore { key, data } => {
+                let tensor: TensorData = bincode::deserialize(data)
+                    .map_err(|e| ChainError::SerializationError(e.to_string()))?;
+                store
+                    .put(key, tensor)
+                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
+            },
+            Self::Delete { key } => {
+                // Idempotent delete - ignore NotFound
+                store.delete(key).ok();
+            },
+        }
+        Ok(())
+    }
+
+    /// Get the key affected by this undo entry.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Restore { key, .. } | Self::Delete { key } => key,
+        }
+    }
+}
+
 /// A distributed transaction spanning multiple shards.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistributedTransaction {
@@ -1866,12 +1928,23 @@ impl DistributedTxCoordinator {
 }
 
 /// Transaction participant on a shard.
-#[derive(Debug)]
 pub struct TxParticipant {
     /// Prepared transactions awaiting commit/abort.
     pub prepared: RwLock<HashMap<u64, PreparedTx>>,
     /// Lock manager for this shard.
     pub locks: LockManager,
+    /// Store for undo log capture and rollback.
+    store: TensorStore,
+}
+
+impl std::fmt::Debug for TxParticipant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TxParticipant")
+            .field("prepared", &self.prepared)
+            .field("locks", &self.locks)
+            .field("store", &"<TensorStore>")
+            .finish()
+    }
 }
 
 /// A prepared transaction on a participant.
@@ -1887,24 +1960,31 @@ pub struct PreparedTx {
     pub delta: DeltaVector,
     /// When the transaction was prepared (epoch milliseconds).
     pub prepared_at_ms: EpochMillis,
-}
-
-impl Default for TxParticipant {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Undo log for rollback (captures previous state of modified keys).
+    #[serde(default)]
+    pub undo_log: Vec<UndoEntry>,
 }
 
 impl TxParticipant {
-    pub fn new() -> Self {
+    /// Create a new transaction participant with the given store for undo log support.
+    pub fn new(store: TensorStore) -> Self {
         Self {
             prepared: RwLock::new(HashMap::new()),
             locks: LockManager::new(),
+            store,
         }
     }
 
+    /// Create a new transaction participant with a fresh in-memory store.
+    /// Primarily for testing.
+    #[must_use]
+    pub fn new_in_memory() -> Self {
+        Self::new(TensorStore::new())
+    }
+
     pub fn prepare(&self, request: PrepareRequest) -> PrepareVote {
-        let keys: Vec<String> = request
+        // Use affected_key() for locking (logical keys)
+        let lock_keys: Vec<String> = request
             .operations
             .iter()
             .map(|op| op.affected_key().to_string())
@@ -1912,12 +1992,12 @@ impl TxParticipant {
 
         tracing::debug!(
             tx_id = request.tx_id,
-            keys = ?keys,
+            keys = ?lock_keys,
             "Participant processing prepare request"
         );
 
         // Try to acquire locks
-        let lock_handle = match self.locks.try_lock(request.tx_id, &keys) {
+        let lock_handle = match self.locks.try_lock(request.tx_id, &lock_keys) {
             Ok(handle) => handle,
             Err(conflicting_tx) => {
                 tracing::warn!(
@@ -1932,13 +2012,21 @@ impl TxParticipant {
             },
         };
 
+        // Capture undo log using storage_key() (actual keys in TensorStore)
+        // This ensures rollback operates on the correct keys
+        let undo_log: Vec<UndoEntry> = request
+            .operations
+            .iter()
+            .map(|op| UndoEntry::capture(&op.storage_key(), &self.store))
+            .collect();
+
         let delta = DeltaVector::from_sparse(
             request.delta_embedding,
-            keys.into_iter().collect(),
+            lock_keys.into_iter().collect(),
             request.tx_id,
         );
 
-        // Store prepared state
+        // Store prepared state with undo log
         self.prepared.write().insert(
             request.tx_id,
             PreparedTx {
@@ -1947,6 +2035,7 @@ impl TxParticipant {
                 operations: request.operations,
                 delta: delta.clone(),
                 prepared_at_ms: now_epoch_millis(),
+                undo_log,
             },
         );
 
@@ -1959,12 +2048,147 @@ impl TxParticipant {
         PrepareVote::Yes { lock_handle, delta }
     }
 
+    /// Apply transaction operations to the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any store operation fails.
+    fn apply_operations(&self, operations: &[Transaction]) -> Result<()> {
+        for tx in operations {
+            match tx {
+                Transaction::Put { key, data } => {
+                    let mut tensor = TensorData::new();
+                    tensor.set(
+                        "data",
+                        TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
+                    );
+                    self.store
+                        .put(key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::Delete { key } => {
+                    // Idempotent delete - ignore NotFound
+                    self.store.delete(key).ok();
+                },
+                Transaction::Embed { key, vector } => {
+                    let storage_key = format!("emb:{key}");
+                    let mut tensor = TensorData::new();
+                    tensor.set("vector", TensorValue::Vector(vector.clone()));
+                    self.store
+                        .put(storage_key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::NodeCreate { key, label } => {
+                    let storage_key = format!("node:{key}");
+                    let mut tensor = TensorData::new();
+                    tensor.set("_id", TensorValue::Scalar(ScalarValue::String(key.clone())));
+                    tensor.set(
+                        "_type",
+                        TensorValue::Scalar(ScalarValue::String("node".into())),
+                    );
+                    tensor.set(
+                        "_label",
+                        TensorValue::Scalar(ScalarValue::String(label.clone())),
+                    );
+                    self.store
+                        .put(storage_key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::NodeDelete { key } => {
+                    let storage_key = format!("node:{key}");
+                    self.store.delete(&storage_key).ok();
+                },
+                Transaction::EdgeCreate {
+                    from,
+                    to,
+                    edge_type,
+                } => {
+                    let storage_key = format!("edge:{from}:{to}:{edge_type}");
+                    let mut tensor = TensorData::new();
+                    tensor.set(
+                        "_from",
+                        TensorValue::Scalar(ScalarValue::String(from.clone())),
+                    );
+                    tensor.set("_to", TensorValue::Scalar(ScalarValue::String(to.clone())));
+                    tensor.set(
+                        "_type",
+                        TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
+                    );
+                    self.store
+                        .put(storage_key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::TableInsert { table, values } => {
+                    let storage_key = format!("table:{table}");
+                    let mut tensor = TensorData::new();
+                    tensor.set(
+                        "values",
+                        TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+                    );
+                    self.store
+                        .put(storage_key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::TableUpdate {
+                    table,
+                    row_id,
+                    values,
+                } => {
+                    let storage_key = format!("table:{table}:row:{row_id}");
+                    let mut tensor = TensorData::new();
+                    tensor.set(
+                        "values",
+                        TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+                    );
+                    tensor.set(
+                        "row_id",
+                        TensorValue::Scalar(ScalarValue::Int(*row_id as i64)),
+                    );
+                    self.store
+                        .put(storage_key, tensor)
+                        .map_err(|e| ChainError::StorageError(e.to_string()))?;
+                },
+                Transaction::TableDelete { table, row_id } => {
+                    let storage_key = format!("table:{table}:row:{row_id}");
+                    self.store.delete(&storage_key).ok();
+                },
+            }
+        }
+        Ok(())
+    }
+
     pub fn commit(&self, tx_id: u64) -> TxResponse {
         let mut prepared = self.prepared.write();
 
         if let Some(tx) = prepared.remove(&tx_id) {
+            // Apply operations BEFORE releasing locks
+            if let Err(e) = self.apply_operations(&tx.operations) {
+                // Operations failed - rollback and report failure
+                for entry in tx.undo_log.iter().rev() {
+                    if let Err(undo_err) = entry.apply(&self.store) {
+                        tracing::warn!(
+                            tx_id = tx_id,
+                            key = entry.key(),
+                            error = %undo_err,
+                            "Failed to apply undo entry during commit rollback"
+                        );
+                    }
+                }
+                self.locks.release_by_handle(tx.lock_handle);
+                tracing::error!(tx_id = tx_id, error = %e, "Commit failed during operation apply");
+                return TxResponse {
+                    tx_id,
+                    success: false,
+                    error: Some(e.to_string()),
+                };
+            }
+
             self.locks.release_by_handle(tx.lock_handle);
-            tracing::info!(tx_id = tx_id, "Participant committed transaction");
+            tracing::info!(
+                tx_id = tx_id,
+                op_count = tx.operations.len(),
+                "Participant committed transaction"
+            );
             TxResponse {
                 tx_id,
                 success: true,
@@ -1987,8 +2211,25 @@ impl TxParticipant {
         let mut prepared = self.prepared.write();
 
         if let Some(tx) = prepared.remove(&tx_id) {
+            // Apply undo log in reverse order to restore previous state
+            for entry in tx.undo_log.iter().rev() {
+                if let Err(e) = entry.apply(&self.store) {
+                    tracing::warn!(
+                        tx_id = tx_id,
+                        key = entry.key(),
+                        error = %e,
+                        "Failed to apply undo entry during abort"
+                    );
+                    // Continue with other entries - best effort rollback
+                }
+            }
+
             self.locks.release_by_handle(tx.lock_handle);
-            tracing::info!(tx_id = tx_id, "Participant aborted transaction");
+            tracing::info!(
+                tx_id = tx_id,
+                undo_count = tx.undo_log.len(),
+                "Participant aborted transaction with rollback"
+            );
         } else {
             tracing::debug!(
                 tx_id = tx_id,
@@ -2019,7 +2260,23 @@ impl TxParticipant {
 
         for tx_id in &stale {
             if let Some(tx) = prepared.remove(tx_id) {
+                // Apply undo log to restore previous state before releasing locks
+                for entry in tx.undo_log.iter().rev() {
+                    if let Err(e) = entry.apply(&self.store) {
+                        tracing::warn!(
+                            tx_id = tx_id,
+                            key = entry.key(),
+                            error = %e,
+                            "Failed to apply undo entry during stale cleanup"
+                        );
+                    }
+                }
                 self.locks.release_by_handle(tx.lock_handle);
+                tracing::debug!(
+                    tx_id = tx_id,
+                    undo_count = tx.undo_log.len(),
+                    "Cleaned up stale transaction with rollback"
+                );
             }
         }
 
@@ -2062,19 +2319,20 @@ impl TxParticipant {
         if let Ok(data) = store.get(&key) {
             if let Some(TensorValue::Scalar(ScalarValue::Bytes(bytes))) = data.get("state") {
                 if let Ok(state) = bincode::deserialize::<ParticipantState>(bytes) {
-                    return Self::with_state(state);
+                    return Self::with_state(state, store.clone());
                 }
             }
         }
 
         // No persisted state - create fresh participant
-        Self::new()
+        Self::new(store.clone())
     }
 
-    fn with_state(state: ParticipantState) -> Self {
+    fn with_state(state: ParticipantState, store: TensorStore) -> Self {
         Self {
             prepared: RwLock::new(state.prepared),
             locks: LockManager::from_serializable(state.lock_state),
+            store,
         }
     }
 
@@ -2111,10 +2369,26 @@ impl TxParticipant {
             .map(|(id, _)| *id)
             .collect();
 
-        // Release locks for expired transactions
+        // Apply undo logs and release locks for expired transactions (presumed abort)
         for tx_id in &expired {
             if let Some(tx) = prepared.remove(tx_id) {
+                // Apply undo log BEFORE releasing locks to restore previous state
+                for entry in tx.undo_log.iter().rev() {
+                    if let Err(e) = entry.apply(&self.store) {
+                        tracing::warn!(
+                            tx_id = tx_id,
+                            key = entry.key(),
+                            error = %e,
+                            "Failed to apply undo entry during recovery"
+                        );
+                    }
+                }
                 self.locks.release_by_handle(tx.lock_handle);
+                tracing::info!(
+                    tx_id = tx_id,
+                    undo_count = tx.undo_log.len(),
+                    "Recovered expired transaction with rollback"
+                );
             }
         }
 
@@ -2380,7 +2654,7 @@ mod tests {
 
     #[test]
     fn test_participant_prepare_commit() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 1,
@@ -2404,7 +2678,7 @@ mod tests {
 
     #[test]
     fn test_participant_abort() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 1,
@@ -2686,7 +2960,7 @@ mod tests {
 
     #[test]
     fn test_participant_prepare_conflict() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         // First prepare
         let request1 = PrepareRequest {
@@ -2721,7 +2995,7 @@ mod tests {
 
     #[test]
     fn test_participant_commit_not_found() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
         let response = participant.commit(999);
         assert!(!response.success);
         assert!(response.error.is_some());
@@ -2729,7 +3003,7 @@ mod tests {
 
     #[test]
     fn test_participant_abort_not_prepared() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
         // Abort should succeed even if not prepared
         let response = participant.abort(999);
         assert!(response.success);
@@ -2737,7 +3011,7 @@ mod tests {
 
     #[test]
     fn test_participant_cleanup_stale() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         // Insert a prepared transaction with an old timestamp (10 seconds ago)
         let old_prepared_at = now_epoch_millis().saturating_sub(10_000);
@@ -2752,6 +3026,7 @@ mod tests {
                 }],
                 delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
                 prepared_at_ms: old_prepared_at,
+                undo_log: Vec::new(),
             },
         );
         assert_eq!(participant.prepared_count(), 1);
@@ -2760,6 +3035,210 @@ mod tests {
         let stale = participant.cleanup_stale(Duration::from_secs(5));
         assert_eq!(stale.len(), 1);
         assert_eq!(participant.prepared_count(), 0);
+    }
+
+    // ========== UndoEntry Tests ==========
+
+    #[test]
+    fn test_undo_entry_capture_existing_key() {
+        let store = TensorStore::new();
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("test_key", data).unwrap();
+
+        let entry = UndoEntry::capture("test_key", &store);
+        assert!(matches!(entry, UndoEntry::Restore { key, .. } if key == "test_key"));
+    }
+
+    #[test]
+    fn test_undo_entry_capture_missing_key() {
+        let store = TensorStore::new();
+
+        let entry = UndoEntry::capture("nonexistent", &store);
+        assert!(matches!(entry, UndoEntry::Delete { key } if key == "nonexistent"));
+    }
+
+    #[test]
+    fn test_undo_entry_apply_restore() {
+        let store = TensorStore::new();
+
+        // Create original data
+        let mut original = TensorData::new();
+        original.set("value", TensorValue::Scalar(ScalarValue::Int(100)));
+        store.put("key1", original.clone()).unwrap();
+
+        // Capture original state
+        let entry = UndoEntry::capture("key1", &store);
+
+        // Overwrite with new data
+        let mut new_data = TensorData::new();
+        new_data.set("value", TensorValue::Scalar(ScalarValue::Int(999)));
+        store.put("key1", new_data).unwrap();
+
+        // Verify new value is set
+        let current = store.get("key1").unwrap();
+        assert_eq!(
+            current.get("value"),
+            Some(&TensorValue::Scalar(ScalarValue::Int(999)))
+        );
+
+        // Apply undo to restore original
+        entry.apply(&store).unwrap();
+
+        // Verify original is restored
+        let restored = store.get("key1").unwrap();
+        assert_eq!(
+            restored.get("value"),
+            Some(&TensorValue::Scalar(ScalarValue::Int(100)))
+        );
+    }
+
+    #[test]
+    fn test_undo_entry_apply_delete() {
+        let store = TensorStore::new();
+
+        // Capture state when key doesn't exist
+        let entry = UndoEntry::capture("new_key", &store);
+        assert!(matches!(entry, UndoEntry::Delete { .. }));
+
+        // Create the key
+        let mut data = TensorData::new();
+        data.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("new_key", data).unwrap();
+        assert!(store.exists("new_key"));
+
+        // Apply undo - should delete the key
+        entry.apply(&store).unwrap();
+        assert!(!store.exists("new_key"));
+    }
+
+    #[test]
+    fn test_undo_entry_key_accessor() {
+        let restore = UndoEntry::Restore {
+            key: "restore_key".to_string(),
+            data: vec![],
+        };
+        assert_eq!(restore.key(), "restore_key");
+
+        let delete = UndoEntry::Delete {
+            key: "delete_key".to_string(),
+        };
+        assert_eq!(delete.key(), "delete_key");
+    }
+
+    #[test]
+    fn test_abort_applies_undo_log() {
+        let store = TensorStore::new();
+
+        // Set up initial state
+        let mut original = TensorData::new();
+        original.set("value", TensorValue::Scalar(ScalarValue::Int(100)));
+        store.put("key1", original).unwrap();
+
+        let participant = TxParticipant::new(store.clone());
+
+        // Prepare a transaction that modifies key1
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "key1".to_string(),
+                data: vec![1, 2, 3],
+            }],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
+            timeout_ms: 5000,
+        };
+
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        // Simulate writes that would happen during execution
+        let mut new_data = TensorData::new();
+        new_data.set("value", TensorValue::Scalar(ScalarValue::Int(999)));
+        store.put("key1", new_data).unwrap();
+
+        // Abort should restore original value
+        let response = participant.abort(1);
+        assert!(response.success);
+
+        // Verify original state is restored
+        let restored = store.get("key1").unwrap();
+        assert_eq!(
+            restored.get("value"),
+            Some(&TensorValue::Scalar(ScalarValue::Int(100)))
+        );
+    }
+
+    #[test]
+    fn test_prepare_captures_undo_for_new_keys() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Prepare a transaction for a key that doesn't exist
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "new_key".to_string(),
+                data: vec![1, 2, 3],
+            }],
+            delta_embedding: SparseVector::from_dense(&[1.0]),
+            timeout_ms: 5000,
+        };
+
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        // Check that undo log has Delete entry for the new key
+        let prepared = participant.prepared.read();
+        let tx = prepared.get(&1).unwrap();
+        assert_eq!(tx.undo_log.len(), 1);
+        assert!(matches!(&tx.undo_log[0], UndoEntry::Delete { key } if key == "new_key"));
+    }
+
+    #[test]
+    fn test_cleanup_stale_applies_undo() {
+        let store = TensorStore::new();
+
+        // Set up initial state
+        let mut original = TensorData::new();
+        original.set("value", TensorValue::Scalar(ScalarValue::Int(42)));
+        store.put("stale_key", original).unwrap();
+
+        let participant = TxParticipant::new(store.clone());
+
+        // Manually insert a stale prepared transaction with undo log
+        let old_prepared_at = now_epoch_millis().saturating_sub(10_000);
+        let undo_entry = UndoEntry::capture("stale_key", &store);
+
+        // Modify the data (simulating what would happen during tx execution)
+        let mut new_data = TensorData::new();
+        new_data.set("value", TensorValue::Scalar(ScalarValue::Int(999)));
+        store.put("stale_key", new_data).unwrap();
+
+        // Insert prepared tx with the undo log
+        participant.prepared.write().insert(
+            1,
+            PreparedTx {
+                tx_id: 1,
+                lock_handle: 1,
+                operations: vec![],
+                delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
+                prepared_at_ms: old_prepared_at,
+                undo_log: vec![undo_entry],
+            },
+        );
+
+        // Cleanup stale should apply undo
+        let stale = participant.cleanup_stale(Duration::from_secs(5));
+        assert_eq!(stale.len(), 1);
+
+        // Verify original state is restored
+        let restored = store.get("stale_key").unwrap();
+        assert_eq!(
+            restored.get("value"),
+            Some(&TensorValue::Scalar(ScalarValue::Int(42)))
+        );
     }
 
     #[test]
@@ -2880,8 +3359,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_participant_default() {
-        let participant = TxParticipant::default();
+    fn test_tx_participant_new_in_memory() {
+        let participant = TxParticipant::new_in_memory();
         assert_eq!(participant.prepared_count(), 0);
     }
 
@@ -3082,6 +3561,7 @@ mod tests {
             operations: vec![],
             delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
             prepared_at_ms: now_epoch_millis(),
+            undo_log: Vec::new(),
         };
         let _ = format!("{:?}", tx);
     }
@@ -3119,6 +3599,7 @@ mod tests {
             }],
             delta: DeltaVector::new(vec![1.0, 2.0], ["key1".to_string()].into(), 100),
             prepared_at_ms: now_epoch_millis(),
+            undo_log: Vec::new(),
         };
 
         let bytes = bincode::serialize(&tx).unwrap();
@@ -3195,6 +3676,7 @@ mod tests {
                 operations: vec![],
                 delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
                 prepared_at_ms: 1000,
+                undo_log: Vec::new(),
             },
         );
 
@@ -3408,7 +3890,7 @@ mod tests {
 
     #[test]
     fn test_participant_to_state() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         // Prepare a transaction
         let request = PrepareRequest {
@@ -3431,7 +3913,7 @@ mod tests {
     #[test]
     fn test_participant_save_load_empty_state() {
         let store = TensorStore::new();
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         participant.save_to_store("node1", 0, &store).unwrap();
 
@@ -3442,7 +3924,7 @@ mod tests {
     #[test]
     fn test_participant_save_load_with_prepared_transactions() {
         let store = TensorStore::new();
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         // Prepare transactions
         let request1 = PrepareRequest {
@@ -3481,7 +3963,7 @@ mod tests {
     #[test]
     fn test_participant_clear_persisted_state() {
         let store = TensorStore::new();
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 1,
@@ -3601,7 +4083,7 @@ mod tests {
 
     #[test]
     fn test_participant_recover_awaiting_decision() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         // Prepare a transaction
         let request = PrepareRequest {
@@ -3624,7 +4106,7 @@ mod tests {
 
     #[test]
     fn test_participant_recover_expired_releases_locks() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
         let old_time = now_epoch_millis().saturating_sub(10_000); // 10 seconds ago
 
         // Manually insert an old prepared transaction and matching lock
@@ -3638,6 +4120,7 @@ mod tests {
                     operations: vec![],
                     delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
                     prepared_at_ms: old_time,
+                    undo_log: Vec::new(),
                 },
             );
         }
@@ -3668,7 +4151,7 @@ mod tests {
 
     #[test]
     fn test_participant_get_awaiting_decision() {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 42,
@@ -5589,5 +6072,440 @@ mod tests {
         assert!(coord.wait_graph.waiting_for(101).is_empty());
         assert!(coord.wait_graph.waiting_for(201).is_empty());
         assert!(coord.wait_graph.waiting_for(301).is_empty());
+    }
+
+    // === TxParticipant commit/abort/recovery tests ===
+
+    #[test]
+    fn test_participant_commit_applies_put_operation() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "test_key".into(),
+                data: b"test_data".to_vec(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        let vote = participant.prepare(request);
+        assert!(matches!(vote, PrepareVote::Yes { .. }));
+
+        let response = participant.commit(1);
+        assert!(response.success);
+        assert!(store.exists("test_key"));
+    }
+
+    #[test]
+    fn test_participant_commit_applies_embed_operation() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Embed {
+                key: "doc1".into(),
+                vector: vec![1.0, 2.0, 3.0],
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        // Should be stored with "emb:" prefix
+        assert!(store.exists("emb:doc1"));
+        // Raw key should not exist
+        assert!(!store.exists("doc1"));
+    }
+
+    #[test]
+    fn test_participant_commit_applies_node_create_operation() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::NodeCreate {
+                key: "user1".into(),
+                label: "Person".into(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(store.exists("node:user1"));
+    }
+
+    #[test]
+    fn test_participant_commit_applies_edge_create_operation() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::EdgeCreate {
+                from: "a".into(),
+                to: "b".into(),
+                edge_type: "knows".into(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(store.exists("edge:a:b:knows"));
+    }
+
+    #[test]
+    fn test_participant_abort_removes_new_key() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Key doesn't exist initially
+        assert!(!store.exists("new_key"));
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "new_key".into(),
+                data: b"data".to_vec(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        participant.abort(1);
+
+        // Key should not exist after abort
+        assert!(!store.exists("new_key"));
+    }
+
+    #[test]
+    fn test_participant_abort_restores_existing_key() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate with existing data
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(b"original".to_vec())),
+        );
+        store.put("existing_key", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "existing_key".into(),
+                data: b"modified".to_vec(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        participant.abort(1);
+
+        // Verify original data is restored
+        let data = store.get("existing_key").unwrap();
+        let bytes = data.get("data").unwrap();
+        match bytes {
+            TensorValue::Scalar(ScalarValue::Bytes(b)) => {
+                assert_eq!(b, b"original");
+            },
+            _ => panic!("Expected bytes"),
+        }
+    }
+
+    #[test]
+    fn test_participant_abort_embed_uses_correct_storage_key() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate emb:doc1 with original vector
+        let mut tensor = TensorData::new();
+        tensor.set("vector", TensorValue::Vector(vec![0.0, 0.0, 0.0]));
+        store.put("emb:doc1", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Embed {
+                key: "doc1".into(),
+                vector: vec![1.0, 2.0, 3.0],
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        participant.abort(1);
+
+        // Verify original vector is restored at emb:doc1
+        let data = store.get("emb:doc1").unwrap();
+        let vec = data.get("vector").unwrap();
+        match vec {
+            TensorValue::Vector(v) => {
+                assert_eq!(v, &[0.0, 0.0, 0.0]);
+            },
+            _ => panic!("Expected vector"),
+        }
+    }
+
+    #[test]
+    fn test_participant_multiple_operations_commit() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![
+                Transaction::Put {
+                    key: "key1".into(),
+                    data: b"data1".to_vec(),
+                },
+                Transaction::Embed {
+                    key: "doc1".into(),
+                    vector: vec![1.0],
+                },
+                Transaction::NodeCreate {
+                    key: "n1".into(),
+                    label: "Label".into(),
+                },
+            ],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(store.exists("key1"));
+        assert!(store.exists("emb:doc1"));
+        assert!(store.exists("node:n1"));
+    }
+
+    #[test]
+    fn test_participant_multiple_operations_abort() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![
+                Transaction::Put {
+                    key: "key1".into(),
+                    data: b"data1".to_vec(),
+                },
+                Transaction::Embed {
+                    key: "doc1".into(),
+                    vector: vec![1.0],
+                },
+            ],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        participant.abort(1);
+
+        // Neither key should exist after abort
+        assert!(!store.exists("key1"));
+        assert!(!store.exists("emb:doc1"));
+    }
+
+    #[test]
+    fn test_participant_commit_unknown_tx_fails() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store);
+
+        let response = participant.commit(999);
+        assert!(!response.success);
+        assert!(response.error.is_some());
+    }
+
+    #[test]
+    fn test_participant_delete_operation_commit() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(b"data".to_vec())),
+        );
+        store.put("to_delete", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Delete {
+                key: "to_delete".into(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(!store.exists("to_delete"));
+    }
+
+    #[test]
+    fn test_participant_delete_operation_abort_restores() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(b"original".to_vec())),
+        );
+        store.put("to_delete", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Delete {
+                key: "to_delete".into(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        participant.abort(1);
+
+        // Key should still exist after abort
+        assert!(store.exists("to_delete"));
+    }
+
+    #[test]
+    fn test_participant_recover_applies_undo_logs() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate with existing data
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "data",
+            TensorValue::Scalar(ScalarValue::Bytes(b"original".to_vec())),
+        );
+        store.put("recover_key", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::Put {
+                key: "recover_key".into(),
+                data: b"modified".to_vec(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+
+        // Use cleanup_stale with zero duration (uses >= for timeout check)
+        // This simulates timeout and applies undo logs
+        let stale = participant.cleanup_stale(Duration::from_secs(0));
+
+        // Transaction should be cleaned up
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0], 1);
+
+        // Original data should be restored (undo log applied)
+        let data = store.get("recover_key").unwrap();
+        let bytes = data.get("data").unwrap();
+        match bytes {
+            TensorValue::Scalar(ScalarValue::Bytes(b)) => {
+                assert_eq!(b, b"original");
+            },
+            _ => panic!("Expected bytes"),
+        }
+    }
+
+    #[test]
+    fn test_participant_node_delete_commit() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        // Pre-populate node
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "_id",
+            TensorValue::Scalar(ScalarValue::String("user1".into())),
+        );
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("node".into())),
+        );
+        store.put("node:user1", tensor).unwrap();
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::NodeDelete {
+                key: "user1".into(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(!store.exists("node:user1"));
+    }
+
+    #[test]
+    fn test_participant_table_insert_commit() {
+        let store = TensorStore::new();
+        let participant = TxParticipant::new(store.clone());
+
+        let request = PrepareRequest {
+            tx_id: 1,
+            coordinator: "node1".to_string(),
+            operations: vec![Transaction::TableInsert {
+                table: "users".into(),
+                values: b"serialized_row".to_vec(),
+            }],
+            delta_embedding: SparseVector::new(0),
+            timeout_ms: 5000,
+        };
+
+        participant.prepare(request);
+        let response = participant.commit(1);
+
+        assert!(response.success);
+        assert!(store.exists("table:users"));
     }
 }

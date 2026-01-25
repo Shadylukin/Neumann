@@ -181,11 +181,13 @@ use tensor_store::SparseVector;
 
 use crate::{
     block::{Block, NodeId},
+    codebook::{GlobalCodebook, GlobalCodebookSnapshot},
     error::{ChainError, Result},
     membership::MembershipManager,
     network::{
-        AppendEntries, AppendEntriesResponse, LogEntry, Message, PreVote, PreVoteResponse,
-        RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse, TimeoutNow, Transport,
+        AppendEntries, AppendEntriesResponse, CodebookChange, LogEntry, Message, PreVote,
+        PreVoteResponse, RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse,
+        TimeoutNow, Transport,
     },
     snapshot_buffer::{SnapshotBuffer, SnapshotBufferConfig},
     validation::FastPathValidator,
@@ -625,6 +627,9 @@ pub struct SnapshotMetadata {
     pub created_at: u64,
     /// Snapshot data size in bytes.
     pub size: u64,
+    /// Global codebook at snapshot time (for state quantization).
+    #[serde(default)]
+    pub codebook: Option<GlobalCodebookSnapshot>,
 }
 
 impl SnapshotMetadata {
@@ -647,6 +652,7 @@ impl SnapshotMetadata {
                 .unwrap_or_default()
                 .as_secs(),
             size,
+            codebook: None,
         }
     }
 
@@ -670,7 +676,39 @@ impl SnapshotMetadata {
                 .unwrap_or_default()
                 .as_secs(),
             size,
+            codebook: None,
         }
+    }
+
+    /// Create snapshot metadata with codebook.
+    pub fn with_codebook(
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_hash: [u8; 32],
+        membership: crate::network::RaftMembershipConfig,
+        size: u64,
+        codebook: GlobalCodebookSnapshot,
+    ) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        Self {
+            last_included_index,
+            last_included_term,
+            snapshot_hash,
+            config: membership.voters.clone(),
+            membership,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            size,
+            codebook: Some(codebook),
+        }
+    }
+
+    /// Set the codebook on an existing snapshot metadata (builder pattern).
+    pub fn set_codebook(mut self, codebook: GlobalCodebookSnapshot) -> Self {
+        self.codebook = Some(codebook);
+        self
     }
 }
 
@@ -885,6 +923,12 @@ pub struct RaftNode {
     heartbeat_task: RwLock<HeartbeatTask>,
     /// Heartbeat statistics for monitoring.
     pub heartbeat_stats: HeartbeatStats,
+    /// Replicated global codebook for state quantization.
+    /// This is replicated through Raft consensus to ensure all nodes
+    /// have consistent quantization vocabulary for fast-path validation.
+    global_codebook: RwLock<Arc<GlobalCodebook>>,
+    /// Version of the global codebook (incremented on each update).
+    codebook_version: AtomicU64,
 }
 
 impl RaftNode {
@@ -939,6 +983,8 @@ impl RaftNode {
             membership_config: RwLock::new(membership_config),
             heartbeat_task: RwLock::new(HeartbeatTask::default()),
             heartbeat_stats: HeartbeatStats::default(),
+            global_codebook: RwLock::new(Arc::new(GlobalCodebook::new(0))),
+            codebook_version: AtomicU64::new(0),
         }
     }
 
@@ -1233,6 +1279,8 @@ impl RaftNode {
             membership_config: RwLock::new(membership_config),
             heartbeat_task: RwLock::new(HeartbeatTask::default()),
             heartbeat_stats: HeartbeatStats::default(),
+            global_codebook: RwLock::new(Arc::new(GlobalCodebook::new(0))),
+            codebook_version: AtomicU64::new(0),
         }
     }
 
@@ -2368,6 +2416,108 @@ impl RaftNode {
         self.fast_path_state.add_embedding(&self.node_id, embedding);
 
         Ok(index)
+    }
+
+    // ========== Codebook Replication Methods ==========
+
+    /// Get the current replicated global codebook.
+    pub fn global_codebook(&self) -> Arc<GlobalCodebook> {
+        self.global_codebook.read().clone()
+    }
+
+    /// Get the current codebook version.
+    pub fn codebook_version(&self) -> u64 {
+        self.codebook_version.load(Ordering::SeqCst)
+    }
+
+    /// Propose a codebook replacement (leader only).
+    ///
+    /// Creates a log entry with the codebook change and appends it to the log.
+    /// The change will be replicated to followers through normal Raft replication.
+    pub fn propose_codebook_replace(&self, snapshot: GlobalCodebookSnapshot) -> Result<u64> {
+        if self.leadership.read().role != RaftState::Leader {
+            return Err(ChainError::ConsensusError("not leader".into()));
+        }
+
+        // Block proposals during leadership transfer
+        if self.is_transfer_in_progress() {
+            return Err(ChainError::ConsensusError(
+                "leadership transfer in progress".into(),
+            ));
+        }
+
+        // Check quorum before accepting write
+        if !self.is_write_safe() {
+            return Err(ChainError::ConsensusError("quorum not available".into()));
+        }
+
+        let mut persistent = self.persistent.write();
+        let index = persistent.log.len() as u64 + 1;
+        let term = persistent.current_term;
+
+        let entry = LogEntry::codebook(term, index, CodebookChange::replace(snapshot));
+        persistent.log.push(entry);
+
+        Ok(index)
+    }
+
+    /// Apply a codebook change from a committed log entry.
+    ///
+    /// Called during log application when a codebook change entry is committed.
+    pub fn apply_codebook_change(&self, change: &CodebookChange) {
+        match change {
+            CodebookChange::Replace { snapshot } => {
+                let codebook = Arc::new(GlobalCodebook::from_snapshot(snapshot.clone()));
+                *self.global_codebook.write() = codebook;
+                self.codebook_version
+                    .store(snapshot.version, Ordering::SeqCst);
+            },
+        }
+    }
+
+    /// Set the global codebook directly (for initialization or testing).
+    pub fn set_global_codebook(&self, codebook: GlobalCodebook) {
+        *self.global_codebook.write() = Arc::new(codebook);
+    }
+
+    /// Set the global codebook with a specific version.
+    pub fn set_global_codebook_versioned(&self, codebook: GlobalCodebook, version: u64) {
+        *self.global_codebook.write() = Arc::new(codebook);
+        self.codebook_version.store(version, Ordering::SeqCst);
+    }
+
+    /// Restore codebook from snapshot metadata.
+    ///
+    /// Called when installing a snapshot to restore the codebook state.
+    pub fn restore_codebook_from_snapshot(&self, metadata: &SnapshotMetadata) {
+        if let Some(ref snapshot) = metadata.codebook {
+            let codebook = GlobalCodebook::from_snapshot(snapshot.clone());
+            *self.global_codebook.write() = Arc::new(codebook);
+            self.codebook_version
+                .store(snapshot.version, Ordering::SeqCst);
+        }
+    }
+
+    /// Create snapshot metadata including current codebook state.
+    pub fn create_snapshot_metadata_with_codebook(
+        &self,
+        last_included_index: u64,
+        last_included_term: u64,
+        snapshot_hash: [u8; 32],
+        size: u64,
+    ) -> SnapshotMetadata {
+        let membership = self.membership_config.read().clone();
+        let codebook_version = self.codebook_version.load(Ordering::SeqCst);
+        let codebook = self.global_codebook.read().to_snapshot(codebook_version);
+
+        SnapshotMetadata::with_codebook(
+            last_included_index,
+            last_included_term,
+            snapshot_hash,
+            membership,
+            size,
+            codebook,
+        )
     }
 
     /// Check if it is safe to accept writes (quorum available).
@@ -7756,5 +7906,170 @@ mod tests {
         let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
         assert!(meta.created_at > 0);
         assert_eq!(meta.size, 100);
+    }
+
+    // ========== Codebook Replication Tests ==========
+
+    #[test]
+    fn test_raft_node_global_codebook_access() {
+        let node = create_test_node("node1", vec![]);
+        let codebook = node.global_codebook();
+        assert!(codebook.is_empty());
+        assert_eq!(node.codebook_version(), 0);
+    }
+
+    #[test]
+    fn test_raft_node_set_global_codebook() {
+        let node = create_test_node("node1", vec![]);
+
+        let centroids = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+        node.set_global_codebook(codebook);
+
+        let retrieved = node.global_codebook();
+        assert_eq!(retrieved.len(), 2);
+    }
+
+    #[test]
+    fn test_raft_node_set_global_codebook_versioned() {
+        let node = create_test_node("node1", vec![]);
+
+        let centroids = vec![vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+        node.set_global_codebook_versioned(codebook, 42);
+
+        assert_eq!(node.codebook_version(), 42);
+        assert_eq!(node.global_codebook().len(), 1);
+    }
+
+    #[test]
+    fn test_raft_node_apply_codebook_change() {
+        let node = create_test_node("node1", vec![]);
+
+        let snapshot = GlobalCodebookSnapshot::new(
+            2,
+            vec![
+                crate::codebook::CodebookEntry::new(0, vec![1.0, 0.0]),
+                crate::codebook::CodebookEntry::new(1, vec![0.0, 1.0]),
+            ],
+            10,
+        );
+        let change = CodebookChange::Replace { snapshot };
+
+        node.apply_codebook_change(&change);
+
+        assert_eq!(node.global_codebook().len(), 2);
+        assert_eq!(node.codebook_version(), 10);
+    }
+
+    #[test]
+    fn test_raft_node_propose_codebook_replace_not_leader() {
+        let node = create_test_node("node1", vec!["node2".to_string()]);
+        // Node is follower by default
+
+        let snapshot = GlobalCodebookSnapshot::empty(4);
+        let result = node.propose_codebook_replace(snapshot);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_snapshot_metadata_with_codebook() {
+        let membership = crate::network::RaftMembershipConfig::new(vec!["n1".to_string()]);
+        let codebook = GlobalCodebookSnapshot::new(
+            4,
+            vec![crate::codebook::CodebookEntry::new(
+                0,
+                vec![1.0, 0.0, 0.0, 0.0],
+            )],
+            5,
+        );
+
+        let meta = SnapshotMetadata::with_codebook(10, 2, [0u8; 32], membership, 100, codebook);
+
+        assert!(meta.codebook.is_some());
+        let cb = meta.codebook.unwrap();
+        assert_eq!(cb.version, 5);
+        assert_eq!(cb.dimension, 4);
+    }
+
+    #[test]
+    fn test_snapshot_metadata_set_codebook() {
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
+        assert!(meta.codebook.is_none());
+
+        let codebook = GlobalCodebookSnapshot::empty(3);
+        let meta_with_cb = meta.set_codebook(codebook);
+
+        assert!(meta_with_cb.codebook.is_some());
+        assert_eq!(meta_with_cb.codebook.unwrap().dimension, 3);
+    }
+
+    #[test]
+    fn test_raft_node_restore_codebook_from_snapshot() {
+        let node = create_test_node("node1", vec![]);
+
+        let codebook_snapshot = GlobalCodebookSnapshot::new(
+            2,
+            vec![crate::codebook::CodebookEntry::new(0, vec![1.0, 0.0])],
+            99,
+        );
+
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100)
+            .set_codebook(codebook_snapshot);
+
+        node.restore_codebook_from_snapshot(&meta);
+
+        assert_eq!(node.codebook_version(), 99);
+        assert_eq!(node.global_codebook().len(), 1);
+    }
+
+    #[test]
+    fn test_raft_node_restore_codebook_from_snapshot_without_codebook() {
+        let node = create_test_node("node1", vec![]);
+
+        // Set a codebook first
+        let centroids = vec![vec![1.0, 0.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+        node.set_global_codebook_versioned(codebook, 50);
+
+        // Restore from snapshot without codebook (legacy)
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
+        assert!(meta.codebook.is_none());
+
+        node.restore_codebook_from_snapshot(&meta);
+
+        // Codebook should be unchanged since snapshot had no codebook
+        assert_eq!(node.codebook_version(), 50);
+        assert_eq!(node.global_codebook().len(), 1);
+    }
+
+    #[test]
+    fn test_raft_node_create_snapshot_metadata_with_codebook() {
+        let node = create_test_node("node1", vec![]);
+
+        // Set a codebook
+        let centroids = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+        node.set_global_codebook_versioned(codebook, 25);
+
+        let meta = node.create_snapshot_metadata_with_codebook(10, 2, [0u8; 32], 100);
+
+        assert!(meta.codebook.is_some());
+        let cb = meta.codebook.unwrap();
+        assert_eq!(cb.version, 25);
+        assert_eq!(cb.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_metadata_backward_compatible() {
+        // Simulate deserializing old SnapshotMetadata without codebook field
+        let meta = SnapshotMetadata::new(10, 2, [0u8; 32], vec!["n1".to_string()], 100);
+
+        let bytes = bincode::serialize(&meta).unwrap();
+        let decoded: SnapshotMetadata = bincode::deserialize(&bytes).unwrap();
+
+        // Should deserialize with codebook = None
+        assert!(decoded.codebook.is_none());
     }
 }

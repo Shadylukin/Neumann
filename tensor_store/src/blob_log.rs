@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 pub struct ChunkHash(pub u64);
 
 impl ChunkHash {
+    /// Computes a hash from the given data.
     #[must_use]
     pub fn from_data(data: &[u8]) -> Self {
         let mut hasher = FxHasher::default();
@@ -33,6 +34,7 @@ impl ChunkHash {
         Self(hasher.finish())
     }
 
+    /// Returns the underlying u64 hash value.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0

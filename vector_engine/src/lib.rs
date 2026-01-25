@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tensor_store::{
     fields, hnsw::simd, SparseVector, TensorData, TensorStore, TensorStoreError, TensorValue,
 };
+use tracing::instrument;
 // Re-export HNSW types from tensor_store for backward compatibility
 pub use tensor_store::{HNSWConfig, HNSWIndex};
 
@@ -115,6 +116,7 @@ impl VectorEngine {
     ///
     /// Automatically uses sparse format for vectors with >50% zeros.
     /// Overwrites any existing embedding with the same key.
+    #[instrument(skip(self, vector), fields(key = %key))]
     pub fn store_embedding(&self, key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
             return Err(VectorError::EmptyVector);
@@ -191,6 +193,7 @@ impl VectorEngine {
     /// Returns results sorted by similarity score (highest first).
     /// Uses cosine similarity with SIMD acceleration.
     /// Automatically uses parallel iteration for large datasets (>5000 vectors).
+    #[instrument(skip(self, query), fields(k = top_k))]
     pub fn search_similar(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         if query.is_empty() {
             return Err(VectorError::EmptyVector);

@@ -1,3 +1,69 @@
+//! `TensorStore` - Unified Storage Layer for Neumann
+//!
+//! A thread-safe, sharded key-value store optimized for tensor data:
+//! - Dense and sparse vector storage with HNSW indexing
+//! - Relational tables with SIMD-accelerated filtering
+//! - Graph structures with CSR-optimized traversal
+//! - Automatic hot/cold tiering with mmap backing
+//!
+//! # Architecture
+//!
+//! ```text
+//! TensorStore
+//!   +-- SlabRouter (key classification and routing)
+//!   |     +-- MetadataSlab (arbitrary key-value)
+//!   |     +-- EmbeddingSlab (dense embeddings)
+//!   |     +-- RelationalSlab (columnar tables)
+//!   |     +-- GraphTensor (nodes and edges)
+//!   +-- HNSWIndex (similarity search)
+//!   +-- EntityIndex (string <-> ID mapping)
+//!   +-- CacheRing (LRU/LFU eviction)
+//!   +-- TieredStore (hot/cold storage)
+//! ```
+//!
+//! # Quick Start
+//!
+//! ```rust
+//! use tensor_store::{TensorStore, TensorData, TensorValue, ScalarValue};
+//!
+//! let store = TensorStore::new();
+//!
+//! // Store a tensor entity
+//! let mut data = TensorData::new();
+//! data.set("name", TensorValue::Scalar(ScalarValue::String("example".into())));
+//! data.set("embedding", TensorValue::Vector(vec![0.1, 0.2, 0.3]));
+//! store.put("entity:1", data).unwrap();
+//!
+//! // Retrieve it
+//! let retrieved = store.get("entity:1").unwrap();
+//! assert!(retrieved.has("name"));
+//! assert!(retrieved.has("embedding"));
+//! ```
+//!
+//! # Thread Safety
+//!
+//! All types use `parking_lot` locks (no lock poisoning) and sharded designs
+//! for high concurrent throughput. Typical performance:
+//! - PUT: ~3.2M ops/sec
+//! - GET: ~5M ops/sec
+//!
+//! # Module Overview
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`slab_router`] | Key routing and WAL durability |
+//! | [`hnsw`] | Hierarchical Navigable Small World index |
+//! | [`sparse_vector`] | Memory-efficient sparse embeddings |
+//! | [`delta_vector`] | Archetype-based delta compression |
+//! | [`relational_slab`] | Column-oriented table storage |
+//! | [`graph_tensor`] | CSR graph with BFS/shortest path |
+//! | [`cache_ring`] | Fixed-size eviction cache |
+//! | [`tiered`] | Hot/cold storage with auto-migration |
+//! | [`mmap`] | Memory-mapped cold storage |
+//! | [`consistent_hash`] | Partition routing with virtual nodes |
+
+#![warn(missing_docs)]
+
 use std::{
     collections::HashMap,
     fs::File,
@@ -202,11 +268,13 @@ impl BloomFilter {
         (hasher.finish() as usize) % self.num_bits
     }
 
+    /// Returns the number of bits in the filter.
     #[must_use]
     pub const fn num_bits(&self) -> usize {
         self.num_bits
     }
 
+    /// Returns the number of hash functions used.
     #[must_use]
     pub const fn num_hashes(&self) -> usize {
         self.num_hashes
@@ -315,6 +383,7 @@ impl TensorValue {
         }
     }
 
+    /// Returns the dimension for vector types, `None` for scalars/pointers.
     #[must_use]
     pub const fn dimension(&self) -> Option<usize> {
         match self {
@@ -376,16 +445,19 @@ impl TensorValue {
         }
     }
 
+    /// Returns true if this is a vector type (dense or sparse).
     #[must_use]
     pub const fn is_vector(&self) -> bool {
         matches!(self, Self::Vector(_) | Self::Sparse(_))
     }
 
+    /// Returns true if this is a sparse vector.
     #[must_use]
     pub const fn is_sparse(&self) -> bool {
         matches!(self, Self::Sparse(_))
     }
 
+    /// Returns approximate memory usage in bytes.
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         match self {
@@ -404,14 +476,20 @@ impl TensorValue {
     }
 }
 
-/// Scalar value types
+/// Scalar value types for entity properties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScalarValue {
+    /// Null/missing value.
     Null,
+    /// Boolean value.
     Bool(bool),
+    /// 64-bit signed integer.
     Int(i64),
+    /// 64-bit floating point.
     Float(f64),
+    /// UTF-8 string.
     String(String),
+    /// Raw byte array.
     Bytes(Vec<u8>),
 }
 
@@ -422,6 +500,7 @@ pub struct TensorData {
 }
 
 impl TensorData {
+    /// Creates an empty entity.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -429,43 +508,51 @@ impl TensorData {
         }
     }
 
+    /// Sets a field value, replacing any existing value.
     pub fn set(&mut self, key: impl Into<String>, value: TensorValue) {
         self.fields.insert(key.into(), value);
     }
 
+    /// Gets a field value by key.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&TensorValue> {
         self.fields.get(key)
     }
 
+    /// Removes a field, returning its value if present.
     pub fn remove(&mut self, key: &str) -> Option<TensorValue> {
         self.fields.remove(key)
     }
 
+    /// Iterates over field keys.
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.fields.keys()
     }
 
-    /// Iterate over all fields as (key, value) pairs.
+    /// Iterates over all fields as (key, value) pairs.
     pub fn fields_iter(&self) -> impl Iterator<Item = (&String, &TensorValue)> {
         self.fields.iter()
     }
 
+    /// Returns true if the field exists.
     #[must_use]
     pub fn has(&self, key: &str) -> bool {
         self.fields.contains_key(key)
     }
 
+    /// Returns the number of fields.
     #[must_use]
     pub fn len(&self) -> usize {
         self.fields.len()
     }
 
+    /// Returns true if there are no fields.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 
+    /// Returns the `_type` field value.
     #[must_use]
     pub fn entity_type(&self) -> Option<&str> {
         match self.get(fields::TYPE) {
@@ -474,6 +561,7 @@ impl TensorData {
         }
     }
 
+    /// Returns the `_id` field value.
     #[must_use]
     pub fn entity_id(&self) -> Option<i64> {
         match self.get(fields::ID) {
@@ -482,6 +570,7 @@ impl TensorData {
         }
     }
 
+    /// Returns the `_label` field value.
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         match self.get(fields::LABEL) {
@@ -490,6 +579,7 @@ impl TensorData {
         }
     }
 
+    /// Returns the `_embedding` field value.
     #[must_use]
     pub fn embedding(&self) -> Option<&Vec<f32>> {
         match self.get(fields::EMBEDDING) {
@@ -498,6 +588,7 @@ impl TensorData {
         }
     }
 
+    /// Returns the `_out` field (outgoing edge pointers).
     #[must_use]
     pub fn outgoing_edges(&self) -> Option<&Vec<String>> {
         match self.get(fields::OUT) {
@@ -506,6 +597,7 @@ impl TensorData {
         }
     }
 
+    /// Returns the `_in` field (incoming edge pointers).
     #[must_use]
     pub fn incoming_edges(&self) -> Option<&Vec<String>> {
         match self.get(fields::IN) {
@@ -514,6 +606,7 @@ impl TensorData {
         }
     }
 
+    /// Sets the `_type` field.
     pub fn set_entity_type(&mut self, entity_type: &str) {
         self.set(
             fields::TYPE,
@@ -521,10 +614,12 @@ impl TensorData {
         );
     }
 
+    /// Sets the `_id` field.
     pub fn set_entity_id(&mut self, id: i64) {
         self.set(fields::ID, TensorValue::Scalar(ScalarValue::Int(id)));
     }
 
+    /// Sets the `_label` field.
     pub fn set_label(&mut self, label: &str) {
         self.set(
             fields::LABEL,
@@ -532,19 +627,22 @@ impl TensorData {
         );
     }
 
+    /// Sets the `_embedding` field.
     pub fn set_embedding(&mut self, embedding: Vec<f32>) {
         self.set(fields::EMBEDDING, TensorValue::Vector(embedding));
     }
 
+    /// Sets the `_out` field.
     pub fn set_outgoing_edges(&mut self, edges: Vec<String>) {
         self.set(fields::OUT, TensorValue::Pointers(edges));
     }
 
+    /// Sets the `_in` field.
     pub fn set_incoming_edges(&mut self, edges: Vec<String>) {
         self.set(fields::IN, TensorValue::Pointers(edges));
     }
 
-    /// Adds edge if not already present.
+    /// Adds an outgoing edge if not already present.
     pub fn add_outgoing_edge(&mut self, edge_key: String) {
         let mut edges = match self.get(fields::OUT) {
             Some(TensorValue::Pointers(p)) => p.clone(),
@@ -568,11 +666,13 @@ impl TensorData {
         self.set(fields::IN, TensorValue::Pointers(edges));
     }
 
+    /// Returns true if `_embedding` field exists.
     #[must_use]
     pub fn has_embedding(&self) -> bool {
         self.has(fields::EMBEDDING)
     }
 
+    /// Returns true if `_out` or `_in` fields exist.
     #[must_use]
     pub fn has_edges(&self) -> bool {
         self.has(fields::OUT) || self.has(fields::IN)
@@ -583,15 +683,19 @@ impl TensorData {
         self.fields.iter().filter(|(k, _)| !k.starts_with('_'))
     }
 
+    /// Iterates over all fields.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &TensorValue)> {
         self.fields.iter()
     }
 }
 
+/// Result type for tensor store operations.
 pub type Result<T> = std::result::Result<T, TensorStoreError>;
 
+/// Errors that can occur during tensor store operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorStoreError {
+    /// Key was not found in the store.
     NotFound(String),
 }
 
@@ -644,6 +748,7 @@ impl From<bincode::Error> for SnapshotError {
     }
 }
 
+/// Result type for snapshot operations.
 pub type SnapshotResult<T> = std::result::Result<T, SnapshotError>;
 
 /// Thread-safe key-value store backed by `SlabRouter`.
@@ -669,6 +774,7 @@ pub struct TensorStore {
 impl TensorStore {
     const DEFAULT_SHARD_COUNT: usize = 16;
 
+    /// Creates a new empty store.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -765,11 +871,13 @@ impl TensorStore {
         hasher.finish() as usize % Self::DEFAULT_SHARD_COUNT
     }
 
+    /// Returns true if Bloom filter is enabled.
     #[must_use]
     pub const fn has_bloom_filter(&self) -> bool {
         self.bloom_filter.is_some()
     }
 
+    /// Returns true if instrumentation is enabled.
     #[must_use]
     pub const fn has_instrumentation(&self) -> bool {
         self.instrumentation.is_some()
@@ -874,21 +982,25 @@ impl TensorStore {
         self.router.exists(key)
     }
 
+    /// Scans keys with the given prefix.
     #[must_use]
     pub fn scan(&self, prefix: &str) -> Vec<String> {
         self.router.scan(prefix)
     }
 
+    /// Returns the number of entries.
     #[must_use]
     pub fn len(&self) -> usize {
         self.router.len()
     }
 
+    /// Returns true if the store is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.router.is_empty()
     }
 
+    /// Clears all entries.
     pub fn clear(&self) {
         self.router.clear();
         if let Some(ref filter) = self.bloom_filter {
@@ -913,6 +1025,7 @@ impl TensorStore {
         self.router.evict_cache(count)
     }
 
+    /// Counts entries with the given prefix.
     #[must_use]
     pub fn scan_count(&self, prefix: &str) -> usize {
         self.router.scan_count(prefix)
@@ -1404,12 +1517,17 @@ impl Default for TensorStore {
 /// ├── Graph: _out=["edge:1", "edge:2"], _in=["edge:3"]
 /// └── Vector: _embedding=[0.1, 0.2, 0.3, ...]
 /// ```
+/// High-level entity abstraction over [`TensorStore`].
+///
+/// Provides type-aware scanning, embedding operations, and graph edge
+/// management with automatic key formatting (`entity_type:id`).
 #[derive(Clone)]
 pub struct EntityStore {
     store: Arc<TensorStore>,
 }
 
 impl EntityStore {
+    /// Creates a new entity store with a fresh underlying `TensorStore`.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -1417,6 +1535,7 @@ impl EntityStore {
         }
     }
 
+    /// Wraps an existing `TensorStore` in an `EntityStore`.
     #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
@@ -1424,26 +1543,31 @@ impl EntityStore {
         }
     }
 
+    /// Creates an entity store from an existing `Arc<TensorStore>`.
     #[must_use]
     pub const fn with_arc(store: Arc<TensorStore>) -> Self {
         Self { store }
     }
 
+    /// Returns a reference to the underlying store.
     #[must_use]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
 
+    /// Returns a cloned `Arc` to the underlying store.
     #[must_use]
     pub fn store_arc(&self) -> Arc<TensorStore> {
         Arc::clone(&self.store)
     }
 
+    /// Formats a key from entity type and numeric ID.
     #[must_use]
     pub fn entity_key(entity_type: &str, id: u64) -> String {
         format!("{entity_type}:{id}")
     }
 
+    /// Parses a key into entity type and numeric ID.
     #[must_use]
     pub fn parse_key(key: &str) -> Option<(&str, u64)> {
         let parts: Vec<&str> = key.splitn(2, ':').collect();
@@ -1475,6 +1599,7 @@ impl EntityStore {
         self.store.delete(key)
     }
 
+    /// Returns true if the key exists in the store.
     #[must_use]
     pub fn exists(&self, key: &str) -> bool {
         self.store.exists(key)
@@ -1500,11 +1625,13 @@ impl EntityStore {
         self.store.put(key, data)
     }
 
+    /// Returns all keys with the given entity type prefix.
     #[must_use]
     pub fn scan_type(&self, entity_type: &str) -> Vec<String> {
         self.store.scan(&format!("{entity_type}:"))
     }
 
+    /// Returns all keys that have an embedding attached.
     #[must_use]
     pub fn scan_with_embeddings(&self) -> Vec<String> {
         self.store
@@ -1514,6 +1641,7 @@ impl EntityStore {
             .collect()
     }
 
+    /// Returns all keys that have graph edges attached.
     #[must_use]
     pub fn scan_with_edges(&self) -> Vec<String> {
         self.store
@@ -1523,6 +1651,7 @@ impl EntityStore {
             .collect()
     }
 
+    /// Returns the embedding for a key, or None if not found.
     #[must_use]
     pub fn get_embedding(&self, key: &str) -> Option<Vec<f32>> {
         self.store
@@ -1573,20 +1702,24 @@ impl EntityStore {
         Ok(data.incoming_edges().cloned().unwrap_or_default())
     }
 
+    /// Removes all entries from the store.
     pub fn clear(&self) {
         self.store.clear();
     }
 
+    /// Returns the total number of entries.
     #[must_use]
     pub fn len(&self) -> usize {
         self.store.len()
     }
 
+    /// Returns true if the store contains no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.store.is_empty()
     }
 
+    /// Counts entries matching the given entity type prefix.
     #[must_use]
     pub fn count_type(&self, entity_type: &str) -> usize {
         self.store.scan_count(&format!("{entity_type}:"))

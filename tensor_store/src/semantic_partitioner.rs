@@ -48,18 +48,21 @@ impl SemanticPartitionerConfig {
         }
     }
 
+    /// Sets the similarity threshold for partition assignment.
     #[must_use]
     pub const fn with_similarity_threshold(mut self, threshold: f32) -> Self {
         self.similarity_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 
+    /// Sets the number of virtual nodes per shard.
     #[must_use]
     pub const fn with_virtual_nodes(mut self, count: usize) -> Self {
         self.virtual_nodes = count;
         self
     }
 
+    /// Sets the k-means clustering configuration.
     #[must_use]
     pub const fn with_kmeans_config(mut self, config: KMeansConfig) -> Self {
         self.kmeans_config = config;
@@ -299,10 +302,12 @@ impl SemanticPartitioner {
         self.centroids.read().unwrap().len()
     }
 
+    /// Returns the embedding dimension.
     pub const fn embedding_dim(&self) -> usize {
         self.config.embedding_dim
     }
 
+    /// Returns the similarity threshold for partition assignment.
     pub const fn similarity_threshold(&self) -> f32 {
         self.config.similarity_threshold
     }

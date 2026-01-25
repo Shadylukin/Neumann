@@ -63,6 +63,7 @@ use tensor_unified::{
 };
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use tokio::runtime::Runtime;
+use tracing::instrument;
 use vector_engine::{DistanceMetric as VectorDistanceMetric, HNSWIndex, VectorEngine, VectorError};
 
 /// Aggregate function types for SELECT queries.
@@ -1118,6 +1119,7 @@ impl QueryRouter {
     }
 
     /// Execute a command string using the legacy string-based parser.
+    #[instrument(skip(self))]
     pub fn execute(&self, command: &str) -> Result<QueryResult> {
         let command = command.trim();
         if command.is_empty() {
@@ -1371,6 +1373,7 @@ impl QueryRouter {
     }
 
     /// Execute a parsed statement.
+    #[instrument(skip(self, stmt))]
     pub fn execute_statement(&self, stmt: &Statement) -> Result<QueryResult> {
         match &stmt.kind {
             // SQL statements

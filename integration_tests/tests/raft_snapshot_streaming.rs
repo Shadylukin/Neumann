@@ -188,7 +188,8 @@ fn test_streaming_create_snapshot() {
         snapshot_max_memory: 1024 * 1024,
         ..Default::default()
     };
-    let node = create_node_with_config("leader", vec!["follower".to_string()], config);
+    // Single-node cluster to avoid quorum issues during propose
+    let node = create_node_with_config("leader", vec![], config);
 
     // Make node a leader so it can propose blocks
     node.become_leader();

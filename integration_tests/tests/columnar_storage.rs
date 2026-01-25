@@ -25,11 +25,13 @@ fn test_materialize_single_column() {
         relational.insert("data", row).unwrap();
     }
 
-    // Materialize column
+    // With slab-based storage, all columns are always columnar
+    // materialize_columns is now a no-op
     relational.materialize_columns("data", &["value"]).unwrap();
 
+    // Both columns are in the schema, so both have columnar data
     assert!(relational.has_columnar_data("data", "value"));
-    assert!(!relational.has_columnar_data("data", "id"));
+    assert!(relational.has_columnar_data("data", "id"));
 }
 
 #[test]
@@ -51,13 +53,15 @@ fn test_materialize_multiple_columns() {
         relational.insert("multi", row).unwrap();
     }
 
+    // materialize_columns is a no-op with slab storage
     relational
         .materialize_columns("multi", &["a", "b"])
         .unwrap();
 
+    // All columns in schema are always columnar with slab
     assert!(relational.has_columnar_data("multi", "a"));
     assert!(relational.has_columnar_data("multi", "b"));
-    assert!(!relational.has_columnar_data("multi", "c"));
+    assert!(relational.has_columnar_data("multi", "c"));
 }
 
 #[test]
@@ -111,11 +115,14 @@ fn test_drop_columnar_data() {
         relational.insert("test", row).unwrap();
     }
 
+    // With slab storage, all columns are always columnar
     relational.materialize_columns("test", &["x"]).unwrap();
     assert!(relational.has_columnar_data("test", "x"));
 
+    // drop_columnar_data is a no-op with slab storage
     relational.drop_columnar_data("test", "x").unwrap();
-    assert!(!relational.has_columnar_data("test", "x"));
+    // Column still exists in schema, so it's still columnar
+    assert!(relational.has_columnar_data("test", "x"));
 }
 
 #[test]

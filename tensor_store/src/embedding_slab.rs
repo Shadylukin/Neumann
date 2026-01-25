@@ -28,7 +28,12 @@ const DEFAULT_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbeddingError {
     /// Embedding dimension mismatch.
-    DimensionMismatch { expected: usize, actual: usize },
+    DimensionMismatch {
+        /// Expected dimension.
+        expected: usize,
+        /// Actual dimension provided.
+        actual: usize,
+    },
     /// `EntityId` not found.
     NotFound(EntityId),
     /// Slab is full and cannot allocate more chunks.
@@ -310,20 +315,25 @@ impl EmbeddingSlab {
     /// Compact the slab by removing gaps from deleted embeddings.
     ///
     /// This is an expensive O(n) operation that rewrites all embeddings.
-    pub fn compact(&self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any embedding fails to be re-inserted.
+    pub fn compact(&self) -> Result<(), EmbeddingError> {
         // Build new compact storage
         let old_entries: Vec<(EntityId, Vec<f32>)> = self.entries();
 
         if old_entries.is_empty() {
-            return;
+            return Ok(());
         }
 
         // Clear and rebuild
         self.clear();
 
         for (entity, embedding) in old_entries {
-            let _ = self.set(entity, &embedding);
+            self.set(entity, &embedding)?;
         }
+        Ok(())
     }
 
     /// Get serializable state for snapshots.
@@ -399,20 +409,38 @@ impl Default for EmbeddingSlab {
 }
 
 /// Compressed embedding for snapshot storage.
+///
+/// Automatically selects the best compression based on vector characteristics:
+/// - `TensorTrain`: For high-dimensional dense vectors (768+), 10-20x compression
+/// - Sparse: For vectors with >50% zeros
+/// - Dense: Fallback for small or incompatible vectors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompressedEmbedding {
     /// Dense vector storage.
     Dense(Vec<f32>),
     /// Sparse vector storage (dimension, positions, values).
     Sparse {
+        /// Vector dimension.
         dimension: usize,
+        /// Non-zero positions.
         positions: Vec<u32>,
+        /// Non-zero values.
         values: Vec<f32>,
     },
+    /// Tensor Train compressed storage (10-20x compression for 768+ dims).
+    TensorTrain(tensor_compress::TTVector),
 }
 
+/// Minimum dimension for TT compression (below this, overhead exceeds savings).
+const TT_MIN_DIMENSION: usize = 256;
+
 impl CompressedEmbedding {
-    /// Create from a dense vector, using sparse format if beneficial (50% threshold).
+    /// Create from a dense vector, selecting optimal compression.
+    ///
+    /// Selection order:
+    /// 1. Sparse if >50% zeros
+    /// 2. `TensorTrain` if dimension >= 256 and has valid factorization
+    /// 3. Dense otherwise
     #[must_use]
     pub fn from_dense(vector: &[f32]) -> Self {
         if vector.is_empty() {
@@ -434,14 +462,23 @@ impl CompressedEmbedding {
                     }
                 }
             }
-            Self::Sparse {
+            return Self::Sparse {
                 dimension: vector.len(),
                 positions,
                 values,
-            }
-        } else {
-            Self::Dense(vector.to_vec())
+            };
         }
+
+        // Try TT compression for high-dimensional dense vectors
+        if vector.len() >= TT_MIN_DIMENSION {
+            if let Ok(config) = tensor_compress::TTConfig::for_dim(vector.len()) {
+                if let Ok(tt) = tensor_compress::tt_decompose(vector, &config) {
+                    return Self::TensorTrain(tt);
+                }
+            }
+        }
+
+        Self::Dense(vector.to_vec())
     }
 
     /// Convert to a dense vector.
@@ -460,6 +497,17 @@ impl CompressedEmbedding {
                 }
                 dense
             },
+            Self::TensorTrain(tt) => tensor_compress::tt_reconstruct(tt),
+        }
+    }
+
+    /// Returns the compression format name.
+    #[must_use]
+    pub const fn format_name(&self) -> &'static str {
+        match self {
+            Self::Dense(_) => "dense",
+            Self::Sparse { .. } => "sparse",
+            Self::TensorTrain(_) => "tensor_train",
         }
     }
 }
@@ -670,7 +718,7 @@ mod tests {
         slab.delete(EntityId::new(7));
 
         // Compact
-        slab.compact();
+        slab.compact().unwrap();
 
         // Verify data integrity
         assert_eq!(slab.len(), 7);
@@ -682,7 +730,7 @@ mod tests {
     #[test]
     fn test_compact_empty() {
         let slab = EmbeddingSlab::new(4, 10);
-        slab.compact(); // Should not panic
+        slab.compact().unwrap();
         assert!(slab.is_empty());
     }
 

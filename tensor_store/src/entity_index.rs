@@ -30,6 +30,7 @@ impl EntityId {
         Self(id)
     }
 
+    /// Returns the underlying u64 value.
     #[inline]
     #[must_use]
     pub const fn as_u64(self) -> u64 {

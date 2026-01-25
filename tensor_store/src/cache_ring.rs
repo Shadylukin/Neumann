@@ -32,8 +32,11 @@ pub enum EvictionStrategy {
     CostBased,
     /// Hybrid strategy combining LRU, LFU, and cost factors.
     Hybrid {
+        /// Weight for recency factor (0-255).
         lru_weight: u8,
+        /// Weight for frequency factor (0-255).
         lfu_weight: u8,
+        /// Weight for cost factor (0-255).
         cost_weight: u8,
     },
 }
@@ -66,6 +69,7 @@ pub struct EvictionScorer {
 }
 
 impl EvictionScorer {
+    /// Creates a new scorer with the given eviction strategy.
     #[must_use]
     pub const fn new(strategy: EvictionStrategy) -> Self {
         Self { strategy }
@@ -464,28 +468,41 @@ impl<V: Clone> Default for CacheRing<V> {
 /// Cache statistics.
 #[derive(Debug, Clone)]
 pub struct CacheStats {
+    /// Total cache hits.
     pub hits: u64,
+    /// Total cache misses.
     pub misses: u64,
+    /// Hit rate (hits / total).
     pub hit_rate: f64,
+    /// Current number of entries.
     pub entries: usize,
+    /// Maximum capacity.
     pub capacity: usize,
 }
 
 /// Serializable cache entry snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntrySnapshot<V> {
+    /// Cache key.
     pub key: String,
+    /// Cached value.
     pub value: V,
+    /// Total access count.
     pub access_count: u64,
+    /// Cost savings value.
     pub cost: f64,
+    /// Size in bytes.
     pub size_bytes: usize,
 }
 
 /// Serializable cache snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheRingSnapshot<V> {
+    /// All cache entries.
     pub entries: Vec<CacheEntrySnapshot<V>>,
+    /// Maximum capacity.
     pub capacity: usize,
+    /// Eviction strategy in use.
     pub strategy: EvictionStrategy,
 }
 

@@ -27,11 +27,13 @@ use crate::{entity_index::EntityId, metadata_slab::MetadataSlab, TensorData};
 pub struct EdgeId(pub u64);
 
 impl EdgeId {
+    /// Creates a new edge ID.
     #[must_use]
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
 
+    /// Returns the underlying u64 value.
     #[must_use]
     pub const fn as_u64(self) -> u64 {
         self.0

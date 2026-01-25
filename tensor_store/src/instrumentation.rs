@@ -203,6 +203,7 @@ pub struct HNSWAccessStats {
 }
 
 impl HNSWAccessStats {
+    /// Creates a new HNSW stats tracker.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -215,16 +216,19 @@ impl HNSWAccessStats {
         }
     }
 
+    /// Records a search operation.
     #[inline]
     pub fn record_search(&self) {
         self.total_searches.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Records an entry point access.
     #[inline]
     pub fn record_entry_point_access(&self) {
         self.entry_point_accesses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Records a layer traversal.
     #[inline]
     pub fn record_layer_traversal(&self, layer: usize) {
         if layer == 0 {
@@ -234,12 +238,14 @@ impl HNSWAccessStats {
         }
     }
 
+    /// Records distance calculations.
     #[inline]
     pub fn record_distance_calculations(&self, count: u64) {
         self.distance_calculations
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Creates a point-in-time snapshot.
     #[must_use]
     pub fn snapshot(&self) -> HNSWStatsSnapshot {
         let total_searches = self.total_searches.load(Ordering::Relaxed);
@@ -262,11 +268,13 @@ impl HNSWAccessStats {
         }
     }
 
+    /// Returns total search count.
     #[must_use]
     pub fn total_searches(&self) -> u64 {
         self.total_searches.load(Ordering::Relaxed)
     }
 
+    /// Returns total distance calculations.
     #[must_use]
     pub fn distance_calculations(&self) -> u64 {
         self.distance_calculations.load(Ordering::Relaxed)
@@ -282,13 +290,18 @@ impl Default for HNSWAccessStats {
 /// Point-in-time snapshot of per-shard statistics.
 #[derive(Debug, Clone)]
 pub struct ShardStatsSnapshot {
+    /// Shard identifier.
     pub shard_id: usize,
+    /// Total read count.
     pub reads: u64,
+    /// Total write count.
     pub writes: u64,
+    /// Last access timestamp in ms since tracker start.
     pub last_access_ms: u64,
 }
 
 impl ShardStatsSnapshot {
+    /// Returns total accesses (reads + writes).
     #[must_use]
     pub const fn total_accesses(&self) -> u64 {
         self.reads + self.writes
@@ -298,18 +311,24 @@ impl ShardStatsSnapshot {
 /// Point-in-time snapshot of shard access patterns.
 #[derive(Debug, Clone)]
 pub struct ShardAccessSnapshot {
+    /// Per-shard statistics.
     pub shard_stats: Vec<ShardStatsSnapshot>,
+    /// Hot shards sorted by access count.
     pub hot_shards: Vec<(usize, u64)>,
+    /// Snapshot timestamp in ms since tracker start.
     pub timestamp_ms: u64,
+    /// Sampling rate (1 = all, 100 = 1%).
     pub sample_rate: u32,
 }
 
 impl ShardAccessSnapshot {
+    /// Returns estimated total reads (scaled by sample rate).
     #[must_use]
     pub fn total_reads(&self) -> u64 {
         self.shard_stats.iter().map(|s| s.reads).sum::<u64>() * u64::from(self.sample_rate)
     }
 
+    /// Returns estimated total writes (scaled by sample rate).
     #[must_use]
     pub fn total_writes(&self) -> u64 {
         self.shard_stats.iter().map(|s| s.writes).sum::<u64>() * u64::from(self.sample_rate)
@@ -337,12 +356,19 @@ impl ShardAccessSnapshot {
 /// Point-in-time snapshot of HNSW access patterns.
 #[derive(Debug, Clone)]
 pub struct HNSWStatsSnapshot {
+    /// Entry point accesses.
     pub entry_point_accesses: u64,
+    /// Layer 0 traversals.
     pub layer0_traversals: u64,
+    /// Upper layer traversals.
     pub upper_layer_traversals: u64,
+    /// Total search operations.
     pub total_searches: u64,
+    /// Total distance calculations.
     pub distance_calculations: u64,
+    /// Average distance calculations per search.
     pub avg_distances_per_search: f64,
+    /// Uptime in milliseconds.
     pub uptime_ms: u64,
 }
 

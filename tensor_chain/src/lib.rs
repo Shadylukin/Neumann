@@ -85,8 +85,8 @@ pub use cluster::{
     PeerConfig as ClusterPeerConfig,
 };
 pub use codebook::{
-    CodebookConfig, CodebookEntry, CodebookManager, GlobalCodebook, HierarchicalQuantization,
-    LocalCodebook, LocalCodebookStats, PruningStrategy,
+    CodebookConfig, CodebookEntry, CodebookManager, GlobalCodebook, GlobalCodebookSnapshot,
+    HierarchicalQuantization, LocalCodebook, LocalCodebookStats, PruningStrategy,
 };
 pub use consensus::{
     BatchConflict, ConflictClass, ConflictResult, ConsensusConfig, ConsensusManager, DeltaVector,
@@ -124,10 +124,10 @@ pub use message_validation::{
 };
 pub use metrics::{TimingSnapshot, TimingStats};
 pub use network::{
-    AppendEntries, AppendEntriesResponse, BlockRequest, BlockResponse, ConfigChange,
-    DataMergeRequest, DataMergeResponse, GeometricTransport, JointConfig, LogEntry, LogEntryData,
-    MemoryTransport, MergeAck, MergeDeltaEntry, MergeFinalize, MergeInit, MergeOpType,
-    MergeViewExchange, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,
+    AppendEntries, AppendEntriesResponse, BlockRequest, BlockResponse, CodebookChange,
+    ConfigChange, DataMergeRequest, DataMergeResponse, GeometricTransport, JointConfig, LogEntry,
+    LogEntryData, MemoryTransport, MergeAck, MergeDeltaEntry, MergeFinalize, MergeInit,
+    MergeOpType, MergeViewExchange, Message, MessageHandler, NetworkManager, PeerConfig, PreVote,
     PreVoteResponse, QueryExecutor, QueryHandler, QueryRequest, QueryResponse,
     RaftMembershipConfig, RequestVote, RequestVoteResponse, SnapshotRequest, SnapshotResponse,
     TimeoutNow, Transport, TxAbortMsg, TxAckMsg, TxCommitMsg, TxHandler, TxPrepareMsg,

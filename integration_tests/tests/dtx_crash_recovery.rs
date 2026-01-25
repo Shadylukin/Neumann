@@ -223,7 +223,7 @@ fn test_participant_crash_after_prepare_recovery() {
 
     // Phase 1: Prepare transaction on participant
     let tx_id = {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 42,
@@ -270,7 +270,7 @@ fn test_participant_crash_expired_presumed_abort() {
 
     // Phase 1: Create a prepared transaction that will be old
     {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 100,
@@ -320,8 +320,8 @@ fn test_coordinator_and_participant_crash_recovery() {
     // Set up coordinator and participants
     let tx_id = {
         let coordinator = create_coordinator();
-        let participant0 = TxParticipant::new();
-        let participant1 = TxParticipant::new();
+        let participant0 = TxParticipant::new_in_memory();
+        let participant1 = TxParticipant::new_in_memory();
 
         let tx = coordinator
             .begin("coord1".to_string(), vec![0, 1])
@@ -453,7 +453,7 @@ fn test_persistence_survives_multiple_restarts() {
     // First session - create and prepare
     let tx_id = {
         let coordinator = create_coordinator();
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let tx = coordinator
             .begin("coord1".to_string(), vec![0])
@@ -566,6 +566,7 @@ fn test_participant_state_bincode_roundtrip() {
             }],
             delta: DeltaVector::new(vec![1.0], HashSet::new(), 1),
             prepared_at_ms: 1000,
+            undo_log: Vec::new(),
         },
     );
 
@@ -675,7 +676,7 @@ fn test_participant_timeout_presumed_abort_after_recovery() {
 
     // Phase 1: Create prepared transaction that has been waiting too long
     {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 500,
@@ -744,7 +745,7 @@ fn test_participant_recovery_awaits_recent_transactions() {
 
     // Phase 1: Create recently prepared transaction
     {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 600,
@@ -794,7 +795,7 @@ fn test_lock_cleanup_after_abort_recovery() {
 
     // Phase 1: Prepare transaction holding locks
     let tx_id = {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
 
         let request = PrepareRequest {
             tx_id: 700,
@@ -855,7 +856,7 @@ fn test_lock_cleanup_after_abort_recovery() {
 #[test]
 fn test_lock_cleanup_partial_abort() {
     // Test that only the aborted transaction's locks are released
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     // Prepare two transactions with different keys
     let request1 = PrepareRequest {

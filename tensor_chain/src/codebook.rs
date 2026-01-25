@@ -34,7 +34,7 @@ use tensor_store::{KMeans, KMeansConfig};
 use crate::error::{ChainError, Result};
 
 /// An entry in a codebook representing a valid state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodebookEntry {
     /// Unique identifier within the codebook.
     id: u32,
@@ -256,6 +256,62 @@ impl GlobalCodebook {
 
     pub fn iter(&self) -> impl Iterator<Item = &CodebookEntry> {
         self.entries.iter()
+    }
+
+    /// Create a serializable snapshot for Raft replication.
+    pub fn to_snapshot(&self, version: u64) -> GlobalCodebookSnapshot {
+        GlobalCodebookSnapshot {
+            dimension: self.dimension,
+            entries: self.entries.clone(),
+            version,
+        }
+    }
+
+    /// Restore from a snapshot received via Raft.
+    pub fn from_snapshot(snapshot: GlobalCodebookSnapshot) -> Self {
+        Self {
+            dimension: snapshot.dimension,
+            entries: snapshot.entries,
+        }
+    }
+}
+
+/// Serializable snapshot of GlobalCodebook for Raft replication.
+///
+/// This struct captures the complete state of a `GlobalCodebook` at a specific
+/// version, allowing it to be replicated through Raft consensus to ensure all
+/// nodes have consistent quantization vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GlobalCodebookSnapshot {
+    /// Vector dimension for all entries.
+    pub dimension: usize,
+    /// Codebook entries (centroids).
+    pub entries: Vec<CodebookEntry>,
+    /// Version number for change tracking.
+    pub version: u64,
+}
+
+impl GlobalCodebookSnapshot {
+    pub fn new(dimension: usize, entries: Vec<CodebookEntry>, version: u64) -> Self {
+        Self {
+            dimension,
+            entries,
+            version,
+        }
+    }
+
+    pub fn empty(dimension: usize) -> Self {
+        Self {
+            dimension,
+            entries: Vec::new(),
+            version: 0,
+        }
+    }
+}
+
+impl Default for GlobalCodebookSnapshot {
+    fn default() -> Self {
+        Self::empty(0)
     }
 }
 
@@ -1237,5 +1293,95 @@ mod tests {
         // Verify it was persisted
         let locals = manager.locals.read();
         assert!(locals.contains_key("new_domain"));
+    }
+
+    // ========== GlobalCodebookSnapshot Tests ==========
+
+    #[test]
+    fn test_global_codebook_snapshot_roundtrip() {
+        let centroids = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let codebook = GlobalCodebook::from_centroids(centroids);
+
+        let snapshot = codebook.to_snapshot(42);
+        assert_eq!(snapshot.version, 42);
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.dimension, 2);
+
+        let restored = GlobalCodebook::from_snapshot(snapshot);
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.dimension(), 2);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_serde() {
+        let snapshot = GlobalCodebookSnapshot {
+            dimension: 4,
+            entries: vec![CodebookEntry::new(0, vec![1.0, 0.0, 0.0, 0.0])],
+            version: 1,
+        };
+
+        let bytes = bincode::serialize(&snapshot).unwrap();
+        let restored: GlobalCodebookSnapshot = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(restored.version, 1);
+        assert_eq!(restored.dimension, 4);
+        assert_eq!(restored.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_empty() {
+        let snapshot = GlobalCodebookSnapshot::empty(3);
+        assert_eq!(snapshot.dimension, 3);
+        assert!(snapshot.entries.is_empty());
+        assert_eq!(snapshot.version, 0);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_default() {
+        let snapshot = GlobalCodebookSnapshot::default();
+        assert_eq!(snapshot.dimension, 0);
+        assert!(snapshot.entries.is_empty());
+        assert_eq!(snapshot.version, 0);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_new() {
+        let entries = vec![
+            CodebookEntry::new(0, vec![1.0, 0.0]),
+            CodebookEntry::new(1, vec![0.0, 1.0]),
+        ];
+        let snapshot = GlobalCodebookSnapshot::new(2, entries.clone(), 5);
+        assert_eq!(snapshot.dimension, 2);
+        assert_eq!(snapshot.version, 5);
+        assert_eq!(snapshot.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_preserves_entry_data() {
+        let centroids = vec![vec![1.0, 2.0, 3.0]];
+        let codebook =
+            GlobalCodebook::from_centroids_with_labels(centroids, vec!["test_label".to_string()]);
+
+        let snapshot = codebook.to_snapshot(100);
+        assert_eq!(snapshot.entries[0].label(), Some("test_label"));
+
+        let restored = GlobalCodebook::from_snapshot(snapshot);
+        assert_eq!(restored.get(0).unwrap().label(), Some("test_label"));
+        assert_eq!(restored.get(0).unwrap().centroid(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_global_codebook_snapshot_equality() {
+        let snapshot1 =
+            GlobalCodebookSnapshot::new(2, vec![CodebookEntry::new(0, vec![1.0, 0.0])], 1);
+        let snapshot2 =
+            GlobalCodebookSnapshot::new(2, vec![CodebookEntry::new(0, vec![1.0, 0.0])], 1);
+        let snapshot3 = GlobalCodebookSnapshot::new(
+            2,
+            vec![CodebookEntry::new(0, vec![1.0, 0.0])],
+            2, // Different version
+        );
+
+        assert_eq!(snapshot1, snapshot2);
+        assert_ne!(snapshot1, snapshot3);
     }
 }

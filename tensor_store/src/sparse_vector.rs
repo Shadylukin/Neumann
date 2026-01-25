@@ -157,6 +157,7 @@ impl SparseVector {
         }
     }
 
+    /// Returns true if the index is within the vector dimension.
     #[inline]
     #[must_use]
     pub const fn in_bounds(&self, index: usize) -> bool {
@@ -180,6 +181,7 @@ impl SparseVector {
             .map_or(0.0, |i| self.values[i])
     }
 
+    /// Returns true if the position has an explicit non-zero value.
     #[inline]
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // Position indices stored as u32
@@ -891,6 +893,7 @@ pub struct SparseVectorBuilder {
 }
 
 impl SparseVectorBuilder {
+    /// Creates a new builder with the given dimension.
     #[must_use]
     pub const fn new(dimension: usize) -> Self {
         Self {
@@ -899,6 +902,7 @@ impl SparseVectorBuilder {
         }
     }
 
+    /// Creates a new builder with pre-allocated capacity.
     #[must_use]
     pub fn with_capacity(dimension: usize, capacity: usize) -> Self {
         Self {

@@ -26,6 +26,7 @@ use std::{
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::{
     blob_log::{BlobLog, BlobLogSnapshot},
@@ -165,6 +166,7 @@ impl SlabRouter {
     /// # Errors
     ///
     /// This function currently always succeeds but returns `Result` for API consistency.
+    #[instrument(skip(self, value), fields(key = %key))]
     pub fn put(&self, key: &str, value: TensorData) -> Result<(), SlabRouterError> {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
@@ -209,6 +211,7 @@ impl SlabRouter {
     /// # Errors
     ///
     /// Returns [`SlabRouterError::NotFound`] if the key does not exist.
+    #[instrument(skip(self), fields(key = %key))]
     pub fn get(&self, key: &str) -> Result<TensorData, SlabRouterError> {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
@@ -730,10 +733,15 @@ enum KeyClass {
 /// Errors from `SlabRouter` operations.
 #[derive(Debug, Clone)]
 pub enum SlabRouterError {
+    /// Key not found in any slab.
     NotFound(String),
+    /// Embedding operation failed.
     EmbeddingError(String),
+    /// Graph operation failed.
     GraphError(String),
+    /// Relational operation failed.
     RelationalError(String),
+    /// WAL operation failed.
     WalError(String),
 }
 
@@ -760,12 +768,19 @@ impl std::error::Error for SlabRouterError {}
 /// Serializable snapshot of all slab state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlabRouterSnapshot {
+    /// Entity index state.
     pub index: EntityIndexSnapshot,
+    /// Embedding slab state.
     pub embeddings: EmbeddingSlabSnapshot,
+    /// Graph tensor state.
     pub graph: GraphTensorSnapshot,
+    /// Relational tables state.
     pub relations: RelationalSlabSnapshot,
+    /// Metadata slab state.
     pub metadata: MetadataSlabSnapshot,
+    /// Cache ring state.
     pub cache: CacheRingSnapshot<TensorData>,
+    /// Blob log state.
     pub blobs: BlobLogSnapshot,
 }
 

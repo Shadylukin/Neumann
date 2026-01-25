@@ -34,7 +34,7 @@ fn test_coordinator_clear_state_success() {
 #[test]
 fn test_participant_clear_state_success() {
     let store = TensorStore::new();
-    let participant = TxParticipant::new();
+    let participant = TxParticipant::new_in_memory();
 
     // Save state
     participant.save_to_store("node1", 0, &store).unwrap();

@@ -19,6 +19,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::{
     delta_vector::{ArchetypeRegistry, DeltaVector},
@@ -41,7 +42,12 @@ pub enum EmbeddingStorageError {
     /// Generic reconstruction error.
     ReconstructionFailed(String),
     /// HNSW index at capacity.
-    CapacityExceeded { limit: usize, current: usize },
+    CapacityExceeded {
+        /// Maximum allowed nodes.
+        limit: usize,
+        /// Current node count.
+        current: usize,
+    },
     /// Delta vectors not supported in HNSW index (convert to Dense first).
     DeltaNotSupported,
 }
@@ -157,15 +163,17 @@ pub mod simd {
 ///
 /// `TensorTrain` storage uses Tensor Train decomposition for 8-10x compression
 /// of high-dimensional vectors (768+ dims) with <1% reconstruction error.
-/// TT vector with cached norm for fast distance computation.
+/// Tensor Train vector with cached norm for fast distance computation.
 #[derive(Debug, Clone)]
 pub struct TTVectorCached {
+    /// The underlying Tensor Train decomposition.
     pub tt: TTVector,
     /// Pre-computed norm (avoids O(r^4) recalculation per distance).
     pub norm: f32,
 }
 
 impl TTVectorCached {
+    /// Creates a new cached TT vector with pre-computed norm.
     #[must_use]
     pub fn new(tt: TTVector) -> Self {
         let norm = tt_norm(&tt);
@@ -173,6 +181,7 @@ impl TTVectorCached {
     }
 }
 
+/// Storage format for embeddings - supports dense, sparse, delta, or TT-compressed.
 #[derive(Debug, Clone)]
 pub enum EmbeddingStorage {
     /// Dense vector storage (traditional)
@@ -186,6 +195,7 @@ pub enum EmbeddingStorage {
 }
 
 impl EmbeddingStorage {
+    /// Returns the vector dimension.
     #[must_use]
     pub const fn dimension(&self) -> usize {
         match self {
@@ -255,6 +265,7 @@ impl EmbeddingStorage {
         }
     }
 
+    /// Returns the underlying dense vector if stored as dense.
     #[must_use]
     pub fn as_dense(&self) -> Option<&[f32]> {
         match self {
@@ -263,6 +274,7 @@ impl EmbeddingStorage {
         }
     }
 
+    /// Returns the underlying sparse vector if stored as sparse.
     #[must_use]
     pub const fn as_sparse(&self) -> Option<&SparseVector> {
         match self {
@@ -271,6 +283,7 @@ impl EmbeddingStorage {
         }
     }
 
+    /// Returns the underlying delta vector if stored as delta.
     #[must_use]
     pub const fn as_delta(&self) -> Option<&DeltaVector> {
         match self {
@@ -279,6 +292,7 @@ impl EmbeddingStorage {
         }
     }
 
+    /// Returns the underlying TT vector if stored as Tensor Train.
     #[must_use]
     pub const fn as_tt(&self) -> Option<&TTVector> {
         match self {
@@ -287,16 +301,19 @@ impl EmbeddingStorage {
         }
     }
 
+    /// Returns true if stored in sparse format.
     #[must_use]
     pub const fn is_sparse(&self) -> bool {
         matches!(self, Self::Sparse(_))
     }
 
+    /// Returns true if stored in delta format.
     #[must_use]
     pub const fn is_delta(&self) -> bool {
         matches!(self, Self::Delta(_))
     }
 
+    /// Returns true if stored in Tensor Train format.
     #[must_use]
     pub const fn is_tt(&self) -> bool {
         matches!(self, Self::TensorTrain(_))
@@ -855,16 +872,20 @@ impl HNSWIndex {
         }
     }
 
+    /// Returns true if access instrumentation is enabled.
     #[must_use]
     pub const fn has_instrumentation(&self) -> bool {
         self.access_stats.is_some()
     }
 
+    /// Returns access statistics snapshot if instrumentation is enabled.
     #[must_use]
     pub fn access_stats(&self) -> Option<crate::instrumentation::HNSWStatsSnapshot> {
         self.access_stats.as_ref().map(|s| s.snapshot())
     }
 
+    /// Returns the number of nodes in the index.
+    ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned.
@@ -873,6 +894,7 @@ impl HNSWIndex {
         self.nodes.read().unwrap().len()
     }
 
+    /// Returns true if the index contains no nodes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -902,6 +924,7 @@ impl HNSWIndex {
     }
 
     /// Insert a vector into the index. Returns the assigned node ID.
+    #[instrument(skip(self, vector), fields(dim = vector.len()))]
     pub fn insert(&self, vector: Vec<f32>) -> usize {
         self.insert_embedding(EmbeddingStorage::Dense(vector))
     }
@@ -1268,6 +1291,7 @@ impl HNSWIndex {
     }
 
     /// Search for k nearest neighbors of the query vector.
+    #[instrument(skip(self, query), fields(k = k))]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(usize, f32)> {
         self.search_with_ef(query, k, self.config.ef_search)
     }

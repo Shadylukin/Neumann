@@ -118,6 +118,7 @@ impl PartitionedStore {
         }
     }
 
+    /// Returns the partition assignment for a key.
     #[must_use]
     pub fn partition_for(&self, key: &str) -> Option<PartitionResult> {
         self.partitioner.as_ref().map(|p| p.partition(key))
@@ -251,6 +252,7 @@ impl PartitionedStore {
         }
     }
 
+    /// Returns the count of local keys only.
     #[must_use]
     pub fn local_count(&self) -> usize {
         self.partitioner.as_ref().map_or_else(
@@ -283,11 +285,13 @@ impl PartitionedStore {
         self.partitioner.as_ref()
     }
 
+    /// Returns the local node ID if partitioning is configured.
     #[must_use]
     pub fn local_node(&self) -> Option<&PhysicalNodeId> {
         self.partitioner.as_ref().map(|p| p.local_node())
     }
 
+    /// Returns all nodes in the partition scheme.
     #[must_use]
     pub fn nodes(&self) -> Vec<PhysicalNodeId> {
         self.partitioner

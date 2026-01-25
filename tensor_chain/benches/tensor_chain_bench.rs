@@ -1187,7 +1187,7 @@ fn bench_2pc_operations(c: &mut Criterion) {
     // Benchmark participant creation
     group.bench_function("participant_create", |b| {
         b.iter(|| {
-            let participant = TxParticipant::new();
+            let participant = TxParticipant::new_in_memory();
             black_box(participant)
         })
     });

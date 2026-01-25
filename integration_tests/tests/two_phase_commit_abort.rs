@@ -18,7 +18,7 @@ fn create_test_coordinator() -> DistributedTxCoordinator {
 }
 
 fn create_test_participant() -> TxParticipant {
-    TxParticipant::new()
+    TxParticipant::new_in_memory()
 }
 
 #[test]

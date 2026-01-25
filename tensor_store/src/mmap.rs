@@ -1,3 +1,25 @@
+//! Memory-mapped cold storage for tensor data.
+//!
+//! Provides persistent, memory-efficient storage using OS-level
+//! memory mapping. Data is stored in a binary format with optional
+//! Zstd compression.
+//!
+//! # Design
+//!
+//! - **Zero-copy reads**: OS pages data directly into process memory
+//! - **Lazy loading**: Only accessed pages are loaded from disk
+//! - **Compression**: Optional Zstd compression (V2 format) for 2-4x savings
+//!
+//! # Types
+//!
+//! - [`MmapStore`]: Read-only memory-mapped storage
+//! - [`MmapStoreMut`]: Read-write memory-mapped storage
+//! - [`MmapStoreBuilder`]: Builder for creating mmap store files
+//!
+//! # Errors
+//!
+//! Operations return [`MmapError`] for I/O or format issues.
+
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
@@ -6,20 +28,29 @@ use std::{
 };
 
 use memmap2::{Mmap, MmapMut};
+use tracing::instrument;
 
 use crate::TensorData;
 
 const MAGIC: &[u8; 4] = b"MMAP";
-const VERSION: u32 = 1;
+const VERSION_UNCOMPRESSED: u32 = 1;
+const VERSION_COMPRESSED: u32 = 2;
 const HEADER_SIZE: usize = 16;
 
+/// Errors from mmap storage operations.
 #[derive(Debug)]
 pub enum MmapError {
+    /// I/O error.
     Io(io::Error),
+    /// Invalid file magic bytes.
     InvalidMagic,
+    /// Unsupported format version.
     UnsupportedVersion(u32),
+    /// Serialization/deserialization error.
     Serialization(String),
+    /// Key not found.
     NotFound(String),
+    /// File is empty.
     EmptyFile,
 }
 
@@ -50,6 +81,7 @@ impl From<bincode::Error> for MmapError {
     }
 }
 
+/// Result type for mmap storage operations.
 pub type Result<T> = std::result::Result<T, MmapError>;
 
 /// Entry location in the memory-mapped file.
@@ -65,19 +97,20 @@ struct EntryLocation {
 /// ```text
 /// [Header: 16 bytes]
 ///   Magic: 4 bytes "MMAP"
-///   Version: 4 bytes (little-endian u32)
+///   Version: 4 bytes (little-endian u32, 1=uncompressed, 2=compressed)
 ///   Entry count: 8 bytes (little-endian u64)
 ///
 /// [Entries: variable]
 ///   Key length: 4 bytes (little-endian u32)
 ///   Key: variable bytes (UTF-8)
 ///   Data length: 4 bytes (little-endian u32)
-///   Data: variable bytes (bincode-serialized TensorData)
+///   Data: variable bytes (bincode-serialized TensorData, Zstd-compressed for V2)
 /// ```
 pub struct MmapStore {
     mmap: Mmap,
     index: HashMap<String, EntryLocation>,
     entry_count: u64,
+    version: u32,
 }
 
 impl MmapStore {
@@ -90,8 +123,9 @@ impl MmapStore {
     /// # Panics
     ///
     /// Panics if the file header is malformed.
+    #[instrument(fields(path = %path.as_ref().display()))]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let metadata = file.metadata()?;
         if metadata.len() == 0 {
             return Err(MmapError::EmptyFile);
@@ -109,7 +143,7 @@ impl MmapStore {
         }
 
         let version = u32::from_le_bytes(mmap[4..8].try_into().unwrap());
-        if version != VERSION {
+        if version != VERSION_UNCOMPRESSED && version != VERSION_COMPRESSED {
             return Err(MmapError::UnsupportedVersion(version));
         }
 
@@ -158,6 +192,7 @@ impl MmapStore {
             mmap,
             index,
             entry_count,
+            version,
         })
     }
 
@@ -173,7 +208,15 @@ impl MmapStore {
             .ok_or_else(|| MmapError::NotFound(key.to_string()))?;
 
         let data = &self.mmap[loc.data_offset..loc.data_offset + loc.data_len];
-        let tensor: TensorData = bincode::deserialize(data)?;
+
+        let tensor: TensorData = if self.version == VERSION_COMPRESSED {
+            let decompressed = zstd::decode_all(data)
+                .map_err(|e| MmapError::Serialization(format!("Zstd decompression failed: {e}")))?;
+            bincode::deserialize(&decompressed)?
+        } else {
+            bincode::deserialize(data)?
+        };
+
         Ok(tensor)
     }
 
@@ -213,15 +256,37 @@ pub struct MmapStoreBuilder {
     file: File,
     entry_count: u64,
     current_offset: u64,
+    compress: bool,
 }
 
+/// Default Zstd compression level (3 = fast with reasonable ratio).
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
+
 impl MmapStoreBuilder {
-    /// Create a new mmap store file.
+    /// Create a new mmap store file (uncompressed V1 format).
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be created or the header cannot be written.
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::create_with_compression(path, false)
+    }
+
+    /// Create a new compressed mmap store file (V2 format with Zstd).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be created or the header cannot be written.
+    pub fn create_compressed<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::create_with_compression(path, true)
+    }
+
+    /// Create a new mmap store file with optional compression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be created or the header cannot be written.
+    fn create_with_compression<P: AsRef<Path>>(path: P, compress: bool) -> Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -229,15 +294,22 @@ impl MmapStoreBuilder {
             .truncate(true)
             .open(path)?;
 
+        let version = if compress {
+            VERSION_COMPRESSED
+        } else {
+            VERSION_UNCOMPRESSED
+        };
+
         // Write header with placeholder count
         file.write_all(MAGIC)?;
-        file.write_all(&VERSION.to_le_bytes())?;
+        file.write_all(&version.to_le_bytes())?;
         file.write_all(&0u64.to_le_bytes())?;
 
         Ok(Self {
             file,
             entry_count: 0,
             current_offset: HEADER_SIZE as u64,
+            compress,
         })
     }
 
@@ -249,7 +321,14 @@ impl MmapStoreBuilder {
     #[allow(clippy::cast_possible_truncation)] // Keys and data won't exceed 4GB
     pub fn add(&mut self, key: &str, tensor: &TensorData) -> Result<()> {
         let key_bytes = key.as_bytes();
-        let data = bincode::serialize(tensor)?;
+        let serialized = bincode::serialize(tensor)?;
+
+        let data = if self.compress {
+            zstd::encode_all(&serialized[..], ZSTD_COMPRESSION_LEVEL)
+                .map_err(|e| MmapError::Serialization(format!("Zstd compression failed: {e}")))?
+        } else {
+            serialized
+        };
 
         // Write key length + key
         self.file
@@ -266,11 +345,18 @@ impl MmapStoreBuilder {
         Ok(())
     }
 
+    /// Check if compression is enabled.
+    #[must_use]
+    pub const fn is_compressed(&self) -> bool {
+        self.compress
+    }
+
     /// Finalize the store and return the file size.
     ///
     /// # Errors
     ///
     /// Returns an error if the header cannot be updated or the file cannot be flushed.
+    #[instrument(skip(self), fields(entry_count = self.entry_count, compressed = self.compress))]
     pub fn finish(mut self) -> Result<u64> {
         // Update entry count in header
         self.file.seek(SeekFrom::Start(8))?;
@@ -313,9 +399,9 @@ impl MmapStoreMut {
 
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
-        // Write header
+        // Write header (V1 uncompressed format for mutable stores)
         mmap[0..4].copy_from_slice(MAGIC);
-        mmap[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        mmap[4..8].copy_from_slice(&VERSION_UNCOMPRESSED.to_le_bytes());
         mmap[8..16].copy_from_slice(&0u64.to_le_bytes());
 
         Ok(Self {
@@ -357,8 +443,9 @@ impl MmapStoreMut {
             return Err(MmapError::InvalidMagic);
         }
 
+        // MmapStoreMut only supports V1 (uncompressed) since it needs direct memory access
         let version = u32::from_le_bytes(mmap[4..8].try_into().unwrap());
-        if version != VERSION {
+        if version != VERSION_UNCOMPRESSED {
             return Err(MmapError::UnsupportedVersion(version));
         }
 
@@ -1146,5 +1233,131 @@ mod tests {
                 _ => panic!("Expected Serialization variant"),
             }
         }
+    }
+
+    #[test]
+    fn test_mmap_store_compressed_roundtrip() {
+        let path = "/tmp/test_mmap_compressed.bin";
+        let _ = fs::remove_file(path);
+
+        // Create compressed store
+        {
+            let mut builder = MmapStoreBuilder::create_compressed(path).unwrap();
+            assert!(builder.is_compressed());
+
+            for i in 0..10 {
+                let tensor = create_test_tensor(i);
+                builder.add(&format!("key_{}", i), &tensor).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+
+        // Read back and verify
+        {
+            let store = MmapStore::open(path).unwrap();
+            assert_eq!(store.len(), 10);
+            assert_eq!(store.version, VERSION_COMPRESSED);
+
+            for i in 0..10 {
+                let tensor = store.get(&format!("key_{}", i)).unwrap();
+                match tensor.get("id") {
+                    Some(TensorValue::Scalar(ScalarValue::Int(id))) => {
+                        assert_eq!(*id, i);
+                    },
+                    _ => panic!("Expected int id"),
+                }
+            }
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_mmap_store_uncompressed_vs_compressed_size() {
+        let uncompressed_path = "/tmp/test_mmap_uncompressed_size.bin";
+        let compressed_path = "/tmp/test_mmap_compressed_size.bin";
+        let _ = fs::remove_file(uncompressed_path);
+        let _ = fs::remove_file(compressed_path);
+
+        // Create tensor with repetitive data (compresses well)
+        let mut tensor = TensorData::new();
+        tensor.set("embedding", TensorValue::Vector(vec![0.5; 1024]));
+
+        // Create uncompressed store
+        let uncompressed_size = {
+            let mut builder = MmapStoreBuilder::create(uncompressed_path).unwrap();
+            for i in 0..50 {
+                builder.add(&format!("key_{}", i), &tensor).unwrap();
+            }
+            builder.finish().unwrap()
+        };
+
+        // Create compressed store
+        let compressed_size = {
+            let mut builder = MmapStoreBuilder::create_compressed(compressed_path).unwrap();
+            for i in 0..50 {
+                builder.add(&format!("key_{}", i), &tensor).unwrap();
+            }
+            builder.finish().unwrap()
+        };
+
+        // Compressed should be smaller for repetitive data
+        assert!(
+            compressed_size < uncompressed_size,
+            "Compressed size {} should be less than uncompressed size {}",
+            compressed_size,
+            uncompressed_size
+        );
+
+        // Verify both read correctly
+        let uncompressed_store = MmapStore::open(uncompressed_path).unwrap();
+        let compressed_store = MmapStore::open(compressed_path).unwrap();
+
+        assert_eq!(uncompressed_store.len(), 50);
+        assert_eq!(compressed_store.len(), 50);
+
+        // Both should return same data
+        for i in 0..50 {
+            let key = format!("key_{}", i);
+            let t1 = uncompressed_store.get(&key).unwrap();
+            let t2 = compressed_store.get(&key).unwrap();
+
+            match (t1.get("embedding"), t2.get("embedding")) {
+                (Some(TensorValue::Vector(v1)), Some(TensorValue::Vector(v2))) => {
+                    assert_eq!(v1.len(), v2.len());
+                    assert_eq!(v1, v2);
+                },
+                _ => panic!("Expected vectors"),
+            }
+        }
+
+        let _ = fs::remove_file(uncompressed_path);
+        let _ = fs::remove_file(compressed_path);
+    }
+
+    #[test]
+    fn test_mmap_store_mut_rejects_compressed() {
+        let path = "/tmp/test_mmap_mut_reject_compressed.bin";
+        let _ = fs::remove_file(path);
+
+        // Create compressed store
+        {
+            let mut builder = MmapStoreBuilder::create_compressed(path).unwrap();
+            let tensor = create_test_tensor(1);
+            builder.add("key_1", &tensor).unwrap();
+            builder.finish().unwrap();
+        }
+
+        // MmapStoreMut should reject compressed stores
+        let result = MmapStoreMut::open(path);
+        assert!(
+            matches!(
+                result,
+                Err(MmapError::UnsupportedVersion(VERSION_COMPRESSED))
+            ),
+            "MmapStoreMut should reject compressed V2 files"
+        );
+
+        let _ = fs::remove_file(path);
     }
 }

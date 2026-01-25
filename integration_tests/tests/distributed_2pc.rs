@@ -174,7 +174,7 @@ fn test_2pc_abort_on_no_vote() {
 
 #[test]
 fn test_tx_handler_prepare_commit_flow() {
-    let participant = Arc::new(TxParticipant::new());
+    let participant = Arc::new(TxParticipant::new_in_memory());
     let handler = TxHandler::new(participant.clone());
 
     // Prepare message
@@ -220,7 +220,7 @@ fn test_tx_handler_prepare_commit_flow() {
 
 #[test]
 fn test_tx_handler_prepare_abort_flow() {
-    let participant = Arc::new(TxParticipant::new());
+    let participant = Arc::new(TxParticipant::new_in_memory());
     let handler = TxHandler::new(participant.clone());
 
     // Prepare
@@ -259,7 +259,7 @@ fn test_tx_handler_prepare_abort_flow() {
 
 #[test]
 fn test_tx_participant_lock_conflict() {
-    let participant = Arc::new(TxParticipant::new());
+    let participant = Arc::new(TxParticipant::new_in_memory());
     let handler = TxHandler::new(participant.clone());
 
     // First prepare succeeds

@@ -40,7 +40,7 @@ fuzz_target!(|input: FuzzInput| {
 
     // Test participant clear
     if input.save_first {
-        let participant = TxParticipant::new();
+        let participant = TxParticipant::new_in_memory();
         let _ = participant.save_to_store(&input.node_id, input.shard_id, &store);
     }
 

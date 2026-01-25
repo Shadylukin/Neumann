@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc, thread, time::Duration};
 
 use graph_engine::{GraphEngine, PropertyValue};
 use tensor_store::TensorStore;
-use tensor_vault::{Permission, Vault, VaultConfig};
+use tensor_vault::{AuditOperation, Permission, Vault, VaultConfig};
 
 #[test]
 fn test_vault_grant_access() {
@@ -205,18 +205,30 @@ fn test_vault_audit_logging() {
     vault.get(Vault::ROOT, "audit/secret1").unwrap();
     vault.get(Vault::ROOT, "audit/secret2").unwrap();
 
-    // Check audit log
-    let recent_logs = vault.audit_recent(10);
+    // Check audit log using the key-based query (handles obfuscation internally)
+    let secret1_logs = vault.audit_log("audit/secret1");
+    let secret2_logs = vault.audit_log("audit/secret2");
 
-    // Should have logged the operations
-    assert!(!recent_logs.is_empty());
-
-    // Logs should include our operations
-    let log_str = format!("{:?}", recent_logs);
+    // Should have logged the operations for each secret
     assert!(
-        log_str.contains("audit/secret1") || log_str.contains("secret1"),
-        "Audit log should contain accessed secrets"
+        !secret1_logs.is_empty(),
+        "Audit log should contain entries for secret1"
     );
+    assert!(
+        !secret2_logs.is_empty(),
+        "Audit log should contain entries for secret2"
+    );
+
+    // Verify we have both Set and Get operations logged
+    let has_set = secret1_logs
+        .iter()
+        .any(|e| matches!(e.operation, AuditOperation::Set));
+    let has_get = secret1_logs
+        .iter()
+        .any(|e| matches!(e.operation, AuditOperation::Get));
+
+    assert!(has_set, "Audit log should contain Set operation");
+    assert!(has_get, "Audit log should contain Get operation");
 }
 
 #[test]
