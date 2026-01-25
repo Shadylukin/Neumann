@@ -2269,6 +2269,48 @@ impl GraphEngine {
         Ok(out + in_)
     }
 
+    /// Returns all nodes in the graph, sorted by ID.
+    ///
+    /// Equivalent to Neo4j's `MATCH (n) RETURN n`.
+    pub fn all_nodes(&self) -> Vec<Node> {
+        let mut nodes = Vec::new();
+        for key in self.store.scan("node:") {
+            // Skip edge list keys (node:N:out, node:N:in)
+            let Some(suffix) = key.strip_prefix("node:") else {
+                continue;
+            };
+            if suffix.contains(':') {
+                continue;
+            }
+            if let Ok(id) = suffix.parse::<u64>() {
+                if let Ok(node) = self.get_node(id) {
+                    nodes.push(node);
+                }
+            }
+        }
+        nodes.sort_by_key(|n| n.id);
+        nodes
+    }
+
+    /// Returns all edges in the graph, sorted by ID.
+    ///
+    /// Equivalent to Neo4j's `MATCH ()-[r]->() RETURN r`.
+    pub fn all_edges(&self) -> Vec<Edge> {
+        let mut edges = Vec::new();
+        for key in self.store.scan("edge:") {
+            let Some(id_str) = key.strip_prefix("edge:") else {
+                continue;
+            };
+            if let Ok(id) = id_str.parse::<u64>() {
+                if let Ok(edge) = self.get_edge(id) {
+                    edges.push(edge);
+                }
+            }
+        }
+        edges.sort_by_key(|e| e.id);
+        edges
+    }
+
     #[instrument(skip(self, filter), fields(node_id = node_id))]
     pub fn neighbors(
         &self,
@@ -8680,5 +8722,267 @@ mod tests {
 
         // Total degree for n1: 3 outgoing + 1 incoming = 4
         assert_eq!(engine.degree(n1).unwrap(), 4);
+    }
+
+    #[test]
+    fn all_nodes_empty_graph() {
+        let engine = GraphEngine::new();
+        let nodes = engine.all_nodes();
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn all_edges_empty_graph() {
+        let engine = GraphEngine::new();
+        let edges = engine.all_edges();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn all_nodes_returns_all() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Company", HashMap::new()).unwrap();
+
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), 3);
+
+        let ids: Vec<u64> = nodes.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&n1));
+        assert!(ids.contains(&n2));
+        assert!(ids.contains(&n3));
+    }
+
+    #[test]
+    fn all_edges_returns_all() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let e1 = engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        let e2 = engine
+            .create_edge(n2, n3, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 2);
+
+        let ids: Vec<u64> = edges.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&e1));
+        assert!(ids.contains(&e2));
+    }
+
+    #[test]
+    fn all_nodes_sorted_by_id() {
+        let engine = GraphEngine::new();
+
+        // Create nodes in various order
+        let _n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let _n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let _n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), 3);
+
+        // Verify sorted by ID
+        for i in 1..nodes.len() {
+            assert!(nodes[i - 1].id < nodes[i].id);
+        }
+    }
+
+    #[test]
+    fn all_edges_sorted_by_id() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let _e1 = engine
+            .create_edge(n1, n2, "R1", HashMap::new(), true)
+            .unwrap();
+        let _e2 = engine
+            .create_edge(n2, n3, "R2", HashMap::new(), true)
+            .unwrap();
+        let _e3 = engine
+            .create_edge(n1, n3, "R3", HashMap::new(), true)
+            .unwrap();
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 3);
+
+        // Verify sorted by ID
+        for i in 1..edges.len() {
+            assert!(edges[i - 1].id < edges[i].id);
+        }
+    }
+
+    #[test]
+    fn all_nodes_after_deletion() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        engine.delete_node(n2).unwrap();
+
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), 2);
+
+        let ids: Vec<u64> = nodes.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&n1));
+        assert!(!ids.contains(&n2));
+        assert!(ids.contains(&n3));
+    }
+
+    #[test]
+    fn all_edges_after_deletion() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+        let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+        let e1 = engine
+            .create_edge(n1, n2, "R1", HashMap::new(), true)
+            .unwrap();
+        let e2 = engine
+            .create_edge(n2, n3, "R2", HashMap::new(), true)
+            .unwrap();
+        let e3 = engine
+            .create_edge(n1, n3, "R3", HashMap::new(), true)
+            .unwrap();
+
+        engine.delete_edge(e2).unwrap();
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 2);
+
+        let ids: Vec<u64> = edges.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&e1));
+        assert!(!ids.contains(&e2));
+        assert!(ids.contains(&e3));
+    }
+
+    #[test]
+    fn all_nodes_includes_properties() {
+        let engine = GraphEngine::new();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "name".to_string(),
+            PropertyValue::String("Alice".to_string()),
+        );
+        props.insert("age".to_string(), PropertyValue::Int(30));
+
+        let n1 = engine.create_node("Person", props).unwrap();
+
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, n1);
+        assert!(nodes[0].has_label("Person"));
+        assert_eq!(
+            nodes[0].properties.get("name"),
+            Some(&PropertyValue::String("Alice".to_string()))
+        );
+        assert_eq!(
+            nodes[0].properties.get("age"),
+            Some(&PropertyValue::Int(30))
+        );
+    }
+
+    #[test]
+    fn all_edges_includes_properties() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("since".to_string(), PropertyValue::Int(2020));
+        props.insert(
+            "status".to_string(),
+            PropertyValue::String("active".to_string()),
+        );
+
+        let e1 = engine.create_edge(n1, n2, "KNOWS", props, true).unwrap();
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].id, e1);
+        assert_eq!(edges[0].edge_type, "KNOWS");
+        assert_eq!(edges[0].from, n1);
+        assert_eq!(edges[0].to, n2);
+        assert_eq!(
+            edges[0].properties.get("since"),
+            Some(&PropertyValue::Int(2020))
+        );
+        assert_eq!(
+            edges[0].properties.get("status"),
+            Some(&PropertyValue::String("active".to_string()))
+        );
+    }
+
+    #[test]
+    fn all_edges_includes_directed_and_undirected() {
+        let engine = GraphEngine::new();
+
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        // Create directed edge
+        let e1 = engine
+            .create_edge(n1, n2, "DIRECTED", HashMap::new(), true)
+            .unwrap();
+
+        // Create undirected edge
+        let e2 = engine
+            .create_edge(n1, n2, "UNDIRECTED", HashMap::new(), false)
+            .unwrap();
+
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 2);
+
+        let directed = edges.iter().find(|e| e.id == e1).unwrap();
+        assert!(directed.directed);
+
+        let undirected = edges.iter().find(|e| e.id == e2).unwrap();
+        assert!(!undirected.directed);
+    }
+
+    #[test]
+    fn all_nodes_large_graph() {
+        let engine = GraphEngine::new();
+
+        let count = 1000;
+        let mut created_ids = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let mut props = HashMap::new();
+            props.insert("index".to_string(), PropertyValue::Int(i as i64));
+            let id = engine.create_node("Node", props).unwrap();
+            created_ids.push(id);
+        }
+
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), count);
+
+        // Verify all created nodes are present
+        let node_ids: std::collections::HashSet<u64> = nodes.iter().map(|n| n.id).collect();
+        for id in &created_ids {
+            assert!(node_ids.contains(id));
+        }
+
+        // Verify sorted
+        for i in 1..nodes.len() {
+            assert!(nodes[i - 1].id < nodes[i].id);
+        }
     }
 }

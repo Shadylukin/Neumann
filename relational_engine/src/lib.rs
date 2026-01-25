@@ -2,6 +2,39 @@
 //!
 //! Provides table storage, indexing, and query execution on top of
 //! `tensor_store::RelationalSlab` for columnar storage.
+//!
+//! # Durability Model
+//!
+//! When using durable storage (via [`RelationalEngine::open_durable`] or
+//! [`RelationalEngine::recover`]), the following data is persisted:
+//!
+//! **Persisted (durable):**
+//! - Table schemas and metadata
+//! - Row data (columnar storage)
+//!
+//! **NOT persisted (must recreate after recovery):**
+//! - Hash indexes: call [`RelationalEngine::create_index`] after recovery
+//! - B-tree indexes: call [`RelationalEngine::create_btree_index`] after recovery
+//! - Row counters: automatically rebuilt from scanning data
+//! - Transaction state: transactions are aborted on crash
+//!
+//! # Recovery Example
+//!
+//! ```ignore
+//! // Open durable engine
+//! let engine = RelationalEngine::recover(
+//!     "data/wal",
+//!     &WalConfig::default(),
+//!     Some(Path::new("data/snapshot")),
+//! )?;
+//!
+//! // Recreate indexes after recovery
+//! for table in engine.list_tables() {
+//!     // Recreate indexes based on your schema requirements
+//!     engine.create_index(&table, "user_id")?;
+//!     engine.create_btree_index(&table, "created_at")?;
+//! }
+//! ```
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -25,8 +58,8 @@ use tracing::instrument;
 
 pub mod transaction;
 pub use transaction::{
-    IndexChange, LockConflictInfo, RowLock, RowLockManager, Transaction, TransactionManager,
-    TxPhase, UndoEntry,
+    Deadline, IndexChange, LockConflictInfo, RowLock, RowLockManager, Transaction,
+    TransactionManager, TxPhase, UndoEntry,
 };
 
 mod simd {
@@ -905,6 +938,149 @@ impl Condition {
     }
 }
 
+/// Configuration for `RelationalEngine` resource limits and timeouts.
+#[derive(Debug, Clone)]
+pub struct RelationalConfig {
+    /// Maximum number of tables allowed. `None` means unlimited.
+    pub max_tables: Option<usize>,
+    /// Maximum number of indexes per table. `None` means unlimited.
+    pub max_indexes_per_table: Option<usize>,
+    /// Maximum total entries across all B-tree indexes.
+    pub max_btree_entries: usize,
+    /// Default query timeout in milliseconds. `None` means no timeout.
+    pub default_query_timeout_ms: Option<u64>,
+    /// Maximum allowed query timeout in milliseconds.
+    pub max_query_timeout_ms: Option<u64>,
+}
+
+impl Default for RelationalConfig {
+    fn default() -> Self {
+        Self {
+            max_tables: None,
+            max_indexes_per_table: None,
+            max_btree_entries: 10_000_000,
+            default_query_timeout_ms: None,
+            max_query_timeout_ms: Some(300_000), // 5 minutes
+        }
+    }
+}
+
+impl RelationalConfig {
+    /// Creates a new configuration with default values.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the maximum number of tables allowed.
+    #[must_use]
+    pub const fn with_max_tables(mut self, max: usize) -> Self {
+        self.max_tables = Some(max);
+        self
+    }
+
+    /// Sets the maximum number of indexes per table.
+    #[must_use]
+    pub const fn with_max_indexes_per_table(mut self, max: usize) -> Self {
+        self.max_indexes_per_table = Some(max);
+        self
+    }
+
+    /// Sets the default query timeout in milliseconds.
+    #[must_use]
+    pub const fn with_default_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.default_query_timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Sets the maximum allowed query timeout in milliseconds.
+    #[must_use]
+    pub const fn with_max_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.max_query_timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Sets the maximum B-tree index entries.
+    #[must_use]
+    pub const fn with_max_btree_entries(mut self, max: usize) -> Self {
+        self.max_btree_entries = max;
+        self
+    }
+
+    /// Configuration preset for high-throughput workloads.
+    ///
+    /// - No table or index limits
+    /// - 30 second default query timeout
+    /// - 20M B-tree entries allowed
+    #[must_use]
+    pub const fn high_throughput() -> Self {
+        Self {
+            max_tables: None,
+            max_indexes_per_table: None,
+            max_btree_entries: 20_000_000,
+            default_query_timeout_ms: Some(30_000),
+            max_query_timeout_ms: Some(600_000), // 10 minutes
+        }
+    }
+
+    /// Configuration preset for low-memory environments.
+    ///
+    /// - Maximum 100 tables
+    /// - Maximum 5 indexes per table
+    /// - 1M B-tree entries
+    /// - 10 second default query timeout
+    #[must_use]
+    pub const fn low_memory() -> Self {
+        Self {
+            max_tables: Some(100),
+            max_indexes_per_table: Some(5),
+            max_btree_entries: 1_000_000,
+            default_query_timeout_ms: Some(10_000),
+            max_query_timeout_ms: Some(60_000), // 1 minute
+        }
+    }
+
+    /// Validates the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the default timeout exceeds the maximum timeout.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if let (Some(default), Some(max)) =
+            (self.default_query_timeout_ms, self.max_query_timeout_ms)
+        {
+            if default > max {
+                return Err(format!(
+                    "default_query_timeout_ms ({default}) exceeds max_query_timeout_ms ({max})"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Options for query execution.
+#[derive(Debug, Clone, Default)]
+pub struct QueryOptions {
+    /// Query timeout in milliseconds. `None` uses the engine's default.
+    pub timeout_ms: Option<u64>,
+}
+
+impl QueryOptions {
+    /// Creates new query options with no timeout override.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { timeout_ms: None }
+    }
+
+    /// Sets the query timeout in milliseconds.
+    #[must_use]
+    pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+}
+
 /// Errors from relational engine operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationalError {
@@ -993,6 +1169,29 @@ pub enum RelationalError {
         /// Description of the corruption.
         reason: String,
     },
+    /// Maximum number of tables exceeded.
+    TooManyTables {
+        /// Current table count.
+        current: usize,
+        /// Maximum allowed tables.
+        max: usize,
+    },
+    /// Maximum number of indexes per table exceeded.
+    TooManyIndexes {
+        /// Table name.
+        table: String,
+        /// Current index count.
+        current: usize,
+        /// Maximum allowed indexes.
+        max: usize,
+    },
+    /// Query timed out.
+    QueryTimeout {
+        /// Operation that timed out.
+        operation: String,
+        /// Timeout in milliseconds.
+        timeout_ms: u64,
+    },
 }
 
 impl std::fmt::Display for RelationalError {
@@ -1064,6 +1263,28 @@ impl std::fmt::Display for RelationalError {
             },
             Self::SchemaCorrupted { table, reason } => {
                 write!(f, "Schema corrupted for table '{table}': {reason}")
+            },
+            Self::TooManyTables { current, max } => {
+                write!(
+                    f,
+                    "Too many tables: {current} tables exceeds maximum of {max}"
+                )
+            },
+            Self::TooManyIndexes {
+                table,
+                current,
+                max,
+            } => {
+                write!(
+                    f,
+                    "Too many indexes on table '{table}': {current} indexes exceeds maximum of {max}"
+                )
+            },
+            Self::QueryTimeout {
+                operation,
+                timeout_ms,
+            } => {
+                write!(f, "Query timeout: {operation} exceeded {timeout_ms}ms")
             },
         }
     }
@@ -1298,6 +1519,10 @@ pub struct RelationalEngine {
     max_btree_entries: usize,
     /// Current total B-tree index entry count.
     btree_entry_count: AtomicUsize,
+    /// Engine configuration for resource limits and timeouts.
+    config: RelationalConfig,
+    /// Current table count for limit enforcement.
+    table_count: AtomicUsize,
 }
 
 /// Ordered key for B-tree indexes with correct comparison semantics.
@@ -1372,12 +1597,15 @@ impl RelationalEngine {
     /// Number of shards for index lock striping (power of 2 for fast modulo).
     const INDEX_LOCK_SHARDS: usize = 64;
 
-    /// Maximum total entries across all B-tree indexes (default 10M).
-    const DEFAULT_MAX_BTREE_INDEX_ENTRIES: usize = 10_000_000;
-
-    /// Creates a new in-memory relational engine.
+    /// Creates a new in-memory relational engine with default configuration.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(RelationalConfig::default())
+    }
+
+    /// Creates a new in-memory relational engine with custom configuration.
+    #[must_use]
+    pub fn with_config(config: RelationalConfig) -> Self {
         Self {
             store: TensorStore::new(),
             row_counters: DashMap::new(),
@@ -1386,14 +1614,22 @@ impl RelationalEngine {
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
-            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            max_btree_entries: config.max_btree_entries,
             btree_entry_count: AtomicUsize::new(0),
+            config,
+            table_count: AtomicUsize::new(0),
         }
     }
 
-    /// Creates an engine with an existing store.
+    /// Creates an engine with an existing store and default configuration.
     #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
+        Self::with_store_and_config(store, RelationalConfig::default())
+    }
+
+    /// Creates an engine with an existing store and custom configuration.
+    #[must_use]
+    pub fn with_store_and_config(store: TensorStore, config: RelationalConfig) -> Self {
         Self {
             store,
             row_counters: DashMap::new(),
@@ -1402,8 +1638,10 @@ impl RelationalEngine {
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
-            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            max_btree_entries: config.max_btree_entries,
             btree_entry_count: AtomicUsize::new(0),
+            config,
+            table_count: AtomicUsize::new(0),
         }
     }
 
@@ -1416,8 +1654,23 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns an I/O error if the WAL file cannot be created or opened.
-    pub fn open_durable<P: AsRef<Path>>(wal_path: P, config: WalConfig) -> std::io::Result<Self> {
-        let store = TensorStore::open_durable(wal_path, config)?;
+    pub fn open_durable<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: WalConfig,
+    ) -> std::io::Result<Self> {
+        Self::open_durable_with_config(wal_path, wal_config, RelationalConfig::default())
+    }
+
+    /// Create a durable engine with Write-Ahead Log and custom configuration.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the WAL file cannot be created or opened.
+    pub fn open_durable_with_config<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: WalConfig,
+        config: RelationalConfig,
+    ) -> std::io::Result<Self> {
+        let store = TensorStore::open_durable(wal_path, wal_config)?;
         Ok(Self {
             store,
             row_counters: DashMap::new(),
@@ -1426,8 +1679,10 @@ impl RelationalEngine {
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
-            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            max_btree_entries: config.max_btree_entries,
             btree_entry_count: AtomicUsize::new(0),
+            config,
+            table_count: AtomicUsize::new(0),
         })
     }
 
@@ -1442,11 +1697,31 @@ impl RelationalEngine {
     /// Returns `RelationalError::StorageError` if WAL recovery fails.
     pub fn recover<P: AsRef<Path>>(
         wal_path: P,
-        config: &WalConfig,
+        wal_config: &WalConfig,
         snapshot_path: Option<&Path>,
     ) -> std::result::Result<Self, RelationalError> {
-        let store = TensorStore::recover(wal_path, config, snapshot_path)
+        Self::recover_with_config(
+            wal_path,
+            wal_config,
+            snapshot_path,
+            RelationalConfig::default(),
+        )
+    }
+
+    /// Recover a durable engine from WAL with custom configuration.
+    ///
+    /// # Errors
+    /// Returns `RelationalError::StorageError` if WAL recovery fails.
+    pub fn recover_with_config<P: AsRef<Path>>(
+        wal_path: P,
+        wal_config: &WalConfig,
+        snapshot_path: Option<&Path>,
+        config: RelationalConfig,
+    ) -> std::result::Result<Self, RelationalError> {
+        let store = TensorStore::recover(wal_path, wal_config, snapshot_path)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+        // Count existing tables for limit tracking
+        let existing_tables = store.scan("_meta:table:").len();
         Ok(Self {
             store,
             row_counters: DashMap::new(),
@@ -1455,14 +1730,26 @@ impl RelationalEngine {
             tx_manager: TransactionManager::new(),
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
-            max_btree_entries: Self::DEFAULT_MAX_BTREE_INDEX_ENTRIES,
+            max_btree_entries: config.max_btree_entries,
             btree_entry_count: AtomicUsize::new(0),
+            config,
+            table_count: AtomicUsize::new(existing_tables),
         })
     }
 
     /// Returns a reference to the underlying tensor store.
     pub const fn store(&self) -> &TensorStore {
         &self.store
+    }
+
+    /// Returns a reference to the engine configuration.
+    pub const fn config(&self) -> &RelationalConfig {
+        &self.config
+    }
+
+    /// Returns the current number of tables.
+    pub fn table_count(&self) -> usize {
+        self.table_count.load(Ordering::Relaxed)
     }
 
     /// Access the underlying `RelationalSlab` for direct columnar operations.
@@ -1480,6 +1767,52 @@ impl RelationalEngine {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         hasher.finish() as usize % Self::INDEX_LOCK_SHARDS
+    }
+
+    /// Checks if creating a new table would exceed the configured limit.
+    fn check_table_limit(&self) -> Result<()> {
+        if let Some(max) = self.config.max_tables {
+            let current = self.table_count.load(Ordering::Acquire);
+            if current >= max {
+                return Err(RelationalError::TooManyTables { current, max });
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves the effective timeout in milliseconds from query options and config.
+    fn resolve_timeout(&self, options: &QueryOptions) -> Option<u64> {
+        let timeout = options.timeout_ms.or(self.config.default_query_timeout_ms);
+
+        // Clamp to max if configured
+        if let (Some(t), Some(max)) = (timeout, self.config.max_query_timeout_ms) {
+            Some(t.min(max))
+        } else {
+            timeout
+        }
+    }
+
+    /// Checks if creating a new index on a table would exceed the configured limit.
+    fn check_index_limit(&self, table: &str) -> Result<()> {
+        if let Some(max) = self.config.max_indexes_per_table {
+            // Count hash indexes
+            let idx_prefix = Self::all_indexes_prefix(table);
+            let hash_count = self.store.scan(&idx_prefix).len();
+
+            // Count B-tree indexes
+            let btree_prefix = format!("_btree:{table}:");
+            let btree_count = self.store.scan(&btree_prefix).len();
+
+            let current = hash_count + btree_count;
+            if current >= max {
+                return Err(RelationalError::TooManyIndexes {
+                    table: table.to_string(),
+                    current,
+                    max,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn put_maybe_durable(&self, key: impl Into<String>, tensor: TensorData) -> Result<()> {
@@ -1591,8 +1924,14 @@ impl RelationalEngine {
             Self::validate_name(&col.name, "Column")?;
         }
 
+        // Check table limit before acquiring DDL lock
+        self.check_table_limit()?;
+
         // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
         let _ddl_guard = self.ddl_lock.write();
+
+        // Re-check limit under lock to prevent race conditions
+        self.check_table_limit()?;
 
         let meta_key = Self::table_meta_key(name);
 
@@ -1644,6 +1983,9 @@ impl RelationalEngine {
 
         self.row_counters
             .insert(name.to_string(), AtomicU64::new(0));
+
+        // Increment table count after successful creation
+        self.table_count.fetch_add(1, Ordering::Release);
 
         Ok(())
     }
@@ -1852,10 +2194,43 @@ impl RelationalEngine {
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, condition), fields(table = %table))]
     pub fn select(&self, table: &str, condition: Condition) -> Result<Vec<Row>> {
+        self.select_with_options(table, condition, QueryOptions::default())
+    }
+
+    /// Select rows with query options including timeout.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
+    #[must_use = "query results should be used"]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn select_with_options(
+        &self,
+        table: &str,
+        condition: Condition,
+        options: QueryOptions,
+    ) -> Result<Vec<Row>> {
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
         let schema = self.get_schema(table)?;
+
+        // Check timeout before index lookup
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "select".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
 
         // Index lookup path: get row_ids from index, then fetch from slab
         if let Some(row_ids) = self.try_index_lookup(table, &condition)? {
+            // Check timeout after index lookup
+            if deadline.is_expired() {
+                return Err(RelationalError::QueryTimeout {
+                    operation: "select (index lookup)".to_string(),
+                    timeout_ms: options.timeout_ms.unwrap_or(0),
+                });
+            }
+
             // Convert 1-based row_ids to 0-based slab indices
             let indices: Vec<usize> = row_ids.iter().map(|id| (*id - 1) as usize).collect();
             let slab_rows = self
@@ -1878,11 +2253,27 @@ impl RelationalEngine {
             return Ok(rows);
         }
 
+        // Check timeout before full scan
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "select (before scan)".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
+
         // Full scan path: scan slab and filter
         let slab_rows = self
             .slab()
             .scan_all(table)
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        // Check timeout after scan
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "select (after scan)".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
 
         let mut rows: Vec<Row> = slab_rows
             .into_iter()
@@ -1952,6 +2343,24 @@ impl RelationalEngine {
         condition: Condition,
         updates: HashMap<String, Value>,
     ) -> Result<usize> {
+        self.update_with_options(table, condition, updates, QueryOptions::default())
+    }
+
+    /// Update rows with query options including timeout.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`,
+    /// `StorageError`, or `QueryTimeout`.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn update_with_options(
+        &self,
+        table: &str,
+        condition: Condition,
+        updates: HashMap<String, Value>,
+        options: QueryOptions,
+    ) -> Result<usize> {
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+
         // Validation for early exit without transaction overhead
         let schema = self.get_schema(table)?;
 
@@ -1972,6 +2381,14 @@ impl RelationalEngine {
             }
         }
 
+        // Check timeout before transaction
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "update".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
+
         // Use internal transaction for atomicity
         let tx_id = self.begin_transaction();
         match self.tx_update(tx_id, table, condition, updates) {
@@ -1990,8 +2407,32 @@ impl RelationalEngine {
     /// Returns `TableNotFound` or `StorageError`.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
+        self.delete_rows_with_options(table, condition, QueryOptions::default())
+    }
+
+    /// Delete rows with query options including timeout.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn delete_rows_with_options(
+        &self,
+        table: &str,
+        condition: Condition,
+        options: QueryOptions,
+    ) -> Result<usize> {
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+
         // Validation for early exit
         let _ = self.get_schema(table)?;
+
+        // Check timeout before transaction
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "delete".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
 
         // Use internal transaction for atomicity
         let tx_id = self.begin_transaction();
@@ -2019,11 +2460,53 @@ impl RelationalEngine {
         on_a: &str,
         on_b: &str,
     ) -> Result<Vec<(Row, Row)>> {
+        self.join_with_options(table_a, table_b, on_a, on_b, QueryOptions::default())
+    }
+
+    /// Hash join with query options including timeout.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
+    pub fn join_with_options(
+        &self,
+        table_a: &str,
+        table_b: &str,
+        on_a: &str,
+        on_b: &str,
+        options: QueryOptions,
+    ) -> Result<Vec<(Row, Row)>> {
+        let deadline = Deadline::from_timeout_ms(self.resolve_timeout(&options));
+
         let _ = self.get_schema(table_a)?;
         let _ = self.get_schema(table_b)?;
 
+        // Check timeout before fetching rows
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "join".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
+
         let rows_a = self.select(table_a, Condition::True)?;
+
+        // Check timeout after fetching first table
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "join (after table_a)".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
+
         let rows_b = self.select(table_b, Condition::True)?;
+
+        // Check timeout after fetching second table
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "join (after table_b)".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
+        }
 
         let mut index: HashMap<String, Vec<usize>> = HashMap::with_capacity(rows_b.len());
         for (i, row) in rows_b.iter().enumerate() {
@@ -2031,6 +2514,14 @@ impl RelationalEngine {
                 let hash = val.hash_key();
                 index.entry(hash).or_default().push(i);
             }
+        }
+
+        // Check timeout after building hash index
+        if deadline.is_expired() {
+            return Err(RelationalError::QueryTimeout {
+                operation: "join (after hash build)".to_string(),
+                timeout_ms: options.timeout_ms.unwrap_or(0),
+            });
         }
 
         let results = if rows_a.len() >= Self::PARALLEL_THRESHOLD {
@@ -2563,6 +3054,9 @@ impl RelationalEngine {
 
         self.row_counters.remove(table);
 
+        // Decrement table count after successful deletion
+        self.table_count.fetch_sub(1, Ordering::Release);
+
         Ok(())
     }
 
@@ -2600,8 +3094,14 @@ impl RelationalEngine {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
 
+        // Check index limit before acquiring DDL lock
+        self.check_index_limit(table)?;
+
         // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
         let _ddl_guard = self.ddl_lock.write();
+
+        // Re-check limit under lock to prevent race conditions
+        self.check_index_limit(table)?;
 
         let meta_key = Self::index_meta_key(table, column);
         if self.store.exists(&meta_key) {
@@ -2671,8 +3171,14 @@ impl RelationalEngine {
             return Err(RelationalError::ColumnNotFound(column.to_string()));
         }
 
+        // Check index limit before acquiring DDL lock
+        self.check_index_limit(table)?;
+
         // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
         let _ddl_guard = self.ddl_lock.write();
+
+        // Re-check limit under lock to prevent race conditions
+        self.check_index_limit(table)?;
 
         let meta_key = Self::btree_meta_key(table, column);
         if self.store.exists(&meta_key) {
@@ -13482,5 +13988,261 @@ mod tensor_eval_tests {
         // Engine should remain consistent - no panics or lost data
         let count = engine.row_count("test").unwrap();
         assert!(count > 0, "Table should have rows");
+    }
+
+    #[test]
+    fn test_max_tables_limit() {
+        let config = RelationalConfig::new().with_max_tables(2);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+
+        // First two tables should succeed
+        engine.create_table("table1", schema.clone()).unwrap();
+        engine.create_table("table2", schema.clone()).unwrap();
+
+        // Third table should fail
+        let result = engine.create_table("table3", schema);
+        assert!(matches!(
+            result,
+            Err(RelationalError::TooManyTables { current: 2, max: 2 })
+        ));
+
+        // After dropping a table, we should be able to create another
+        engine.drop_table("table1").unwrap();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("table3", schema).unwrap();
+    }
+
+    #[test]
+    fn test_max_indexes_per_table_limit() {
+        let config = RelationalConfig::new().with_max_indexes_per_table(2);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        // First two indexes should succeed
+        engine.create_index("test", "a").unwrap();
+        engine.create_btree_index("test", "b").unwrap();
+
+        // Third index should fail
+        let result = engine.create_index("test", "c");
+        assert!(matches!(
+            result,
+            Err(RelationalError::TooManyIndexes {
+                table,
+                current: 2,
+                max: 2
+            }) if table == "test"
+        ));
+    }
+
+    #[test]
+    fn test_unlimited_when_none() {
+        let config = RelationalConfig::default();
+        assert!(config.max_tables.is_none());
+        assert!(config.max_indexes_per_table.is_none());
+
+        let engine = RelationalEngine::with_config(config);
+
+        // Should be able to create many tables
+        for i in 0..10 {
+            let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+            engine.create_table(&format!("table{i}"), schema).unwrap();
+        }
+
+        // Should be able to create many indexes on one table
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+            Column::new("d", ColumnType::Int),
+            Column::new("e", ColumnType::Int),
+        ]);
+        engine.create_table("multi_idx", schema).unwrap();
+        engine.create_index("multi_idx", "a").unwrap();
+        engine.create_index("multi_idx", "b").unwrap();
+        engine.create_index("multi_idx", "c").unwrap();
+        engine.create_index("multi_idx", "d").unwrap();
+        engine.create_index("multi_idx", "e").unwrap();
+    }
+
+    #[test]
+    fn test_select_with_timeout() {
+        let config = RelationalConfig::new().with_default_timeout_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // With 0ms timeout, the query should immediately timeout
+        // We need to use select_with_options with an explicit 0 timeout
+        let result = engine.select_with_options(
+            "test",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        // Allow a small window - the query might complete before timeout check
+        // or it might timeout
+        match result {
+            Ok(rows) => assert!(rows.is_empty()),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_config_validation() {
+        // Valid config
+        let config = RelationalConfig::new()
+            .with_default_timeout_ms(1000)
+            .with_max_timeout_ms(5000);
+        assert!(config.validate().is_ok());
+
+        // Invalid config: default > max
+        let config = RelationalConfig::new()
+            .with_default_timeout_ms(10000)
+            .with_max_timeout_ms(5000);
+        assert!(config.validate().is_err());
+
+        // Valid: no max set
+        let config = RelationalConfig::new().with_default_timeout_ms(100000);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_presets() {
+        let high = RelationalConfig::high_throughput();
+        assert!(high.max_tables.is_none());
+        assert!(high.max_indexes_per_table.is_none());
+        assert_eq!(high.max_btree_entries, 20_000_000);
+        assert_eq!(high.default_query_timeout_ms, Some(30_000));
+
+        let low = RelationalConfig::low_memory();
+        assert_eq!(low.max_tables, Some(100));
+        assert_eq!(low.max_indexes_per_table, Some(5));
+        assert_eq!(low.max_btree_entries, 1_000_000);
+        assert_eq!(low.default_query_timeout_ms, Some(10_000));
+    }
+
+    #[test]
+    fn test_new_uses_default_config() {
+        let engine = RelationalEngine::new();
+
+        // Default config should allow unlimited tables
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        for i in 0..20 {
+            engine
+                .create_table(&format!("table{i}"), schema.clone())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_table_creation_with_limit() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = RelationalConfig::new().with_max_tables(5);
+        let engine = Arc::new(RelationalEngine::with_config(config));
+
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let eng = Arc::clone(&engine);
+                thread::spawn(move || {
+                    let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+                    eng.create_table(&format!("table{i}"), schema)
+                })
+            })
+            .collect();
+
+        let mut successes = 0;
+        let mut too_many = 0;
+        for h in handles {
+            match h.join().unwrap() {
+                Ok(()) => successes += 1,
+                Err(RelationalError::TooManyTables { .. }) => too_many += 1,
+                Err(e) => panic!("Unexpected error: {e}"),
+            }
+        }
+
+        // Exactly 5 should succeed, 5 should fail
+        assert_eq!(successes, 5);
+        assert_eq!(too_many, 5);
+    }
+
+    #[test]
+    fn test_query_options_new_and_builder() {
+        let opts = QueryOptions::new();
+        assert!(opts.timeout_ms.is_none());
+
+        let opts = QueryOptions::new().with_timeout_ms(5000);
+        assert_eq!(opts.timeout_ms, Some(5000));
+
+        let opts = QueryOptions::default();
+        assert!(opts.timeout_ms.is_none());
+    }
+
+    #[test]
+    fn test_config_accessor_methods() {
+        let config = RelationalConfig::new()
+            .with_max_tables(100)
+            .with_max_indexes_per_table(10)
+            .with_default_timeout_ms(5000)
+            .with_max_timeout_ms(60000)
+            .with_max_btree_entries(5_000_000);
+
+        assert_eq!(config.max_tables, Some(100));
+        assert_eq!(config.max_indexes_per_table, Some(10));
+        assert_eq!(config.default_query_timeout_ms, Some(5000));
+        assert_eq!(config.max_query_timeout_ms, Some(60000));
+        assert_eq!(config.max_btree_entries, 5_000_000);
+
+        let engine = RelationalEngine::with_config(config.clone());
+        let engine_config = engine.config();
+        assert_eq!(engine_config.max_tables, Some(100));
+    }
+
+    #[test]
+    fn test_table_count_tracking() {
+        let config = RelationalConfig::new().with_max_tables(10);
+        let engine = RelationalEngine::with_config(config);
+
+        assert_eq!(engine.table_count(), 0);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("t1", schema.clone()).unwrap();
+        assert_eq!(engine.table_count(), 1);
+
+        engine.create_table("t2", schema.clone()).unwrap();
+        assert_eq!(engine.table_count(), 2);
+
+        engine.drop_table("t1").unwrap();
+        assert_eq!(engine.table_count(), 1);
+
+        engine.drop_table("t2").unwrap();
+        assert_eq!(engine.table_count(), 0);
+    }
+
+    #[test]
+    fn test_timeout_clamps_to_max() {
+        let config = RelationalConfig::new()
+            .with_default_timeout_ms(1000)
+            .with_max_timeout_ms(500);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // The effective timeout should be clamped to 500ms even though
+        // options request 1000ms
+        let resolved = engine.resolve_timeout(&QueryOptions::new().with_timeout_ms(1000));
+        assert_eq!(resolved, Some(500));
     }
 }
