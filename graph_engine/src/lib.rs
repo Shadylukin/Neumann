@@ -144,6 +144,110 @@ impl PropertyValue {
             ScalarValue::Null | ScalarValue::Bytes(_) => Self::Null,
         }
     }
+
+    #[must_use]
+    pub fn value_type(&self) -> PropertyValueType {
+        match self {
+            Self::Null => PropertyValueType::Null,
+            Self::Int(_) => PropertyValueType::Int,
+            Self::Float(_) => PropertyValueType::Float,
+            Self::String(_) => PropertyValueType::String,
+            Self::Bool(_) => PropertyValueType::Bool,
+        }
+    }
+}
+
+/// Property value type for type constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PropertyValueType {
+    Null,
+    Int,
+    Float,
+    String,
+    Bool,
+}
+
+/// Type of constraint enforcement.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ConstraintType {
+    /// Property must be unique across all nodes/edges of given label/type.
+    Unique,
+    /// Property must exist (not null).
+    Exists,
+    /// Property must match a specific type.
+    PropertyType(PropertyValueType),
+}
+
+/// Target scope of a constraint.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ConstraintTarget {
+    /// Applies to nodes with specific label.
+    NodeLabel(String),
+    /// Applies to edges with specific type.
+    EdgeType(String),
+    /// Applies to all nodes.
+    AllNodes,
+    /// Applies to all edges.
+    AllEdges,
+}
+
+/// A constraint definition for property validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Constraint {
+    pub name: String,
+    pub target: ConstraintTarget,
+    pub property: String,
+    pub constraint_type: ConstraintType,
+}
+
+/// Input for batch node creation.
+#[derive(Debug, Clone)]
+pub struct NodeInput {
+    pub labels: Vec<String>,
+    pub properties: HashMap<String, PropertyValue>,
+}
+
+impl NodeInput {
+    #[must_use]
+    pub fn new(labels: Vec<String>, properties: HashMap<String, PropertyValue>) -> Self {
+        Self { labels, properties }
+    }
+}
+
+/// Input for batch edge creation.
+#[derive(Debug, Clone)]
+pub struct EdgeInput {
+    pub from: u64,
+    pub to: u64,
+    pub edge_type: String,
+    pub properties: HashMap<String, PropertyValue>,
+    pub directed: bool,
+}
+
+impl EdgeInput {
+    #[must_use]
+    pub fn new(
+        from: u64,
+        to: u64,
+        edge_type: impl Into<String>,
+        properties: HashMap<String, PropertyValue>,
+        directed: bool,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            edge_type: edge_type.into(),
+            properties,
+            directed,
+        }
+    }
+}
+
+/// Result of a batch operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchResult {
+    pub created_ids: Vec<u64>,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1428,9 +1532,32 @@ pub enum GraphError {
     EdgeNotFound(u64),
     StorageError(String),
     PathNotFound,
-    IndexAlreadyExists { target: String, property: String },
-    IndexNotFound { target: String, property: String },
-    NegativeWeight { edge_id: u64, weight: f64 },
+    IndexAlreadyExists {
+        target: String,
+        property: String,
+    },
+    IndexNotFound {
+        target: String,
+        property: String,
+    },
+    NegativeWeight {
+        edge_id: u64,
+        weight: f64,
+    },
+    ConstraintViolation {
+        constraint_name: String,
+        message: String,
+    },
+    ConstraintAlreadyExists(String),
+    ConstraintNotFound(String),
+    BatchValidationError {
+        index: usize,
+        cause: Box<GraphError>,
+    },
+    BatchCreationError {
+        index: usize,
+        cause: Box<GraphError>,
+    },
 }
 
 impl std::fmt::Display for GraphError {
@@ -1449,6 +1576,22 @@ impl std::fmt::Display for GraphError {
             Self::NegativeWeight { edge_id, weight } => {
                 write!(f, "Edge {edge_id} has negative weight: {weight}")
             },
+            Self::ConstraintViolation {
+                constraint_name,
+                message,
+            } => {
+                write!(f, "Constraint '{constraint_name}' violated: {message}")
+            },
+            Self::ConstraintAlreadyExists(name) => {
+                write!(f, "Constraint already exists: {name}")
+            },
+            Self::ConstraintNotFound(name) => write!(f, "Constraint not found: {name}"),
+            Self::BatchValidationError { index, cause } => {
+                write!(f, "Batch validation failed at index {index}: {cause}")
+            },
+            Self::BatchCreationError { index, cause } => {
+                write!(f, "Batch creation failed at index {index}: {cause}")
+            },
         }
     }
 }
@@ -1462,7 +1605,9 @@ impl Hash for GraphError {
         std::mem::discriminant(self).hash(state);
         match self {
             Self::NodeNotFound(id) | Self::EdgeNotFound(id) => id.hash(state),
-            Self::StorageError(s) => s.hash(state),
+            Self::StorageError(s)
+            | Self::ConstraintAlreadyExists(s)
+            | Self::ConstraintNotFound(s) => s.hash(state),
             Self::PathNotFound => {},
             Self::IndexAlreadyExists { target, property }
             | Self::IndexNotFound { target, property } => {
@@ -1472,6 +1617,18 @@ impl Hash for GraphError {
             Self::NegativeWeight { edge_id, weight } => {
                 edge_id.hash(state);
                 weight.to_bits().hash(state);
+            },
+            Self::ConstraintViolation {
+                constraint_name,
+                message,
+            } => {
+                constraint_name.hash(state);
+                message.hash(state);
+            },
+            Self::BatchValidationError { index, cause }
+            | Self::BatchCreationError { index, cause } => {
+                index.hash(state);
+                cause.hash(state);
             },
         }
     }
@@ -1504,15 +1661,19 @@ pub struct GraphEngine {
     label_index_initialized: AtomicBool,
     /// Whether the edge type index has been initialized (for lazy auto-creation).
     edge_type_index_initialized: AtomicBool,
+    /// Cached constraints for fast validation.
+    constraints: RwLock<HashMap<String, Constraint>>,
 }
 
 impl std::fmt::Debug for GraphEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let index_count = self.btree_indexes.read().len();
+        let constraint_count = self.constraints.read().len();
         f.debug_struct("GraphEngine")
             .field("node_counter", &self.node_counter.load(Ordering::Relaxed))
             .field("edge_counter", &self.edge_counter.load(Ordering::Relaxed))
             .field("index_count", &index_count)
+            .field("constraint_count", &constraint_count)
             .finish_non_exhaustive()
     }
 }
@@ -1536,6 +1697,7 @@ impl GraphEngine {
             index_locks: create_index_locks(),
             label_index_initialized: AtomicBool::new(false),
             edge_type_index_initialized: AtomicBool::new(false),
+            constraints: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1583,6 +1745,9 @@ impl GraphEngine {
         let edge_type_index_exists =
             btree_indexes.contains_key(&(IndexTarget::Edge, "_edge_type".to_string()));
 
+        // Load existing constraints from store
+        let constraints = Self::load_constraints_from_store(&store);
+
         Self {
             store,
             node_counter: AtomicU64::new(max_node_id),
@@ -1591,6 +1756,43 @@ impl GraphEngine {
             index_locks: create_index_locks(),
             label_index_initialized: AtomicBool::new(label_index_exists),
             edge_type_index_initialized: AtomicBool::new(edge_type_index_exists),
+            constraints: RwLock::new(constraints),
+        }
+    }
+
+    fn load_constraints_from_store(store: &TensorStore) -> HashMap<String, Constraint> {
+        let mut constraints = HashMap::new();
+        for key in store.scan("_graph_constraint:") {
+            if let Ok(tensor) = store.get(&key) {
+                let name = Self::extract_string(&tensor, "name").unwrap_or_default();
+                let target_json = Self::extract_string(&tensor, "target").unwrap_or_default();
+                let property = Self::extract_string(&tensor, "property").unwrap_or_default();
+                let type_json =
+                    Self::extract_string(&tensor, "constraint_type").unwrap_or_default();
+
+                if let (Ok(target), Ok(constraint_type)) = (
+                    serde_json::from_str::<ConstraintTarget>(&target_json),
+                    serde_json::from_str::<ConstraintType>(&type_json),
+                ) {
+                    constraints.insert(
+                        name.clone(),
+                        Constraint {
+                            name,
+                            target,
+                            property,
+                            constraint_type,
+                        },
+                    );
+                }
+            }
+        }
+        constraints
+    }
+
+    fn extract_string(tensor: &TensorData, key: &str) -> Option<String> {
+        match tensor.get(key) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => Some(s.clone()),
+            _ => None,
         }
     }
 
@@ -2629,6 +2831,9 @@ impl GraphEngine {
         labels: Vec<String>,
         properties: HashMap<String, PropertyValue>,
     ) -> Result<u64> {
+        // Validate constraints before creating
+        self.validate_node_constraints(&labels, &properties, None)?;
+
         // Ensure label index exists (lazy init on first node creation)
         self.ensure_label_index();
 
@@ -2684,8 +2889,12 @@ impl GraphEngine {
             return Err(GraphError::NodeNotFound(to));
         }
 
-        let id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let edge_type = edge_type.into();
+
+        // Validate constraints before creating
+        self.validate_edge_constraints(&edge_type, &properties, None)?;
+
+        let id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut tensor = TensorData::new();
         tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
@@ -2877,6 +3086,10 @@ impl GraphEngine {
     ) -> Result<()> {
         // Get old node for index maintenance
         let old_node = self.get_node(id)?;
+
+        // Validate constraints before updating (exclude self from unique checks)
+        let effective_labels = labels.as_ref().unwrap_or(&old_node.labels);
+        self.validate_node_constraints(effective_labels, &properties, Some(id))?;
 
         let key = Self::node_key(id);
         let mut tensor = self
@@ -6562,6 +6775,629 @@ impl GraphEngine {
 impl Default for GraphEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// Constraint management methods
+impl GraphEngine {
+    pub fn create_constraint(&self, constraint: Constraint) -> Result<()> {
+        let key = format!("_graph_constraint:{}", constraint.name);
+        if self.store.exists(&key) {
+            return Err(GraphError::ConstraintAlreadyExists(constraint.name));
+        }
+
+        // For unique constraints, create backing index if not exists
+        if constraint.constraint_type == ConstraintType::Unique {
+            match &constraint.target {
+                ConstraintTarget::NodeLabel(_) | ConstraintTarget::AllNodes => {
+                    let _ = self.create_node_property_index(&constraint.property);
+                },
+                ConstraintTarget::EdgeType(_) | ConstraintTarget::AllEdges => {
+                    let _ = self.create_edge_property_index(&constraint.property);
+                },
+            }
+
+            // Validate existing data doesn't violate constraint
+            self.validate_unique_constraint_on_existing_data(&constraint)?;
+        }
+
+        // For exists constraints, validate existing data
+        if constraint.constraint_type == ConstraintType::Exists {
+            self.validate_exists_constraint_on_existing_data(&constraint)?;
+        }
+
+        // Store constraint definition
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("constraint".into())),
+        );
+        tensor.set(
+            "name",
+            TensorValue::Scalar(ScalarValue::String(constraint.name.clone())),
+        );
+        tensor.set(
+            "target",
+            TensorValue::Scalar(ScalarValue::String(
+                serde_json::to_string(&constraint.target).unwrap_or_default(),
+            )),
+        );
+        tensor.set(
+            "property",
+            TensorValue::Scalar(ScalarValue::String(constraint.property.clone())),
+        );
+        tensor.set(
+            "constraint_type",
+            TensorValue::Scalar(ScalarValue::String(
+                serde_json::to_string(&constraint.constraint_type).unwrap_or_default(),
+            )),
+        );
+
+        self.store.put(key, tensor)?;
+
+        // Cache in memory for fast lookup
+        self.constraints
+            .write()
+            .insert(constraint.name.clone(), constraint);
+
+        Ok(())
+    }
+
+    pub fn drop_constraint(&self, name: &str) -> Result<()> {
+        let key = format!("_graph_constraint:{name}");
+        if !self.store.exists(&key) {
+            return Err(GraphError::ConstraintNotFound(name.to_string()));
+        }
+
+        self.store.delete(&key)?;
+        self.constraints.write().remove(name);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn list_constraints(&self) -> Vec<Constraint> {
+        self.constraints.read().values().cloned().collect()
+    }
+
+    #[must_use]
+    pub fn get_constraint(&self, name: &str) -> Option<Constraint> {
+        self.constraints.read().get(name).cloned()
+    }
+
+    fn validate_unique_constraint_on_existing_data(&self, constraint: &Constraint) -> Result<()> {
+        let mut seen_values: HashMap<OrderedPropertyValue, u64> = HashMap::new();
+
+        match &constraint.target {
+            ConstraintTarget::NodeLabel(label) => {
+                if let Ok(nodes) = self.find_nodes_by_label(label) {
+                    for node in nodes {
+                        if let Some(value) = node.properties.get(&constraint.property) {
+                            let ordered = OrderedPropertyValue::from(value);
+                            if let Some(&existing_id) = seen_values.get(&ordered) {
+                                return Err(GraphError::ConstraintViolation {
+                                    constraint_name: constraint.name.clone(),
+                                    message: format!(
+                                        "Duplicate value for property '{}' on nodes {} and {}",
+                                        constraint.property, existing_id, node.id
+                                    ),
+                                });
+                            }
+                            seen_values.insert(ordered, node.id);
+                        }
+                    }
+                }
+            },
+            ConstraintTarget::AllNodes => {
+                for node in self.all_nodes() {
+                    if let Some(value) = node.properties.get(&constraint.property) {
+                        let ordered = OrderedPropertyValue::from(value);
+                        if let Some(&existing_id) = seen_values.get(&ordered) {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Duplicate value for property '{}' on nodes {} and {}",
+                                    constraint.property, existing_id, node.id
+                                ),
+                            });
+                        }
+                        seen_values.insert(ordered, node.id);
+                    }
+                }
+            },
+            ConstraintTarget::EdgeType(edge_type) => {
+                if let Ok(edges) = self.find_edges_by_type(edge_type) {
+                    for edge in edges {
+                        if let Some(value) = edge.properties.get(&constraint.property) {
+                            let ordered = OrderedPropertyValue::from(value);
+                            if let Some(&existing_id) = seen_values.get(&ordered) {
+                                return Err(GraphError::ConstraintViolation {
+                                    constraint_name: constraint.name.clone(),
+                                    message: format!(
+                                        "Duplicate value for property '{}' on edges {} and {}",
+                                        constraint.property, existing_id, edge.id
+                                    ),
+                                });
+                            }
+                            seen_values.insert(ordered, edge.id);
+                        }
+                    }
+                }
+            },
+            ConstraintTarget::AllEdges => {
+                for edge in self.all_edges() {
+                    if let Some(value) = edge.properties.get(&constraint.property) {
+                        let ordered = OrderedPropertyValue::from(value);
+                        if let Some(&existing_id) = seen_values.get(&ordered) {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Duplicate value for property '{}' on edges {} and {}",
+                                    constraint.property, existing_id, edge.id
+                                ),
+                            });
+                        }
+                        seen_values.insert(ordered, edge.id);
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn validate_exists_constraint_on_existing_data(&self, constraint: &Constraint) -> Result<()> {
+        match &constraint.target {
+            ConstraintTarget::NodeLabel(label) => {
+                if let Ok(nodes) = self.find_nodes_by_label(label) {
+                    for node in nodes {
+                        if !node.properties.contains_key(&constraint.property) {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Node {} missing required property '{}'",
+                                    node.id, constraint.property
+                                ),
+                            });
+                        }
+                    }
+                }
+            },
+            ConstraintTarget::AllNodes => {
+                for node in self.all_nodes() {
+                    if !node.properties.contains_key(&constraint.property) {
+                        return Err(GraphError::ConstraintViolation {
+                            constraint_name: constraint.name.clone(),
+                            message: format!(
+                                "Node {} missing required property '{}'",
+                                node.id, constraint.property
+                            ),
+                        });
+                    }
+                }
+            },
+            ConstraintTarget::EdgeType(edge_type) => {
+                if let Ok(edges) = self.find_edges_by_type(edge_type) {
+                    for edge in edges {
+                        if !edge.properties.contains_key(&constraint.property) {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Edge {} missing required property '{}'",
+                                    edge.id, constraint.property
+                                ),
+                            });
+                        }
+                    }
+                }
+            },
+            ConstraintTarget::AllEdges => {
+                for edge in self.all_edges() {
+                    if !edge.properties.contains_key(&constraint.property) {
+                        return Err(GraphError::ConstraintViolation {
+                            constraint_name: constraint.name.clone(),
+                            message: format!(
+                                "Edge {} missing required property '{}'",
+                                edge.id, constraint.property
+                            ),
+                        });
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn validate_node_constraints(
+        &self,
+        labels: &[String],
+        properties: &HashMap<String, PropertyValue>,
+        exclude_id: Option<u64>,
+    ) -> Result<()> {
+        let constraints = self.constraints.read();
+
+        for constraint in constraints.values() {
+            // Check if constraint applies to this node
+            let applies = match &constraint.target {
+                ConstraintTarget::AllNodes => true,
+                ConstraintTarget::NodeLabel(label) => labels.contains(label),
+                _ => false,
+            };
+
+            if !applies {
+                continue;
+            }
+
+            match &constraint.constraint_type {
+                ConstraintType::Exists => {
+                    if !properties.contains_key(&constraint.property) {
+                        return Err(GraphError::ConstraintViolation {
+                            constraint_name: constraint.name.clone(),
+                            message: format!("Property '{}' is required", constraint.property),
+                        });
+                    }
+                },
+                ConstraintType::Unique => {
+                    if let Some(value) = properties.get(&constraint.property) {
+                        // Use index to check uniqueness
+                        if let Ok(existing) =
+                            self.find_nodes_by_property(&constraint.property, value)
+                        {
+                            for node in &existing {
+                                // Skip self during update
+                                if exclude_id != Some(node.id) {
+                                    return Err(GraphError::ConstraintViolation {
+                                        constraint_name: constraint.name.clone(),
+                                        message: format!(
+                                            "Property '{}' value already exists on node {}",
+                                            constraint.property, node.id
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                },
+                ConstraintType::PropertyType(expected_type) => {
+                    if let Some(value) = properties.get(&constraint.property) {
+                        if value.value_type() != *expected_type {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Property '{}' must be type {:?}, got {:?}",
+                                    constraint.property,
+                                    expected_type,
+                                    value.value_type()
+                                ),
+                            });
+                        }
+                    }
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_edge_constraints(
+        &self,
+        edge_type: &str,
+        properties: &HashMap<String, PropertyValue>,
+        exclude_id: Option<u64>,
+    ) -> Result<()> {
+        let constraints = self.constraints.read();
+
+        for constraint in constraints.values() {
+            // Check if constraint applies to this edge
+            let applies = match &constraint.target {
+                ConstraintTarget::AllEdges => true,
+                ConstraintTarget::EdgeType(t) => t == edge_type,
+                _ => false,
+            };
+
+            if !applies {
+                continue;
+            }
+
+            match &constraint.constraint_type {
+                ConstraintType::Exists => {
+                    if !properties.contains_key(&constraint.property) {
+                        return Err(GraphError::ConstraintViolation {
+                            constraint_name: constraint.name.clone(),
+                            message: format!("Property '{}' is required", constraint.property),
+                        });
+                    }
+                },
+                ConstraintType::Unique => {
+                    if let Some(value) = properties.get(&constraint.property) {
+                        // Use index to check uniqueness
+                        if let Ok(existing) =
+                            self.find_edges_by_property(&constraint.property, value)
+                        {
+                            for edge in &existing {
+                                // Skip self during update
+                                if exclude_id != Some(edge.id) {
+                                    return Err(GraphError::ConstraintViolation {
+                                        constraint_name: constraint.name.clone(),
+                                        message: format!(
+                                            "Property '{}' value already exists on edge {}",
+                                            constraint.property, edge.id
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                },
+                ConstraintType::PropertyType(expected_type) => {
+                    if let Some(value) = properties.get(&constraint.property) {
+                        if value.value_type() != *expected_type {
+                            return Err(GraphError::ConstraintViolation {
+                                constraint_name: constraint.name.clone(),
+                                message: format!(
+                                    "Property '{}' must be type {:?}, got {:?}",
+                                    constraint.property,
+                                    expected_type,
+                                    value.value_type()
+                                ),
+                            });
+                        }
+                    }
+                },
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Batch operations
+impl GraphEngine {
+    pub fn batch_create_nodes(&self, nodes: Vec<NodeInput>) -> Result<BatchResult> {
+        if nodes.is_empty() {
+            return Ok(BatchResult {
+                created_ids: vec![],
+                count: 0,
+            });
+        }
+
+        // Phase 1: Validate all inputs (check constraints if any)
+        for (idx, node) in nodes.iter().enumerate() {
+            self.validate_node_constraints(&node.labels, &node.properties, None)
+                .map_err(|e| GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(e),
+                })?;
+        }
+
+        // Ensure label index exists
+        self.ensure_label_index();
+
+        // Phase 2: Pre-allocate IDs atomically
+        let count = nodes.len();
+        let start_id = self.node_counter.fetch_add(count as u64, Ordering::SeqCst) + 1;
+        let ids: Vec<u64> = (start_id..start_id + count as u64).collect();
+
+        // Phase 3: Create all nodes (parallelize if count >= threshold)
+        let results: Vec<Result<()>> = if count >= Self::PARALLEL_THRESHOLD {
+            nodes
+                .par_iter()
+                .zip(ids.par_iter())
+                .map(|(node, &id)| self.create_node_internal(id, &node.labels, &node.properties))
+                .collect()
+        } else {
+            nodes
+                .iter()
+                .zip(ids.iter())
+                .map(|(node, &id)| self.create_node_internal(id, &node.labels, &node.properties))
+                .collect()
+        };
+
+        // Phase 4: Check for failures
+        for (idx, result) in results.into_iter().enumerate() {
+            result.map_err(|e| GraphError::BatchCreationError {
+                index: idx,
+                cause: Box::new(e),
+            })?;
+        }
+
+        Ok(BatchResult {
+            created_ids: ids,
+            count,
+        })
+    }
+
+    fn create_node_internal(
+        &self,
+        id: u64,
+        labels: &[String],
+        properties: &HashMap<String, PropertyValue>,
+    ) -> Result<()> {
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("node".into())),
+        );
+        tensor.set("_labels", TensorValue::Pointers(labels.to_vec()));
+        tensor.set(
+            "_created_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
+
+        for (key, value) in properties {
+            tensor.set(key, TensorValue::Scalar(value.to_scalar()));
+        }
+
+        self.store.put(Self::node_key(id), tensor)?;
+
+        // Initialize empty edge lists
+        let out_tensor = TensorData::new();
+        let in_tensor = TensorData::new();
+        self.store.put(Self::outgoing_edges_key(id), out_tensor)?;
+        self.store.put(Self::incoming_edges_key(id), in_tensor)?;
+
+        // Update indexes
+        self.index_node_properties(id, labels, properties);
+
+        Ok(())
+    }
+
+    pub fn batch_create_edges(&self, edges: Vec<EdgeInput>) -> Result<BatchResult> {
+        if edges.is_empty() {
+            return Ok(BatchResult {
+                created_ids: vec![],
+                count: 0,
+            });
+        }
+
+        // Phase 1: Validate all source/target nodes exist and constraints
+        for (idx, edge) in edges.iter().enumerate() {
+            if !self.node_exists(edge.from) {
+                return Err(GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(GraphError::NodeNotFound(edge.from)),
+                });
+            }
+            if !self.node_exists(edge.to) {
+                return Err(GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(GraphError::NodeNotFound(edge.to)),
+                });
+            }
+            self.validate_edge_constraints(&edge.edge_type, &edge.properties, None)
+                .map_err(|e| GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(e),
+                })?;
+        }
+
+        // Ensure edge type index exists
+        self.ensure_edge_type_index();
+
+        // Phase 2: Pre-allocate IDs
+        let count = edges.len();
+        let start_id = self.edge_counter.fetch_add(count as u64, Ordering::SeqCst) + 1;
+        let ids: Vec<u64> = (start_id..start_id + count as u64).collect();
+
+        // Phase 3: Create all edges (cannot fully parallelize due to edge list updates)
+        for (edge, &id) in edges.iter().zip(ids.iter()) {
+            self.create_edge_internal(
+                id,
+                edge.from,
+                edge.to,
+                &edge.edge_type,
+                &edge.properties,
+                edge.directed,
+            )?;
+        }
+
+        Ok(BatchResult {
+            created_ids: ids,
+            count,
+        })
+    }
+
+    fn create_edge_internal(
+        &self,
+        id: u64,
+        from: u64,
+        to: u64,
+        edge_type: &str,
+        properties: &HashMap<String, PropertyValue>,
+        directed: bool,
+    ) -> Result<()> {
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(from as i64)));
+        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to as i64)));
+        tensor.set(
+            "_edge_type",
+            TensorValue::Scalar(ScalarValue::String(edge_type.to_string())),
+        );
+        tensor.set(
+            "_directed",
+            TensorValue::Scalar(ScalarValue::Bool(directed)),
+        );
+        tensor.set(
+            "_created_at",
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+        );
+
+        for (key, value) in properties {
+            tensor.set(key, TensorValue::Scalar(value.to_scalar()));
+        }
+
+        self.store.put(Self::edge_key(id), tensor)?;
+
+        // Add to outgoing edges of 'from' node
+        self.add_edge_to_list(Self::outgoing_edges_key(from), id)?;
+        // Add to incoming edges of 'to' node
+        self.add_edge_to_list(Self::incoming_edges_key(to), id)?;
+
+        // For undirected edges, also add reverse connections
+        if !directed {
+            self.add_edge_to_list(Self::outgoing_edges_key(to), id)?;
+            self.add_edge_to_list(Self::incoming_edges_key(from), id)?;
+        }
+
+        // Update indexes
+        self.index_edge_properties(id, edge_type, properties);
+
+        Ok(())
+    }
+
+    pub fn batch_delete_nodes(&self, ids: Vec<u64>) -> Result<usize> {
+        let mut deleted = 0;
+        for id in ids {
+            if self.delete_node(id).is_ok() {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    pub fn batch_delete_edges(&self, ids: Vec<u64>) -> Result<usize> {
+        let mut deleted = 0;
+        for id in ids {
+            if self.delete_edge(id).is_ok() {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn batch_update_nodes(
+        &self,
+        updates: Vec<(u64, Option<Vec<String>>, HashMap<String, PropertyValue>)>,
+    ) -> Result<usize> {
+        // Validate all updates first
+        for (idx, (id, labels, properties)) in updates.iter().enumerate() {
+            let node = self
+                .get_node(*id)
+                .map_err(|e| GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(e),
+                })?;
+            let effective_labels = labels.as_ref().unwrap_or(&node.labels);
+            self.validate_node_constraints(effective_labels, properties, Some(*id))
+                .map_err(|e| GraphError::BatchValidationError {
+                    index: idx,
+                    cause: Box::new(e),
+                })?;
+        }
+
+        // Apply updates
+        let mut update_count = 0;
+        for (id, labels, properties) in updates {
+            if self.update_node(id, labels, properties).is_ok() {
+                update_count += 1;
+            }
+        }
+        Ok(update_count)
     }
 }
 
@@ -15129,5 +15965,1234 @@ mod tests {
         if by_size.len() > 1 {
             assert!(by_size[0].1 >= by_size[1].1);
         }
+    }
+
+    // ==================== Batch Operations Tests ====================
+
+    #[test]
+    fn batch_create_nodes_empty() {
+        let engine = GraphEngine::new();
+        let result = engine.batch_create_nodes(vec![]).unwrap();
+        assert!(result.created_ids.is_empty());
+        assert_eq!(result.count, 0);
+    }
+
+    #[test]
+    fn batch_create_nodes_single() {
+        let engine = GraphEngine::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+
+        let nodes = vec![NodeInput::new(vec!["Person".to_string()], props)];
+        let result = engine.batch_create_nodes(nodes).unwrap();
+
+        assert_eq!(result.count, 1);
+        assert_eq!(result.created_ids.len(), 1);
+
+        let node = engine.get_node(result.created_ids[0]).unwrap();
+        assert_eq!(node.labels, vec!["Person"]);
+        assert_eq!(
+            node.properties.get("name"),
+            Some(&PropertyValue::String("Alice".into()))
+        );
+    }
+
+    #[test]
+    fn batch_create_nodes_multiple() {
+        let engine = GraphEngine::new();
+        let nodes: Vec<NodeInput> = (0..5)
+            .map(|i| {
+                let mut props = HashMap::new();
+                props.insert("index".to_string(), PropertyValue::Int(i));
+                NodeInput::new(vec!["Item".to_string()], props)
+            })
+            .collect();
+
+        let result = engine.batch_create_nodes(nodes).unwrap();
+
+        assert_eq!(result.count, 5);
+        assert_eq!(result.created_ids.len(), 5);
+
+        // Verify sequential IDs
+        for (i, &id) in result.created_ids.iter().enumerate() {
+            assert_eq!(id, (i + 1) as u64);
+            let node = engine.get_node(id).unwrap();
+            assert_eq!(
+                node.properties.get("index"),
+                Some(&PropertyValue::Int(i as i64))
+            );
+        }
+    }
+
+    #[test]
+    fn batch_create_nodes_validation_failure() {
+        let engine = GraphEngine::new();
+
+        // Create a unique constraint on email
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        // First node
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "email".to_string(),
+            PropertyValue::String("test@test.com".into()),
+        );
+        engine
+            .create_node_with_labels(vec!["Person".into()], props1)
+            .unwrap();
+
+        // Try to batch create with duplicate email
+        let mut props2 = HashMap::new();
+        props2.insert(
+            "email".to_string(),
+            PropertyValue::String("test@test.com".into()),
+        );
+        let nodes = vec![NodeInput::new(vec!["Person".to_string()], props2)];
+
+        let result = engine.batch_create_nodes(nodes);
+        assert!(matches!(
+            result,
+            Err(GraphError::BatchValidationError { .. })
+        ));
+    }
+
+    #[test]
+    fn batch_create_nodes_parallel() {
+        let engine = GraphEngine::new();
+        // Create more than PARALLEL_THRESHOLD (100) nodes
+        let nodes: Vec<NodeInput> = (0..150)
+            .map(|i| {
+                let mut props = HashMap::new();
+                props.insert("index".to_string(), PropertyValue::Int(i));
+                NodeInput::new(vec!["Item".to_string()], props)
+            })
+            .collect();
+
+        let result = engine.batch_create_nodes(nodes).unwrap();
+
+        assert_eq!(result.count, 150);
+        assert_eq!(result.created_ids.len(), 150);
+    }
+
+    #[test]
+    fn batch_create_edges_empty() {
+        let engine = GraphEngine::new();
+        let result = engine.batch_create_edges(vec![]).unwrap();
+        assert!(result.created_ids.is_empty());
+        assert_eq!(result.count, 0);
+    }
+
+    #[test]
+    fn batch_create_edges_multiple() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let edges = vec![
+            EdgeInput::new(n1, n2, "CONNECTS", HashMap::new(), true),
+            EdgeInput::new(n2, n3, "CONNECTS", HashMap::new(), true),
+            EdgeInput::new(n1, n3, "CONNECTS", HashMap::new(), true),
+        ];
+
+        let result = engine.batch_create_edges(edges).unwrap();
+
+        assert_eq!(result.count, 3);
+        assert_eq!(result.created_ids.len(), 3);
+
+        // Verify edges exist
+        for id in &result.created_ids {
+            let edge = engine.get_edge(*id).unwrap();
+            assert_eq!(edge.edge_type, "CONNECTS");
+        }
+    }
+
+    #[test]
+    fn batch_create_edges_node_not_found() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let edges = vec![EdgeInput::new(n1, 999, "CONNECTS", HashMap::new(), true)];
+
+        let result = engine.batch_create_edges(edges);
+        assert!(matches!(
+            result,
+            Err(GraphError::BatchValidationError { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn batch_delete_nodes_multiple() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create an edge that should be deleted with node
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let deleted = engine.batch_delete_nodes(vec![n1, n2]).unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(!engine.node_exists(n1));
+        assert!(!engine.node_exists(n2));
+        assert!(engine.node_exists(n3));
+    }
+
+    #[test]
+    fn batch_delete_edges_multiple() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let e1 = engine
+            .create_edge(n1, n2, "A", HashMap::new(), true)
+            .unwrap();
+        let e2 = engine
+            .create_edge(n1, n2, "B", HashMap::new(), true)
+            .unwrap();
+
+        let deleted = engine.batch_delete_edges(vec![e1, e2]).unwrap();
+        assert_eq!(deleted, 2);
+
+        assert!(engine.get_edge(e1).is_err());
+        assert!(engine.get_edge(e2).is_err());
+    }
+
+    #[test]
+    fn batch_update_nodes_multiple() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert("name".to_string(), PropertyValue::String("Alice".into()));
+
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), PropertyValue::String("Bob".into()));
+
+        let updates = vec![(n1, None, props1), (n2, None, props2)];
+
+        let updated = engine.batch_update_nodes(updates).unwrap();
+        assert_eq!(updated, 2);
+
+        let node1 = engine.get_node(n1).unwrap();
+        let node2 = engine.get_node(n2).unwrap();
+
+        assert_eq!(
+            node1.properties.get("name"),
+            Some(&PropertyValue::String("Alice".into()))
+        );
+        assert_eq!(
+            node2.properties.get("name"),
+            Some(&PropertyValue::String("Bob".into()))
+        );
+    }
+
+    #[test]
+    fn batch_result_struct() {
+        let result = BatchResult {
+            created_ids: vec![1, 2, 3],
+            count: 3,
+        };
+        assert_eq!(result.created_ids, vec![1, 2, 3]);
+        assert_eq!(result.count, 3);
+    }
+
+    // ==================== Constraint Tests ====================
+
+    #[test]
+    fn create_constraint_unique() {
+        let engine = GraphEngine::new();
+        let constraint = Constraint {
+            name: "unique_email".to_string(),
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "email".to_string(),
+            constraint_type: ConstraintType::Unique,
+        };
+
+        engine.create_constraint(constraint.clone()).unwrap();
+
+        let retrieved = engine.get_constraint("unique_email");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap(), constraint);
+    }
+
+    #[test]
+    fn create_constraint_exists() {
+        let engine = GraphEngine::new();
+        let constraint = Constraint {
+            name: "require_name".to_string(),
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "name".to_string(),
+            constraint_type: ConstraintType::Exists,
+        };
+
+        engine.create_constraint(constraint).unwrap();
+        assert!(engine.get_constraint("require_name").is_some());
+    }
+
+    #[test]
+    fn create_constraint_type() {
+        let engine = GraphEngine::new();
+        let constraint = Constraint {
+            name: "age_is_int".to_string(),
+            target: ConstraintTarget::AllNodes,
+            property: "age".to_string(),
+            constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+        };
+
+        engine.create_constraint(constraint).unwrap();
+        assert!(engine.get_constraint("age_is_int").is_some());
+    }
+
+    #[test]
+    fn constraint_already_exists() {
+        let engine = GraphEngine::new();
+        let constraint = Constraint {
+            name: "test_constraint".to_string(),
+            target: ConstraintTarget::AllNodes,
+            property: "prop".to_string(),
+            constraint_type: ConstraintType::Exists,
+        };
+
+        engine.create_constraint(constraint.clone()).unwrap();
+        let result = engine.create_constraint(constraint);
+
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintAlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn drop_constraint() {
+        let engine = GraphEngine::new();
+        let constraint = Constraint {
+            name: "to_drop".to_string(),
+            target: ConstraintTarget::AllNodes,
+            property: "prop".to_string(),
+            constraint_type: ConstraintType::Exists,
+        };
+
+        engine.create_constraint(constraint).unwrap();
+        assert!(engine.get_constraint("to_drop").is_some());
+
+        engine.drop_constraint("to_drop").unwrap();
+        assert!(engine.get_constraint("to_drop").is_none());
+    }
+
+    #[test]
+    fn drop_constraint_not_found() {
+        let engine = GraphEngine::new();
+        let result = engine.drop_constraint("nonexistent");
+        assert!(matches!(result, Err(GraphError::ConstraintNotFound(_))));
+    }
+
+    #[test]
+    fn list_constraints() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "c1".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "a".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        engine
+            .create_constraint(Constraint {
+                name: "c2".to_string(),
+                target: ConstraintTarget::AllEdges,
+                property: "b".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let constraints = engine.list_constraints();
+        assert_eq!(constraints.len(), 2);
+    }
+
+    #[test]
+    fn unique_constraint_violation_on_create() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            PropertyValue::String("alice@test.com".into()),
+        );
+        engine
+            .create_node_with_labels(vec!["Person".into()], props.clone())
+            .unwrap();
+
+        // Attempt to create duplicate
+        let result = engine.create_node_with_labels(vec!["Person".into()], props);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn unique_constraint_violation_on_update() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "email".to_string(),
+            PropertyValue::String("alice@test.com".into()),
+        );
+        engine
+            .create_node_with_labels(vec!["Person".into()], props1)
+            .unwrap();
+
+        let mut props2 = HashMap::new();
+        props2.insert(
+            "email".to_string(),
+            PropertyValue::String("bob@test.com".into()),
+        );
+        let n2 = engine
+            .create_node_with_labels(vec!["Person".into()], props2)
+            .unwrap();
+
+        // Try to update n2 to have same email as n1
+        let mut update_props = HashMap::new();
+        update_props.insert(
+            "email".to_string(),
+            PropertyValue::String("alice@test.com".into()),
+        );
+
+        let result = engine.update_node(n2, None, update_props);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn exists_constraint_violation() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "require_name".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Attempt to create without required property
+        let result = engine.create_node_with_labels(vec!["Person".into()], HashMap::new());
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn type_constraint_violation() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "age_is_int".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "age".to_string(),
+                constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+            })
+            .unwrap();
+
+        // Attempt to create with wrong type
+        let mut props = HashMap::new();
+        props.insert(
+            "age".to_string(),
+            PropertyValue::String("not an int".into()),
+        );
+
+        let result = engine.create_node_with_labels(vec!["Person".into()], props);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn constraint_scoped_to_label() {
+        let engine = GraphEngine::new();
+
+        engine
+            .create_constraint(Constraint {
+                name: "person_name".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Creating a non-Person node without name should succeed
+        let result = engine.create_node_with_labels(vec!["Animal".into()], HashMap::new());
+        assert!(result.is_ok());
+
+        // Creating a Person node without name should fail
+        let result = engine.create_node_with_labels(vec!["Person".into()], HashMap::new());
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn constraint_validates_existing_data() {
+        let engine = GraphEngine::new();
+
+        // Create nodes with duplicate emails
+        let mut props1 = HashMap::new();
+        props1.insert(
+            "email".to_string(),
+            PropertyValue::String("same@test.com".into()),
+        );
+        engine
+            .create_node_with_labels(vec!["Person".into()], props1.clone())
+            .unwrap();
+        engine
+            .create_node_with_labels(vec!["Person".into()], props1)
+            .unwrap();
+
+        // Try to add unique constraint - should fail
+        let result = engine.create_constraint(Constraint {
+            name: "unique_email".to_string(),
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "email".to_string(),
+            constraint_type: ConstraintType::Unique,
+        });
+
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn constraints_persist_across_restart() {
+        let store = TensorStore::new();
+
+        // Create engine and add constraint
+        {
+            let engine = GraphEngine::with_store(store.clone());
+            engine
+                .create_constraint(Constraint {
+                    name: "persist_test".to_string(),
+                    target: ConstraintTarget::AllNodes,
+                    property: "test".to_string(),
+                    constraint_type: ConstraintType::Exists,
+                })
+                .unwrap();
+        }
+
+        // Create new engine with same store
+        {
+            let engine = GraphEngine::with_store(store);
+            let constraint = engine.get_constraint("persist_test");
+            assert!(constraint.is_some());
+            assert_eq!(constraint.unwrap().property, "test");
+        }
+    }
+
+    #[test]
+    fn node_input_new() {
+        let props = HashMap::new();
+        let input = NodeInput::new(vec!["Label".to_string()], props);
+        assert_eq!(input.labels, vec!["Label"]);
+        assert!(input.properties.is_empty());
+    }
+
+    #[test]
+    fn edge_input_new() {
+        let props = HashMap::new();
+        let input = EdgeInput::new(1, 2, "TYPE", props, true);
+        assert_eq!(input.from, 1);
+        assert_eq!(input.to, 2);
+        assert_eq!(input.edge_type, "TYPE");
+        assert!(input.directed);
+    }
+
+    #[test]
+    fn property_value_type() {
+        assert_eq!(PropertyValue::Null.value_type(), PropertyValueType::Null);
+        assert_eq!(PropertyValue::Int(42).value_type(), PropertyValueType::Int);
+        assert_eq!(
+            PropertyValue::Float(3.14).value_type(),
+            PropertyValueType::Float
+        );
+        assert_eq!(
+            PropertyValue::String("test".into()).value_type(),
+            PropertyValueType::String
+        );
+        assert_eq!(
+            PropertyValue::Bool(true).value_type(),
+            PropertyValueType::Bool
+        );
+    }
+
+    #[test]
+    fn edge_constraint_exists_violation() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        engine
+            .create_constraint(Constraint {
+                name: "edge_weight_required".to_string(),
+                target: ConstraintTarget::EdgeType("WEIGHTED".to_string()),
+                property: "weight".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Create edge without required property
+        let result = engine.create_edge(n1, n2, "WEIGHTED", HashMap::new(), true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+
+        // Create edge with required property - should succeed
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.5));
+        let result = engine.create_edge(n1, n2, "WEIGHTED", props, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn batch_edges_with_undirected() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let edges = vec![EdgeInput::new(n1, n2, "FRIEND", HashMap::new(), false)];
+        let result = engine.batch_create_edges(edges).unwrap();
+
+        assert_eq!(result.count, 1);
+
+        // Verify undirected edge is traversable both ways
+        let neighbors_from_n1 = engine
+            .neighbors(n1, None, Direction::Outgoing, None)
+            .unwrap();
+        let neighbors_from_n2 = engine
+            .neighbors(n2, None, Direction::Outgoing, None)
+            .unwrap();
+
+        assert!(neighbors_from_n1.iter().any(|n| n.id == n2));
+        assert!(neighbors_from_n2.iter().any(|n| n.id == n1));
+    }
+
+    #[test]
+    fn all_nodes_unique_constraint() {
+        let engine = GraphEngine::new();
+
+        // Create nodes with same property across different labels
+        let mut props = HashMap::new();
+        props.insert("uuid".to_string(), PropertyValue::String("abc".into()));
+        engine
+            .create_node_with_labels(vec!["Person".into()], props.clone())
+            .unwrap();
+
+        // Create unique constraint on AllNodes
+        engine
+            .create_constraint(Constraint {
+                name: "unique_uuid".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "uuid".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        // Creating any node with same uuid should fail
+        let result = engine.create_node_with_labels(vec!["Animal".into()], props);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_nodes_unique_constraint_validates_existing() {
+        let engine = GraphEngine::new();
+
+        // Create nodes with duplicate property
+        let mut props = HashMap::new();
+        props.insert("code".to_string(), PropertyValue::String("dup".into()));
+        engine
+            .create_node_with_labels(vec!["A".into()], props.clone())
+            .unwrap();
+        engine
+            .create_node_with_labels(vec!["B".into()], props)
+            .unwrap();
+
+        // Creating constraint should fail on existing data
+        let result = engine.create_constraint(Constraint {
+            name: "unique_code".to_string(),
+            target: ConstraintTarget::AllNodes,
+            property: "code".to_string(),
+            constraint_type: ConstraintType::Unique,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_edges_unique_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("ref".to_string(), PropertyValue::String("unique1".into()));
+        engine.create_edge(n1, n2, "TYPE_A", props, true).unwrap();
+
+        // Create unique constraint on AllEdges
+        engine
+            .create_constraint(Constraint {
+                name: "unique_edge_ref".to_string(),
+                target: ConstraintTarget::AllEdges,
+                property: "ref".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        // Creating edge with duplicate ref should fail
+        let mut props2 = HashMap::new();
+        props2.insert("ref".to_string(), PropertyValue::String("unique1".into()));
+        let result = engine.create_edge(n1, n2, "TYPE_B", props2, true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn edge_type_unique_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create unique constraint on specific edge type
+        engine
+            .create_constraint(Constraint {
+                name: "unique_edge_id".to_string(),
+                target: ConstraintTarget::EdgeType("LINK".to_string()),
+                property: "link_id".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        // First edge should succeed
+        let mut props1 = HashMap::new();
+        props1.insert("link_id".to_string(), PropertyValue::String("id1".into()));
+        engine.create_edge(n1, n2, "LINK", props1, true).unwrap();
+
+        // Duplicate on same type should fail
+        let mut props2 = HashMap::new();
+        props2.insert("link_id".to_string(), PropertyValue::String("id1".into()));
+        let result = engine.create_edge(n1, n2, "LINK", props2, true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+
+        // Different edge type should succeed
+        let mut props3 = HashMap::new();
+        props3.insert("link_id".to_string(), PropertyValue::String("id1".into()));
+        let result = engine.create_edge(n1, n2, "OTHER", props3, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn edge_type_constraint_validates_existing() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create edges with duplicate property
+        let mut props = HashMap::new();
+        props.insert("code".to_string(), PropertyValue::String("dup".into()));
+        engine
+            .create_edge(n1, n2, "REL", props.clone(), true)
+            .unwrap();
+        engine.create_edge(n1, n2, "REL", props, true).unwrap();
+
+        // Creating constraint should fail on existing data
+        let result = engine.create_constraint(Constraint {
+            name: "unique_rel_code".to_string(),
+            target: ConstraintTarget::EdgeType("REL".to_string()),
+            property: "code".to_string(),
+            constraint_type: ConstraintType::Unique,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_edges_exists_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        engine
+            .create_constraint(Constraint {
+                name: "all_edges_need_weight".to_string(),
+                target: ConstraintTarget::AllEdges,
+                property: "weight".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Edge without weight should fail
+        let result = engine.create_edge(n1, n2, "ANY_TYPE", HashMap::new(), true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_edges_exists_validates_existing() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create edge without the property
+        engine
+            .create_edge(n1, n2, "LINK", HashMap::new(), true)
+            .unwrap();
+
+        // Creating exists constraint should fail
+        let result = engine.create_constraint(Constraint {
+            name: "require_weight".to_string(),
+            target: ConstraintTarget::AllEdges,
+            property: "weight".to_string(),
+            constraint_type: ConstraintType::Exists,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn edge_type_exists_validates_existing() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create edge without the property
+        engine
+            .create_edge(n1, n2, "WEIGHTED", HashMap::new(), true)
+            .unwrap();
+
+        // Creating exists constraint should fail
+        let result = engine.create_constraint(Constraint {
+            name: "weighted_needs_weight".to_string(),
+            target: ConstraintTarget::EdgeType("WEIGHTED".to_string()),
+            property: "weight".to_string(),
+            constraint_type: ConstraintType::Exists,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_nodes_exists_validates_existing() {
+        let engine = GraphEngine::new();
+
+        // Create node without the property
+        engine
+            .create_node_with_labels(vec!["Any".into()], HashMap::new())
+            .unwrap();
+
+        // Creating exists constraint should fail
+        let result = engine.create_constraint(Constraint {
+            name: "require_id".to_string(),
+            target: ConstraintTarget::AllNodes,
+            property: "external_id".to_string(),
+            constraint_type: ConstraintType::Exists,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn all_edges_unique_validates_existing() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create edges with duplicate property
+        let mut props = HashMap::new();
+        props.insert("ref".to_string(), PropertyValue::String("dup".into()));
+        engine
+            .create_edge(n1, n2, "A", props.clone(), true)
+            .unwrap();
+        engine.create_edge(n1, n2, "B", props, true).unwrap();
+
+        // Creating constraint should fail
+        let result = engine.create_constraint(Constraint {
+            name: "unique_ref".to_string(),
+            target: ConstraintTarget::AllEdges,
+            property: "ref".to_string(),
+            constraint_type: ConstraintType::Unique,
+        });
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn edge_type_property_type_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        engine
+            .create_constraint(Constraint {
+                name: "weight_is_float".to_string(),
+                target: ConstraintTarget::EdgeType("WEIGHTED".to_string()),
+                property: "weight".to_string(),
+                constraint_type: ConstraintType::PropertyType(PropertyValueType::Float),
+            })
+            .unwrap();
+
+        // String weight should fail
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::String("heavy".into()));
+        let result = engine.create_edge(n1, n2, "WEIGHTED", props, true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+
+        // Float weight should succeed
+        let mut props2 = HashMap::new();
+        props2.insert("weight".to_string(), PropertyValue::Float(1.5));
+        let result = engine.create_edge(n1, n2, "WEIGHTED", props2, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn all_edges_property_type_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        engine
+            .create_constraint(Constraint {
+                name: "priority_is_int".to_string(),
+                target: ConstraintTarget::AllEdges,
+                property: "priority".to_string(),
+                constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+            })
+            .unwrap();
+
+        // String priority should fail
+        let mut props = HashMap::new();
+        props.insert("priority".to_string(), PropertyValue::String("high".into()));
+        let result = engine.create_edge(n1, n2, "ANY", props, true);
+        assert!(matches!(
+            result,
+            Err(GraphError::ConstraintViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn constraint_not_applicable_to_different_target() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        // Create constraint on nodes
+        engine
+            .create_constraint(Constraint {
+                name: "node_constraint".to_string(),
+                target: ConstraintTarget::NodeLabel("Person".to_string()),
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Edge creation should not be affected by node constraint
+        let result = engine.create_edge(n1, n2, "Person", HashMap::new(), true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn graph_error_display() {
+        let err1 = GraphError::ConstraintViolation {
+            constraint_name: "test".to_string(),
+            message: "violation".to_string(),
+        };
+        assert!(err1.to_string().contains("test"));
+        assert!(err1.to_string().contains("violation"));
+
+        let err2 = GraphError::ConstraintAlreadyExists("dup".to_string());
+        assert!(err2.to_string().contains("dup"));
+
+        let err3 = GraphError::ConstraintNotFound("missing".to_string());
+        assert!(err3.to_string().contains("missing"));
+
+        let err4 = GraphError::BatchValidationError {
+            index: 5,
+            cause: Box::new(GraphError::NodeNotFound(42)),
+        };
+        assert!(err4.to_string().contains("5"));
+
+        let err5 = GraphError::BatchCreationError {
+            index: 3,
+            cause: Box::new(GraphError::StorageError("fail".to_string())),
+        };
+        assert!(err5.to_string().contains("3"));
+
+        let err6 = GraphError::NegativeWeight {
+            edge_id: 1,
+            weight: -1.5,
+        };
+        assert!(err6.to_string().contains("-1.5"));
+    }
+
+    #[test]
+    fn graph_error_hash_new_variants() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+
+        set.insert(GraphError::ConstraintAlreadyExists("a".to_string()));
+        set.insert(GraphError::ConstraintNotFound("b".to_string()));
+        set.insert(GraphError::ConstraintViolation {
+            constraint_name: "c".to_string(),
+            message: "d".to_string(),
+        });
+        set.insert(GraphError::BatchValidationError {
+            index: 0,
+            cause: Box::new(GraphError::NodeNotFound(1)),
+        });
+        set.insert(GraphError::BatchCreationError {
+            index: 1,
+            cause: Box::new(GraphError::EdgeNotFound(2)),
+        });
+        set.insert(GraphError::PathNotFound);
+
+        assert_eq!(set.len(), 6);
+    }
+
+    #[test]
+    fn property_condition_int_float_comparison() {
+        // Test Int vs Float comparison paths
+        let cond = PropertyCondition::new("val", CompareOp::Lt, PropertyValue::Int(10));
+        let mut props = HashMap::new();
+        props.insert("val".to_string(), PropertyValue::Float(5.0));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props,
+            created_at: None,
+            updated_at: None,
+        };
+        // This should compare Int(10) with Float(5.0)
+        let result = cond.matches_node(&node);
+        assert!(result); // 5.0 < 10
+
+        // Test Float vs Int comparison
+        let cond2 = PropertyCondition::new("val", CompareOp::Gt, PropertyValue::Float(3.0));
+        let mut props2 = HashMap::new();
+        props2.insert("val".to_string(), PropertyValue::Int(5));
+        let node2 = Node {
+            id: 2,
+            labels: vec![],
+            properties: props2,
+            created_at: None,
+            updated_at: None,
+        };
+        let result2 = cond2.matches_node(&node2);
+        assert!(result2); // 5 > 3.0
+    }
+
+    #[test]
+    fn property_condition_bool_invalid_ops() {
+        // Bool with Lt/Le/Gt/Ge should return false
+        let cond = PropertyCondition::new("flag", CompareOp::Lt, PropertyValue::Bool(true));
+        let mut props = HashMap::new();
+        props.insert("flag".to_string(), PropertyValue::Bool(false));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props,
+            created_at: None,
+            updated_at: None,
+        };
+        assert!(!cond.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_float_nan() {
+        let cond = PropertyCondition::new("val", CompareOp::Eq, PropertyValue::Float(f64::NAN));
+        let mut props = HashMap::new();
+        props.insert("val".to_string(), PropertyValue::Float(1.0));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props,
+            created_at: None,
+            updated_at: None,
+        };
+        // NaN comparison with Eq should return false, Ne should return true
+        assert!(!cond.matches_node(&node));
+
+        let cond_ne = PropertyCondition::new("val", CompareOp::Ne, PropertyValue::Float(f64::NAN));
+        assert!(cond_ne.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_float_eq_ne() {
+        let cond_eq = PropertyCondition::new("val", CompareOp::Eq, PropertyValue::Float(1.0));
+        let mut props = HashMap::new();
+        props.insert("val".to_string(), PropertyValue::Float(1.0));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props.clone(),
+            created_at: None,
+            updated_at: None,
+        };
+        assert!(cond_eq.matches_node(&node));
+
+        let cond_ne = PropertyCondition::new("val", CompareOp::Ne, PropertyValue::Float(1.0));
+        assert!(!cond_ne.matches_node(&node));
+
+        let cond_ge = PropertyCondition::new("val", CompareOp::Ge, PropertyValue::Float(1.0));
+        assert!(cond_ge.matches_node(&node));
+
+        let cond_gt = PropertyCondition::new("val", CompareOp::Gt, PropertyValue::Float(0.5));
+        assert!(cond_gt.matches_node(&node));
+    }
+
+    #[test]
+    fn property_condition_int_le() {
+        let cond = PropertyCondition::new("val", CompareOp::Le, PropertyValue::Int(10));
+        let mut props = HashMap::new();
+        props.insert("val".to_string(), PropertyValue::Int(10));
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: props,
+            created_at: None,
+            updated_at: None,
+        };
+        assert!(cond.matches_node(&node));
+    }
+
+    #[test]
+    fn node_timestamps() {
+        let node = Node {
+            id: 1,
+            labels: vec![],
+            properties: HashMap::new(),
+            created_at: Some(1000),
+            updated_at: Some(2000),
+        };
+        assert_eq!(node.created_at_millis(), Some(1000));
+        assert_eq!(node.updated_at_millis(), Some(2000));
+    }
+
+    #[test]
+    fn edge_timestamps() {
+        let edge = Edge {
+            id: 1,
+            from: 1,
+            to: 2,
+            edge_type: "TEST".to_string(),
+            properties: HashMap::new(),
+            directed: true,
+            created_at: Some(1000),
+            updated_at: Some(2000),
+        };
+        assert_eq!(edge.created_at_millis(), Some(1000));
+        assert_eq!(edge.updated_at_millis(), Some(2000));
+    }
+
+    #[test]
+    fn pagerank_result_default() {
+        let result = PageRankResult::default();
+        assert!(result.scores.is_empty());
+    }
+
+    #[test]
+    fn community_result_default() {
+        let result = CommunityResult::default();
+        assert!(result.communities.is_empty());
+    }
+
+    #[test]
+    fn centrality_result_empty() {
+        let result = CentralityResult::empty(CentralityType::Betweenness);
+        assert!(result.scores.is_empty());
+    }
+
+    #[test]
+    fn connected_components_with_edge_type_filter() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Node", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n2, n3, "LIKES", HashMap::new(), true)
+            .unwrap();
+
+        let config = CommunityConfig::new().edge_type("KNOWS");
+        let result = engine.connected_components(Some(config)).unwrap();
+
+        // Only KNOWS edges counted, so n3 should be separate
+        assert!(result.community_count >= 2);
     }
 }
