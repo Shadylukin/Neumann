@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
+from neumann.config import ClientConfig
 from neumann.errors import (
     ConnectionError,
     NeumannError,
     error_from_code,
 )
+from neumann.retry import retry_call
 from neumann.types import (
     ArtifactInfo,
     BlobStats,
@@ -56,6 +58,7 @@ class NeumannClient:
         self._channel: object | None = None
         self._stub: object | None = None
         self._api_key: str | None = None
+        self._config: ClientConfig = ClientConfig.default()
         self._connected = False
 
     @classmethod
@@ -93,6 +96,7 @@ class NeumannClient:
         *,
         api_key: str | None = None,
         tls: bool = False,
+        config: ClientConfig | None = None,
     ) -> NeumannClient:
         """Connect to a remote Neumann server via gRPC.
 
@@ -100,6 +104,7 @@ class NeumannClient:
             address: Server address in format "host:port".
             api_key: Optional API key for authentication.
             tls: Whether to use TLS encryption.
+            config: Optional client configuration for timeouts, retries, and keepalive.
 
         Returns:
             A connected NeumannClient in remote mode.
@@ -109,15 +114,27 @@ class NeumannClient:
         """
         client = cls(mode="remote")
         client._api_key = api_key
+        client._config = config or ClientConfig.default()
 
         try:
             import grpc
 
+            # Channel options with keepalive
+            options = [
+                ("grpc.keepalive_time_ms", client._config.keepalive.time_ms),
+                ("grpc.keepalive_timeout_ms", client._config.keepalive.timeout_ms),
+                (
+                    "grpc.keepalive_permit_without_calls",
+                    1 if client._config.keepalive.permit_without_calls else 0,
+                ),
+                ("grpc.http2.min_time_between_pings_ms", client._config.keepalive.time_ms),
+            ]
+
             if tls:
                 credentials = grpc.ssl_channel_credentials()
-                client._channel = grpc.secure_channel(address, credentials)
+                client._channel = grpc.secure_channel(address, credentials, options=options)
             else:
-                client._channel = grpc.insecure_channel(address)
+                client._channel = grpc.insecure_channel(address, options=options)
 
             # Import the generated proto stubs
             from neumann.proto import neumann_pb2_grpc
@@ -211,7 +228,15 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            response = self._stub.Execute(request, metadata=metadata or None)
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
+            def do_execute() -> object:
+                return self._stub.Execute(request, timeout=timeout, metadata=metadata or None)
+
+            response = retry_call(do_execute, self._config.retry)
             return self._convert_proto_result(response)
         except Exception as e:
             if "grpc" in str(type(e).__module__):
@@ -256,7 +281,14 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            stream = self._stub.ExecuteStream(request, metadata=metadata or None)
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
+            stream = self._stub.ExecuteStream(
+                request, timeout=timeout, metadata=metadata or None
+            )
             for chunk in stream:
                 if chunk.is_final:
                     break
@@ -310,7 +342,17 @@ class NeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            response = self._stub.ExecuteBatch(request, metadata=metadata or None)
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
+            def do_batch() -> object:
+                return self._stub.ExecuteBatch(
+                    request, timeout=timeout, metadata=metadata or None
+                )
+
+            response = retry_call(do_batch, self._config.retry)
             return [self._convert_proto_result(r) for r in response.results]
         except Exception as e:
             if "grpc" in str(type(e).__module__):

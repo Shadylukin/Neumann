@@ -25,6 +25,12 @@ Basic usage:
 """
 
 from neumann.client import NeumannClient
+from neumann.config import (
+    ClientConfig,
+    KeepaliveConfig,
+    RetryConfig,
+    TimeoutConfig,
+)
 from neumann.errors import (
     AuthenticationError,
     ConnectionError,
@@ -77,6 +83,11 @@ __all__ = [
     # Client
     "NeumannClient",
     "Transaction",
+    # Configuration
+    "ClientConfig",
+    "TimeoutConfig",
+    "RetryConfig",
+    "KeepaliveConfig",
     # Types
     "QueryResult",
     "QueryResultType",

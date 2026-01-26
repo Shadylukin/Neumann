@@ -895,7 +895,7 @@ class TestNeumannClientConnectDirect:
     """Tests that directly call connect() to cover actual code paths."""
 
     def test_connect_insecure_channel(self) -> None:
-        """Test connect() creates insecure channel."""
+        """Test connect() creates insecure channel with keepalive options."""
         mock_grpc = MagicMock()
         mock_channel = MagicMock()
         mock_grpc.insecure_channel.return_value = mock_channel
@@ -919,10 +919,14 @@ class TestNeumannClientConnectDirect:
 
             client = client_mod.NeumannClient.connect("localhost:50051")
             assert client.is_connected
-            mock_grpc.insecure_channel.assert_called_once_with("localhost:50051")
+            # Check channel was created with address and keepalive options
+            mock_grpc.insecure_channel.assert_called_once()
+            call_args = mock_grpc.insecure_channel.call_args
+            assert call_args[0][0] == "localhost:50051"
+            assert "options" in call_args[1]
 
     def test_connect_secure_channel_with_tls(self) -> None:
-        """Test connect(tls=True) creates secure channel."""
+        """Test connect(tls=True) creates secure channel with keepalive options."""
         mock_grpc = MagicMock()
         mock_creds = MagicMock()
         mock_grpc.ssl_channel_credentials.return_value = mock_creds
@@ -949,7 +953,12 @@ class TestNeumannClientConnectDirect:
             client = client_mod.NeumannClient.connect("localhost:50051", tls=True)
             assert client.is_connected
             mock_grpc.ssl_channel_credentials.assert_called_once()
-            mock_grpc.secure_channel.assert_called_once_with("localhost:50051", mock_creds)
+            # Check secure channel was created with address, credentials, and options
+            mock_grpc.secure_channel.assert_called_once()
+            call_args = mock_grpc.secure_channel.call_args
+            assert call_args[0][0] == "localhost:50051"
+            assert call_args[0][1] == mock_creds
+            assert "options" in call_args[1]
 
     def test_connect_with_api_key(self) -> None:
         """Test connect() stores API key."""

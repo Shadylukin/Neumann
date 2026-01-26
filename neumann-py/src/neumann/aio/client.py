@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, AsyncIterator
 
+from neumann.config import ClientConfig
 from neumann.errors import ConnectionError, NeumannError
+from neumann.retry import retry_call_async
 from neumann.types import QueryResult
 
 if TYPE_CHECKING:
@@ -24,6 +26,7 @@ class AsyncNeumannClient:
         self._channel: object | None = None
         self._stub: object | None = None
         self._api_key: str | None = None
+        self._config: ClientConfig = ClientConfig.default()
         self._connected = False
 
     @classmethod
@@ -33,6 +36,7 @@ class AsyncNeumannClient:
         *,
         api_key: str | None = None,
         tls: bool = False,
+        config: ClientConfig | None = None,
     ) -> AsyncNeumannClient:
         """Connect to a remote Neumann server via async gRPC.
 
@@ -40,6 +44,7 @@ class AsyncNeumannClient:
             address: Server address in format "host:port".
             api_key: Optional API key for authentication.
             tls: Whether to use TLS encryption.
+            config: Optional client configuration for timeouts, retries, and keepalive.
 
         Returns:
             A connected AsyncNeumannClient.
@@ -49,15 +54,27 @@ class AsyncNeumannClient:
         """
         client = cls()
         client._api_key = api_key
+        client._config = config or ClientConfig.default()
 
         try:
             import grpc.aio
 
+            # Channel options with keepalive
+            options = [
+                ("grpc.keepalive_time_ms", client._config.keepalive.time_ms),
+                ("grpc.keepalive_timeout_ms", client._config.keepalive.timeout_ms),
+                (
+                    "grpc.keepalive_permit_without_calls",
+                    1 if client._config.keepalive.permit_without_calls else 0,
+                ),
+                ("grpc.http2.min_time_between_pings_ms", client._config.keepalive.time_ms),
+            ]
+
             if tls:
                 credentials = grpc.ssl_channel_credentials()
-                client._channel = grpc.aio.secure_channel(address, credentials)
+                client._channel = grpc.aio.secure_channel(address, credentials, options=options)
             else:
-                client._channel = grpc.aio.insecure_channel(address)
+                client._channel = grpc.aio.insecure_channel(address, options=options)
 
             from neumann.proto import neumann_pb2_grpc
 
@@ -125,7 +142,17 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
-            response = await self._stub.Execute(request, metadata=metadata or None)
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
+            async def do_execute() -> object:
+                return await self._stub.Execute(
+                    request, timeout=timeout, metadata=metadata or None
+                )
+
+            response = await retry_call_async(do_execute, self._config.retry)
 
             # Import conversion utilities from sync client
             from neumann.client import NeumannClient
@@ -166,12 +193,19 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
             # Import conversion utilities
             from neumann.client import NeumannClient
 
             converter = NeumannClient.__new__(NeumannClient)
 
-            stream = self._stub.ExecuteStream(request, metadata=metadata or None)
+            stream = self._stub.ExecuteStream(
+                request, timeout=timeout, metadata=metadata or None
+            )
             async for chunk in stream:
                 if chunk.is_final:
                     break
@@ -215,12 +249,22 @@ class AsyncNeumannClient:
             if self._api_key:
                 metadata.append(("x-api-key", self._api_key))
 
+            timeout = (
+                self._config.timeout.query_timeout_s
+                or self._config.timeout.default_timeout_s
+            )
+
             # Import conversion utilities
             from neumann.client import NeumannClient
 
             converter = NeumannClient.__new__(NeumannClient)
 
-            response = await self._stub.ExecuteBatch(request, metadata=metadata or None)
+            async def do_batch() -> object:
+                return await self._stub.ExecuteBatch(
+                    request, timeout=timeout, metadata=metadata or None
+                )
+
+            response = await retry_call_async(do_batch, self._config.retry)
             return [converter._convert_proto_result(r) for r in response.results]
         except Exception as e:
             if "grpc" in str(type(e).__module__):

@@ -284,7 +284,11 @@ class TestAsyncNeumannClientConnectDirect:
                 client = await AsyncNeumannClient.connect("localhost:50051")
 
                 assert client.is_connected
-                mock_channel.assert_called_once_with("localhost:50051")
+                # Check that channel was created with address and keepalive options
+                mock_channel.assert_called_once()
+                call_args = mock_channel.call_args
+                assert call_args[0][0] == "localhost:50051"
+                assert "options" in call_args[1]
                 mock_stub_cls.assert_called_once_with(mock_ch)
 
     @pytest.mark.asyncio
@@ -312,9 +316,12 @@ class TestAsyncNeumannClientConnectDirect:
 
                     assert client.is_connected
                     mock_creds.assert_called_once()
-                    mock_channel.assert_called_once_with(
-                        "localhost:50051", mock_credentials
-                    )
+                    # Check that channel was created with address, credentials, and options
+                    mock_channel.assert_called_once()
+                    call_args = mock_channel.call_args
+                    assert call_args[0][0] == "localhost:50051"
+                    assert call_args[0][1] == mock_credentials
+                    assert "options" in call_args[1]
 
     @pytest.mark.asyncio
     async def test_connect_with_api_key_stored(self) -> None:
