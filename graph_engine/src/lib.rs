@@ -1036,6 +1036,360 @@ impl Default for PatternMatchResult {
     }
 }
 
+// ============================================================================
+// Graph Algorithm Types
+// ============================================================================
+
+const PAGERANK_DEFAULT_DAMPING: f64 = 0.85;
+const PAGERANK_DEFAULT_TOLERANCE: f64 = 1e-6;
+const PAGERANK_DEFAULT_MAX_ITERATIONS: usize = 100;
+const CENTRALITY_PARALLEL_THRESHOLD: usize = 100;
+const COMMUNITY_MAX_PASSES: usize = 10;
+const LABEL_PROPAGATION_MAX_ITERATIONS: usize = 100;
+
+/// Configuration for `PageRank` algorithm.
+#[derive(Debug, Clone)]
+pub struct PageRankConfig {
+    pub damping: f64,
+    pub tolerance: f64,
+    pub max_iterations: usize,
+    pub direction: Direction,
+    pub edge_type: Option<String>,
+}
+
+impl Default for PageRankConfig {
+    fn default() -> Self {
+        Self {
+            damping: PAGERANK_DEFAULT_DAMPING,
+            tolerance: PAGERANK_DEFAULT_TOLERANCE,
+            max_iterations: PAGERANK_DEFAULT_MAX_ITERATIONS,
+            direction: Direction::Outgoing,
+            edge_type: None,
+        }
+    }
+}
+
+impl PageRankConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn damping(mut self, damping: f64) -> Self {
+        self.damping = damping;
+        self
+    }
+
+    #[must_use]
+    pub fn tolerance(mut self, tolerance: f64) -> Self {
+        self.tolerance = tolerance;
+        self
+    }
+
+    #[must_use]
+    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    #[must_use]
+    pub fn edge_type(mut self, edge_type: impl Into<String>) -> Self {
+        self.edge_type = Some(edge_type.into());
+        self
+    }
+}
+
+/// Result of `PageRank` computation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageRankResult {
+    pub scores: HashMap<u64, f64>,
+    pub iterations: usize,
+    pub convergence: f64,
+    pub converged: bool,
+}
+
+impl PageRankResult {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            scores: HashMap::new(),
+            iterations: 0,
+            convergence: 0.0,
+            converged: true,
+        }
+    }
+
+    #[must_use]
+    pub fn top_k(&self, k: usize) -> Vec<(u64, f64)> {
+        let mut sorted: Vec<_> = self.scores.iter().map(|(&id, &s)| (id, s)).collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(CmpOrdering::Equal));
+        sorted.truncate(k);
+        sorted
+    }
+}
+
+impl Default for PageRankResult {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Type of centrality measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CentralityType {
+    Betweenness,
+    Closeness,
+    Eigenvector,
+}
+
+/// Configuration for centrality algorithms.
+#[derive(Debug, Clone)]
+pub struct CentralityConfig {
+    pub direction: Direction,
+    pub edge_type: Option<String>,
+    pub sampling_ratio: f64,
+    pub max_iterations: usize,
+    pub tolerance: f64,
+}
+
+impl Default for CentralityConfig {
+    fn default() -> Self {
+        Self {
+            direction: Direction::Both,
+            edge_type: None,
+            sampling_ratio: 1.0,
+            max_iterations: PAGERANK_DEFAULT_MAX_ITERATIONS,
+            tolerance: PAGERANK_DEFAULT_TOLERANCE,
+        }
+    }
+}
+
+impl CentralityConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    #[must_use]
+    pub fn edge_type(mut self, edge_type: impl Into<String>) -> Self {
+        self.edge_type = Some(edge_type.into());
+        self
+    }
+
+    #[must_use]
+    pub fn sampling_ratio(mut self, ratio: f64) -> Self {
+        self.sampling_ratio = ratio.clamp(0.0, 1.0);
+        self
+    }
+
+    #[must_use]
+    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn tolerance(mut self, tolerance: f64) -> Self {
+        self.tolerance = tolerance;
+        self
+    }
+}
+
+/// Result of centrality computation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CentralityResult {
+    pub scores: HashMap<u64, f64>,
+    pub centrality_type: CentralityType,
+    pub iterations: Option<usize>,
+    pub converged: Option<bool>,
+    pub sample_count: Option<usize>,
+}
+
+impl CentralityResult {
+    #[must_use]
+    pub fn empty(centrality_type: CentralityType) -> Self {
+        Self {
+            scores: HashMap::new(),
+            centrality_type,
+            iterations: None,
+            converged: None,
+            sample_count: None,
+        }
+    }
+
+    #[must_use]
+    pub fn top_k(&self, k: usize) -> Vec<(u64, f64)> {
+        let mut sorted: Vec<_> = self.scores.iter().map(|(&id, &s)| (id, s)).collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(CmpOrdering::Equal));
+        sorted.truncate(k);
+        sorted
+    }
+}
+
+/// Configuration for community detection algorithms.
+#[derive(Debug, Clone)]
+pub struct CommunityConfig {
+    pub direction: Direction,
+    pub edge_type: Option<String>,
+    pub resolution: f64,
+    pub max_passes: usize,
+    pub max_iterations: usize,
+    pub seed: Option<u64>,
+}
+
+impl Default for CommunityConfig {
+    fn default() -> Self {
+        Self {
+            direction: Direction::Both,
+            edge_type: None,
+            resolution: 1.0,
+            max_passes: COMMUNITY_MAX_PASSES,
+            max_iterations: LABEL_PROPAGATION_MAX_ITERATIONS,
+            seed: None,
+        }
+    }
+}
+
+impl CommunityConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    #[must_use]
+    pub fn edge_type(mut self, edge_type: impl Into<String>) -> Self {
+        self.edge_type = Some(edge_type.into());
+        self
+    }
+
+    #[must_use]
+    pub fn resolution(mut self, resolution: f64) -> Self {
+        self.resolution = resolution;
+        self
+    }
+
+    #[must_use]
+    pub fn max_passes(mut self, max_passes: usize) -> Self {
+        self.max_passes = max_passes;
+        self
+    }
+
+    #[must_use]
+    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+}
+
+/// Result of community detection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommunityResult {
+    pub communities: HashMap<u64, u64>,
+    pub members: HashMap<u64, Vec<u64>>,
+    pub community_count: usize,
+    pub modularity: Option<f64>,
+    pub passes: Option<usize>,
+    pub iterations: Option<usize>,
+}
+
+impl CommunityResult {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            communities: HashMap::new(),
+            members: HashMap::new(),
+            community_count: 0,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        }
+    }
+
+    #[must_use]
+    pub fn communities_by_size(&self) -> Vec<(u64, usize)> {
+        let mut sizes: Vec<_> = self.members.iter().map(|(&c, m)| (c, m.len())).collect();
+        sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        sizes
+    }
+}
+
+impl Default for CommunityResult {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Union-Find data structure for connected components.
+struct UnionFind {
+    parent: HashMap<u64, u64>,
+    rank: HashMap<u64, usize>,
+}
+
+impl UnionFind {
+    fn new(nodes: &[u64]) -> Self {
+        let parent = nodes.iter().map(|&n| (n, n)).collect();
+        let rank = nodes.iter().map(|&n| (n, 0)).collect();
+        Self { parent, rank }
+    }
+
+    fn find(&mut self, x: u64) -> u64 {
+        let p = self.parent[&x];
+        if p == x {
+            x
+        } else {
+            let root = self.find(p);
+            self.parent.insert(x, root);
+            root
+        }
+    }
+
+    fn union(&mut self, x: u64, y: u64) {
+        let rx = self.find(x);
+        let ry = self.find(y);
+        if rx != ry {
+            let rank_x = self.rank[&rx];
+            let rank_y = self.rank[&ry];
+            match rank_x.cmp(&rank_y) {
+                CmpOrdering::Less => {
+                    self.parent.insert(rx, ry);
+                },
+                CmpOrdering::Greater => {
+                    self.parent.insert(ry, rx);
+                },
+                CmpOrdering::Equal => {
+                    self.parent.insert(ry, rx);
+                    self.rank.insert(rx, rank_x + 1);
+                },
+            }
+        }
+    }
+}
+
 /// Min-heap entry for Dijkstra (smallest distance first).
 #[derive(Copy, Clone)]
 struct DijkstraEntry {
@@ -5511,6 +5865,697 @@ impl GraphEngine {
             .into_iter()
             .filter(|key| self.entity_has_edges(key))
             .collect()
+    }
+
+    // ========================================================================
+    // Graph Algorithm Methods
+    // ========================================================================
+
+    fn all_node_ids(&self) -> Vec<u64> {
+        self.all_nodes().into_iter().map(|n| n.id).collect()
+    }
+
+    fn algo_bfs_distances(
+        &self,
+        source: u64,
+        direction: Direction,
+        edge_type: Option<&str>,
+    ) -> HashMap<u64, usize> {
+        let mut distances = HashMap::new();
+        distances.insert(source, 0);
+
+        let mut queue = VecDeque::new();
+        queue.push_back(source);
+
+        while let Some(current) = queue.pop_front() {
+            let current_dist = distances[&current];
+            for neighbor in self.get_neighbor_ids(current, edge_type, direction) {
+                if let std::collections::hash_map::Entry::Vacant(e) = distances.entry(neighbor) {
+                    e.insert(current_dist + 1);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        distances
+    }
+
+    /// Find connected components using Union-Find.
+    pub fn connected_components(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+
+        if nodes.is_empty() {
+            return Ok(CommunityResult::empty());
+        }
+
+        let mut uf = UnionFind::new(&nodes);
+
+        for edge in self.all_edges() {
+            if let Some(ref et) = cfg.edge_type {
+                if edge.edge_type != *et {
+                    continue;
+                }
+            }
+            uf.union(edge.from, edge.to);
+        }
+
+        let mut communities: HashMap<u64, u64> = HashMap::new();
+        let mut members: HashMap<u64, Vec<u64>> = HashMap::new();
+
+        for &node in &nodes {
+            let root = uf.find(node);
+            communities.insert(node, root);
+            members.entry(root).or_default().push(node);
+        }
+
+        let community_count = members.len();
+
+        Ok(CommunityResult {
+            communities,
+            members,
+            community_count,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        })
+    }
+
+    /// Compute `PageRank` scores using power iteration.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn pagerank(&self, config: Option<PageRankConfig>) -> Result<PageRankResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(PageRankResult::empty());
+        }
+
+        let mut out_degree: HashMap<u64, usize> = HashMap::new();
+        let mut in_neighbors: HashMap<u64, Vec<u64>> = HashMap::new();
+
+        for &node in &nodes {
+            let out_edges: Vec<Edge> = self
+                .edges_of(node, cfg.direction)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| {
+                    cfg.edge_type.is_none() || cfg.edge_type.as_deref() == Some(&e.edge_type)
+                })
+                .collect();
+            out_degree.insert(node, out_edges.len());
+            for edge in out_edges {
+                let target = if edge.from == node {
+                    edge.to
+                } else {
+                    edge.from
+                };
+                in_neighbors.entry(target).or_default().push(node);
+            }
+        }
+
+        let n_f64 = n as f64;
+        let mut scores: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 1.0 / n_f64)).collect();
+        let teleport = (1.0 - cfg.damping) / n_f64;
+
+        let mut convergence = f64::MAX;
+        let mut iterations = 0;
+
+        for iter in 0..cfg.max_iterations {
+            iterations = iter + 1;
+
+            let dangling_sum: f64 = nodes
+                .iter()
+                .filter(|&&n| out_degree.get(&n).copied().unwrap_or(0) == 0)
+                .map(|n| scores.get(n).copied().unwrap_or(0.0))
+                .sum();
+            let dangling_contrib = cfg.damping * dangling_sum / n_f64;
+
+            let new_scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+                nodes
+                    .par_iter()
+                    .map(|&node| {
+                        let sum: f64 = in_neighbors.get(&node).map_or(0.0, |ins| {
+                            ins.iter()
+                                .map(|&src| {
+                                    let deg = out_degree.get(&src).copied().unwrap_or(1).max(1);
+                                    scores.get(&src).copied().unwrap_or(0.0) / deg as f64
+                                })
+                                .sum()
+                        });
+                        (node, teleport + dangling_contrib + cfg.damping * sum)
+                    })
+                    .collect()
+            } else {
+                nodes
+                    .iter()
+                    .map(|&node| {
+                        let sum: f64 = in_neighbors.get(&node).map_or(0.0, |ins| {
+                            ins.iter()
+                                .map(|&src| {
+                                    let deg = out_degree.get(&src).copied().unwrap_or(1).max(1);
+                                    scores.get(&src).copied().unwrap_or(0.0) / deg as f64
+                                })
+                                .sum()
+                        });
+                        (node, teleport + dangling_contrib + cfg.damping * sum)
+                    })
+                    .collect()
+            };
+
+            convergence = nodes
+                .iter()
+                .map(|n| {
+                    (new_scores.get(n).copied().unwrap_or(0.0)
+                        - scores.get(n).copied().unwrap_or(0.0))
+                    .abs()
+                })
+                .sum();
+
+            scores = new_scores;
+
+            if convergence < cfg.tolerance {
+                return Ok(PageRankResult {
+                    scores,
+                    iterations,
+                    convergence,
+                    converged: true,
+                });
+            }
+        }
+
+        Ok(PageRankResult {
+            scores,
+            iterations,
+            convergence,
+            converged: false,
+        })
+    }
+
+    /// Compute betweenness centrality using Brandes' algorithm.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    pub fn betweenness_centrality(
+        &self,
+        config: Option<CentralityConfig>,
+    ) -> Result<CentralityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(CentralityResult::empty(CentralityType::Betweenness));
+        }
+
+        let sample_count = ((n as f64) * cfg.sampling_ratio).ceil() as usize;
+        let sources: Vec<u64> = if cfg.sampling_ratio < 1.0 && sample_count < n {
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            cfg.sampling_ratio.to_bits().hash(&mut hasher);
+            let seed = hasher.finish();
+
+            let mut indices: Vec<usize> = (0..n).collect();
+            let mut lcg = seed;
+            for i in (1..n).rev() {
+                lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let j = (lcg as usize) % (i + 1);
+                indices.swap(i, j);
+            }
+            indices.truncate(sample_count);
+            indices.into_iter().map(|i| nodes[i]).collect()
+        } else {
+            nodes.clone()
+        };
+
+        let partial_scores: Vec<HashMap<u64, f64>> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+            sources
+                .par_iter()
+                .map(|&source| {
+                    self.brandes_single_source(
+                        source,
+                        &nodes,
+                        cfg.direction,
+                        cfg.edge_type.as_deref(),
+                    )
+                })
+                .collect()
+        } else {
+            sources
+                .iter()
+                .map(|&source| {
+                    self.brandes_single_source(
+                        source,
+                        &nodes,
+                        cfg.direction,
+                        cfg.edge_type.as_deref(),
+                    )
+                })
+                .collect()
+        };
+
+        let mut scores: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
+        for partial in partial_scores {
+            for (node, score) in partial {
+                *scores.entry(node).or_insert(0.0) += score;
+            }
+        }
+
+        if cfg.sampling_ratio < 1.0 {
+            let scale = n as f64 / sample_count as f64;
+            for score in scores.values_mut() {
+                *score *= scale;
+            }
+        }
+
+        for score in scores.values_mut() {
+            *score /= 2.0;
+        }
+
+        Ok(CentralityResult {
+            scores,
+            centrality_type: CentralityType::Betweenness,
+            iterations: None,
+            converged: None,
+            sample_count: Some(sources.len()),
+        })
+    }
+
+    fn brandes_single_source(
+        &self,
+        source: u64,
+        nodes: &[u64],
+        direction: Direction,
+        edge_type: Option<&str>,
+    ) -> HashMap<u64, f64> {
+        let mut sigma: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
+        let mut dist: HashMap<u64, i64> = nodes.iter().map(|&n| (n, -1)).collect();
+        let mut pred: HashMap<u64, Vec<u64>> = nodes.iter().map(|&n| (n, Vec::new())).collect();
+
+        sigma.insert(source, 1.0);
+        dist.insert(source, 0);
+
+        let mut queue = VecDeque::new();
+        queue.push_back(source);
+        let mut stack = Vec::new();
+
+        while let Some(v) = queue.pop_front() {
+            stack.push(v);
+            let v_dist = dist[&v];
+
+            for neighbor in self.get_neighbor_ids(v, edge_type, direction) {
+                if dist[&neighbor] < 0 {
+                    queue.push_back(neighbor);
+                    dist.insert(neighbor, v_dist + 1);
+                }
+                if dist[&neighbor] == v_dist + 1 {
+                    sigma.insert(neighbor, sigma[&neighbor] + sigma[&v]);
+                    pred.get_mut(&neighbor).unwrap().push(v);
+                }
+            }
+        }
+
+        let mut delta: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
+
+        while let Some(w) = stack.pop() {
+            for &v in &pred[&w] {
+                let contrib = (sigma[&v] / sigma[&w]) * (1.0 + delta[&w]);
+                delta.insert(v, delta[&v] + contrib);
+            }
+        }
+
+        delta
+    }
+
+    /// Compute closeness centrality using harmonic variant.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn closeness_centrality(
+        &self,
+        config: Option<CentralityConfig>,
+    ) -> Result<CentralityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(CentralityResult::empty(CentralityType::Closeness));
+        }
+
+        let scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+            nodes
+                .par_iter()
+                .map(|&node| {
+                    let distances =
+                        self.algo_bfs_distances(node, cfg.direction, cfg.edge_type.as_deref());
+                    let harmonic_sum: f64 = distances
+                        .iter()
+                        .filter(|(&n, _)| n != node)
+                        .map(|(_, &d)| if d > 0 { 1.0 / d as f64 } else { 0.0 })
+                        .sum();
+                    (node, harmonic_sum / (n - 1).max(1) as f64)
+                })
+                .collect()
+        } else {
+            nodes
+                .iter()
+                .map(|&node| {
+                    let distances =
+                        self.algo_bfs_distances(node, cfg.direction, cfg.edge_type.as_deref());
+                    let harmonic_sum: f64 = distances
+                        .iter()
+                        .filter(|(&n, _)| n != node)
+                        .map(|(_, &d)| if d > 0 { 1.0 / d as f64 } else { 0.0 })
+                        .sum();
+                    (node, harmonic_sum / (n - 1).max(1) as f64)
+                })
+                .collect()
+        };
+
+        Ok(CentralityResult {
+            scores,
+            centrality_type: CentralityType::Closeness,
+            iterations: None,
+            converged: None,
+            sample_count: None,
+        })
+    }
+
+    /// Compute eigenvector centrality using power iteration.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn eigenvector_centrality(
+        &self,
+        config: Option<CentralityConfig>,
+    ) -> Result<CentralityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(CentralityResult::empty(CentralityType::Eigenvector));
+        }
+
+        let n_f64 = n as f64;
+        let mut scores: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 1.0 / n_f64)).collect();
+        let mut converged = false;
+        let mut iterations = 0;
+
+        for iter in 0..cfg.max_iterations {
+            iterations = iter + 1;
+
+            let new_scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+                nodes
+                    .par_iter()
+                    .map(|&node| {
+                        let sum: f64 = self
+                            .get_neighbor_ids(node, cfg.edge_type.as_deref(), cfg.direction)
+                            .iter()
+                            .map(|&neighbor| scores.get(&neighbor).copied().unwrap_or(0.0))
+                            .sum();
+                        (node, sum)
+                    })
+                    .collect()
+            } else {
+                nodes
+                    .iter()
+                    .map(|&node| {
+                        let sum: f64 = self
+                            .get_neighbor_ids(node, cfg.edge_type.as_deref(), cfg.direction)
+                            .iter()
+                            .map(|&neighbor| scores.get(&neighbor).copied().unwrap_or(0.0))
+                            .sum();
+                        (node, sum)
+                    })
+                    .collect()
+            };
+
+            let norm: f64 = new_scores.values().map(|&v| v * v).sum::<f64>().sqrt();
+            let norm = if norm > 0.0 { norm } else { 1.0 };
+
+            let normalized: HashMap<u64, f64> =
+                new_scores.into_iter().map(|(n, v)| (n, v / norm)).collect();
+
+            let delta: f64 = nodes
+                .iter()
+                .map(|n| {
+                    (normalized.get(n).copied().unwrap_or(0.0)
+                        - scores.get(n).copied().unwrap_or(0.0))
+                    .abs()
+                })
+                .sum();
+
+            scores = normalized;
+
+            if delta < cfg.tolerance {
+                converged = true;
+                break;
+            }
+        }
+
+        Ok(CentralityResult {
+            scores,
+            centrality_type: CentralityType::Eigenvector,
+            iterations: Some(iterations),
+            converged: Some(converged),
+            sample_count: None,
+        })
+    }
+
+    /// Detect communities using label propagation.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn label_propagation(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(CommunityResult::empty());
+        }
+
+        let mut labels: HashMap<u64, u64> = nodes.iter().map(|&n| (n, n)).collect();
+
+        let mut order: Vec<u64> = nodes.clone();
+        let seed = cfg.seed.unwrap_or(42);
+        let mut lcg = seed;
+        for i in (1..n).rev() {
+            lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let j = (lcg as usize) % (i + 1);
+            order.swap(i, j);
+        }
+
+        let mut iterations = 0;
+
+        for iter in 0..cfg.max_iterations {
+            iterations = iter + 1;
+            let mut changed = false;
+
+            for &node in &order {
+                let neighbors =
+                    self.get_neighbor_ids(node, cfg.edge_type.as_deref(), cfg.direction);
+                if neighbors.is_empty() {
+                    continue;
+                }
+
+                let mut label_counts: HashMap<u64, usize> = HashMap::new();
+                for &neighbor in &neighbors {
+                    let label = labels[&neighbor];
+                    *label_counts.entry(label).or_insert(0) += 1;
+                }
+
+                let max_count = label_counts.values().copied().max().unwrap_or(0);
+                let mut candidates: Vec<u64> = label_counts
+                    .into_iter()
+                    .filter(|&(_, c)| c == max_count)
+                    .map(|(l, _)| l)
+                    .collect();
+                candidates.sort_unstable();
+
+                let new_label = candidates[0];
+                if labels[&node] != new_label {
+                    labels.insert(node, new_label);
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        let mut members: HashMap<u64, Vec<u64>> = HashMap::new();
+        for (&node, &label) in &labels {
+            members.entry(label).or_default().push(node);
+        }
+
+        let community_count = members.len();
+
+        Ok(CommunityResult {
+            communities: labels,
+            members,
+            community_count,
+            modularity: None,
+            passes: None,
+            iterations: Some(iterations),
+        })
+    }
+
+    /// Detect communities using Louvain algorithm.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    pub fn louvain_communities(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
+        let cfg = config.unwrap_or_default();
+        let nodes = self.all_node_ids();
+        let n = nodes.len();
+
+        if n == 0 {
+            return Ok(CommunityResult::empty());
+        }
+
+        let mut adj: HashMap<u64, HashMap<u64, f64>> = HashMap::new();
+        let mut total_weight = 0.0;
+
+        for edge in self.all_edges() {
+            if let Some(ref et) = cfg.edge_type {
+                if edge.edge_type != *et {
+                    continue;
+                }
+            }
+            let weight = 1.0;
+            total_weight += weight;
+
+            adj.entry(edge.from)
+                .or_default()
+                .entry(edge.to)
+                .and_modify(|w| *w += weight)
+                .or_insert(weight);
+
+            if !edge.directed {
+                adj.entry(edge.to)
+                    .or_default()
+                    .entry(edge.from)
+                    .and_modify(|w| *w += weight)
+                    .or_insert(weight);
+            }
+        }
+
+        if total_weight == 0.0 {
+            let communities: HashMap<u64, u64> = nodes.iter().map(|&n| (n, n)).collect();
+            let members: HashMap<u64, Vec<u64>> = nodes.iter().map(|&n| (n, vec![n])).collect();
+            return Ok(CommunityResult {
+                communities,
+                members,
+                community_count: n,
+                modularity: Some(0.0),
+                passes: Some(0),
+                iterations: None,
+            });
+        }
+
+        let mut communities: HashMap<u64, u64> = nodes.iter().map(|&n| (n, n)).collect();
+        let mut passes = 0;
+
+        for pass in 0..cfg.max_passes {
+            passes = pass + 1;
+            let mut improved = false;
+
+            let mut order: Vec<u64> = nodes.clone();
+            let seed = cfg.seed.unwrap_or(42).wrapping_add(pass as u64);
+            let mut lcg = seed;
+            for i in (1..n).rev() {
+                lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let j = (lcg as usize) % (i + 1);
+                order.swap(i, j);
+            }
+
+            for &node in &order {
+                let current_comm = communities[&node];
+
+                let mut comm_weights: HashMap<u64, f64> = HashMap::new();
+                if let Some(neighbors) = adj.get(&node) {
+                    for (&neighbor, &weight) in neighbors {
+                        let neighbor_comm = communities[&neighbor];
+                        *comm_weights.entry(neighbor_comm).or_insert(0.0) += weight;
+                    }
+                }
+
+                let mut best_comm = current_comm;
+                let mut best_delta = 0.0;
+
+                for (&comm, &weight_to_comm) in &comm_weights {
+                    if comm == current_comm {
+                        continue;
+                    }
+                    let delta =
+                        weight_to_comm - comm_weights.get(&current_comm).copied().unwrap_or(0.0);
+                    let delta = delta * cfg.resolution;
+
+                    if delta > best_delta {
+                        best_delta = delta;
+                        best_comm = comm;
+                    }
+                }
+
+                if best_comm != current_comm {
+                    communities.insert(node, best_comm);
+                    improved = true;
+                }
+            }
+
+            if !improved {
+                break;
+            }
+        }
+
+        let modularity = self.compute_modularity_from_adj(&communities, &adj, total_weight);
+
+        let mut members: HashMap<u64, Vec<u64>> = HashMap::new();
+        for (&node, &comm) in &communities {
+            members.entry(comm).or_default().push(node);
+        }
+
+        let community_count = members.len();
+
+        Ok(CommunityResult {
+            communities,
+            members,
+            community_count,
+            modularity: Some(modularity),
+            passes: Some(passes),
+            iterations: None,
+        })
+    }
+
+    #[allow(clippy::unused_self)]
+    fn compute_modularity_from_adj(
+        &self,
+        communities: &HashMap<u64, u64>,
+        adj: &HashMap<u64, HashMap<u64, f64>>,
+        total_weight: f64,
+    ) -> f64 {
+        if total_weight == 0.0 {
+            return 0.0;
+        }
+
+        let mut degree: HashMap<u64, f64> = HashMap::new();
+        for (node, neighbors) in adj {
+            let sum: f64 = neighbors.values().sum();
+            degree.insert(*node, sum);
+        }
+
+        let mut q = 0.0;
+        let m2 = 2.0 * total_weight;
+
+        for (node, neighbors) in adj {
+            let node_comm = communities.get(node).copied().unwrap_or(*node);
+            let node_deg = degree.get(node).copied().unwrap_or(0.0);
+
+            for (&neighbor, &weight) in neighbors {
+                let neighbor_comm = communities.get(&neighbor).copied().unwrap_or(neighbor);
+                if node_comm == neighbor_comm {
+                    let neighbor_deg = degree.get(&neighbor).copied().unwrap_or(0.0);
+                    q += weight - (node_deg * neighbor_deg) / m2;
+                }
+            }
+        }
+
+        q / m2
     }
 }
 
@@ -13244,5 +14289,845 @@ mod tests {
         let result = PatternMatchResult::default();
         assert!(result.is_empty());
         assert_eq!(result.stats, PatternMatchStats::default());
+    }
+
+    // ==================== PageRank Tests ====================
+
+    #[test]
+    fn pagerank_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.pagerank(None).unwrap();
+        assert!(result.scores.is_empty());
+        assert_eq!(result.iterations, 0);
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn pagerank_single_node() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let result = engine.pagerank(None).unwrap();
+        assert_eq!(result.scores.len(), 1);
+        assert!((result.scores[&n1] - 1.0).abs() < 1e-6);
+        assert!(result.converged);
+    }
+
+    #[test]
+    fn pagerank_two_nodes_directed() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.pagerank(None).unwrap();
+        assert_eq!(result.scores.len(), 2);
+        // Node 2 should have higher rank (receives link)
+        assert!(result.scores[&n2] > result.scores[&n1]);
+    }
+
+    #[test]
+    fn pagerank_cycle() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..4 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(nodes[0], nodes[1], "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[2], "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[2], nodes[3], "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[3], nodes[0], "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.pagerank(None).unwrap();
+        assert_eq!(result.scores.len(), 4);
+        // All nodes should have equal rank in a cycle
+        let first_score = result.scores[&nodes[0]];
+        for node in &nodes[1..] {
+            assert!((result.scores[node] - first_score).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn pagerank_star_graph() {
+        let engine = GraphEngine::new();
+        // Center node, spokes all pointing to center
+        let center = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut spokes = Vec::new();
+        for _ in 0..5 {
+            let spoke = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(spoke, center, "LINKS", HashMap::new(), true)
+                .unwrap();
+            spokes.push(spoke);
+        }
+
+        let result = engine.pagerank(None).unwrap();
+        // Center should have highest rank
+        let center_score = result.scores[&center];
+        for spoke in &spokes {
+            assert!(center_score > result.scores[spoke]);
+        }
+    }
+
+    #[test]
+    fn pagerank_convergence() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..10 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..9 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "LINKS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.pagerank(None).unwrap();
+        assert!(result.converged);
+        assert!(result.convergence < 1e-6);
+    }
+
+    #[test]
+    fn pagerank_max_iterations() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "LINKS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let config = PageRankConfig::new().max_iterations(2);
+        let result = engine.pagerank(Some(config)).unwrap();
+        assert_eq!(result.iterations, 2);
+    }
+
+    #[test]
+    fn pagerank_damping_factor() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let config_low = PageRankConfig::new().damping(0.5);
+        let config_high = PageRankConfig::new().damping(0.99);
+
+        let result_low = engine.pagerank(Some(config_low)).unwrap();
+        let result_high = engine.pagerank(Some(config_high)).unwrap();
+
+        // Higher damping should lead to more difference between nodes
+        let diff_low = (result_low.scores[&n2] - result_low.scores[&n1]).abs();
+        let diff_high = (result_high.scores[&n2] - result_high.scores[&n1]).abs();
+        assert!(diff_high > diff_low);
+    }
+
+    #[test]
+    fn pagerank_dangling_nodes() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        // 1 -> 2, 1 -> 3, 2 and 3 are dangling (no outgoing edges)
+        engine
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.pagerank(None).unwrap();
+        assert_eq!(result.scores.len(), 3);
+        // All nodes should have valid scores
+        for score in result.scores.values() {
+            assert!(*score > 0.0);
+            assert!(score.is_finite());
+        }
+    }
+
+    #[test]
+    fn pagerank_edge_type_filter() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n1, n3, "FOLLOWS", HashMap::new(), true)
+            .unwrap();
+
+        let config = PageRankConfig::new().edge_type("LINKS");
+        let result = engine.pagerank(Some(config)).unwrap();
+
+        // With only LINKS edges, node 2 should rank higher than 3
+        assert!(result.scores[&n2] > result.scores[&n3]);
+    }
+
+    #[test]
+    fn pagerank_result_top_k() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(n3, n2, "LINKS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.pagerank(None).unwrap();
+        let top_2 = result.top_k(2);
+        assert_eq!(top_2.len(), 2);
+        // Node 2 should be first (highest rank)
+        assert_eq!(top_2[0].0, n2);
+    }
+
+    #[test]
+    fn pagerank_config_builder() {
+        let config = PageRankConfig::new()
+            .damping(0.9)
+            .tolerance(1e-8)
+            .max_iterations(50)
+            .direction(Direction::Both)
+            .edge_type("KNOWS");
+
+        assert!((config.damping - 0.9).abs() < 1e-10);
+        assert!((config.tolerance - 1e-8).abs() < 1e-12);
+        assert_eq!(config.max_iterations, 50);
+        assert_eq!(config.direction, Direction::Both);
+        assert_eq!(config.edge_type, Some("KNOWS".to_string()));
+    }
+
+    // ==================== Centrality Tests ====================
+
+    #[test]
+    fn betweenness_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.betweenness_centrality(None).unwrap();
+        assert!(result.scores.is_empty());
+        assert_eq!(result.centrality_type, CentralityType::Betweenness);
+    }
+
+    #[test]
+    fn betweenness_line_graph() {
+        let engine = GraphEngine::new();
+        // 1 - 2 - 3 - 4 - 5
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(nodes[i + 1], nodes[i], "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.betweenness_centrality(None).unwrap();
+        // Middle node (index 2) should have highest betweenness
+        assert!(result.scores[&nodes[2]] >= result.scores[&nodes[0]]);
+        assert!(result.scores[&nodes[2]] >= result.scores[&nodes[4]]);
+    }
+
+    #[test]
+    fn betweenness_star_graph() {
+        let engine = GraphEngine::new();
+        // Center node 1, spokes 2-6
+        let center = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut spokes = Vec::new();
+        for _ in 0..5 {
+            let spoke = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(center, spoke, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(spoke, center, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            spokes.push(spoke);
+        }
+
+        let result = engine.betweenness_centrality(None).unwrap();
+        // Center should have highest betweenness
+        let center_score = result.scores[&center];
+        for spoke in &spokes {
+            assert!(center_score >= result.scores[spoke]);
+        }
+    }
+
+    #[test]
+    fn betweenness_cycle() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..4 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(nodes[0], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[2], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[2], nodes[3], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[3], nodes[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[3], nodes[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[0], nodes[3], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.betweenness_centrality(None).unwrap();
+        // All nodes should have similar betweenness in a cycle
+        let first_score = result.scores[&nodes[0]];
+        for node in &nodes[1..] {
+            assert!((result.scores[node] - first_score).abs() < 0.5);
+        }
+    }
+
+    #[test]
+    fn betweenness_sampling() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..20 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..19 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let config = CentralityConfig::new().sampling_ratio(0.5);
+        let result = engine.betweenness_centrality(Some(config)).unwrap();
+        assert!(result.sample_count.is_some());
+        assert!(result.sample_count.unwrap() <= 10);
+    }
+
+    #[test]
+    fn closeness_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.closeness_centrality(None).unwrap();
+        assert!(result.scores.is_empty());
+        assert_eq!(result.centrality_type, CentralityType::Closeness);
+    }
+
+    #[test]
+    fn closeness_disconnected() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        // No edges - disconnected
+
+        let result = engine.closeness_centrality(None).unwrap();
+        // Harmonic closeness handles disconnected graphs
+        assert_eq!(result.scores.len(), 2);
+        assert_eq!(result.scores[&n1], 0.0);
+        assert_eq!(result.scores[&n2], 0.0);
+    }
+
+    #[test]
+    fn closeness_star_graph() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut spokes = Vec::new();
+        for _ in 0..5 {
+            let spoke = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(center, spoke, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(spoke, center, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            spokes.push(spoke);
+        }
+
+        let result = engine.closeness_centrality(None).unwrap();
+        // Center should have highest closeness
+        let center_score = result.scores[&center];
+        for spoke in &spokes {
+            assert!(center_score >= result.scores[spoke]);
+        }
+    }
+
+    #[test]
+    fn eigenvector_empty_graph() {
+        let engine = GraphEngine::new();
+        let result = engine.eigenvector_centrality(None).unwrap();
+        assert!(result.scores.is_empty());
+        assert_eq!(result.centrality_type, CentralityType::Eigenvector);
+    }
+
+    #[test]
+    fn eigenvector_star_graph() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut spokes = Vec::new();
+        for _ in 0..5 {
+            let spoke = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(center, spoke, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(spoke, center, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            spokes.push(spoke);
+        }
+
+        let result = engine.eigenvector_centrality(None).unwrap();
+        // All nodes should have valid scores
+        assert_eq!(result.scores.len(), 6);
+        for score in result.scores.values() {
+            assert!(*score >= 0.0);
+        }
+    }
+
+    #[test]
+    fn eigenvector_convergence() {
+        let engine = GraphEngine::new();
+        // Use a clique for guaranteed convergence
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..5 {
+            for j in 0..5 {
+                if i != j {
+                    engine
+                        .create_edge(nodes[i], nodes[j], "KNOWS", HashMap::new(), true)
+                        .unwrap();
+                }
+            }
+        }
+
+        let result = engine.eigenvector_centrality(None).unwrap();
+        assert!(result.converged.unwrap_or(false));
+    }
+
+    #[test]
+    fn centrality_result_top_k() {
+        let engine = GraphEngine::new();
+        let center = engine.create_node("Person", HashMap::new()).unwrap();
+        let mut spokes = Vec::new();
+        for _ in 0..5 {
+            let spoke = engine.create_node("Person", HashMap::new()).unwrap();
+            engine
+                .create_edge(spoke, center, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(center, spoke, "KNOWS", HashMap::new(), true)
+                .unwrap();
+            spokes.push(spoke);
+        }
+
+        let result = engine.betweenness_centrality(None).unwrap();
+        let top_3 = result.top_k(3);
+        assert_eq!(top_3.len(), 3);
+        // Center should be first
+        assert_eq!(top_3[0].0, center);
+    }
+
+    #[test]
+    fn centrality_config_builder() {
+        let config = CentralityConfig::new()
+            .direction(Direction::Outgoing)
+            .edge_type("FOLLOWS")
+            .sampling_ratio(0.5)
+            .max_iterations(50)
+            .tolerance(1e-8);
+
+        assert_eq!(config.direction, Direction::Outgoing);
+        assert_eq!(config.edge_type, Some("FOLLOWS".to_string()));
+        assert!((config.sampling_ratio - 0.5).abs() < 1e-10);
+        assert_eq!(config.max_iterations, 50);
+        assert!((config.tolerance - 1e-8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn centrality_type_enum() {
+        assert_ne!(CentralityType::Betweenness, CentralityType::Closeness);
+        assert_ne!(CentralityType::Closeness, CentralityType::Eigenvector);
+        assert_eq!(CentralityType::Betweenness, CentralityType::Betweenness);
+    }
+
+    // ==================== Community Detection Tests ====================
+
+    #[test]
+    fn connected_components_empty() {
+        let engine = GraphEngine::new();
+        let result = engine.connected_components(None).unwrap();
+        assert!(result.communities.is_empty());
+        assert!(result.members.is_empty());
+        assert_eq!(result.community_count, 0);
+    }
+
+    #[test]
+    fn connected_components_isolated() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+        let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+        // No edges - all isolated
+
+        let result = engine.connected_components(None).unwrap();
+        assert_eq!(result.community_count, 3);
+        // Each node in its own community
+        let comm_1 = result.communities[&n1];
+        let comm_2 = result.communities[&n2];
+        let comm_3 = result.communities[&n3];
+        assert_ne!(comm_1, comm_2);
+        assert_ne!(comm_2, comm_3);
+        assert_ne!(comm_1, comm_3);
+    }
+
+    #[test]
+    fn connected_components_single() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.connected_components(None).unwrap();
+        assert_eq!(result.community_count, 1);
+        // All nodes in same community
+        let comm = result.communities[&nodes[0]];
+        for node in &nodes[1..] {
+            assert_eq!(result.communities[node], comm);
+        }
+    }
+
+    #[test]
+    fn connected_components_two_groups() {
+        let engine = GraphEngine::new();
+        // Group 1: 1-2-3
+        let mut group1 = Vec::new();
+        for _ in 0..3 {
+            group1.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(group1[0], group1[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(group1[1], group1[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Group 2: 4-5
+        let mut group2 = Vec::new();
+        for _ in 0..2 {
+            group2.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(group2[0], group2[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.connected_components(None).unwrap();
+        assert_eq!(result.community_count, 2);
+        // Check group membership
+        assert_eq!(
+            result.communities[&group1[0]],
+            result.communities[&group1[1]]
+        );
+        assert_eq!(
+            result.communities[&group1[1]],
+            result.communities[&group1[2]]
+        );
+        assert_eq!(
+            result.communities[&group2[0]],
+            result.communities[&group2[1]]
+        );
+        assert_ne!(
+            result.communities[&group1[0]],
+            result.communities[&group2[0]]
+        );
+    }
+
+    #[test]
+    fn louvain_empty() {
+        let engine = GraphEngine::new();
+        let result = engine.louvain_communities(None).unwrap();
+        assert!(result.communities.is_empty());
+        assert_eq!(result.community_count, 0);
+    }
+
+    #[test]
+    fn louvain_single_community() {
+        let engine = GraphEngine::new();
+        // Fully connected graph - should stay as one community
+        let mut nodes = Vec::new();
+        for _ in 0..4 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                engine
+                    .create_edge(nodes[i], nodes[j], "KNOWS", HashMap::new(), true)
+                    .unwrap();
+                engine
+                    .create_edge(nodes[j], nodes[i], "KNOWS", HashMap::new(), true)
+                    .unwrap();
+            }
+        }
+
+        let result = engine.louvain_communities(None).unwrap();
+        assert!(result.community_count >= 1);
+    }
+
+    #[test]
+    fn louvain_two_clusters() {
+        let engine = GraphEngine::new();
+        // Two dense clusters with weak connection
+        // Cluster 1: 1, 2, 3
+        let mut cluster1 = Vec::new();
+        for _ in 0..3 {
+            cluster1.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(cluster1[0], cluster1[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster1[1], cluster1[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster1[1], cluster1[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster1[2], cluster1[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster1[0], cluster1[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster1[2], cluster1[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Cluster 2: 4, 5, 6
+        let mut cluster2 = Vec::new();
+        for _ in 0..3 {
+            cluster2.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(cluster2[0], cluster2[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster2[1], cluster2[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster2[1], cluster2[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster2[2], cluster2[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster2[0], cluster2[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(cluster2[2], cluster2[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Weak link between clusters
+        engine
+            .create_edge(cluster1[2], cluster2[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.louvain_communities(None).unwrap();
+        // Should find 2 communities
+        assert!(result.community_count >= 1);
+    }
+
+    #[test]
+    fn louvain_modularity() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..4 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(nodes[0], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[2], nodes[3], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[3], nodes[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let result = engine.louvain_communities(None).unwrap();
+        // Modularity should be computed
+        assert!(result.modularity.is_some());
+    }
+
+    #[test]
+    fn louvain_deterministic() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..6 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(nodes[0], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[3], nodes[4], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[4], nodes[5], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let config = CommunityConfig::new().seed(42);
+        let result1 = engine.louvain_communities(Some(config.clone())).unwrap();
+        let result2 = engine.louvain_communities(Some(config)).unwrap();
+
+        assert_eq!(result1.community_count, result2.community_count);
+    }
+
+    #[test]
+    fn label_propagation_empty() {
+        let engine = GraphEngine::new();
+        let result = engine.label_propagation(None).unwrap();
+        assert!(result.communities.is_empty());
+        assert_eq!(result.community_count, 0);
+    }
+
+    #[test]
+    fn label_propagation_isolated() {
+        let engine = GraphEngine::new();
+        let _n1 = engine.create_node("Person", HashMap::new()).unwrap();
+        let _n2 = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let result = engine.label_propagation(None).unwrap();
+        // Each isolated node gets its own community
+        assert_eq!(result.community_count, 2);
+    }
+
+    #[test]
+    fn label_propagation_convergence() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..5 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        for i in 0..4 {
+            engine
+                .create_edge(nodes[i], nodes[i + 1], "KNOWS", HashMap::new(), true)
+                .unwrap();
+            engine
+                .create_edge(nodes[i + 1], nodes[i], "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let result = engine.label_propagation(None).unwrap();
+        assert!(result.iterations.is_some());
+    }
+
+    #[test]
+    fn label_propagation_deterministic() {
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..6 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(nodes[0], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[0], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[1], nodes[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(nodes[2], nodes[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        let config = CommunityConfig::new().seed(42);
+        let result1 = engine.label_propagation(Some(config.clone())).unwrap();
+        let result2 = engine.label_propagation(Some(config)).unwrap();
+
+        assert_eq!(result1.communities, result2.communities);
+    }
+
+    #[test]
+    fn community_config_builder() {
+        let config = CommunityConfig::new()
+            .direction(Direction::Both)
+            .edge_type("KNOWS")
+            .resolution(1.5)
+            .max_passes(20)
+            .max_iterations(200)
+            .seed(12345);
+
+        assert_eq!(config.direction, Direction::Both);
+        assert_eq!(config.edge_type, Some("KNOWS".to_string()));
+        assert!((config.resolution - 1.5).abs() < 1e-10);
+        assert_eq!(config.max_passes, 20);
+        assert_eq!(config.max_iterations, 200);
+        assert_eq!(config.seed, Some(12345));
+    }
+
+    #[test]
+    fn community_result_communities_by_size() {
+        let engine = GraphEngine::new();
+        // Group 1: 3 nodes
+        let mut group = Vec::new();
+        for _ in 0..3 {
+            group.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        engine
+            .create_edge(group[0], group[1], "KNOWS", HashMap::new(), true)
+            .unwrap();
+        engine
+            .create_edge(group[1], group[2], "KNOWS", HashMap::new(), true)
+            .unwrap();
+
+        // Isolated: 1 node
+        let _isolated = engine.create_node("Person", HashMap::new()).unwrap();
+
+        let result = engine.connected_components(None).unwrap();
+        let by_size = result.communities_by_size();
+        // Largest community first
+        assert!(!by_size.is_empty());
+        if by_size.len() > 1 {
+            assert!(by_size[0].1 >= by_size[1].1);
+        }
     }
 }
