@@ -9,7 +9,10 @@ use std::{
     cmp::Ordering as CmpOrdering,
     collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1558,6 +1561,20 @@ pub enum GraphError {
         index: usize,
         cause: Box<GraphError>,
     },
+    PartialDeletionError {
+        node_id: u64,
+        failed_edges: Vec<u64>,
+    },
+    IdSpaceExhausted {
+        entity_type: &'static str,
+    },
+    InvalidPropertyName {
+        name: String,
+    },
+    CorruptedEdge {
+        edge_id: u64,
+        field: String,
+    },
 }
 
 impl std::fmt::Display for GraphError {
@@ -1591,6 +1608,31 @@ impl std::fmt::Display for GraphError {
             },
             Self::BatchCreationError { index, cause } => {
                 write!(f, "Batch creation failed at index {index}: {cause}")
+            },
+            Self::PartialDeletionError {
+                node_id,
+                failed_edges,
+            } => {
+                write!(
+                    f,
+                    "Partial deletion of node {node_id}: {} edges failed to delete",
+                    failed_edges.len()
+                )
+            },
+            Self::IdSpaceExhausted { entity_type } => {
+                write!(f, "ID space exhausted for {entity_type}")
+            },
+            Self::InvalidPropertyName { name } => {
+                write!(
+                    f,
+                    "Invalid property name '{name}': contains reserved character ':'"
+                )
+            },
+            Self::CorruptedEdge { edge_id, field } => {
+                write!(
+                    f,
+                    "Corrupted edge {edge_id}: missing or invalid field '{field}'"
+                )
             },
         }
     }
@@ -1630,6 +1672,23 @@ impl Hash for GraphError {
                 index.hash(state);
                 cause.hash(state);
             },
+            Self::PartialDeletionError {
+                node_id,
+                failed_edges,
+            } => {
+                node_id.hash(state);
+                failed_edges.hash(state);
+            },
+            Self::IdSpaceExhausted { entity_type } => {
+                entity_type.hash(state);
+            },
+            Self::InvalidPropertyName { name } => {
+                name.hash(state);
+            },
+            Self::CorruptedEdge { edge_id, field } => {
+                edge_id.hash(state);
+                field.hash(state);
+            },
         }
     }
 }
@@ -1648,6 +1707,11 @@ const INDEX_LOCK_COUNT: usize = 64;
 /// Type alias for the `BTreeMap` index structure.
 type PropertyIndex = BTreeMap<OrderedPropertyValue, Vec<u64>>;
 
+/// Lock ordering (acquire in this order to prevent deadlocks):
+/// 1. `batch_unique_lock` - Serializes unique constraint operations
+/// 2. `constraints` - Constraint definitions (`RwLock`)
+/// 3. `btree_indexes` - In-memory indexes (`RwLock`)
+/// 4. Store operations - Internal `TensorStore` locking
 pub struct GraphEngine {
     store: TensorStore,
     node_counter: AtomicU64,
@@ -1663,6 +1727,8 @@ pub struct GraphEngine {
     edge_type_index_initialized: AtomicBool,
     /// Cached constraints for fast validation.
     constraints: RwLock<HashMap<String, Constraint>>,
+    /// Serializes batch operations involving unique constraints to prevent TOCTOU races.
+    batch_unique_lock: RwLock<()>,
 }
 
 impl std::fmt::Debug for GraphEngine {
@@ -1686,6 +1752,7 @@ fn create_index_locks() -> [RwLock<()>; INDEX_LOCK_COUNT] {
 impl GraphEngine {
     const PARALLEL_THRESHOLD: usize = 100;
     const AGGREGATE_PARALLEL_THRESHOLD: usize = 1000;
+    const MAX_UNPAGINATED_RESULTS: usize = 100_000;
 
     #[must_use]
     pub fn new() -> Self {
@@ -1698,6 +1765,7 @@ impl GraphEngine {
             label_index_initialized: AtomicBool::new(false),
             edge_type_index_initialized: AtomicBool::new(false),
             constraints: RwLock::new(HashMap::new()),
+            batch_unique_lock: RwLock::new(()),
         }
     }
 
@@ -1757,6 +1825,7 @@ impl GraphEngine {
             label_index_initialized: AtomicBool::new(label_index_exists),
             edge_type_index_initialized: AtomicBool::new(edge_type_index_exists),
             constraints: RwLock::new(constraints),
+            batch_unique_lock: RwLock::new(()),
         }
     }
 
@@ -1947,10 +2016,21 @@ impl GraphEngine {
 
     /// Create an index on a node property for O(log n) lookups.
     ///
+    fn validate_property_name(name: &str) -> Result<()> {
+        if name.contains(':') {
+            return Err(GraphError::InvalidPropertyName {
+                name: name.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// # Errors
     ///
     /// Returns `IndexAlreadyExists` if an index already exists for this property.
+    /// Returns `InvalidPropertyName` if the property name contains ':'.
     pub fn create_node_property_index(&self, property: &str) -> Result<()> {
+        Self::validate_property_name(property)?;
         self.create_property_index(IndexTarget::Node, property)
     }
 
@@ -1959,7 +2039,9 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `IndexAlreadyExists` if an index already exists for this property.
+    /// Returns `InvalidPropertyName` if the property name contains ':'.
     pub fn create_edge_property_index(&self, property: &str) -> Result<()> {
+        Self::validate_property_name(property)?;
         self.create_property_index(IndexTarget::Edge, property)
     }
 
@@ -2831,6 +2913,14 @@ impl GraphEngine {
         labels: Vec<String>,
         properties: HashMap<String, PropertyValue>,
     ) -> Result<u64> {
+        // Acquire lock to prevent TOCTOU race when unique constraints exist.
+        let has_unique = self.has_any_unique_node_constraint();
+        let _guard = if has_unique {
+            Some(self.batch_unique_lock.write())
+        } else {
+            None
+        };
+
         // Validate constraints before creating
         self.validate_node_constraints(&labels, &properties, None)?;
 
@@ -2878,6 +2968,16 @@ impl GraphEngine {
         properties: HashMap<String, PropertyValue>,
         directed: bool,
     ) -> Result<u64> {
+        let edge_type = edge_type.into();
+
+        // Acquire lock to prevent TOCTOU race when unique constraints exist.
+        let has_unique = self.has_any_unique_edge_constraint();
+        let _guard = if has_unique {
+            Some(self.batch_unique_lock.write())
+        } else {
+            None
+        };
+
         // Ensure edge type index exists (lazy init on first edge creation)
         self.ensure_edge_type_index();
 
@@ -2888,8 +2988,6 @@ impl GraphEngine {
         if !self.node_exists(to) {
             return Err(GraphError::NodeNotFound(to));
         }
-
-        let edge_type = edge_type.into();
 
         // Validate constraints before creating
         self.validate_edge_constraints(&edge_type, &properties, None)?;
@@ -3025,12 +3123,22 @@ impl GraphEngine {
 
         let from = match tensor.get("_from") {
             Some(TensorValue::Scalar(ScalarValue::Int(v))) => *v as u64,
-            _ => 0,
+            _ => {
+                return Err(GraphError::CorruptedEdge {
+                    edge_id: id,
+                    field: "_from".to_string(),
+                })
+            },
         };
 
         let to = match tensor.get("_to") {
             Some(TensorValue::Scalar(ScalarValue::Int(v))) => *v as u64,
-            _ => 0,
+            _ => {
+                return Err(GraphError::CorruptedEdge {
+                    edge_id: id,
+                    field: "_to".to_string(),
+                })
+            },
         };
 
         let edge_type = match tensor.get("_edge_type") {
@@ -3422,9 +3530,19 @@ impl GraphEngine {
     /// Returns all nodes in the graph, sorted by ID.
     ///
     /// Equivalent to Neo4j's `MATCH (n) RETURN n`.
+    ///
+    /// **Warning:** For large graphs, use `all_nodes_paginated()` instead.
+    /// This method has a safety limit to prevent OOM.
     pub fn all_nodes(&self) -> Vec<Node> {
         let mut nodes = Vec::new();
         for key in self.store.scan("node:") {
+            if nodes.len() >= Self::MAX_UNPAGINATED_RESULTS {
+                warn!(
+                    limit = Self::MAX_UNPAGINATED_RESULTS,
+                    "all_nodes() hit safety limit, use all_nodes_paginated() for large graphs"
+                );
+                break;
+            }
             // Skip edge list keys (node:N:out, node:N:in)
             let Some(suffix) = key.strip_prefix("node:") else {
                 continue;
@@ -3445,9 +3563,19 @@ impl GraphEngine {
     /// Returns all edges in the graph, sorted by ID.
     ///
     /// Equivalent to Neo4j's `MATCH ()-[r]->() RETURN r`.
+    ///
+    /// **Warning:** For large graphs, use `all_edges_paginated()` instead.
+    /// This method has a safety limit to prevent OOM.
     pub fn all_edges(&self) -> Vec<Edge> {
         let mut edges = Vec::new();
         for key in self.store.scan("edge:") {
+            if edges.len() >= Self::MAX_UNPAGINATED_RESULTS {
+                warn!(
+                    limit = Self::MAX_UNPAGINATED_RESULTS,
+                    "all_edges() hit safety limit, use all_edges_paginated() for large graphs"
+                );
+                break;
+            }
             let Some(id_str) = key.strip_prefix("edge:") else {
                 continue;
             };
@@ -4843,13 +4971,14 @@ impl GraphEngine {
         }
 
         // DFS with explicit stack: (current_node, path_nodes, path_edges, visited)
-        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, HashSet<u64>)> = Vec::new();
+        // Uses Arc<HashSet> for copy-on-write to avoid O(B^D) memory explosion
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, Arc<HashSet<u64>>)> = Vec::new();
 
         let mut initial_visited = HashSet::new();
         if !config.allow_cycles {
             initial_visited.insert(from);
         }
-        stack.push((from, vec![from], vec![], initial_visited));
+        stack.push((from, vec![from], vec![], Arc::new(initial_visited)));
 
         let edge_type_set: Option<HashSet<&str>> = config
             .edge_types
@@ -4915,10 +5044,13 @@ impl GraphEngine {
 
                 // Continue exploring if under max_hops
                 if new_depth < config.max_hops {
-                    let mut new_visited = visited.clone();
-                    if !config.allow_cycles {
-                        new_visited.insert(neighbor_id);
-                    }
+                    let new_visited = if config.allow_cycles {
+                        Arc::clone(&visited)
+                    } else {
+                        let mut cloned = Arc::clone(&visited);
+                        Arc::make_mut(&mut cloned).insert(neighbor_id);
+                        cloned
+                    };
                     stack.push((neighbor_id, new_nodes, new_edges, new_visited));
                 }
             }
@@ -5584,8 +5716,9 @@ impl GraphEngine {
         var_len: VariableLengthSpec,
     ) -> Result<()> {
         // Use DFS with explicit stack: (current_node_id, path_nodes, path_edges, depth, visited)
+        // Uses Arc<HashSet> for copy-on-write to avoid O(B^D) memory explosion
         #[allow(clippy::type_complexity)]
-        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, usize, HashSet<u64>)> = Vec::new();
+        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, usize, Arc<HashSet<u64>>)> = Vec::new();
 
         let mut initial_visited = HashSet::new();
         initial_visited.insert(start_node_id);
@@ -5594,7 +5727,7 @@ impl GraphEngine {
             vec![start_node_id],
             vec![],
             0,
-            initial_visited,
+            Arc::new(initial_visited),
         ));
 
         // Handle min_hops == 0 case (match without traversing)
@@ -5706,8 +5839,8 @@ impl GraphEngine {
 
                 // Continue exploring if under max_hops
                 if new_depth < var_len.max_hops {
-                    let mut new_visited = visited.clone();
-                    new_visited.insert(neighbor.id);
+                    let mut new_visited = Arc::clone(&visited);
+                    Arc::make_mut(&mut new_visited).insert(neighbor.id);
                     stack.push((
                         neighbor.id,
                         new_path_nodes,
@@ -5771,8 +5904,11 @@ impl GraphEngine {
         if all_edge_ids.len() >= Self::PARALLEL_THRESHOLD {
             // For high-degree nodes, batch the cleanup
             let edges_to_delete: Vec<_> = all_edge_ids.iter().copied().collect();
+            let failed_edges: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
             edges_to_delete.par_iter().for_each(|edge_id| {
-                if let Ok(edge) = self.get_edge(*edge_id) {
+                let result: Result<()> = (|| {
+                    let edge = self.get_edge(*edge_id)?;
                     // Unindex edge properties
                     self.unindex_edge_properties(*edge_id, &edge.edge_type, &edge.properties);
 
@@ -5781,25 +5917,49 @@ impl GraphEngine {
 
                     if edge.from == id {
                         // We're the 'from' node, clean up 'to' node's incoming list
-                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), *edge_id)
-                            .ok();
+                        self.remove_edge_from_list(
+                            &Self::incoming_edges_key(other_node),
+                            *edge_id,
+                        )?;
                     }
                     if edge.to == id {
                         // We're the 'to' node, clean up 'from' node's outgoing list
-                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), *edge_id)
-                            .ok();
+                        self.remove_edge_from_list(
+                            &Self::outgoing_edges_key(other_node),
+                            *edge_id,
+                        )?;
                     }
                     // For undirected edges, also clean up reverse
                     if !edge.directed && other_node != id {
-                        self.remove_edge_from_list(&Self::outgoing_edges_key(other_node), *edge_id)
-                            .ok();
-                        self.remove_edge_from_list(&Self::incoming_edges_key(other_node), *edge_id)
-                            .ok();
+                        self.remove_edge_from_list(
+                            &Self::outgoing_edges_key(other_node),
+                            *edge_id,
+                        )?;
+                        self.remove_edge_from_list(
+                            &Self::incoming_edges_key(other_node),
+                            *edge_id,
+                        )?;
+                    }
+
+                    // Delete the edge record
+                    self.store.delete(&Self::edge_key(*edge_id))?;
+                    Ok(())
+                })();
+
+                if result.is_err() {
+                    if let Ok(mut guard) = failed_edges.lock() {
+                        guard.push(*edge_id);
                     }
                 }
-                // Delete the edge record
-                self.store.delete(&Self::edge_key(*edge_id)).ok();
             });
+
+            let failed = failed_edges.into_inner().unwrap_or_default();
+            if !failed.is_empty() {
+                return Err(GraphError::PartialDeletionError {
+                    node_id: id,
+                    failed_edges: failed,
+                });
+            }
         } else {
             for edge_id in all_edge_ids {
                 if let Ok(edge) = self.get_edge(edge_id) {
@@ -6382,7 +6542,9 @@ impl GraphEngine {
                 }
                 if dist[&neighbor] == v_dist + 1 {
                     sigma.insert(neighbor, sigma[&neighbor] + sigma[&v]);
-                    pred.get_mut(&neighbor).unwrap().push(v);
+                    if let Some(p) = pred.get_mut(&neighbor) {
+                        p.push(v);
+                    }
                 }
             }
         }
@@ -7027,13 +7189,17 @@ impl GraphEngine {
             }
 
             match &constraint.constraint_type {
-                ConstraintType::Exists => {
-                    if !properties.contains_key(&constraint.property) {
+                ConstraintType::Exists => match properties.get(&constraint.property) {
+                    None | Some(PropertyValue::Null) => {
                         return Err(GraphError::ConstraintViolation {
                             constraint_name: constraint.name.clone(),
-                            message: format!("Property '{}' is required", constraint.property),
+                            message: format!(
+                                "Property '{}' is required and cannot be null",
+                                constraint.property
+                            ),
                         });
-                    }
+                    },
+                    Some(_) => {},
                 },
                 ConstraintType::Unique => {
                     if let Some(value) = properties.get(&constraint.property) {
@@ -7098,13 +7264,17 @@ impl GraphEngine {
             }
 
             match &constraint.constraint_type {
-                ConstraintType::Exists => {
-                    if !properties.contains_key(&constraint.property) {
+                ConstraintType::Exists => match properties.get(&constraint.property) {
+                    None | Some(PropertyValue::Null) => {
                         return Err(GraphError::ConstraintViolation {
                             constraint_name: constraint.name.clone(),
-                            message: format!("Property '{}' is required", constraint.property),
+                            message: format!(
+                                "Property '{}' is required and cannot be null",
+                                constraint.property
+                            ),
                         });
-                    }
+                    },
+                    Some(_) => {},
                 },
                 ConstraintType::Unique => {
                     if let Some(value) = properties.get(&constraint.property) {
@@ -7147,6 +7317,26 @@ impl GraphEngine {
 
         Ok(())
     }
+
+    fn has_any_unique_node_constraint(&self) -> bool {
+        self.constraints.read().values().any(|c| {
+            matches!(c.constraint_type, ConstraintType::Unique)
+                && matches!(
+                    c.target,
+                    ConstraintTarget::AllNodes | ConstraintTarget::NodeLabel(_)
+                )
+        })
+    }
+
+    fn has_any_unique_edge_constraint(&self) -> bool {
+        self.constraints.read().values().any(|c| {
+            matches!(c.constraint_type, ConstraintType::Unique)
+                && matches!(
+                    c.target,
+                    ConstraintTarget::AllEdges | ConstraintTarget::EdgeType(_)
+                )
+        })
+    }
 }
 
 // Batch operations
@@ -7158,6 +7348,15 @@ impl GraphEngine {
                 count: 0,
             });
         }
+
+        // Acquire lock to prevent TOCTOU race when unique constraints exist.
+        // The lock is held for the entire validation + creation phase.
+        let has_unique = self.has_any_unique_node_constraint();
+        let _guard = if has_unique {
+            Some(self.batch_unique_lock.write())
+        } else {
+            None
+        };
 
         // Phase 1: Validate all inputs (check constraints if any)
         for (idx, node) in nodes.iter().enumerate() {
@@ -7173,6 +7372,13 @@ impl GraphEngine {
 
         // Phase 2: Pre-allocate IDs atomically
         let count = nodes.len();
+        // Check for ID space exhaustion before allocating
+        let current = self.node_counter.load(Ordering::SeqCst);
+        if current > u64::MAX - count as u64 {
+            return Err(GraphError::IdSpaceExhausted {
+                entity_type: "node",
+            });
+        }
         let start_id = self.node_counter.fetch_add(count as u64, Ordering::SeqCst) + 1;
         let ids: Vec<u64> = (start_id..start_id + count as u64).collect();
 
@@ -7241,6 +7447,12 @@ impl GraphEngine {
         Ok(())
     }
 
+    /// Creates multiple edges in a single batch operation.
+    ///
+    /// # Concurrency Note
+    /// Node existence is validated before edge creation. If nodes are deleted
+    /// concurrently by another thread, edge creation will fail with `NodeNotFound`.
+    /// This is by design - the caller should retry if this race is possible.
     pub fn batch_create_edges(&self, edges: Vec<EdgeInput>) -> Result<BatchResult> {
         if edges.is_empty() {
             return Ok(BatchResult {
@@ -7248,6 +7460,14 @@ impl GraphEngine {
                 count: 0,
             });
         }
+
+        // Acquire lock to prevent TOCTOU race when unique constraints exist.
+        let has_unique = self.has_any_unique_edge_constraint();
+        let _guard = if has_unique {
+            Some(self.batch_unique_lock.write())
+        } else {
+            None
+        };
 
         // Phase 1: Validate all source/target nodes exist and constraints
         for (idx, edge) in edges.iter().enumerate() {
@@ -7275,6 +7495,13 @@ impl GraphEngine {
 
         // Phase 2: Pre-allocate IDs
         let count = edges.len();
+        // Check for ID space exhaustion before allocating
+        let current = self.edge_counter.load(Ordering::SeqCst);
+        if current > u64::MAX - count as u64 {
+            return Err(GraphError::IdSpaceExhausted {
+                entity_type: "edge",
+            });
+        }
         let start_id = self.edge_counter.fetch_add(count as u64, Ordering::SeqCst) + 1;
         let ids: Vec<u64> = (start_id..start_id + count as u64).collect();
 
@@ -17194,5 +17421,385 @@ mod tests {
 
         // Only KNOWS edges counted, so n3 should be separate
         assert!(result.community_count >= 2);
+    }
+
+    // ========== New Error Variant Tests ==========
+
+    #[test]
+    fn partial_deletion_error_display() {
+        let err = GraphError::PartialDeletionError {
+            node_id: 42,
+            failed_edges: vec![1, 2, 3],
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("42"));
+        assert!(msg.contains("3 edges"));
+    }
+
+    #[test]
+    fn id_space_exhausted_display() {
+        let err = GraphError::IdSpaceExhausted {
+            entity_type: "node",
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("node"));
+        assert!(msg.contains("exhausted"));
+    }
+
+    #[test]
+    fn invalid_property_name_display() {
+        let err = GraphError::InvalidPropertyName {
+            name: "bad:name".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("bad:name"));
+        assert!(msg.contains(":"));
+    }
+
+    #[test]
+    fn corrupted_edge_display() {
+        let err = GraphError::CorruptedEdge {
+            edge_id: 99,
+            field: "_from".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("99"));
+        assert!(msg.contains("_from"));
+    }
+
+    #[test]
+    fn graph_error_hash_new_variants_all() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+
+        set.insert(GraphError::PartialDeletionError {
+            node_id: 1,
+            failed_edges: vec![2, 3],
+        });
+        set.insert(GraphError::IdSpaceExhausted {
+            entity_type: "node",
+        });
+        set.insert(GraphError::InvalidPropertyName {
+            name: "test".to_string(),
+        });
+        set.insert(GraphError::CorruptedEdge {
+            edge_id: 1,
+            field: "_from".to_string(),
+        });
+
+        assert_eq!(set.len(), 4);
+    }
+
+    // ========== Constraint Validation Tests ==========
+
+    #[test]
+    fn exists_constraint_null_value_rejected() {
+        let engine = GraphEngine::new();
+        engine
+            .create_constraint(Constraint {
+                name: "require_name".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        // Null value should be treated as missing
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::Null);
+
+        let result = engine.create_node("Person", props);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, GraphError::ConstraintViolation { .. }));
+    }
+
+    #[test]
+    fn exists_constraint_missing_property_rejected() {
+        let engine = GraphEngine::new();
+        engine
+            .create_constraint(Constraint {
+                name: "require_name".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        let result = engine.create_node("Person", HashMap::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn exists_constraint_valid_value_accepted() {
+        let engine = GraphEngine::new();
+        engine
+            .create_constraint(Constraint {
+                name: "require_name".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "name".to_string(),
+                constraint_type: ConstraintType::Exists,
+            })
+            .unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), PropertyValue::String("Alice".into()));
+
+        let result = engine.create_node("Person", props);
+        assert!(result.is_ok());
+    }
+
+    // ========== Property Name Validation Tests ==========
+
+    #[test]
+    fn property_name_with_colon_rejected() {
+        let engine = GraphEngine::new();
+        let result = engine.create_node_property_index("bad:name");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GraphError::InvalidPropertyName { .. }
+        ));
+    }
+
+    #[test]
+    fn edge_property_name_with_colon_rejected() {
+        let engine = GraphEngine::new();
+        let result = engine.create_edge_property_index("also:bad");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GraphError::InvalidPropertyName { .. }
+        ));
+    }
+
+    #[test]
+    fn valid_property_name_accepted() {
+        let engine = GraphEngine::new();
+        let result = engine.create_node_property_index("valid_name");
+        assert!(result.is_ok());
+    }
+
+    // ========== Corrupted Edge Tests ==========
+
+    #[test]
+    fn get_edge_corrupted_from_field() {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let engine = GraphEngine::new();
+        // Create a corrupted edge directly in the store (missing _from)
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(999)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        // Missing _from field
+        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(2)));
+        tensor.set(
+            "_edge_type",
+            TensorValue::Scalar(ScalarValue::String("TEST".into())),
+        );
+        tensor.set("_directed", TensorValue::Scalar(ScalarValue::Bool(true)));
+
+        engine.store.put("edge:999", tensor).unwrap();
+
+        let result = engine.get_edge(999);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            GraphError::CorruptedEdge { edge_id, field } => {
+                assert_eq!(edge_id, 999);
+                assert_eq!(field, "_from");
+            },
+            _ => panic!("Expected CorruptedEdge error"),
+        }
+    }
+
+    #[test]
+    fn get_edge_corrupted_to_field() {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let engine = GraphEngine::new();
+        // Create a corrupted edge directly in the store (missing _to)
+        let mut tensor = TensorData::new();
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(998)));
+        tensor.set(
+            "_type",
+            TensorValue::Scalar(ScalarValue::String("edge".into())),
+        );
+        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(1)));
+        // Missing _to field
+        tensor.set(
+            "_edge_type",
+            TensorValue::Scalar(ScalarValue::String("TEST".into())),
+        );
+        tensor.set("_directed", TensorValue::Scalar(ScalarValue::Bool(true)));
+
+        engine.store.put("edge:998", tensor).unwrap();
+
+        let result = engine.get_edge(998);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            GraphError::CorruptedEdge { edge_id, field } => {
+                assert_eq!(edge_id, 998);
+                assert_eq!(field, "_to");
+            },
+            _ => panic!("Expected CorruptedEdge error"),
+        }
+    }
+
+    // ========== Safety Limit Tests ==========
+
+    #[test]
+    fn all_nodes_returns_results_under_limit() {
+        let engine = GraphEngine::new();
+        for _ in 0..10 {
+            engine.create_node("Test", HashMap::new()).unwrap();
+        }
+        let nodes = engine.all_nodes();
+        assert_eq!(nodes.len(), 10);
+    }
+
+    #[test]
+    fn all_edges_returns_results_under_limit() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("Test", HashMap::new()).unwrap();
+        let n2 = engine.create_node("Test", HashMap::new()).unwrap();
+        for _ in 0..5 {
+            engine
+                .create_edge(n1, n2, "LINK", HashMap::new(), true)
+                .unwrap();
+        }
+        let edges = engine.all_edges();
+        assert_eq!(edges.len(), 5);
+    }
+
+    // ========== Batch Operation Tests ==========
+
+    #[test]
+    fn batch_create_nodes_with_unique_constraint() {
+        let engine = GraphEngine::new();
+        engine.create_node_property_index("email").unwrap();
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let nodes = vec![
+            NodeInput {
+                labels: vec!["User".to_string()],
+                properties: {
+                    let mut p = HashMap::new();
+                    p.insert(
+                        "email".to_string(),
+                        PropertyValue::String("a@example.com".into()),
+                    );
+                    p
+                },
+            },
+            NodeInput {
+                labels: vec!["User".to_string()],
+                properties: {
+                    let mut p = HashMap::new();
+                    p.insert(
+                        "email".to_string(),
+                        PropertyValue::String("b@example.com".into()),
+                    );
+                    p
+                },
+            },
+        ];
+
+        let result = engine.batch_create_nodes(nodes);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().count, 2);
+    }
+
+    #[test]
+    fn batch_create_nodes_unique_constraint_violation() {
+        let engine = GraphEngine::new();
+        engine.create_node_property_index("email").unwrap();
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        // First create a node with an email
+        let mut props = HashMap::new();
+        props.insert(
+            "email".to_string(),
+            PropertyValue::String("taken@example.com".into()),
+        );
+        engine.create_node("User", props).unwrap();
+
+        // Now try to batch create with a duplicate
+        let nodes = vec![NodeInput {
+            labels: vec!["User".to_string()],
+            properties: {
+                let mut p = HashMap::new();
+                p.insert(
+                    "email".to_string(),
+                    PropertyValue::String("taken@example.com".into()),
+                );
+                p
+            },
+        }];
+
+        let result = engine.batch_create_nodes(nodes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn batch_create_edges_with_unique_constraint() {
+        let engine = GraphEngine::new();
+        let n1 = engine.create_node("A", HashMap::new()).unwrap();
+        let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+        engine.create_edge_property_index("ref_id").unwrap();
+        engine
+            .create_constraint(Constraint {
+                name: "unique_ref".to_string(),
+                target: ConstraintTarget::AllEdges,
+                property: "ref_id".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let edges = vec![
+            EdgeInput {
+                from: n1,
+                to: n2,
+                edge_type: "LINK".to_string(),
+                properties: {
+                    let mut p = HashMap::new();
+                    p.insert("ref_id".to_string(), PropertyValue::String("ref1".into()));
+                    p
+                },
+                directed: true,
+            },
+            EdgeInput {
+                from: n1,
+                to: n2,
+                edge_type: "LINK".to_string(),
+                properties: {
+                    let mut p = HashMap::new();
+                    p.insert("ref_id".to_string(), PropertyValue::String("ref2".into()));
+                    p
+                },
+                directed: true,
+            },
+        ];
+
+        let result = engine.batch_create_edges(edges);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().count, 2);
     }
 }

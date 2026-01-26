@@ -3468,12 +3468,37 @@ impl QueryRouter {
                     .take(3)
                     .map(|(k, v)| format!("{}={:?}", k, v))
                     .collect();
-                vec![format!("label='{}', {}", node.labels.join(":"), props.join(", "))]
+                vec![format!(
+                    "label='{}', {}",
+                    node.labels.join(":"),
+                    props.join(", ")
+                )]
             },
             Err(_) => vec![],
         };
 
         (edge_count, sample)
+    }
+
+    fn collect_edge_info(&self, edge_id: u64) -> Vec<String> {
+        match self.graph.get_edge(edge_id) {
+            Ok(edge) => {
+                let props: Vec<String> = edge
+                    .properties
+                    .iter()
+                    .take(3)
+                    .map(|(k, v)| format!("{k}={v:?}"))
+                    .collect();
+                vec![format!(
+                    "type='{}', from={}, to={}, {}",
+                    edge.edge_type,
+                    edge.from,
+                    edge.to,
+                    props.join(", ")
+                )]
+            },
+            Err(_) => vec![],
+        }
     }
 
     // ========== Query Execution Methods ==========
@@ -3667,11 +3692,26 @@ impl QueryRouter {
                     label: edge.edge_type.clone(),
                 }]))
             },
-            EdgeOp::Delete { id: _ } => {
-                // GraphEngine doesn't support edge deletion yet
-                Err(RouterError::ParseError(
-                    "EDGE DELETE not yet supported".to_string(),
-                ))
+            EdgeOp::Delete { id } => {
+                let edge_id = self.expr_to_u64(id)?;
+                let sample_data = self.collect_edge_info(edge_id);
+                let op = DestructiveOp::EdgeDelete { edge_id };
+
+                match self.protect_destructive_op(
+                    &format!("EDGE DELETE {edge_id}"),
+                    op,
+                    sample_data,
+                )? {
+                    ProtectedOpResult::Proceed => {},
+                    ProtectedOpResult::Cancelled => {
+                        return Err(RouterError::CheckpointError(
+                            "Operation cancelled by user".to_string(),
+                        ));
+                    },
+                }
+
+                self.graph.delete_edge(edge_id)?;
+                Ok(QueryResult::Count(1))
             },
             EdgeOp::List { edge_type } => {
                 // List all edges with optional type filter

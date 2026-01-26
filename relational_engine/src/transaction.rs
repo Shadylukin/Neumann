@@ -30,6 +30,7 @@ use std::{
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use tracing::{debug, instrument, warn};
 
 use crate::{SlabColumnValue, SlabRowId, Value};
 
@@ -249,6 +250,7 @@ impl Default for RowLockManager {
 impl RowLockManager {
     /// Creates a new lock manager with 30 second default timeout.
     #[must_use]
+    #[instrument(skip_all)]
     pub fn new() -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
@@ -259,6 +261,7 @@ impl RowLockManager {
 
     /// Creates a lock manager with custom default timeout.
     #[must_use]
+    #[instrument(skip_all, fields(timeout_secs = timeout.as_secs()))]
     pub fn with_default_timeout(timeout: Duration) -> Self {
         Self {
             locks: RwLock::new(HashMap::new()),
@@ -273,6 +276,7 @@ impl RowLockManager {
     ///
     /// Returns `LockConflictInfo` if a row is already locked by another transaction.
     #[allow(clippy::significant_drop_tightening)]
+    #[instrument(skip(self, rows), fields(tx_id, row_count = rows.len()))]
     pub fn try_lock(
         &self,
         tx_id: u64,
@@ -286,6 +290,13 @@ impl RowLockManager {
             let key = (table.clone(), *row_id);
             if let Some(existing) = locks.get(&key) {
                 if !existing.is_expired() && existing.tx_id != tx_id {
+                    warn!(
+                        tx_id,
+                        table = %table,
+                        row_id,
+                        blocking_tx = existing.tx_id,
+                        "lock conflict"
+                    );
                     return Err(LockConflictInfo {
                         blocking_tx: existing.tx_id,
                         table: table.clone(),
@@ -319,6 +330,7 @@ impl RowLockManager {
     }
 
     /// Release all locks held by a transaction.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn release(&self, tx_id: u64) {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -336,6 +348,7 @@ impl RowLockManager {
 
     /// Check if a row is locked.
     #[must_use]
+    #[instrument(skip(self), fields(table = %table, row_id))]
     pub fn is_locked(&self, table: &str, row_id: u64) -> bool {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -344,6 +357,7 @@ impl RowLockManager {
 
     /// Get the transaction ID holding a lock on a row.
     #[must_use]
+    #[instrument(skip(self), fields(table = %table, row_id))]
     pub fn lock_holder(&self, table: &str, row_id: u64) -> Option<u64> {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -355,6 +369,7 @@ impl RowLockManager {
 
     /// Clean up expired locks.
     #[allow(clippy::significant_drop_tightening)]
+    #[instrument(skip(self))]
     pub fn cleanup_expired(&self) -> usize {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -372,17 +387,24 @@ impl RowLockManager {
             }
         }
 
-        expired.len()
+        let removed = expired.len();
+        if removed > 0 {
+            debug!(count = removed, "cleaned up expired locks");
+        }
+
+        removed
     }
 
     /// Get the number of active locks.
     #[must_use]
+    #[instrument(skip(self))]
     pub fn active_lock_count(&self) -> usize {
         self.locks.read().len()
     }
 
     /// Get the number of locks held by a transaction.
     #[must_use]
+    #[instrument(skip(self), fields(tx_id))]
     pub fn locks_held_by(&self, tx_id: u64) -> usize {
         self.tx_locks.read().get(&tx_id).map_or(0, Vec::len)
     }
@@ -422,6 +444,7 @@ impl Default for TransactionManager {
 impl TransactionManager {
     /// Creates a new transaction manager with 60 second default timeout.
     #[must_use]
+    #[instrument(skip_all)]
     pub fn new() -> Self {
         Self {
             transactions: DashMap::new(),
@@ -432,6 +455,7 @@ impl TransactionManager {
 
     /// Creates a transaction manager with custom timeout.
     #[must_use]
+    #[instrument(skip_all, fields(timeout_secs = timeout.as_secs()))]
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
             transactions: DashMap::new(),
@@ -442,6 +466,7 @@ impl TransactionManager {
 
     /// Begin a new transaction.
     #[allow(clippy::cast_possible_truncation)]
+    #[instrument(skip(self))]
     pub fn begin(&self) -> u64 {
         let tx_id = TX_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tx = Transaction::new(tx_id, self.default_timeout.as_millis() as u64);
@@ -451,17 +476,20 @@ impl TransactionManager {
 
     /// Get a transaction by ID (read-only).
     #[must_use]
+    #[instrument(skip(self), fields(tx_id))]
     pub fn get(&self, tx_id: u64) -> Option<TxPhase> {
         self.transactions.get(&tx_id).map(|r| r.phase)
     }
 
     /// Check if a transaction is active.
     #[must_use]
+    #[instrument(skip(self), fields(tx_id))]
     pub fn is_active(&self, tx_id: u64) -> bool {
         self.transactions.get(&tx_id).is_some_and(|r| r.is_active())
     }
 
     /// Set transaction phase.
+    #[instrument(skip(self), fields(tx_id, phase = ?phase))]
     pub fn set_phase(&self, tx_id: u64, phase: TxPhase) -> bool {
         if let Some(mut tx) = self.transactions.get_mut(&tx_id) {
             tx.phase = phase;
@@ -473,6 +501,7 @@ impl TransactionManager {
 
     /// Record an undo entry for a transaction.
     #[allow(clippy::option_if_let_else)]
+    #[instrument(skip(self, entry), fields(tx_id))]
     pub fn record_undo(&self, tx_id: u64, entry: UndoEntry) -> bool {
         if let Some(mut tx) = self.transactions.get_mut(&tx_id) {
             tx.record_undo(entry);
@@ -484,11 +513,13 @@ impl TransactionManager {
 
     /// Get the undo log for a transaction (cloned for rollback).
     #[must_use]
+    #[instrument(skip(self), fields(tx_id))]
     pub fn get_undo_log(&self, tx_id: u64) -> Option<Vec<UndoEntry>> {
         self.transactions.get(&tx_id).map(|r| r.undo_log.clone())
     }
 
     /// Remove a completed transaction.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn remove(&self, tx_id: u64) {
         self.transactions.remove(&tx_id);
     }
@@ -500,17 +531,20 @@ impl TransactionManager {
     }
 
     /// Release all locks for a transaction.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn release_locks(&self, tx_id: u64) {
         self.lock_manager.release(tx_id);
     }
 
     /// Get number of active transactions.
     #[must_use]
+    #[instrument(skip(self))]
     pub fn active_count(&self) -> usize {
         self.transactions.iter().filter(|r| r.is_active()).count()
     }
 
     /// Clean up expired transactions.
+    #[instrument(skip(self))]
     pub fn cleanup_expired(&self) -> usize {
         let before = self.transactions.len();
         self.transactions.retain(|_, tx| {
@@ -521,7 +555,11 @@ impl TransactionManager {
                 true
             }
         });
-        before - self.transactions.len()
+        let removed = before - self.transactions.len();
+        if removed > 0 {
+            debug!(count = removed, "cleaned up expired transactions");
+        }
+        removed
     }
 }
 

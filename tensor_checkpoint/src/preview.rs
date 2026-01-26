@@ -36,6 +36,9 @@ impl PreviewGenerator {
             } => {
                 format!("Will delete node {node_id} and {edge_count} connected edge(s)")
             },
+            DestructiveOp::EdgeDelete { edge_id } => {
+                format!("Will delete edge {edge_id}")
+            },
             DestructiveOp::EmbedDelete { key } => {
                 format!("Will delete embedding with key '{key}'")
             },
@@ -91,6 +94,9 @@ pub fn format_warning(op: &DestructiveOp) -> String {
             edge_count,
         } => {
             format!("WARNING: About to delete node {node_id} and {edge_count} connected edge(s)")
+        },
+        DestructiveOp::EdgeDelete { edge_id } => {
+            format!("WARNING: About to delete edge {edge_id}")
         },
         DestructiveOp::EmbedDelete { key } => {
             format!("WARNING: About to delete embedding '{key}'")
@@ -267,6 +273,7 @@ mod tests {
                 node_id: 1,
                 edge_count: 2,
             },
+            DestructiveOp::EdgeDelete { edge_id: 1 },
             DestructiveOp::EmbedDelete {
                 key: "k".to_string(),
             },
@@ -299,6 +306,7 @@ mod tests {
                 node_id: 42,
                 edge_count: 5,
             },
+            DestructiveOp::EdgeDelete { edge_id: 42 },
             DestructiveOp::EmbedDelete {
                 key: "doc1".to_string(),
             },

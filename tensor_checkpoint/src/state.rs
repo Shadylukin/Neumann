@@ -63,6 +63,7 @@ pub enum DestructiveOp {
     DropTable { table: String, row_count: usize },
     DropIndex { table: String, column: String },
     NodeDelete { node_id: u64, edge_count: usize },
+    EdgeDelete { edge_id: u64 },
     EmbedDelete { key: String },
     VaultDelete { key: String },
     BlobDelete { artifact_id: String, size: usize },
@@ -76,6 +77,7 @@ impl DestructiveOp {
             DestructiveOp::DropTable { .. } => "DROP TABLE",
             DestructiveOp::DropIndex { .. } => "DROP INDEX",
             DestructiveOp::NodeDelete { .. } => "NODE DELETE",
+            DestructiveOp::EdgeDelete { .. } => "EDGE DELETE",
             DestructiveOp::EmbedDelete { .. } => "EMBED DELETE",
             DestructiveOp::VaultDelete { .. } => "VAULT DELETE",
             DestructiveOp::BlobDelete { .. } => "BLOB DELETE",
@@ -89,6 +91,7 @@ impl DestructiveOp {
             DestructiveOp::DropTable { row_count, .. } => *row_count,
             DestructiveOp::DropIndex { .. } => 1,
             DestructiveOp::NodeDelete { edge_count, .. } => 1 + edge_count,
+            DestructiveOp::EdgeDelete { .. } => 1,
             DestructiveOp::EmbedDelete { .. } => 1,
             DestructiveOp::VaultDelete { .. } => 1,
             DestructiveOp::BlobDelete { .. } => 1,
@@ -236,6 +239,10 @@ mod tests {
             "NODE DELETE"
         );
         assert_eq!(
+            DestructiveOp::EdgeDelete { edge_id: 1 }.operation_name(),
+            "EDGE DELETE"
+        );
+        assert_eq!(
             DestructiveOp::EmbedDelete { key: "k".into() }.operation_name(),
             "EMBED DELETE"
         );
@@ -291,6 +298,7 @@ mod tests {
             .affected_count(),
             6
         );
+        assert_eq!(DestructiveOp::EdgeDelete { edge_id: 1 }.affected_count(), 1);
         assert_eq!(
             DestructiveOp::EmbedDelete { key: "k".into() }.affected_count(),
             1

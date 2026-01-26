@@ -54,7 +54,7 @@ pub use tensor_store::{
     RowId as SlabRowId, TableSchema as SlabTableSchema, WalConfig,
 };
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 pub mod transaction;
 pub use transaction::{
@@ -1748,6 +1748,7 @@ impl RelationalEngine {
     }
 
     /// Returns the current number of tables.
+    #[instrument(skip(self))]
     pub fn table_count(&self) -> usize {
         self.table_count.load(Ordering::Relaxed)
     }
@@ -1918,6 +1919,7 @@ impl RelationalEngine {
     /// Returns `TableAlreadyExists` if the table already exists.
     /// Returns `StorageError` if the underlying storage fails.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, schema), fields(table = %name))]
     pub fn create_table(&self, name: &str, schema: Schema) -> Result<()> {
         Self::validate_name(name, "Table")?;
         for col in &schema.columns {
@@ -1993,6 +1995,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound` if the table does not exist, or `SchemaCorrupted`
     /// if the schema metadata is malformed.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn get_schema(&self, table: &str) -> Result<Schema> {
         let meta_key = Self::table_meta_key(table);
         let meta = self
@@ -2050,6 +2053,7 @@ impl RelationalEngine {
     }
 
     /// Returns a list of all table names.
+    #[instrument(skip(self))]
     pub fn list_tables(&self) -> Vec<String> {
         self.store
             .scan("_meta:table:")
@@ -2103,6 +2107,7 @@ impl RelationalEngine {
     /// Returns `TableNotFound`, `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
     #[must_use = "batch insert results contain row IDs that should be used"]
     #[allow(clippy::cast_possible_wrap)] // Row IDs are monotonic from 1, won't exceed i64::MAX
+    #[instrument(skip(self, rows), fields(table = %table, row_count = rows.len()))]
     pub fn batch_insert(&self, table: &str, rows: Vec<HashMap<String, Value>>) -> Result<Vec<u64>> {
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -2204,6 +2209,7 @@ impl RelationalEngine {
     #[must_use = "query results should be used"]
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::needless_pass_by_value)]
+    #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn select_with_options(
         &self,
         table: &str,
@@ -2337,6 +2343,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`, or `StorageError`.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, condition, updates), fields(table = %table))]
     pub fn update(
         &self,
         table: &str,
@@ -2352,6 +2359,7 @@ impl RelationalEngine {
     /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`,
     /// `StorageError`, or `QueryTimeout`.
     #[allow(clippy::needless_pass_by_value)]
+    #[instrument(skip(self, condition, updates, options), fields(table = %table))]
     pub fn update_with_options(
         &self,
         table: &str,
@@ -2406,6 +2414,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, condition), fields(table = %table))]
     pub fn delete_rows(&self, table: &str, condition: Condition) -> Result<usize> {
         self.delete_rows_with_options(table, condition, QueryOptions::default())
     }
@@ -2415,6 +2424,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
     #[allow(clippy::needless_pass_by_value)]
+    #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn delete_rows_with_options(
         &self,
         table: &str,
@@ -2453,6 +2463,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn join(
         &self,
         table_a: &str,
@@ -2467,6 +2478,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
+    #[instrument(skip(self, options), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn join_with_options(
         &self,
         table_a: &str,
@@ -2576,6 +2588,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn left_join(
         &self,
         table_a: &str,
@@ -2623,6 +2636,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn right_join(
         &self,
         table_a: &str,
@@ -2670,6 +2684,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn full_join(
         &self,
         table_a: &str,
@@ -2727,6 +2742,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
     #[must_use = "query results should be used"]
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b))]
     pub fn cross_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let _ = self.get_schema(table_a)?;
         let _ = self.get_schema(table_b)?;
@@ -2760,6 +2776,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `ResultTooLarge`, or `StorageError`.
     #[must_use = "query results should be used"]
+    #[instrument(skip(self), fields(table_a = %table_a, table_b = %table_b))]
     pub fn natural_join(&self, table_a: &str, table_b: &str) -> Result<Vec<(Row, Row)>> {
         let schema_a = self.get_schema(table_a)?;
         let schema_b = self.get_schema(table_b)?;
@@ -2824,6 +2841,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self, condition), fields(table = %table))]
     pub fn count(&self, table: &str, condition: Condition) -> Result<u64> {
         let rows = self.select(table, condition)?;
         Ok(rows.len() as u64)
@@ -2831,6 +2849,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn count_column(&self, table: &str, column: &str, condition: Condition) -> Result<u64> {
         let rows = self.select(table, condition)?;
         let count = rows
@@ -2843,6 +2862,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
     #[allow(clippy::cast_precision_loss)] // Aggregate functions accept f64 precision loss
+    #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn sum(&self, table: &str, column: &str, condition: Condition) -> Result<f64> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -2877,6 +2897,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
     #[allow(clippy::cast_precision_loss)] // Aggregate functions accept f64 precision loss
+    #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn avg(&self, table: &str, column: &str, condition: Condition) -> Result<Option<f64>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -2921,6 +2942,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn min(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -2970,6 +2992,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self, condition), fields(table = %table, column = %column))]
     pub fn max(&self, table: &str, column: &str, condition: Condition) -> Result<Option<Value>> {
         let rows = self.select(table, condition)?;
         let col = column.to_string();
@@ -3019,6 +3042,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn drop_table(&self, table: &str) -> Result<()> {
         // Atomic DDL: acquire lock before check-then-act to prevent TOCTOU races
         let _ddl_guard = self.ddl_lock.write();
@@ -3061,6 +3085,7 @@ impl RelationalEngine {
     }
 
     /// Returns true if the table exists.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn table_exists(&self, table: &str) -> bool {
         let meta_key = Self::table_meta_key(table);
         self.store.exists(&meta_key)
@@ -3070,6 +3095,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn row_count(&self, table: &str) -> Result<usize> {
         let _ = self.get_schema(table)?;
         self.slab()
@@ -3082,6 +3108,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `InvalidName`, `TableNotFound`, `ColumnNotFound`, `IndexAlreadyExists`, or `StorageError`.
     #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn create_index(&self, table: &str, column: &str) -> Result<()> {
         // Allow _id as a special case (system column)
         if column != "_id" {
@@ -3159,6 +3186,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `InvalidName`, `TableNotFound`, `ColumnNotFound`, `IndexAlreadyExists`, or `StorageError`.
     #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn create_btree_index(&self, table: &str, column: &str) -> Result<()> {
         // Allow _id as a special case (system column)
         if column != "_id" {
@@ -3236,6 +3264,7 @@ impl RelationalEngine {
     }
 
     /// Returns true if a B-tree index exists on the column.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn has_btree_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::btree_meta_key(table, column);
         self.store.exists(&meta_key)
@@ -3245,6 +3274,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `IndexNotFound`, or `StorageError`.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn drop_btree_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
 
@@ -3284,6 +3314,7 @@ impl RelationalEngine {
     }
 
     /// Returns columns that have B-tree indexes.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn get_btree_indexed_columns(&self, table: &str) -> Vec<String> {
         let prefix = "_btree:".to_string() + table + ":";
         self.store
@@ -3304,6 +3335,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `IndexNotFound`, or `StorageError`.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn drop_index(&self, table: &str, column: &str) -> Result<()> {
         let _ = self.get_schema(table)?;
 
@@ -3330,12 +3362,14 @@ impl RelationalEngine {
     }
 
     /// Returns true if a hash index exists on the column.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn has_index(&self, table: &str, column: &str) -> bool {
         let meta_key = Self::index_meta_key(table, column);
         self.store.exists(&meta_key)
     }
 
     /// Returns columns that have hash indexes.
+    #[instrument(skip(self), fields(table = %table))]
     pub fn get_indexed_columns(&self, table: &str) -> Vec<String> {
         let prefix = format!("_idx:{table}:");
         let mut columns = HashSet::new();
@@ -3634,6 +3668,7 @@ impl RelationalEngine {
     }
 
     /// Returns true if column data is stored in columnar format.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn has_columnar_data(&self, table: &str, column: &str) -> bool {
         // With slab integration, all columns are stored in columnar format
         // Check if the table exists and has the column
@@ -3647,6 +3682,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound` or `ColumnNotFound`.
+    #[instrument(skip(self, columns), fields(table = %table))]
     pub fn materialize_columns(&self, table: &str, columns: &[&str]) -> Result<()> {
         // With RelationalSlab integration, data is already stored in columnar format.
         // This method now just validates inputs for backward compatibility.
@@ -3684,6 +3720,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `ColumnNotFound`, or `StorageError`.
     #[allow(clippy::cast_possible_truncation)] // Dict indices fit in u32; row counts fit in u64
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn load_column_data(&self, table: &str, column: &str) -> Result<ColumnData> {
         // With slab integration, extract column data directly from slab's columnar storage
         let schema = self.get_schema(table)?;
@@ -3794,6 +3831,7 @@ impl RelationalEngine {
 
     /// # Errors
     /// This function cannot fail - returns `Ok(())` unconditionally.
+    #[instrument(skip(self), fields(table = %table, column = %column))]
     pub fn drop_columnar_data(&self, table: &str, column: &str) -> Result<()> {
         // Column data may not exist - delete is idempotent
         self.store
@@ -4406,6 +4444,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound` or `StorageError`.
     #[must_use = "query results should be used"]
+    #[instrument(skip(self, condition, projection), fields(table = %table))]
     pub fn select_with_projection(
         &self,
         table: &str,
@@ -4438,6 +4477,7 @@ impl RelationalEngine {
     // ==================== Transaction API ====================
 
     /// Begin a new transaction.
+    #[instrument(skip(self))]
     pub fn begin_transaction(&self) -> u64 {
         self.tx_manager.begin()
     }
@@ -4448,6 +4488,7 @@ impl RelationalEngine {
     }
 
     /// Check if a transaction is active.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn is_transaction_active(&self, tx_id: u64) -> bool {
         self.tx_manager.is_active(tx_id)
     }
@@ -4456,6 +4497,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TransactionNotFound` or `TransactionInactive`.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn commit(&self, tx_id: u64) -> Result<()> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -4487,6 +4529,7 @@ impl RelationalEngine {
     /// Returns `TransactionNotFound` or `TransactionInactive` for invalid transactions.
     /// Returns `RollbackFailed` if any undo operations failed, but the transaction
     /// is still properly cleaned up in this case.
+    #[instrument(skip(self), fields(tx_id))]
     pub fn rollback(&self, tx_id: u64) -> Result<()> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -4657,6 +4700,7 @@ impl RelationalEngine {
     /// `NullNotAllowed`, `TypeMismatch`, or `StorageError`.
     #[allow(clippy::cast_possible_wrap)] // Row IDs won't exceed i64::MAX
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, values), fields(tx_id, table = %table))]
     pub fn tx_insert(
         &self,
         tx_id: u64,
@@ -4767,6 +4811,7 @@ impl RelationalEngine {
     /// `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`, `LockConflict`, or `StorageError`.
     #[allow(clippy::too_many_lines)] // Transaction update logic is inherently complex
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, condition, updates), fields(tx_id, table = %table))]
     pub fn tx_update(
         &self,
         tx_id: u64,
@@ -4907,6 +4952,7 @@ impl RelationalEngine {
     /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`,
     /// `LockConflict`, or `StorageError`.
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
+    #[instrument(skip(self, condition), fields(tx_id, table = %table))]
     pub fn tx_delete(&self, tx_id: u64, table: &str, condition: Condition) -> Result<usize> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -5006,6 +5052,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TransactionNotFound`, `TransactionInactive`, `TableNotFound`, or `StorageError`.
     #[must_use = "query results should be used"]
+    #[instrument(skip(self, condition), fields(tx_id, table = %table))]
     pub fn tx_select(&self, tx_id: u64, table: &str, condition: Condition) -> Result<Vec<Row>> {
         if !self.tx_manager.is_active(tx_id) {
             if self.tx_manager.get(tx_id).is_none() {
@@ -5019,6 +5066,7 @@ impl RelationalEngine {
     }
 
     /// Get the number of active transactions.
+    #[instrument(skip(self))]
     pub fn active_transaction_count(&self) -> usize {
         self.tx_manager.active_count()
     }
