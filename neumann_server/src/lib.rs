@@ -245,7 +245,7 @@ impl NeumannServer {
         // Create shared health state
         let health_state = Arc::new(HealthState::new());
 
-        // Create services with configuration, health monitoring, rate limiting, and audit
+        // Create services with configuration, health monitoring, rate limiting, audit, and metrics
         let query_service = QueryServiceImpl::with_full_config(
             Arc::clone(&self.router),
             self.config.auth.clone(),
@@ -253,6 +253,7 @@ impl NeumannServer {
             Arc::clone(&health_state),
             self.rate_limiter.clone(),
             self.audit_logger.clone(),
+            self.metrics.clone(),
         );
 
         let health_service = HealthServiceImpl::with_state(Arc::clone(&health_state));
@@ -303,6 +304,7 @@ impl NeumannServer {
                 &self.config,
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
+                self.metrics.clone(),
             );
             tracing::info!("Blob service enabled");
             BlobServiceServer::new(blob_service)
@@ -374,7 +376,7 @@ impl NeumannServer {
             .as_ref()
             .map(|cfg| Arc::new(ShutdownManager::new(cfg.clone(), Arc::clone(&health_state))));
 
-        // Create services with configuration, health monitoring, rate limiting, and audit
+        // Create services with configuration, health monitoring, rate limiting, audit, and metrics
         let query_service = QueryServiceImpl::with_full_config(
             Arc::clone(&self.router),
             self.config.auth.clone(),
@@ -382,6 +384,7 @@ impl NeumannServer {
             Arc::clone(&health_state),
             self.rate_limiter.clone(),
             self.audit_logger.clone(),
+            self.metrics.clone(),
         );
 
         let health_service = HealthServiceImpl::with_state(Arc::clone(&health_state));
@@ -436,6 +439,7 @@ impl NeumannServer {
                 &self.config,
                 self.rate_limiter.clone(),
                 self.audit_logger.clone(),
+                self.metrics.clone(),
             );
             BlobServiceServer::new(blob_service)
         });
@@ -660,5 +664,43 @@ mod tests {
         assert!(config.enable_grpc_web);
         assert!(config.enable_reflection);
         assert!(config.stream_channel_capacity > 0);
+    }
+
+    #[test]
+    fn test_server_with_metrics() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let server = NeumannServer::new(router, config).with_metrics(metrics);
+
+        assert!(server.metrics.is_some());
+    }
+
+    #[test]
+    fn test_metrics_passed_to_services() {
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = Arc::new(RwLock::new(QueryRouter::new()));
+        let config = ServerConfig::default();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        // Create server with metrics
+        let server = NeumannServer::new(router, config).with_metrics(Arc::clone(&metrics));
+
+        // Verify metrics are set
+        assert!(server.metrics.is_some());
+
+        // The metrics Arc should be the same one we passed in
+        let stored = server.metrics.as_ref().unwrap();
+        assert!(Arc::ptr_eq(stored, &metrics));
     }
 }

@@ -2,6 +2,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -15,6 +16,7 @@ use crate::audit::{AuditEvent, AuditLogger};
 use crate::auth;
 use crate::config::{AuthConfig, ServerConfig};
 use crate::convert::{blob_metadata_to_proto, upload_metadata_to_put_options};
+use crate::metrics::ServerMetrics;
 use crate::proto::{
     blob_service_server::BlobService, ArtifactInfo, BlobDeleteRequest, BlobDeleteResponse,
     BlobDownloadChunk, BlobDownloadRequest, BlobMetadataRequest, BlobUploadRequest,
@@ -31,6 +33,7 @@ pub struct BlobServiceImpl {
     stream_channel_capacity: usize,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
+    metrics: Option<Arc<ServerMetrics>>,
 }
 
 /// Default maximum upload size: 512MB
@@ -51,6 +54,7 @@ impl BlobServiceImpl {
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl BlobServiceImpl {
             stream_channel_capacity: config.stream_channel_capacity,
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
@@ -79,16 +84,18 @@ impl BlobServiceImpl {
             stream_channel_capacity: DEFAULT_STREAM_CHANNEL_CAPACITY,
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
-    /// Create a new blob service with full configuration including rate limiting and audit.
+    /// Create a new blob service with full configuration including rate limiting, audit, and metrics.
     #[must_use]
     pub fn with_full_config(
         blob_store: Arc<Mutex<BlobStore>>,
         config: &ServerConfig,
         rate_limiter: Option<Arc<RateLimiter>>,
         audit_logger: Option<Arc<AuditLogger>>,
+        metrics: Option<Arc<ServerMetrics>>,
     ) -> Self {
         Self {
             blob_store,
@@ -98,6 +105,7 @@ impl BlobServiceImpl {
             stream_channel_capacity: config.stream_channel_capacity,
             rate_limiter,
             audit_logger,
+            metrics,
         }
     }
 
@@ -115,13 +123,27 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<Streaming<BlobUploadRequest>>,
     ) -> Result<Response<BlobUploadResponse>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let identity = auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "upload", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         // Check blob-specific rate limit
         if let Some(ref limiter) = self.rate_limiter {
@@ -135,6 +157,11 @@ impl BlobService for BlobServiceImpl {
                             },
                             None,
                         );
+                    }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "blob_upload");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("blob", "upload", false, latency_ms);
                     }
                     return Err(Status::resource_exhausted(msg));
                 }
@@ -220,6 +247,12 @@ impl BlobService for BlobServiceImpl {
             );
         }
 
+        // Record success metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("blob", "upload", true, latency_ms);
+        }
+
         Ok(Response::new(BlobUploadResponse {
             artifact_id,
             size: meta.size as u64,
@@ -234,13 +267,27 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobDownloadRequest>,
     ) -> Result<Response<Self::DownloadStream>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let identity = auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "download", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         // Check blob-specific rate limit
         if let Some(ref limiter) = self.rate_limiter {
@@ -255,6 +302,11 @@ impl BlobService for BlobServiceImpl {
                             None,
                         );
                     }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "blob_download");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("blob", "download", false, latency_ms);
+                    }
                     return Err(Status::resource_exhausted(msg));
                 }
             }
@@ -265,14 +317,22 @@ impl BlobService for BlobServiceImpl {
 
         // Get the blob data
         let store = self.blob_store.lock().await;
-        let data = store.get(&artifact_id).await.map_err(|e| {
-            if matches!(e, tensor_blob::BlobError::NotFound(_)) {
-                Status::not_found(format!("artifact not found: {artifact_id}"))
-            } else {
+        let data = match store.get(&artifact_id).await {
+            Ok(d) => d,
+            Err(e) => {
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "download", false, latency_ms);
+                }
+                if matches!(e, tensor_blob::BlobError::NotFound(_)) {
+                    return Err(Status::not_found(format!(
+                        "artifact not found: {artifact_id}"
+                    )));
+                }
                 tracing::error!("Blob download error: {e}");
-                Status::internal("internal storage error")
-            }
-        })?;
+                return Err(Status::internal("internal storage error"));
+            },
+        };
 
         drop(store); // Release lock before streaming
 
@@ -285,6 +345,12 @@ impl BlobService for BlobServiceImpl {
                 },
                 None,
             );
+        }
+
+        // Record success metrics for download setup
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("blob", "download", true, latency_ms);
         }
 
         let (tx, rx) = mpsc::channel(self.stream_channel_capacity);
@@ -316,13 +382,27 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobDeleteRequest>,
     ) -> Result<Response<BlobDeleteResponse>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let identity = auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "delete", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         // Check blob-specific rate limit
         if let Some(ref limiter) = self.rate_limiter {
@@ -337,6 +417,11 @@ impl BlobService for BlobServiceImpl {
                             None,
                         );
                     }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "blob_delete");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("blob", "delete", false, latency_ms);
+                    }
                     return Err(Status::resource_exhausted(msg));
                 }
             }
@@ -345,14 +430,19 @@ impl BlobService for BlobServiceImpl {
         let artifact_id = request.into_inner().artifact_id;
 
         let store = self.blob_store.lock().await;
-        store.delete(&artifact_id).await.map_err(|e| {
-            if matches!(e, tensor_blob::BlobError::NotFound(_)) {
-                Status::not_found(format!("artifact not found: {artifact_id}"))
-            } else {
-                tracing::error!("Blob delete error: {e}");
-                Status::internal("internal storage error")
+        if let Err(e) = store.delete(&artifact_id).await {
+            if let Some(ref m) = self.metrics {
+                let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                m.record_request("blob", "delete", false, latency_ms);
             }
-        })?;
+            if matches!(e, tensor_blob::BlobError::NotFound(_)) {
+                return Err(Status::not_found(format!(
+                    "artifact not found: {artifact_id}"
+                )));
+            }
+            tracing::error!("Blob delete error: {e}");
+            return Err(Status::internal("internal storage error"));
+        }
 
         // Audit the deletion
         if let Some(ref logger) = self.audit_logger {
@@ -365,6 +455,12 @@ impl BlobService for BlobServiceImpl {
             );
         }
 
+        // Record success metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("blob", "delete", true, latency_ms);
+        }
+
         Ok(Response::new(BlobDeleteResponse { success: true }))
     }
 
@@ -372,20 +468,48 @@ impl BlobService for BlobServiceImpl {
         &self,
         request: Request<BlobMetadataRequest>,
     ) -> Result<Response<ArtifactInfo>, Status> {
+        let start = Instant::now();
+
         // Validate authentication (no rate limit for metadata - read-only operation)
-        let _identity = auth::validate_request(&request, &self.auth_config)?;
+        let _identity = match auth::validate_request(&request, &self.auth_config) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "get_metadata", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         let artifact_id = request.into_inner().artifact_id;
 
         let store = self.blob_store.lock().await;
-        let metadata = store.metadata(&artifact_id).await.map_err(|e| {
-            if matches!(e, tensor_blob::BlobError::NotFound(_)) {
-                Status::not_found(format!("artifact not found: {artifact_id}"))
-            } else {
+        let metadata = match store.metadata(&artifact_id).await {
+            Ok(m) => m,
+            Err(e) => {
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("blob", "get_metadata", false, latency_ms);
+                }
+                if matches!(e, tensor_blob::BlobError::NotFound(_)) {
+                    return Err(Status::not_found(format!(
+                        "artifact not found: {artifact_id}"
+                    )));
+                }
                 tracing::error!("Blob metadata error: {e}");
-                Status::internal("internal storage error")
-            }
-        })?;
+                return Err(Status::internal("internal storage error"));
+            },
+        };
+
+        // Record success metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("blob", "get_metadata", true, latency_ms);
+        }
 
         Ok(Response::new(blob_metadata_to_proto(&metadata)))
     }
@@ -556,5 +680,119 @@ mod tests {
 
         let service = BlobServiceImpl::with_config(blob_store, &config);
         assert_eq!(service.chunk_size, 32 * 1024);
+    }
+
+    #[tokio::test]
+    async fn test_upload_records_metrics() {
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let blob_store = create_test_blob_store().await;
+        let config = ServerConfig::new();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        // Upload directly to blob store, then download via service with metrics
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"data", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let service = BlobServiceImpl::with_full_config(
+            blob_store,
+            &config,
+            None,
+            None,
+            Some(metrics),
+        );
+
+        // Download via service - should record metrics
+        let request = Request::new(BlobDownloadRequest {
+            artifact_id,
+        });
+
+        let result = service.download(request).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_download_records_metrics() {
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let blob_store = create_test_blob_store().await;
+        let config = ServerConfig::new();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        // Upload directly to blob store
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"download_test", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let service = BlobServiceImpl::with_full_config(
+            blob_store,
+            &config,
+            None,
+            None,
+            Some(metrics),
+        );
+
+        let request = Request::new(BlobDownloadRequest {
+            artifact_id,
+        });
+
+        // Download should record metrics
+        let result = service.download(request).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_records_metrics() {
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let blob_store = create_test_blob_store().await;
+        let config = ServerConfig::new();
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        // Upload directly to blob store
+        let artifact_id = {
+            let store = blob_store.lock().await;
+            store
+                .put("test.txt", b"delete_test", tensor_blob::PutOptions::default())
+                .await
+                .unwrap()
+        };
+
+        let service = BlobServiceImpl::with_full_config(
+            Arc::clone(&blob_store),
+            &config,
+            None,
+            None,
+            Some(metrics),
+        );
+
+        let request = Request::new(BlobDeleteRequest {
+            artifact_id,
+        });
+
+        // Delete should record metrics
+        let result = service.delete(request).await;
+        assert!(result.is_ok());
     }
 }

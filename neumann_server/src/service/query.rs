@@ -3,6 +3,7 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
@@ -17,6 +18,7 @@ use crate::config::AuthConfig;
 use crate::convert::{
     edge_to_proto, node_to_proto, query_result_to_proto, row_to_proto, similar_to_proto,
 };
+use crate::metrics::ServerMetrics;
 use crate::proto::{
     self, query_service_server::QueryService, BatchQueryRequest, BatchQueryResponse, QueryRequest,
     QueryResponse, QueryResponseChunk,
@@ -39,6 +41,7 @@ pub struct QueryServiceImpl {
     consecutive_failures: AtomicU32,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
+    metrics: Option<Arc<ServerMetrics>>,
 }
 
 impl QueryServiceImpl {
@@ -53,6 +56,7 @@ impl QueryServiceImpl {
             consecutive_failures: AtomicU32::new(0),
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
@@ -67,6 +71,7 @@ impl QueryServiceImpl {
             consecutive_failures: AtomicU32::new(0),
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
@@ -85,6 +90,7 @@ impl QueryServiceImpl {
             consecutive_failures: AtomicU32::new(0),
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
@@ -104,10 +110,11 @@ impl QueryServiceImpl {
             consecutive_failures: AtomicU32::new(0),
             rate_limiter: None,
             audit_logger: None,
+            metrics: None,
         }
     }
 
-    /// Create a new query service with all options including rate limiting and audit logging.
+    /// Create a new query service with all options including rate limiting, audit logging, and metrics.
     #[must_use]
     pub fn with_full_config(
         router: Arc<RwLock<QueryRouter>>,
@@ -116,6 +123,7 @@ impl QueryServiceImpl {
         health_state: Arc<HealthState>,
         rate_limiter: Option<Arc<RateLimiter>>,
         audit_logger: Option<Arc<AuditLogger>>,
+        metrics: Option<Arc<ServerMetrics>>,
     ) -> Self {
         Self {
             router,
@@ -125,6 +133,7 @@ impl QueryServiceImpl {
             consecutive_failures: AtomicU32::new(0),
             rate_limiter,
             audit_logger,
+            metrics,
         }
     }
 
@@ -179,13 +188,27 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<QueryResponse>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let identity = auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "execute", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         // Check query-specific rate limit
         if let Some(ref limiter) = self.rate_limiter {
@@ -200,6 +223,11 @@ impl QueryService for QueryServiceImpl {
                             None,
                         );
                     }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "query");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("query", "execute", false, latency_ms);
+                    }
                     return Err(Status::resource_exhausted(msg));
                 }
             }
@@ -209,6 +237,12 @@ impl QueryService for QueryServiceImpl {
         tracing::debug!("Executing query: {}", query);
 
         let result = self.execute_query(query, identity.as_deref());
+
+        // Record metrics
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("query", "execute", result.is_ok(), latency_ms);
+        }
 
         // Audit the query execution
         if let Some(ref logger) = self.audit_logger {
@@ -236,13 +270,27 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<QueryRequest>,
     ) -> Result<Response<Self::ExecuteStreamStream>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let identity = auth::validate_request_with_audit(
+        let identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "execute_stream", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         // Check query-specific rate limit
         if let Some(ref limiter) = self.rate_limiter {
@@ -256,6 +304,11 @@ impl QueryService for QueryServiceImpl {
                             },
                             None,
                         );
+                    }
+                    if let Some(ref m) = self.metrics {
+                        m.record_rate_limited(id, "query");
+                        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        m.record_request("query", "execute_stream", false, latency_ms);
                     }
                     return Err(Status::resource_exhausted(msg));
                 }
@@ -278,7 +331,22 @@ impl QueryService for QueryServiceImpl {
             }
         }
 
-        let result = self.execute_query(query, identity.as_deref())?;
+        let result = match self.execute_query(query, identity.as_deref()) {
+            Ok(r) => r,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "execute_stream", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
+
+        // Record metrics for successful stream setup
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("query", "execute_stream", true, latency_ms);
+        }
 
         let (tx, rx) = mpsc::channel(self.stream_channel_capacity);
 
@@ -397,16 +465,31 @@ impl QueryService for QueryServiceImpl {
         &self,
         request: Request<BatchQueryRequest>,
     ) -> Result<Response<BatchQueryResponse>, Status> {
+        let start = Instant::now();
+
         // Validate authentication with rate limiting and audit
-        let request_identity = auth::validate_request_with_audit(
+        let request_identity = match auth::validate_request_with_audit(
             &request,
             &self.auth_config,
             self.rate_limiter.as_deref(),
             self.audit_logger.as_deref(),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(status) => {
+                if let Some(ref m) = self.metrics {
+                    if status.code() == tonic::Code::Unauthenticated {
+                        m.record_auth_failure("invalid_key");
+                    }
+                    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    m.record_request("query", "execute_batch", false, latency_ms);
+                }
+                return Err(status);
+            },
+        };
 
         let batch = request.into_inner();
         let mut results = Vec::with_capacity(batch.queries.len());
+        let mut all_succeeded = true;
 
         for query_request in batch.queries {
             // SECURITY: Always use the authenticated request identity.
@@ -426,6 +509,11 @@ impl QueryService for QueryServiceImpl {
                                 },
                                 None,
                             );
+                        }
+                        if let Some(ref m) = self.metrics {
+                            m.record_rate_limited(id, "query");
+                            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+                            m.record_request("query", "execute_batch", false, latency_ms);
                         }
                         return Err(Status::resource_exhausted(msg));
                     }
@@ -447,16 +535,25 @@ impl QueryService for QueryServiceImpl {
 
             let response = match self.execute_query(&query_request.query, identity.as_deref()) {
                 Ok(result) => query_result_to_proto(result),
-                Err(status) => QueryResponse {
-                    result: None,
-                    error: Some(proto::ErrorInfo {
-                        code: status_to_error_code(&status).into(),
-                        message: status.message().to_string(),
-                        details: None,
-                    }),
+                Err(status) => {
+                    all_succeeded = false;
+                    QueryResponse {
+                        result: None,
+                        error: Some(proto::ErrorInfo {
+                            code: status_to_error_code(&status).into(),
+                            message: status.message().to_string(),
+                            details: None,
+                        }),
+                    }
                 },
             };
             results.push(response);
+        }
+
+        // Record metrics for the entire batch
+        if let Some(ref m) = self.metrics {
+            let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+            m.record_request("query", "execute_batch", all_succeeded, latency_ms);
         }
 
         Ok(Response::new(BatchQueryResponse { results }))
@@ -925,6 +1022,175 @@ mod tests {
         for _ in 0..10 {
             service.record_failure();
         }
+    }
+
+    #[tokio::test]
+    async fn test_execute_records_metrics() {
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            None,
+            32,
+            health_state,
+            None,
+            None,
+            Some(Arc::clone(&metrics)),
+        );
+
+        let request = Request::new(QueryRequest {
+            query: "CREATE TABLE metrics_test (x:int)".to_string(),
+            identity: None,
+        });
+
+        // Execute query - should record metrics
+        let response = service.execute(request).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_records_latency() {
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            None,
+            32,
+            health_state,
+            None,
+            None,
+            Some(metrics),
+        );
+
+        let request = Request::new(QueryRequest {
+            query: "CREATE TABLE latency_test (x:int)".to_string(),
+            identity: None,
+        });
+
+        // Execute query - latency should be recorded
+        let response = service.execute(request).await;
+        assert!(response.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_auth_failure_recorded() {
+        use crate::config::ApiKey;
+        use crate::metrics::ServerMetrics;
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+        let auth_config = AuthConfig::new()
+            .with_api_key(ApiKey::new(
+                "test-api-key-12345678".to_string(),
+                "user:alice".to_string(),
+            ))
+            .with_anonymous(false);
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            None,
+            None,
+            Some(metrics),
+        );
+
+        // Request without auth should fail and record auth failure
+        let request = Request::new(QueryRequest {
+            query: "CREATE TABLE auth_fail_test (x:int)".to_string(),
+            identity: None,
+        });
+
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+        assert_eq!(response.unwrap_err().code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_recorded() {
+        use crate::config::ApiKey;
+        use crate::metrics::ServerMetrics;
+        use crate::rate_limit::{RateLimitConfig, RateLimiter};
+        use opentelemetry::metrics::MeterProvider;
+        use opentelemetry_sdk::metrics::SdkMeterProvider;
+        use tonic::metadata::MetadataValue;
+
+        let router = create_test_router();
+        let health_state = Arc::new(HealthState::new());
+
+        // Configure auth so rate limiter has an identity to track
+        let auth_config = AuthConfig::new().with_api_key(ApiKey::new(
+            "test-api-key-12345678".to_string(),
+            "user:rate_test".to_string(),
+        ));
+
+        // Set very low query limit so it triggers on second request
+        let rate_limiter = Arc::new(RateLimiter::new(
+            RateLimitConfig::new().with_max_queries(1),
+        ));
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = Arc::new(ServerMetrics::new(meter));
+
+        let service = QueryServiceImpl::with_full_config(
+            router,
+            Some(auth_config),
+            32,
+            health_state,
+            Some(rate_limiter),
+            None,
+            Some(metrics),
+        );
+
+        // First request should succeed (with valid API key)
+        let mut request = Request::new(QueryRequest {
+            query: "CREATE TABLE rate_test (x:int)".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("test-api-key-12345678"),
+        );
+        let response = service.execute(request).await;
+        assert!(response.is_ok());
+
+        // Second request should be rate limited and recorded
+        let mut request = Request::new(QueryRequest {
+            query: "SELECT rate_test".to_string(),
+            identity: None,
+        });
+        request.metadata_mut().insert(
+            "x-api-key",
+            MetadataValue::from_static("test-api-key-12345678"),
+        );
+        let response = service.execute(request).await;
+        assert!(response.is_err());
+        assert_eq!(
+            response.unwrap_err().code(),
+            tonic::Code::ResourceExhausted
+        );
     }
 
     use tokio_stream::StreamExt;
