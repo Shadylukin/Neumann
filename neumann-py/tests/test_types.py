@@ -3,6 +3,23 @@
 import pytest
 
 from neumann.types import (
+    BlobStats,
+    ChainBlockInfo,
+    ChainCodebookInfo,
+    ChainCommitted,
+    ChainConflictResolution,
+    ChainDrift,
+    ChainHeight,
+    ChainHistory,
+    ChainHistoryEntry,
+    ChainMergeResult,
+    ChainRolledBack,
+    ChainSimilar,
+    ChainSimilarItem,
+    ChainTip,
+    ChainTransactionBegun,
+    ChainTransitionAnalysis,
+    CheckpointInfo,
     Edge,
     Node,
     Path,
@@ -12,6 +29,8 @@ from neumann.types import (
     Row,
     ScalarType,
     SimilarItem,
+    UnifiedItem,
+    UnifiedResult,
     Value,
 )
 
@@ -368,3 +387,450 @@ class TestRowGetters:
         assert row.get_float("missing") is None
         assert row.get_string("missing") is None
         assert row.get_bool("missing") is None
+
+
+class TestUnifiedTypes:
+    """Tests for UnifiedItem and UnifiedResult."""
+
+    def test_unified_item_creation(self) -> None:
+        """Test UnifiedItem creation."""
+        item = UnifiedItem(
+            entity_type="node",
+            key="n1",
+            fields={"name": "Alice"},
+            score=0.95,
+        )
+        assert item.entity_type == "node"
+        assert item.key == "n1"
+        assert item.fields == {"name": "Alice"}
+        assert item.score == 0.95
+
+    def test_unified_item_default_fields(self) -> None:
+        """Test UnifiedItem with default fields."""
+        item = UnifiedItem(entity_type="edge", key="e1")
+        assert item.fields == {}
+        assert item.score is None
+
+    def test_unified_item_is_frozen(self) -> None:
+        """Test UnifiedItem is immutable."""
+        item = UnifiedItem(entity_type="node", key="n1")
+        with pytest.raises(AttributeError):
+            item.key = "n2"  # type: ignore
+
+    def test_unified_result_creation(self) -> None:
+        """Test UnifiedResult creation."""
+        items = [UnifiedItem(entity_type="node", key="n1")]
+        result = UnifiedResult(description="Found 1 item", items=items)
+        assert result.description == "Found 1 item"
+        assert len(result.items) == 1
+        assert result.items[0].key == "n1"
+
+    def test_unified_result_default_items(self) -> None:
+        """Test UnifiedResult with default items."""
+        result = UnifiedResult(description="Empty result")
+        assert result.items == []
+
+
+class TestBlobStats:
+    """Tests for BlobStats."""
+
+    def test_blob_stats_creation(self) -> None:
+        """Test BlobStats creation."""
+        stats = BlobStats(
+            artifact_count=100,
+            chunk_count=500,
+            total_bytes=1024000,
+            unique_bytes=512000,
+            dedup_ratio=2.0,
+            orphaned_chunks=5,
+        )
+        assert stats.artifact_count == 100
+        assert stats.chunk_count == 500
+        assert stats.total_bytes == 1024000
+        assert stats.unique_bytes == 512000
+        assert stats.dedup_ratio == 2.0
+        assert stats.orphaned_chunks == 5
+
+    def test_blob_stats_is_frozen(self) -> None:
+        """Test BlobStats is immutable."""
+        stats = BlobStats(
+            artifact_count=100,
+            chunk_count=500,
+            total_bytes=1024000,
+            unique_bytes=512000,
+            dedup_ratio=2.0,
+            orphaned_chunks=5,
+        )
+        with pytest.raises(AttributeError):
+            stats.artifact_count = 200  # type: ignore
+
+
+class TestCheckpointInfo:
+    """Tests for CheckpointInfo."""
+
+    def test_checkpoint_info_creation(self) -> None:
+        """Test CheckpointInfo creation."""
+        cp = CheckpointInfo(
+            id="cp-1",
+            name="backup-2024",
+            created_at=1704067200,
+            is_auto=False,
+        )
+        assert cp.id == "cp-1"
+        assert cp.name == "backup-2024"
+        assert cp.created_at == 1704067200
+        assert cp.is_auto is False
+
+    def test_checkpoint_info_auto(self) -> None:
+        """Test CheckpointInfo with auto flag."""
+        cp = CheckpointInfo(
+            id="cp-2",
+            name="auto-backup",
+            created_at=1704153600,
+            is_auto=True,
+        )
+        assert cp.is_auto is True
+
+
+class TestChainTypes:
+    """Tests for chain-related types."""
+
+    def test_chain_transaction_begun(self) -> None:
+        """Test ChainTransactionBegun creation."""
+        begun = ChainTransactionBegun(tx_id="tx-123")
+        assert begun.tx_id == "tx-123"
+
+    def test_chain_committed(self) -> None:
+        """Test ChainCommitted creation."""
+        committed = ChainCommitted(block_hash="abc123", height=100)
+        assert committed.block_hash == "abc123"
+        assert committed.height == 100
+
+    def test_chain_rolled_back(self) -> None:
+        """Test ChainRolledBack creation."""
+        rolled = ChainRolledBack(to_height=50)
+        assert rolled.to_height == 50
+
+    def test_chain_history_entry(self) -> None:
+        """Test ChainHistoryEntry creation."""
+        entry = ChainHistoryEntry(
+            height=10,
+            transaction_type="PUT",
+            data=b"payload",
+        )
+        assert entry.height == 10
+        assert entry.transaction_type == "PUT"
+        assert entry.data == b"payload"
+
+    def test_chain_history_entry_no_data(self) -> None:
+        """Test ChainHistoryEntry without data."""
+        entry = ChainHistoryEntry(height=5, transaction_type="DELETE")
+        assert entry.data is None
+
+    def test_chain_history(self) -> None:
+        """Test ChainHistory creation."""
+        entries = [ChainHistoryEntry(height=1, transaction_type="PUT")]
+        history = ChainHistory(entries=entries)
+        assert len(history.entries) == 1
+
+    def test_chain_similar_item(self) -> None:
+        """Test ChainSimilarItem creation."""
+        item = ChainSimilarItem(
+            block_hash="xyz789",
+            height=42,
+            similarity=0.92,
+        )
+        assert item.block_hash == "xyz789"
+        assert item.height == 42
+        assert item.similarity == 0.92
+
+    def test_chain_similar(self) -> None:
+        """Test ChainSimilar creation."""
+        items = [ChainSimilarItem(block_hash="a", height=1, similarity=0.9)]
+        similar = ChainSimilar(items=items)
+        assert len(similar.items) == 1
+
+    def test_chain_drift(self) -> None:
+        """Test ChainDrift creation."""
+        drift = ChainDrift(
+            from_height=0,
+            to_height=100,
+            total_drift=15.5,
+            avg_drift_per_block=0.155,
+            max_drift=2.3,
+        )
+        assert drift.from_height == 0
+        assert drift.to_height == 100
+        assert drift.total_drift == 15.5
+        assert drift.avg_drift_per_block == 0.155
+        assert drift.max_drift == 2.3
+
+    def test_chain_height(self) -> None:
+        """Test ChainHeight creation."""
+        height = ChainHeight(height=500)
+        assert height.height == 500
+
+    def test_chain_tip(self) -> None:
+        """Test ChainTip creation."""
+        tip = ChainTip(hash="head123", height=500)
+        assert tip.hash == "head123"
+        assert tip.height == 500
+
+    def test_chain_block_info(self) -> None:
+        """Test ChainBlockInfo creation."""
+        block = ChainBlockInfo(
+            height=100,
+            hash="block100",
+            prev_hash="block99",
+            timestamp=1704067200,
+            transaction_count=50,
+            proposer="validator1",
+        )
+        assert block.height == 100
+        assert block.hash == "block100"
+        assert block.prev_hash == "block99"
+        assert block.timestamp == 1704067200
+        assert block.transaction_count == 50
+        assert block.proposer == "validator1"
+
+    def test_chain_codebook_info(self) -> None:
+        """Test ChainCodebookInfo creation."""
+        codebook = ChainCodebookInfo(
+            scope="global",
+            entry_count=256,
+            dimension=128,
+            domain="embeddings",
+        )
+        assert codebook.scope == "global"
+        assert codebook.entry_count == 256
+        assert codebook.dimension == 128
+        assert codebook.domain == "embeddings"
+
+    def test_chain_codebook_info_no_domain(self) -> None:
+        """Test ChainCodebookInfo without domain."""
+        codebook = ChainCodebookInfo(
+            scope="local",
+            entry_count=64,
+            dimension=32,
+        )
+        assert codebook.domain is None
+
+    def test_chain_transition_analysis(self) -> None:
+        """Test ChainTransitionAnalysis creation."""
+        analysis = ChainTransitionAnalysis(
+            total_transitions=100,
+            valid_transitions=95,
+            invalid_transitions=5,
+            avg_validity_score=0.95,
+        )
+        assert analysis.total_transitions == 100
+        assert analysis.valid_transitions == 95
+        assert analysis.invalid_transitions == 5
+        assert analysis.avg_validity_score == 0.95
+
+    def test_chain_conflict_resolution(self) -> None:
+        """Test ChainConflictResolution creation."""
+        resolution = ChainConflictResolution(
+            strategy="semantic",
+            conflicts_resolved=10,
+        )
+        assert resolution.strategy == "semantic"
+        assert resolution.conflicts_resolved == 10
+
+    def test_chain_merge_result(self) -> None:
+        """Test ChainMergeResult creation."""
+        merge = ChainMergeResult(success=True, merged_count=25)
+        assert merge.success is True
+        assert merge.merged_count == 25
+
+    def test_chain_merge_result_failed(self) -> None:
+        """Test ChainMergeResult with failure."""
+        merge = ChainMergeResult(success=False, merged_count=0)
+        assert merge.success is False
+        assert merge.merged_count == 0
+
+
+class TestQueryResultNewAccessors:
+    """Tests for new QueryResult property accessors."""
+
+    def test_unified_result_accessor(self) -> None:
+        """Test unified_result accessor."""
+        unified = UnifiedResult(
+            description="test",
+            items=[UnifiedItem(entity_type="node", key="n1")],
+        )
+        result = QueryResult(QueryResultType.UNIFIED, unified)
+        assert result.unified_result == unified
+        assert result.unified_result.description == "test"
+
+    def test_unified_items_accessor(self) -> None:
+        """Test unified_items accessor."""
+        items = [UnifiedItem(entity_type="node", key="n1")]
+        unified = UnifiedResult(description="test", items=items)
+        result = QueryResult(QueryResultType.UNIFIED, unified)
+        assert result.unified_items == items
+
+    def test_unified_description_accessor(self) -> None:
+        """Test unified_description accessor."""
+        unified = UnifiedResult(description="Found 5 items", items=[])
+        result = QueryResult(QueryResultType.UNIFIED, unified)
+        assert result.unified_description == "Found 5 items"
+
+    def test_artifact_ids_accessor(self) -> None:
+        """Test artifact_ids accessor."""
+        result = QueryResult(QueryResultType.ARTIFACT_LIST, ["art1", "art2"])
+        assert result.artifact_ids == ["art1", "art2"]
+
+    def test_blob_stats_accessor(self) -> None:
+        """Test blob_stats accessor."""
+        stats = BlobStats(
+            artifact_count=10,
+            chunk_count=50,
+            total_bytes=1000,
+            unique_bytes=500,
+            dedup_ratio=2.0,
+            orphaned_chunks=1,
+        )
+        result = QueryResult(QueryResultType.BLOB_STATS, stats)
+        assert result.blob_stats == stats
+
+    def test_checkpoints_accessor(self) -> None:
+        """Test checkpoints accessor."""
+        checkpoints = [CheckpointInfo(id="1", name="cp1", created_at=100, is_auto=False)]
+        result = QueryResult(QueryResultType.CHECKPOINT_LIST, checkpoints)
+        assert result.checkpoints == checkpoints
+
+    def test_chain_transaction_begun_accessor(self) -> None:
+        """Test chain_transaction_begun accessor."""
+        begun = ChainTransactionBegun(tx_id="tx-1")
+        result = QueryResult(QueryResultType.CHAIN_TRANSACTION_BEGUN, begun)
+        assert result.chain_transaction_begun == begun
+
+    def test_chain_committed_accessor(self) -> None:
+        """Test chain_committed accessor."""
+        committed = ChainCommitted(block_hash="hash1", height=100)
+        result = QueryResult(QueryResultType.CHAIN_COMMITTED, committed)
+        assert result.chain_committed == committed
+
+    def test_chain_rolled_back_accessor(self) -> None:
+        """Test chain_rolled_back accessor."""
+        rolled = ChainRolledBack(to_height=50)
+        result = QueryResult(QueryResultType.CHAIN_ROLLED_BACK, rolled)
+        assert result.chain_rolled_back == rolled
+
+    def test_chain_history_accessor(self) -> None:
+        """Test chain_history accessor."""
+        history = ChainHistory(entries=[])
+        result = QueryResult(QueryResultType.CHAIN_HISTORY, history)
+        assert result.chain_history == history
+
+    def test_chain_similar_accessor(self) -> None:
+        """Test chain_similar accessor."""
+        similar = ChainSimilar(items=[])
+        result = QueryResult(QueryResultType.CHAIN_SIMILAR, similar)
+        assert result.chain_similar == similar
+
+    def test_chain_drift_accessor(self) -> None:
+        """Test chain_drift accessor."""
+        drift = ChainDrift(
+            from_height=0,
+            to_height=100,
+            total_drift=10.0,
+            avg_drift_per_block=0.1,
+            max_drift=1.0,
+        )
+        result = QueryResult(QueryResultType.CHAIN_DRIFT, drift)
+        assert result.chain_drift == drift
+
+    def test_chain_height_accessor(self) -> None:
+        """Test chain_height accessor."""
+        height = ChainHeight(height=500)
+        result = QueryResult(QueryResultType.CHAIN_HEIGHT, height)
+        assert result.chain_height == height
+
+    def test_chain_tip_accessor(self) -> None:
+        """Test chain_tip accessor."""
+        tip = ChainTip(hash="abc", height=100)
+        result = QueryResult(QueryResultType.CHAIN_TIP, tip)
+        assert result.chain_tip == tip
+
+    def test_chain_block_accessor(self) -> None:
+        """Test chain_block accessor."""
+        block = ChainBlockInfo(
+            height=1,
+            hash="a",
+            prev_hash="b",
+            timestamp=0,
+            transaction_count=1,
+            proposer="p",
+        )
+        result = QueryResult(QueryResultType.CHAIN_BLOCK, block)
+        assert result.chain_block == block
+
+    def test_chain_codebook_accessor(self) -> None:
+        """Test chain_codebook accessor."""
+        codebook = ChainCodebookInfo(scope="global", entry_count=10, dimension=128)
+        result = QueryResult(QueryResultType.CHAIN_CODEBOOK, codebook)
+        assert result.chain_codebook == codebook
+
+    def test_chain_transition_analysis_accessor(self) -> None:
+        """Test chain_transition_analysis accessor."""
+        analysis = ChainTransitionAnalysis(
+            total_transitions=10,
+            valid_transitions=9,
+            invalid_transitions=1,
+            avg_validity_score=0.9,
+        )
+        result = QueryResult(QueryResultType.CHAIN_TRANSITION_ANALYSIS, analysis)
+        assert result.chain_transition_analysis == analysis
+
+    def test_chain_conflict_resolution_accessor(self) -> None:
+        """Test chain_conflict_resolution accessor."""
+        resolution = ChainConflictResolution(strategy="auto", conflicts_resolved=5)
+        result = QueryResult(QueryResultType.CHAIN_CONFLICT_RESOLUTION, resolution)
+        assert result.chain_conflict_resolution == resolution
+
+    def test_chain_merge_accessor(self) -> None:
+        """Test chain_merge accessor."""
+        merge = ChainMergeResult(success=True, merged_count=10)
+        result = QueryResult(QueryResultType.CHAIN_MERGE, merge)
+        assert result.chain_merge == merge
+
+    def test_new_accessors_wrong_type(self) -> None:
+        """Test new accessors return None/empty for wrong types."""
+        count_result = QueryResult(QueryResultType.COUNT, 42)
+        assert count_result.unified_result is None
+        assert count_result.unified_items == []
+        assert count_result.unified_description is None
+        assert count_result.artifact_ids == []
+        assert count_result.blob_stats is None
+        assert count_result.checkpoints == []
+        assert count_result.chain_transaction_begun is None
+        assert count_result.chain_committed is None
+        assert count_result.chain_rolled_back is None
+        assert count_result.chain_history is None
+        assert count_result.chain_similar is None
+        assert count_result.chain_drift is None
+        assert count_result.chain_height is None
+        assert count_result.chain_tip is None
+        assert count_result.chain_block is None
+        assert count_result.chain_codebook is None
+        assert count_result.chain_transition_analysis is None
+        assert count_result.chain_conflict_resolution is None
+        assert count_result.chain_merge is None
+
+    def test_new_accessors_none_data(self) -> None:
+        """Test new accessors with None data."""
+        unified_result = QueryResult(QueryResultType.UNIFIED, None)
+        assert unified_result.unified_result is None
+        assert unified_result.unified_items == []
+        assert unified_result.unified_description is None
+
+        artifact_result = QueryResult(QueryResultType.ARTIFACT_LIST, None)
+        assert artifact_result.artifact_ids == []
+
+        blob_stats_result = QueryResult(QueryResultType.BLOB_STATS, None)
+        assert blob_stats_result.blob_stats is None
+
+        checkpoint_result = QueryResult(QueryResultType.CHECKPOINT_LIST, None)
+        assert checkpoint_result.checkpoints == []

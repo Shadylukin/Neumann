@@ -200,6 +200,174 @@ class ArtifactInfo:
     tags: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class UnifiedItem:
+    """An item from a unified query result."""
+
+    entity_type: str
+    key: str
+    fields: dict[str, str] = field(default_factory=dict)
+    score: float | None = None
+
+
+@dataclass(frozen=True)
+class UnifiedResult:
+    """Result from a unified cross-engine query."""
+
+    description: str
+    items: list[UnifiedItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BlobStats:
+    """Statistics for blob storage."""
+
+    artifact_count: int
+    chunk_count: int
+    total_bytes: int
+    unique_bytes: int
+    dedup_ratio: float
+    orphaned_chunks: int
+
+
+@dataclass(frozen=True)
+class CheckpointInfo:
+    """Information about a checkpoint."""
+
+    id: str
+    name: str
+    created_at: int
+    is_auto: bool
+
+
+@dataclass(frozen=True)
+class ChainTransactionBegun:
+    """Result when a chain transaction begins."""
+
+    tx_id: str
+
+
+@dataclass(frozen=True)
+class ChainCommitted:
+    """Result when a chain commit succeeds."""
+
+    block_hash: str
+    height: int
+
+
+@dataclass(frozen=True)
+class ChainRolledBack:
+    """Result when a chain rollback completes."""
+
+    to_height: int
+
+
+@dataclass(frozen=True)
+class ChainHistoryEntry:
+    """An entry in chain history."""
+
+    height: int
+    transaction_type: str
+    data: bytes | None = None
+
+
+@dataclass(frozen=True)
+class ChainHistory:
+    """Chain history result."""
+
+    entries: list[ChainHistoryEntry] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ChainSimilarItem:
+    """A similar item found in the chain."""
+
+    block_hash: str
+    height: int
+    similarity: float
+
+
+@dataclass(frozen=True)
+class ChainSimilar:
+    """Chain similarity search result."""
+
+    items: list[ChainSimilarItem] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ChainDrift:
+    """Chain drift analysis result."""
+
+    from_height: int
+    to_height: int
+    total_drift: float
+    avg_drift_per_block: float
+    max_drift: float
+
+
+@dataclass(frozen=True)
+class ChainHeight:
+    """Current chain height."""
+
+    height: int
+
+
+@dataclass(frozen=True)
+class ChainTip:
+    """Current chain tip information."""
+
+    hash: str
+    height: int
+
+
+@dataclass(frozen=True)
+class ChainBlockInfo:
+    """Information about a chain block."""
+
+    height: int
+    hash: str
+    prev_hash: str
+    timestamp: int
+    transaction_count: int
+    proposer: str
+
+
+@dataclass(frozen=True)
+class ChainCodebookInfo:
+    """Information about a chain codebook."""
+
+    scope: str
+    entry_count: int
+    dimension: int
+    domain: str | None = None
+
+
+@dataclass(frozen=True)
+class ChainTransitionAnalysis:
+    """Analysis of chain transitions."""
+
+    total_transitions: int
+    valid_transitions: int
+    invalid_transitions: int
+    avg_validity_score: float
+
+
+@dataclass(frozen=True)
+class ChainConflictResolution:
+    """Result of chain conflict resolution."""
+
+    strategy: str
+    conflicts_resolved: int
+
+
+@dataclass(frozen=True)
+class ChainMergeResult:
+    """Result of a chain merge operation."""
+
+    success: bool
+    merged_count: int
+
+
 class QueryResultType(Enum):
     """Types of query results."""
 
@@ -215,8 +383,23 @@ class QueryResultType(Enum):
     TABLE_LIST = "table_list"
     BLOB = "blob"
     BLOB_INFO = "blob_info"
+    BLOB_STATS = "blob_stats"
+    ARTIFACT_LIST = "artifact_list"
+    CHECKPOINT_LIST = "checkpoint_list"
     CHAIN_COMMITTED = "chain_committed"
     CHAIN_TRANSACTION = "chain_transaction"
+    CHAIN_TRANSACTION_BEGUN = "chain_transaction_begun"
+    CHAIN_ROLLED_BACK = "chain_rolled_back"
+    CHAIN_HISTORY = "chain_history"
+    CHAIN_SIMILAR = "chain_similar"
+    CHAIN_DRIFT = "chain_drift"
+    CHAIN_HEIGHT = "chain_height"
+    CHAIN_TIP = "chain_tip"
+    CHAIN_BLOCK = "chain_block"
+    CHAIN_CODEBOOK = "chain_codebook"
+    CHAIN_TRANSITION_ANALYSIS = "chain_transition_analysis"
+    CHAIN_CONFLICT_RESOLUTION = "chain_conflict_resolution"
+    CHAIN_MERGE = "chain_merge"
     UNIFIED = "unified"
     ERROR = "error"
 
@@ -320,4 +503,137 @@ class QueryResult:
         """Get error message if result is error."""
         if self.type == QueryResultType.ERROR:
             return str(self.data) if self.data else None
+        return None
+
+    @property
+    def unified_result(self) -> UnifiedResult | None:
+        """Get unified result if result is unified."""
+        if self.type == QueryResultType.UNIFIED:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def unified_items(self) -> list[UnifiedItem]:
+        """Get unified items if result is unified."""
+        if self.type == QueryResultType.UNIFIED and self.data:
+            return self.data.items if hasattr(self.data, "items") else []
+        return []
+
+    @property
+    def unified_description(self) -> str | None:
+        """Get unified description if result is unified."""
+        if self.type == QueryResultType.UNIFIED and self.data:
+            return self.data.description if hasattr(self.data, "description") else None
+        return None
+
+    @property
+    def artifact_ids(self) -> list[str]:
+        """Get artifact IDs if result is artifact list."""
+        if self.type == QueryResultType.ARTIFACT_LIST:
+            return self.data if self.data else []
+        return []
+
+    @property
+    def blob_stats(self) -> BlobStats | None:
+        """Get blob stats if result is blob stats."""
+        if self.type == QueryResultType.BLOB_STATS:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def checkpoints(self) -> list[CheckpointInfo]:
+        """Get checkpoints if result is checkpoint list."""
+        if self.type == QueryResultType.CHECKPOINT_LIST:
+            return self.data if self.data else []
+        return []
+
+    @property
+    def chain_transaction_begun(self) -> ChainTransactionBegun | None:
+        """Get chain transaction begun if result is chain transaction begun."""
+        if self.type == QueryResultType.CHAIN_TRANSACTION_BEGUN:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_committed(self) -> ChainCommitted | None:
+        """Get chain committed if result is chain committed."""
+        if self.type == QueryResultType.CHAIN_COMMITTED:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_rolled_back(self) -> ChainRolledBack | None:
+        """Get chain rolled back if result is chain rolled back."""
+        if self.type == QueryResultType.CHAIN_ROLLED_BACK:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_history(self) -> ChainHistory | None:
+        """Get chain history if result is chain history."""
+        if self.type == QueryResultType.CHAIN_HISTORY:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_similar(self) -> ChainSimilar | None:
+        """Get chain similar if result is chain similar."""
+        if self.type == QueryResultType.CHAIN_SIMILAR:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_drift(self) -> ChainDrift | None:
+        """Get chain drift if result is chain drift."""
+        if self.type == QueryResultType.CHAIN_DRIFT:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_height(self) -> ChainHeight | None:
+        """Get chain height if result is chain height."""
+        if self.type == QueryResultType.CHAIN_HEIGHT:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_tip(self) -> ChainTip | None:
+        """Get chain tip if result is chain tip."""
+        if self.type == QueryResultType.CHAIN_TIP:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_block(self) -> ChainBlockInfo | None:
+        """Get chain block if result is chain block."""
+        if self.type == QueryResultType.CHAIN_BLOCK:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_codebook(self) -> ChainCodebookInfo | None:
+        """Get chain codebook if result is chain codebook."""
+        if self.type == QueryResultType.CHAIN_CODEBOOK:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_transition_analysis(self) -> ChainTransitionAnalysis | None:
+        """Get chain transition analysis if result is chain transition analysis."""
+        if self.type == QueryResultType.CHAIN_TRANSITION_ANALYSIS:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_conflict_resolution(self) -> ChainConflictResolution | None:
+        """Get chain conflict resolution if result is chain conflict resolution."""
+        if self.type == QueryResultType.CHAIN_CONFLICT_RESOLUTION:
+            return self.data if self.data else None
+        return None
+
+    @property
+    def chain_merge(self) -> ChainMergeResult | None:
+        """Get chain merge result if result is chain merge."""
+        if self.type == QueryResultType.CHAIN_MERGE:
+            return self.data if self.data else None
         return None

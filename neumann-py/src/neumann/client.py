@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from neumann.errors import (
     ConnectionError,
@@ -11,6 +12,23 @@ from neumann.errors import (
 )
 from neumann.types import (
     ArtifactInfo,
+    BlobStats,
+    ChainBlockInfo,
+    ChainCodebookInfo,
+    ChainCommitted,
+    ChainConflictResolution,
+    ChainDrift,
+    ChainHeight,
+    ChainHistory,
+    ChainHistoryEntry,
+    ChainMergeResult,
+    ChainRolledBack,
+    ChainSimilar,
+    ChainSimilarItem,
+    ChainTip,
+    ChainTransactionBegun,
+    ChainTransitionAnalysis,
+    CheckpointInfo,
     Edge,
     Node,
     Path,
@@ -18,8 +36,9 @@ from neumann.types import (
     QueryResult,
     QueryResultType,
     Row,
-    ScalarType,
     SimilarItem,
+    UnifiedItem,
+    UnifiedResult,
     Value,
 )
 
@@ -106,9 +125,7 @@ class NeumannClient:
             client._stub = neumann_pb2_grpc.QueryServiceStub(client._channel)
             client._connected = True
         except ImportError as e:
-            raise ConnectionError(
-                "gRPC not available. Install with: pip install grpcio"
-            ) from e
+            raise ConnectionError("gRPC not available. Install with: pip install grpcio") from e
         except Exception as e:
             raise ConnectionError(f"Failed to connect to {address}: {e}") from e
 
@@ -201,9 +218,7 @@ class NeumannClient:
                 raise ConnectionError(f"gRPC error: {e}") from e
             raise NeumannError(str(e)) from e
 
-    def execute_stream(
-        self, query: str, *, identity: str | None = None
-    ) -> Iterator[QueryResult]:
+    def execute_stream(self, query: str, *, identity: str | None = None) -> Iterator[QueryResult]:
         """Execute a streaming query.
 
         Args:
@@ -225,9 +240,7 @@ class NeumannClient:
         else:
             yield from self._execute_stream_remote(query, identity)
 
-    def _execute_stream_remote(
-        self, query: str, identity: str | None
-    ) -> Iterator[QueryResult]:
+    def _execute_stream_remote(self, query: str, identity: str | None) -> Iterator[QueryResult]:
         """Execute streaming query in remote mode."""
         if self._stub is None:
             raise ConnectionError("gRPC stub not initialized")
@@ -276,9 +289,7 @@ class NeumannClient:
         else:
             return self._execute_batch_remote(queries, identity)
 
-    def _execute_batch_remote(
-        self, queries: list[str], identity: str | None
-    ) -> list[QueryResult]:
+    def _execute_batch_remote(self, queries: list[str], identity: str | None) -> list[QueryResult]:
         """Execute batch in remote mode."""
         if self._stub is None:
             raise ConnectionError("gRPC stub not initialized")
@@ -331,9 +342,7 @@ class NeumannClient:
             edges = [self._convert_native_edge(e) for e in result_dict.get("data", [])]
             return QueryResult(QueryResultType.EDGES, edges)
         elif result_type == "similar":
-            items = [
-                self._convert_native_similar(s) for s in result_dict.get("data", [])
-            ]
+            items = [self._convert_native_similar(s) for s in result_dict.get("data", [])]
             return QueryResult(QueryResultType.SIMILAR, items)
         elif result_type == "ids":
             return QueryResult(QueryResultType.IDS, result_dict.get("data", []))
@@ -341,10 +350,36 @@ class NeumannClient:
             return QueryResult(QueryResultType.TABLE_LIST, result_dict.get("data", []))
         elif result_type == "blob":
             return QueryResult(QueryResultType.BLOB, result_dict.get("data"))
+        elif result_type == "blob_stats":
+            data = result_dict.get("data", {})
+            stats = BlobStats(
+                artifact_count=data.get("artifact_count", 0),
+                chunk_count=data.get("chunk_count", 0),
+                total_bytes=data.get("total_bytes", 0),
+                unique_bytes=data.get("unique_bytes", 0),
+                dedup_ratio=data.get("dedup_ratio", 0.0),
+                orphaned_chunks=data.get("orphaned_chunks", 0),
+            )
+            return QueryResult(QueryResultType.BLOB_STATS, stats)
+        elif result_type == "artifact_list":
+            return QueryResult(QueryResultType.ARTIFACT_LIST, result_dict.get("data", []))
+        elif result_type == "checkpoint_list":
+            checkpoints = [self._convert_native_checkpoint(c) for c in result_dict.get("data", [])]
+            return QueryResult(QueryResultType.CHECKPOINT_LIST, checkpoints)
+        elif result_type == "unified":
+            data = result_dict.get("data", {})
+            unified_items: list[UnifiedItem] = [
+                self._convert_native_unified_item(i) for i in data.get("items", [])
+            ]
+            unified = UnifiedResult(
+                description=data.get("description", ""),
+                items=unified_items,
+            )
+            return QueryResult(QueryResultType.UNIFIED, unified)
         elif result_type == "error":
             return QueryResult(QueryResultType.ERROR, result_dict.get("message"))
         else:
-            return QueryResult(QueryResultType.EMPTY)
+            return self._convert_native_chain_result(result_type, result_dict)
 
     def _convert_native_row(self, row: dict) -> Row:
         """Convert native row to Row."""
@@ -405,6 +440,138 @@ class NeumannClient:
         else:
             return Value.string(str(value))
 
+    def _convert_native_checkpoint(self, checkpoint: dict) -> CheckpointInfo:
+        """Convert native checkpoint to CheckpointInfo."""
+        return CheckpointInfo(
+            id=checkpoint.get("id", ""),
+            name=checkpoint.get("name", ""),
+            created_at=checkpoint.get("created_at", 0),
+            is_auto=checkpoint.get("is_auto", False),
+        )
+
+    def _convert_native_unified_item(self, item: dict) -> UnifiedItem:
+        """Convert native unified item to UnifiedItem."""
+        return UnifiedItem(
+            entity_type=item.get("entity_type", ""),
+            key=item.get("key", ""),
+            fields=item.get("fields", {}),
+            score=item.get("score"),
+        )
+
+    def _convert_native_chain_result(self, result_type: str, result_dict: dict) -> QueryResult:
+        """Convert native chain result to QueryResult."""
+        data = result_dict.get("data", {})
+
+        if result_type == "chain_transaction_begun":
+            return QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id=data.get("tx_id", "")),
+            )
+        elif result_type == "chain_committed":
+            return QueryResult(
+                QueryResultType.CHAIN_COMMITTED,
+                ChainCommitted(
+                    block_hash=data.get("block_hash", ""),
+                    height=data.get("height", 0),
+                ),
+            )
+        elif result_type == "chain_rolled_back":
+            return QueryResult(
+                QueryResultType.CHAIN_ROLLED_BACK,
+                ChainRolledBack(to_height=data.get("to_height", 0)),
+            )
+        elif result_type == "chain_history":
+            entries = [
+                ChainHistoryEntry(
+                    height=e.get("height", 0),
+                    transaction_type=e.get("transaction_type", ""),
+                    data=e.get("data"),
+                )
+                for e in data.get("entries", [])
+            ]
+            return QueryResult(QueryResultType.CHAIN_HISTORY, ChainHistory(entries=entries))
+        elif result_type == "chain_similar":
+            items = [
+                ChainSimilarItem(
+                    block_hash=i.get("block_hash", ""),
+                    height=i.get("height", 0),
+                    similarity=i.get("similarity", 0.0),
+                )
+                for i in data.get("items", [])
+            ]
+            return QueryResult(QueryResultType.CHAIN_SIMILAR, ChainSimilar(items=items))
+        elif result_type == "chain_drift":
+            return QueryResult(
+                QueryResultType.CHAIN_DRIFT,
+                ChainDrift(
+                    from_height=data.get("from_height", 0),
+                    to_height=data.get("to_height", 0),
+                    total_drift=data.get("total_drift", 0.0),
+                    avg_drift_per_block=data.get("avg_drift_per_block", 0.0),
+                    max_drift=data.get("max_drift", 0.0),
+                ),
+            )
+        elif result_type == "chain_height":
+            return QueryResult(
+                QueryResultType.CHAIN_HEIGHT,
+                ChainHeight(height=data.get("height", 0)),
+            )
+        elif result_type == "chain_tip":
+            return QueryResult(
+                QueryResultType.CHAIN_TIP,
+                ChainTip(hash=data.get("hash", ""), height=data.get("height", 0)),
+            )
+        elif result_type == "chain_block":
+            return QueryResult(
+                QueryResultType.CHAIN_BLOCK,
+                ChainBlockInfo(
+                    height=data.get("height", 0),
+                    hash=data.get("hash", ""),
+                    prev_hash=data.get("prev_hash", ""),
+                    timestamp=data.get("timestamp", 0),
+                    transaction_count=data.get("transaction_count", 0),
+                    proposer=data.get("proposer", ""),
+                ),
+            )
+        elif result_type == "chain_codebook":
+            return QueryResult(
+                QueryResultType.CHAIN_CODEBOOK,
+                ChainCodebookInfo(
+                    scope=data.get("scope", ""),
+                    entry_count=data.get("entry_count", 0),
+                    dimension=data.get("dimension", 0),
+                    domain=data.get("domain"),
+                ),
+            )
+        elif result_type == "chain_transition_analysis":
+            return QueryResult(
+                QueryResultType.CHAIN_TRANSITION_ANALYSIS,
+                ChainTransitionAnalysis(
+                    total_transitions=data.get("total_transitions", 0),
+                    valid_transitions=data.get("valid_transitions", 0),
+                    invalid_transitions=data.get("invalid_transitions", 0),
+                    avg_validity_score=data.get("avg_validity_score", 0.0),
+                ),
+            )
+        elif result_type == "chain_conflict_resolution":
+            return QueryResult(
+                QueryResultType.CHAIN_CONFLICT_RESOLUTION,
+                ChainConflictResolution(
+                    strategy=data.get("strategy", ""),
+                    conflicts_resolved=data.get("conflicts_resolved", 0),
+                ),
+            )
+        elif result_type == "chain_merge":
+            return QueryResult(
+                QueryResultType.CHAIN_MERGE,
+                ChainMergeResult(
+                    success=data.get("success", False),
+                    merged_count=data.get("merged_count", 0),
+                ),
+            )
+        else:
+            return QueryResult(QueryResultType.EMPTY)
+
     def _convert_proto_result(self, response: object) -> QueryResult:
         """Convert proto response to QueryResult."""
         # Handle error response
@@ -456,6 +623,43 @@ class NeumannClient:
                 tags=list(result.tags),
             )
             return QueryResult(QueryResultType.BLOB_INFO, info)
+        elif which == "blob_stats":
+            stats = BlobStats(
+                artifact_count=result.artifact_count,
+                chunk_count=result.chunk_count,
+                total_bytes=result.total_bytes,
+                unique_bytes=result.unique_bytes,
+                dedup_ratio=result.dedup_ratio,
+                orphaned_chunks=result.orphaned_chunks,
+            )
+            return QueryResult(QueryResultType.BLOB_STATS, stats)
+        elif which == "artifact_list":
+            return QueryResult(QueryResultType.ARTIFACT_LIST, list(result.artifact_ids))
+        elif which == "checkpoint_list":
+            checkpoints = [self._convert_proto_checkpoint(c) for c in result.checkpoints]
+            return QueryResult(QueryResultType.CHECKPOINT_LIST, checkpoints)
+        elif which == "unified":
+            unified_items: list[UnifiedItem] = [
+                self._convert_proto_unified_item(i) for i in result.items
+            ]
+            unified = UnifiedResult(description=result.description, items=unified_items)
+            return QueryResult(QueryResultType.UNIFIED, unified)
+        elif which in (
+            "chain_transaction_begun",
+            "chain_committed",
+            "chain_rolled_back",
+            "chain_history",
+            "chain_similar",
+            "chain_drift",
+            "chain_height",
+            "chain_tip",
+            "chain_block",
+            "chain_codebook",
+            "chain_transition_analysis",
+            "chain_conflict_resolution",
+            "chain_merge",
+        ):
+            return self._convert_proto_chain_result(which, result)
         else:
             return QueryResult(QueryResultType.EMPTY)
 
@@ -522,6 +726,131 @@ class NeumannClient:
             return Value.bytes_(value.bytes_value)
         else:
             return Value.null()
+
+    def _convert_proto_checkpoint(self, checkpoint: object) -> CheckpointInfo:
+        """Convert proto checkpoint to CheckpointInfo."""
+        return CheckpointInfo(
+            id=checkpoint.id,
+            name=checkpoint.name,
+            created_at=checkpoint.created_at,
+            is_auto=checkpoint.is_auto,
+        )
+
+    def _convert_proto_unified_item(self, item: object) -> UnifiedItem:
+        """Convert proto unified item to UnifiedItem."""
+        fields = {}
+        if hasattr(item, "fields"):
+            for k, v in item.fields.items():
+                fields[k] = v
+        return UnifiedItem(
+            entity_type=item.entity_type,
+            key=item.key,
+            fields=fields,
+            score=item.score if hasattr(item, "score") and item.score else None,
+        )
+
+    def _convert_proto_chain_result(self, which: str, result: object) -> QueryResult:
+        """Convert proto chain result to QueryResult."""
+        if which == "chain_transaction_begun":
+            return QueryResult(
+                QueryResultType.CHAIN_TRANSACTION_BEGUN,
+                ChainTransactionBegun(tx_id=result.tx_id),
+            )
+        elif which == "chain_committed":
+            return QueryResult(
+                QueryResultType.CHAIN_COMMITTED,
+                ChainCommitted(block_hash=result.block_hash, height=result.height),
+            )
+        elif which == "chain_rolled_back":
+            return QueryResult(
+                QueryResultType.CHAIN_ROLLED_BACK,
+                ChainRolledBack(to_height=result.to_height),
+            )
+        elif which == "chain_history":
+            entries = [
+                ChainHistoryEntry(
+                    height=e.height,
+                    transaction_type=e.transaction_type,
+                    data=e.data if hasattr(e, "data") else None,
+                )
+                for e in result.entries
+            ]
+            return QueryResult(QueryResultType.CHAIN_HISTORY, ChainHistory(entries=entries))
+        elif which == "chain_similar":
+            items = [
+                ChainSimilarItem(
+                    block_hash=i.block_hash,
+                    height=i.height,
+                    similarity=i.similarity,
+                )
+                for i in result.items
+            ]
+            return QueryResult(QueryResultType.CHAIN_SIMILAR, ChainSimilar(items=items))
+        elif which == "chain_drift":
+            return QueryResult(
+                QueryResultType.CHAIN_DRIFT,
+                ChainDrift(
+                    from_height=result.from_height,
+                    to_height=result.to_height,
+                    total_drift=result.total_drift,
+                    avg_drift_per_block=result.avg_drift_per_block,
+                    max_drift=result.max_drift,
+                ),
+            )
+        elif which == "chain_height":
+            return QueryResult(QueryResultType.CHAIN_HEIGHT, ChainHeight(height=result.height))
+        elif which == "chain_tip":
+            return QueryResult(
+                QueryResultType.CHAIN_TIP,
+                ChainTip(hash=result.hash, height=result.height),
+            )
+        elif which == "chain_block":
+            return QueryResult(
+                QueryResultType.CHAIN_BLOCK,
+                ChainBlockInfo(
+                    height=result.height,
+                    hash=result.hash,
+                    prev_hash=result.prev_hash,
+                    timestamp=result.timestamp,
+                    transaction_count=result.transaction_count,
+                    proposer=result.proposer,
+                ),
+            )
+        elif which == "chain_codebook":
+            return QueryResult(
+                QueryResultType.CHAIN_CODEBOOK,
+                ChainCodebookInfo(
+                    scope=result.scope,
+                    entry_count=result.entry_count,
+                    dimension=result.dimension,
+                    domain=result.domain if hasattr(result, "domain") else None,
+                ),
+            )
+        elif which == "chain_transition_analysis":
+            return QueryResult(
+                QueryResultType.CHAIN_TRANSITION_ANALYSIS,
+                ChainTransitionAnalysis(
+                    total_transitions=result.total_transitions,
+                    valid_transitions=result.valid_transitions,
+                    invalid_transitions=result.invalid_transitions,
+                    avg_validity_score=result.avg_validity_score,
+                ),
+            )
+        elif which == "chain_conflict_resolution":
+            return QueryResult(
+                QueryResultType.CHAIN_CONFLICT_RESOLUTION,
+                ChainConflictResolution(
+                    strategy=result.strategy,
+                    conflicts_resolved=result.conflicts_resolved,
+                ),
+            )
+        elif which == "chain_merge":
+            return QueryResult(
+                QueryResultType.CHAIN_MERGE,
+                ChainMergeResult(success=result.success, merged_count=result.merged_count),
+            )
+        else:
+            return QueryResult(QueryResultType.EMPTY)
 
     def _convert_proto_chunk(self, chunk: object) -> QueryResult:
         """Convert proto streaming chunk to QueryResult."""

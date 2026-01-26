@@ -2,34 +2,40 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
 
 from neumann.client import NeumannClient
 from neumann.errors import (
     ConnectionError,
-    NeumannError,
-    AuthenticationError,
-    PermissionError,
-    NotFoundError,
-    InvalidArgumentError,
-    ParseError,
-    QueryError,
-    InternalError,
     ErrorCode,
+    InternalError,
+    NeumannError,
 )
 from neumann.types import (
-    QueryResult,
+    BlobStats,
+    ChainBlockInfo,
+    ChainCodebookInfo,
+    ChainCommitted,
+    ChainConflictResolution,
+    ChainDrift,
+    ChainHeight,
+    ChainHistory,
+    ChainMergeResult,
+    ChainRolledBack,
+    ChainSimilar,
+    ChainTip,
+    ChainTransactionBegun,
+    ChainTransitionAnalysis,
+    CheckpointInfo,
+    Edge,
+    Node,
     QueryResultType,
     Row,
-    Node,
-    Edge,
-    Path,
-    PathSegment,
-    SimilarItem,
-    ArtifactInfo,
-    Value,
     ScalarType,
+    SimilarItem,
+    UnifiedResult,
 )
 
 
@@ -424,9 +430,7 @@ class TestNeumannClientConvertNativeResult:
 
     def test_convert_ids_result(self) -> None:
         """Test converting IDs result."""
-        result = self.client._convert_native_result(
-            {"type": "ids", "data": [1, 2, 3, 4, 5]}
-        )
+        result = self.client._convert_native_result({"type": "ids", "data": [1, 2, 3, 4, 5]})
         assert result.type == QueryResultType.IDS
         assert result.data == [1, 2, 3, 4, 5]
 
@@ -440,9 +444,7 @@ class TestNeumannClientConvertNativeResult:
 
     def test_convert_blob_result(self) -> None:
         """Test converting blob result."""
-        result = self.client._convert_native_result(
-            {"type": "blob", "data": b"binary data"}
-        )
+        result = self.client._convert_native_result({"type": "blob", "data": b"binary data"})
         assert result.type == QueryResultType.BLOB
         assert result.data == b"binary data"
 
@@ -863,6 +865,7 @@ class TestNeumannClientEmbeddedDirect:
             # Need to reload to pick up the mock
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
             client = client_mod.NeumannClient.embedded()
@@ -879,6 +882,7 @@ class TestNeumannClientEmbeddedDirect:
         with patch.dict("sys.modules", {"neumann._native": mock_native}):
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
             client = client_mod.NeumannClient.embedded(path="/tmp/neumann-db")
@@ -910,6 +914,7 @@ class TestNeumannClientConnectDirect:
         ):
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
             client = client_mod.NeumannClient.connect("localhost:50051")
@@ -938,6 +943,7 @@ class TestNeumannClientConnectDirect:
         ):
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
             client = client_mod.NeumannClient.connect("localhost:50051", tls=True)
@@ -965,11 +971,10 @@ class TestNeumannClientConnectDirect:
         ):
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
-            client = client_mod.NeumannClient.connect(
-                "localhost:50051", api_key="secret-key"
-            )
+            client = client_mod.NeumannClient.connect("localhost:50051", api_key="secret-key")
             assert client._api_key == "secret-key"
 
     def test_connect_handles_generic_exception(self) -> None:
@@ -980,6 +985,7 @@ class TestNeumannClientConnectDirect:
         with patch.dict("sys.modules", {"grpc": mock_grpc}):
             import importlib
             import neumann.client as client_mod
+
             importlib.reload(client_mod)
 
             with pytest.raises(ConnectionError) as exc_info:
@@ -1386,3 +1392,550 @@ class TestNeumannClientConvertProtoResultBranches:
 
         value = self.client._convert_proto_value(mock_value)
         assert value.type == ScalarType.NULL
+
+
+class TestNeumannClientConvertNativeNewTypes:
+    """Tests for _convert_native_result with new result types."""
+
+    def setup_method(self) -> None:
+        """Set up test client."""
+        self.client = NeumannClient()
+
+    def test_convert_blob_stats_result(self) -> None:
+        """Test converting blob stats result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "blob_stats",
+                "data": {
+                    "artifact_count": 100,
+                    "chunk_count": 500,
+                    "total_bytes": 1024000,
+                    "unique_bytes": 512000,
+                    "dedup_ratio": 2.0,
+                    "orphaned_chunks": 5,
+                },
+            }
+        )
+        assert result.type == QueryResultType.BLOB_STATS
+        assert isinstance(result.data, BlobStats)
+        assert result.data.artifact_count == 100
+        assert result.data.dedup_ratio == 2.0
+
+    def test_convert_artifact_list_result(self) -> None:
+        """Test converting artifact list result."""
+        result = self.client._convert_native_result(
+            {"type": "artifact_list", "data": ["art-1", "art-2", "art-3"]}
+        )
+        assert result.type == QueryResultType.ARTIFACT_LIST
+        assert result.data == ["art-1", "art-2", "art-3"]
+
+    def test_convert_checkpoint_list_result(self) -> None:
+        """Test converting checkpoint list result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "checkpoint_list",
+                "data": [
+                    {"id": "cp-1", "name": "backup1", "created_at": 100, "is_auto": False},
+                    {"id": "cp-2", "name": "auto", "created_at": 200, "is_auto": True},
+                ],
+            }
+        )
+        assert result.type == QueryResultType.CHECKPOINT_LIST
+        assert len(result.data) == 2
+        assert isinstance(result.data[0], CheckpointInfo)
+        assert result.data[0].id == "cp-1"
+        assert result.data[1].is_auto is True
+
+    def test_convert_unified_result(self) -> None:
+        """Test converting unified result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "unified",
+                "data": {
+                    "description": "Found 2 items",
+                    "items": [
+                        {"entity_type": "node", "key": "n1", "fields": {"name": "A"}, "score": 0.9},
+                        {"entity_type": "edge", "key": "e1", "fields": {}, "score": None},
+                    ],
+                },
+            }
+        )
+        assert result.type == QueryResultType.UNIFIED
+        assert isinstance(result.data, UnifiedResult)
+        assert result.data.description == "Found 2 items"
+        assert len(result.data.items) == 2
+        assert result.data.items[0].entity_type == "node"
+        assert result.data.items[0].score == 0.9
+        assert result.data.items[1].score is None
+
+
+class TestNeumannClientConvertNativeChainResults:
+    """Tests for _convert_native_chain_result."""
+
+    def setup_method(self) -> None:
+        """Set up test client."""
+        self.client = NeumannClient()
+
+    def test_convert_chain_transaction_begun(self) -> None:
+        """Test converting chain transaction begun result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_transaction_begun", "data": {"tx_id": "tx-123"}}
+        )
+        assert result.type == QueryResultType.CHAIN_TRANSACTION_BEGUN
+        assert isinstance(result.data, ChainTransactionBegun)
+        assert result.data.tx_id == "tx-123"
+
+    def test_convert_chain_committed(self) -> None:
+        """Test converting chain committed result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_committed", "data": {"block_hash": "abc", "height": 100}}
+        )
+        assert result.type == QueryResultType.CHAIN_COMMITTED
+        assert isinstance(result.data, ChainCommitted)
+        assert result.data.block_hash == "abc"
+        assert result.data.height == 100
+
+    def test_convert_chain_rolled_back(self) -> None:
+        """Test converting chain rolled back result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_rolled_back", "data": {"to_height": 50}}
+        )
+        assert result.type == QueryResultType.CHAIN_ROLLED_BACK
+        assert isinstance(result.data, ChainRolledBack)
+        assert result.data.to_height == 50
+
+    def test_convert_chain_history(self) -> None:
+        """Test converting chain history result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_history",
+                "data": {
+                    "entries": [
+                        {"height": 1, "transaction_type": "PUT", "data": b"test"},
+                        {"height": 2, "transaction_type": "DELETE", "data": None},
+                    ]
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_HISTORY
+        assert isinstance(result.data, ChainHistory)
+        assert len(result.data.entries) == 2
+        assert result.data.entries[0].height == 1
+        assert result.data.entries[0].data == b"test"
+
+    def test_convert_chain_similar(self) -> None:
+        """Test converting chain similar result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_similar",
+                "data": {
+                    "items": [
+                        {"block_hash": "h1", "height": 10, "similarity": 0.95},
+                        {"block_hash": "h2", "height": 20, "similarity": 0.85},
+                    ]
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_SIMILAR
+        assert isinstance(result.data, ChainSimilar)
+        assert len(result.data.items) == 2
+        assert result.data.items[0].similarity == 0.95
+
+    def test_convert_chain_drift(self) -> None:
+        """Test converting chain drift result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_drift",
+                "data": {
+                    "from_height": 0,
+                    "to_height": 100,
+                    "total_drift": 15.5,
+                    "avg_drift_per_block": 0.155,
+                    "max_drift": 2.3,
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_DRIFT
+        assert isinstance(result.data, ChainDrift)
+        assert result.data.total_drift == 15.5
+
+    def test_convert_chain_height(self) -> None:
+        """Test converting chain height result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_height", "data": {"height": 500}}
+        )
+        assert result.type == QueryResultType.CHAIN_HEIGHT
+        assert isinstance(result.data, ChainHeight)
+        assert result.data.height == 500
+
+    def test_convert_chain_tip(self) -> None:
+        """Test converting chain tip result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_tip", "data": {"hash": "head", "height": 500}}
+        )
+        assert result.type == QueryResultType.CHAIN_TIP
+        assert isinstance(result.data, ChainTip)
+        assert result.data.hash == "head"
+        assert result.data.height == 500
+
+    def test_convert_chain_block(self) -> None:
+        """Test converting chain block result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_block",
+                "data": {
+                    "height": 100,
+                    "hash": "b100",
+                    "prev_hash": "b99",
+                    "timestamp": 1704067200,
+                    "transaction_count": 50,
+                    "proposer": "val1",
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_BLOCK
+        assert isinstance(result.data, ChainBlockInfo)
+        assert result.data.height == 100
+        assert result.data.proposer == "val1"
+
+    def test_convert_chain_codebook(self) -> None:
+        """Test converting chain codebook result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_codebook",
+                "data": {
+                    "scope": "global",
+                    "entry_count": 256,
+                    "dimension": 128,
+                    "domain": "embeddings",
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_CODEBOOK
+        assert isinstance(result.data, ChainCodebookInfo)
+        assert result.data.scope == "global"
+        assert result.data.domain == "embeddings"
+
+    def test_convert_chain_codebook_no_domain(self) -> None:
+        """Test converting chain codebook without domain."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_codebook",
+                "data": {"scope": "local", "entry_count": 64, "dimension": 32},
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_CODEBOOK
+        assert result.data.domain is None
+
+    def test_convert_chain_transition_analysis(self) -> None:
+        """Test converting chain transition analysis result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_transition_analysis",
+                "data": {
+                    "total_transitions": 100,
+                    "valid_transitions": 95,
+                    "invalid_transitions": 5,
+                    "avg_validity_score": 0.95,
+                },
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_TRANSITION_ANALYSIS
+        assert isinstance(result.data, ChainTransitionAnalysis)
+        assert result.data.total_transitions == 100
+
+    def test_convert_chain_conflict_resolution(self) -> None:
+        """Test converting chain conflict resolution result."""
+        result = self.client._convert_native_result(
+            {
+                "type": "chain_conflict_resolution",
+                "data": {"strategy": "semantic", "conflicts_resolved": 10},
+            }
+        )
+        assert result.type == QueryResultType.CHAIN_CONFLICT_RESOLUTION
+        assert isinstance(result.data, ChainConflictResolution)
+        assert result.data.strategy == "semantic"
+
+    def test_convert_chain_merge(self) -> None:
+        """Test converting chain merge result."""
+        result = self.client._convert_native_result(
+            {"type": "chain_merge", "data": {"success": True, "merged_count": 25}}
+        )
+        assert result.type == QueryResultType.CHAIN_MERGE
+        assert isinstance(result.data, ChainMergeResult)
+        assert result.data.success is True
+        assert result.data.merged_count == 25
+
+    def test_convert_unknown_chain_type(self) -> None:
+        """Test converting unknown chain type returns empty."""
+        result = self.client._convert_native_result({"type": "chain_unknown", "data": {}})
+        assert result.type == QueryResultType.EMPTY
+
+
+class TestNeumannClientConvertProtoNewTypes:
+    """Tests for _convert_proto_result with new result types."""
+
+    def setup_method(self) -> None:
+        """Set up test client."""
+        self.client = NeumannClient()
+
+    def test_convert_proto_blob_stats(self) -> None:
+        """Test converting proto blob stats result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.artifact_count = 100
+        mock_response.result.chunk_count = 500
+        mock_response.result.total_bytes = 1024000
+        mock_response.result.unique_bytes = 512000
+        mock_response.result.dedup_ratio = 2.0
+        mock_response.result.orphaned_chunks = 5
+        mock_response.WhichOneof.return_value = "blob_stats"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.BLOB_STATS
+        assert result.data.artifact_count == 100
+
+    def test_convert_proto_artifact_list(self) -> None:
+        """Test converting proto artifact list result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.artifact_ids = ["art1", "art2"]
+        mock_response.WhichOneof.return_value = "artifact_list"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.ARTIFACT_LIST
+        assert result.data == ["art1", "art2"]
+
+    def test_convert_proto_checkpoint_list(self) -> None:
+        """Test converting proto checkpoint list result."""
+        mock_cp = MagicMock()
+        mock_cp.id = "cp-1"
+        mock_cp.name = "backup"
+        mock_cp.created_at = 100
+        mock_cp.is_auto = False
+
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.checkpoints = [mock_cp]
+        mock_response.WhichOneof.return_value = "checkpoint_list"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHECKPOINT_LIST
+        assert len(result.data) == 1
+        assert result.data[0].id == "cp-1"
+
+    def test_convert_proto_unified(self) -> None:
+        """Test converting proto unified result."""
+        mock_item = MagicMock()
+        mock_item.entity_type = "node"
+        mock_item.key = "n1"
+        mock_item.fields = {"name": "Alice"}
+        mock_item.score = 0.9
+
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.description = "Found 1 item"
+        mock_response.result.items = [mock_item]
+        mock_response.WhichOneof.return_value = "unified"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.UNIFIED
+        assert result.data.description == "Found 1 item"
+        assert len(result.data.items) == 1
+
+
+class TestNeumannClientConvertProtoChainResults:
+    """Tests for _convert_proto_chain_result."""
+
+    def setup_method(self) -> None:
+        """Set up test client."""
+        self.client = NeumannClient()
+
+    def test_convert_proto_chain_transaction_begun(self) -> None:
+        """Test converting proto chain transaction begun result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.tx_id = "tx-123"
+        mock_response.WhichOneof.return_value = "chain_transaction_begun"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_TRANSACTION_BEGUN
+        assert result.data.tx_id == "tx-123"
+
+    def test_convert_proto_chain_committed(self) -> None:
+        """Test converting proto chain committed result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.block_hash = "abc"
+        mock_response.result.height = 100
+        mock_response.WhichOneof.return_value = "chain_committed"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_COMMITTED
+        assert result.data.block_hash == "abc"
+
+    def test_convert_proto_chain_rolled_back(self) -> None:
+        """Test converting proto chain rolled back result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.to_height = 50
+        mock_response.WhichOneof.return_value = "chain_rolled_back"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_ROLLED_BACK
+        assert result.data.to_height == 50
+
+    def test_convert_proto_chain_history(self) -> None:
+        """Test converting proto chain history result."""
+        mock_entry = MagicMock()
+        mock_entry.height = 1
+        mock_entry.transaction_type = "PUT"
+        mock_entry.data = b"test"
+
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.entries = [mock_entry]
+        mock_response.WhichOneof.return_value = "chain_history"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_HISTORY
+        assert len(result.data.entries) == 1
+
+    def test_convert_proto_chain_similar(self) -> None:
+        """Test converting proto chain similar result."""
+        mock_item = MagicMock()
+        mock_item.block_hash = "h1"
+        mock_item.height = 10
+        mock_item.similarity = 0.95
+
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.items = [mock_item]
+        mock_response.WhichOneof.return_value = "chain_similar"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_SIMILAR
+        assert len(result.data.items) == 1
+
+    def test_convert_proto_chain_drift(self) -> None:
+        """Test converting proto chain drift result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.from_height = 0
+        mock_response.result.to_height = 100
+        mock_response.result.total_drift = 15.5
+        mock_response.result.avg_drift_per_block = 0.155
+        mock_response.result.max_drift = 2.3
+        mock_response.WhichOneof.return_value = "chain_drift"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_DRIFT
+        assert result.data.total_drift == 15.5
+
+    def test_convert_proto_chain_height(self) -> None:
+        """Test converting proto chain height result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.height = 500
+        mock_response.WhichOneof.return_value = "chain_height"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_HEIGHT
+        assert result.data.height == 500
+
+    def test_convert_proto_chain_tip(self) -> None:
+        """Test converting proto chain tip result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.hash = "head"
+        mock_response.result.height = 500
+        mock_response.WhichOneof.return_value = "chain_tip"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_TIP
+        assert result.data.hash == "head"
+
+    def test_convert_proto_chain_block(self) -> None:
+        """Test converting proto chain block result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.height = 100
+        mock_response.result.hash = "b100"
+        mock_response.result.prev_hash = "b99"
+        mock_response.result.timestamp = 1704067200
+        mock_response.result.transaction_count = 50
+        mock_response.result.proposer = "val1"
+        mock_response.WhichOneof.return_value = "chain_block"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_BLOCK
+        assert result.data.height == 100
+
+    def test_convert_proto_chain_codebook(self) -> None:
+        """Test converting proto chain codebook result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.scope = "global"
+        mock_response.result.entry_count = 256
+        mock_response.result.dimension = 128
+        mock_response.result.domain = "embeddings"
+        mock_response.WhichOneof.return_value = "chain_codebook"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_CODEBOOK
+        assert result.data.scope == "global"
+
+    def test_convert_proto_chain_transition_analysis(self) -> None:
+        """Test converting proto chain transition analysis result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.total_transitions = 100
+        mock_response.result.valid_transitions = 95
+        mock_response.result.invalid_transitions = 5
+        mock_response.result.avg_validity_score = 0.95
+        mock_response.WhichOneof.return_value = "chain_transition_analysis"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_TRANSITION_ANALYSIS
+        assert result.data.total_transitions == 100
+
+    def test_convert_proto_chain_conflict_resolution(self) -> None:
+        """Test converting proto chain conflict resolution result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.strategy = "semantic"
+        mock_response.result.conflicts_resolved = 10
+        mock_response.WhichOneof.return_value = "chain_conflict_resolution"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_CONFLICT_RESOLUTION
+        assert result.data.strategy == "semantic"
+
+    def test_convert_proto_chain_merge(self) -> None:
+        """Test converting proto chain merge result."""
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = MagicMock()
+        mock_response.result.success = True
+        mock_response.result.merged_count = 25
+        mock_response.WhichOneof.return_value = "chain_merge"
+
+        result = self.client._convert_proto_result(mock_response)
+        assert result.type == QueryResultType.CHAIN_MERGE
+        assert result.data.success is True
