@@ -28,6 +28,7 @@ on:
       - 'tensor_chain/**'
       - 'tensor_cache/**'
       - 'relational_engine/**'
+      - 'vector_engine/**'
       - 'fuzz/**'
 
 env:
@@ -73,6 +74,8 @@ jobs:
           # Relational engine targets
           - relational_condition
           - relational_engine_ops
+          # Vector engine targets
+          - vector_engine_ops
           # Cache targets
           - cache_eviction_scorer
           - cache_semantic_search
