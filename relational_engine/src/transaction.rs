@@ -51,7 +51,7 @@ pub enum TxPhase {
 
 /// Index change record for rollback.
 #[derive(Debug, Clone)]
-pub struct IndexChange {
+pub(crate) struct IndexChange {
     /// Column name.
     pub column: String,
     /// Old value.
@@ -62,7 +62,8 @@ pub struct IndexChange {
 
 /// Undo entry for rollback.
 #[derive(Debug, Clone)]
-pub enum UndoEntry {
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum UndoEntry {
     /// Undo an insert: delete the row.
     InsertedRow {
         /// Table name.
@@ -114,7 +115,7 @@ pub struct Transaction {
     /// Transaction timeout in milliseconds.
     pub timeout_ms: u64,
     /// Undo log for rollback.
-    pub undo_log: Vec<UndoEntry>,
+    pub(crate) undo_log: Vec<UndoEntry>,
     /// Tables affected by this transaction.
     pub affected_tables: HashSet<String>,
 }
@@ -146,7 +147,7 @@ impl Transaction {
     }
 
     /// Records an undo entry for rollback.
-    pub fn record_undo(&mut self, entry: UndoEntry) {
+    pub(crate) fn record_undo(&mut self, entry: UndoEntry) {
         match &entry {
             UndoEntry::InsertedRow { table, .. }
             | UndoEntry::UpdatedRow { table, .. }
@@ -160,10 +161,12 @@ impl Transaction {
 
 /// Row-level lock for transactions.
 #[derive(Debug, Clone)]
-pub struct RowLock {
+pub(crate) struct RowLock {
     /// Table name.
+    #[allow(dead_code)]
     pub table: String,
     /// Row ID (1-based engine row ID).
+    #[allow(dead_code)]
     pub row_id: u64,
     /// Transaction ID holding the lock.
     pub tx_id: u64,
@@ -187,7 +190,7 @@ impl RowLock {
 /// This is essential for query timeouts where wall-clock adjustments should
 /// not affect timeout behavior.
 #[derive(Debug, Clone, Copy)]
-pub struct Deadline {
+pub(crate) struct Deadline {
     deadline: Option<Instant>,
 }
 
@@ -211,6 +214,7 @@ impl Deadline {
 
     /// Returns true if the deadline has expired.
     #[must_use]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn is_expired(&self) -> bool {
         self.deadline.is_some_and(|d| Instant::now() >= d)
     }
@@ -218,6 +222,8 @@ impl Deadline {
     /// Returns the remaining time in milliseconds, or `None` if no deadline is set.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    #[allow(dead_code)]
     pub fn remaining_ms(&self) -> Option<u64> {
         self.deadline
             .map(|d| d.saturating_duration_since(Instant::now()).as_millis() as u64)
@@ -232,7 +238,7 @@ impl Default for Deadline {
 
 /// Row-level lock manager for transactions.
 #[derive(Debug)]
-pub struct RowLockManager {
+pub(crate) struct RowLockManager {
     /// Locks by (table, `row_id`) -> lock.
     locks: RwLock<HashMap<(String, u64), RowLock>>,
     /// Locks by `tx_id` -> list of (table, `row_id`).
@@ -349,6 +355,7 @@ impl RowLockManager {
     /// Check if a row is locked.
     #[must_use]
     #[instrument(skip(self), fields(table = %table, row_id))]
+    #[allow(dead_code)]
     pub fn is_locked(&self, table: &str, row_id: u64) -> bool {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -358,6 +365,7 @@ impl RowLockManager {
     /// Get the transaction ID holding a lock on a row.
     #[must_use]
     #[instrument(skip(self), fields(table = %table, row_id))]
+    #[allow(dead_code)]
     pub fn lock_holder(&self, table: &str, row_id: u64) -> Option<u64> {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -370,6 +378,7 @@ impl RowLockManager {
     /// Clean up expired locks.
     #[allow(clippy::significant_drop_tightening)]
     #[instrument(skip(self))]
+    #[allow(dead_code)]
     pub fn cleanup_expired(&self) -> usize {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -398,6 +407,7 @@ impl RowLockManager {
     /// Get the number of active locks.
     #[must_use]
     #[instrument(skip(self))]
+    #[allow(dead_code)]
     pub fn active_lock_count(&self) -> usize {
         self.locks.read().len()
     }
@@ -405,6 +415,7 @@ impl RowLockManager {
     /// Get the number of locks held by a transaction.
     #[must_use]
     #[instrument(skip(self), fields(tx_id))]
+    #[allow(dead_code)]
     pub fn locks_held_by(&self, tx_id: u64) -> usize {
         self.tx_locks.read().get(&tx_id).map_or(0, Vec::len)
     }
@@ -412,7 +423,7 @@ impl RowLockManager {
 
 /// Information about a lock conflict.
 #[derive(Debug, Clone)]
-pub struct LockConflictInfo {
+pub(crate) struct LockConflictInfo {
     /// Transaction holding the conflicting lock.
     pub blocking_tx: u64,
     /// Table name.
@@ -502,7 +513,7 @@ impl TransactionManager {
     /// Record an undo entry for a transaction.
     #[allow(clippy::option_if_let_else)]
     #[instrument(skip(self, entry), fields(tx_id))]
-    pub fn record_undo(&self, tx_id: u64, entry: UndoEntry) -> bool {
+    pub(crate) fn record_undo(&self, tx_id: u64, entry: UndoEntry) -> bool {
         if let Some(mut tx) = self.transactions.get_mut(&tx_id) {
             tx.record_undo(entry);
             true
@@ -514,7 +525,7 @@ impl TransactionManager {
     /// Get the undo log for a transaction (cloned for rollback).
     #[must_use]
     #[instrument(skip(self), fields(tx_id))]
-    pub fn get_undo_log(&self, tx_id: u64) -> Option<Vec<UndoEntry>> {
+    pub(crate) fn get_undo_log(&self, tx_id: u64) -> Option<Vec<UndoEntry>> {
         self.transactions.get(&tx_id).map(|r| r.undo_log.clone())
     }
 
@@ -526,7 +537,7 @@ impl TransactionManager {
 
     /// Get the lock manager.
     #[must_use]
-    pub const fn lock_manager(&self) -> &RowLockManager {
+    pub(crate) const fn lock_manager(&self) -> &RowLockManager {
         &self.lock_manager
     }
 

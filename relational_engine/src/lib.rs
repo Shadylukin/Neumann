@@ -47,20 +47,18 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-#[allow(unused_imports)] // Used in Phase 3 integration
 use tensor_store::RelationalSlab;
-pub use tensor_store::{
+pub use tensor_store::WalConfig;
+pub(crate) use tensor_store::{
     ColumnDef as SlabColumnDef, ColumnType as SlabColumnType, ColumnValue as SlabColumnValue,
-    RowId as SlabRowId, TableSchema as SlabTableSchema, WalConfig,
+    RowId as SlabRowId, TableSchema as SlabTableSchema,
 };
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
 use tracing::{instrument, warn};
 
 pub mod transaction;
-pub use transaction::{
-    Deadline, IndexChange, LockConflictInfo, RowLock, RowLockManager, Transaction,
-    TransactionManager, TxPhase, UndoEntry,
-};
+pub(crate) use transaction::{Deadline, IndexChange, UndoEntry};
+pub use transaction::{Transaction, TransactionManager, TxPhase};
 
 mod simd {
     use wide::{f64x4, i64x4, CmpEq, CmpGt, CmpLt};
@@ -871,11 +869,12 @@ impl Condition {
     }
 
     #[cfg(not(feature = "test-internals"))]
+    #[allow(dead_code)]
     pub(crate) fn evaluate_tensor(&self, tensor: &TensorData) -> bool {
         self.evaluate_tensor_impl(tensor)
     }
 
-    #[allow(dead_code)] // Legacy method for TensorData evaluation
+    #[allow(dead_code)]
     fn evaluate_tensor_impl(&self, tensor: &TensorData) -> bool {
         use std::cmp::Ordering;
         match self {
@@ -1404,7 +1403,6 @@ pub(crate) struct SelectionVector {
     row_count: usize,
 }
 
-#[allow(dead_code)]
 impl SelectionVector {
     pub fn all(row_count: usize) -> Self {
         let words = simd::bitmap_words(row_count);
@@ -1428,18 +1426,22 @@ impl SelectionVector {
         Self { bitmap, row_count }
     }
 
+    #[allow(dead_code)]
     pub fn bitmap_mut(&mut self) -> &mut [u64] {
         &mut self.bitmap
     }
 
+    #[allow(dead_code)]
     pub fn bitmap(&self) -> &[u64] {
         &self.bitmap
     }
 
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         simd::popcount(&self.bitmap)
     }
 
+    #[allow(dead_code)]
     pub fn is_selected(&self, idx: usize) -> bool {
         if idx >= self.row_count {
             return false;
@@ -1527,7 +1529,7 @@ pub struct RelationalEngine {
 
 /// Ordered key for B-tree indexes with correct comparison semantics.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum OrderedKey {
+pub(crate) enum OrderedKey {
     /// Null value (sorts first).
     Null,
     /// Boolean value.
@@ -1542,10 +1544,7 @@ pub enum OrderedKey {
 
 /// Wrapper for f64 that implements total ordering (NaN is less than all values).
 #[derive(Debug, Clone, Copy)]
-pub struct OrderedFloat(
-    /// The wrapped f64 value.
-    pub f64,
-);
+pub(crate) struct OrderedFloat(pub(crate) f64);
 
 impl PartialEq for OrderedFloat {
     fn eq(&self, other: &Self) -> bool {
