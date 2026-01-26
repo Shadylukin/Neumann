@@ -206,10 +206,9 @@ impl RateLimiter {
         let now = Instant::now();
         let window_start = now - self.config.window;
 
-        self.history
-            .get(&key)
-            .map(|entry| entry.iter().filter(|&&ts| ts >= window_start).count() as u32)
-            .unwrap_or(0)
+        self.history.get(&key).map_or(0, |entry| {
+            entry.iter().filter(|&&ts| ts >= window_start).count() as u32
+        })
     }
 
     /// Clear history for an identity.

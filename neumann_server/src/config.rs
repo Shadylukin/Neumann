@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use crate::audit::AuditConfig;
 use crate::error::{Result, ServerError};
+use crate::metrics::MetricsConfig;
 use crate::rate_limit::RateLimitConfig;
+use crate::shutdown::ShutdownConfig;
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -32,6 +34,10 @@ pub struct ServerConfig {
     pub rate_limit: Option<RateLimitConfig>,
     /// Audit logging configuration (optional).
     pub audit: Option<AuditConfig>,
+    /// Graceful shutdown configuration (optional).
+    pub shutdown: Option<ShutdownConfig>,
+    /// Metrics configuration (optional).
+    pub metrics: Option<MetricsConfig>,
 }
 
 impl Default for ServerConfig {
@@ -51,6 +57,8 @@ impl Default for ServerConfig {
             stream_channel_capacity: 32, // Bounded channel for backpressure
             rate_limit: None,
             audit: None,
+            shutdown: None,
+            metrics: None,
         }
     }
 }
@@ -139,6 +147,20 @@ impl ServerConfig {
     #[must_use]
     pub fn with_audit(mut self, config: AuditConfig) -> Self {
         self.audit = Some(config);
+        self
+    }
+
+    /// Set graceful shutdown configuration.
+    #[must_use]
+    pub fn with_shutdown(mut self, config: ShutdownConfig) -> Self {
+        self.shutdown = Some(config);
+        self
+    }
+
+    /// Set metrics configuration.
+    #[must_use]
+    pub fn with_metrics(mut self, config: MetricsConfig) -> Self {
+        self.metrics = Some(config);
         self
     }
 
@@ -652,5 +674,35 @@ mod tests {
 
         assert!(config.rate_limit.is_none());
         assert!(config.audit.is_none());
+    }
+
+    #[test]
+    fn test_server_config_with_shutdown() {
+        use std::time::Duration;
+
+        let config = ServerConfig::new()
+            .with_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_secs(60)));
+
+        assert!(config.shutdown.is_some());
+        let shutdown = config.shutdown.as_ref().unwrap();
+        assert_eq!(shutdown.drain_timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_server_config_with_metrics() {
+        let config = ServerConfig::new()
+            .with_metrics(MetricsConfig::default().with_service_name("test_service".to_string()));
+
+        assert!(config.metrics.is_some());
+        let metrics = config.metrics.as_ref().unwrap();
+        assert_eq!(metrics.service_name, "test_service");
+    }
+
+    #[test]
+    fn test_default_config_no_shutdown_or_metrics() {
+        let config = ServerConfig::default();
+
+        assert!(config.shutdown.is_none());
+        assert!(config.metrics.is_none());
     }
 }

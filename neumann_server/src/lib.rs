@@ -55,9 +55,14 @@ pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod convert;
+pub mod correlation;
 pub mod error;
+pub mod metrics;
 pub mod rate_limit;
 pub mod service;
+pub mod shutdown;
+pub mod signals;
+pub mod tls_loader;
 
 /// Generated protobuf types.
 #[allow(missing_docs)]
@@ -83,9 +88,13 @@ use tensor_store::TensorStore;
 
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ServerConfig, TlsConfig};
+pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
 pub use error::{Result, ServerError};
+pub use metrics::{init_metrics, MetricsConfig, MetricsHandle, ServerMetrics};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
 pub use service::{BlobServiceImpl, HealthServiceImpl, HealthState, QueryServiceImpl};
+pub use shutdown::{ShutdownConfig, ShutdownManager};
+pub use tls_loader::TlsLoader;
 
 use proto::blob_service_server::BlobServiceServer;
 use proto::health_server::HealthServer;
@@ -98,6 +107,7 @@ pub struct NeumannServer {
     config: ServerConfig,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
+    metrics: Option<Arc<ServerMetrics>>,
 }
 
 impl NeumannServer {
@@ -120,6 +130,7 @@ impl NeumannServer {
             config,
             rate_limiter,
             audit_logger,
+            metrics: None,
         }
     }
 
@@ -155,6 +166,7 @@ impl NeumannServer {
             config,
             rate_limiter,
             audit_logger,
+            metrics: None,
         })
     }
 
@@ -162,6 +174,13 @@ impl NeumannServer {
     #[must_use]
     pub fn with_blob_store(mut self, blob_store: Arc<Mutex<BlobStore>>) -> Self {
         self.blob_store = Some(blob_store);
+        self
+    }
+
+    /// Set the metrics for the server.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<ServerMetrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -323,7 +342,9 @@ impl NeumannServer {
 
     /// Start the server with graceful shutdown support.
     ///
-    /// The server will shut down when the provided future completes.
+    /// The server will shut down when the provided future completes. If shutdown
+    /// configuration is provided, the server will wait for in-flight requests to
+    /// drain before fully shutting down, up to the configured timeout.
     ///
     /// # Errors
     ///
@@ -346,6 +367,13 @@ impl NeumannServer {
         // Create shared health state
         let health_state = Arc::new(HealthState::new());
 
+        // Create shutdown manager if configured
+        let shutdown_manager = self
+            .config
+            .shutdown
+            .as_ref()
+            .map(|cfg| Arc::new(ShutdownManager::new(cfg.clone(), Arc::clone(&health_state))));
+
         // Create services with configuration, health monitoring, rate limiting, and audit
         let query_service = QueryServiceImpl::with_full_config(
             Arc::clone(&self.router),
@@ -361,9 +389,15 @@ impl NeumannServer {
         let query_svc = QueryServiceServer::new(query_service);
         let health_svc = HealthServer::new(health_service);
 
-        // Load TLS configuration if enabled
+        // Load TLS configuration if enabled and register SIGHUP handler
         let tls_config = if let Some(ref tls) = self.config.tls {
-            Some(Self::load_tls_config(tls)?)
+            let tls_loader = Arc::new(TlsLoader::new(tls.clone())?);
+            let tls_config = tls_loader.load()?;
+
+            // Register SIGHUP handler for certificate reloading
+            signals::register_sighup_handler(tls_loader);
+
+            Some(tls_config)
         } else {
             None
         };
@@ -406,6 +440,32 @@ impl NeumannServer {
             BlobServiceServer::new(blob_service)
         });
 
+        // Create drain-aware shutdown future
+        let shutdown_manager_clone = shutdown_manager.clone();
+        let health_state_clone = Arc::clone(&health_state);
+        let drain_future = async move {
+            shutdown.await;
+
+            if let Some(ref mgr) = shutdown_manager_clone {
+                mgr.trigger_shutdown();
+
+                let drained = mgr.wait_for_drain().await;
+
+                if !drained {
+                    tracing::warn!(
+                        remaining_streams = mgr.active_count(),
+                        "Drain timeout reached, forcing shutdown"
+                    );
+                }
+
+                // Wait grace period before final shutdown
+                tokio::time::sleep(mgr.config().grace_period).await;
+            } else {
+                // No shutdown config, just mark as draining
+                health_state_clone.set_draining(true);
+            }
+        };
+
         // Add services and start server
         if self.config.enable_grpc_web {
             let layer = GrpcWebLayer::new();
@@ -421,7 +481,7 @@ impl NeumannServer {
                 router = router.add_service(refl);
             }
 
-            router.serve_with_shutdown(addr, shutdown).await?;
+            router.serve_with_shutdown(addr, drain_future).await?;
         } else {
             let mut router = builder.add_service(query_svc).add_service(health_svc);
 
@@ -432,7 +492,7 @@ impl NeumannServer {
                 router = router.add_service(refl);
             }
 
-            router.serve_with_shutdown(addr, shutdown).await?;
+            router.serve_with_shutdown(addr, drain_future).await?;
         }
 
         Ok(())

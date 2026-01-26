@@ -12,6 +12,7 @@ use crate::proto::{health_server::Health, HealthCheckRequest, HealthCheckRespons
 pub struct HealthState {
     query_service_healthy: AtomicBool,
     blob_service_healthy: AtomicBool,
+    is_draining: AtomicBool,
 }
 
 impl Default for HealthState {
@@ -19,6 +20,7 @@ impl Default for HealthState {
         Self {
             query_service_healthy: AtomicBool::new(true),
             blob_service_healthy: AtomicBool::new(true),
+            is_draining: AtomicBool::new(false),
         }
     }
 }
@@ -55,7 +57,18 @@ impl HealthState {
     /// Check if all services are healthy.
     #[must_use]
     pub fn is_all_healthy(&self) -> bool {
-        self.is_query_service_healthy() && self.is_blob_service_healthy()
+        self.is_query_service_healthy() && self.is_blob_service_healthy() && !self.is_draining()
+    }
+
+    /// Set the draining state for graceful shutdown.
+    pub fn set_draining(&self, draining: bool) {
+        self.is_draining.store(draining, Ordering::SeqCst);
+    }
+
+    /// Check if the server is draining (shutting down gracefully).
+    #[must_use]
+    pub fn is_draining(&self) -> bool {
+        self.is_draining.load(Ordering::SeqCst)
     }
 }
 
@@ -100,6 +113,13 @@ impl Health for HealthServiceImpl {
         request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         let service = request.into_inner().service;
+
+        // If draining, report not serving for all services
+        if self.state.is_draining() {
+            return Ok(Response::new(HealthCheckResponse {
+                status: ServingStatus::NotServing.into(),
+            }));
+        }
 
         let status = match service.as_deref() {
             Some("neumann.v1.QueryService") => {
@@ -278,5 +298,57 @@ mod tests {
 
         state.set_blob_service_healthy(true);
         assert!(state.is_all_healthy());
+    }
+
+    #[test]
+    fn test_health_state_draining() {
+        let state = HealthState::new();
+
+        assert!(!state.is_draining());
+        assert!(state.is_all_healthy());
+
+        state.set_draining(true);
+        assert!(state.is_draining());
+        // When draining, all_healthy should return false
+        assert!(!state.is_all_healthy());
+
+        state.set_draining(false);
+        assert!(!state.is_draining());
+        assert!(state.is_all_healthy());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_when_draining() {
+        let state = Arc::new(HealthState::new());
+        let service = HealthServiceImpl::with_state(Arc::clone(&state));
+
+        // Initially serving
+        let request = Request::new(HealthCheckRequest { service: None });
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::Serving)
+        );
+
+        // Set draining
+        state.set_draining(true);
+
+        // Should report not serving for overall health
+        let request = Request::new(HealthCheckRequest { service: None });
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::NotServing)
+        );
+
+        // Should report not serving for query service too
+        let request = Request::new(HealthCheckRequest {
+            service: Some("neumann.v1.QueryService".to_string()),
+        });
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::NotServing)
+        );
     }
 }

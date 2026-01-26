@@ -20,7 +20,7 @@ tonic = { version = "0.12", features = ["gzip", "tls"] }
 tonic-web = "0.12"
 tonic-reflection = "0.12"
 prost = "0.13"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros", "time"] }
 tokio-stream = "0.1"
 parking_lot = "0.12"
 tracing = "0.1"
@@ -28,6 +28,10 @@ thiserror = "2"
 bytes = "1"
 dashmap = "6"
 serde = { version = "1", features = ["derive"] }
+opentelemetry = { version = "0.24", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.17", features = ["metrics", "grpc-tonic"] }
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 tonic-build = "0.12"

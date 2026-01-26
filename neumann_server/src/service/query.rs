@@ -215,7 +215,7 @@ impl QueryService for QueryServiceImpl {
             if logger.config().log_queries {
                 logger.record(
                     AuditEvent::QueryExecuted {
-                        identity: identity.clone(),
+                        identity,
                         query: query.clone(),
                     },
                     None,
