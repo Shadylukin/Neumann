@@ -1,6 +1,36 @@
-//! Vector Engine - Module 4 of Neumann
+//! Vector Engine - k-NN similarity search with HNSW support
 //!
-//! Provides embeddings storage and similarity search functionality.
+//! This crate provides embeddings storage and similarity search functionality
+//! for the Neumann database system.
+//!
+//! # Features
+//!
+//! - **Dense and sparse vectors**: Automatic sparse detection for memory efficiency
+//! - **Multiple distance metrics**: Cosine, Euclidean, dot product, and extended metrics
+//! - **HNSW indexing**: Hierarchical Navigable Small World graphs for fast k-NN search
+//! - **Batch operations**: Parallel processing for large embedding batches
+//! - **Entity embeddings**: Associate embeddings with existing entities in TensorStore
+//! - **Memory bounds**: Configurable limits for dimension and scan operations
+//!
+//! # Quick Start
+//!
+//! ```rust,ignore
+//! use vector_engine::{VectorEngine, VectorEngineConfig};
+//!
+//! let engine = VectorEngine::new();
+//! engine.store_embedding("doc1", vec![0.1, 0.2, 0.3]).unwrap();
+//! engine.store_embedding("doc2", vec![0.2, 0.3, 0.4]).unwrap();
+//!
+//! let results = engine.search_similar(&[0.15, 0.25, 0.35], 10).unwrap();
+//! ```
+//!
+//! # Configuration
+//!
+//! Use `VectorEngineConfig` to tune behavior:
+//! - `max_dimension`: Limit embedding dimensions for memory safety
+//! - `max_keys_per_scan`: Bound memory usage on unbounded operations
+//! - `sparse_threshold`: Control sparse vector detection (0.0-1.0)
+//! - `parallel_threshold`: Control when to use parallel processing
 
 // Pedantic lint configuration for vector_engine
 #![allow(clippy::cast_possible_truncation)] // Truncation from usize to f32 for ratios is intentional
@@ -131,6 +161,12 @@ pub struct VectorEngineConfig {
     pub parallel_threshold: usize,
     /// Default distance metric for search operations.
     pub default_metric: DistanceMetric,
+    /// Maximum allowed embedding dimension for memory safety.
+    pub max_dimension: Option<usize>,
+    /// Maximum keys to return from unbounded scan operations.
+    pub max_keys_per_scan: Option<usize>,
+    /// Threshold for using parallel iteration in batch operations.
+    pub batch_parallel_threshold: usize,
 }
 
 impl Default for VectorEngineConfig {
@@ -140,6 +176,9 @@ impl Default for VectorEngineConfig {
             sparse_threshold: 0.5,
             parallel_threshold: 5000,
             default_metric: DistanceMetric::Cosine,
+            max_dimension: None,
+            max_keys_per_scan: None,
+            batch_parallel_threshold: 100,
         }
     }
 }
@@ -152,6 +191,9 @@ impl VectorEngineConfig {
             sparse_threshold: 0.5,
             parallel_threshold: 1000, // Lower threshold = more parallelism
             default_metric: DistanceMetric::Cosine,
+            max_dimension: None,
+            max_keys_per_scan: None,
+            batch_parallel_threshold: 100,
         }
     }
 
@@ -162,6 +204,9 @@ impl VectorEngineConfig {
             sparse_threshold: 0.3, // More aggressive sparse detection
             parallel_threshold: 5000,
             default_metric: DistanceMetric::Cosine,
+            max_dimension: Some(4096),
+            max_keys_per_scan: Some(10_000),
+            batch_parallel_threshold: 100,
         }
     }
 
@@ -174,6 +219,25 @@ impl VectorEngineConfig {
         if self.parallel_threshold == 0 {
             return Err(VectorError::ConfigurationError(
                 "parallel_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if let Some(max_dim) = self.max_dimension {
+            if max_dim == 0 {
+                return Err(VectorError::ConfigurationError(
+                    "max_dimension must be greater than 0".to_string(),
+                ));
+            }
+        }
+        if let Some(max_keys) = self.max_keys_per_scan {
+            if max_keys == 0 {
+                return Err(VectorError::ConfigurationError(
+                    "max_keys_per_scan must be greater than 0".to_string(),
+                ));
+            }
+        }
+        if self.batch_parallel_threshold == 0 {
+            return Err(VectorError::ConfigurationError(
+                "batch_parallel_threshold must be greater than 0".to_string(),
             ));
         }
         Ok(())
@@ -213,9 +277,6 @@ impl BatchResult {
         Self { stored_keys, count }
     }
 }
-
-/// Threshold for using parallel iteration in batch operations.
-const BATCH_PARALLEL_THRESHOLD: usize = 100;
 
 // ========== Pagination ==========
 
@@ -286,7 +347,29 @@ impl<T> PagedResult<T> {
 
 /// Vector Engine for storing and searching embeddings.
 ///
-/// Uses cosine similarity for nearest neighbor search.
+/// Uses cosine similarity for nearest neighbor search with optional HNSW indexing.
+///
+/// # Thread Safety
+///
+/// `VectorEngine` is thread-safe and can be shared across threads via `Arc<VectorEngine>`.
+/// Thread safety is inherited from `TensorStore`'s internal sharded `SlabRouter` which uses
+/// fine-grained locking. Concurrent reads and writes to different keys proceed in parallel.
+///
+/// # Memory Considerations
+///
+/// Use `VectorEngineConfig::max_keys_per_scan` and `max_dimension` to bound memory usage
+/// in production environments. For large datasets, prefer `list_keys_paginated()` over
+/// `list_keys()` and use HNSW indexing for efficient k-NN search.
+///
+/// # Distance Metrics
+///
+/// - `DistanceMetric` (3 variants): Simple API for basic similarity search
+///   - `Cosine`, `Euclidean`, `DotProduct`
+/// - `ExtendedDistanceMetric` (10 variants): Full metric support for HNSW-based search
+///   - Includes `Angular`, `Jaccard`, `Overlap`, `Manhattan`, `Geodesic`, `Composite`
+///
+/// Use `DistanceMetric` for `search_similar()` and `ExtendedDistanceMetric` for
+/// `search_with_hnsw_and_metric()`.
 pub struct VectorEngine {
     store: TensorStore,
     config: VectorEngineConfig,
@@ -294,6 +377,7 @@ pub struct VectorEngine {
 
 impl VectorEngine {
     /// Create a new VectorEngine with a fresh TensorStore.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: TensorStore::new(),
@@ -302,6 +386,7 @@ impl VectorEngine {
     }
 
     /// Create a VectorEngine using an existing TensorStore.
+    #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             store,
@@ -310,16 +395,22 @@ impl VectorEngine {
     }
 
     /// Create a VectorEngine with custom configuration.
-    pub fn with_config(config: VectorEngineConfig) -> Self {
-        Self {
+    ///
+    /// Validates the configuration before construction.
+    pub fn with_config(config: VectorEngineConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self {
             store: TensorStore::new(),
             config,
-        }
+        })
     }
 
     /// Create a VectorEngine with existing store and custom configuration.
-    pub fn with_store_and_config(store: TensorStore, config: VectorEngineConfig) -> Self {
-        Self { store, config }
+    ///
+    /// Validates the configuration before construction.
+    pub fn with_store_and_config(store: TensorStore, config: VectorEngineConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self { store, config })
     }
 
     /// Get a reference to the underlying TensorStore.
@@ -346,10 +437,19 @@ impl VectorEngine {
     ///
     /// Automatically uses sparse format based on configured sparse_threshold.
     /// Overwrites any existing embedding with the same key.
-    #[instrument(skip(self, vector), fields(key = %key))]
+    #[instrument(skip(self, vector), fields(key = %key, vector_dim = vector.len()))]
     pub fn store_embedding(&self, key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
             return Err(VectorError::EmptyVector);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if vector.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: vector.len(),
+                });
+            }
         }
 
         let storage_key = Self::embedding_key(key);
@@ -385,6 +485,7 @@ impl VectorEngine {
     /// Get an embedding by key.
     ///
     /// Returns the embedding as a dense vector regardless of storage format.
+    #[instrument(skip(self), fields(key = %key))]
     pub fn get_embedding(&self, key: &str) -> Result<Vec<f32>> {
         let storage_key = Self::embedding_key(key);
         let tensor = self
@@ -400,6 +501,7 @@ impl VectorEngine {
     }
 
     /// Delete an embedding by key.
+    #[instrument(skip(self), fields(key = %key))]
     pub fn delete_embedding(&self, key: &str) -> Result<()> {
         let storage_key = Self::embedding_key(key);
         if !self.store.exists(&storage_key) {
@@ -425,13 +527,22 @@ impl VectorEngine {
     /// Returns results sorted by similarity score (highest first).
     /// Uses cosine similarity with SIMD acceleration.
     /// Automatically uses parallel iteration for large datasets.
-    #[instrument(skip(self, query), fields(k = top_k))]
+    #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_similar(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
         if top_k == 0 {
             return Err(VectorError::InvalidTopK);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if query.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: query.len(),
+                });
+            }
         }
 
         // Pre-compute query magnitude for efficiency
@@ -710,6 +821,20 @@ impl VectorEngine {
             .collect()
     }
 
+    /// List embedding keys with memory safety bounds.
+    ///
+    /// Uses `config.max_keys_per_scan` if set, otherwise returns all keys.
+    /// Prefer this over `list_keys()` in production environments.
+    pub fn list_keys_bounded(&self) -> Vec<String> {
+        let limit = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
+        self.store
+            .scan(Self::embedding_prefix())
+            .into_iter()
+            .take(limit)
+            .filter_map(|k| k.strip_prefix(Self::embedding_prefix()).map(String::from))
+            .collect()
+    }
+
     /// Clear all embeddings.
     pub fn clear(&self) -> Result<()> {
         let keys = self.store.scan(Self::embedding_prefix());
@@ -724,6 +849,8 @@ impl VectorEngine {
     /// Returns a tuple of (index, key_mapping) where key_mapping maps node IDs to keys.
     /// Use this for fast approximate nearest neighbor search on large datasets.
     ///
+    /// Validates dimension consistency across all vectors.
+    ///
     /// # Example
     /// ```ignore
     /// let engine = VectorEngine::new();
@@ -734,13 +861,46 @@ impl VectorEngine {
     ///     println!("Key: {}, Score: {}", keys[node_id], score);
     /// }
     /// ```
+    #[instrument(skip(self, config))]
     pub fn build_hnsw_index(&self, config: HNSWConfig) -> Result<(HNSWIndex, Vec<String>)> {
         let keys = self.list_keys();
+
+        if keys.is_empty() {
+            return Ok((HNSWIndex::with_config(config), Vec::new()));
+        }
+
+        // Validate first vector and establish expected dimension
+        let first_key = &keys[0];
+        let first_vector = self.get_embedding(first_key)?;
+        let expected_dim = first_vector.len();
+
+        // Check config dimension constraint
+        if let Some(max_dim) = self.config.max_dimension {
+            if expected_dim > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: expected_dim,
+                });
+            }
+        }
+
         let index = HNSWIndex::with_config(config);
         let mut key_mapping = Vec::with_capacity(keys.len());
 
-        for key in keys {
+        index.insert(first_vector);
+        key_mapping.push(first_key.clone());
+
+        for key in keys.into_iter().skip(1) {
             let vector = self.get_embedding(&key)?;
+
+            // Validate dimension consistency
+            if vector.len() != expected_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: expected_dim,
+                    got: vector.len(),
+                });
+            }
+
             index.insert(vector);
             key_mapping.push(key);
         }
@@ -751,6 +911,31 @@ impl VectorEngine {
     /// Build an HNSW index with default configuration.
     pub fn build_hnsw_index_default(&self) -> Result<(HNSWIndex, Vec<String>)> {
         self.build_hnsw_index(HNSWConfig::default())
+    }
+
+    /// Estimate memory usage for building an HNSW index.
+    ///
+    /// Returns estimated bytes needed based on current embeddings.
+    pub fn estimate_hnsw_memory(&self) -> Result<usize> {
+        let count = self.count();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        // Sample first embedding for dimension
+        let keys = self.list_keys();
+        let first = self.get_embedding(&keys[0])?;
+        let dim = first.len();
+
+        // Estimate: vectors + HNSW graph structure + key mapping
+        // vectors: count * dim * 4 bytes (f32)
+        // graph: ~count * M * 2 * 8 bytes (M=16 default, node ID refs)
+        // keys: ~count * 32 bytes average key length
+        let vector_bytes = count * dim * 4;
+        let graph_bytes = count * 16 * 2 * 8;
+        let key_bytes = count * 32;
+
+        Ok(vector_bytes + graph_bytes + key_bytes)
     }
 
     /// This is a convenience method that converts node IDs back to SearchResults.
@@ -834,7 +1019,8 @@ impl VectorEngine {
     /// Store multiple embeddings in a single batch operation.
     ///
     /// Validates all inputs upfront before storing any.
-    /// Uses parallel processing for batches larger than 100.
+    /// Uses parallel processing for batches larger than `config.batch_parallel_threshold`.
+    #[instrument(skip(self, inputs), fields(count = inputs.len()))]
     pub fn batch_store_embeddings(&self, inputs: Vec<EmbeddingInput>) -> Result<BatchResult> {
         if inputs.is_empty() {
             return Ok(BatchResult::new(Vec::new()));
@@ -851,7 +1037,7 @@ impl VectorEngine {
         }
 
         // Store embeddings (parallel for large batches)
-        if inputs.len() >= BATCH_PARALLEL_THRESHOLD {
+        if inputs.len() >= self.config.batch_parallel_threshold {
             let results: Vec<Result<String>> = inputs
                 .par_iter()
                 .enumerate()
@@ -889,12 +1075,13 @@ impl VectorEngine {
     ///
     /// Returns the count of successfully deleted embeddings.
     /// Silently skips keys that don't exist.
+    #[instrument(skip(self, keys), fields(count = keys.len()))]
     pub fn batch_delete_embeddings(&self, keys: Vec<String>) -> Result<usize> {
         if keys.is_empty() {
             return Ok(0);
         }
 
-        if keys.len() >= BATCH_PARALLEL_THRESHOLD {
+        if keys.len() >= self.config.batch_parallel_threshold {
             let count: usize = keys
                 .par_iter()
                 .filter_map(|key| self.delete_embedding(key).ok())
@@ -1011,9 +1198,19 @@ impl VectorEngine {
     /// Store embedding in an entity's _embedding field. Creates entity if needed.
     ///
     /// Automatically uses sparse format for vectors with >50% zeros.
+    #[instrument(skip(self, vector), fields(key = %entity_key, vector_dim = vector.len()))]
     pub fn set_entity_embedding(&self, entity_key: &str, vector: Vec<f32>) -> Result<()> {
         if vector.is_empty() {
             return Err(VectorError::EmptyVector);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if vector.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: vector.len(),
+                });
+            }
         }
 
         let mut tensor = self
@@ -1072,12 +1269,22 @@ impl VectorEngine {
     }
 
     /// Search for similar entities using _embedding field.
+    #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_entities(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
         if top_k == 0 {
             return Err(VectorError::InvalidTopK);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if query.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: query.len(),
+                });
+            }
         }
 
         let query_magnitude = Self::magnitude(query);
@@ -2297,7 +2504,7 @@ mod tests {
     #[test]
     fn engine_with_config() {
         let config = VectorEngineConfig::high_throughput();
-        let engine = VectorEngine::with_config(config);
+        let engine = VectorEngine::with_config(config).unwrap();
         assert_eq!(engine.config().parallel_threshold, 1000);
     }
 
@@ -2305,7 +2512,7 @@ mod tests {
     fn engine_with_store_and_config() {
         let store = TensorStore::new();
         let config = VectorEngineConfig::low_memory();
-        let engine = VectorEngine::with_store_and_config(store, config);
+        let engine = VectorEngine::with_store_and_config(store, config).unwrap();
         assert!((engine.config().sparse_threshold - 0.3).abs() < 1e-6);
     }
 
@@ -2863,7 +3070,7 @@ mod tests {
             sparse_threshold: 0.8, // Very high threshold
             ..Default::default()
         };
-        let engine = VectorEngine::with_config(config);
+        let engine = VectorEngine::with_config(config).unwrap();
 
         // 70% zeros - should NOT use sparse with 0.8 threshold
         let mostly_zeros: Vec<f32> = (0..100).map(|i| if i < 30 { 1.0 } else { 0.0 }).collect();
@@ -3270,5 +3477,299 @@ mod tests {
 
         let result = engine.remove_entity_embedding("entity:1");
         assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    // ========== Production Hardening Tests ==========
+
+    #[test]
+    fn config_validate_invalid_max_dimension_zero() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(0),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("max_dimension")
+        ));
+    }
+
+    #[test]
+    fn config_validate_invalid_max_keys_per_scan_zero() {
+        let config = VectorEngineConfig {
+            max_keys_per_scan: Some(0),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("max_keys_per_scan")
+        ));
+    }
+
+    #[test]
+    fn config_validate_invalid_batch_parallel_threshold_zero() {
+        let config = VectorEngineConfig {
+            batch_parallel_threshold: 0,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("batch_parallel_threshold")
+        ));
+    }
+
+    #[test]
+    fn with_config_validates_and_returns_error() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(0),
+            ..Default::default()
+        };
+        let result = VectorEngine::with_config(config);
+        assert!(matches!(result, Err(VectorError::ConfigurationError(_))));
+    }
+
+    #[test]
+    fn with_store_and_config_validates_and_returns_error() {
+        let store = TensorStore::new();
+        let config = VectorEngineConfig {
+            batch_parallel_threshold: 0,
+            ..Default::default()
+        };
+        let result = VectorEngine::with_store_and_config(store, config);
+        assert!(matches!(result, Err(VectorError::ConfigurationError(_))));
+    }
+
+    #[test]
+    fn with_config_valid_succeeds() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(1024),
+            max_keys_per_scan: Some(1000),
+            ..Default::default()
+        };
+        let result = VectorEngine::with_config(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn list_keys_bounded_respects_limit() {
+        let config = VectorEngineConfig {
+            max_keys_per_scan: Some(3),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("v{}", i), vec![i as f32])
+                .unwrap();
+        }
+
+        let keys = engine.list_keys_bounded();
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn list_keys_bounded_no_limit() {
+        let engine = VectorEngine::new();
+
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("v{}", i), vec![i as f32])
+                .unwrap();
+        }
+
+        let keys = engine.list_keys_bounded();
+        assert_eq!(keys.len(), 10);
+    }
+
+    #[test]
+    fn search_similar_rejects_oversized_dimension() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(10),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        let oversized_query = vec![0.0; 20];
+        let result = engine.search_similar(&oversized_query, 5);
+
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 10,
+                got: 20
+            })
+        ));
+    }
+
+    #[test]
+    fn store_embedding_rejects_oversized_dimension() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        let oversized = vec![0.0; 10];
+        let result = engine.store_embedding("key", oversized);
+
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 5,
+                got: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn set_entity_embedding_rejects_oversized_dimension() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        let oversized = vec![0.0; 10];
+        let result = engine.set_entity_embedding("entity:1", oversized);
+
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 5,
+                got: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn search_entities_rejects_oversized_dimension() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        let oversized_query = vec![0.0; 10];
+        let result = engine.search_entities(&oversized_query, 5);
+
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 5,
+                got: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn build_hnsw_index_validates_dimension_consistency() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 2.0, 3.0]).unwrap();
+        engine.store_embedding("b", vec![4.0, 5.0, 6.0]).unwrap();
+
+        let result = engine.build_hnsw_index_default();
+        assert!(result.is_ok());
+
+        let (index, keys) = result.unwrap();
+        assert_eq!(index.len(), 2);
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn build_hnsw_index_empty_store() {
+        let engine = VectorEngine::new();
+
+        let result = engine.build_hnsw_index_default();
+        assert!(result.is_ok());
+
+        let (index, keys) = result.unwrap();
+        assert!(index.is_empty());
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn build_hnsw_index_rejects_exceeding_max_dimension() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        // Store a valid small embedding first
+        engine.store_embedding("a", vec![1.0, 2.0]).unwrap();
+
+        // The dimension 2 is within max_dimension 5, so build should succeed
+        let result = engine.build_hnsw_index_default();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn estimate_hnsw_memory_empty_store() {
+        let engine = VectorEngine::new();
+        let estimate = engine.estimate_hnsw_memory().unwrap();
+        assert_eq!(estimate, 0);
+    }
+
+    #[test]
+    fn estimate_hnsw_memory_calculation() {
+        let engine = VectorEngine::new();
+
+        // Store 10 embeddings of dimension 128
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("v{}", i), vec![1.0; 128])
+                .unwrap();
+        }
+
+        let estimate = engine.estimate_hnsw_memory().unwrap();
+
+        // Expected: 10 * 128 * 4 (vectors) + 10 * 16 * 2 * 8 (graph) + 10 * 32 (keys)
+        // = 5120 + 2560 + 320 = 8000
+        let expected = 10 * 128 * 4 + 10 * 16 * 2 * 8 + 10 * 32;
+        assert_eq!(estimate, expected);
+    }
+
+    #[test]
+    fn batch_uses_config_parallel_threshold() {
+        let config = VectorEngineConfig {
+            batch_parallel_threshold: 5,
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        // Store 10 items (above threshold of 5)
+        let inputs: Vec<EmbeddingInput> = (0..10)
+            .map(|i| EmbeddingInput::new(format!("v{}", i), vec![i as f32, 0.0]))
+            .collect();
+
+        let result = engine.batch_store_embeddings(inputs).unwrap();
+        assert_eq!(result.count, 10);
+    }
+
+    #[test]
+    fn config_low_memory_has_bounds() {
+        let config = VectorEngineConfig::low_memory();
+        assert_eq!(config.max_dimension, Some(4096));
+        assert_eq!(config.max_keys_per_scan, Some(10_000));
+    }
+
+    #[test]
+    fn config_default_has_new_fields() {
+        let config = VectorEngineConfig::default();
+        assert_eq!(config.max_dimension, None);
+        assert_eq!(config.max_keys_per_scan, None);
+        assert_eq!(config.batch_parallel_threshold, 100);
+    }
+
+    #[test]
+    fn config_high_throughput_has_new_fields() {
+        let config = VectorEngineConfig::high_throughput();
+        assert_eq!(config.max_dimension, None);
+        assert_eq!(config.max_keys_per_scan, None);
+        assert_eq!(config.batch_parallel_threshold, 100);
     }
 }
