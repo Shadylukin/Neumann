@@ -81,6 +81,88 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
         QueryResult::Chain(chain_result) => {
             proto::query_response::Result::Chain(chain_result_to_proto(chain_result))
         },
+
+        QueryResult::PageRank(results) => {
+            proto::query_response::Result::PageRank(proto::PageRankResult {
+                items: results.into_iter().map(pagerank_item_to_proto).collect(),
+            })
+        },
+
+        QueryResult::Centrality(results) => {
+            proto::query_response::Result::Centrality(proto::CentralityResult {
+                items: results.into_iter().map(centrality_item_to_proto).collect(),
+            })
+        },
+
+        QueryResult::Communities(results) => {
+            // Group nodes by community_id
+            let mut communities: std::collections::HashMap<u64, Vec<u64>> =
+                std::collections::HashMap::new();
+            for r in &results {
+                communities
+                    .entry(r.community_id)
+                    .or_default()
+                    .push(r.node_id);
+            }
+            let mut sorted: Vec<_> = communities.into_iter().collect();
+            sorted.sort_by_key(|(id, _)| *id);
+            let value = sorted
+                .iter()
+                .map(|(community_id, nodes)| {
+                    let node_list = nodes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("Community {community_id}: [{node_list}]")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
+
+        QueryResult::Constraints(constraints) => {
+            let value = constraints
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} on {} property '{}' ({})",
+                        c.name, c.target, c.property, c.constraint_type
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
+
+        QueryResult::GraphIndexes(indexes) => {
+            let value = indexes.join("\n");
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
+
+        QueryResult::Aggregate(agg) => {
+            let value = match agg {
+                query_router::AggregateResultValue::Count(n) => format!("Count: {n}"),
+                query_router::AggregateResultValue::Sum(v) => format!("Sum: {v}"),
+                query_router::AggregateResultValue::Avg(v) => format!("Avg: {v}"),
+                query_router::AggregateResultValue::Min(v) => format!("Min: {v}"),
+                query_router::AggregateResultValue::Max(v) => format!("Max: {v}"),
+            };
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
+
+        QueryResult::BatchResult(batch) => {
+            let value = format!("{}: {} affected", batch.operation, batch.affected_count);
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
+
+        QueryResult::PatternMatch(pm) => {
+            let value = format!(
+                "Pattern Matches: {} found (truncated: {})",
+                pm.stats.matches_found, pm.stats.truncated
+            );
+            proto::query_response::Result::Value(proto::StringValue { value })
+        },
     };
 
     proto::QueryResponse {
@@ -144,6 +226,24 @@ pub fn edge_to_proto(edge: EdgeResult) -> proto::Edge {
 pub fn similar_to_proto(item: RouterSimilarResult) -> proto::SimilarItem {
     proto::SimilarItem {
         key: item.key,
+        score: item.score,
+    }
+}
+
+/// Convert a `PageRankResult` to protobuf.
+#[must_use]
+pub fn pagerank_item_to_proto(item: query_router::PageRankResult) -> proto::PageRankItem {
+    proto::PageRankItem {
+        node_id: item.node_id,
+        score: item.score,
+    }
+}
+
+/// Convert a `CentralityResult` to protobuf.
+#[must_use]
+pub fn centrality_item_to_proto(item: query_router::CentralityResult) -> proto::CentralityItem {
+    proto::CentralityItem {
+        node_id: item.node_id,
         score: item.score,
     }
 }
@@ -1267,5 +1367,103 @@ mod tests {
             },
             _ => panic!("Expected Rows result"),
         }
+    }
+
+    #[test]
+    fn test_pagerank_result_conversion() {
+        let result = QueryResult::PageRank(vec![
+            query_router::PageRankResult {
+                node_id: 1,
+                score: 0.25,
+            },
+            query_router::PageRankResult {
+                node_id: 2,
+                score: 0.15,
+            },
+            query_router::PageRankResult {
+                node_id: 3,
+                score: 0.10,
+            },
+        ]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PageRank(pr)) => {
+                assert_eq!(pr.items.len(), 3);
+                assert_eq!(pr.items[0].node_id, 1);
+                assert!((pr.items[0].score - 0.25).abs() < 0.001);
+                assert_eq!(pr.items[1].node_id, 2);
+                assert!((pr.items[1].score - 0.15).abs() < 0.001);
+            },
+            _ => panic!("Expected PageRank result"),
+        }
+    }
+
+    #[test]
+    fn test_centrality_result_conversion() {
+        let result = QueryResult::Centrality(vec![
+            query_router::CentralityResult {
+                node_id: 10,
+                score: 0.85,
+            },
+            query_router::CentralityResult {
+                node_id: 20,
+                score: 0.65,
+            },
+        ]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Centrality(c)) => {
+                assert_eq!(c.items.len(), 2);
+                assert_eq!(c.items[0].node_id, 10);
+                assert!((c.items[0].score - 0.85).abs() < 0.001);
+            },
+            _ => panic!("Expected Centrality result"),
+        }
+    }
+
+    #[test]
+    fn test_pagerank_empty_result() {
+        let result = QueryResult::PageRank(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PageRank(pr)) => {
+                assert!(pr.items.is_empty());
+            },
+            _ => panic!("Expected PageRank result"),
+        }
+    }
+
+    #[test]
+    fn test_centrality_empty_result() {
+        let result = QueryResult::Centrality(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Centrality(c)) => {
+                assert!(c.items.is_empty());
+            },
+            _ => panic!("Expected Centrality result"),
+        }
+    }
+
+    #[test]
+    fn test_pagerank_item_to_proto() {
+        let item = query_router::PageRankResult {
+            node_id: 42,
+            score: 0.123_456,
+        };
+        let proto = pagerank_item_to_proto(item);
+        assert_eq!(proto.node_id, 42);
+        assert!((proto.score - 0.123_456).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn test_centrality_item_to_proto() {
+        let item = query_router::CentralityResult {
+            node_id: 99,
+            score: 0.999,
+        };
+        let proto = centrality_item_to_proto(item);
+        assert_eq!(proto.node_id, 99);
+        assert!((proto.score - 0.999).abs() < 0.001);
     }
 }

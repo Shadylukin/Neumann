@@ -556,3 +556,304 @@ async fn test_async_blob_concurrent_read_write() {
     assert_eq!(read_count.load(Ordering::SeqCst), 2 * 10 * 5);
     assert_eq!(write_count.load(Ordering::SeqCst), 2 * 10);
 }
+
+#[test]
+fn test_graph_concurrent_batch_nodes_and_edges() {
+    use std::sync::Barrier;
+
+    let (_store, _relational, graph, _vector) = create_shared_engines_arc();
+
+    // Pre-create some nodes for edge targets
+    let mut base_nodes = Vec::new();
+    for i in 0..100 {
+        let mut props = HashMap::new();
+        props.insert("idx".to_string(), PropertyValue::Int(i));
+        base_nodes.push(graph.create_node("Base", props).unwrap());
+    }
+    let base_nodes = Arc::new(base_nodes);
+
+    let thread_count = 20;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let node_success = Arc::new(AtomicUsize::new(0));
+    let edge_success = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = vec![];
+
+    // 10 threads batch creating nodes
+    for t in 0..10 {
+        let g = Arc::clone(&graph);
+        let bar = Arc::clone(&barrier);
+        let cnt = Arc::clone(&node_success);
+        handles.push(thread::spawn(move || {
+            bar.wait();
+            let nodes: Vec<graph_engine::NodeInput> = (0..50)
+                .map(|i| graph_engine::NodeInput {
+                    labels: vec!["Batch".to_string()],
+                    properties: {
+                        let mut p = HashMap::new();
+                        p.insert(
+                            "thread".to_string(),
+                            PropertyValue::Int(t as i64),
+                        );
+                        p.insert("idx".to_string(), PropertyValue::Int(i as i64));
+                        p
+                    },
+                })
+                .collect();
+            if let Ok(result) = g.batch_create_nodes(nodes) {
+                cnt.fetch_add(result.created_ids.len(), Ordering::SeqCst);
+            }
+        }));
+    }
+
+    // 10 threads batch creating edges
+    for t in 0..10 {
+        let g = Arc::clone(&graph);
+        let bar = Arc::clone(&barrier);
+        let cnt = Arc::clone(&edge_success);
+        let bases = Arc::clone(&base_nodes);
+        handles.push(thread::spawn(move || {
+            bar.wait();
+            let edges: Vec<graph_engine::EdgeInput> = (0..10)
+                .map(|i| graph_engine::EdgeInput {
+                    from: bases[t * 10 % 100],
+                    to: bases[(t * 10 + i + 1) % 100],
+                    edge_type: "LINK".to_string(),
+                    properties: HashMap::new(),
+                    directed: true,
+                })
+                .collect();
+            if let Ok(result) = g.batch_create_edges(edges) {
+                cnt.fetch_add(result.count, Ordering::SeqCst);
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().expect("thread should not panic");
+    }
+
+    // Verify counts
+    assert_eq!(node_success.load(Ordering::SeqCst), 10 * 50);
+    assert_eq!(edge_success.load(Ordering::SeqCst), 10 * 10);
+}
+
+#[test]
+fn test_graph_striped_lock_saturation_100_threads() {
+    use std::sync::Barrier;
+
+    let graph = Arc::new(GraphEngine::new());
+    graph.create_node_property_index("key").unwrap();
+
+    let thread_count = 100;
+    let ops_per_thread = 100;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let success_count = Arc::new(AtomicUsize::new(0));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|t| {
+            let g = Arc::clone(&graph);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&success_count);
+            thread::spawn(move || {
+                bar.wait();
+                for i in 0..ops_per_thread {
+                    let mut props = HashMap::new();
+                    // Distribute keys to stress all lock stripes
+                    let key = format!("{:02x}_thread{t}_op{i}", (t + i) % 256);
+                    props.insert("key".to_string(), PropertyValue::String(key));
+                    if g.create_node("Saturated", props).is_ok() {
+                        cnt.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("thread should not panic");
+    }
+
+    let expected = thread_count * ops_per_thread;
+    assert_eq!(success_count.load(Ordering::SeqCst), expected);
+
+    // Verify index integrity with a random lookup
+    let results = graph
+        .find_nodes_by_property(
+            "key",
+            &PropertyValue::String("00_thread50_op50".into()),
+        )
+        .unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn test_hnsw_concurrent_insert_search() {
+    use std::sync::Barrier;
+
+    let vector = Arc::new(VectorEngine::new());
+
+    // Pre-populate with initial embeddings
+    let initial = sample_embeddings(500, 128);
+    for (i, emb) in initial.iter().enumerate() {
+        vector.store_embedding(&format!("init_{i}"), emb.clone()).unwrap();
+    }
+
+    let thread_count = 20;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let insert_count = Arc::new(AtomicUsize::new(0));
+    let search_count = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = vec![];
+
+    // 10 inserter threads
+    for t in 0..10 {
+        let v = Arc::clone(&vector);
+        let bar = Arc::clone(&barrier);
+        let cnt = Arc::clone(&insert_count);
+        let embeddings = sample_embeddings(100, 128);
+        handles.push(thread::spawn(move || {
+            bar.wait();
+            for (i, emb) in embeddings.into_iter().enumerate() {
+                let key = format!("thread{t}_emb{i}");
+                if v.store_embedding(&key, emb).is_ok() {
+                    cnt.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+    }
+
+    // 10 searcher threads
+    for _t in 0..10 {
+        let v = Arc::clone(&vector);
+        let bar = Arc::clone(&barrier);
+        let cnt = Arc::clone(&search_count);
+        let queries = sample_embeddings(50, 128);
+        handles.push(thread::spawn(move || {
+            bar.wait();
+            for query in queries {
+                if v.search_similar(&query, 10).is_ok() {
+                    cnt.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+    }
+
+    for h in handles {
+        h.join().expect("thread should not panic");
+    }
+
+    assert_eq!(insert_count.load(Ordering::SeqCst), 10 * 100);
+    assert_eq!(search_count.load(Ordering::SeqCst), 10 * 50);
+
+    // Verify search still works after concurrent operations
+    let query = sample_embeddings(1, 128).pop().unwrap();
+    let results = vector.search_similar(&query, 10).unwrap();
+    assert!(!results.is_empty());
+}
+
+#[test]
+fn test_graph_batch_edges_node_deletion_race() {
+    use std::sync::Barrier;
+
+    let graph = Arc::new(GraphEngine::new());
+
+    // Create nodes that will be contested
+    let mut node_ids = Vec::new();
+    for _ in 0..50 {
+        node_ids.push(graph.create_node("Contested", HashMap::new()).unwrap());
+    }
+
+    let barrier = Arc::new(Barrier::new(2));
+
+    // Thread 1: delete half the nodes
+    let g1 = Arc::clone(&graph);
+    let bar1 = Arc::clone(&barrier);
+    let nodes_to_delete: Vec<_> = node_ids[25..].to_vec();
+    let deleter = thread::spawn(move || {
+        bar1.wait();
+        let mut deleted = 0;
+        for id in nodes_to_delete {
+            if g1.delete_node(id).is_ok() {
+                deleted += 1;
+            }
+        }
+        deleted
+    });
+
+    // Thread 2: create edges between all nodes
+    let g2 = Arc::clone(&graph);
+    let bar2 = Arc::clone(&barrier);
+    let edge_creator = thread::spawn(move || {
+        bar2.wait();
+        let edges: Vec<graph_engine::EdgeInput> = (0..49)
+            .map(|i| graph_engine::EdgeInput {
+                from: node_ids[i],
+                to: node_ids[i + 1],
+                edge_type: "CHAIN".to_string(),
+                properties: HashMap::new(),
+                directed: true,
+            })
+            .collect();
+        g2.batch_create_edges(edges)
+    });
+
+    let deleted = deleter.join().expect("deleter should not panic");
+    let edge_result = edge_creator.join().expect("edge creator should not panic");
+
+    // Either operation could partially succeed - just verify no panic/corruption
+    assert!(deleted <= 25);
+    match edge_result {
+        Ok(result) => assert!(result.count <= 49),
+        Err(_) => { /* Clean error is fine */ }
+    }
+
+    // Verify engine is still usable
+    let _ = graph.create_node("AfterRace", HashMap::new()).unwrap();
+}
+
+#[test]
+fn test_graph_update_delete_same_node_race() {
+    use std::sync::Barrier;
+
+    let graph = Arc::new(GraphEngine::new());
+    let node_id = graph.create_node("RaceTarget", HashMap::new()).unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+
+    // Thread 1: try to update the node repeatedly
+    let g1 = Arc::clone(&graph);
+    let bar1 = Arc::clone(&barrier);
+    let updater = thread::spawn(move || {
+        bar1.wait();
+        let mut updates = 0;
+        for i in 0..100 {
+            let mut props = HashMap::new();
+            props.insert("counter".to_string(), PropertyValue::Int(i));
+            if g1.update_node(node_id, None, props).is_ok() {
+                updates += 1;
+            }
+        }
+        updates
+    });
+
+    // Thread 2: try to delete the node
+    let g2 = Arc::clone(&graph);
+    let bar2 = Arc::clone(&barrier);
+    let deleter = thread::spawn(move || {
+        bar2.wait();
+        // Small delay to let some updates happen first
+        std::thread::sleep(std::time::Duration::from_micros(100));
+        g2.delete_node(node_id)
+    });
+
+    let updates = updater.join().expect("updater should not panic");
+    let delete_result = deleter.join().expect("deleter should not panic");
+
+    // Some updates should succeed, and delete should eventually work
+    // or some updates fail after delete - both are valid outcomes
+    assert!(updates > 0 || delete_result.is_ok());
+
+    // Verify engine is still usable
+    let _ = graph.create_node("AfterRace", HashMap::new()).unwrap();
+}

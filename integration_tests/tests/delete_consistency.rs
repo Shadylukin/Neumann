@@ -80,11 +80,15 @@ fn test_delete_graph_node() {
 
     // Verify edges involving node2 are cleaned up
     // node1 should no longer have node2 as neighbor
-    let node1_neighbors = graph.neighbors(node1, None, Direction::Outgoing, None).unwrap();
+    let node1_neighbors = graph
+        .neighbors(node1, None, Direction::Outgoing, None)
+        .unwrap();
     assert!(!node1_neighbors.iter().any(|n| n.id == node2));
 
     // node3 should no longer have node2 as incoming neighbor
-    let node3_neighbors = graph.neighbors(node3, None, Direction::Incoming, None).unwrap();
+    let node3_neighbors = graph
+        .neighbors(node3, None, Direction::Incoming, None)
+        .unwrap();
     assert!(!node3_neighbors.iter().any(|n| n.id == node2));
 }
 
@@ -262,7 +266,9 @@ fn test_delete_node_with_edges() {
     }
 
     // Verify hub has 5 outgoing edges
-    let hub_neighbors = graph.neighbors(hub, None, Direction::Outgoing, None).unwrap();
+    let hub_neighbors = graph
+        .neighbors(hub, None, Direction::Outgoing, None)
+        .unwrap();
     assert_eq!(hub_neighbors.len(), 5);
 
     // Delete hub
@@ -276,7 +282,9 @@ fn test_delete_node_with_edges() {
         let node = graph.get_node(*spoke).unwrap();
         assert!(node.has_label("spoke"));
 
-        let incoming = graph.neighbors(*spoke, None, Direction::Incoming, None).unwrap();
+        let incoming = graph
+            .neighbors(*spoke, None, Direction::Incoming, None)
+            .unwrap();
         assert!(!incoming.iter().any(|n| n.id == hub));
     }
 }

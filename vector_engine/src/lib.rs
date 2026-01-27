@@ -31,6 +31,37 @@
 //! - `max_keys_per_scan`: Bound memory usage on unbounded operations
 //! - `sparse_threshold`: Control sparse vector detection (0.0-1.0)
 //! - `parallel_threshold`: Control when to use parallel processing
+//!
+//! # Distance Metrics
+//!
+//! Two metric enums are available:
+//!
+//! ## `DistanceMetric` (Simple API)
+//! Use for basic similarity search via `search_similar_with_metric()`:
+//! - `Cosine` - Best for normalized embeddings (text, images). Range: [-1, 1]
+//! - `Euclidean` - Best for absolute distances. Range: [0, inf)
+//! - `DotProduct` - Best for recommendation systems. Range: (-inf, inf)
+//!
+//! ## `ExtendedDistanceMetric` (HNSW API)
+//! Use for HNSW index construction via `search_with_hnsw_and_metric()`:
+//! - All `DistanceMetric` variants plus:
+//! - `Angular` - Cosine converted to angular distance
+//! - `Manhattan` - L1 norm, robust to outliers
+//! - `Chebyshev` - L-infinity norm, max absolute difference
+//! - `Jaccard` - Set similarity for binary/sparse vectors
+//! - `Overlap` - Minimum overlap coefficient
+//! - `Geodesic` - Spherical distance for geographic data
+//! - `Composite` - Weighted combination of metrics
+//!
+//! ## When to Use Which
+//! | Use Case | Recommended Metric |
+//! |----------|-------------------|
+//! | Text embeddings (OpenAI, etc.) | `Cosine` |
+//! | Image feature vectors | `Cosine` or `Euclidean` |
+//! | Sparse vectors (TF-IDF) | `Jaccard` or `Cosine` |
+//! | Geographic coordinates | `Geodesic` |
+//! | Recommendation scores | `DotProduct` |
+//! | General purpose | `Cosine` (default) |
 
 // Pedantic lint configuration for vector_engine
 #![allow(clippy::cast_possible_truncation)] // Truncation from usize to f32 for ratios is intentional
@@ -42,7 +73,7 @@
 #![allow(clippy::doc_markdown)] // Flexibility in doc formatting
 #![allow(clippy::must_use_candidate)] // Not all pure functions need #[must_use]
 #![allow(clippy::missing_const_for_fn)] // Some functions can't be const due to dependencies
-#![allow(missing_docs)] // Docs exist on public types; field-level docs not required
+#![warn(missing_docs)]
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -62,7 +93,12 @@ pub enum VectorError {
     /// The requested embedding was not found.
     NotFound(String),
     /// Vector dimension mismatch.
-    DimensionMismatch { expected: usize, got: usize },
+    DimensionMismatch {
+        /// The expected dimension.
+        expected: usize,
+        /// The actual dimension received.
+        got: usize,
+    },
     /// Empty vector provided.
     EmptyVector,
     /// Invalid top_k value.
@@ -70,9 +106,19 @@ pub enum VectorError {
     /// Storage error from underlying tensor store.
     StorageError(String),
     /// Validation error during batch operation.
-    BatchValidationError { index: usize, cause: String },
+    BatchValidationError {
+        /// Index of the failing input.
+        index: usize,
+        /// Description of the validation failure.
+        cause: String,
+    },
     /// Operation error during batch operation.
-    BatchOperationError { index: usize, cause: String },
+    BatchOperationError {
+        /// Index of the failing operation.
+        index: usize,
+        /// Description of the operation failure.
+        cause: String,
+    },
     /// Configuration error.
     ConfigurationError(String),
 }
@@ -118,6 +164,7 @@ impl From<DistanceMetric> for ExtendedDistanceMetric {
     }
 }
 
+/// A specialized Result type for vector operations.
 pub type Result<T> = std::result::Result<T, VectorError>;
 
 /// Result of a similarity search.
@@ -130,6 +177,7 @@ pub struct SearchResult {
 }
 
 impl SearchResult {
+    /// Creates a new search result with the given key and score.
     #[must_use]
     pub const fn new(key: String, score: f32) -> Self {
         Self { key, score }
@@ -184,6 +232,9 @@ impl Default for VectorEngineConfig {
 }
 
 impl VectorEngineConfig {
+    /// Creates a configuration optimized for high throughput workloads.
+    ///
+    /// Uses a lower parallel threshold (1000) for more aggressive parallelism.
     #[must_use]
     pub const fn high_throughput() -> Self {
         Self {
@@ -197,6 +248,9 @@ impl VectorEngineConfig {
         }
     }
 
+    /// Creates a configuration optimized for low memory environments.
+    ///
+    /// Sets `max_dimension` to 4096 and `max_keys_per_scan` to 10,000.
     #[must_use]
     pub const fn low_memory() -> Self {
         Self {
@@ -210,6 +264,9 @@ impl VectorEngineConfig {
         }
     }
 
+    /// Validates the configuration parameters.
+    ///
+    /// Returns an error if any parameter is out of valid range.
     pub fn validate(&self) -> Result<()> {
         if self.sparse_threshold < 0.0 || self.sparse_threshold > 1.0 {
             return Err(VectorError::ConfigurationError(
@@ -242,6 +299,55 @@ impl VectorEngineConfig {
         }
         Ok(())
     }
+
+    /// Set the default embedding dimension.
+    #[must_use]
+    pub const fn with_default_dimension(mut self, dim: usize) -> Self {
+        self.default_dimension = Some(dim);
+        self
+    }
+
+    /// Set the sparse vector detection threshold (0.0-1.0).
+    #[must_use]
+    pub const fn with_sparse_threshold(mut self, threshold: f32) -> Self {
+        self.sparse_threshold = threshold;
+        self
+    }
+
+    /// Set the parallel processing threshold.
+    #[must_use]
+    pub const fn with_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.parallel_threshold = threshold;
+        self
+    }
+
+    /// Set the default distance metric.
+    #[must_use]
+    pub const fn with_default_metric(mut self, metric: DistanceMetric) -> Self {
+        self.default_metric = metric;
+        self
+    }
+
+    /// Set the maximum allowed embedding dimension.
+    #[must_use]
+    pub const fn with_max_dimension(mut self, max: usize) -> Self {
+        self.max_dimension = Some(max);
+        self
+    }
+
+    /// Set the maximum keys per scan operation.
+    #[must_use]
+    pub const fn with_max_keys_per_scan(mut self, max: usize) -> Self {
+        self.max_keys_per_scan = Some(max);
+        self
+    }
+
+    /// Set the batch parallel processing threshold.
+    #[must_use]
+    pub const fn with_batch_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.batch_parallel_threshold = threshold;
+        self
+    }
 }
 
 // ========== Batch Operations ==========
@@ -249,11 +355,14 @@ impl VectorEngineConfig {
 /// Input for batch embedding storage.
 #[derive(Debug, Clone)]
 pub struct EmbeddingInput {
+    /// The key to store the embedding under.
     pub key: String,
+    /// The embedding vector.
     pub vector: Vec<f32>,
 }
 
 impl EmbeddingInput {
+    /// Creates a new embedding input with the given key and vector.
     #[must_use]
     pub fn new(key: impl Into<String>, vector: Vec<f32>) -> Self {
         Self {
@@ -266,11 +375,14 @@ impl EmbeddingInput {
 /// Result of a batch operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchResult {
+    /// Keys that were successfully stored.
     pub stored_keys: Vec<String>,
+    /// Number of embeddings stored.
     pub count: usize,
 }
 
 impl BatchResult {
+    /// Creates a new batch result from a list of stored keys.
     #[must_use]
     pub const fn new(stored_keys: Vec<String>) -> Self {
         let count = stored_keys.len();
@@ -292,6 +404,7 @@ pub struct Pagination {
 }
 
 impl Pagination {
+    /// Creates pagination with skip offset and limit.
     #[must_use]
     pub const fn new(skip: usize, limit: usize) -> Self {
         Self {
@@ -301,12 +414,14 @@ impl Pagination {
         }
     }
 
+    /// Enables total count computation in the result.
     #[must_use]
     pub const fn with_total(mut self) -> Self {
         self.count_total = true;
         self
     }
 
+    /// Creates pagination with only a skip offset (no limit).
     #[must_use]
     pub const fn skip_only(skip: usize) -> Self {
         Self {
@@ -320,12 +435,16 @@ impl Pagination {
 /// Result of a paginated query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PagedResult<T> {
+    /// The items in this page.
     pub items: Vec<T>,
+    /// Total count of items (if requested via `count_total`).
     pub total_count: Option<usize>,
+    /// Whether more items exist beyond this page.
     pub has_more: bool,
 }
 
 impl<T> PagedResult<T> {
+    /// Creates a new paged result with the given items, total count, and has_more flag.
     #[must_use]
     pub const fn new(items: Vec<T>, total_count: Option<usize>, has_more: bool) -> Self {
         Self {
@@ -335,6 +454,7 @@ impl<T> PagedResult<T> {
         }
     }
 
+    /// Creates an empty paged result with zero total count.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -512,12 +632,14 @@ impl VectorEngine {
     }
 
     /// Check if an embedding exists.
+    #[instrument(skip(self), fields(key = %key))]
     pub fn exists(&self, key: &str) -> bool {
         let storage_key = Self::embedding_key(key);
         self.store.exists(&storage_key)
     }
 
     /// Get the count of stored embeddings.
+    #[instrument(skip(self))]
     pub fn count(&self) -> usize {
         self.store.scan_count(Self::embedding_prefix())
     }
@@ -579,6 +701,7 @@ impl VectorEngine {
     /// - Cosine: Higher scores are more similar (range -1 to 1)
     /// - DotProduct: Higher scores are more similar (unbounded)
     /// - Euclidean: Lower distances are more similar (converted to score via 1/(1+dist))
+    #[instrument(skip(self, query), fields(query_dim = query.len(), top_k, metric = ?metric))]
     pub fn search_similar_with_metric(
         &self,
         query: &[f32],
@@ -813,6 +936,7 @@ impl VectorEngine {
     }
 
     /// List all embedding keys.
+    #[instrument(skip(self))]
     pub fn list_keys(&self) -> Vec<String> {
         self.store
             .scan(Self::embedding_prefix())
@@ -825,6 +949,7 @@ impl VectorEngine {
     ///
     /// Uses `config.max_keys_per_scan` if set, otherwise returns all keys.
     /// Prefer this over `list_keys()` in production environments.
+    #[instrument(skip(self))]
     pub fn list_keys_bounded(&self) -> Vec<String> {
         let limit = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
         self.store
@@ -836,6 +961,7 @@ impl VectorEngine {
     }
 
     /// Clear all embeddings.
+    #[instrument(skip(self))]
     pub fn clear(&self) -> Result<()> {
         let keys = self.store.scan(Self::embedding_prefix());
         for key in keys {
@@ -909,6 +1035,7 @@ impl VectorEngine {
     }
 
     /// Build an HNSW index with default configuration.
+    #[instrument(skip(self))]
     pub fn build_hnsw_index_default(&self) -> Result<(HNSWIndex, Vec<String>)> {
         self.build_hnsw_index(HNSWConfig::default())
     }
@@ -1101,6 +1228,7 @@ impl VectorEngine {
     // ========== Pagination ==========
 
     /// List embedding keys with pagination.
+    #[instrument(skip(self, pagination))]
     pub fn list_keys_paginated(&self, pagination: Pagination) -> PagedResult<String> {
         let all_keys: Vec<String> = self
             .store
@@ -1129,6 +1257,7 @@ impl VectorEngine {
     }
 
     /// Search for similar embeddings with pagination.
+    #[instrument(skip(self, query, pagination), fields(query_dim = query.len(), top_k))]
     pub fn search_similar_paginated(
         &self,
         query: &[f32],
@@ -1161,6 +1290,7 @@ impl VectorEngine {
     }
 
     /// Search for similar entities with pagination.
+    #[instrument(skip(self, query, pagination), fields(query_dim = query.len(), top_k))]
     pub fn search_entities_paginated(
         &self,
         query: &[f32],
@@ -1343,6 +1473,7 @@ impl Default for VectorEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tensor_store::ScalarValue;
 
     fn create_test_vector(dim: usize, seed: usize) -> Vec<f32> {
         // Create vectors where each seed produces a unique direction
@@ -3771,5 +3902,124 @@ mod tests {
         assert_eq!(config.max_dimension, None);
         assert_eq!(config.max_keys_per_scan, None);
         assert_eq!(config.batch_parallel_threshold, 100);
+    }
+
+    #[test]
+    fn config_builder_methods() {
+        let config = VectorEngineConfig::default()
+            .with_default_dimension(128)
+            .with_sparse_threshold(0.7)
+            .with_parallel_threshold(1000)
+            .with_default_metric(DistanceMetric::Euclidean)
+            .with_max_dimension(4096)
+            .with_max_keys_per_scan(50_000)
+            .with_batch_parallel_threshold(200);
+
+        assert_eq!(config.default_dimension, Some(128));
+        assert!((config.sparse_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(config.parallel_threshold, 1000);
+        assert_eq!(config.default_metric, DistanceMetric::Euclidean);
+        assert_eq!(config.max_dimension, Some(4096));
+        assert_eq!(config.max_keys_per_scan, Some(50_000));
+        assert_eq!(config.batch_parallel_threshold, 200);
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test --release -p vector_engine large_scale -- --ignored
+    fn large_scale_million_vectors() {
+        use std::time::Instant;
+
+        let config = VectorEngineConfig::high_throughput();
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        const VECTOR_COUNT: usize = 1_000_000;
+        const DIMENSION: usize = 128;
+
+        // Insert 1M vectors
+        let start = Instant::now();
+        for i in 0..VECTOR_COUNT {
+            let key = format!("vec_{}", i);
+            let vector: Vec<f32> = (0..DIMENSION)
+                .map(|j| ((i * DIMENSION + j) % 1000) as f32 / 1000.0)
+                .collect();
+            engine.store_embedding(&key, vector).unwrap();
+        }
+        let insert_time = start.elapsed();
+
+        assert_eq!(engine.count(), VECTOR_COUNT);
+
+        // Search performance
+        let query: Vec<f32> = (0..DIMENSION)
+            .map(|i| i as f32 / DIMENSION as f32)
+            .collect();
+        let start = Instant::now();
+        for _ in 0..100 {
+            let results = engine.search_similar(&query, 10).unwrap();
+            assert_eq!(results.len(), 10);
+        }
+        let search_time = start.elapsed();
+
+        // Performance assertions (relaxed for CI)
+        assert!(
+            insert_time.as_secs() < 120,
+            "Insert took too long: {:?}",
+            insert_time
+        );
+        assert!(
+            search_time.as_millis() < 5000,
+            "100 searches took too long: {:?}",
+            search_time
+        );
+    }
+
+    #[test]
+    fn error_from_tensor_store_error() {
+        let tensor_error = TensorStoreError::NotFound("test_key".to_string());
+        let vector_error: VectorError = tensor_error.into();
+        assert!(matches!(vector_error, VectorError::StorageError(_)));
+        assert!(vector_error.to_string().contains("test_key"));
+    }
+
+    #[test]
+    fn error_std_error_trait() {
+        let error = VectorError::NotFound("test".to_string());
+        let _: &dyn std::error::Error = &error;
+    }
+
+    #[test]
+    fn search_with_metric_parallel_path() {
+        // Use a low parallel threshold to trigger parallel search
+        let config = VectorEngineConfig {
+            parallel_threshold: 5,
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        // Store enough vectors to trigger parallel path
+        for i in 0..10 {
+            engine
+                .store_embedding(&format!("vec_{}", i), vec![i as f32, 0.0, 0.0])
+                .unwrap();
+        }
+
+        let results = engine
+            .search_similar_with_metric(&[5.0, 0.0, 0.0], 3, DistanceMetric::Euclidean)
+            .unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn get_embedding_invalid_format() {
+        let engine = VectorEngine::new();
+        // Directly write a tensor without a vector field to test error path
+        let mut tensor = TensorData::new();
+        tensor.set("not_vector", TensorValue::Scalar(ScalarValue::Int(42)));
+        engine
+            .store()
+            .put("emb:invalid".to_string(), tensor)
+            .unwrap();
+
+        let result = engine.get_embedding("invalid");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
     }
 }

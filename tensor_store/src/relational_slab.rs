@@ -630,6 +630,68 @@ impl TableStorage {
             .map(|&word| word as u64)
             .collect()
     }
+
+    fn add_column(&mut self, col_def: ColumnDef, default: Option<&ColumnValue>) -> bool {
+        // Check if column already exists
+        if self.schema.column_index(&col_def.name).is_some() {
+            return false;
+        }
+
+        // For non-nullable columns without default, table must be empty
+        if !col_def.nullable && default.is_none() && self.live_rows > 0 {
+            return false;
+        }
+
+        // Create storage for new column
+        let mut col_storage = ColumnStorage::new(&col_def.col_type, self.total_rows.max(100));
+
+        // Create null bitmap for new column
+        let mut null_bitmap = BitVec::with_capacity(self.total_rows);
+
+        // Fill with default/null for existing rows
+        for idx in 0..self.total_rows {
+            if self.alive[idx] {
+                if let Some(val) = default {
+                    col_storage.push(val);
+                    null_bitmap.push(val.is_null());
+                } else {
+                    col_storage.push(&ColumnValue::Null);
+                    null_bitmap.push(true);
+                }
+            } else {
+                // Deleted rows also need placeholder values
+                col_storage.push(&ColumnValue::Null);
+                null_bitmap.push(true);
+            }
+        }
+
+        // Update schema
+        self.schema.columns.push(col_def);
+        self.columns.push(col_storage);
+        self.null_bitmaps.push(null_bitmap);
+
+        true
+    }
+
+    fn drop_column(&mut self, column: &str) -> bool {
+        let Some(col_idx) = self.schema.column_index(column) else {
+            return false;
+        };
+
+        // Remove from schema
+        self.schema.columns.remove(col_idx);
+
+        // Remove column storage
+        self.columns.remove(col_idx);
+
+        // Remove null bitmap
+        self.null_bitmaps.remove(col_idx);
+
+        // Remove any index on this column
+        self.hash_indexes.remove(column);
+
+        true
+    }
 }
 
 /// Columnar storage for relational tables.
@@ -691,6 +753,47 @@ impl RelationalSlab {
     /// Get table schema.
     pub fn get_schema(&self, name: &str) -> Option<TableSchema> {
         self.tables.read().get(name).map(|t| t.schema.clone())
+    }
+
+    /// Add a column to an existing table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table does not exist or if the column already exists.
+    #[allow(clippy::significant_drop_tightening)] // Lock needed for entire operation
+    pub fn add_column(
+        &self,
+        table: &str,
+        col_def: ColumnDef,
+        default: Option<&ColumnValue>,
+    ) -> Result<(), RelationalError> {
+        let mut tables = self.tables.write();
+        let storage = tables
+            .get_mut(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        if !storage.add_column(col_def.clone(), default) {
+            return Err(RelationalError::ColumnExists(col_def.name));
+        }
+        Ok(())
+    }
+
+    /// Drop a column from a table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table or column does not exist.
+    #[allow(clippy::significant_drop_tightening)] // Lock needed for entire operation
+    pub fn drop_column(&self, table: &str, column: &str) -> Result<(), RelationalError> {
+        let mut tables = self.tables.write();
+        let storage = tables
+            .get_mut(table)
+            .ok_or_else(|| RelationalError::TableNotFound(table.to_string()))?;
+
+        if !storage.drop_column(column) {
+            return Err(RelationalError::ColumnNotFound(column.to_string()));
+        }
+        Ok(())
     }
 
     /// Insert a row.
@@ -1105,6 +1208,8 @@ pub enum RelationalError {
     RowNotFound(RowId),
     /// Column does not exist or wrong type.
     ColumnNotFound(String),
+    /// Column already exists.
+    ColumnExists(String),
 }
 
 impl std::fmt::Display for RelationalError {
@@ -1120,6 +1225,7 @@ impl std::fmt::Display for RelationalError {
             },
             Self::RowNotFound(row_id) => write!(f, "row not found: {}", row_id.0),
             Self::ColumnNotFound(col) => write!(f, "column not found: {col}"),
+            Self::ColumnExists(col) => write!(f, "column already exists: {col}"),
         }
     }
 }

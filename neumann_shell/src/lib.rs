@@ -13,8 +13,10 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 use query_router::{
-    ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult,
-    ChainSimilarResult, ChainTransitionAnalysis, CheckpointInfo, QueryResult, QueryRouter,
+    AggregateResultValue, BatchOperationResult, CentralityResult, ChainBlockInfo,
+    ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult, ChainSimilarResult,
+    ChainTransitionAnalysis, CheckpointInfo, CommunityResult, ConstraintInfo, PageRankResult,
+    PatternMatchResultValue, QueryResult, QueryRouter,
 };
 use relational_engine::Row;
 use rustyline::{
@@ -956,6 +958,14 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::BlobStats(stats) => format_blob_stats(stats),
         QueryResult::CheckpointList(checkpoints) => format_checkpoint_list(checkpoints),
         QueryResult::Chain(chain) => format_chain_result(chain),
+        QueryResult::PageRank(results) => format_pagerank(results),
+        QueryResult::Centrality(results) => format_centrality(results),
+        QueryResult::Communities(results) => format_communities(results),
+        QueryResult::Constraints(constraints) => format_constraints(constraints),
+        QueryResult::GraphIndexes(indexes) => format_graph_indexes(indexes),
+        QueryResult::Aggregate(agg) => format_aggregate(agg),
+        QueryResult::BatchResult(batch) => format_batch_result(batch),
+        QueryResult::PatternMatch(pm) => format_pattern_match(pm),
     }
 }
 
@@ -1399,6 +1409,137 @@ fn format_rows(rows: &[Row]) -> String {
 
     let _ = write!(output, "({} rows)", rows.len());
     output
+}
+
+fn format_pagerank(results: &[PageRankResult]) -> String {
+    if results.is_empty() {
+        return "No PageRank results".to_string();
+    }
+    let mut output = String::from("PageRank Results:\n");
+    for r in results {
+        let _ = writeln!(output, "  Node {}: {:.6}", r.node_id, r.score);
+    }
+    output.trim_end().to_string()
+}
+
+fn format_centrality(results: &[CentralityResult]) -> String {
+    if results.is_empty() {
+        return "No centrality results".to_string();
+    }
+    let mut output = String::from("Centrality Results:\n");
+    for r in results {
+        let _ = writeln!(output, "  Node {}: {:.6}", r.node_id, r.score);
+    }
+    output.trim_end().to_string()
+}
+
+fn format_communities(results: &[CommunityResult]) -> String {
+    if results.is_empty() {
+        return "No communities found".to_string();
+    }
+    // Group nodes by community_id
+    let mut communities: std::collections::HashMap<u64, Vec<u64>> =
+        std::collections::HashMap::new();
+    for r in results {
+        communities
+            .entry(r.community_id)
+            .or_default()
+            .push(r.node_id);
+    }
+    let mut output = String::from("Communities:\n");
+    let mut sorted: Vec<_> = communities.into_iter().collect();
+    sorted.sort_by_key(|(id, _)| *id);
+    for (community_id, nodes) in sorted {
+        let node_list = nodes
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(output, "  Community {}: [{}]", community_id, node_list);
+    }
+    output.trim_end().to_string()
+}
+
+fn format_constraints(constraints: &[ConstraintInfo]) -> String {
+    if constraints.is_empty() {
+        return "No constraints found".to_string();
+    }
+    let mut output = String::from("Constraints:\n");
+    for c in constraints {
+        let _ = writeln!(
+            output,
+            "  {} on {} property '{}' ({})",
+            c.name, c.target, c.property, c.constraint_type
+        );
+    }
+    output.trim_end().to_string()
+}
+
+fn format_graph_indexes(indexes: &[String]) -> String {
+    if indexes.is_empty() {
+        return "No indexes found".to_string();
+    }
+    let mut output = String::from("Graph Indexes:\n");
+    for idx in indexes {
+        let _ = writeln!(output, "  {idx}");
+    }
+    output.trim_end().to_string()
+}
+
+fn format_aggregate(agg: &AggregateResultValue) -> String {
+    match agg {
+        AggregateResultValue::Count(n) => format!("Count: {n}"),
+        AggregateResultValue::Sum(v) => format!("Sum: {v}"),
+        AggregateResultValue::Avg(v) => format!("Avg: {v}"),
+        AggregateResultValue::Min(v) => format!("Min: {v}"),
+        AggregateResultValue::Max(v) => format!("Max: {v}"),
+    }
+}
+
+fn format_batch_result(batch: &BatchOperationResult) -> String {
+    let mut output = format!("{}: {} affected", batch.operation, batch.affected_count);
+    if let Some(ids) = &batch.created_ids {
+        if !ids.is_empty() {
+            let id_str = ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(output, " (IDs: {})", id_str);
+        }
+    }
+    output
+}
+
+fn format_pattern_match(pm: &PatternMatchResultValue) -> String {
+    if pm.matches.is_empty() {
+        return "No pattern matches found".to_string();
+    }
+    let mut output = format!("Pattern Matches ({} found):\n", pm.stats.matches_found);
+    for (i, m) in pm.matches.iter().enumerate() {
+        let _ = writeln!(output, "  Match {}:", i + 1);
+        for (var, binding) in &m.bindings {
+            let desc = match binding {
+                query_router::BindingValue::Node { id, label } => {
+                    format!("Node {} ({})", id, label)
+                },
+                query_router::BindingValue::Edge {
+                    id,
+                    edge_type,
+                    from,
+                    to,
+                } => format!("Edge {} ({}) {} -> {}", id, edge_type, from, to),
+                query_router::BindingValue::Path { nodes, length, .. } => {
+                    format!("Path (length {}, {} nodes)", length, nodes.len())
+                },
+            };
+            let _ = writeln!(output, "    {var}: {desc}");
+        }
+    }
+    if pm.stats.truncated {
+        let _ = writeln!(output, "  (results truncated)");
+    }
+    output.trim_end().to_string()
 }
 
 #[cfg(test)]

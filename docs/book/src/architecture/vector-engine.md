@@ -59,23 +59,88 @@ graph TB
 | Type | Description |
 | --- | --- |
 | `VectorEngine` | Main engine for storing and searching embeddings |
+| `VectorEngineConfig` | Configuration for engine behavior and memory bounds |
 | `SearchResult` | Result with key and similarity score |
 | `DistanceMetric` | Enum: `Cosine`, `Euclidean`, `DotProduct` |
+| `ExtendedDistanceMetric` | Extended metrics for HNSW (9+ variants) |
 | `VectorError` | Error types for vector operations |
+| `EmbeddingInput` | Input for batch store operations |
+| `BatchResult` | Result of batch operations |
+| `Pagination` | Parameters for paginated queries |
+| `PagedResult<T>` | Paginated query result |
 | `HNSWIndex` | Hierarchical navigable small world graph (re-exported from tensor_store) |
 | `HNSWConfig` | HNSW index configuration (re-exported from tensor_store) |
 | `SparseVector` | Memory-efficient sparse embedding storage |
-| `EmbeddingStorage` | Union type: Dense, Sparse, Delta, or TensorTrain |
 
 ### VectorError Variants
 
 | Variant | Description | When Triggered |
 | --- | --- | --- |
 | `NotFound` | Embedding key doesn't exist | `get_embedding`, `delete_embedding` |
-| `DimensionMismatch` | Vectors have different dimensions | `compute_similarity` with mismatched inputs |
+| `DimensionMismatch` | Vectors have different dimensions | `compute_similarity`, exceeds `max_dimension` |
 | `EmptyVector` | Empty vector provided | Any operation with `vec![]` |
 | `InvalidTopK` | top_k is 0 | `search_similar`, `search_with_hnsw` |
 | `StorageError` | Underlying Tensor Store error | Storage failures |
+| `BatchValidationError` | Invalid input in batch | `batch_store_embeddings` validation |
+| `BatchOperationError` | Operation failed in batch | `batch_store_embeddings` execution |
+| `ConfigurationError` | Invalid configuration | `VectorEngineConfig::validate()` |
+
+## Configuration
+
+### VectorEngineConfig
+
+Configuration for the Vector Engine with memory bounds and performance tuning.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `default_dimension` | `Option<usize>` | `None` | Expected embedding dimension |
+| `sparse_threshold` | `f32` | `0.5` | Sparsity threshold (0.0-1.0) |
+| `parallel_threshold` | `usize` | `5000` | Dataset size for parallel search |
+| `default_metric` | `DistanceMetric` | `Cosine` | Default distance metric |
+| `max_dimension` | `Option<usize>` | `None` | Maximum allowed dimension |
+| `max_keys_per_scan` | `Option<usize>` | `None` | Limit for unbounded scans |
+| `batch_parallel_threshold` | `usize` | `100` | Batch size for parallel processing |
+
+### Configuration Presets
+
+| Preset | Description | Key Settings |
+| --- | --- | --- |
+| `default()` | Balanced for most workloads | All defaults |
+| `high_throughput()` | Optimized for write-heavy loads | `parallel_threshold: 1000` |
+| `low_memory()` | Memory-constrained environments | `max_dimension: 4096`, `max_keys_per_scan: 10000` |
+
+### Builder Methods
+
+All builder methods are `const fn` for compile-time configuration:
+
+```rust
+let config = VectorEngineConfig::default()
+    .with_default_dimension(768)
+    .with_sparse_threshold(0.7)
+    .with_parallel_threshold(1000)
+    .with_default_metric(DistanceMetric::Cosine)
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(50_000)
+    .with_batch_parallel_threshold(200);
+
+let engine = VectorEngine::with_config(config)?;
+```
+
+### Memory Bounds
+
+For production deployments, configure memory bounds to prevent resource exhaustion:
+
+```rust
+// Reject embeddings larger than 4096 dimensions
+let config = VectorEngineConfig::default()
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(10_000);
+
+let engine = VectorEngine::with_config(config)?;
+
+// This will fail with DimensionMismatch
+engine.store_embedding("too_big", vec![0.0; 5000])?; // Error!
+```
 
 ## Distance Metrics
 
@@ -87,6 +152,38 @@ graph TB
 
 All metrics return higher scores for better matches. Euclidean distance is
 transformed to similarity score.
+
+### Extended Distance Metrics (HNSW)
+
+The `ExtendedDistanceMetric` enum provides additional metrics for HNSW-based
+search via `search_with_hnsw_and_metric()`:
+
+| Metric | Description | Best For |
+| --- | --- | --- |
+| `Cosine` | Angle-based similarity | Text embeddings, normalized vectors |
+| `Euclidean` | L2 distance | Spatial data, absolute distances |
+| `Angular` | Cosine converted to angular | When angle interpretation needed |
+| `Manhattan` | L1 norm | Robust to outliers |
+| `Chebyshev` | L-infinity (max diff) | When max deviation matters |
+| `Jaccard` | Set similarity | Binary/sparse vectors, TF-IDF |
+| `Overlap` | Minimum overlap coefficient | Partial matches |
+| `Geodesic` | Spherical distance | Geographic coordinates |
+| `Composite` | Weighted combination | Custom similarity functions |
+
+```rust
+use vector_engine::ExtendedDistanceMetric;
+
+let (index, keys) = engine.build_hnsw_index_default()?;
+
+// Search with Jaccard similarity for sparse vectors
+let results = engine.search_with_hnsw_and_metric(
+    &index,
+    &keys,
+    &query,
+    10,
+    ExtendedDistanceMetric::Jaccard,
+)?;
+```
 
 ### Distance Metric Implementation Details
 
@@ -245,6 +342,59 @@ let results = engine.search_similar_with_metric(
 // Direct similarity computation
 let similarity = VectorEngine::compute_similarity(&vec_a, &vec_b)?;
 ```
+
+### Batch Operations
+
+For bulk insert and delete operations with parallel processing:
+
+```rust
+use vector_engine::EmbeddingInput;
+
+// Batch store - validates all inputs first, then stores in parallel
+let inputs = vec![
+    EmbeddingInput::new("doc1", vec![0.1, 0.2, 0.3]),
+    EmbeddingInput::new("doc2", vec![0.2, 0.3, 0.4]),
+    EmbeddingInput::new("doc3", vec![0.3, 0.4, 0.5]),
+];
+
+let result = engine.batch_store_embeddings(inputs)?;
+println!("Stored {} embeddings", result.count);  // -> 3
+
+// Batch delete - returns count of successfully deleted
+let keys = vec!["doc1".to_string(), "doc2".to_string()];
+let deleted = engine.batch_delete_embeddings(keys)?;
+println!("Deleted {} embeddings", deleted);  // -> 2
+```
+
+Batches larger than `batch_parallel_threshold` (default: 100) use parallel
+processing via rayon.
+
+### Pagination
+
+For memory-efficient iteration over large datasets:
+
+```rust
+use vector_engine::Pagination;
+
+// List keys with pagination
+let page = Pagination::new(0, 100);  // skip=0, limit=100
+let result = engine.list_keys_paginated(page);
+println!("Items: {}, Has more: {}", result.items.len(), result.has_more);
+
+// Get total count with pagination
+let page = Pagination::new(0, 100).with_total();
+let result = engine.list_keys_paginated(page);
+println!("Total: {:?}", result.total_count);  // Some(total)
+
+// Paginated similarity search
+let page = Pagination::new(10, 5);  // skip first 10, return 5
+let results = engine.search_similar_paginated(&query, 100, page)?;
+
+// Paginated entity search
+let results = engine.search_entities_paginated(&query, 100, page)?;
+```
+
+Use `list_keys_bounded()` for production to enforce `max_keys_per_scan` limits.
 
 ### Search Flow Diagram
 
@@ -666,7 +816,9 @@ println!("Dense: {}, Sparse: {}, Total bytes: {}",
 | `tensor_store` | Persistence, SparseVector, HNSWIndex, SIMD |
 | `rayon` | Parallel iteration for large datasets |
 | `serde` | Serialization of types |
-| `wide` | SIMD f32x8 operations |
+| `tracing` | Instrumentation and observability |
+
+Note: `wide` (SIMD f32x8 operations) is a transitive dependency via `tensor_store`.
 
 ## Related Modules
 

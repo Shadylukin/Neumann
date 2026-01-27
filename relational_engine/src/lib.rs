@@ -8,31 +8,30 @@
 //! When using durable storage (via [`RelationalEngine::open_durable`] or
 //! [`RelationalEngine::recover`]), the following data is persisted:
 //!
-//! **Persisted (durable):**
+//! **Persisted and auto-recovered:**
 //! - Table schemas and metadata
 //! - Row data (columnar storage)
+//! - B-tree indexes (automatically rebuilt on recovery)
+//! - Row counters (automatically rebuilt from scanning data)
 //!
 //! **NOT persisted (must recreate after recovery):**
 //! - Hash indexes: call [`RelationalEngine::create_index`] after recovery
-//! - B-tree indexes: call [`RelationalEngine::create_btree_index`] after recovery
-//! - Row counters: automatically rebuilt from scanning data
 //! - Transaction state: transactions are aborted on crash
 //!
 //! # Recovery Example
 //!
 //! ```ignore
-//! // Open durable engine
+//! // Open durable engine - B-tree indexes are automatically rebuilt
 //! let engine = RelationalEngine::recover(
 //!     "data/wal",
 //!     &WalConfig::default(),
 //!     Some(Path::new("data/snapshot")),
 //! )?;
 //!
-//! // Recreate indexes after recovery
+//! // Only hash indexes need to be recreated after recovery
 //! for table in engine.list_tables() {
-//!     // Recreate indexes based on your schema requirements
 //!     engine.create_index(&table, "user_id")?;
-//!     engine.create_btree_index(&table, "created_at")?;
+//!     // B-tree indexes are already restored!
 //! }
 //! ```
 
@@ -41,6 +40,7 @@ use std::{
     hash::{Hash, Hasher},
     path::Path,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
@@ -54,7 +54,7 @@ pub(crate) use tensor_store::{
     RowId as SlabRowId, TableSchema as SlabTableSchema,
 };
 use tensor_store::{ScalarValue, TensorData, TensorStore, TensorStoreError, TensorValue};
-use tracing::{instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 pub mod transaction;
 pub(crate) use transaction::{Deadline, IndexChange, UndoEntry};
@@ -950,6 +950,14 @@ pub struct RelationalConfig {
     pub default_query_timeout_ms: Option<u64>,
     /// Maximum allowed query timeout in milliseconds.
     pub max_query_timeout_ms: Option<u64>,
+    /// Slow query warning threshold in milliseconds. Default: 100ms.
+    pub slow_query_threshold_ms: u64,
+    /// Maximum rows returned from a single query. `None` means unlimited.
+    pub max_query_result_rows: Option<usize>,
+    /// Default transaction timeout in seconds. Default: 60s.
+    pub transaction_timeout_secs: u64,
+    /// Default lock timeout in seconds. Default: 30s.
+    pub lock_timeout_secs: u64,
 }
 
 impl Default for RelationalConfig {
@@ -960,6 +968,10 @@ impl Default for RelationalConfig {
             max_btree_entries: 10_000_000,
             default_query_timeout_ms: None,
             max_query_timeout_ms: Some(300_000), // 5 minutes
+            slow_query_threshold_ms: 100,
+            max_query_result_rows: None,
+            transaction_timeout_secs: 60,
+            lock_timeout_secs: 30,
         }
     }
 }
@@ -1006,11 +1018,40 @@ impl RelationalConfig {
         self
     }
 
+    /// Sets the slow query warning threshold in milliseconds.
+    #[must_use]
+    pub const fn with_slow_query_threshold_ms(mut self, threshold_ms: u64) -> Self {
+        self.slow_query_threshold_ms = threshold_ms;
+        self
+    }
+
+    /// Sets the maximum rows returned from a single query.
+    #[must_use]
+    pub const fn with_max_query_result_rows(mut self, max: usize) -> Self {
+        self.max_query_result_rows = Some(max);
+        self
+    }
+
+    /// Sets the transaction timeout in seconds.
+    #[must_use]
+    pub const fn with_transaction_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.transaction_timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Sets the lock timeout in seconds.
+    #[must_use]
+    pub const fn with_lock_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.lock_timeout_secs = timeout_secs;
+        self
+    }
+
     /// Configuration preset for high-throughput workloads.
     ///
     /// - No table or index limits
     /// - 30 second default query timeout
     /// - 20M B-tree entries allowed
+    /// - 50ms slow query threshold
     #[must_use]
     pub const fn high_throughput() -> Self {
         Self {
@@ -1019,6 +1060,10 @@ impl RelationalConfig {
             max_btree_entries: 20_000_000,
             default_query_timeout_ms: Some(30_000),
             max_query_timeout_ms: Some(600_000), // 10 minutes
+            slow_query_threshold_ms: 50,
+            max_query_result_rows: None,
+            transaction_timeout_secs: 120,
+            lock_timeout_secs: 60,
         }
     }
 
@@ -1028,6 +1073,7 @@ impl RelationalConfig {
     /// - Maximum 5 indexes per table
     /// - 1M B-tree entries
     /// - 10 second default query timeout
+    /// - 10K max result rows
     #[must_use]
     pub const fn low_memory() -> Self {
         Self {
@@ -1036,6 +1082,10 @@ impl RelationalConfig {
             max_btree_entries: 1_000_000,
             default_query_timeout_ms: Some(10_000),
             max_query_timeout_ms: Some(60_000), // 1 minute
+            slow_query_threshold_ms: 100,
+            max_query_result_rows: Some(10_000),
+            transaction_timeout_secs: 30,
+            lock_timeout_secs: 15,
         }
     }
 
@@ -1077,6 +1127,108 @@ impl QueryOptions {
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
         self
+    }
+}
+
+/// Options for cursor-based iteration over query results.
+#[derive(Debug, Clone, Copy)]
+pub struct CursorOptions {
+    /// Number of rows to fetch per batch. Default: 1000.
+    pub batch_size: usize,
+    /// Starting row offset. Default: 0.
+    pub offset: usize,
+}
+
+impl Default for CursorOptions {
+    fn default() -> Self {
+        Self {
+            batch_size: 1000,
+            offset: 0,
+        }
+    }
+}
+
+impl CursorOptions {
+    /// Creates new cursor options with default batch size.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            batch_size: 1000,
+            offset: 0,
+        }
+    }
+
+    /// Sets the batch size for fetching rows.
+    #[must_use]
+    pub const fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Sets the starting offset.
+    #[must_use]
+    pub const fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
+}
+
+/// Iterator over query results.
+///
+/// Created by [`RelationalEngine::select_iter`]. Provides an iterator interface
+/// for processing query results one row at a time.
+pub struct RowCursor<'a> {
+    #[allow(dead_code)]
+    engine: &'a RelationalEngine,
+    rows: std::vec::IntoIter<Row>,
+    rows_processed: usize,
+    total_rows: usize,
+}
+
+impl RowCursor<'_> {
+    /// Returns the number of rows processed so far.
+    #[must_use]
+    pub const fn rows_processed(&self) -> usize {
+        self.rows_processed
+    }
+
+    /// Returns the total number of rows in the result set.
+    #[must_use]
+    pub const fn total_rows(&self) -> usize {
+        self.total_rows
+    }
+
+    /// Returns true if all rows have been consumed.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.rows_processed >= self.total_rows
+    }
+}
+
+impl Iterator for RowCursor<'_> {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.rows.next().map(|row| {
+            self.rows_processed += 1;
+            Ok(row)
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.total_rows.saturating_sub(self.rows_processed);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for RowCursor<'_> {}
+
+impl std::fmt::Debug for RowCursor<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowCursor")
+            .field("rows_processed", &self.rows_processed)
+            .field("total_rows", &self.total_rows)
+            .finish()
     }
 }
 
@@ -1584,6 +1736,55 @@ impl OrderedKey {
             Value::String(s) => Self::String(s.clone()),
         }
     }
+
+    /// Parses a sortable key string back to an `OrderedKey`.
+    ///
+    /// Returns `None` if the format is invalid.
+    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)] // Math is correct for i64 range
+    fn from_sortable_key(s: &str) -> Option<Self> {
+        if s == "0" {
+            return Some(Self::Null);
+        }
+
+        // Handle empty string case: "s" with nothing after
+        if s == "s" {
+            return Some(Self::String(String::new()));
+        }
+
+        if s.len() < 2 {
+            return None;
+        }
+
+        let prefix = &s[..1];
+        let value = &s[1..];
+
+        match prefix {
+            "i" => {
+                // Parse hex and reverse the offset encoding
+                let unsigned = u64::from_str_radix(value, 16).ok()?;
+                let signed = (i128::from(unsigned) - i128::from(i64::MAX) - 1) as i64;
+                Some(Self::Int(signed))
+            },
+            "f" => {
+                // Parse hex and reverse the IEEE 754 encoding
+                let sortable = u64::from_str_radix(value, 16).ok()?;
+                // Check if original was positive (high bit set in sortable)
+                let bits = if sortable & 0x8000_0000_0000_0000 != 0 {
+                    sortable ^ 0x8000_0000_0000_0000 // Was positive
+                } else {
+                    !sortable // Was negative
+                };
+                Some(Self::Float(OrderedFloat(f64::from_bits(bits))))
+            },
+            "s" => Some(Self::String(value.to_string())),
+            "b" => match value {
+                "1" => Some(Self::Bool(true)),
+                "0" => Some(Self::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 impl RelationalEngine {
@@ -1598,19 +1799,33 @@ impl RelationalEngine {
 
     /// Creates a new in-memory relational engine with default configuration.
     #[must_use]
+    #[instrument(level = "info", skip_all)]
     pub fn new() -> Self {
+        info!("creating in-memory relational engine");
         Self::with_config(RelationalConfig::default())
     }
 
     /// Creates a new in-memory relational engine with custom configuration.
     #[must_use]
+    #[instrument(level = "info", skip_all, fields(max_tables = ?config.max_tables))]
     pub fn with_config(config: RelationalConfig) -> Self {
+        info!(
+            max_btree_entries = config.max_btree_entries,
+            slow_query_threshold_ms = config.slow_query_threshold_ms,
+            transaction_timeout_secs = config.transaction_timeout_secs,
+            lock_timeout_secs = config.lock_timeout_secs,
+            "creating relational engine with config"
+        );
+        let tx_manager = TransactionManager::with_timeouts(
+            Duration::from_secs(config.transaction_timeout_secs),
+            Duration::from_secs(config.lock_timeout_secs),
+        );
         Self {
             store: TensorStore::new(),
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
             is_durable: false,
-            tx_manager: TransactionManager::new(),
+            tx_manager,
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
             max_btree_entries: config.max_btree_entries,
@@ -1622,19 +1837,30 @@ impl RelationalEngine {
 
     /// Creates an engine with an existing store and default configuration.
     #[must_use]
+    #[instrument(level = "info", skip_all)]
     pub fn with_store(store: TensorStore) -> Self {
+        info!("creating relational engine with existing store");
         Self::with_store_and_config(store, RelationalConfig::default())
     }
 
     /// Creates an engine with an existing store and custom configuration.
     #[must_use]
+    #[instrument(level = "info", skip_all, fields(max_tables = ?config.max_tables))]
     pub fn with_store_and_config(store: TensorStore, config: RelationalConfig) -> Self {
+        info!(
+            max_btree_entries = config.max_btree_entries,
+            "creating relational engine with store and config"
+        );
+        let tx_manager = TransactionManager::with_timeouts(
+            Duration::from_secs(config.transaction_timeout_secs),
+            Duration::from_secs(config.lock_timeout_secs),
+        );
         Self {
             store,
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
             is_durable: false,
-            tx_manager: TransactionManager::new(),
+            tx_manager,
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
             max_btree_entries: config.max_btree_entries,
@@ -1653,10 +1879,12 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns an I/O error if the WAL file cannot be created or opened.
+    #[instrument(level = "info", skip_all, fields(wal_path = ?wal_path.as_ref()))]
     pub fn open_durable<P: AsRef<Path>>(
         wal_path: P,
         wal_config: WalConfig,
     ) -> std::io::Result<Self> {
+        info!("opening durable relational engine");
         Self::open_durable_with_config(wal_path, wal_config, RelationalConfig::default())
     }
 
@@ -1664,18 +1892,27 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns an I/O error if the WAL file cannot be created or opened.
+    #[instrument(level = "info", skip_all, fields(wal_path = ?wal_path.as_ref()))]
     pub fn open_durable_with_config<P: AsRef<Path>>(
         wal_path: P,
         wal_config: WalConfig,
         config: RelationalConfig,
     ) -> std::io::Result<Self> {
+        info!(
+            max_btree_entries = config.max_btree_entries,
+            "opening durable relational engine with config"
+        );
         let store = TensorStore::open_durable(wal_path, wal_config)?;
+        let tx_manager = TransactionManager::with_timeouts(
+            Duration::from_secs(config.transaction_timeout_secs),
+            Duration::from_secs(config.lock_timeout_secs),
+        );
         Ok(Self {
             store,
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
             is_durable: true,
-            tx_manager: TransactionManager::new(),
+            tx_manager,
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
             max_btree_entries: config.max_btree_entries,
@@ -1687,18 +1924,19 @@ impl RelationalEngine {
 
     /// Recover a durable engine from WAL after crash.
     ///
-    /// Recovers all table metadata and row data from the WAL. The following are
-    /// NOT recovered and must be recreated manually:
-    /// - B-tree indexes: call `create_btree_index()` for each needed index
+    /// Recovers all table metadata, row data, and B-tree indexes from the WAL.
+    /// The following must be recreated manually after recovery:
     /// - Hash indexes: call `create_index()` for each needed index
     ///
     /// # Errors
     /// Returns `RelationalError::StorageError` if WAL recovery fails.
+    #[instrument(level = "info", skip_all, fields(wal_path = ?wal_path.as_ref()))]
     pub fn recover<P: AsRef<Path>>(
         wal_path: P,
         wal_config: &WalConfig,
         snapshot_path: Option<&Path>,
     ) -> std::result::Result<Self, RelationalError> {
+        info!("recovering relational engine from WAL");
         Self::recover_with_config(
             wal_path,
             wal_config,
@@ -1709,8 +1947,11 @@ impl RelationalEngine {
 
     /// Recover a durable engine from WAL with custom configuration.
     ///
+    /// B-tree indexes are automatically rebuilt from persisted data.
+    ///
     /// # Errors
     /// Returns `RelationalError::StorageError` if WAL recovery fails.
+    #[instrument(level = "info", skip_all, fields(wal_path = ?wal_path.as_ref()))]
     pub fn recover_with_config<P: AsRef<Path>>(
         wal_path: P,
         wal_config: &WalConfig,
@@ -1721,19 +1962,109 @@ impl RelationalEngine {
             .map_err(|e| RelationalError::StorageError(e.to_string()))?;
         // Count existing tables for limit tracking
         let existing_tables = store.scan("_meta:table:").len();
-        Ok(Self {
+        info!(
+            existing_tables = existing_tables,
+            "recovered relational engine"
+        );
+        let tx_manager = TransactionManager::with_timeouts(
+            Duration::from_secs(config.transaction_timeout_secs),
+            Duration::from_secs(config.lock_timeout_secs),
+        );
+        let engine = Self {
             store,
             row_counters: DashMap::new(),
             btree_indexes: RwLock::new(HashMap::new()),
             is_durable: true,
-            tx_manager: TransactionManager::new(),
+            tx_manager,
             ddl_lock: RwLock::new(()),
             index_locks: std::array::from_fn(|_| RwLock::new(())),
             max_btree_entries: config.max_btree_entries,
             btree_entry_count: AtomicUsize::new(0),
             config,
             table_count: AtomicUsize::new(existing_tables),
-        })
+        };
+
+        // Rebuild B-tree indexes from persisted data
+        engine.rebuild_btree_indexes()?;
+
+        Ok(engine)
+    }
+
+    /// Rebuilds all B-tree indexes from persisted data after recovery.
+    ///
+    /// This method scans for all B-tree entry keys in the store and reconstructs
+    /// the in-memory `BTreeMap` indexes. It should be called automatically after
+    /// recovery, but can also be called manually if needed.
+    ///
+    /// # Errors
+    /// Returns `RelationalError::StorageError` if reading persisted index data fails.
+    #[instrument(skip(self))]
+    fn rebuild_btree_indexes(&self) -> Result<()> {
+        // Scan for all btree keys
+        let btree_keys = self.store.scan("_btree:");
+
+        let mut indexes: HashMap<BTreeIndexKey, BTreeMap<OrderedKey, Vec<u64>>> = HashMap::new();
+        let mut entry_count = 0usize;
+
+        for key in btree_keys {
+            let parts: Vec<&str> = key.split(':').collect();
+
+            // Skip meta keys (3 parts: _btree:table:column)
+            // Process entry keys (4 parts: _btree:table:column:sortable_value)
+            if parts.len() != 4 {
+                continue;
+            }
+
+            let table = parts[1];
+            let column = parts[2];
+            let sortable_value = parts[3];
+
+            // Parse the sortable key back to OrderedKey
+            let Some(ordered_key) = OrderedKey::from_sortable_key(sortable_value) else {
+                debug!(
+                    key = %key,
+                    "skipping btree entry with unparseable sortable key"
+                );
+                continue;
+            };
+
+            // Get the row IDs from the store
+            let tensor = match self.store.get(&key) {
+                Ok(t) => t,
+                Err(e) => {
+                    debug!(key = %key, error = %e, "failed to read btree entry");
+                    continue;
+                },
+            };
+
+            let ids = match Self::tensor_to_id_list(&tensor) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    debug!(key = %key, error = ?e, "failed to parse btree entry ids");
+                    continue;
+                },
+            };
+
+            // Add to the in-memory index
+            let btree_key = (table.to_string(), column.to_string());
+            let btree = indexes.entry(btree_key).or_default();
+            let existing_ids = btree.entry(ordered_key).or_default();
+            existing_ids.extend(ids);
+            entry_count += 1;
+        }
+
+        // Update the engine's btree_indexes
+        let index_count = indexes.len();
+        *self.btree_indexes.write() = indexes;
+        self.btree_entry_count.store(entry_count, Ordering::Relaxed);
+
+        info!(
+            btree_count = index_count,
+            entry_count = entry_count,
+            "rebuilt B-tree indexes from persistent storage"
+        );
+
+        Ok(())
     }
 
     /// Returns a reference to the underlying tensor store.
@@ -2206,7 +2537,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
     #[must_use = "query results should be used"]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     #[allow(clippy::needless_pass_by_value)]
     #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn select_with_options(
@@ -2215,6 +2546,7 @@ impl RelationalEngine {
         condition: Condition,
         options: QueryOptions,
     ) -> Result<Vec<Row>> {
+        let start = Instant::now();
         let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
         let schema = self.get_schema(table)?;
 
@@ -2255,6 +2587,31 @@ impl RelationalEngine {
                 })
                 .collect();
             rows.sort_by_key(|r| r.id);
+
+            // Check result limit
+            if let Some(max) = self.config.max_query_result_rows {
+                if rows.len() > max {
+                    return Err(RelationalError::ResultTooLarge {
+                        operation: "select".to_string(),
+                        actual: rows.len(),
+                        max,
+                    });
+                }
+            }
+
+            // Log slow query warning
+            let elapsed = start.elapsed();
+            let elapsed_ms = elapsed.as_millis() as u64;
+            if elapsed_ms > self.config.slow_query_threshold_ms {
+                warn!(
+                    table = %table,
+                    elapsed_ms = elapsed_ms,
+                    threshold_ms = self.config.slow_query_threshold_ms,
+                    row_count = rows.len(),
+                    "slow query detected (indexed)"
+                );
+            }
+
             return Ok(rows);
         }
 
@@ -2267,6 +2624,10 @@ impl RelationalEngine {
         }
 
         // Full scan path: scan slab and filter
+        debug!(
+            table = %table,
+            "index miss: falling back to full table scan"
+        );
         let slab_rows = self
             .slab()
             .scan_all(table)
@@ -2293,7 +2654,66 @@ impl RelationalEngine {
             .collect();
 
         rows.sort_by_key(|r| r.id);
+
+        // Check result limit
+        if let Some(max) = self.config.max_query_result_rows {
+            if rows.len() > max {
+                return Err(RelationalError::ResultTooLarge {
+                    operation: "select".to_string(),
+                    actual: rows.len(),
+                    max,
+                });
+            }
+        }
+
+        // Log slow query warning
+        let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if elapsed_ms > self.config.slow_query_threshold_ms {
+            warn!(
+                table = %table,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = self.config.slow_query_threshold_ms,
+                row_count = rows.len(),
+                "slow query detected (full scan)"
+            );
+        }
+
         Ok(rows)
+    }
+
+    /// Returns an iterator over query results.
+    ///
+    /// This method provides an iterator interface for processing query results
+    /// one row at a time. Use `CursorOptions` to specify a starting offset.
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` if the table does not exist.
+    #[instrument(skip(self, condition, options), fields(table = %table))]
+    pub fn select_iter(
+        &self,
+        table: &str,
+        condition: Condition,
+        options: CursorOptions,
+    ) -> Result<RowCursor<'_>> {
+        let mut rows = self.select(table, condition)?;
+
+        // Apply offset if specified
+        if options.offset > 0 {
+            if options.offset >= rows.len() {
+                rows.clear();
+            } else {
+                rows = rows.into_iter().skip(options.offset).collect();
+            }
+        }
+
+        let total_rows = rows.len();
+        Ok(RowCursor {
+            engine: self,
+            rows: rows.into_iter(),
+            rows_processed: 0,
+            total_rows,
+        })
     }
 
     fn slab_row_to_engine_row(
@@ -2357,7 +2777,7 @@ impl RelationalEngine {
     /// # Errors
     /// Returns `TableNotFound`, `ColumnNotFound`, `TypeMismatch`, `NullNotAllowed`,
     /// `StorageError`, or `QueryTimeout`.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
     #[instrument(skip(self, condition, updates, options), fields(table = %table))]
     pub fn update_with_options(
         &self,
@@ -2366,6 +2786,7 @@ impl RelationalEngine {
         updates: HashMap<String, Value>,
         options: QueryOptions,
     ) -> Result<usize> {
+        let start = Instant::now();
         let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         // Validation for early exit without transaction overhead
@@ -2398,7 +2819,7 @@ impl RelationalEngine {
 
         // Use internal transaction for atomicity
         let tx_id = self.begin_transaction();
-        match self.tx_update(tx_id, table, condition, updates) {
+        let result = match self.tx_update(tx_id, table, condition, updates) {
             Ok(count) => {
                 self.commit(tx_id)?;
                 Ok(count)
@@ -2407,7 +2828,22 @@ impl RelationalEngine {
                 let _ = self.rollback(tx_id);
                 Err(e)
             },
+        };
+
+        // Log slow query warning
+        let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if elapsed_ms > self.config.slow_query_threshold_ms {
+            warn!(
+                table = %table,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = self.config.slow_query_threshold_ms,
+                rows_updated = result.as_ref().copied().unwrap_or(0),
+                "slow update detected"
+            );
         }
+
+        result
     }
 
     /// # Errors
@@ -2422,7 +2858,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value, clippy::cast_possible_truncation)]
     #[instrument(skip(self, condition, options), fields(table = %table))]
     pub fn delete_rows_with_options(
         &self,
@@ -2430,6 +2866,7 @@ impl RelationalEngine {
         condition: Condition,
         options: QueryOptions,
     ) -> Result<usize> {
+        let start = Instant::now();
         let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         // Validation for early exit
@@ -2445,7 +2882,7 @@ impl RelationalEngine {
 
         // Use internal transaction for atomicity
         let tx_id = self.begin_transaction();
-        match self.tx_delete(tx_id, table, condition) {
+        let result = match self.tx_delete(tx_id, table, condition) {
             Ok(count) => {
                 self.commit(tx_id)?;
                 Ok(count)
@@ -2454,7 +2891,22 @@ impl RelationalEngine {
                 let _ = self.rollback(tx_id);
                 Err(e)
             },
+        };
+
+        // Log slow query warning
+        let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if elapsed_ms > self.config.slow_query_threshold_ms {
+            warn!(
+                table = %table,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = self.config.slow_query_threshold_ms,
+                rows_deleted = result.as_ref().copied().unwrap_or(0),
+                "slow delete detected"
+            );
         }
+
+        result
     }
 
     /// Hash join: O(n+m) instead of O(n*m) nested loop join.
@@ -2477,6 +2929,7 @@ impl RelationalEngine {
     ///
     /// # Errors
     /// Returns `TableNotFound`, `StorageError`, or `QueryTimeout`.
+    #[allow(clippy::cast_possible_truncation)]
     #[instrument(skip(self, options), fields(table_a = %table_a, table_b = %table_b, on_a = %on_a, on_b = %on_b))]
     pub fn join_with_options(
         &self,
@@ -2486,6 +2939,7 @@ impl RelationalEngine {
         on_b: &str,
         options: QueryOptions,
     ) -> Result<Vec<(Row, Row)>> {
+        let start = Instant::now();
         let deadline = Deadline::from_timeout_ms(self.resolve_timeout(options));
 
         let _ = self.get_schema(table_a)?;
@@ -2578,6 +3032,20 @@ impl RelationalEngine {
             }
             results
         };
+
+        // Log slow query warning
+        let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if elapsed_ms > self.config.slow_query_threshold_ms {
+            warn!(
+                table_a = %table_a,
+                table_b = %table_b,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = self.config.slow_query_threshold_ms,
+                result_count = results.len(),
+                "slow join detected"
+            );
+        }
 
         Ok(results)
     }
@@ -14234,6 +14702,375 @@ mod tests {
             Err(e) => panic!("Unexpected error: {e}"),
         }
     }
+
+    // ===========================================
+    // Production hardening feature tests
+    // ===========================================
+
+    #[test]
+    fn test_slow_query_threshold_config() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(50);
+        assert_eq!(config.slow_query_threshold_ms, 50);
+
+        let engine = RelationalEngine::with_config(config);
+        assert_eq!(engine.config().slow_query_threshold_ms, 50);
+    }
+
+    #[test]
+    fn test_slow_query_threshold_default() {
+        let config = RelationalConfig::default();
+        assert_eq!(config.slow_query_threshold_ms, 100);
+    }
+
+    #[test]
+    fn test_max_query_result_rows_config() {
+        let config = RelationalConfig::new().with_max_query_result_rows(1000);
+        assert_eq!(config.max_query_result_rows, Some(1000));
+
+        let engine = RelationalEngine::with_config(config);
+        assert_eq!(engine.config().max_query_result_rows, Some(1000));
+    }
+
+    #[test]
+    fn test_max_query_result_rows_enforcement() {
+        let config = RelationalConfig::new().with_max_query_result_rows(5);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 10 rows
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Query should fail due to result limit
+        let result = engine.select("test", Condition::True);
+        assert!(result.is_err());
+        match result {
+            Err(RelationalError::ResultTooLarge { actual, max, .. }) => {
+                assert_eq!(actual, 10);
+                assert_eq!(max, 5);
+            },
+            _ => panic!("expected ResultTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_max_query_result_rows_under_limit_succeeds() {
+        let config = RelationalConfig::new().with_max_query_result_rows(100);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 10 rows
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Query should succeed since we're under the limit
+        let result = engine.select("test", Condition::True);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 10);
+    }
+
+    #[test]
+    fn test_transaction_timeout_config() {
+        let config = RelationalConfig::new()
+            .with_transaction_timeout_secs(120)
+            .with_lock_timeout_secs(60);
+
+        assert_eq!(config.transaction_timeout_secs, 120);
+        assert_eq!(config.lock_timeout_secs, 60);
+
+        let engine = RelationalEngine::with_config(config);
+        assert_eq!(engine.config().transaction_timeout_secs, 120);
+        assert_eq!(engine.config().lock_timeout_secs, 60);
+    }
+
+    #[test]
+    fn test_transaction_timeout_defaults() {
+        let config = RelationalConfig::default();
+        assert_eq!(config.transaction_timeout_secs, 60);
+        assert_eq!(config.lock_timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_cursor_options_default() {
+        let options = CursorOptions::default();
+        assert_eq!(options.batch_size, 1000);
+        assert_eq!(options.offset, 0);
+    }
+
+    #[test]
+    fn test_cursor_options_builder() {
+        let options = CursorOptions::new()
+            .with_batch_size(500)
+            .with_offset(100);
+        assert_eq!(options.batch_size, 500);
+        assert_eq!(options.offset, 100);
+    }
+
+    #[test]
+    fn test_select_iter_basic() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 10 rows
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Use cursor to iterate
+        let cursor = engine
+            .select_iter("test", Condition::True, CursorOptions::default())
+            .unwrap();
+
+        assert_eq!(cursor.total_rows(), 10);
+        assert_eq!(cursor.rows_processed(), 0);
+        assert!(!cursor.is_exhausted());
+
+        // Collect all rows
+        let rows: Vec<_> = cursor.collect();
+        assert_eq!(rows.len(), 10);
+        assert!(rows.iter().all(|r| r.is_ok()));
+    }
+
+    #[test]
+    fn test_select_iter_with_offset() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 10 rows
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Use cursor with offset
+        let options = CursorOptions::new().with_offset(5);
+        let cursor = engine
+            .select_iter("test", Condition::True, options)
+            .unwrap();
+
+        // Should only return rows after offset
+        assert_eq!(cursor.total_rows(), 5);
+
+        let rows: Vec<_> = cursor.collect();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn test_select_iter_with_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 10 rows
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Use cursor with condition
+        let cursor = engine
+            .select_iter(
+                "test",
+                Condition::Ge("id".to_string(), Value::Int(5)),
+                CursorOptions::default(),
+            )
+            .unwrap();
+
+        // Should only return rows matching condition
+        assert_eq!(cursor.total_rows(), 5);
+    }
+
+    #[test]
+    fn test_select_iter_empty_result() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // No rows inserted
+
+        let cursor = engine
+            .select_iter("test", Condition::True, CursorOptions::default())
+            .unwrap();
+
+        assert_eq!(cursor.total_rows(), 0);
+        assert!(cursor.is_exhausted());
+
+        let rows: Vec<_> = cursor.collect();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_row_cursor_exact_size_iterator() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        let mut cursor = engine
+            .select_iter("test", Condition::True, CursorOptions::default())
+            .unwrap();
+
+        // ExactSizeIterator should report correct length
+        assert_eq!(cursor.len(), 5);
+
+        cursor.next();
+        assert_eq!(cursor.len(), 4);
+
+        cursor.next();
+        cursor.next();
+        assert_eq!(cursor.len(), 2);
+    }
+
+    #[test]
+    fn test_row_cursor_debug() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        let cursor = engine
+            .select_iter("test", Condition::True, CursorOptions::default())
+            .unwrap();
+
+        let debug_str = format!("{:?}", cursor);
+        assert!(debug_str.contains("RowCursor"));
+        assert!(debug_str.contains("rows_processed"));
+        assert!(debug_str.contains("total_rows"));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_null() {
+        let key = OrderedKey::from_sortable_key("0");
+        assert_eq!(key, Some(OrderedKey::Null));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_bool() {
+        let true_key = OrderedKey::from_sortable_key("b1");
+        assert_eq!(true_key, Some(OrderedKey::Bool(true)));
+
+        let false_key = OrderedKey::from_sortable_key("b0");
+        assert_eq!(false_key, Some(OrderedKey::Bool(false)));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_string() {
+        let key = OrderedKey::from_sortable_key("shello");
+        assert_eq!(key, Some(OrderedKey::String("hello".to_string())));
+
+        let empty_key = OrderedKey::from_sortable_key("s");
+        assert_eq!(empty_key, Some(OrderedKey::String(String::new())));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_int_positive() {
+        // For i64::MAX (9223372036854775807), the sortable key is:
+        // unsigned = i64::MAX as u64 + i64::MAX as u64 + 1 = 18446744073709551615 = u64::MAX
+        // which is "ffffffffffffffff" in hex
+        let max_key = OrderedKey::from_sortable_key("iffffffffffffffff");
+        assert_eq!(max_key, Some(OrderedKey::Int(i64::MAX)));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_int_zero() {
+        // For 0: unsigned = 0 as u64 + i64::MAX as u64 + 1 = 9223372036854775808 = 0x8000000000000000
+        let zero_key = OrderedKey::from_sortable_key("i8000000000000000");
+        assert_eq!(zero_key, Some(OrderedKey::Int(0)));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_int_negative() {
+        // For i64::MIN (-9223372036854775808): unsigned = i64::MIN as u64 + i64::MAX as u64 + 1 = 0
+        let min_key = OrderedKey::from_sortable_key("i0000000000000000");
+        assert_eq!(min_key, Some(OrderedKey::Int(i64::MIN)));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_float_positive() {
+        // Test parsing positive 1.0
+        // IEEE 754: 1.0 = 0x3ff0000000000000
+        // Sortable: 0x3ff0000000000000 ^ 0x8000000000000000 = 0xbff0000000000000
+        let parsed = OrderedKey::from_sortable_key("fbff0000000000000");
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Float(f)) = parsed {
+            assert!((f.0 - 1.0).abs() < f64::EPSILON);
+        } else {
+            panic!("expected Float, got {:?}", parsed);
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_float_zero() {
+        // Test parsing zero float
+        // IEEE 754: 0.0 = 0x0000000000000000, sortable = 0x8000000000000000
+        let parsed = OrderedKey::from_sortable_key("f8000000000000000");
+        assert_eq!(parsed, Some(OrderedKey::Float(OrderedFloat(0.0))));
+    }
+
+    #[test]
+    fn test_ordered_key_from_sortable_key_invalid() {
+        // Single character (too short)
+        assert_eq!(OrderedKey::from_sortable_key("i"), None);
+
+        // Unknown prefix
+        assert_eq!(OrderedKey::from_sortable_key("x123"), None);
+
+        // Invalid bool value
+        assert_eq!(OrderedKey::from_sortable_key("b2"), None);
+
+        // Invalid int hex
+        assert_eq!(OrderedKey::from_sortable_key("inotahex"), None);
+
+        // Invalid float hex
+        assert_eq!(OrderedKey::from_sortable_key("fnotahex"), None);
+    }
+
+    #[test]
+    fn test_ordered_key_parsing_consistent() {
+        // Verify that known sortable keys parse correctly
+        let test_cases = vec![
+            ("0", OrderedKey::Null),
+            ("b1", OrderedKey::Bool(true)),
+            ("b0", OrderedKey::Bool(false)),
+            ("i8000000000000000", OrderedKey::Int(0)),
+            ("iffffffffffffffff", OrderedKey::Int(i64::MAX)),
+            ("i0000000000000000", OrderedKey::Int(i64::MIN)),
+            ("shello", OrderedKey::String("hello".to_string())),
+            ("s", OrderedKey::String(String::new())),
+        ];
+
+        for (sortable, expected) in test_cases {
+            let parsed = OrderedKey::from_sortable_key(sortable);
+            assert_eq!(
+                parsed,
+                Some(expected.clone()),
+                "parsing failed for {:?} -> expected {:?}",
+                sortable,
+                expected
+            );
+        }
+    }
+
 }
 
 #[cfg(all(test, feature = "test-internals"))]

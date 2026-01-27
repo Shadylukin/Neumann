@@ -703,18 +703,11 @@ mod tests {
                 .unwrap()
         };
 
-        let service = BlobServiceImpl::with_full_config(
-            blob_store,
-            &config,
-            None,
-            None,
-            Some(metrics),
-        );
+        let service =
+            BlobServiceImpl::with_full_config(blob_store, &config, None, None, Some(metrics));
 
         // Download via service - should record metrics
-        let request = Request::new(BlobDownloadRequest {
-            artifact_id,
-        });
+        let request = Request::new(BlobDownloadRequest { artifact_id });
 
         let result = service.download(request).await;
         assert!(result.is_ok());
@@ -736,22 +729,19 @@ mod tests {
         let artifact_id = {
             let store = blob_store.lock().await;
             store
-                .put("test.txt", b"download_test", tensor_blob::PutOptions::default())
+                .put(
+                    "test.txt",
+                    b"download_test",
+                    tensor_blob::PutOptions::default(),
+                )
                 .await
                 .unwrap()
         };
 
-        let service = BlobServiceImpl::with_full_config(
-            blob_store,
-            &config,
-            None,
-            None,
-            Some(metrics),
-        );
+        let service =
+            BlobServiceImpl::with_full_config(blob_store, &config, None, None, Some(metrics));
 
-        let request = Request::new(BlobDownloadRequest {
-            artifact_id,
-        });
+        let request = Request::new(BlobDownloadRequest { artifact_id });
 
         // Download should record metrics
         let result = service.download(request).await;
@@ -774,7 +764,11 @@ mod tests {
         let artifact_id = {
             let store = blob_store.lock().await;
             store
-                .put("test.txt", b"delete_test", tensor_blob::PutOptions::default())
+                .put(
+                    "test.txt",
+                    b"delete_test",
+                    tensor_blob::PutOptions::default(),
+                )
                 .await
                 .unwrap()
         };
@@ -787,9 +781,7 @@ mod tests {
             Some(metrics),
         );
 
-        let request = Request::new(BlobDeleteRequest {
-            artifact_id,
-        });
+        let request = Request::new(BlobDeleteRequest { artifact_id });
 
         // Delete should record metrics
         let result = service.delete(request).await;

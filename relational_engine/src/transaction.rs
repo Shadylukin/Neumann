@@ -475,6 +475,17 @@ impl TransactionManager {
         }
     }
 
+    /// Creates a transaction manager with separate transaction and lock timeouts.
+    #[must_use]
+    #[instrument(skip_all, fields(tx_timeout_secs = tx_timeout.as_secs(), lock_timeout_secs = lock_timeout.as_secs()))]
+    pub fn with_timeouts(tx_timeout: Duration, lock_timeout: Duration) -> Self {
+        Self {
+            transactions: DashMap::new(),
+            lock_manager: RowLockManager::with_default_timeout(lock_timeout),
+            default_timeout: tx_timeout,
+        }
+    }
+
     /// Begin a new transaction.
     #[allow(clippy::cast_possible_truncation)]
     #[instrument(skip(self))]

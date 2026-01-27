@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use tensor_unified::{UnifiedEngine, UnifiedItem};
+use tensor_unified::UnifiedEngine;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,12 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Create Graph Relationships (The "Glue" is now Native)
     // process_data CAUSES/CALLS validate_input
     engine
-        .connect_entities(
-            "func:process_data",
-            "func:validate_input",
-            "CALLS",
-            HashMap::new(),
-        )
+        .connect_entities("func:process_data", "func:validate_input", "CALLS")
         .await?;
 
     println!("✅ Codebase Ingested.");
@@ -102,7 +97,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     for item in results {
-        println!("   Found: {} (Score: {:.4})", item.key, item.score);
+        println!(
+            "   Found: {} (Score: {:.4})",
+            item.id,
+            item.score.unwrap_or(0.0)
+        );
     }
 
     println!("\n✅ Demonstration Complete. The Ferrari works.");

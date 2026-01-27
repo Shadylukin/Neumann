@@ -48,6 +48,8 @@ pub enum StatementKind {
     ShowTables,
     /// SHOW EMBEDDINGS statement
     ShowEmbeddings { limit: Option<Expr> },
+    /// SHOW VECTOR INDEX statement
+    ShowVectorIndex,
     /// COUNT EMBEDDINGS statement
     CountEmbeddings,
     /// DESCRIBE statement
@@ -104,6 +106,20 @@ pub enum StatementKind {
     // === Cluster Statements ===
     /// CLUSTER command
     Cluster(ClusterStmt),
+
+    // === Extended Graph Statements ===
+    /// GRAPH ALGORITHM command (PageRank, centrality, etc.)
+    GraphAlgorithm(GraphAlgorithmStmt),
+    /// GRAPH CONSTRAINT command
+    GraphConstraint(GraphConstraintStmt),
+    /// GRAPH INDEX command
+    GraphIndex(GraphIndexStmt),
+    /// GRAPH AGGREGATE command (COUNT NODES, etc.)
+    GraphAggregate(GraphAggregateStmt),
+    /// GRAPH PATTERN command (MATCH PATTERN)
+    GraphPattern(GraphPatternStmt),
+    /// GRAPH BATCH command
+    GraphBatch(GraphBatchStmt),
 
     /// Empty statement (just semicolons)
     Empty,
@@ -475,6 +491,8 @@ pub struct PathStmt {
     pub from_id: Expr,
     pub to_id: Expr,
     pub max_depth: Option<Expr>,
+    pub min_depth: Option<Expr>,
+    pub weight_property: Option<Ident>,
 }
 
 /// Path-finding algorithms.
@@ -483,6 +501,9 @@ pub enum PathAlgorithm {
     #[default]
     Shortest,
     All,
+    Weighted,
+    AllWeighted,
+    Variable,
 }
 
 // =============================================================================
@@ -581,6 +602,8 @@ pub enum EntityOp {
         properties: Vec<Property>,
         embedding: Option<Vec<Expr>>,
     },
+    /// Get an entity: `ENTITY GET 'key'`
+    Get { key: Expr },
     /// Connect entities: `ENTITY CONNECT 'from' -> 'to' : type`
     Connect {
         from_key: Expr,
@@ -841,6 +864,245 @@ pub enum ChainOp {
     Block { height: Expr },
     /// Verify chain integrity: `CHAIN VERIFY`
     Verify,
+}
+
+// =============================================================================
+// Extended Graph Statements
+// =============================================================================
+
+/// GRAPH ALGORITHM command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphAlgorithmStmt {
+    pub operation: GraphAlgorithmOp,
+}
+
+/// Graph algorithm operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphAlgorithmOp {
+    PageRank {
+        damping: Option<Expr>,
+        tolerance: Option<Expr>,
+        max_iterations: Option<Expr>,
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+    BetweennessCentrality {
+        sampling_ratio: Option<Expr>,
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+    ClosenessCentrality {
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+    EigenvectorCentrality {
+        max_iterations: Option<Expr>,
+        tolerance: Option<Expr>,
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+    LouvainCommunities {
+        resolution: Option<Expr>,
+        max_passes: Option<Expr>,
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+    LabelPropagation {
+        max_iterations: Option<Expr>,
+        direction: Option<Direction>,
+        edge_type: Option<Ident>,
+    },
+}
+
+/// GRAPH CONSTRAINT command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphConstraintStmt {
+    pub operation: GraphConstraintOp,
+}
+
+/// Graph constraint operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphConstraintOp {
+    Create {
+        name: Ident,
+        target: ConstraintTarget,
+        property: Ident,
+        constraint_type: ConstraintType,
+    },
+    Drop {
+        name: Ident,
+    },
+    List,
+    Get {
+        name: Ident,
+    },
+}
+
+/// Constraint target (NODE or EDGE).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConstraintTarget {
+    Node { label: Option<Ident> },
+    Edge { edge_type: Option<Ident> },
+}
+
+/// Constraint types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstraintType {
+    Unique,
+    Exists,
+    Type(String),
+}
+
+/// GRAPH INDEX command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphIndexStmt {
+    pub operation: GraphIndexOp,
+}
+
+/// Graph index operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphIndexOp {
+    CreateNodeProperty { property: Ident },
+    CreateEdgeProperty { property: Ident },
+    CreateLabel,
+    CreateEdgeType,
+    DropNode { property: Ident },
+    DropEdge { property: Ident },
+    ShowNodeIndexes,
+    ShowEdgeIndexes,
+}
+
+/// GRAPH AGGREGATE command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphAggregateStmt {
+    pub operation: GraphAggregateOp,
+}
+
+/// Graph aggregate operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphAggregateOp {
+    CountNodes {
+        label: Option<Ident>,
+    },
+    CountEdges {
+        edge_type: Option<Ident>,
+    },
+    AggregateNodeProperty {
+        function: AggregateFunction,
+        property: Ident,
+        label: Option<Ident>,
+        filter: Option<Box<Expr>>,
+    },
+    AggregateEdgeProperty {
+        function: AggregateFunction,
+        property: Ident,
+        edge_type: Option<Ident>,
+        filter: Option<Box<Expr>>,
+    },
+}
+
+/// Aggregate functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AggregateFunction {
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Count,
+}
+
+/// GRAPH PATTERN command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphPatternStmt {
+    pub operation: GraphPatternOp,
+}
+
+/// Graph pattern operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphPatternOp {
+    Match {
+        pattern: PatternSpec,
+        limit: Option<Expr>,
+    },
+    Count {
+        pattern: PatternSpec,
+    },
+    Exists {
+        pattern: PatternSpec,
+    },
+}
+
+/// Pattern specification for graph matching.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternSpec {
+    pub nodes: Vec<NodePatternSpec>,
+    pub edges: Vec<EdgePatternSpec>,
+}
+
+/// Node pattern in a match.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodePatternSpec {
+    pub alias: Option<Ident>,
+    pub label: Option<Ident>,
+    pub properties: Vec<Property>,
+}
+
+/// Edge pattern in a match.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgePatternSpec {
+    pub alias: Option<Ident>,
+    pub edge_type: Option<Ident>,
+    pub direction: Direction,
+    pub from_node: usize,
+    pub to_node: usize,
+    pub properties: Vec<Property>,
+}
+
+/// GRAPH BATCH command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphBatchStmt {
+    pub operation: GraphBatchOp,
+}
+
+/// Graph batch operations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphBatchOp {
+    CreateNodes { nodes: Vec<BatchNodeDef> },
+    CreateEdges { edges: Vec<BatchEdgeDef> },
+    DeleteNodes { ids: Vec<Expr> },
+    DeleteEdges { ids: Vec<Expr> },
+    UpdateNodes { updates: Vec<BatchNodeUpdate> },
+}
+
+/// Batch node definition for creation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchNodeDef {
+    pub labels: Vec<Ident>,
+    pub properties: Vec<Property>,
+}
+
+/// Batch edge definition for creation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchEdgeDef {
+    pub from_id: Expr,
+    pub to_id: Expr,
+    pub edge_type: Ident,
+    pub properties: Vec<Property>,
+}
+
+/// Batch node update definition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchNodeUpdate {
+    pub id: Expr,
+    pub properties: Vec<Property>,
+}
+
+/// Pagination options for paginated queries.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PaginationOpts {
+    pub skip: Option<Expr>,
+    pub limit: Option<Expr>,
+    pub count_total: bool,
 }
 
 // =============================================================================

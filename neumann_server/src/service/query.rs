@@ -1147,9 +1147,7 @@ mod tests {
         ));
 
         // Set very low query limit so it triggers on second request
-        let rate_limiter = Arc::new(RateLimiter::new(
-            RateLimitConfig::new().with_max_queries(1),
-        ));
+        let rate_limiter = Arc::new(RateLimiter::new(RateLimitConfig::new().with_max_queries(1)));
         let provider = SdkMeterProvider::builder().build();
         let meter = provider.meter("test");
         let metrics = Arc::new(ServerMetrics::new(meter));
@@ -1187,10 +1185,7 @@ mod tests {
         );
         let response = service.execute(request).await;
         assert!(response.is_err());
-        assert_eq!(
-            response.unwrap_err().code(),
-            tonic::Code::ResourceExhausted
-        );
+        assert_eq!(response.unwrap_err().code(), tonic::Code::ResourceExhausted);
     }
 
     use tokio_stream::StreamExt;

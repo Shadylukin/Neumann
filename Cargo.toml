@@ -21,8 +21,9 @@ members = [
     "stress_tests",
     "experiments",
     "seed_model",
+    "neumann_docs",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "neumann-py/neumann-native"]
 
 [workspace.package]
 version = "0.1.0"

@@ -258,6 +258,35 @@ pub enum TokenKind {
     Meta,
     Artifacts,
 
+    // === Graph Algorithm Keywords ===
+    PageRank,
+    Betweenness,
+    Closeness,
+    Eigenvector,
+    Centrality,
+    Louvain,
+    Communities,
+    Propagation,
+    Damping,
+    Tolerance,
+    Iterations,
+    Sampling,
+    Resolution,
+    Passes,
+
+    // === Graph Extended Keywords ===
+    Weighted,
+    Variable,
+    Hops,
+    Depth,
+    Skip,
+    Total,
+    Pattern,
+    Aggregate,
+    Property,
+    Type,
+    Graph,
+
     // === Operators ===
     /// `+`
     Plus,
@@ -531,6 +560,33 @@ impl TokenKind {
                 | For
                 | Meta
                 | Artifacts
+                // Graph algorithm keywords
+                | PageRank
+                | Betweenness
+                | Closeness
+                | Eigenvector
+                | Centrality
+                | Louvain
+                | Communities
+                | Propagation
+                | Damping
+                | Tolerance
+                | Iterations
+                | Sampling
+                | Resolution
+                | Passes
+                // Graph extended keywords
+                | Weighted
+                | Variable
+                | Hops
+                | Depth
+                | Skip
+                | Total
+                | Pattern
+                | Aggregate
+                | Property
+                | Type
+                | Graph
         )
     }
 
@@ -575,6 +631,13 @@ impl TokenKind {
             | Height | Transitions | Tip | Block | Codebook | Global | Local | Drift | Analyze | History
             // Transaction related
             | Begin | Commit | Transaction
+            // Graph algorithm related (can be used as identifiers)
+            | PageRank | Betweenness | Closeness | Eigenvector | Centrality | Louvain | Communities | Propagation
+            | Damping | Tolerance | Iterations | Sampling | Resolution | Passes
+            // Graph extended (can be used as identifiers)
+            | Weighted | Variable | Hops | Depth | Skip | Total | Pattern | Aggregate | Property | Type | Graph
+            // Data types (can be used as identifiers)
+            | Int | Float_ | Boolean | Text
         )
     }
 
@@ -786,6 +849,35 @@ impl TokenKind {
             "META" => TokenKind::Meta,
             "ARTIFACTS" => TokenKind::Artifacts,
 
+            // Graph algorithm keywords
+            "PAGERANK" => TokenKind::PageRank,
+            "BETWEENNESS" => TokenKind::Betweenness,
+            "CLOSENESS" => TokenKind::Closeness,
+            "EIGENVECTOR" => TokenKind::Eigenvector,
+            "CENTRALITY" => TokenKind::Centrality,
+            "LOUVAIN" => TokenKind::Louvain,
+            "COMMUNITIES" => TokenKind::Communities,
+            "PROPAGATION" => TokenKind::Propagation,
+            "DAMPING" => TokenKind::Damping,
+            "TOLERANCE" => TokenKind::Tolerance,
+            "ITERATIONS" => TokenKind::Iterations,
+            "SAMPLING" => TokenKind::Sampling,
+            "RESOLUTION" => TokenKind::Resolution,
+            "PASSES" => TokenKind::Passes,
+
+            // Graph extended keywords
+            "WEIGHTED" => TokenKind::Weighted,
+            "VARIABLE" => TokenKind::Variable,
+            "HOPS" => TokenKind::Hops,
+            "DEPTH" => TokenKind::Depth,
+            "SKIP" => TokenKind::Skip,
+            "TOTAL" => TokenKind::Total,
+            "PATTERN" => TokenKind::Pattern,
+            "AGGREGATE" => TokenKind::Aggregate,
+            "PROPERTY" => TokenKind::Property,
+            "TYPE" => TokenKind::Type,
+            "GRAPH" => TokenKind::Graph,
+
             _ => return None,
         })
     }
@@ -978,6 +1070,33 @@ impl TokenKind {
             For => "FOR",
             Meta => "META",
             Artifacts => "ARTIFACTS",
+            // Graph algorithm keywords
+            PageRank => "PAGERANK",
+            Betweenness => "BETWEENNESS",
+            Closeness => "CLOSENESS",
+            Eigenvector => "EIGENVECTOR",
+            Centrality => "CENTRALITY",
+            Louvain => "LOUVAIN",
+            Communities => "COMMUNITIES",
+            Propagation => "PROPAGATION",
+            Damping => "DAMPING",
+            Tolerance => "TOLERANCE",
+            Iterations => "ITERATIONS",
+            Sampling => "SAMPLING",
+            Resolution => "RESOLUTION",
+            Passes => "PASSES",
+            // Graph extended keywords
+            Weighted => "WEIGHTED",
+            Variable => "VARIABLE",
+            Hops => "HOPS",
+            Depth => "DEPTH",
+            Skip => "SKIP",
+            Total => "TOTAL",
+            Pattern => "PATTERN",
+            Aggregate => "AGGREGATE",
+            Property => "PROPERTY",
+            Type => "TYPE",
+            Graph => "GRAPH",
             Plus => "+",
             Minus => "-",
             Star => "*",

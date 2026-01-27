@@ -233,24 +233,81 @@ with automatic sparse vector optimization for memory efficiency.</p>
 <h2 id="key-types"><a class="header" href="#key-types">Key Types</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>VectorEngine</code></td><td>Main engine for storing and searching embeddings</td></tr>
+<tr><td><code>VectorEngineConfig</code></td><td>Configuration for engine behavior and memory bounds</td></tr>
 <tr><td><code>SearchResult</code></td><td>Result with key and similarity score</td></tr>
 <tr><td><code>DistanceMetric</code></td><td>Enum: <code>Cosine</code>, <code>Euclidean</code>, <code>DotProduct</code></td></tr>
+<tr><td><code>ExtendedDistanceMetric</code></td><td>Extended metrics for HNSW (9+ variants)</td></tr>
 <tr><td><code>VectorError</code></td><td>Error types for vector operations</td></tr>
+<tr><td><code>EmbeddingInput</code></td><td>Input for batch store operations</td></tr>
+<tr><td><code>BatchResult</code></td><td>Result of batch operations</td></tr>
+<tr><td><code>Pagination</code></td><td>Parameters for paginated queries</td></tr>
+<tr><td><code>PagedResult&lt;T&gt;</code></td><td>Paginated query result</td></tr>
 <tr><td><code>HNSWIndex</code></td><td>Hierarchical navigable small world graph (re-exported from tensor_store)</td></tr>
 <tr><td><code>HNSWConfig</code></td><td>HNSW index configuration (re-exported from tensor_store)</td></tr>
 <tr><td><code>SparseVector</code></td><td>Memory-efficient sparse embedding storage</td></tr>
-<tr><td><code>EmbeddingStorage</code></td><td>Union type: Dense, Sparse, Delta, or TensorTrain</td></tr>
 </tbody></table>
 </div>
 <h3 id="vectorerror-variants"><a class="header" href="#vectorerror-variants">VectorError Variants</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variant</th><th>Description</th><th>When Triggered</th></tr></thead><tbody>
 <tr><td><code>NotFound</code></td><td>Embedding key doesn’t exist</td><td><code>get_embedding</code>, <code>delete_embedding</code></td></tr>
-<tr><td><code>DimensionMismatch</code></td><td>Vectors have different dimensions</td><td><code>compute_similarity</code> with mismatched inputs</td></tr>
+<tr><td><code>DimensionMismatch</code></td><td>Vectors have different dimensions</td><td><code>compute_similarity</code>, exceeds <code>max_dimension</code></td></tr>
 <tr><td><code>EmptyVector</code></td><td>Empty vector provided</td><td>Any operation with <code>vec![]</code></td></tr>
 <tr><td><code>InvalidTopK</code></td><td>top_k is 0</td><td><code>search_similar</code>, <code>search_with_hnsw</code></td></tr>
 <tr><td><code>StorageError</code></td><td>Underlying Tensor Store error</td><td>Storage failures</td></tr>
+<tr><td><code>BatchValidationError</code></td><td>Invalid input in batch</td><td><code>batch_store_embeddings</code> validation</td></tr>
+<tr><td><code>BatchOperationError</code></td><td>Operation failed in batch</td><td><code>batch_store_embeddings</code> execution</td></tr>
+<tr><td><code>ConfigurationError</code></td><td>Invalid configuration</td><td><code>VectorEngineConfig::validate()</code></td></tr>
 </tbody></table>
 </div>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h3 id="vectorengineconfig"><a class="header" href="#vectorengineconfig">VectorEngineConfig</a></h3>
+<p>Configuration for the Vector Engine with memory bounds and performance tuning.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>default_dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Expected embedding dimension</td></tr>
+<tr><td><code>sparse_threshold</code></td><td><code>f32</code></td><td><code>0.5</code></td><td>Sparsity threshold (0.0-1.0)</td></tr>
+<tr><td><code>parallel_threshold</code></td><td><code>usize</code></td><td><code>5000</code></td><td>Dataset size for parallel search</td></tr>
+<tr><td><code>default_metric</code></td><td><code>DistanceMetric</code></td><td><code>Cosine</code></td><td>Default distance metric</td></tr>
+<tr><td><code>max_dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Maximum allowed dimension</td></tr>
+<tr><td><code>max_keys_per_scan</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Limit for unbounded scans</td></tr>
+<tr><td><code>batch_parallel_threshold</code></td><td><code>usize</code></td><td><code>100</code></td><td>Batch size for parallel processing</td></tr>
+</tbody></table>
+</div>
+<h3 id="configuration-presets"><a class="header" href="#configuration-presets">Configuration Presets</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Description</th><th>Key Settings</th></tr></thead><tbody>
+<tr><td><code>default()</code></td><td>Balanced for most workloads</td><td>All defaults</td></tr>
+<tr><td><code>high_throughput()</code></td><td>Optimized for write-heavy loads</td><td><code>parallel_threshold: 1000</code></td></tr>
+<tr><td><code>low_memory()</code></td><td>Memory-constrained environments</td><td><code>max_dimension: 4096</code>, <code>max_keys_per_scan: 10000</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="builder-methods"><a class="header" href="#builder-methods">Builder Methods</a></h3>
+<p>All builder methods are <code>const fn</code> for compile-time configuration:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = VectorEngineConfig::default()
+    .with_default_dimension(768)
+    .with_sparse_threshold(0.7)
+    .with_parallel_threshold(1000)
+    .with_default_metric(DistanceMetric::Cosine)
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(50_000)
+    .with_batch_parallel_threshold(200);
+
+let engine = VectorEngine::with_config(config)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="memory-bounds"><a class="header" href="#memory-bounds">Memory Bounds</a></h3>
+<p>For production deployments, configure memory bounds to prevent resource exhaustion:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Reject embeddings larger than 4096 dimensions
+let config = VectorEngineConfig::default()
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(10_000);
+
+let engine = VectorEngine::with_config(config)?;
+
+// This will fail with DimensionMismatch
+engine.store_embedding("too_big", vec![0.0; 5000])?; // Error!
+<span class="boring">}</span></code></pre></pre>
 <h2 id="distance-metrics"><a class="header" href="#distance-metrics">Distance Metrics</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Formula</th><th>Score Range</th><th>Use Case</th><th>HNSW Support</th></tr></thead><tbody>
 <tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>-1.0 to 1.0</td><td>Semantic similarity</td><td>Yes</td></tr>
@@ -260,6 +317,36 @@ with automatic sparse vector optimization for memory efficiency.</p>
 </div>
 <p>All metrics return higher scores for better matches. Euclidean distance is
 transformed to similarity score.</p>
+<h3 id="extended-distance-metrics-hnsw"><a class="header" href="#extended-distance-metrics-hnsw">Extended Distance Metrics (HNSW)</a></h3>
+<p>The <code>ExtendedDistanceMetric</code> enum provides additional metrics for HNSW-based
+search via <code>search_with_hnsw_and_metric()</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Description</th><th>Best For</th></tr></thead><tbody>
+<tr><td><code>Cosine</code></td><td>Angle-based similarity</td><td>Text embeddings, normalized vectors</td></tr>
+<tr><td><code>Euclidean</code></td><td>L2 distance</td><td>Spatial data, absolute distances</td></tr>
+<tr><td><code>Angular</code></td><td>Cosine converted to angular</td><td>When angle interpretation needed</td></tr>
+<tr><td><code>Manhattan</code></td><td>L1 norm</td><td>Robust to outliers</td></tr>
+<tr><td><code>Chebyshev</code></td><td>L-infinity (max diff)</td><td>When max deviation matters</td></tr>
+<tr><td><code>Jaccard</code></td><td>Set similarity</td><td>Binary/sparse vectors, TF-IDF</td></tr>
+<tr><td><code>Overlap</code></td><td>Minimum overlap coefficient</td><td>Partial matches</td></tr>
+<tr><td><code>Geodesic</code></td><td>Spherical distance</td><td>Geographic coordinates</td></tr>
+<tr><td><code>Composite</code></td><td>Weighted combination</td><td>Custom similarity functions</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::ExtendedDistanceMetric;
+
+let (index, keys) = engine.build_hnsw_index_default()?;
+
+// Search with Jaccard similarity for sparse vectors
+let results = engine.search_with_hnsw_and_metric(
+    &amp;index,
+    &amp;keys,
+    &amp;query,
+    10,
+    ExtendedDistanceMetric::Jaccard,
+)?;
+<span class="boring">}</span></code></pre></pre>
 <h3 id="distance-metric-implementation-details"><a class="header" href="#distance-metric-implementation-details">Distance Metric Implementation Details</a></h3>
 <pre class="mermaid">flowchart TD
     Query[Query Vector] --&gt; MetricCheck{Which Metric?}
@@ -403,6 +490,53 @@ let results = engine.search_similar_with_metric(
 // Direct similarity computation
 let similarity = VectorEngine::compute_similarity(&amp;vec_a, &amp;vec_b)?;
 <span class="boring">}</span></code></pre></pre>
+<h3 id="batch-operations"><a class="header" href="#batch-operations">Batch Operations</a></h3>
+<p>For bulk insert and delete operations with parallel processing:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::EmbeddingInput;
+
+// Batch store - validates all inputs first, then stores in parallel
+let inputs = vec![
+    EmbeddingInput::new("doc1", vec![0.1, 0.2, 0.3]),
+    EmbeddingInput::new("doc2", vec![0.2, 0.3, 0.4]),
+    EmbeddingInput::new("doc3", vec![0.3, 0.4, 0.5]),
+];
+
+let result = engine.batch_store_embeddings(inputs)?;
+println!("Stored {} embeddings", result.count);  // -&gt; 3
+
+// Batch delete - returns count of successfully deleted
+let keys = vec!["doc1".to_string(), "doc2".to_string()];
+let deleted = engine.batch_delete_embeddings(keys)?;
+println!("Deleted {} embeddings", deleted);  // -&gt; 2
+<span class="boring">}</span></code></pre></pre>
+<p>Batches larger than <code>batch_parallel_threshold</code> (default: 100) use parallel
+processing via rayon.</p>
+<h3 id="pagination"><a class="header" href="#pagination">Pagination</a></h3>
+<p>For memory-efficient iteration over large datasets:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::Pagination;
+
+// List keys with pagination
+let page = Pagination::new(0, 100);  // skip=0, limit=100
+let result = engine.list_keys_paginated(page);
+println!("Items: {}, Has more: {}", result.items.len(), result.has_more);
+
+// Get total count with pagination
+let page = Pagination::new(0, 100).with_total();
+let result = engine.list_keys_paginated(page);
+println!("Total: {:?}", result.total_count);  // Some(total)
+
+// Paginated similarity search
+let page = Pagination::new(10, 5);  // skip first 10, return 5
+let results = engine.search_similar_paginated(&amp;query, 100, page)?;
+
+// Paginated entity search
+let results = engine.search_entities_paginated(&amp;query, 100, page)?;
+<span class="boring">}</span></code></pre></pre>
+<p>Use <code>list_keys_bounded()</code> for production to enforce <code>max_keys_per_scan</code> limits.</p>
 <h3 id="search-flow-diagram"><a class="header" href="#search-flow-diagram">Search Flow Diagram</a></h3>
 <pre class="mermaid">sequenceDiagram
     participant Client
@@ -779,9 +913,10 @@ data</li>
 <tr><td><code>tensor_store</code></td><td>Persistence, SparseVector, HNSWIndex, SIMD</td></tr>
 <tr><td><code>rayon</code></td><td>Parallel iteration for large datasets</td></tr>
 <tr><td><code>serde</code></td><td>Serialization of types</td></tr>
-<tr><td><code>wide</code></td><td>SIMD f32x8 operations</td></tr>
+<tr><td><code>tracing</code></td><td>Instrumentation and observability</td></tr>
 </tbody></table>
 </div>
+<p>Note: <code>wide</code> (SIMD f32x8 operations) is a transitive dependency via <code>tensor_store</code>.</p>
 <h2 id="related-modules"><a class="header" href="#related-modules">Related Modules</a></h2>
 <ul>
 <li><a href="tensor-store.html">Tensor Store</a> - Underlying storage and HNSW implementation</li>

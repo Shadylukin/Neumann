@@ -757,6 +757,48 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "graph_engine_ops"
+path = "fuzz_targets/graph_engine_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_path_algorithms"
+path = "fuzz_targets/graph_path_algorithms.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_centrality"
+path = "fuzz_targets/graph_centrality.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_pattern_matching"
+path = "fuzz_targets/graph_pattern_matching.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_constraints"
+path = "fuzz_targets/graph_constraints.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_batch_ops"
+path = "fuzz_targets/graph_batch_ops.rs"
+test = false
+doc = false
+bench = false
+
 # Tier 40: Vector engine targets
 
 [[bin]]

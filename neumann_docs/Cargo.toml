@@ -1,0 +1,27 @@
+[package]
+name = "neumann_docs"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Documentation storage and search for Neumann using all three engines"
+keywords = ["neumann", "documentation", "search", "tfidf"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "neumann-docs"
+path = "src/main.rs"
+
+[dependencies]
+neumann_client = { path = "../neumann_client", features = ["embedded"] }
+query_router = { path = "../query_router" }
+relational_engine = { path = "../relational_engine" }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+walkdir = "2"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

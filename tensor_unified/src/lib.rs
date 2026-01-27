@@ -478,7 +478,7 @@ impl UnifiedEngine {
             let mut item = UnifiedItem::new("graph", node.id.to_string());
             item.set("label", node.labels.join(":"));
             for (k, v) in &node.properties {
-                item.set(k.clone(), format!("{:?}", v));
+                item.set(k.clone(), Self::property_to_string(v));
             }
             items.push(item);
         }
@@ -510,7 +510,7 @@ impl UnifiedEngine {
             item.set("to", edge.to.to_string());
             item.set("type", &edge.edge_type);
             for (k, v) in &edge.properties {
-                item.set(k.clone(), format!("{:?}", v));
+                item.set(k.clone(), Self::property_to_string(v));
             }
             items.push(item);
         }
@@ -547,12 +547,12 @@ impl UnifiedEngine {
 
     // ========== Batch Operations ==========
 
-    /// Stores multiple embeddings concurrently.
+    /// Stores multiple embeddings using the vector engine's storage format.
     pub async fn embed_batch(&self, items: Vec<(String, Vec<f32>)>) -> Result<usize> {
         let mut success_count = 0;
 
         for (key, vec) in items {
-            if self.vector.set_entity_embedding(&key, vec).is_ok() {
+            if self.vector.store_embedding(&key, vec).is_ok() {
                 success_count += 1;
             }
         }
@@ -653,13 +653,43 @@ impl UnifiedEngine {
                 }
                 false
             },
+            Condition::Ne(col, val) => {
+                if let Some(prop) = node.properties.get(col) {
+                    return !self.property_matches_value(prop, val);
+                }
+                true // Missing property is considered "not equal"
+            },
+            Condition::Gt(col, val) => {
+                if let Some(prop) = node.properties.get(col) {
+                    return self.property_compare_gt(prop, val);
+                }
+                false
+            },
+            Condition::Ge(col, val) => {
+                if let Some(prop) = node.properties.get(col) {
+                    return self.property_compare_gte(prop, val);
+                }
+                false
+            },
+            Condition::Lt(col, val) => {
+                if let Some(prop) = node.properties.get(col) {
+                    return self.property_compare_lt(prop, val);
+                }
+                false
+            },
+            Condition::Le(col, val) => {
+                if let Some(prop) = node.properties.get(col) {
+                    return self.property_compare_lte(prop, val);
+                }
+                false
+            },
             Condition::And(a, b) => {
                 self.node_matches_condition(node, a) && self.node_matches_condition(node, b)
             },
             Condition::Or(a, b) => {
                 self.node_matches_condition(node, a) || self.node_matches_condition(node, b)
             },
-            _ => true, // Other conditions not yet implemented for nodes
+            _ => true, // Other conditions (In, Like, etc.) not yet implemented
         }
     }
 
@@ -696,13 +726,43 @@ impl UnifiedEngine {
                 }
                 false
             },
+            Condition::Ne(col, val) => {
+                if let Some(prop) = edge.properties.get(col) {
+                    return !self.property_matches_value(prop, val);
+                }
+                true
+            },
+            Condition::Gt(col, val) => {
+                if let Some(prop) = edge.properties.get(col) {
+                    return self.property_compare_gt(prop, val);
+                }
+                false
+            },
+            Condition::Ge(col, val) => {
+                if let Some(prop) = edge.properties.get(col) {
+                    return self.property_compare_gte(prop, val);
+                }
+                false
+            },
+            Condition::Lt(col, val) => {
+                if let Some(prop) = edge.properties.get(col) {
+                    return self.property_compare_lt(prop, val);
+                }
+                false
+            },
+            Condition::Le(col, val) => {
+                if let Some(prop) = edge.properties.get(col) {
+                    return self.property_compare_lte(prop, val);
+                }
+                false
+            },
             Condition::And(a, b) => {
                 self.edge_matches_condition(edge, a) && self.edge_matches_condition(edge, b)
             },
             Condition::Or(a, b) => {
                 self.edge_matches_condition(edge, a) || self.edge_matches_condition(edge, b)
             },
-            _ => true,
+            _ => true, // Other conditions (In, Like, etc.) not yet implemented
         }
     }
 
@@ -715,6 +775,56 @@ impl UnifiedEngine {
             (graph_engine::PropertyValue::String(s), Value::String(v)) => s == v,
             (graph_engine::PropertyValue::Bool(b), Value::Bool(v)) => *b == *v,
             _ => false,
+        }
+    }
+
+    fn property_compare_gt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+        match (prop, val) {
+            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i > *v,
+            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f > *v,
+            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) > *v,
+            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f > (*v as f64),
+            _ => false,
+        }
+    }
+
+    fn property_compare_gte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+        match (prop, val) {
+            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i >= *v,
+            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f >= *v,
+            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) >= *v,
+            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f >= (*v as f64),
+            _ => false,
+        }
+    }
+
+    fn property_compare_lt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+        match (prop, val) {
+            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i < *v,
+            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f < *v,
+            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) < *v,
+            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f < (*v as f64),
+            _ => false,
+        }
+    }
+
+    fn property_compare_lte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+        match (prop, val) {
+            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i <= *v,
+            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f <= *v,
+            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) <= *v,
+            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f <= (*v as f64),
+            _ => false,
+        }
+    }
+
+    fn property_to_string(prop: &graph_engine::PropertyValue) -> String {
+        match prop {
+            graph_engine::PropertyValue::Int(i) => i.to_string(),
+            graph_engine::PropertyValue::Float(f) => f.to_string(),
+            graph_engine::PropertyValue::String(s) => s.clone(),
+            graph_engine::PropertyValue::Bool(b) => b.to_string(),
+            graph_engine::PropertyValue::Null => "null".to_string(),
         }
     }
 }
@@ -1082,8 +1192,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 1,
-            label: "person".to_string(),
+            labels: vec!["person".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("label".to_string(), Value::String("person".to_string()));
@@ -1098,8 +1210,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 42,
-            label: "test".to_string(),
+            labels: vec!["test".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("id".to_string(), Value::Int(42));
@@ -1111,8 +1225,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 1,
-            label: "person".to_string(),
+            labels: vec!["person".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::And(
@@ -1130,8 +1246,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 1,
-            label: "person".to_string(),
+            labels: vec!["person".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Or(
@@ -1154,6 +1272,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("type".to_string(), Value::String("knows".to_string()));
@@ -1194,8 +1314,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 42,
-            label: "test".to_string(),
+            labels: vec!["test".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("id".to_string(), Value::String("42".to_string()));
@@ -1210,8 +1332,10 @@ mod tests {
 
         let node = Node {
             id: 1,
-            label: "person".to_string(),
+            labels: vec!["person".to_string()],
             properties: props,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("age".to_string(), Value::Int(30));
@@ -1228,6 +1352,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("id".to_string(), Value::Int(5));
@@ -1244,6 +1370,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond_from = Condition::Eq("from".to_string(), Value::Int(10));
@@ -1263,6 +1391,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond_and = Condition::And(
@@ -1592,6 +1722,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         // Test edge_type alias
@@ -1614,6 +1746,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: props,
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("weight".to_string(), Value::Float(0.5));
@@ -1630,6 +1764,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("id".to_string(), Value::String("5".to_string()));
@@ -1641,8 +1777,10 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 1,
-            label: "test".to_string(),
+            labels: vec!["test".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("unknown".to_string(), Value::String("val".to_string()));
@@ -1659,6 +1797,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let cond = Condition::Eq("unknown".to_string(), Value::String("val".to_string()));
@@ -1670,11 +1810,13 @@ mod tests {
         let engine = create_engine();
         let node = Node {
             id: 1,
-            label: "test".to_string(),
+            labels: vec!["test".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
 
-        // Ne, Gt, etc. are not fully implemented and return true
+        // Ne is implemented
         let cond = Condition::Ne("id".to_string(), Value::Int(2));
         assert!(engine.node_matches_condition(&node, &cond));
     }
@@ -1682,17 +1824,22 @@ mod tests {
     #[test]
     fn test_edge_matches_condition_other() {
         let engine = create_engine();
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), graph_engine::PropertyValue::Int(10));
+
         let edge = graph_engine::Edge {
             id: 1,
             from: 1,
             to: 2,
             edge_type: "knows".to_string(),
-            properties: HashMap::new(),
+            properties: props,
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
-        // Gt is not fully implemented and returns true
-        let cond = Condition::Gt("id".to_string(), Value::Int(0));
+        // Gt is now implemented for properties
+        let cond = Condition::Gt("weight".to_string(), Value::Int(5));
         assert!(engine.edge_matches_condition(&edge, &cond));
     }
 
@@ -1721,11 +1868,13 @@ mod tests {
 
         let node = Node {
             id: 42,
-            label: "person".to_string(),
+            labels: vec!["person".to_string()],
             properties: HashMap::from([(
                 "name".to_string(),
                 graph_engine::PropertyValue::String("Alice".to_string()),
             )]),
+            created_at: None,
+            updated_at: None,
         };
 
         let item = node.as_unified();
@@ -1749,6 +1898,8 @@ mod tests {
             edge_type: "knows".to_string(),
             properties: HashMap::new(),
             directed: true,
+            created_at: None,
+            updated_at: None,
         };
 
         let item = edge.as_unified();
@@ -1787,8 +1938,10 @@ mod tests {
         // Simulate collecting unified items from different sources
         let node = Node {
             id: 1,
-            label: "test".to_string(),
+            labels: vec!["test".to_string()],
             properties: HashMap::new(),
+            created_at: None,
+            updated_at: None,
         };
         let search = vector_engine::SearchResult {
             key: "vec:1".to_string(),

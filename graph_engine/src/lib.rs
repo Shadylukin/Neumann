@@ -17802,4 +17802,335 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap().count, 2);
     }
+
+    // ========== Concurrent Operation Tests ==========
+
+    #[test]
+    fn test_update_node_concurrent_same_property() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        let mut props = HashMap::new();
+        props.insert("counter".to_string(), PropertyValue::Int(0));
+        let node_id = engine.create_node("Counter", props).unwrap();
+
+        let thread_count = 10;
+        let updates_per_thread = 100;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    bar.wait();
+                    for i in 0..updates_per_thread {
+                        let mut props = HashMap::new();
+                        let value = (t * updates_per_thread + i) as i64;
+                        props.insert("counter".to_string(), PropertyValue::Int(value));
+                        if eng.update_node(node_id, None, props).is_ok() {
+                            cnt.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::SeqCst),
+            thread_count * updates_per_thread
+        );
+
+        // Verify node is still valid and has a counter value
+        let node = engine.get_node(node_id).unwrap();
+        assert!(matches!(
+            node.properties.get("counter"),
+            Some(PropertyValue::Int(_))
+        ));
+    }
+
+    #[test]
+    fn test_update_node_concurrent_different_nodes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Each thread gets its own node to update
+        let thread_count = 10;
+        let mut node_ids = Vec::new();
+        for _ in 0..thread_count {
+            node_ids.push(engine.create_node("Entity", HashMap::new()).unwrap());
+        }
+        let node_ids = Arc::new(node_ids);
+
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                let ids = Arc::clone(&node_ids);
+                thread::spawn(move || {
+                    bar.wait();
+                    let prop_name = format!("prop_{t}");
+                    let mut props = HashMap::new();
+                    props.insert(prop_name, PropertyValue::Int(t as i64));
+                    if eng.update_node(ids[t], None, props).is_ok() {
+                        cnt.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        assert_eq!(success_count.load(Ordering::SeqCst), thread_count);
+
+        // Verify each node has its property
+        for t in 0..thread_count {
+            let node = engine.get_node(node_ids[t]).unwrap();
+            let prop_name = format!("prop_{t}");
+            assert!(
+                node.properties.contains_key(&prop_name),
+                "property {prop_name} missing on node {}", node_ids[t]
+            );
+        }
+    }
+
+    #[test]
+    fn test_update_node_concurrent_add_remove_labels() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        let node_id = engine.create_node("Base", HashMap::new()).unwrap();
+
+        let thread_count = 10;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    bar.wait();
+                    // Each thread adds its own label then updates with different label set
+                    let label = format!("Label{t}");
+                    let labels = vec!["Base".to_string(), label];
+                    if eng.update_node(node_id, Some(labels), HashMap::new()).is_ok() {
+                        cnt.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        assert_eq!(success_count.load(Ordering::SeqCst), thread_count);
+
+        // Node should have Base label and one of the thread labels
+        let node = engine.get_node(node_id).unwrap();
+        assert!(node.has_label("Base"));
+        assert_eq!(node.labels.len(), 2);
+    }
+
+    #[test]
+    fn test_batch_create_edges_toctou_safety() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create source and target nodes
+        let mut source_ids = Vec::new();
+        let mut target_ids = Vec::new();
+        for _ in 0..20 {
+            source_ids.push(engine.create_node("Source", HashMap::new()).unwrap());
+            target_ids.push(engine.create_node("Target", HashMap::new()).unwrap());
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Thread 1: delete source nodes
+        let eng1 = Arc::clone(&engine);
+        let bar1 = Arc::clone(&barrier);
+        let sources_to_delete = source_ids[10..].to_vec();
+        let deleter = thread::spawn(move || {
+            bar1.wait();
+            for id in sources_to_delete {
+                let _ = eng1.delete_node(id);
+            }
+        });
+
+        // Thread 2: batch create edges using those sources
+        let eng2 = Arc::clone(&engine);
+        let bar2 = Arc::clone(&barrier);
+        let edge_inputs: Vec<EdgeInput> = source_ids
+            .iter()
+            .zip(target_ids.iter())
+            .map(|(&from, &to)| EdgeInput {
+                from,
+                to,
+                edge_type: "LINK".to_string(),
+                properties: HashMap::new(),
+                directed: true,
+            })
+            .collect();
+
+        let edge_creator = thread::spawn(move || {
+            bar2.wait();
+            eng2.batch_create_edges(edge_inputs)
+        });
+
+        deleter.join().expect("deleter should not panic");
+        let result = edge_creator.join().expect("edge creator should not panic");
+
+        // Should either succeed partially or fail cleanly (no corruption/panic)
+        match result {
+            Ok(batch_result) => {
+                // Some edges created successfully
+                assert!(batch_result.count <= 20);
+            }
+            Err(_) => {
+                // Clean validation error is acceptable
+            }
+        }
+
+        // Verify engine is still usable
+        let _ = engine.create_node("Test", HashMap::new()).unwrap();
+    }
+
+    #[test]
+    fn test_index_concurrent_writes_50_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        engine.create_node_property_index("indexed_field").unwrap();
+
+        let thread_count = 50;
+        let nodes_per_thread = 100;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    bar.wait();
+                    for i in 0..nodes_per_thread {
+                        let mut props = HashMap::new();
+                        let value = format!("value_{t}_{i}");
+                        props.insert("indexed_field".to_string(), PropertyValue::String(value));
+                        if eng.create_node("Indexed", props).is_ok() {
+                            cnt.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        let expected_count = thread_count * nodes_per_thread;
+        assert_eq!(success_count.load(Ordering::SeqCst), expected_count);
+
+        // Verify index integrity by looking up a random value
+        let results = engine
+            .find_nodes_by_property("indexed_field", &PropertyValue::String("value_25_50".into()))
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_striped_lock_fairness_64_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Instant;
+
+        let engine = Arc::new(GraphEngine::new());
+        engine.create_node_property_index("shard_key").unwrap();
+
+        let thread_count = 64;
+        let ops_per_thread = 50;
+        let barrier = Arc::new(Barrier::new(thread_count));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    bar.wait();
+                    let start = Instant::now();
+
+                    for i in 0..ops_per_thread {
+                        let mut props = HashMap::new();
+                        // Distribute across shards using different prefixes
+                        let key = format!("{:02x}_{t}_{i}", t % 64);
+                        props.insert("shard_key".to_string(), PropertyValue::String(key));
+                        eng.create_node("Sharded", props).unwrap();
+                    }
+
+                    start.elapsed()
+                })
+            })
+            .collect();
+
+        let durations: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("no panic"))
+            .collect();
+
+        // Calculate variance to check fairness
+        let avg_ms: f64 = durations.iter().map(|d| d.as_millis() as f64).sum::<f64>()
+            / thread_count as f64;
+        let max_ms = durations.iter().map(|d| d.as_millis()).max().unwrap() as f64;
+
+        // No thread should take more than 5x the average (fairness check)
+        // This is a loose bound to avoid flaky tests
+        assert!(
+            max_ms < avg_ms * 5.0 + 100.0,
+            "thread starvation detected: max={max_ms}ms, avg={avg_ms}ms"
+        );
+
+        // Verify all nodes created
+        let expected_total = thread_count * ops_per_thread;
+        let actual_count = AtomicUsize::new(0);
+        for id in 1..=(expected_total as u64 + 100) {
+            if engine.get_node(id).is_ok() {
+                actual_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(
+            actual_count.load(Ordering::Relaxed),
+            expected_total,
+            "expected {expected_total} nodes, found {}",
+            actual_count.load(Ordering::Relaxed)
+        );
+    }
 }

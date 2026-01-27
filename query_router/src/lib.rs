@@ -33,16 +33,23 @@ pub use distributed::{
     DistributedQueryConfig, MergeStrategy, QueryPlan, QueryPlanner, ResultMerger, ShardId,
     ShardResult,
 };
-use graph_engine::{Direction, GraphEngine, GraphError, PropertyValue};
+use graph_engine::{
+    CentralityConfig, CommunityConfig, Constraint, ConstraintTarget as GConstraintTarget,
+    ConstraintType as GConstraintType, Direction, EdgeInput, GraphEngine, GraphError, NodeInput,
+    PageRankConfig, PropertyValue,
+};
 use neumann_parser::{
-    self as parser, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt, CacheOp,
-    CacheStmt, ChainOp, ChainStmt, CheckpointStmt, CheckpointsStmt, ClusterOp, ClusterStmt,
-    DeleteStmt, DescribeStmt, DescribeTarget, Direction as ParsedDirection,
-    DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt, EmbedOp, EmbedStmt, EntityOp,
-    EntityStmt, Expr, ExprKind, FindPattern, FindStmt, InsertSource, InsertStmt, JoinCondition,
-    JoinKind, Literal, NeighborsStmt, NodeOp, NodeStmt, NullsOrder, PathStmt, Property,
-    RollbackStmt, SelectStmt, SimilarQuery, SimilarStmt, SortDirection, Statement, StatementKind,
-    TableRefKind, UpdateStmt, VaultOp, VaultStmt,
+    self as parser, AggregateFunction, BinaryOp, BlobOp, BlobOptions, BlobStmt, BlobsOp, BlobsStmt,
+    CacheOp, CacheStmt, ChainOp, ChainStmt, CheckpointStmt, CheckpointsStmt, ClusterOp,
+    ClusterStmt, ConstraintTarget, ConstraintType, DeleteStmt, DescribeStmt, DescribeTarget,
+    Direction as ParsedDirection, DistanceMetric as ParsedDistanceMetric, EdgeOp, EdgeStmt,
+    EmbedOp, EmbedStmt, EntityOp, EntityStmt, Expr, ExprKind, FindPattern, FindStmt,
+    GraphAggregateOp, GraphAggregateStmt, GraphAlgorithmOp, GraphAlgorithmStmt, GraphBatchOp,
+    GraphBatchStmt, GraphConstraintOp, GraphConstraintStmt, GraphIndexOp, GraphIndexStmt,
+    GraphPatternOp, GraphPatternStmt, InsertSource, InsertStmt, JoinCondition, JoinKind, Literal,
+    NeighborsStmt, NodeOp, NodeStmt, NullsOrder, PathStmt, Property, RollbackStmt, SelectStmt,
+    SimilarQuery, SimilarStmt, SortDirection, Statement, StatementKind, TableRefKind, UpdateStmt,
+    VaultOp, VaultStmt,
 };
 use relational_engine::{
     ColumnarScanOptions, Condition, RelationalEngine, RelationalError, Row, Value,
@@ -116,6 +123,8 @@ pub enum RouterError {
     TypeMismatch(String),
     /// Authentication required for vault operations.
     AuthenticationRequired,
+    /// Entity or resource not found.
+    NotFound(String),
 }
 
 impl std::fmt::Display for RouterError {
@@ -140,6 +149,7 @@ impl std::fmt::Display for RouterError {
                     "Authentication required: call SET IDENTITY before vault operations"
                 )
             },
+            RouterError::NotFound(msg) => write!(f, "Not found: {}", msg),
         }
     }
 }
@@ -245,6 +255,22 @@ pub enum QueryResult {
     CheckpointList(Vec<CheckpointInfo>),
     /// Chain operation result
     Chain(ChainResult),
+    /// PageRank algorithm results
+    PageRank(Vec<PageRankResult>),
+    /// Centrality algorithm results
+    Centrality(Vec<CentralityResult>),
+    /// Community detection results
+    Communities(Vec<CommunityResult>),
+    /// Constraint list results
+    Constraints(Vec<ConstraintInfo>),
+    /// Graph index list results
+    GraphIndexes(Vec<String>),
+    /// Aggregate result (numeric)
+    Aggregate(AggregateResultValue),
+    /// Batch operation result
+    BatchResult(BatchOperationResult),
+    /// Pattern match results
+    PatternMatch(PatternMatchResultValue),
 }
 
 /// Node result from graph query.
@@ -408,6 +434,96 @@ pub struct ChainTransitionAnalysis {
     pub avg_validity_score: f32,
 }
 
+/// PageRank result for a node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageRankResult {
+    pub node_id: u64,
+    pub score: f64,
+}
+
+/// Centrality result for a node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentralityResult {
+    pub node_id: u64,
+    pub score: f64,
+}
+
+/// Community detection result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityResult {
+    pub node_id: u64,
+    pub community_id: u64,
+}
+
+/// Constraint information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintInfo {
+    pub name: String,
+    pub target: String,
+    pub property: String,
+    pub constraint_type: String,
+}
+
+/// Aggregate result value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AggregateResultValue {
+    Count(u64),
+    Sum(f64),
+    Avg(f64),
+    Min(f64),
+    Max(f64),
+}
+
+/// Batch operation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchOperationResult {
+    pub operation: String,
+    pub affected_count: usize,
+    pub created_ids: Option<Vec<u64>>,
+}
+
+/// Pattern match result value for serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternMatchResultValue {
+    pub matches: Vec<PatternMatchBinding>,
+    pub stats: PatternMatchStatsValue,
+}
+
+/// A single match with variable bindings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternMatchBinding {
+    pub bindings: HashMap<String, BindingValue>,
+}
+
+/// A binding to a graph element.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BindingValue {
+    Node {
+        id: u64,
+        label: String,
+    },
+    Edge {
+        id: u64,
+        edge_type: String,
+        from: u64,
+        to: u64,
+    },
+    Path {
+        nodes: Vec<u64>,
+        edges: Vec<u64>,
+        length: usize,
+    },
+}
+
+/// Statistics from pattern matching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternMatchStatsValue {
+    pub matches_found: usize,
+    pub nodes_evaluated: usize,
+    pub edges_evaluated: usize,
+    pub truncated: bool,
+}
+
 impl QueryResult {
     /// Convert the result to JSON string.
     pub fn to_json(&self) -> String {
@@ -488,40 +604,31 @@ pub struct QueryRouter {
 }
 
 impl QueryRouter {
-    /// Create a new query router with fresh engines.
+    /// Create a new query router with fresh engines sharing a common store.
     pub fn new() -> Self {
-        Self {
-            relational: Arc::new(RelationalEngine::new()),
-            graph: Arc::new(GraphEngine::new()),
-            vector: Arc::new(VectorEngine::new()),
-            unified: None,
-            vault: None,
-            cache: None,
-            blob: None,
-            blob_runtime: None,
-            current_identity: None,
-            hnsw_index: None,
-            checkpoint: None,
-            chain: None,
-            cluster: None,
-            cluster_runtime: None,
-            distributed_planner: None,
-            distributed_config: DistributedQueryConfig::default(),
-            local_shard_id: 0,
-        }
+        Self::with_shared_store(TensorStore::new())
     }
 
     /// Create a query router with existing engines.
+    ///
+    /// The unified engine is initialized using the vector engine's store.
     pub fn with_engines(
         relational: Arc<RelationalEngine>,
         graph: Arc<GraphEngine>,
         vector: Arc<VectorEngine>,
     ) -> Self {
+        let store = vector.store().clone();
+        let unified = UnifiedEngine::with_engines(
+            store,
+            Arc::clone(&relational),
+            Arc::clone(&graph),
+            Arc::clone(&vector),
+        );
         Self {
             relational,
             graph,
             vector,
-            unified: None,
+            unified: Some(unified),
             vault: None,
             cache: None,
             blob: None,
@@ -591,6 +698,19 @@ impl QueryRouter {
     /// Get reference to unified engine (if initialized).
     pub fn unified(&self) -> Option<&UnifiedEngine> {
         self.unified.as_ref()
+    }
+
+    /// Returns a reference to the unified engine or an error if not initialized.
+    fn require_unified(&self) -> Result<&UnifiedEngine> {
+        self.unified.as_ref().ok_or_else(|| {
+            RouterError::InvalidArgument("Unified engine not initialized".to_string())
+        })
+    }
+
+    /// Creates a new Tokio runtime for sync-to-async bridging.
+    fn create_runtime() -> Result<Runtime> {
+        Runtime::new()
+            .map_err(|e| RouterError::InvalidArgument(format!("Failed to create runtime: {}", e)))
     }
 
     /// Get reference to vault (if initialized).
@@ -1073,48 +1193,36 @@ impl QueryRouter {
     }
 
     /// Store a unified entity with relational, graph, and vector data.
+    ///
+    /// Delegates to `UnifiedEngine::create_entity()`.
     pub fn create_unified_entity(
         &self,
         key: &str,
         fields: HashMap<String, String>,
         embedding: Option<Vec<f32>>,
     ) -> Result<()> {
-        if let Some(emb) = embedding {
-            self.vector
-                .set_entity_embedding(key, emb)
-                .map_err(|e| RouterError::VectorError(e.to_string()))?;
-        }
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        for (field_name, field_value) in fields {
-            let mut tensor = self
-                .vector
-                .store()
-                .get(key)
-                .unwrap_or_else(|_| tensor_store::TensorData::new());
-            tensor.set(
-                &field_name,
-                tensor_store::TensorValue::Scalar(tensor_store::ScalarValue::String(field_value)),
-            );
-            self.vector
-                .store()
-                .put(key, tensor)
-                .map_err(|e: tensor_store::TensorStoreError| {
-                    RouterError::VectorError(e.to_string())
-                })?;
-        }
-
-        Ok(())
+        runtime
+            .block_on(unified.create_entity(key, fields, embedding))
+            .map_err(|e| RouterError::VectorError(e.to_string()))
     }
 
     /// Connect two entities with an edge.
+    ///
+    /// Delegates to `UnifiedEngine::connect_entities()`.
     pub fn connect_entities(
         &self,
         from_key: &str,
         to_key: &str,
         edge_type: &str,
     ) -> Result<String> {
-        self.graph
-            .add_entity_edge(from_key, to_key, edge_type)
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
+
+        runtime
+            .block_on(unified.connect_entities(from_key, to_key, edge_type))
             .map_err(|e| RouterError::GraphError(e.to_string()))
     }
 
@@ -1154,6 +1262,12 @@ impl QueryRouter {
 
             // Unified queries
             "FIND" => self.execute_find(command),
+
+            // Extended graph commands (use parser-based execution)
+            "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" => self.execute_parsed(command),
+
+            // Show commands (use parser-based execution)
+            "SHOW" => self.execute_parsed(command),
 
             _ => Err(RouterError::UnknownCommand(keyword)),
         }
@@ -1429,6 +1543,16 @@ impl QueryRouter {
                 let limited: Vec<String> = keys.into_iter().take(limit_val).collect();
                 Ok(QueryResult::Value(format!("Embeddings: {:?}", limited)))
             },
+            StatementKind::ShowVectorIndex => match &self.hnsw_index {
+                Some((_, keys)) => {
+                    let count = keys.len();
+                    Ok(QueryResult::Value(format!(
+                        "HNSW index: {} vectors indexed",
+                        count
+                    )))
+                },
+                None => Ok(QueryResult::Value("No HNSW index built".to_string())),
+            },
             StatementKind::CountEmbeddings => {
                 let count = self.vector.list_keys().len();
                 Ok(QueryResult::Count(count))
@@ -1469,6 +1593,14 @@ impl QueryRouter {
 
             // Cluster statements
             StatementKind::Cluster(cluster) => self.exec_cluster(cluster),
+
+            // Extended graph statements
+            StatementKind::GraphAlgorithm(algo) => self.exec_graph_algorithm(algo),
+            StatementKind::GraphConstraint(constraint) => self.exec_graph_constraint(constraint),
+            StatementKind::GraphIndex(idx) => self.exec_graph_index(idx),
+            StatementKind::GraphAggregate(agg) => self.exec_graph_aggregate(agg),
+            StatementKind::GraphPattern(pattern) => self.exec_graph_pattern(pattern),
+            StatementKind::GraphBatch(batch) => self.exec_graph_batch(batch),
 
             // Empty statement
             StatementKind::Empty => Ok(QueryResult::Empty),
@@ -2485,6 +2617,756 @@ impl QueryRouter {
                     ))
                 }
             },
+        }
+    }
+
+    // ========== Extended Graph Statement Handlers ==========
+
+    fn exec_graph_algorithm(&self, stmt: &GraphAlgorithmStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphAlgorithmOp::PageRank {
+                damping,
+                tolerance,
+                max_iterations,
+                direction,
+                edge_type,
+            } => {
+                let config = PageRankConfig {
+                    damping: damping
+                        .as_ref()
+                        .map(|e| self.expr_to_f64(e))
+                        .transpose()?
+                        .unwrap_or(0.85),
+                    tolerance: tolerance
+                        .as_ref()
+                        .map(|e| self.expr_to_f64(e))
+                        .transpose()?
+                        .unwrap_or(1e-6),
+                    max_iterations: max_iterations
+                        .as_ref()
+                        .map(|e| self.expr_to_usize(e))
+                        .transpose()?
+                        .unwrap_or(100),
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Outgoing),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                };
+                let result = self.graph.pagerank(Some(config))?;
+                let results: Vec<PageRankResult> = result
+                    .scores
+                    .into_iter()
+                    .map(|(id, score)| PageRankResult { node_id: id, score })
+                    .collect();
+                Ok(QueryResult::PageRank(results))
+            },
+            GraphAlgorithmOp::BetweennessCentrality {
+                sampling_ratio,
+                direction,
+                edge_type,
+            } => {
+                let config = CentralityConfig {
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Both),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                    sampling_ratio: sampling_ratio
+                        .as_ref()
+                        .map(|e| self.expr_to_f64(e))
+                        .transpose()?
+                        .unwrap_or(1.0),
+                    max_iterations: 100,
+                    tolerance: 1e-6,
+                };
+                let result = self.graph.betweenness_centrality(Some(config))?;
+                let results: Vec<CentralityResult> = result
+                    .scores
+                    .into_iter()
+                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .collect();
+                Ok(QueryResult::Centrality(results))
+            },
+            GraphAlgorithmOp::ClosenessCentrality {
+                direction,
+                edge_type,
+            } => {
+                let config = CentralityConfig {
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Both),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                    sampling_ratio: 1.0,
+                    max_iterations: 100,
+                    tolerance: 1e-6,
+                };
+                let result = self.graph.closeness_centrality(Some(config))?;
+                let results: Vec<CentralityResult> = result
+                    .scores
+                    .into_iter()
+                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .collect();
+                Ok(QueryResult::Centrality(results))
+            },
+            GraphAlgorithmOp::EigenvectorCentrality {
+                max_iterations,
+                tolerance,
+                direction,
+                edge_type,
+            } => {
+                let config = CentralityConfig {
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Both),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                    sampling_ratio: 1.0,
+                    max_iterations: max_iterations
+                        .as_ref()
+                        .map(|e| self.expr_to_usize(e))
+                        .transpose()?
+                        .unwrap_or(100),
+                    tolerance: tolerance
+                        .as_ref()
+                        .map(|e| self.expr_to_f64(e))
+                        .transpose()?
+                        .unwrap_or(1e-6),
+                };
+                let result = self.graph.eigenvector_centrality(Some(config))?;
+                let results: Vec<CentralityResult> = result
+                    .scores
+                    .into_iter()
+                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .collect();
+                Ok(QueryResult::Centrality(results))
+            },
+            GraphAlgorithmOp::LouvainCommunities {
+                resolution,
+                max_passes,
+                direction,
+                edge_type,
+            } => {
+                let config = CommunityConfig {
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Both),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                    resolution: resolution
+                        .as_ref()
+                        .map(|e| self.expr_to_f64(e))
+                        .transpose()?
+                        .unwrap_or(1.0),
+                    max_passes: max_passes
+                        .as_ref()
+                        .map(|e| self.expr_to_usize(e))
+                        .transpose()?
+                        .unwrap_or(10),
+                    max_iterations: 100,
+                    seed: None,
+                };
+                let result = self.graph.louvain_communities(Some(config))?;
+                let results: Vec<CommunityResult> = result
+                    .communities
+                    .into_iter()
+                    .map(|(node_id, community_id)| CommunityResult {
+                        node_id,
+                        community_id,
+                    })
+                    .collect();
+                Ok(QueryResult::Communities(results))
+            },
+            GraphAlgorithmOp::LabelPropagation {
+                max_iterations,
+                direction,
+                edge_type,
+            } => {
+                let config = CommunityConfig {
+                    direction: direction
+                        .as_ref()
+                        .map(|d| self.convert_parsed_direction(d))
+                        .unwrap_or(Direction::Both),
+                    edge_type: edge_type.as_ref().map(|e| e.name.clone()),
+                    resolution: 1.0,
+                    max_passes: 10,
+                    max_iterations: max_iterations
+                        .as_ref()
+                        .map(|e| self.expr_to_usize(e))
+                        .transpose()?
+                        .unwrap_or(100),
+                    seed: None,
+                };
+                let result = self.graph.label_propagation(Some(config))?;
+                let results: Vec<CommunityResult> = result
+                    .communities
+                    .into_iter()
+                    .map(|(node_id, community_id)| CommunityResult {
+                        node_id,
+                        community_id,
+                    })
+                    .collect();
+                Ok(QueryResult::Communities(results))
+            },
+        }
+    }
+
+    fn exec_graph_constraint(&self, stmt: &GraphConstraintStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphConstraintOp::Create {
+                name,
+                target,
+                property,
+                constraint_type,
+            } => {
+                let g_target = match target {
+                    ConstraintTarget::Node { label } => match label {
+                        Some(l) => GConstraintTarget::NodeLabel(l.name.clone()),
+                        None => GConstraintTarget::AllNodes,
+                    },
+                    ConstraintTarget::Edge { edge_type } => match edge_type {
+                        Some(t) => GConstraintTarget::EdgeType(t.name.clone()),
+                        None => GConstraintTarget::AllEdges,
+                    },
+                };
+                let g_type = match constraint_type {
+                    ConstraintType::Unique => GConstraintType::Unique,
+                    ConstraintType::Exists => GConstraintType::Exists,
+                    ConstraintType::Type(t) => {
+                        let type_name = t.to_uppercase();
+                        use graph_engine::PropertyValueType;
+                        match type_name.as_str() {
+                            "STRING" => GConstraintType::PropertyType(PropertyValueType::String),
+                            "INT" | "INTEGER" => {
+                                GConstraintType::PropertyType(PropertyValueType::Int)
+                            },
+                            "FLOAT" | "DOUBLE" => {
+                                GConstraintType::PropertyType(PropertyValueType::Float)
+                            },
+                            "BOOL" | "BOOLEAN" => {
+                                GConstraintType::PropertyType(PropertyValueType::Bool)
+                            },
+                            _ => GConstraintType::PropertyType(PropertyValueType::String),
+                        }
+                    },
+                };
+                let constraint = Constraint {
+                    name: name.name.clone(),
+                    target: g_target,
+                    property: property.name.clone(),
+                    constraint_type: g_type,
+                };
+                self.graph.create_constraint(constraint)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphConstraintOp::Drop { name } => {
+                self.graph.drop_constraint(&name.name)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphConstraintOp::List => {
+                let constraints = self.graph.list_constraints();
+                let results: Vec<ConstraintInfo> = constraints
+                    .into_iter()
+                    .map(|c| ConstraintInfo {
+                        name: c.name,
+                        target: match c.target {
+                            GConstraintTarget::NodeLabel(l) => format!("Node({})", l),
+                            GConstraintTarget::EdgeType(t) => format!("Edge({})", t),
+                            GConstraintTarget::AllNodes => "AllNodes".to_string(),
+                            GConstraintTarget::AllEdges => "AllEdges".to_string(),
+                        },
+                        property: c.property,
+                        constraint_type: match c.constraint_type {
+                            GConstraintType::Unique => "UNIQUE".to_string(),
+                            GConstraintType::Exists => "EXISTS".to_string(),
+                            GConstraintType::PropertyType(t) => format!("TYPE({:?})", t),
+                        },
+                    })
+                    .collect();
+                Ok(QueryResult::Constraints(results))
+            },
+            GraphConstraintOp::Get { name } => match self.graph.get_constraint(&name.name) {
+                Some(c) => {
+                    let info = ConstraintInfo {
+                        name: c.name,
+                        target: match c.target {
+                            GConstraintTarget::NodeLabel(l) => format!("Node({})", l),
+                            GConstraintTarget::EdgeType(t) => format!("Edge({})", t),
+                            GConstraintTarget::AllNodes => "AllNodes".to_string(),
+                            GConstraintTarget::AllEdges => "AllEdges".to_string(),
+                        },
+                        property: c.property,
+                        constraint_type: match c.constraint_type {
+                            GConstraintType::Unique => "UNIQUE".to_string(),
+                            GConstraintType::Exists => "EXISTS".to_string(),
+                            GConstraintType::PropertyType(t) => format!("TYPE({:?})", t),
+                        },
+                    };
+                    Ok(QueryResult::Constraints(vec![info]))
+                },
+                None => Ok(QueryResult::Constraints(vec![])),
+            },
+        }
+    }
+
+    fn exec_graph_index(&self, stmt: &GraphIndexStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphIndexOp::CreateNodeProperty { property } => {
+                self.graph.create_node_property_index(&property.name)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::CreateEdgeProperty { property } => {
+                self.graph.create_edge_property_index(&property.name)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::CreateLabel => {
+                self.graph.create_label_index()?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::CreateEdgeType => {
+                self.graph.create_edge_type_index()?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::DropNode { property } => {
+                self.graph.drop_node_index(&property.name)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::DropEdge { property } => {
+                self.graph.drop_edge_index(&property.name)?;
+                Ok(QueryResult::Empty)
+            },
+            GraphIndexOp::ShowNodeIndexes => {
+                let indexes = self.graph.get_indexed_node_properties();
+                Ok(QueryResult::GraphIndexes(indexes))
+            },
+            GraphIndexOp::ShowEdgeIndexes => {
+                let indexes = self.graph.get_indexed_edge_properties();
+                Ok(QueryResult::GraphIndexes(indexes))
+            },
+        }
+    }
+
+    fn exec_graph_aggregate(&self, stmt: &GraphAggregateStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphAggregateOp::CountNodes { label } => {
+                let count = match label {
+                    Some(l) => self.graph.count_nodes_by_label(&l.name)?,
+                    None => self.graph.count_nodes(),
+                };
+                Ok(QueryResult::Aggregate(AggregateResultValue::Count(count)))
+            },
+            GraphAggregateOp::CountEdges { edge_type } => {
+                let count = match edge_type {
+                    Some(t) => self.graph.count_edges_by_type(&t.name)?,
+                    None => self.graph.count_edges(),
+                };
+                Ok(QueryResult::Aggregate(AggregateResultValue::Count(count)))
+            },
+            GraphAggregateOp::AggregateNodeProperty {
+                function,
+                property,
+                label,
+                ..
+            } => {
+                // Get the aggregate result based on whether we filter by label
+                let agg = match label {
+                    Some(l) => self
+                        .graph
+                        .aggregate_node_property_by_label(&l.name, &property.name)?,
+                    None => self.graph.aggregate_node_property(&property.name),
+                };
+                let result = match function {
+                    AggregateFunction::Sum => AggregateResultValue::Sum(agg.sum.unwrap_or(0.0)),
+                    AggregateFunction::Avg => AggregateResultValue::Avg(agg.avg.unwrap_or(0.0)),
+                    AggregateFunction::Min => AggregateResultValue::Min(
+                        self.property_value_to_f64(agg.min).unwrap_or(0.0),
+                    ),
+                    AggregateFunction::Max => AggregateResultValue::Max(
+                        self.property_value_to_f64(agg.max).unwrap_or(0.0),
+                    ),
+                    AggregateFunction::Count => AggregateResultValue::Count(agg.count),
+                };
+                Ok(QueryResult::Aggregate(result))
+            },
+            GraphAggregateOp::AggregateEdgeProperty {
+                function,
+                property,
+                edge_type,
+                ..
+            } => {
+                // Get the aggregate result based on whether we filter by edge type
+                let agg = match edge_type {
+                    Some(t) => self
+                        .graph
+                        .aggregate_edge_property_by_type(&t.name, &property.name)?,
+                    None => self.graph.aggregate_edge_property(&property.name),
+                };
+                let result = match function {
+                    AggregateFunction::Sum => AggregateResultValue::Sum(agg.sum.unwrap_or(0.0)),
+                    AggregateFunction::Avg => AggregateResultValue::Avg(agg.avg.unwrap_or(0.0)),
+                    AggregateFunction::Min => AggregateResultValue::Min(
+                        self.property_value_to_f64(agg.min).unwrap_or(0.0),
+                    ),
+                    AggregateFunction::Max => AggregateResultValue::Max(
+                        self.property_value_to_f64(agg.max).unwrap_or(0.0),
+                    ),
+                    AggregateFunction::Count => AggregateResultValue::Count(agg.count),
+                };
+                Ok(QueryResult::Aggregate(result))
+            },
+        }
+    }
+
+    fn exec_graph_pattern(&self, stmt: &GraphPatternStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphPatternOp::Match { pattern, limit } => {
+                let gp = self.pattern_spec_to_graph_pattern(pattern, limit)?;
+                let result = self.graph.match_pattern(&gp)?;
+                Ok(QueryResult::PatternMatch(
+                    self.convert_pattern_match_result(&result),
+                ))
+            },
+            GraphPatternOp::Count { pattern } => {
+                let gp = self.pattern_spec_to_graph_pattern(pattern, &None)?;
+                let count = self.graph.count_pattern_matches(&gp)?;
+                Ok(QueryResult::Aggregate(AggregateResultValue::Count(count)))
+            },
+            GraphPatternOp::Exists { pattern } => {
+                let gp = self.pattern_spec_to_graph_pattern(pattern, &None)?;
+                let exists = self.graph.pattern_exists(&gp)?;
+                Ok(QueryResult::Value(exists.to_string()))
+            },
+        }
+    }
+
+    fn pattern_spec_to_graph_pattern(
+        &self,
+        pattern: &parser::PatternSpec,
+        limit: &Option<Expr>,
+    ) -> Result<graph_engine::Pattern> {
+        use graph_engine::{EdgePattern, NodePattern, PathPattern, Pattern};
+
+        if pattern.nodes.is_empty() {
+            return Err(RouterError::InvalidArgument(
+                "Pattern must have at least one node".to_string(),
+            ));
+        }
+
+        // Build node patterns from AST
+        let build_node_pattern = |spec: &parser::NodePatternSpec| -> NodePattern {
+            let mut np = NodePattern::new();
+            if let Some(alias) = &spec.alias {
+                np = np.variable(&alias.name);
+            }
+            if let Some(label) = &spec.label {
+                np = np.label(&label.name);
+            }
+            np
+        };
+
+        // If there are no edges, return a pattern that matches just the first node
+        if pattern.edges.is_empty() {
+            let start = build_node_pattern(&pattern.nodes[0]);
+            // Create a minimal pattern with just one node (edge and end required by API)
+            let path = PathPattern::new(start, EdgePattern::new(), NodePattern::new());
+            let mut gp = Pattern::new(path);
+            if let Some(lim) = limit {
+                gp = gp.limit(self.expr_to_usize(lim)?);
+            }
+            return Ok(gp);
+        }
+
+        // Build path from edges - edges reference nodes by index
+        let first_edge = &pattern.edges[0];
+        let start_node = build_node_pattern(&pattern.nodes[first_edge.from_node]);
+
+        let edge =
+            EdgePattern::new().direction(self.convert_parsed_direction(&first_edge.direction));
+        let edge = if let Some(alias) = &first_edge.alias {
+            edge.variable(&alias.name)
+        } else {
+            edge
+        };
+        let edge = if let Some(et) = &first_edge.edge_type {
+            edge.edge_type(&et.name)
+        } else {
+            edge
+        };
+
+        let end_node = build_node_pattern(&pattern.nodes[first_edge.to_node]);
+        let mut path = PathPattern::new(start_node, edge, end_node);
+
+        // Extend path with remaining edges
+        for edge_spec in pattern.edges.iter().skip(1) {
+            let edge =
+                EdgePattern::new().direction(self.convert_parsed_direction(&edge_spec.direction));
+            let edge = if let Some(alias) = &edge_spec.alias {
+                edge.variable(&alias.name)
+            } else {
+                edge
+            };
+            let edge = if let Some(et) = &edge_spec.edge_type {
+                edge.edge_type(&et.name)
+            } else {
+                edge
+            };
+
+            let target_node = build_node_pattern(&pattern.nodes[edge_spec.to_node]);
+            path = path.extend(edge, target_node);
+        }
+
+        let mut gp = Pattern::new(path);
+        if let Some(lim) = limit {
+            gp = gp.limit(self.expr_to_usize(lim)?);
+        }
+
+        Ok(gp)
+    }
+
+    fn convert_pattern_match_result(
+        &self,
+        result: &graph_engine::PatternMatchResult,
+    ) -> PatternMatchResultValue {
+        use graph_engine::Binding;
+
+        let matches = result
+            .matches
+            .iter()
+            .map(|m| {
+                let bindings = m
+                    .bindings
+                    .iter()
+                    .map(|(k, v)| {
+                        let binding = match v {
+                            Binding::Node(n) => BindingValue::Node {
+                                id: n.id,
+                                label: n.labels.join(", "),
+                            },
+                            Binding::Edge(e) => BindingValue::Edge {
+                                id: e.id,
+                                edge_type: e.edge_type.clone(),
+                                from: e.from,
+                                to: e.to,
+                            },
+                            Binding::Path(p) => BindingValue::Path {
+                                nodes: p.nodes.clone(),
+                                edges: p.edges.clone(),
+                                length: p.nodes.len().saturating_sub(1),
+                            },
+                        };
+                        (k.clone(), binding)
+                    })
+                    .collect();
+                PatternMatchBinding { bindings }
+            })
+            .collect();
+
+        PatternMatchResultValue {
+            matches,
+            stats: PatternMatchStatsValue {
+                matches_found: result.stats.matches_found,
+                nodes_evaluated: result.stats.nodes_evaluated,
+                edges_evaluated: result.stats.edges_evaluated,
+                truncated: result.stats.truncated,
+            },
+        }
+    }
+
+    fn exec_graph_batch(&self, stmt: &GraphBatchStmt) -> Result<QueryResult> {
+        match &stmt.operation {
+            GraphBatchOp::CreateNodes { nodes } => {
+                let inputs: Vec<NodeInput> = nodes
+                    .iter()
+                    .map(|n| {
+                        let props = n
+                            .properties
+                            .iter()
+                            .map(|p| {
+                                let pv = self
+                                    .expr_to_property_value(&p.value)
+                                    .unwrap_or(PropertyValue::Null);
+                                (p.key.name.clone(), pv)
+                            })
+                            .collect();
+                        NodeInput {
+                            labels: n.labels.iter().map(|l| l.name.clone()).collect(),
+                            properties: props,
+                        }
+                    })
+                    .collect();
+                let result = self.graph.batch_create_nodes(inputs)?;
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "CREATE_NODES".to_string(),
+                    affected_count: result.count,
+                    created_ids: Some(result.created_ids),
+                }))
+            },
+            GraphBatchOp::CreateEdges { edges } => {
+                let inputs: Vec<EdgeInput> = edges
+                    .iter()
+                    .map(|e| {
+                        let from_id = self.expr_to_u64(&e.from_id).unwrap_or(0);
+                        let to_id = self.expr_to_u64(&e.to_id).unwrap_or(0);
+                        let props = e
+                            .properties
+                            .iter()
+                            .map(|p| {
+                                let pv = self
+                                    .expr_to_property_value(&p.value)
+                                    .unwrap_or(PropertyValue::Null);
+                                (p.key.name.clone(), pv)
+                            })
+                            .collect();
+                        EdgeInput {
+                            from: from_id,
+                            to: to_id,
+                            edge_type: e.edge_type.name.clone(),
+                            properties: props,
+                            directed: true,
+                        }
+                    })
+                    .collect();
+                let result = self.graph.batch_create_edges(inputs)?;
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "CREATE_EDGES".to_string(),
+                    affected_count: result.count,
+                    created_ids: Some(result.created_ids),
+                }))
+            },
+            GraphBatchOp::DeleteNodes { ids } => {
+                let node_ids: Vec<u64> = ids
+                    .iter()
+                    .filter_map(|e| self.expr_to_u64(e).ok())
+                    .collect();
+
+                if !node_ids.is_empty() {
+                    // Checkpoint protection for batch delete
+                    let sample_data: Vec<String> =
+                        node_ids.iter().map(|id| format!("node {}", id)).collect();
+                    let op = DestructiveOp::NodeDelete {
+                        node_id: node_ids[0],
+                        edge_count: node_ids.len().saturating_sub(1),
+                    };
+
+                    match self.protect_destructive_op(
+                        &format!("BATCH DELETE NODES ({})", node_ids.len()),
+                        op,
+                        sample_data,
+                    )? {
+                        ProtectedOpResult::Proceed => {},
+                        ProtectedOpResult::Cancelled => {
+                            return Err(RouterError::CheckpointError(
+                                "Operation cancelled by user".to_string(),
+                            ));
+                        },
+                    }
+                }
+
+                let count = self.graph.batch_delete_nodes(node_ids)?;
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "DELETE_NODES".to_string(),
+                    affected_count: count,
+                    created_ids: None,
+                }))
+            },
+            GraphBatchOp::DeleteEdges { ids } => {
+                let edge_ids: Vec<u64> = ids
+                    .iter()
+                    .filter_map(|e| self.expr_to_u64(e).ok())
+                    .collect();
+
+                if !edge_ids.is_empty() {
+                    // Checkpoint protection for batch delete
+                    let sample_data: Vec<String> =
+                        edge_ids.iter().map(|id| format!("edge {}", id)).collect();
+                    let op = DestructiveOp::EdgeDelete {
+                        edge_id: edge_ids[0],
+                    };
+
+                    match self.protect_destructive_op(
+                        &format!("BATCH DELETE EDGES ({})", edge_ids.len()),
+                        op,
+                        sample_data,
+                    )? {
+                        ProtectedOpResult::Proceed => {},
+                        ProtectedOpResult::Cancelled => {
+                            return Err(RouterError::CheckpointError(
+                                "Operation cancelled by user".to_string(),
+                            ));
+                        },
+                    }
+                }
+
+                let count = self.graph.batch_delete_edges(edge_ids)?;
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "DELETE_EDGES".to_string(),
+                    affected_count: count,
+                    created_ids: None,
+                }))
+            },
+            GraphBatchOp::UpdateNodes { updates } => {
+                #[allow(clippy::type_complexity)]
+                let update_inputs: Vec<(
+                    u64,
+                    Option<Vec<String>>,
+                    HashMap<String, PropertyValue>,
+                )> = updates
+                    .iter()
+                    .filter_map(|u| {
+                        let id = self.expr_to_u64(&u.id).ok()?;
+                        let props: HashMap<String, PropertyValue> = u
+                            .properties
+                            .iter()
+                            .map(|p| {
+                                let pv = self
+                                    .expr_to_property_value(&p.value)
+                                    .unwrap_or(PropertyValue::Null);
+                                (p.key.name.clone(), pv)
+                            })
+                            .collect();
+                        Some((id, None, props))
+                    })
+                    .collect();
+                let count = self.graph.batch_update_nodes(update_inputs)?;
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "UPDATE_NODES".to_string(),
+                    affected_count: count,
+                    created_ids: None,
+                }))
+            },
+        }
+    }
+
+    fn convert_parsed_direction(&self, dir: &ParsedDirection) -> Direction {
+        match dir {
+            ParsedDirection::Outgoing => Direction::Outgoing,
+            ParsedDirection::Incoming => Direction::Incoming,
+            ParsedDirection::Both => Direction::Both,
+        }
+    }
+
+    fn expr_to_property_value(&self, expr: &Expr) -> Result<PropertyValue> {
+        match &expr.kind {
+            ExprKind::Literal(lit) => match lit {
+                Literal::Null => Ok(PropertyValue::Null),
+                Literal::Boolean(b) => Ok(PropertyValue::Bool(*b)),
+                Literal::Integer(i) => Ok(PropertyValue::Int(*i)),
+                Literal::Float(f) => Ok(PropertyValue::Float(*f)),
+                Literal::String(s) => Ok(PropertyValue::String(s.clone())),
+            },
+            ExprKind::Ident(ident) => Ok(PropertyValue::String(ident.name.clone())),
+            _ => Err(RouterError::InvalidArgument(
+                "Cannot convert expression to property value".to_string(),
+            )),
+        }
+    }
+
+    fn property_value_to_f64(&self, value: Option<PropertyValue>) -> Option<f64> {
+        match value {
+            Some(PropertyValue::Int(i)) => Some(i as f64),
+            Some(PropertyValue::Float(f)) => Some(f),
+            _ => None,
         }
     }
 
@@ -4050,6 +4932,48 @@ impl QueryRouter {
 
                 Ok(QueryResult::Value(format!("Entity '{}' created", key_str)))
             },
+            EntityOp::Get { key } => {
+                let key_str = self.expr_to_string(key)?;
+
+                // Try to get from unified engine if available
+                if let Some(ref unified) = self.unified {
+                    let runtime =
+                        Runtime::new().map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+                    let item = runtime
+                        .block_on(unified.get_entity(&key_str))
+                        .map_err(|e| RouterError::NotFound(e.to_string()))?;
+
+                    return Ok(QueryResult::Unified(UnifiedResult {
+                        description: format!("Entity: {}", key_str),
+                        items: vec![item],
+                    }));
+                }
+
+                // Fall back to looking up data directly
+                let mut data = HashMap::new();
+                data.insert("key".to_string(), key_str.clone());
+
+                // Try to find in vector store
+                if let Ok(embedding) = self.vector.get_embedding(&key_str) {
+                    let item = UnifiedItem {
+                        id: key_str.clone(),
+                        source: "vector".to_string(),
+                        data,
+                        embedding: Some(embedding),
+                        score: None,
+                    };
+                    return Ok(QueryResult::Unified(UnifiedResult {
+                        description: format!("Entity: {}", key_str),
+                        items: vec![item],
+                    }));
+                }
+
+                Err(RouterError::NotFound(format!(
+                    "Entity '{}' not found",
+                    key_str
+                )))
+            },
             EntityOp::Connect {
                 from_key,
                 to_key,
@@ -4070,298 +4994,40 @@ impl QueryRouter {
         }
     }
 
+    /// Delegates to `UnifiedEngine::find_nodes()`.
     fn scan_find_nodes(
         &self,
         label_filter: Option<&str>,
         condition: Option<&Condition>,
         limit: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        let mut items = Vec::new();
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        // Scan for all node keys in the graph store
-        let keys = self.graph().store().scan("node:");
+        let mut items = runtime
+            .block_on(unified.find_nodes(label_filter, condition))
+            .map_err(|e| RouterError::GraphError(e.to_string()))?;
 
-        for key in keys {
-            if items.len() >= limit {
-                break;
-            }
-
-            // Filter out edge lists (node:123:out, node:123:in)
-            if key.contains(":out") || key.contains(":in") {
-                continue;
-            }
-
-            // Parse node ID from key "node:{id}"
-            if let Some(id_str) = key.strip_prefix("node:") {
-                if let Ok(id) = id_str.parse::<u64>() {
-                    if let Ok(node) = self.graph().get_node(id) {
-                        // Apply label filter
-                        if let Some(filter) = label_filter {
-                            if !node.has_label(filter) {
-                                continue;
-                            }
-                        }
-
-                        // Apply condition filter
-                        if let Some(cond) = condition {
-                            if !self.node_matches_condition(&node, cond) {
-                                continue;
-                            }
-                        }
-
-                        // Build unified item
-                        let mut data = HashMap::new();
-                        data.insert("label".to_string(), node.labels.join(":"));
-                        for (k, v) in &node.properties {
-                            data.insert(k.clone(), Self::property_to_string(v));
-                        }
-
-                        items.push(UnifiedItem::with_data("graph", node.id.to_string(), data));
-                    }
-                }
-            }
-        }
-
+        items.truncate(limit);
         Ok(items)
     }
 
+    /// Delegates to `UnifiedEngine::find_edges()`.
     fn scan_find_edges(
         &self,
         type_filter: Option<&str>,
         condition: Option<&Condition>,
         limit: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        let mut items = Vec::new();
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        // Scan for all edge keys in the graph store
-        let keys = self.graph().store().scan("edge:");
+        let mut items = runtime
+            .block_on(unified.find_edges(type_filter, condition))
+            .map_err(|e| RouterError::GraphError(e.to_string()))?;
 
-        for key in keys {
-            if items.len() >= limit {
-                break;
-            }
-
-            // Parse edge ID from key "edge:{id}"
-            if let Some(id_str) = key.strip_prefix("edge:") {
-                if let Ok(id) = id_str.parse::<u64>() {
-                    if let Ok(edge) = self.graph().get_edge(id) {
-                        // Apply type filter
-                        if let Some(filter) = type_filter {
-                            if edge.edge_type != filter {
-                                continue;
-                            }
-                        }
-
-                        // Apply condition filter
-                        if let Some(cond) = condition {
-                            if !self.edge_matches_condition(&edge, cond) {
-                                continue;
-                            }
-                        }
-
-                        // Build unified item
-                        let mut data = HashMap::new();
-                        data.insert("from".to_string(), edge.from.to_string());
-                        data.insert("to".to_string(), edge.to.to_string());
-                        data.insert("type".to_string(), edge.edge_type.clone());
-                        data.insert("directed".to_string(), edge.directed.to_string());
-                        for (k, v) in &edge.properties {
-                            data.insert(k.clone(), Self::property_to_string(v));
-                        }
-
-                        items.push(UnifiedItem::with_data("graph", edge.id.to_string(), data));
-                    }
-                }
-            }
-        }
-
+        items.truncate(limit);
         Ok(items)
-    }
-
-    fn node_matches_condition(&self, node: &graph_engine::Node, condition: &Condition) -> bool {
-        match condition {
-            Condition::Eq(col, val) => {
-                if col == "id" {
-                    return match val {
-                        Value::Int(i) => node.id == *i as u64,
-                        Value::String(s) => node.id.to_string() == *s,
-                        _ => false,
-                    };
-                }
-                if col == "label" {
-                    return match val {
-                        Value::String(s) => node.has_label(s),
-                        _ => false,
-                    };
-                }
-                if let Some(prop) = node.properties.get(col) {
-                    return self.property_matches_value(prop, val);
-                }
-                false
-            },
-            Condition::Ne(col, val) => {
-                if let Some(prop) = node.properties.get(col) {
-                    return !self.property_matches_value(prop, val);
-                }
-                true // Missing property is considered "not equal"
-            },
-            Condition::Gt(col, val) => {
-                if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_gt(prop, val);
-                }
-                false
-            },
-            Condition::Ge(col, val) => {
-                if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_gte(prop, val);
-                }
-                false
-            },
-            Condition::Lt(col, val) => {
-                if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_lt(prop, val);
-                }
-                false
-            },
-            Condition::Le(col, val) => {
-                if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_lte(prop, val);
-                }
-                false
-            },
-            Condition::And(a, b) => {
-                self.node_matches_condition(node, a) && self.node_matches_condition(node, b)
-            },
-            Condition::Or(a, b) => {
-                self.node_matches_condition(node, a) || self.node_matches_condition(node, b)
-            },
-            _ => true, // Other conditions not fully implemented for nodes
-        }
-    }
-
-    fn edge_matches_condition(&self, edge: &graph_engine::Edge, condition: &Condition) -> bool {
-        match condition {
-            Condition::Eq(col, val) => {
-                if col == "id" {
-                    return match val {
-                        Value::Int(i) => edge.id == *i as u64,
-                        Value::String(s) => edge.id.to_string() == *s,
-                        _ => false,
-                    };
-                }
-                if col == "type" || col == "edge_type" {
-                    return match val {
-                        Value::String(s) => edge.edge_type == *s,
-                        _ => false,
-                    };
-                }
-                if col == "from" {
-                    return match val {
-                        Value::Int(i) => edge.from == *i as u64,
-                        _ => false,
-                    };
-                }
-                if col == "to" {
-                    return match val {
-                        Value::Int(i) => edge.to == *i as u64,
-                        _ => false,
-                    };
-                }
-                if let Some(prop) = edge.properties.get(col) {
-                    return self.property_matches_value(prop, val);
-                }
-                false
-            },
-            Condition::Ne(col, val) => {
-                if let Some(prop) = edge.properties.get(col) {
-                    return !self.property_matches_value(prop, val);
-                }
-                true
-            },
-            Condition::Gt(col, val) => {
-                if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_gt(prop, val);
-                }
-                false
-            },
-            Condition::Ge(col, val) => {
-                if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_gte(prop, val);
-                }
-                false
-            },
-            Condition::Lt(col, val) => {
-                if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_lt(prop, val);
-                }
-                false
-            },
-            Condition::Le(col, val) => {
-                if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_lte(prop, val);
-                }
-                false
-            },
-            Condition::And(a, b) => {
-                self.edge_matches_condition(edge, a) && self.edge_matches_condition(edge, b)
-            },
-            Condition::Or(a, b) => {
-                self.edge_matches_condition(edge, a) || self.edge_matches_condition(edge, b)
-            },
-            _ => true, // Other conditions not fully implemented for edges
-        }
-    }
-
-    fn property_matches_value(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
-        match (prop, val) {
-            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i == *v,
-            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => {
-                (*f - *v).abs() < f64::EPSILON
-            },
-            (graph_engine::PropertyValue::String(s), Value::String(v)) => s == v,
-            (graph_engine::PropertyValue::Bool(b), Value::Bool(v)) => *b == *v,
-            _ => false,
-        }
-    }
-
-    fn property_compare_gt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
-        match (prop, val) {
-            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i > *v,
-            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f > *v,
-            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) > *v,
-            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f > (*v as f64),
-            _ => false,
-        }
-    }
-
-    fn property_compare_gte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
-        match (prop, val) {
-            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i >= *v,
-            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f >= *v,
-            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) >= *v,
-            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f >= (*v as f64),
-            _ => false,
-        }
-    }
-
-    fn property_compare_lt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
-        match (prop, val) {
-            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i < *v,
-            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f < *v,
-            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) < *v,
-            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f < (*v as f64),
-            _ => false,
-        }
-    }
-
-    fn property_compare_lte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
-        match (prop, val) {
-            (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i <= *v,
-            (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f <= *v,
-            (graph_engine::PropertyValue::Int(i), Value::Float(v)) => (*i as f64) <= *v,
-            (graph_engine::PropertyValue::Float(f), Value::Int(v)) => *f <= (*v as f64),
-            _ => false,
-        }
     }
 
     // ========== AST Conversion Helpers ==========
@@ -4458,6 +5124,14 @@ impl QueryRouter {
         match &expr.kind {
             ExprKind::Literal(Literal::Float(f)) => Ok(*f as f32),
             ExprKind::Literal(Literal::Integer(i)) => Ok(*i as f32),
+            _ => Err(RouterError::InvalidArgument("Expected number".to_string())),
+        }
+    }
+
+    fn expr_to_f64(&self, expr: &Expr) -> Result<f64> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Float(f)) => Ok(*f),
+            ExprKind::Literal(Literal::Integer(i)) => Ok(*i as f64),
             _ => Err(RouterError::InvalidArgument("Expected number".to_string())),
         }
     }
@@ -5919,8 +6593,7 @@ impl QueryRouter {
 
     /// Store multiple embeddings in parallel.
     ///
-    /// This method processes batch embeddings concurrently, which can provide
-    /// performance benefits when storing many embeddings at once.
+    /// Delegates to `UnifiedEngine::embed_batch()`.
     ///
     /// # Arguments
     /// * `items` - Vector of (key, embedding) pairs to store
@@ -5929,27 +6602,12 @@ impl QueryRouter {
     /// * `Ok(count)` - Number of embeddings successfully stored
     /// * `Err(e)` - First error encountered
     pub async fn embed_batch_parallel(&self, items: Vec<(String, Vec<f32>)>) -> Result<usize> {
-        use futures::future::join_all;
+        let unified = self.require_unified()?;
 
-        let futures: Vec<_> = items
-            .into_iter()
-            .map(|(key, vec)| {
-                let key = key.clone();
-                let vec = vec.clone();
-                let vector = Arc::clone(&self.vector);
-                async move { vector.store_embedding(&key, vec) }
-            })
-            .collect();
-
-        let results = join_all(futures).await;
-        let mut success_count = 0;
-        for result in results {
-            match result {
-                Ok(_) => success_count += 1,
-                Err(e) => return Err(RouterError::VectorError(e.to_string())),
-            }
-        }
-        Ok(success_count)
+        unified
+            .embed_batch(items)
+            .await
+            .map_err(|e| RouterError::VectorError(e.to_string()))
     }
 
     /// Find similar entities connected to a target, with parallel graph/vector queries.
@@ -7354,6 +8012,39 @@ mod tests {
         let router = QueryRouter::new();
         let result = router.execute("EMBED emptykey []");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn show_vector_index_empty() {
+        let router = QueryRouter::new();
+        let result = router.execute("SHOW VECTOR INDEX").unwrap();
+        match result {
+            QueryResult::Value(s) => {
+                assert!(s.contains("No HNSW index built"));
+            },
+            _ => panic!("Expected Value result"),
+        }
+    }
+
+    #[test]
+    fn show_vector_index_after_build() {
+        let mut router = QueryRouter::new();
+        router.execute("EMBED v1 [1.0, 0.0, 0.0]").unwrap();
+        router.execute("EMBED v2 [0.0, 1.0, 0.0]").unwrap();
+        router.execute("EMBED v3 [0.0, 0.0, 1.0]").unwrap();
+
+        // Build the index
+        router.build_vector_index().unwrap();
+
+        // Now SHOW VECTOR INDEX should show indexed vectors
+        let result = router.execute("SHOW VECTOR INDEX").unwrap();
+        match result {
+            QueryResult::Value(s) => {
+                assert!(s.contains("HNSW index"));
+                assert!(s.contains("3"));
+            },
+            _ => panic!("Expected Value result"),
+        }
     }
 
     #[test]
@@ -9422,11 +10113,11 @@ mod tests {
     }
 
     #[test]
-    fn new_router_has_no_unified_engine() {
+    fn new_router_has_unified_engine() {
         let router = QueryRouter::new();
 
-        // Without shared store, unified engine should not be initialized
-        assert!(router.unified().is_none());
+        // new() now initializes unified engine with a shared store
+        assert!(router.unified().is_some());
     }
 
     #[test]
@@ -14294,5 +14985,375 @@ mod tests {
 
         assert_eq!(edge_count, 1);
         assert!(!info.is_empty());
+    }
+
+    // =========================================================================
+    // Extended Graph Algorithm Tests
+    // =========================================================================
+
+    #[test]
+    fn test_graph_pagerank() {
+        let router = QueryRouter::new();
+
+        // Create a simple graph
+        let a = match router.execute("NODE CREATE Page url=\"a\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Page url=\"b\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let c = match router.execute("NODE CREATE Page url=\"c\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} links", a, b))
+            .unwrap();
+        router
+            .execute(&format!("EDGE CREATE {} -> {} links", b, c))
+            .unwrap();
+        router
+            .execute(&format!("EDGE CREATE {} -> {} links", c, a))
+            .unwrap();
+
+        let result = router.execute("GRAPH PAGERANK").unwrap();
+        match result {
+            QueryResult::PageRank(pr) => {
+                assert_eq!(pr.len(), 3);
+                for item in &pr {
+                    assert!(item.score > 0.0);
+                }
+            },
+            _ => panic!("Expected PageRank result"),
+        }
+    }
+
+    #[test]
+    fn test_graph_pagerank_with_options() {
+        let router = QueryRouter::new();
+
+        // Create nodes
+        let a = match router.execute("NODE CREATE Page").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Page").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} links", a, b))
+            .unwrap();
+
+        let result = router
+            .execute("GRAPH PAGERANK DAMPING 0.85 ITERATIONS 50")
+            .unwrap();
+        assert!(matches!(result, QueryResult::PageRank(_)));
+    }
+
+    #[test]
+    fn test_graph_betweenness_centrality() {
+        let router = QueryRouter::new();
+
+        // Create a line graph: a -> b -> c
+        let a = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let c = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} conn", a, b))
+            .unwrap();
+        router
+            .execute(&format!("EDGE CREATE {} -> {} conn", b, c))
+            .unwrap();
+
+        let result = router.execute("GRAPH BETWEENNESS CENTRALITY").unwrap();
+        match result {
+            QueryResult::Centrality(scores) => {
+                assert_eq!(scores.len(), 3);
+            },
+            _ => panic!("Expected Centrality result"),
+        }
+    }
+
+    #[test]
+    fn test_graph_closeness_centrality() {
+        let router = QueryRouter::new();
+
+        let a = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} conn", a, b))
+            .unwrap();
+
+        let result = router.execute("GRAPH CLOSENESS CENTRALITY").unwrap();
+        assert!(matches!(result, QueryResult::Centrality(_)));
+    }
+
+    #[test]
+    fn test_graph_louvain_communities() {
+        let router = QueryRouter::new();
+
+        // Create two clusters
+        let a1 = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let a2 = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} rel", a1, a2))
+            .unwrap();
+        router
+            .execute(&format!("EDGE CREATE {} -> {} rel", a2, a1))
+            .unwrap();
+
+        let result = router.execute("GRAPH LOUVAIN COMMUNITIES").unwrap();
+        assert!(matches!(result, QueryResult::Communities(_)));
+    }
+
+    #[test]
+    fn test_graph_label_propagation() {
+        let router = QueryRouter::new();
+
+        let a = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} rel", a, b))
+            .unwrap();
+
+        let result = router.execute("GRAPH LABEL PROPAGATION").unwrap();
+        assert!(matches!(result, QueryResult::Communities(_)));
+    }
+
+    // =========================================================================
+    // Graph Index Tests
+    // =========================================================================
+
+    #[test]
+    fn test_graph_index_create_node_property() {
+        let router = QueryRouter::new();
+
+        // Create node first
+        router.execute("NODE CREATE Person name=\"Test\"").unwrap();
+
+        let result = router
+            .execute("GRAPH INDEX CREATE ON NODE PROPERTY name")
+            .unwrap();
+        assert!(matches!(result, QueryResult::Empty));
+    }
+
+    #[test]
+    fn test_graph_index_show() {
+        let router = QueryRouter::new();
+
+        let result = router.execute("GRAPH INDEX SHOW ON NODE").unwrap();
+        assert!(matches!(result, QueryResult::GraphIndexes(_)));
+    }
+
+    // =========================================================================
+    // Constraint Tests
+    // =========================================================================
+
+    #[test]
+    fn test_constraint_create_list_get_drop() {
+        let router = QueryRouter::new();
+
+        // Create a constraint
+        let result = router
+            .execute("CONSTRAINT CREATE email_unique ON NODE PROPERTY email UNIQUE")
+            .unwrap();
+        assert!(matches!(result, QueryResult::Empty));
+
+        // List constraints
+        let result = router.execute("CONSTRAINT LIST").unwrap();
+        match result {
+            QueryResult::Constraints(constraints) => {
+                assert!(!constraints.is_empty());
+            },
+            _ => panic!("Expected Constraints result"),
+        }
+
+        // Get specific constraint
+        let result = router.execute("CONSTRAINT GET email_unique").unwrap();
+        match result {
+            QueryResult::Constraints(c) => assert!(!c.is_empty()),
+            _ => panic!("Expected Constraints result"),
+        }
+
+        // Drop constraint
+        let result = router.execute("CONSTRAINT DROP email_unique").unwrap();
+        assert!(matches!(result, QueryResult::Empty));
+    }
+
+    // =========================================================================
+    // Batch Operation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_batch_create_nodes() {
+        let router = QueryRouter::new();
+
+        let result = router
+            .execute("BATCH CREATE NODES [{labels: [Person], name: 'Alice'}, {labels: [Person], name: 'Bob'}]")
+            .unwrap();
+
+        match result {
+            QueryResult::BatchResult(batch) => {
+                assert_eq!(batch.affected_count, 2);
+                assert!(batch.created_ids.is_some());
+            },
+            _ => panic!("Expected BatchResult"),
+        }
+    }
+
+    #[test]
+    fn test_batch_create_edges() {
+        let router = QueryRouter::new();
+
+        // First create nodes
+        let a = match router.execute("NODE CREATE Person name=\"A\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Person name=\"B\"").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        let result = router
+            .execute(&format!(
+                "BATCH CREATE EDGES [{{from: {}, to: {}, type: knows}}]",
+                a, b
+            ))
+            .unwrap();
+
+        match result {
+            QueryResult::BatchResult(batch) => {
+                assert_eq!(batch.affected_count, 1);
+            },
+            _ => panic!("Expected BatchResult"),
+        }
+    }
+
+    #[test]
+    fn test_batch_delete_nodes() {
+        let router = QueryRouter::new();
+
+        // Create nodes first
+        let a = match router.execute("NODE CREATE Temp").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Temp").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        let result = router
+            .execute(&format!("BATCH DELETE NODES [{}, {}]", a, b))
+            .unwrap();
+
+        match result {
+            QueryResult::BatchResult(batch) => {
+                assert_eq!(batch.affected_count, 2);
+            },
+            _ => panic!("Expected BatchResult"),
+        }
+    }
+
+    // =========================================================================
+    // Aggregate Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregate_node_property() {
+        let router = QueryRouter::new();
+
+        // Create nodes with age property
+        router.execute("NODE CREATE Person age=25").unwrap();
+        router.execute("NODE CREATE Person age=30").unwrap();
+        router.execute("NODE CREATE Person age=35").unwrap();
+
+        let result = router.execute("AGGREGATE NODE PROPERTY age SUM").unwrap();
+        match result {
+            QueryResult::Aggregate(AggregateResultValue::Sum(s)) => {
+                // Sum should be 90
+                assert!((s - 90.0).abs() < 0.001);
+            },
+            _ => panic!("Expected Aggregate Sum result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_node_property_avg() {
+        let router = QueryRouter::new();
+
+        router.execute("NODE CREATE Person age=20").unwrap();
+        router.execute("NODE CREATE Person age=40").unwrap();
+
+        let result = router.execute("AGGREGATE NODE PROPERTY age AVG").unwrap();
+        match result {
+            QueryResult::Aggregate(AggregateResultValue::Avg(a)) => {
+                assert!((a - 30.0).abs() < 0.001);
+            },
+            _ => panic!("Expected Aggregate Avg result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_edge_property() {
+        let router = QueryRouter::new();
+
+        let a = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+        let b = match router.execute("NODE CREATE Node").unwrap() {
+            QueryResult::Ids(ids) => ids[0],
+            _ => panic!("Expected Ids"),
+        };
+
+        router
+            .execute(&format!("EDGE CREATE {} -> {} conn weight=0.5", a, b))
+            .unwrap();
+
+        let result = router
+            .execute("AGGREGATE EDGE PROPERTY weight SUM")
+            .unwrap();
+        assert!(matches!(
+            result,
+            QueryResult::Aggregate(AggregateResultValue::Sum(_))
+        ));
     }
 }

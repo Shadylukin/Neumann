@@ -145,7 +145,7 @@ impl TxWal {
                     let v2 = !Self::looks_like_bincode_start(&checksum_buf);
                     detected_format = Some(v2);
                     v2
-                }
+                },
             };
 
             if is_v2 {
@@ -378,7 +378,7 @@ impl TxWal {
                     let v2 = !Self::looks_like_bincode_start(&checksum_buf);
                     detected_format = Some(v2);
                     v2
-                }
+                },
             };
 
             let data = if is_v2 {

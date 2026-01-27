@@ -58,7 +58,9 @@ fn test_empty_graph_traversal() {
     let node_id = graph.create_node("lonely", HashMap::new()).unwrap();
 
     // Neighbors of node with no edges should be empty
-    let neighbors = graph.neighbors(node_id, None, Direction::Both, None).unwrap();
+    let neighbors = graph
+        .neighbors(node_id, None, Direction::Both, None)
+        .unwrap();
     assert!(neighbors.is_empty());
 
     // Path to self
@@ -322,7 +324,9 @@ fn test_self_loop_graph_handling() {
             // Self-loop created successfully
             // Note: neighbors() may or may not include self in results
             // This documents the behavior
-            let _neighbors = graph.neighbors(node, None, Direction::Outgoing, None).unwrap();
+            let _neighbors = graph
+                .neighbors(node, None, Direction::Outgoing, None)
+                .unwrap();
 
             // The edge exists, so the graph supports self-loops
             // neighbors may filter out self-references in some implementations

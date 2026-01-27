@@ -1,144 +1,111 @@
 # Neumann
 
 [![CI](https://github.com/Shadylukin/Neumann/workflows/CI/badge.svg)](https://github.com/Shadylukin/Neumann/actions)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/uN3KbAyKvw)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord)](https://discord.gg/uN3KbAyKvw)
 
-A unified runtime that stores relational data, graph relationships, and vector
-embeddings in a single mathematical structure — the tensor.
-
-Instead of spinning up Postgres, Neo4j, Qdrant, and Redis separately, you spin
-up Neumann.
-
-> Code and data live together. Files are exports. The tensor is truth.
-
-## What Problem Does It Solve?
-
-Modern development requires too many moving pieces. A simple project might need:
-
-- A relational database for structured data
-- A graph database for relationships
-- A vector database for semantic search
-- A cache layer for performance
-- Version control for code
-
-Each has its own query language, its own mental model, its own operational
-overhead. Teams spend more time on infrastructure than on their actual problem.
-
-**Neumann collapses this.** One runtime. One shell. One way of thinking about
-information.
-
-For vibe coders and small teams, this means getting started in minutes instead
-of hours. For AI-native applications, it means code, data, and embeddings are
-naturally co-located — no glue code, no sync problems.
-
-## Core Concepts
-
-### Tensor
-
-The underlying mathematical structure. Just as von Neumann showed that code and
-data are both patterns in memory, a tensor can represent a scalar, a vector, a
-matrix, a table, a graph, or a higher-dimensional structure. The storage format
-is unified even when the query patterns differ.
-
-### Shell
-
-The interface. Simple CLI commands to create, query, and manipulate data.
-Designed for humans first.
-
-### Benchmarks on M1 Max
-
-| Operation | Dimensionality | Time | Throughput | improvement |
-| --- | --- | --- | --- | --- |
-| **Write** | 1536d | 133ns | 7.5M/sec | --- |
-| **Read** | 1536d | 89ns | 11.2M/sec | --- |
-| **TT-Decompose** | 1024d | 33.5µs | 29.8k/sec | **62% faster** (Randomized SVD) |
-| **TT-Decompose** | 4096d | 79.7µs | 12.5k/sec | **32% faster** (Randomized SVD) |
-| **TT-Reconstruct** | 4096d | 886µs | 1.1k/sec | **28% faster** |
-
-> **Note**: Throughput numbers are for single-threaded execution. Neumann scales
-linearly with cores.
-
-### Three Query Patterns, One Substrate
-
-| Pattern | Style | Examples |
-| --- | --- | --- |
-| **Relational** | Postgres-style | Tables, rows, columns, joins |
-| **Graph** | Neo4j-style | Nodes, edges, traversals, path-finding |
-| **Vector** | Qdrant-style | Embeddings, similarity search, nearest neighbors |
-
-All three operate on the same underlying tensor. A node in your graph can have
-relational properties and a vector embedding. A row in your table can have graph
-relationships. The boundaries dissolve.
-
-### Unified Entities
-
-The core insight: **one key, one entity, three perspectives**.
+A distributed tensor runtime that unifies relational, graph, and vector
+storage with semantic consensus.
 
 ```text
-user:1 = {
-    // Relational fields
-    name: "Alice",
-    email: "alice@example.com",
-
-    // Graph connections
-    _out: ["edge:follows:1", "edge:follows:2"],
-    _in: ["edge:follows:3"],
-
-    // Vector embedding
-    _embedding: [0.1, 0.2, 0.3, ...]
-}
+One database. Three query patterns. Geometric conflict resolution.
 ```
 
-This enables cross-engine queries:
+## The Problem
 
-- "Find users similar to Alice who are also friends with Bob" (vector + graph)
-- "Get all products in the 'electronics' category that are similar to this
-  description" (relational + vector)
-- "Find the shortest path between users who have similar embeddings" (graph +
-  vector)
+Building AI applications requires juggling multiple databases:
 
-### Code as Data
+| Need            | Typical Solution | Overhead                            |
+| --------------- | ---------------- | ----------------------------------- |
+| Structured data | PostgreSQL       | Connection pooling, migrations, ORM |
+| Relationships   | Neo4j            | Separate query language, sync logic |
+| Embeddings      | Pinecone/Qdrant  | API calls, eventual consistency     |
+| Caching         | Redis            | Another connection, invalidation    |
+| Secrets         | Vault            | Yet another service                 |
 
-When you point Neumann at a codebase, it doesn't just store files — it
-understands structure. Functions, dependencies, call graphs. This enables
-queries like "what would break if I changed this?" without leaving the same
-system that holds your application data.
+Each system has its own failure modes, its own scaling story, its own
+operational burden. Your "simple" AI application now depends on five
+services that must stay synchronized.
 
-### Zero-Aware Storage
+## The Solution
 
-Neumann treats zeros as the absence of information rather than data to store:
+Neumann stores everything in tensors. A user can have relational properties,
+graph edges, and vector embeddings in the same entity. Queries cross these
+boundaries naturally:
 
-```text
-Traditional: Store 768 floats → 3,072 bytes per embedding
-Sparse (99% zeros): Store 8 positions + values → ~64 bytes (48x smaller)
-Delta (clustered): Store archetype_id + small delta → ~120 bytes (25x smaller)
+```sql
+-- Find users similar to Alice who are connected to Bob
+FIND NODE user
+  WHERE role = 'engineer'
+  SIMILAR TO 'user:alice'
+  CONNECTED TO 'user:bob'
 ```
 
-When vectors cluster around archetypes (common in embeddings), k-means discovers
-these patterns automatically. Similarity operations scale with actual
-information (non-zeros), not dimension size — yielding 10-150x speedups.
+One runtime. One query language. One consistency model.
 
-### Tiered Memory
+## Performance
 
-When datasets exceed RAM, Neumann automatically tiers between hot and cold
-storage:
+Benchmarked on Apple M-series silicon:
 
-```text
-Hot Tier (DashMap):     Fast, in-memory, concurrent access
-Cold Tier (mmap):       Disk-backed, loaded on demand
+| Operation              | Performance               | Notes                         |
+| ---------------------- | ------------------------- | ----------------------------- |
+| **Storage throughput** | 3.2M PUT, 5M GET ops/sec  | BTreeMap-based, no stalls     |
+| **Concurrent writes**  | 7.5M ops/sec @ 1M entries | 8 threads, CV <7%             |
+| **Vector similarity**  | 150us @ 10K vectors       | HNSW index, 13x vs brute      |
+| **Conflict detection** | 52M pairs/sec             | 99% sparse deltas             |
+| **Query parsing**      | 1.9M queries/sec          | Hand-written recursive descent|
 
-TieredStore tracks access patterns:
-- Frequently accessed data stays hot
-- Cold data migrates to memory-mapped files
-- Accessing cold data promotes it back to hot
-```
+Sub-microsecond operations for most workloads. Linear scaling with cores.
 
-This enables 50GB+ vector indices on machines with 8GB RAM — hot data (working
-set) stays fast while cold data lives on disk. Benchmarks show 5-7% overhead for
-hot operations, with ~1M entries/sec migration throughput.
+## Distributed Consensus
 
-## Installation
+Neumann includes a production-ready distributed layer built on Raft
+consensus with semantic extensions:
+
+### Tensor-Native Raft
+
+Standard Raft treats data as opaque bytes. Neumann embeds state semantically:
+
+- **Similarity fast-path**: Blocks with >95% cosine similarity to current
+  state bypass full validation (40-60% latency reduction)
+- **Geometric tie-breaking**: Leader elections prefer candidates semantically
+  closer to cluster state
+- **Two-phase finality**: Optimistic reads while guaranteeing durability
+
+### 6-Way Conflict Detection
+
+Instead of binary commit/abort, conflicts are classified geometrically:
+
+| Class        | Cosine  | Jaccard | Action                       |
+| ------------ | ------- | ------- | ---------------------------- |
+| Orthogonal   | <0.1    | <0.5    | Auto-merge via vector add    |
+| Low Conflict | 0.1-0.7 | <0.5    | Weighted average             |
+| Identical    | 1.0     | -       | Deduplicate                  |
+| Opposite     | <-0.95  | -       | Cancel (no-op)               |
+| Conflicting  | >0.7    | -       | Reject                       |
+| Ambiguous    | 0.1-0.7 | >0.5    | Reject                       |
+
+This catches subtle conflicts that pure voting misses. Two transactions
+modifying different fields of the same entity can commit in parallel
+if they're orthogonal.
+
+### Delta Replication
+
+State replication uses archetype-based compression:
+
+- Embeddings cluster around learned archetypes
+- Replicate `(archetype_id, sparse_delta)` instead of full vectors
+- **4-6x bandwidth reduction** with BLAKE2b integrity checks
+- 100 updates batched per network round-trip
+
+### Cluster Management
+
+- SWIM gossip protocol with LWW-CRDT membership state
+- Partition detection with quorum enforcement
+- DFS-based deadlock detection in 2PC coordinator
+- Ed25519 block signatures via validator registry
+
+## Quick Start
 
 ```bash
 # Clone and build
@@ -146,198 +113,218 @@ git clone https://github.com/Shadylukin/Neumann.git
 cd Neumann
 cargo build --release
 
-# Run the shell
+# Start the shell
 ./target/release/neumann_shell
 ```
 
-See the [Installation Guide](docs/book/src/getting-started/installation.md)
-for detailed instructions.
+### Relational
 
-## Quick Start
+```sql
+> CREATE TABLE users (id INT, name TEXT, role TEXT)
+> INSERT users id=1, name='Alice', role='engineer'
+> SELECT * FROM users WHERE role = 'engineer'
+```
+
+### Graph
+
+```sql
+> NODE CREATE person name='Alice'
+> NODE CREATE project name='Neumann'
+> EDGE CREATE node:1 -> node:2 works_on
+> PATH node:1 -> node:2
+```
+
+### Vector
+
+```sql
+> EMBED 'doc:readme' [0.1, 0.2, 0.3, 0.4, ...]
+> SIMILAR 'doc:readme' TOP 5
+```
+
+### Unified
+
+```sql
+> FIND NODE person
+    WHERE role = 'engineer'
+    SIMILAR TO 'user:alice'
+```
+
+## Architecture
+
+19 crates organized in dependency tiers:
+
+```text
+                    +---------------------------------------------+
+                    |              tensor_chain                   |
+                    |   Raft consensus, 2PC, gossip, delta        |
+                    |         replication, codebooks              |
+                    +---------------------------------------------+
+                                        |
+        +-------------------------------+-------------------------------+
+        v                               v                               v
++---------------+               +---------------+               +---------------+
+| tensor_vault  |               | tensor_cache  |               |  tensor_blob  |
+|   AES-256     |               |  LLM cache    |               |    S3-style   |
+| graph access  |               |   semantic    |               |   chunked     |
++---------------+               +---------------+               +---------------+
+        |                               |                               |
+        +-------------------------------+-------------------------------+
+                                        v
+                    +---------------------------------------------+
+                    |             query_router                    |
+                    |     Unified cross-engine queries            |
+                    +---------------------------------------------+
+                                        |
+        +-------------------------------+-------------------------------+
+        v                               v                               v
++---------------+               +---------------+               +---------------+
+|   relational  |               |    graph      |               |    vector     |
+|    engine     |               |    engine     |               |    engine     |
+|  SIMD filter  |               |  BFS, paths   |               |  HNSW, sparse |
++---------------+               +---------------+               +---------------+
+        |                               |                               |
+        +-------------------------------+-------------------------------+
+                                        v
+                    +---------------------------------------------+
+                    |              tensor_store                   |
+                    |   SlabRouter, HNSW, sparse vectors,         |
+                    |   tiered storage, bloom filters             |
+                    +---------------------------------------------+
+```
+
+### Core Storage (tensor_store)
+
+- **SlabRouter**: Routes keys to specialized slabs by prefix
+- **5 embedding formats**: Dense, Sparse, Delta, TensorTrain, Quantized
+- **15+ distance metrics**: Cosine, Angular, Geodesic, Jaccard, Overlap,
+  Euclidean, Manhattan, Composite
+- **Hot/cold tiering**: Automatic migration based on access patterns
+- **Zero-allocation sparse ops**: Similarity scales with non-zeros
+
+### Engines
+
+| Engine            | Lines  | Key Features                                  |
+| ----------------- | ------ | --------------------------------------------- |
+| relational_engine | 14,843 | SIMD filtering, B-tree indexes, transactions  |
+| graph_engine      | 17,805 | BFS traversal, shortest path, constraints     |
+| vector_engine     | 3,775  | HNSW O(log n) search, sparse detection, batch |
+
+### Specialized Storage
+
+| Crate             | Purpose                                              |
+| ----------------- | ---------------------------------------------------- |
+| tensor_vault      | AES-256-GCM encryption with graph-based access       |
+| tensor_cache      | Multi-layer LLM caching: exact + semantic + embedding|
+| tensor_blob       | Content-addressable chunks with SHA-256 deduplication|
+| tensor_checkpoint | Pre-destructive-op snapshots with confirmation       |
+
+### Distributed (tensor_chain)
+
+51,977 lines implementing:
+
+- Tensor-Raft with similarity fast-path and geometric tie-breaking
+- 2PC coordinator with DFS deadlock detection
+- SWIM gossip with LWW-CRDT membership
+- Delta-compressed replication with archetype codebooks
+- Hierarchical vector quantization for state validation
+
+## Client SDKs
+
+### Python
+
+```python
+from neumann import NeumannClient
+
+# Embedded (in-process)
+client = NeumannClient.embedded()
+
+# Remote (gRPC)
+client = NeumannClient.connect("localhost:9200", api_key="...")
+
+result = client.execute("SELECT * FROM users")
+for row in result.rows:
+    print(row.to_dict())
+
+# Transactions
+with client.transaction() as tx:
+    tx.execute("INSERT users name='Alice'")
+    tx.execute("INSERT users name='Bob'")
+```
+
+### TypeScript
+
+```typescript
+const client = await NeumannClient.connect("localhost:9200");
+const result = await client.execute("SELECT * FROM users");
+
+// Streaming for large results
+for await (const chunk of client.executeStream("SELECT * FROM large_table")) {
+  console.log(chunk.rows);
+}
+```
+
+### gRPC
+
+Full service definitions in `neumann_server/proto/neumann.proto`:
+
+- QueryService: Execute, ExecuteStream, ExecuteBatch
+- BlobService: Upload, Download, Delete, GetMetadata
+- Health: Check
+
+## Testing
 
 ```bash
-# Start the interactive shell
-$ ./target/release/neumann_shell
+# All tests (267+ integration tests)
+cargo test
 
-# Create a table (relational)
-> CREATE TABLE users (id INT, name TEXT, role TEXT)
-> INSERT INTO users VALUES (1, 'Alice', 'engineer')
-> SELECT * FROM users WHERE role = 'engineer'
+# Quality gates
+cargo fmt --check
+cargo clippy -- -D warnings -D clippy::pedantic
 
-# Create nodes and edges (graph)
-> NODE CREATE person {name: 'Alice'}
-> NODE CREATE project {name: 'Neumann'}
-> EDGE CREATE node:1 -> node:2 : works_on {}
-> NEIGHBORS node:2 INCOMING
-
-# Store and search embeddings (vector)
-> EMBED STORE 'doc:1' [0.1, 0.2, 0.3, 0.4]
-> EMBED STORE 'doc:2' [0.15, 0.25, 0.35, 0.45]
-> SIMILAR 'doc:1' LIMIT 5
-
-# Save your work
-> SAVE 'mydata.bin'
+# Fuzzing (22 targets)
+cargo +nightly fuzz run parser_parse -- -max_total_time=60
 ```
 
-See [Getting Started](docs/book/src/getting-started/quick-start.md) for a full
-tutorial.
+Coverage requirements enforced per-crate (91-95% minimum).
 
-### Using the Unified Entity API (Rust)
+## What This Is
 
-```rust
-use query_router::QueryRouter;
-use tensor_store::TensorStore;
+- A unified runtime for AI-native applications
+- A research platform for semantic consensus
+- A foundation for building distributed tensor systems
 
-// Create a router with shared storage
-let store = TensorStore::new();
-let router = QueryRouter::with_shared_store(store);
+## What This Isn't (Yet)
 
-// Create entities with embeddings
-router.vector().set_entity_embedding("user:1", vec![0.1, 0.2, 0.3])?;
-router.vector().set_entity_embedding("user:2", vec![0.15, 0.25, 0.35])?;
+- Not battle-tested in production multi-node deployments
+- Not a drop-in replacement for PostgreSQL at enterprise scale
+- Not optimized for petabyte-scale cold storage
 
-// Connect entities via graph edges
-router.connect_entities("user:1", "user:2", "follows")?;
+The distributed layer has >95% test coverage and comprehensive fuzz testing,
+but real-world validation across diverse failure modes is ongoing.
 
-// Cross-engine query: find neighbors sorted by similarity
-let results = router.find_neighbors_by_similarity("user:1", &query_vec, 10)?;
-```
+## Why "Neumann"
 
-### Persistence
+John von Neumann unified code and data in the stored-program architecture.
+Sixty years later, we've re-fragmented them across separate systems for
+structure, relationships, and semantics.
 
-Save and load the entire store to disk:
-
-```rust
-use tensor_store::TensorStore;
-
-// Create and populate store
-let store = TensorStore::new();
-store.put("user:1", user_data)?;
-store.put("user:2", user_data)?;
-
-// Save snapshot to file (atomic write)
-store.save_snapshot("data.bin")?;
-
-// Later: load from snapshot
-let store = TensorStore::load_snapshot("data.bin")?;
-assert!(store.exists("user:1"));
-```
-
-Snapshots use bincode for compact binary serialization. All core types
-(`TensorData`, `TensorValue`, `ScalarValue`) are serializable.
-
-## Project Status
-
-| Module | Status | Description |
-| --- | --- | --- |
-| Tensor Store | Complete | Key-value storage with HNSW, SlabRouter, 22 specialized modules |
-| Tiered Storage | Complete | Hot/cold memory tiering with mmap for datasets larger than RAM |
-| Sparse Vectors | Complete | Memory-efficient storage with 15+ distance metrics (3-33x compression) |
-| Delta Vectors | Complete | Archetype-based encoding with k-means clustering (auto-discovery) |
-| Relational Engine | Complete | Tables, schemas, SIMD-accelerated filtering, indexes |
-| Graph Engine | Complete | Nodes, edges, BFS traversal, shortest path, unified entity edges |
-| Vector Engine | Complete | Embeddings, k-NN search via HNSW, unified entity embeddings |
-| Tensor Compress | Complete | Tensor Train decomposition (10-20x), delta encoding, RLE |
-| Tensor Vault | Complete | AES-256-GCM secrets with graph-based access, TTL, rate limiting, audit |
-| Tensor Cache | Complete | Multi-layer LLM caching (exact + semantic + embedding), cost tracking |
-| Tensor Blob | Complete | S3-style chunked blob storage with deduplication, streaming, GC |
-| Tensor Unified | Complete | Cross-engine unified entity operations with async batch support |
-| Tensor Checkpoint | Complete | Atomic snapshot/restore with retention and confirmation workflow |
-| Query Router | Complete | Cross-engine queries, distributed query planning, result merging |
-| Neumann Parser | Complete | Hand-written recursive descent SQL/Graph/Vector parser |
-| Shell | Complete | Interactive CLI with readline, WAL, history, formatted output |
-| Server | Complete | gRPC server exposing QueryRouter via tonic |
-| Tensor Chain | Complete | Tensor-native blockchain with production-ready distributed systems |
-| Persistence | Complete | SlabRouter-based snapshots with V2/V3 format migration |
-
-### Distributed Systems (Tensor Chain)
-
-Tensor Chain provides **production-ready distributed infrastructure** with >95%
-test coverage:
-
-| Component | Status | Features |
-| --- | --- | --- |
-| **Raft Consensus** | Production | Pre-vote protocol, automatic log compaction, snapshot persistence, WAL durability, leadership transfer, automatic heartbeat |
-| **2PC Transactions** | Production | Coordinator/participant model, abort broadcast with retry, deadlock detection, orthogonal delta optimization |
-| **Membership** | Production | Gossip protocol (SWIM), dynamic membership via joint consensus, partition detection and automatic merge |
-| **Network** | Production | TCP transport with TLS, LZ4 compression, per-peer rate limiting, I/O timeouts, connection pooling |
-| **Replication** | Production | Delta-compressed state replication, archetype persistence, streaming snapshots with memory bounds |
-
-All components have integration tests and fuzz targets.
-See [Tensor Chain docs](docs/book/src/architecture/tensor-chain.md)
-for details.
-
-## What Neumann Is Not (For Now)
-
-- **Not battle-tested in production yet.** Distributed infrastructure is
-  complete with >95% test coverage, but real-world multi-node deployments need
-  validation.
-- **Not a replacement for production Postgres at scale.** It's for development,
-  prototyping, small-to-medium workloads, and AI-native applications.
-- **Not a full IDE or code editor.** It stores and queries code structure, but
-  you still write code elsewhere.
-
-## Why "Neumann"?
-
-John von Neumann unified code and data in the stored-program architecture. Sixty
-years later, we've re-fragmented them into separate systems.
-
-Neumann finishes the thought.
+Neumann finishes the thought: one mathematical substrate for all your data.
 
 ## Documentation
 
-### Getting Started
-
 - [Installation](docs/book/src/getting-started/installation.md)
-- [Getting Started Tutorial](docs/book/src/getting-started/quick-start.md)
-- [Architecture Overview](docs/architecture.md)
-
-### Core Modules
-
-- [Tensor Store API](docs/book/src/architecture/tensor-store.md)
-- [Relational Engine API](docs/book/src/architecture/relational-engine.md)
-- [Graph Engine API](docs/book/src/architecture/graph-engine.md)
-- [Vector Engine API](docs/book/src/architecture/vector-engine.md)
-
-### Extended Modules
-
-- [Tensor Compress](docs/book/src/architecture/tensor-compress.md)
-- [Tensor Vault](docs/book/src/architecture/tensor-vault.md)
-- [Tensor Cache](docs/book/src/architecture/tensor-cache.md)
-- [Tensor Blob](docs/book/src/architecture/tensor-blob.md)
-- [Tensor Chain](docs/book/src/architecture/tensor-chain.md)
-
-### Query Language
-
-- [Query Router API](docs/book/src/architecture/query-router.md)
-- [Neumann Parser](docs/book/src/architecture/neumann-parser.md)
-- [Shell](docs/book/src/architecture/neumann-shell.md)
-
-### Reference
-
+- [Quick Start](docs/book/src/getting-started/quick-start.md)
+- [Architecture](docs/architecture.md)
 - [Benchmarks](docs/book/src/benchmarks/index.md)
-- [Integration Tests](docs/book/src/integration-tests/index.md)
-- [Changelog](CHANGELOG.md)
-
-## Getting Help
-
-- **Discord**: [Join our community](https://discord.gg/uN3KbAyKvw)
-- **GitHub Issues**: [Report bugs](https://github.com/Shadylukin/Neumann/issues)
-- **GitHub Discussions**: [Ask
-  questions](https://github.com/Shadylukin/Neumann/discussions)
-
-## Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- [Tensor Chain](docs/book/src/architecture/tensor-chain.md)
+- [API Reference](docs/book/src/api-reference.md)
 
 ## License
 
-Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your
-option.
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
 
 ## Author
 
-Created by [Lukin Ackroyd](https://scrunchee.ai) in Auckland, New Zealand.
+Built by [Lukin Ackroyd](https://scrunchee.ai) in Auckland, New Zealand.
 
-Neumann is the infrastructure layer for [Scrunchee](https://scrunchee.ai), a
-code intelligence platform for the AI era.
+Neumann is the infrastructure layer for [Scrunchee](https://scrunchee.ai).

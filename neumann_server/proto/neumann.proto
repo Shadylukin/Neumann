@@ -56,6 +56,8 @@ message QueryResponse {
     BlobStatsResult blob_stats = 15;
     CheckpointListResult checkpoint_list = 16;
     ChainQueryResult chain = 17;
+    PageRankResult page_rank = 18;
+    CentralityResult centrality = 19;
   }
   optional ErrorInfo error = 20;
 }
@@ -164,6 +166,26 @@ message SimilarItem {
 
 message SimilarChunk {
   SimilarItem item = 1;
+}
+
+// === Graph Algorithm Result Types ===
+
+message PageRankResult {
+  repeated PageRankItem items = 1;
+}
+
+message PageRankItem {
+  uint64 node_id = 1;
+  double score = 2;
+}
+
+message CentralityResult {
+  repeated CentralityItem items = 1;
+}
+
+message CentralityItem {
+  uint64 node_id = 1;
+  double score = 2;
 }
 
 message RowChunk {

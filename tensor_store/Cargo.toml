@@ -24,3 +24,7 @@ tempfile = "3"
 [[bench]]
 name = "tensor_store_bench"
 harness = false
+
+[[bench]]
+name = "hnsw_concurrent_bench"
+harness = false

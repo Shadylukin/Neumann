@@ -194,7 +194,7 @@ impl RaftWal {
                     let v2 = !Self::looks_like_bincode_start(&checksum_buf);
                     detected_format = Some(v2);
                     v2
-                }
+                },
             };
 
             if is_v2 {
@@ -416,7 +416,7 @@ impl RaftWal {
                     let v2 = !Self::looks_like_bincode_start(&checksum_buf);
                     detected_format = Some(v2);
                     v2
-                }
+                },
             };
 
             let data = if is_v2 {
@@ -1415,11 +1415,15 @@ mod tests {
         let entries = wal.replay().unwrap();
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            RaftWalEntry::LogAppend { index, term, command_hash } => {
+            RaftWalEntry::LogAppend {
+                index,
+                term,
+                command_hash,
+            } => {
                 assert_eq!(*index, 42);
                 assert_eq!(*term, 5);
                 assert_eq!(*command_hash, [0xAB; 32]);
-            }
+            },
             _ => panic!("Expected LogAppend"),
         }
     }

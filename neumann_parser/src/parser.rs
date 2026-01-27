@@ -138,6 +138,40 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Expects an identifier or any keyword (including reserved ones like FROM, TO).
+    /// Used in contexts like batch edge definitions where reserved keywords are valid keys.
+    fn expect_ident_or_any_keyword(&mut self) -> ParseResult<Ident> {
+        let token = self.current.clone();
+        if let TokenKind::Ident(name) = &token.kind {
+            self.advance();
+            Ok(Ident::new(name.clone(), token.span))
+        } else if token.kind.is_keyword() {
+            self.advance();
+            // Convert keyword to lowercase string for use as identifier
+            let name = token.kind.as_str().to_lowercase();
+            Ok(Ident::new(name, token.span))
+        } else {
+            Err(ParseError::unexpected(token.kind, token.span, "identifier"))
+        }
+    }
+
+    /// Parses a direction (OUTGOING, INCOMING, BOTH).
+    fn parse_direction(&mut self) -> ParseResult<Direction> {
+        if self.eat(&TokenKind::Outgoing) {
+            Ok(Direction::Outgoing)
+        } else if self.eat(&TokenKind::Incoming) {
+            Ok(Direction::Incoming)
+        } else if self.eat(&TokenKind::Both) {
+            Ok(Direction::Both)
+        } else {
+            Err(ParseError::unexpected(
+                self.current.kind.clone(),
+                self.current.span,
+                "OUTGOING, INCOMING, or BOTH",
+            ))
+        }
+    }
+
     /// Parses an expression.
     fn parse_expr(&mut self) -> ParseResult<Expr> {
         self.parse_expr_bp(0)
@@ -681,6 +715,12 @@ impl<'a> Parser<'a> {
             // Cluster Statements
             TokenKind::Cluster => self.parse_cluster()?,
 
+            // Extended Graph Statements
+            TokenKind::Graph => self.parse_graph()?,
+            TokenKind::Constraint => self.parse_constraint()?,
+            TokenKind::Batch => self.parse_batch()?,
+            TokenKind::Aggregate => self.parse_aggregate_stmt()?,
+
             _ => {
                 return Err(ParseError::new(
                     ParseErrorKind::UnknownCommand(format!("{}", self.current.kind)),
@@ -1124,7 +1164,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_column_def(&mut self) -> ParseResult<ColumnDef> {
-        let name = self.expect_ident()?;
+        let name = self.expect_ident_or_keyword()?;
         let data_type = self.parse_data_type()?;
 
         let mut constraints = Vec::new();
@@ -1437,6 +1477,9 @@ impl<'a> Parser<'a> {
                 None
             };
             Ok(StatementKind::ShowEmbeddings { limit })
+        } else if self.eat(&TokenKind::Vector) {
+            self.expect(&TokenKind::Index)?;
+            Ok(StatementKind::ShowVectorIndex)
         } else if self.eat(&TokenKind::Codebook) {
             // SHOW CODEBOOK GLOBAL or SHOW CODEBOOK LOCAL 'domain'
             if self.eat(&TokenKind::Global) {
@@ -1459,7 +1502,7 @@ impl<'a> Parser<'a> {
             Err(ParseError::unexpected(
                 self.current.kind.clone(),
                 self.current.span,
-                "TABLES, EMBEDDINGS, or CODEBOOK",
+                "TABLES, EMBEDDINGS, VECTOR INDEX, or CODEBOOK",
             ))
         }
     }
@@ -1663,6 +1706,8 @@ impl<'a> Parser<'a> {
             from_id,
             to_id,
             max_depth,
+            min_depth: None,
+            weight_property: None,
         }))
     }
 
@@ -1874,13 +1919,17 @@ impl<'a> Parser<'a> {
                 properties,
                 embedding,
             }
+        } else if self.eat(&TokenKind::Get) {
+            // ENTITY GET 'key'
+            let key = self.parse_expr()?;
+            EntityOp::Get { key }
         } else if self.eat(&TokenKind::Connect) {
             // ENTITY CONNECT 'from' -> 'to' : type
             let from_key = self.parse_expr()?;
             self.expect(&TokenKind::Arrow)?;
             let to_key = self.parse_expr()?;
             self.expect(&TokenKind::Colon)?;
-            let edge_type = self.expect_ident()?;
+            let edge_type = self.expect_ident_or_keyword()?;
 
             EntityOp::Connect {
                 from_key,
@@ -1889,7 +1938,7 @@ impl<'a> Parser<'a> {
             }
         } else {
             return Err(ParseError::invalid(
-                "expected CREATE or CONNECT after ENTITY",
+                "expected CREATE, GET, or CONNECT after ENTITY",
                 self.current.span,
             ));
         };
@@ -2099,6 +2148,856 @@ impl<'a> Parser<'a> {
     }
 
     // =========================================================================
+    // Extended Graph Statement Parsers
+    // =========================================================================
+
+    fn parse_graph(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Graph)?;
+
+        match &self.current.kind {
+            TokenKind::PageRank => self.parse_graph_pagerank(),
+            TokenKind::Betweenness => self.parse_graph_betweenness(),
+            TokenKind::Closeness => self.parse_graph_closeness(),
+            TokenKind::Eigenvector => self.parse_graph_eigenvector(),
+            TokenKind::Louvain => self.parse_graph_louvain(),
+            TokenKind::Label => self.parse_graph_label_propagation(),
+            TokenKind::Index => self.parse_graph_index(),
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected:
+                        "PAGERANK, BETWEENNESS, CLOSENESS, EIGENVECTOR, LOUVAIN, LABEL, or INDEX"
+                            .to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    fn parse_graph_pagerank(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::PageRank)?;
+
+        let mut damping = None;
+        let mut tolerance = None;
+        let mut max_iterations = None;
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Damping => {
+                    self.advance();
+                    damping = Some(self.parse_expr()?);
+                },
+                TokenKind::Tolerance => {
+                    self.advance();
+                    tolerance = Some(self.parse_expr()?);
+                },
+                TokenKind::Iterations => {
+                    self.advance();
+                    max_iterations = Some(self.parse_expr()?);
+                },
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::PageRank {
+                damping,
+                tolerance,
+                max_iterations,
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_betweenness(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Betweenness)?;
+        self.expect(&TokenKind::Centrality)?;
+
+        let mut sampling_ratio = None;
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Sampling => {
+                    self.advance();
+                    sampling_ratio = Some(self.parse_expr()?);
+                },
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::BetweennessCentrality {
+                sampling_ratio,
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_closeness(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Closeness)?;
+        self.expect(&TokenKind::Centrality)?;
+
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::ClosenessCentrality {
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_eigenvector(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Eigenvector)?;
+        self.expect(&TokenKind::Centrality)?;
+
+        let mut max_iterations = None;
+        let mut tolerance = None;
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Iterations => {
+                    self.advance();
+                    max_iterations = Some(self.parse_expr()?);
+                },
+                TokenKind::Tolerance => {
+                    self.advance();
+                    tolerance = Some(self.parse_expr()?);
+                },
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::EigenvectorCentrality {
+                max_iterations,
+                tolerance,
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_louvain(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Louvain)?;
+        self.expect(&TokenKind::Communities)?;
+
+        let mut resolution = None;
+        let mut max_passes = None;
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Resolution => {
+                    self.advance();
+                    resolution = Some(self.parse_expr()?);
+                },
+                TokenKind::Passes => {
+                    self.advance();
+                    max_passes = Some(self.parse_expr()?);
+                },
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::LouvainCommunities {
+                resolution,
+                max_passes,
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_label_propagation(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Label)?;
+        self.expect(&TokenKind::Propagation)?;
+
+        let mut max_iterations = None;
+        let mut direction = None;
+        let mut edge_type = None;
+
+        while !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            match &self.current.kind {
+                TokenKind::Iterations => {
+                    self.advance();
+                    max_iterations = Some(self.parse_expr()?);
+                },
+                TokenKind::Outgoing | TokenKind::Incoming | TokenKind::Both => {
+                    direction = Some(self.parse_direction()?);
+                },
+                TokenKind::Edge => {
+                    self.advance();
+                    self.expect(&TokenKind::Type)?;
+                    edge_type = Some(self.expect_ident_or_keyword()?);
+                },
+                _ => break,
+            }
+        }
+
+        Ok(StatementKind::GraphAlgorithm(GraphAlgorithmStmt {
+            operation: GraphAlgorithmOp::LabelPropagation {
+                max_iterations,
+                direction,
+                edge_type,
+            },
+        }))
+    }
+
+    fn parse_graph_index(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Index)?;
+
+        match &self.current.kind {
+            TokenKind::Create => {
+                self.advance();
+                self.expect(&TokenKind::On)?;
+
+                match &self.current.kind {
+                    TokenKind::Node => {
+                        self.advance();
+                        self.expect(&TokenKind::Property)?;
+                        let property = self.expect_ident_or_keyword()?;
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::CreateNodeProperty { property },
+                        }))
+                    },
+                    TokenKind::Edge => {
+                        self.advance();
+                        if self.eat(&TokenKind::Property) {
+                            let property = self.expect_ident_or_keyword()?;
+                            Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                                operation: GraphIndexOp::CreateEdgeProperty { property },
+                            }))
+                        } else {
+                            self.expect(&TokenKind::Type)?;
+                            Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                                operation: GraphIndexOp::CreateEdgeType,
+                            }))
+                        }
+                    },
+                    TokenKind::Label => {
+                        self.advance();
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::CreateLabel,
+                        }))
+                    },
+                    _ => Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "NODE, EDGE, or LABEL".to_string(),
+                        },
+                        self.current.span,
+                    )),
+                }
+            },
+            TokenKind::Drop => {
+                self.advance();
+                self.expect(&TokenKind::On)?;
+
+                match &self.current.kind {
+                    TokenKind::Node => {
+                        self.advance();
+                        self.expect(&TokenKind::Property)?;
+                        let property = self.expect_ident_or_keyword()?;
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::DropNode { property },
+                        }))
+                    },
+                    TokenKind::Edge => {
+                        self.advance();
+                        self.expect(&TokenKind::Property)?;
+                        let property = self.expect_ident_or_keyword()?;
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::DropEdge { property },
+                        }))
+                    },
+                    _ => Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "NODE or EDGE".to_string(),
+                        },
+                        self.current.span,
+                    )),
+                }
+            },
+            TokenKind::Show => {
+                self.advance();
+                self.expect(&TokenKind::On)?;
+
+                match &self.current.kind {
+                    TokenKind::Node => {
+                        self.advance();
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::ShowNodeIndexes,
+                        }))
+                    },
+                    TokenKind::Edge => {
+                        self.advance();
+                        Ok(StatementKind::GraphIndex(GraphIndexStmt {
+                            operation: GraphIndexOp::ShowEdgeIndexes,
+                        }))
+                    },
+                    _ => Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "NODE or EDGE".to_string(),
+                        },
+                        self.current.span,
+                    )),
+                }
+            },
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected: "CREATE, DROP, or SHOW".to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    fn parse_constraint(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Constraint)?;
+
+        match &self.current.kind {
+            TokenKind::Create => {
+                self.advance();
+                let name = self.expect_ident_or_keyword()?;
+                self.expect(&TokenKind::On)?;
+
+                let target = match &self.current.kind {
+                    TokenKind::Node => {
+                        self.advance();
+                        let label = if !self.check(&TokenKind::Property) {
+                            Some(self.expect_ident_or_keyword()?)
+                        } else {
+                            None
+                        };
+                        ConstraintTarget::Node { label }
+                    },
+                    TokenKind::Edge => {
+                        self.advance();
+                        let edge_type = if !self.check(&TokenKind::Property) {
+                            Some(self.expect_ident_or_keyword()?)
+                        } else {
+                            None
+                        };
+                        ConstraintTarget::Edge { edge_type }
+                    },
+                    _ => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::UnexpectedToken {
+                                found: self.current.kind.clone(),
+                                expected: "NODE or EDGE".to_string(),
+                            },
+                            self.current.span,
+                        ));
+                    },
+                };
+
+                self.expect(&TokenKind::Property)?;
+                let property = self.expect_ident_or_keyword()?;
+
+                let constraint_type = match &self.current.kind {
+                    TokenKind::Unique => {
+                        self.advance();
+                        ConstraintType::Unique
+                    },
+                    TokenKind::Exists => {
+                        self.advance();
+                        ConstraintType::Exists
+                    },
+                    TokenKind::Type => {
+                        self.advance();
+                        let type_name = self.expect_ident_or_keyword()?;
+                        ConstraintType::Type(type_name.name)
+                    },
+                    _ => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::UnexpectedToken {
+                                found: self.current.kind.clone(),
+                                expected: "UNIQUE, EXISTS, or TYPE".to_string(),
+                            },
+                            self.current.span,
+                        ));
+                    },
+                };
+
+                Ok(StatementKind::GraphConstraint(GraphConstraintStmt {
+                    operation: GraphConstraintOp::Create {
+                        name,
+                        target,
+                        property,
+                        constraint_type,
+                    },
+                }))
+            },
+            TokenKind::Drop => {
+                self.advance();
+                let name = self.expect_ident_or_keyword()?;
+                Ok(StatementKind::GraphConstraint(GraphConstraintStmt {
+                    operation: GraphConstraintOp::Drop { name },
+                }))
+            },
+            TokenKind::List => {
+                self.advance();
+                Ok(StatementKind::GraphConstraint(GraphConstraintStmt {
+                    operation: GraphConstraintOp::List,
+                }))
+            },
+            TokenKind::Get => {
+                self.advance();
+                let name = self.expect_ident_or_keyword()?;
+                Ok(StatementKind::GraphConstraint(GraphConstraintStmt {
+                    operation: GraphConstraintOp::Get { name },
+                }))
+            },
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected: "CREATE, DROP, LIST, or GET".to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    fn parse_batch(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Batch)?;
+
+        match &self.current.kind {
+            TokenKind::Create => {
+                self.advance();
+                match &self.current.kind {
+                    TokenKind::Node | TokenKind::Nodes => {
+                        self.advance();
+                        let nodes = self.parse_batch_node_list()?;
+                        Ok(StatementKind::GraphBatch(GraphBatchStmt {
+                            operation: GraphBatchOp::CreateNodes { nodes },
+                        }))
+                    },
+                    TokenKind::Edge | TokenKind::Edges => {
+                        self.advance();
+                        let edges = self.parse_batch_edge_list()?;
+                        Ok(StatementKind::GraphBatch(GraphBatchStmt {
+                            operation: GraphBatchOp::CreateEdges { edges },
+                        }))
+                    },
+                    _ => Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "NODES or EDGES".to_string(),
+                        },
+                        self.current.span,
+                    )),
+                }
+            },
+            TokenKind::Delete => {
+                self.advance();
+                match &self.current.kind {
+                    TokenKind::Node | TokenKind::Nodes => {
+                        self.advance();
+                        let ids = self.parse_expr_list()?;
+                        Ok(StatementKind::GraphBatch(GraphBatchStmt {
+                            operation: GraphBatchOp::DeleteNodes { ids },
+                        }))
+                    },
+                    TokenKind::Edge | TokenKind::Edges => {
+                        self.advance();
+                        let ids = self.parse_expr_list()?;
+                        Ok(StatementKind::GraphBatch(GraphBatchStmt {
+                            operation: GraphBatchOp::DeleteEdges { ids },
+                        }))
+                    },
+                    _ => Err(ParseError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            found: self.current.kind.clone(),
+                            expected: "NODES or EDGES".to_string(),
+                        },
+                        self.current.span,
+                    )),
+                }
+            },
+            TokenKind::Update => {
+                self.advance();
+                self.expect(&TokenKind::Nodes)?;
+                let updates = self.parse_batch_update_list()?;
+                Ok(StatementKind::GraphBatch(GraphBatchStmt {
+                    operation: GraphBatchOp::UpdateNodes { updates },
+                }))
+            },
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected: "CREATE, DELETE, or UPDATE".to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    fn parse_batch_node_list(&mut self) -> ParseResult<Vec<BatchNodeDef>> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut nodes = Vec::new();
+
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                nodes.push(self.parse_batch_node_def()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBracket)?;
+        Ok(nodes)
+    }
+
+    fn parse_batch_node_def(&mut self) -> ParseResult<BatchNodeDef> {
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut labels = Vec::new();
+        let mut properties = Vec::new();
+
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                let key = self.expect_ident_or_keyword()?;
+                self.expect(&TokenKind::Colon)?;
+
+                if key.name == "labels" {
+                    self.expect(&TokenKind::LBracket)?;
+                    if !self.check(&TokenKind::RBracket) {
+                        loop {
+                            labels.push(self.expect_ident_or_keyword()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RBracket)?;
+                } else {
+                    let value = self.parse_expr()?;
+                    properties.push(Property { key, value });
+                }
+
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+        Ok(BatchNodeDef { labels, properties })
+    }
+
+    fn parse_batch_edge_list(&mut self) -> ParseResult<Vec<BatchEdgeDef>> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut edges = Vec::new();
+
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                edges.push(self.parse_batch_edge_def()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBracket)?;
+        Ok(edges)
+    }
+
+    fn parse_batch_edge_def(&mut self) -> ParseResult<BatchEdgeDef> {
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut from_id = None;
+        let mut to_id = None;
+        let mut edge_type = None;
+        let mut properties = Vec::new();
+
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                // Use expect_ident_or_any_keyword to allow reserved keywords like FROM, TO
+                let key = self.expect_ident_or_any_keyword()?;
+                self.expect(&TokenKind::Colon)?;
+
+                match key.name.as_str() {
+                    "from" => from_id = Some(self.parse_expr()?),
+                    "to" => to_id = Some(self.parse_expr()?),
+                    "type" => edge_type = Some(self.expect_ident_or_any_keyword()?),
+                    _ => {
+                        let value = self.parse_expr()?;
+                        properties.push(Property { key, value });
+                    },
+                }
+
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+
+        let from_id = from_id.ok_or_else(|| {
+            ParseError::new(
+                ParseErrorKind::Custom("Missing 'from' in edge definition".to_string()),
+                self.current.span,
+            )
+        })?;
+        let to_id = to_id.ok_or_else(|| {
+            ParseError::new(
+                ParseErrorKind::Custom("Missing 'to' in edge definition".to_string()),
+                self.current.span,
+            )
+        })?;
+        let edge_type = edge_type.ok_or_else(|| {
+            ParseError::new(
+                ParseErrorKind::Custom("Missing 'type' in edge definition".to_string()),
+                self.current.span,
+            )
+        })?;
+
+        Ok(BatchEdgeDef {
+            from_id,
+            to_id,
+            edge_type,
+            properties,
+        })
+    }
+
+    fn parse_batch_update_list(&mut self) -> ParseResult<Vec<BatchNodeUpdate>> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut updates = Vec::new();
+
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                updates.push(self.parse_batch_node_update()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBracket)?;
+        Ok(updates)
+    }
+
+    fn parse_batch_node_update(&mut self) -> ParseResult<BatchNodeUpdate> {
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut id = None;
+        let mut properties = Vec::new();
+
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                let key = self.expect_ident_or_keyword()?;
+                self.expect(&TokenKind::Colon)?;
+
+                if key.name == "id" {
+                    id = Some(self.parse_expr()?);
+                } else {
+                    let value = self.parse_expr()?;
+                    properties.push(Property { key, value });
+                }
+
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+
+        let id = id.ok_or_else(|| {
+            ParseError::new(
+                ParseErrorKind::Custom("Missing 'id' in node update".to_string()),
+                self.current.span,
+            )
+        })?;
+
+        Ok(BatchNodeUpdate { id, properties })
+    }
+
+    fn parse_expr_list(&mut self) -> ParseResult<Vec<Expr>> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut exprs = Vec::new();
+
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                exprs.push(self.parse_expr()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBracket)?;
+        Ok(exprs)
+    }
+
+    fn parse_aggregate_stmt(&mut self) -> ParseResult<StatementKind> {
+        self.expect(&TokenKind::Aggregate)?;
+
+        match &self.current.kind {
+            TokenKind::Node => {
+                self.advance();
+                self.expect(&TokenKind::Property)?;
+                let property = self.expect_ident_or_keyword()?;
+
+                let function = self.parse_aggregate_function()?;
+
+                let label = if self.eat(&TokenKind::By) {
+                    self.expect(&TokenKind::Label)?;
+                    Some(self.expect_ident_or_keyword()?)
+                } else {
+                    None
+                };
+
+                let filter = if self.eat(&TokenKind::Where) {
+                    Some(Box::new(self.parse_expr()?))
+                } else {
+                    None
+                };
+
+                Ok(StatementKind::GraphAggregate(GraphAggregateStmt {
+                    operation: GraphAggregateOp::AggregateNodeProperty {
+                        function,
+                        property,
+                        label,
+                        filter,
+                    },
+                }))
+            },
+            TokenKind::Edge => {
+                self.advance();
+                self.expect(&TokenKind::Property)?;
+                let property = self.expect_ident_or_keyword()?;
+
+                let function = self.parse_aggregate_function()?;
+
+                let edge_type = if self.eat(&TokenKind::By) {
+                    self.expect(&TokenKind::Type)?;
+                    Some(self.expect_ident_or_keyword()?)
+                } else {
+                    None
+                };
+
+                let filter = if self.eat(&TokenKind::Where) {
+                    Some(Box::new(self.parse_expr()?))
+                } else {
+                    None
+                };
+
+                Ok(StatementKind::GraphAggregate(GraphAggregateStmt {
+                    operation: GraphAggregateOp::AggregateEdgeProperty {
+                        function,
+                        property,
+                        edge_type,
+                        filter,
+                    },
+                }))
+            },
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected: "NODE or EDGE".to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    fn parse_aggregate_function(&mut self) -> ParseResult<AggregateFunction> {
+        match &self.current.kind {
+            TokenKind::Sum => {
+                self.advance();
+                Ok(AggregateFunction::Sum)
+            },
+            TokenKind::Avg => {
+                self.advance();
+                Ok(AggregateFunction::Avg)
+            },
+            TokenKind::Min => {
+                self.advance();
+                Ok(AggregateFunction::Min)
+            },
+            TokenKind::Max => {
+                self.advance();
+                Ok(AggregateFunction::Max)
+            },
+            TokenKind::Count => {
+                self.advance();
+                Ok(AggregateFunction::Count)
+            },
+            _ => Err(ParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: self.current.kind.clone(),
+                    expected: "SUM, AVG, MIN, MAX, or COUNT".to_string(),
+                },
+                self.current.span,
+            )),
+        }
+    }
+
+    // =========================================================================
     // Blob Storage Statement Parsers
     // =========================================================================
 
@@ -2278,8 +3177,9 @@ impl<'a> Parser<'a> {
             BlobsOp::ByTag { tag }
         } else if self.eat(&TokenKind::Where) {
             // BLOBS WHERE TYPE = 'type'
-            // Expect TYPE or an identifier
-            if self.check(&TokenKind::Ident("TYPE".to_string()))
+            // Expect TYPE keyword or an identifier
+            if self.check(&TokenKind::Type)
+                || self.check(&TokenKind::Ident("TYPE".to_string()))
                 || self.check(&TokenKind::Ident("type".to_string()))
             {
                 self.advance();
@@ -5329,6 +6229,649 @@ mod tests {
             assert!(cps.limit.is_some());
         } else {
             panic!("expected CHECKPOINTS");
+        }
+    }
+
+    // =========================================================================
+    // Extended Graph Algorithm Tests
+    // =========================================================================
+
+    #[test]
+    fn test_graph_pagerank_simple() {
+        let stmt = parse_stmt("GRAPH PAGERANK");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::PageRank {
+                    damping: None,
+                    tolerance: None,
+                    max_iterations: None,
+                    direction: None,
+                    edge_type: None,
+                }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_pagerank_with_damping() {
+        let stmt = parse_stmt("GRAPH PAGERANK DAMPING 0.85");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::PageRank { damping, .. } = algo.operation {
+                assert!(damping.is_some());
+            } else {
+                panic!("expected PageRank");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_pagerank_with_all_options() {
+        let stmt = parse_stmt(
+            "GRAPH PAGERANK DAMPING 0.85 TOLERANCE 0.001 ITERATIONS 100 OUTGOING EDGE TYPE follows",
+        );
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::PageRank {
+                damping,
+                tolerance,
+                max_iterations,
+                direction,
+                edge_type,
+            } = algo.operation
+            {
+                assert!(damping.is_some());
+                assert!(tolerance.is_some());
+                assert!(max_iterations.is_some());
+                assert!(direction.is_some());
+                assert!(edge_type.is_some());
+            } else {
+                panic!("expected PageRank");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_betweenness_centrality() {
+        let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::BetweennessCentrality { .. }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_betweenness_with_sampling() {
+        let stmt = parse_stmt("GRAPH BETWEENNESS CENTRALITY SAMPLING 0.5");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::BetweennessCentrality { sampling_ratio, .. } = algo.operation {
+                assert!(sampling_ratio.is_some());
+            } else {
+                panic!("expected BetweennessCentrality");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_closeness_centrality() {
+        let stmt = parse_stmt("GRAPH CLOSENESS CENTRALITY");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::ClosenessCentrality { .. }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_closeness_with_direction() {
+        let stmt = parse_stmt("GRAPH CLOSENESS CENTRALITY INCOMING");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::ClosenessCentrality { direction, .. } = algo.operation {
+                assert!(direction.is_some());
+            } else {
+                panic!("expected ClosenessCentrality");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_eigenvector_centrality() {
+        let stmt = parse_stmt("GRAPH EIGENVECTOR CENTRALITY");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::EigenvectorCentrality { .. }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_eigenvector_with_options() {
+        let stmt = parse_stmt("GRAPH EIGENVECTOR CENTRALITY ITERATIONS 50 TOLERANCE 0.0001");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::EigenvectorCentrality {
+                max_iterations,
+                tolerance,
+                ..
+            } = algo.operation
+            {
+                assert!(max_iterations.is_some());
+                assert!(tolerance.is_some());
+            } else {
+                panic!("expected EigenvectorCentrality");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_louvain_communities() {
+        let stmt = parse_stmt("GRAPH LOUVAIN COMMUNITIES");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::LouvainCommunities { .. }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_louvain_with_resolution() {
+        let stmt = parse_stmt("GRAPH LOUVAIN COMMUNITIES RESOLUTION 1.5 PASSES 10");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::LouvainCommunities {
+                resolution,
+                max_passes,
+                ..
+            } = algo.operation
+            {
+                assert!(resolution.is_some());
+                assert!(max_passes.is_some());
+            } else {
+                panic!("expected LouvainCommunities");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_label_propagation() {
+        let stmt = parse_stmt("GRAPH LABEL PROPAGATION");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            assert!(matches!(
+                algo.operation,
+                GraphAlgorithmOp::LabelPropagation { .. }
+            ));
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    #[test]
+    fn test_graph_label_propagation_with_iterations() {
+        let stmt = parse_stmt("GRAPH LABEL PROPAGATION ITERATIONS 20");
+        if let StatementKind::GraphAlgorithm(algo) = stmt.kind {
+            if let GraphAlgorithmOp::LabelPropagation { max_iterations, .. } = algo.operation {
+                assert!(max_iterations.is_some());
+            } else {
+                panic!("expected LabelPropagation");
+            }
+        } else {
+            panic!("expected GraphAlgorithm");
+        }
+    }
+
+    // =========================================================================
+    // Graph Index Tests
+    // =========================================================================
+
+    #[test]
+    fn test_graph_index_create_node_property() {
+        let stmt = parse_stmt("GRAPH INDEX CREATE ON NODE PROPERTY name");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            if let GraphIndexOp::CreateNodeProperty { property } = idx.operation {
+                assert_eq!(property.name, "name");
+            } else {
+                panic!("expected CreateNodeProperty");
+            }
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_create_edge_property() {
+        let stmt = parse_stmt("GRAPH INDEX CREATE ON EDGE PROPERTY weight");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            if let GraphIndexOp::CreateEdgeProperty { property } = idx.operation {
+                assert_eq!(property.name, "weight");
+            } else {
+                panic!("expected CreateEdgeProperty");
+            }
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_create_label() {
+        let stmt = parse_stmt("GRAPH INDEX CREATE ON LABEL");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            assert!(matches!(idx.operation, GraphIndexOp::CreateLabel));
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_create_edge_type() {
+        let stmt = parse_stmt("GRAPH INDEX CREATE ON EDGE TYPE");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            assert!(matches!(idx.operation, GraphIndexOp::CreateEdgeType));
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_drop_node() {
+        let stmt = parse_stmt("GRAPH INDEX DROP ON NODE PROPERTY age");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            if let GraphIndexOp::DropNode { property } = idx.operation {
+                assert_eq!(property.name, "age");
+            } else {
+                panic!("expected DropNode");
+            }
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_drop_edge() {
+        let stmt = parse_stmt("GRAPH INDEX DROP ON EDGE PROPERTY weight");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            if let GraphIndexOp::DropEdge { property } = idx.operation {
+                assert_eq!(property.name, "weight");
+            } else {
+                panic!("expected DropEdge");
+            }
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_show_node() {
+        let stmt = parse_stmt("GRAPH INDEX SHOW ON NODE");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            assert!(matches!(idx.operation, GraphIndexOp::ShowNodeIndexes));
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    #[test]
+    fn test_graph_index_show_edge() {
+        let stmt = parse_stmt("GRAPH INDEX SHOW ON EDGE");
+        if let StatementKind::GraphIndex(idx) = stmt.kind {
+            assert!(matches!(idx.operation, GraphIndexOp::ShowEdgeIndexes));
+        } else {
+            panic!("expected GraphIndex");
+        }
+    }
+
+    // =========================================================================
+    // Constraint Tests
+    // =========================================================================
+
+    #[test]
+    fn test_constraint_create_unique() {
+        let stmt = parse_stmt("CONSTRAINT CREATE email_unique ON NODE User PROPERTY email UNIQUE");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Create {
+                name,
+                target,
+                property,
+                constraint_type,
+            } = c.operation
+            {
+                assert_eq!(name.name, "email_unique");
+                assert!(matches!(target, ConstraintTarget::Node { label: Some(_) }));
+                assert_eq!(property.name, "email");
+                assert_eq!(constraint_type, ConstraintType::Unique);
+            } else {
+                panic!("expected Create");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_create_exists() {
+        let stmt = parse_stmt("CONSTRAINT CREATE name_required ON NODE PROPERTY name EXISTS");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Create {
+                constraint_type, ..
+            } = c.operation
+            {
+                assert_eq!(constraint_type, ConstraintType::Exists);
+            } else {
+                panic!("expected Create");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_create_type() {
+        let stmt = parse_stmt("CONSTRAINT CREATE age_int ON NODE PROPERTY age TYPE int");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Create {
+                constraint_type, ..
+            } = c.operation
+            {
+                assert!(matches!(constraint_type, ConstraintType::Type(_)));
+            } else {
+                panic!("expected Create");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_create_on_edge() {
+        let stmt =
+            parse_stmt("CONSTRAINT CREATE weight_exists ON EDGE knows PROPERTY weight EXISTS");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Create { target, .. } = c.operation {
+                assert!(matches!(
+                    target,
+                    ConstraintTarget::Edge { edge_type: Some(_) }
+                ));
+            } else {
+                panic!("expected Create");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_drop() {
+        let stmt = parse_stmt("CONSTRAINT DROP email_unique");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Drop { name } = c.operation {
+                assert_eq!(name.name, "email_unique");
+            } else {
+                panic!("expected Drop");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_list() {
+        let stmt = parse_stmt("CONSTRAINT LIST");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            assert!(matches!(c.operation, GraphConstraintOp::List));
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    #[test]
+    fn test_constraint_get() {
+        let stmt = parse_stmt("CONSTRAINT GET my_constraint");
+        if let StatementKind::GraphConstraint(c) = stmt.kind {
+            if let GraphConstraintOp::Get { name } = c.operation {
+                assert_eq!(name.name, "my_constraint");
+            } else {
+                panic!("expected Get");
+            }
+        } else {
+            panic!("expected GraphConstraint");
+        }
+    }
+
+    // =========================================================================
+    // Batch Operation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_batch_create_nodes_simple() {
+        let stmt = parse_stmt("BATCH CREATE NODES [{labels: [Person], name: 'Alice'}]");
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::CreateNodes { nodes } = batch.operation {
+                assert_eq!(nodes.len(), 1);
+                assert_eq!(nodes[0].labels.len(), 1);
+            } else {
+                panic!("expected CreateNodes");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    #[test]
+    fn test_batch_create_nodes_multiple() {
+        let stmt = parse_stmt(
+            "BATCH CREATE NODES [{labels: [Person], name: 'Alice'}, {labels: [Person], name: 'Bob'}]",
+        );
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::CreateNodes { nodes } = batch.operation {
+                assert_eq!(nodes.len(), 2);
+            } else {
+                panic!("expected CreateNodes");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    #[test]
+    fn test_batch_create_edges() {
+        let stmt = parse_stmt("BATCH CREATE EDGES [{from: 1, to: 2, type: knows, weight: 0.5}]");
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::CreateEdges { edges } = batch.operation {
+                assert_eq!(edges.len(), 1);
+                assert_eq!(edges[0].edge_type.name, "knows");
+            } else {
+                panic!("expected CreateEdges");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    #[test]
+    fn test_batch_delete_nodes() {
+        let stmt = parse_stmt("BATCH DELETE NODES [1, 2, 3]");
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::DeleteNodes { ids } = batch.operation {
+                assert_eq!(ids.len(), 3);
+            } else {
+                panic!("expected DeleteNodes");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    #[test]
+    fn test_batch_delete_edges() {
+        let stmt = parse_stmt("BATCH DELETE EDGES [10, 20]");
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::DeleteEdges { ids } = batch.operation {
+                assert_eq!(ids.len(), 2);
+            } else {
+                panic!("expected DeleteEdges");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    #[test]
+    fn test_batch_update_nodes() {
+        let stmt = parse_stmt("BATCH UPDATE NODES [{id: 1, name: 'Alice Updated'}]");
+        if let StatementKind::GraphBatch(batch) = stmt.kind {
+            if let GraphBatchOp::UpdateNodes { updates } = batch.operation {
+                assert_eq!(updates.len(), 1);
+            } else {
+                panic!("expected UpdateNodes");
+            }
+        } else {
+            panic!("expected GraphBatch");
+        }
+    }
+
+    // =========================================================================
+    // Aggregate Statement Tests
+    // =========================================================================
+
+    #[test]
+    fn test_aggregate_node_property_sum() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateNodeProperty {
+                function,
+                property,
+                label,
+                filter,
+            } = agg.operation
+            {
+                assert_eq!(function, AggregateFunction::Sum);
+                assert_eq!(property.name, "age");
+                assert!(label.is_none());
+                assert!(filter.is_none());
+            } else {
+                panic!("expected AggregateNodeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_node_property_avg() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY salary AVG");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation {
+                assert_eq!(function, AggregateFunction::Avg);
+            } else {
+                panic!("expected AggregateNodeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_node_property_with_label() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM BY LABEL Person");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateNodeProperty { label, .. } = agg.operation {
+                assert!(label.is_some());
+                assert_eq!(label.unwrap().name, "Person");
+            } else {
+                panic!("expected AggregateNodeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_node_property_with_filter() {
+        let stmt = parse_stmt("AGGREGATE NODE PROPERTY age SUM WHERE age > 18");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateNodeProperty { filter, .. } = agg.operation {
+                assert!(filter.is_some());
+            } else {
+                panic!("expected AggregateNodeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_edge_property() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight AVG");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateEdgeProperty {
+                function, property, ..
+            } = agg.operation
+            {
+                assert_eq!(function, AggregateFunction::Avg);
+                assert_eq!(property.name, "weight");
+            } else {
+                panic!("expected AggregateEdgeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_edge_property_with_type() {
+        let stmt = parse_stmt("AGGREGATE EDGE PROPERTY weight SUM BY TYPE knows");
+        if let StatementKind::GraphAggregate(agg) = stmt.kind {
+            if let GraphAggregateOp::AggregateEdgeProperty { edge_type, .. } = agg.operation {
+                assert!(edge_type.is_some());
+                assert_eq!(edge_type.unwrap().name, "knows");
+            } else {
+                panic!("expected AggregateEdgeProperty");
+            }
+        } else {
+            panic!("expected GraphAggregate");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_functions_min_max_count() {
+        for (func_name, expected_func) in [
+            ("MIN", AggregateFunction::Min),
+            ("MAX", AggregateFunction::Max),
+            ("COUNT", AggregateFunction::Count),
+        ] {
+            let stmt = parse_stmt(&format!("AGGREGATE NODE PROPERTY x {}", func_name));
+            if let StatementKind::GraphAggregate(agg) = stmt.kind {
+                if let GraphAggregateOp::AggregateNodeProperty { function, .. } = agg.operation {
+                    assert_eq!(function, expected_func);
+                } else {
+                    panic!("expected AggregateNodeProperty");
+                }
+            } else {
+                panic!("expected GraphAggregate");
+            }
         }
     }
 }

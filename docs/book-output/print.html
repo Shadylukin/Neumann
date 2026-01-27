@@ -3529,24 +3529,81 @@ with automatic sparse vector optimization for memory efficiency.</p>
 <h2 id="key-types-3"><a class="header" href="#key-types-3">Key Types</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Type</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>VectorEngine</code></td><td>Main engine for storing and searching embeddings</td></tr>
+<tr><td><code>VectorEngineConfig</code></td><td>Configuration for engine behavior and memory bounds</td></tr>
 <tr><td><code>SearchResult</code></td><td>Result with key and similarity score</td></tr>
 <tr><td><code>DistanceMetric</code></td><td>Enum: <code>Cosine</code>, <code>Euclidean</code>, <code>DotProduct</code></td></tr>
+<tr><td><code>ExtendedDistanceMetric</code></td><td>Extended metrics for HNSW (9+ variants)</td></tr>
 <tr><td><code>VectorError</code></td><td>Error types for vector operations</td></tr>
+<tr><td><code>EmbeddingInput</code></td><td>Input for batch store operations</td></tr>
+<tr><td><code>BatchResult</code></td><td>Result of batch operations</td></tr>
+<tr><td><code>Pagination</code></td><td>Parameters for paginated queries</td></tr>
+<tr><td><code>PagedResult&lt;T&gt;</code></td><td>Paginated query result</td></tr>
 <tr><td><code>HNSWIndex</code></td><td>Hierarchical navigable small world graph (re-exported from tensor_store)</td></tr>
 <tr><td><code>HNSWConfig</code></td><td>HNSW index configuration (re-exported from tensor_store)</td></tr>
 <tr><td><code>SparseVector</code></td><td>Memory-efficient sparse embedding storage</td></tr>
-<tr><td><code>EmbeddingStorage</code></td><td>Union type: Dense, Sparse, Delta, or TensorTrain</td></tr>
 </tbody></table>
 </div>
 <h3 id="vectorerror-variants"><a class="header" href="#vectorerror-variants">VectorError Variants</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variant</th><th>Description</th><th>When Triggered</th></tr></thead><tbody>
 <tr><td><code>NotFound</code></td><td>Embedding key doesn’t exist</td><td><code>get_embedding</code>, <code>delete_embedding</code></td></tr>
-<tr><td><code>DimensionMismatch</code></td><td>Vectors have different dimensions</td><td><code>compute_similarity</code> with mismatched inputs</td></tr>
+<tr><td><code>DimensionMismatch</code></td><td>Vectors have different dimensions</td><td><code>compute_similarity</code>, exceeds <code>max_dimension</code></td></tr>
 <tr><td><code>EmptyVector</code></td><td>Empty vector provided</td><td>Any operation with <code>vec![]</code></td></tr>
 <tr><td><code>InvalidTopK</code></td><td>top_k is 0</td><td><code>search_similar</code>, <code>search_with_hnsw</code></td></tr>
 <tr><td><code>StorageError</code></td><td>Underlying Tensor Store error</td><td>Storage failures</td></tr>
+<tr><td><code>BatchValidationError</code></td><td>Invalid input in batch</td><td><code>batch_store_embeddings</code> validation</td></tr>
+<tr><td><code>BatchOperationError</code></td><td>Operation failed in batch</td><td><code>batch_store_embeddings</code> execution</td></tr>
+<tr><td><code>ConfigurationError</code></td><td>Invalid configuration</td><td><code>VectorEngineConfig::validate()</code></td></tr>
 </tbody></table>
 </div>
+<h2 id="configuration-3"><a class="header" href="#configuration-3">Configuration</a></h2>
+<h3 id="vectorengineconfig"><a class="header" href="#vectorengineconfig">VectorEngineConfig</a></h3>
+<p>Configuration for the Vector Engine with memory bounds and performance tuning.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>default_dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Expected embedding dimension</td></tr>
+<tr><td><code>sparse_threshold</code></td><td><code>f32</code></td><td><code>0.5</code></td><td>Sparsity threshold (0.0-1.0)</td></tr>
+<tr><td><code>parallel_threshold</code></td><td><code>usize</code></td><td><code>5000</code></td><td>Dataset size for parallel search</td></tr>
+<tr><td><code>default_metric</code></td><td><code>DistanceMetric</code></td><td><code>Cosine</code></td><td>Default distance metric</td></tr>
+<tr><td><code>max_dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Maximum allowed dimension</td></tr>
+<tr><td><code>max_keys_per_scan</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Limit for unbounded scans</td></tr>
+<tr><td><code>batch_parallel_threshold</code></td><td><code>usize</code></td><td><code>100</code></td><td>Batch size for parallel processing</td></tr>
+</tbody></table>
+</div>
+<h3 id="configuration-presets-1"><a class="header" href="#configuration-presets-1">Configuration Presets</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Description</th><th>Key Settings</th></tr></thead><tbody>
+<tr><td><code>default()</code></td><td>Balanced for most workloads</td><td>All defaults</td></tr>
+<tr><td><code>high_throughput()</code></td><td>Optimized for write-heavy loads</td><td><code>parallel_threshold: 1000</code></td></tr>
+<tr><td><code>low_memory()</code></td><td>Memory-constrained environments</td><td><code>max_dimension: 4096</code>, <code>max_keys_per_scan: 10000</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="builder-methods"><a class="header" href="#builder-methods">Builder Methods</a></h3>
+<p>All builder methods are <code>const fn</code> for compile-time configuration:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let config = VectorEngineConfig::default()
+    .with_default_dimension(768)
+    .with_sparse_threshold(0.7)
+    .with_parallel_threshold(1000)
+    .with_default_metric(DistanceMetric::Cosine)
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(50_000)
+    .with_batch_parallel_threshold(200);
+
+let engine = VectorEngine::with_config(config)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="memory-bounds"><a class="header" href="#memory-bounds">Memory Bounds</a></h3>
+<p>For production deployments, configure memory bounds to prevent resource exhaustion:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Reject embeddings larger than 4096 dimensions
+let config = VectorEngineConfig::default()
+    .with_max_dimension(4096)
+    .with_max_keys_per_scan(10_000);
+
+let engine = VectorEngine::with_config(config)?;
+
+// This will fail with DimensionMismatch
+engine.store_embedding("too_big", vec![0.0; 5000])?; // Error!
+<span class="boring">}</span></code></pre></pre>
 <h2 id="distance-metrics-1"><a class="header" href="#distance-metrics-1">Distance Metrics</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Formula</th><th>Score Range</th><th>Use Case</th><th>HNSW Support</th></tr></thead><tbody>
 <tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>-1.0 to 1.0</td><td>Semantic similarity</td><td>Yes</td></tr>
@@ -3556,6 +3613,36 @@ with automatic sparse vector optimization for memory efficiency.</p>
 </div>
 <p>All metrics return higher scores for better matches. Euclidean distance is
 transformed to similarity score.</p>
+<h3 id="extended-distance-metrics-hnsw"><a class="header" href="#extended-distance-metrics-hnsw">Extended Distance Metrics (HNSW)</a></h3>
+<p>The <code>ExtendedDistanceMetric</code> enum provides additional metrics for HNSW-based
+search via <code>search_with_hnsw_and_metric()</code>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Description</th><th>Best For</th></tr></thead><tbody>
+<tr><td><code>Cosine</code></td><td>Angle-based similarity</td><td>Text embeddings, normalized vectors</td></tr>
+<tr><td><code>Euclidean</code></td><td>L2 distance</td><td>Spatial data, absolute distances</td></tr>
+<tr><td><code>Angular</code></td><td>Cosine converted to angular</td><td>When angle interpretation needed</td></tr>
+<tr><td><code>Manhattan</code></td><td>L1 norm</td><td>Robust to outliers</td></tr>
+<tr><td><code>Chebyshev</code></td><td>L-infinity (max diff)</td><td>When max deviation matters</td></tr>
+<tr><td><code>Jaccard</code></td><td>Set similarity</td><td>Binary/sparse vectors, TF-IDF</td></tr>
+<tr><td><code>Overlap</code></td><td>Minimum overlap coefficient</td><td>Partial matches</td></tr>
+<tr><td><code>Geodesic</code></td><td>Spherical distance</td><td>Geographic coordinates</td></tr>
+<tr><td><code>Composite</code></td><td>Weighted combination</td><td>Custom similarity functions</td></tr>
+</tbody></table>
+</div>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::ExtendedDistanceMetric;
+
+let (index, keys) = engine.build_hnsw_index_default()?;
+
+// Search with Jaccard similarity for sparse vectors
+let results = engine.search_with_hnsw_and_metric(
+    &amp;index,
+    &amp;keys,
+    &amp;query,
+    10,
+    ExtendedDistanceMetric::Jaccard,
+)?;
+<span class="boring">}</span></code></pre></pre>
 <h3 id="distance-metric-implementation-details"><a class="header" href="#distance-metric-implementation-details">Distance Metric Implementation Details</a></h3>
 <pre class="mermaid">flowchart TD
     Query[Query Vector] --&gt; MetricCheck{Which Metric?}
@@ -3699,6 +3786,53 @@ let results = engine.search_similar_with_metric(
 // Direct similarity computation
 let similarity = VectorEngine::compute_similarity(&amp;vec_a, &amp;vec_b)?;
 <span class="boring">}</span></code></pre></pre>
+<h3 id="batch-operations-1"><a class="header" href="#batch-operations-1">Batch Operations</a></h3>
+<p>For bulk insert and delete operations with parallel processing:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::EmbeddingInput;
+
+// Batch store - validates all inputs first, then stores in parallel
+let inputs = vec![
+    EmbeddingInput::new("doc1", vec![0.1, 0.2, 0.3]),
+    EmbeddingInput::new("doc2", vec![0.2, 0.3, 0.4]),
+    EmbeddingInput::new("doc3", vec![0.3, 0.4, 0.5]),
+];
+
+let result = engine.batch_store_embeddings(inputs)?;
+println!("Stored {} embeddings", result.count);  // -&gt; 3
+
+// Batch delete - returns count of successfully deleted
+let keys = vec!["doc1".to_string(), "doc2".to_string()];
+let deleted = engine.batch_delete_embeddings(keys)?;
+println!("Deleted {} embeddings", deleted);  // -&gt; 2
+<span class="boring">}</span></code></pre></pre>
+<p>Batches larger than <code>batch_parallel_threshold</code> (default: 100) use parallel
+processing via rayon.</p>
+<h3 id="pagination"><a class="header" href="#pagination">Pagination</a></h3>
+<p>For memory-efficient iteration over large datasets:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::Pagination;
+
+// List keys with pagination
+let page = Pagination::new(0, 100);  // skip=0, limit=100
+let result = engine.list_keys_paginated(page);
+println!("Items: {}, Has more: {}", result.items.len(), result.has_more);
+
+// Get total count with pagination
+let page = Pagination::new(0, 100).with_total();
+let result = engine.list_keys_paginated(page);
+println!("Total: {:?}", result.total_count);  // Some(total)
+
+// Paginated similarity search
+let page = Pagination::new(10, 5);  // skip first 10, return 5
+let results = engine.search_similar_paginated(&amp;query, 100, page)?;
+
+// Paginated entity search
+let results = engine.search_entities_paginated(&amp;query, 100, page)?;
+<span class="boring">}</span></code></pre></pre>
+<p>Use <code>list_keys_bounded()</code> for production to enforce <code>max_keys_per_scan</code> limits.</p>
 <h3 id="search-flow-diagram"><a class="header" href="#search-flow-diagram">Search Flow Diagram</a></h3>
 <pre class="mermaid">sequenceDiagram
     participant Client
@@ -4075,9 +4209,10 @@ data</li>
 <tr><td><code>tensor_store</code></td><td>Persistence, SparseVector, HNSWIndex, SIMD</td></tr>
 <tr><td><code>rayon</code></td><td>Parallel iteration for large datasets</td></tr>
 <tr><td><code>serde</code></td><td>Serialization of types</td></tr>
-<tr><td><code>wide</code></td><td>SIMD f32x8 operations</td></tr>
+<tr><td><code>tracing</code></td><td>Instrumentation and observability</td></tr>
 </tbody></table>
 </div>
+<p>Note: <code>wide</code> (SIMD f32x8 operations) is a transitive dependency via <code>tensor_store</code>.</p>
 <h2 id="related-modules-3"><a class="header" href="#related-modules-3">Related Modules</a></h2>
 <ul>
 <li><a href="architecture/tensor-store.html">Tensor Store</a> - Underlying storage and HNSW implementation</li>
@@ -4366,7 +4501,7 @@ let restored = tt_reconstruct(&amp;tt);
 let tt2 = tt_decompose(&amp;other_embedding, &amp;config)?;
 let sim = tt_cosine_similarity(&amp;tt, &amp;tt2)?;
 <span class="boring">}</span></code></pre></pre>
-<h3 id="batch-operations-1"><a class="header" href="#batch-operations-1">Batch Operations</a></h3>
+<h3 id="batch-operations-2"><a class="header" href="#batch-operations-2">Batch Operations</a></h3>
 <p>Batch operations use rayon for parallel processing when handling 4+ vectors:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -4393,7 +4528,7 @@ let top_5: Vec&lt;_&gt; = indexed.iter().take(5).collect();
 </span><span class="boring">fn main() {
 </span>const PARALLEL_THRESHOLD: usize = 4;
 <span class="boring">}</span></code></pre></pre>
-<h2 id="configuration-3"><a class="header" href="#configuration-3">Configuration</a></h2>
+<h2 id="configuration-4"><a class="header" href="#configuration-4">Configuration</a></h2>
 <h3 id="ttconfig-presets"><a class="header" href="#ttconfig-presets">TTConfig Presets</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Preset</th><th>max_rank</th><th>tolerance</th><th>Use Case</th></tr></thead><tbody>
 <tr><td><code>for_dim(d)</code></td><td>8</td><td>1e-4</td><td>Balanced compression/accuracy</td></tr>
@@ -6373,7 +6508,7 @@ let handle = manager.start(move |batch_size| {
 // Later: graceful shutdown
 handle.shutdown().await;
 <span class="boring">}</span></code></pre></pre>
-<h2 id="configuration-4"><a class="header" href="#configuration-4">Configuration</a></h2>
+<h2 id="configuration-5"><a class="header" href="#configuration-5">Configuration</a></h2>
 <h3 id="default-configuration"><a class="header" href="#default-configuration">Default Configuration</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -6400,7 +6535,7 @@ handle.shutdown().await;
     sparsity_metric_threshold: 0.7,
 }
 <span class="boring">}</span></code></pre></pre>
-<h3 id="configuration-presets-1"><a class="header" href="#configuration-presets-1">Configuration Presets</a></h3>
+<h3 id="configuration-presets-2"><a class="header" href="#configuration-presets-2">Configuration Presets</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Use Case</th><th>Exact Capacity</th><th>Semantic Capacity</th><th>Embedding Capacity</th><th>Eviction Batch</th></tr></thead><tbody>
 <tr><td><code>default()</code></td><td>General purpose</td><td>10,000</td><td>5,000</td><td>50,000</td><td>100</td></tr>
 <tr><td><code>high_throughput()</code></td><td>High-traffic server</td><td>50,000</td><td>20,000</td><td>100,000</td><td>500</td></tr>
@@ -7806,7 +7941,7 @@ let config = BlobConfig::new()
     .with_gc_batch_size(50)                       // Small batches
     .with_gc_min_age(Duration::from_secs(86400)); // 24 hour grace period
 <span class="boring">}</span></code></pre></pre>
-<h3 id="batch-operations-2"><a class="header" href="#batch-operations-2">Batch Operations</a></h3>
+<h3 id="batch-operations-3"><a class="header" href="#batch-operations-3">Batch Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// For multiple related artifacts, batch metadata updates
@@ -8087,7 +8222,7 @@ pub struct SlabRouterSnapshot {
     )
 }
 <span class="boring">}</span></code></pre></pre>
-<h2 id="configuration-5"><a class="header" href="#configuration-5">Configuration</a></h2>
+<h2 id="configuration-6"><a class="header" href="#configuration-6">Configuration</a></h2>
 <h3 id="checkpointconfig"><a class="header" href="#checkpointconfig">CheckpointConfig</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>max_checkpoints</code></td><td><code>usize</code></td><td>10</td><td>Maximum checkpoints before pruning</td></tr>
@@ -8105,7 +8240,7 @@ pub struct SlabRouterSnapshot {
     .with_interactive_confirm(false)
     .with_preview_sample_size(10);
 <span class="boring">}</span></code></pre></pre>
-<h3 id="configuration-presets-2"><a class="header" href="#configuration-presets-2">Configuration Presets</a></h3>
+<h3 id="configuration-presets-3"><a class="header" href="#configuration-presets-3">Configuration Presets</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Preset</th><th>max_checkpoints</th><th>auto_checkpoint</th><th>interactive_confirm</th><th>Use Case</th></tr></thead><tbody>
 <tr><td>Default</td><td>10</td><td>true</td><td>true</td><td>Interactive CLI usage</td></tr>
 <tr><td>Automated</td><td>20</td><td>true</td><td>false</td><td>Batch processing scripts</td></tr>
@@ -9001,7 +9136,7 @@ entities:</p>
 </div>
 <p><strong>Gotcha:</strong> Conditions other than <code>Eq</code>, <code>And</code>, <code>Or</code> return <code>true</code> (not yet
 implemented for graph entities).</p>
-<h2 id="batch-operations-3"><a class="header" href="#batch-operations-3">Batch Operations</a></h2>
+<h2 id="batch-operations-4"><a class="header" href="#batch-operations-4">Batch Operations</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// Store multiple embeddings
@@ -9206,7 +9341,7 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 </ul>
 <p><strong>Gotcha:</strong> Concurrent writes to the same entity may interleave fields. Use
 transactions for atomicity.</p>
-<h2 id="configuration-6"><a class="header" href="#configuration-6">Configuration</a></h2>
+<h2 id="configuration-7"><a class="header" href="#configuration-7">Configuration</a></h2>
 <p>UnifiedEngine uses the configuration of its underlying engines:</p>
 <ul>
 <li><code>TensorStore</code>: Storage configuration</li>
@@ -15794,7 +15929,7 @@ transport.start().await?;
     Reconnecting --&gt; Failed: Max Retries
     Failed --&gt; [*]
 </pre>
-<h3 id="configuration-7"><a class="header" href="#configuration-7">Configuration</a></h3>
+<h3 id="configuration-8"><a class="header" href="#configuration-8">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>pool_size</code></td><td>2</td><td>Connections per peer</td></tr>
 <tr><td><code>connect_timeout_ms</code></td><td>5000</td><td>Connection timeout in milliseconds</td></tr>
@@ -15862,7 +15997,7 @@ peer from overwhelming the system.</p>
     C --&gt;|No| E[Reject Message]
     D --&gt; F[Consume Token]
 </pre>
-<h3 id="configuration-presets-3"><a class="header" href="#configuration-presets-3">Configuration Presets</a></h3>
+<h3 id="configuration-presets-4"><a class="header" href="#configuration-presets-4">Configuration Presets</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Bucket Size</th><th>Refill Rate</th><th>Description</th></tr></thead><tbody>
 <tr><td>Default</td><td>100</td><td>50/sec</td><td>Balanced throughput</td></tr>
 <tr><td>Aggressive</td><td>50</td><td>25/sec</td><td>Lower burst, tighter limit</td></tr>
@@ -15889,7 +16024,7 @@ Flags byte:
   bit 0: 1 = LZ4 compressed, 0 = uncompressed
   bits 1-7: reserved (must be 0)
 </code></pre>
-<h3 id="configuration-8"><a class="header" href="#configuration-8">Configuration</a></h3>
+<h3 id="configuration-9"><a class="header" href="#configuration-9">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>enabled</code></td><td>true</td><td>Enable compression</td></tr>
 <tr><td><code>method</code></td><td>Lz4</td><td>Compression algorithm</td></tr>
@@ -15910,7 +16045,7 @@ transient failures without overwhelming the network.</p>
 jitter = backoff * random(-jitter_factor, +jitter_factor)
 final_delay = backoff + jitter
 </code></pre>
-<h3 id="configuration-9"><a class="header" href="#configuration-9">Configuration</a></h3>
+<h3 id="configuration-10"><a class="header" href="#configuration-10">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>enabled</code></td><td>true</td><td>Enable auto-reconnection</td></tr>
 <tr><td><code>initial_backoff_ms</code></td><td>100</td><td>Initial backoff delay</td></tr>
@@ -16090,7 +16225,7 @@ Total: 16 bytes
 <h2 id="snapshotbuffer"><a class="header" href="#snapshotbuffer">SnapshotBuffer</a></h2>
 <p>The <code>SnapshotBuffer</code> provides adaptive memory/disk storage with bounded
 memory usage.</p>
-<h3 id="configuration-10"><a class="header" href="#configuration-10">Configuration</a></h3>
+<h3 id="configuration-11"><a class="header" href="#configuration-11">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>max_memory_bytes</code></td><td>256 MB</td><td>Threshold before disk spill</td></tr>
 <tr><td><code>temp_dir</code></td><td>System</td><td>Directory for temp files</td></tr>
@@ -16513,7 +16648,7 @@ delta vectors have low cosine similarity:</p>
 <pre><code class="language-text">similarity = cos(delta_A, delta_B)
 orthogonal = abs(similarity) &lt; threshold
 </code></pre>
-<h3 id="configuration-11"><a class="header" href="#configuration-11">Configuration</a></h3>
+<h3 id="configuration-12"><a class="header" href="#configuration-12">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>orthogonal_threshold</code></td><td>0.1</td><td>Max similarity for orthogonal</td></tr>
 <tr><td><code>merge_window_ms</code></td><td>60000</td><td>Window for merge candidates</td></tr>
@@ -16760,7 +16895,7 @@ index.insert("doc_2", sparse_vec_2);
 // Search
 let results = index.search(&amp;query_vec, 10); // top 10
 <span class="boring">}</span></code></pre></pre>
-<h3 id="configuration-12"><a class="header" href="#configuration-12">Configuration</a></h3>
+<h3 id="configuration-13"><a class="header" href="#configuration-13">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>m</code></td><td>16</td><td>Max connections per layer</td></tr>
 <tr><td><code>ef_construction</code></td><td>200</td><td>Build-time search width</td></tr>
@@ -16998,7 +17133,7 @@ if delta_a.cosine_similarity(&amp;delta_b) &gt; CONFLICT_THRESHOLD {
 <li>For prepared transactions: query coordinator</li>
 <li>Apply commit or abort based on coordinator state</li>
 </ol>
-<h2 id="configuration-13"><a class="header" href="#configuration-13">Configuration</a></h2>
+<h2 id="configuration-14"><a class="header" href="#configuration-14">Configuration</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>pub struct DistributedTxConfig {
@@ -17063,7 +17198,7 @@ Term 2: [Election] -&gt; [Leader B] -----&gt; ...
     L-&gt;&gt;L: Commit (majority)
     L-&gt;&gt;C: Success
 </pre>
-<h3 id="configuration-14"><a class="header" href="#configuration-14">Configuration</a></h3>
+<h3 id="configuration-15"><a class="header" href="#configuration-15">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>election_timeout_min</code></td><td>150ms</td><td>Min election timeout</td></tr>
 <tr><td><code>election_timeout_max</code></td><td>300ms</td><td>Max election timeout</td></tr>
@@ -17122,7 +17257,7 @@ fn merge(&amp;mut self, other: &amp;Self) {
     }
 }
 <span class="boring">}</span></code></pre></pre>
-<h3 id="configuration-15"><a class="header" href="#configuration-15">Configuration</a></h3>
+<h3 id="configuration-16"><a class="header" href="#configuration-16">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>ping_interval</code></td><td>1s</td><td>Direct ping frequency</td></tr>
 <tr><td><code>ping_timeout</code></td><td>500ms</td><td>Time to wait for response</td></tr>
@@ -17427,7 +17562,7 @@ misses.</p>
 <pre><code class="language-text">centroid_new = alpha * observation + (1 - alpha) * centroid_old
 </code></pre>
 <p>where <code>alpha</code> controls the learning rate (default: 0.1).</p>
-<h3 id="configuration-16"><a class="header" href="#configuration-16">Configuration</a></h3>
+<h3 id="configuration-17"><a class="header" href="#configuration-17">Configuration</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>max_entries</code></td><td>256</td><td>Maximum entries in the codebook</td></tr>
 <tr><td><code>ema_alpha</code></td><td>0.1</td><td>EMA learning rate</td></tr>
@@ -17460,7 +17595,7 @@ local.set_pruning_strategy(PruningStrategy::Hybrid {
 <h2 id="codebookmanager"><a class="header" href="#codebookmanager">CodebookManager</a></h2>
 <p>The <code>CodebookManager</code> coordinates hierarchical quantization across global
 and local codebooks.</p>
-<h3 id="configuration-17"><a class="header" href="#configuration-17">Configuration</a></h3>
+<h3 id="configuration-18"><a class="header" href="#configuration-18">Configuration</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_chain::codebook::{CodebookManager, CodebookConfig, GlobalCodebook};
@@ -17586,7 +17721,7 @@ placement.</p>
     G --&gt;|No| F
     G --&gt;|Yes| H[Final Centroids]
 </pre>
-<h3 id="configuration-18"><a class="header" href="#configuration-18">Configuration</a></h3>
+<h3 id="configuration-19"><a class="header" href="#configuration-19">Configuration</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_store::{KMeans, KMeansConfig};
@@ -17814,7 +17949,7 @@ Timeline:
         .unwrap()
 }
 <span class="boring">}</span></code></pre></pre>
-<h3 id="configuration-19"><a class="header" href="#configuration-19">Configuration</a></h3>
+<h3 id="configuration-20"><a class="header" href="#configuration-20">Configuration</a></h3>
 <pre><code class="language-toml">[deadlock]
 detection_interval_ms = 100
 max_cycle_length = 10
@@ -17934,7 +18069,7 @@ if !candidates.is_empty() {
 <li>Network connectivity between nodes</li>
 <li>Synchronized clocks (NTP)</li>
 </ul>
-<h3 id="configuration-20"><a class="header" href="#configuration-20">Configuration</a></h3>
+<h3 id="configuration-21"><a class="header" href="#configuration-21">Configuration</a></h3>
 <p>Each node needs a config file:</p>
 <pre><code class="language-toml"># /etc/neumann/config.toml
 
@@ -18030,7 +18165,7 @@ Backup strategy in place</li>
 <li><input disabled="" type="checkbox"/>
 Resource limits set appropriately</li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="configuration-21"><a class="header" href="#configuration-21">Configuration</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="configuration-22"><a class="header" href="#configuration-22">Configuration</a></h1>
 <h2 id="configuration-sources"><a class="header" href="#configuration-sources">Configuration Sources</a></h2>
 <p>Configuration is loaded in order (later overrides earlier):</p>
 <ol>
@@ -21165,7 +21300,7 @@ STRESS_DURATION=30 cargo test --release -p stress_tests -- --ignored --nocapture
 <li>Graph operations (5us p50) and vector ops (&lt; 1us p50) are fastest</li>
 <li>Relational engine adds ~12ms p50 overhead due to schema operations</li>
 </ul>
-<h2 id="configuration-22"><a class="header" href="#configuration-22">Configuration</a></h2>
+<h2 id="configuration-23"><a class="header" href="#configuration-23">Configuration</a></h2>
 <h3 id="environment-variables-3"><a class="header" href="#environment-variables-3">Environment Variables</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>STRESS_DURATION</code></td><td>30 (quick) / 600 (full)</td><td>Test duration in seconds</td></tr>
@@ -21383,7 +21518,7 @@ cargo test --release -p stress_tests stress_tiered_hot_only_scale -- --ignored -
 <tr><td>Memory-based</td><td>Hot tier size limit</td><td>Memory pressure</td></tr>
 </tbody></table>
 </div>
-<h2 id="configuration-23"><a class="header" href="#configuration-23">Configuration</a></h2>
+<h2 id="configuration-24"><a class="header" href="#configuration-24">Configuration</a></h2>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>let config = TieredConfig {

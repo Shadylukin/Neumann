@@ -256,6 +256,278 @@ fn bench_find_path_branching(c: &mut Criterion) {
     group.finish();
 }
 
+// ========== Concurrent Benchmarks ==========
+
+fn bench_concurrent_node_creation(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let mut group = c.benchmark_group("concurrent_node_creation");
+
+    for thread_count in [2, 4, 8, 16, 32] {
+        let nodes_per_thread = 1000;
+
+        group.bench_with_input(
+            BenchmarkId::new("threads", thread_count),
+            &thread_count,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let mut total_duration = std::time::Duration::ZERO;
+
+                    for _ in 0..iters {
+                        let engine = Arc::new(GraphEngine::new());
+                        let barrier = Arc::new(Barrier::new(threads));
+
+                        let start = std::time::Instant::now();
+
+                        let handles: Vec<_> = (0..threads)
+                            .map(|t| {
+                                let eng = Arc::clone(&engine);
+                                let bar = Arc::clone(&barrier);
+                                thread::spawn(move || {
+                                    bar.wait();
+                                    for i in 0..nodes_per_thread {
+                                        eng.create_node("Bench", create_props((t * nodes_per_thread + i) as i64))
+                                            .unwrap();
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+
+                        total_duration += start.elapsed();
+                    }
+
+                    total_duration
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_concurrent_update_node(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let mut group = c.benchmark_group("concurrent_update_node");
+
+    for thread_count in [2, 4, 8, 16, 32] {
+        let updates_per_thread = 500;
+
+        group.bench_with_input(
+            BenchmarkId::new("threads", thread_count),
+            &thread_count,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let mut total_duration = std::time::Duration::ZERO;
+
+                    for _ in 0..iters {
+                        let engine = Arc::new(GraphEngine::new());
+
+                        // Pre-create nodes
+                        let mut node_ids = Vec::new();
+                        for t in 0..threads {
+                            node_ids.push(
+                                engine
+                                    .create_node("Target", create_props(t as i64))
+                                    .unwrap(),
+                            );
+                        }
+                        let node_ids = Arc::new(node_ids);
+
+                        let barrier = Arc::new(Barrier::new(threads));
+                        let start = std::time::Instant::now();
+
+                        let handles: Vec<_> = (0..threads)
+                            .map(|t| {
+                                let eng = Arc::clone(&engine);
+                                let bar = Arc::clone(&barrier);
+                                let ids = Arc::clone(&node_ids);
+                                thread::spawn(move || {
+                                    bar.wait();
+                                    for i in 0..updates_per_thread {
+                                        let mut props = HashMap::new();
+                                        props.insert(
+                                            "counter".to_string(),
+                                            PropertyValue::Int(i as i64),
+                                        );
+                                        eng.update_node(ids[t], None, props).unwrap();
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+
+                        total_duration += start.elapsed();
+                    }
+
+                    total_duration
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_concurrent_batch_operations(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let mut group = c.benchmark_group("concurrent_batch_operations");
+
+    for thread_count in [2, 4, 8, 16] {
+        let batch_size = 100;
+        let batches_per_thread = 10;
+
+        group.bench_with_input(
+            BenchmarkId::new("threads", thread_count),
+            &thread_count,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let mut total_duration = std::time::Duration::ZERO;
+
+                    for _ in 0..iters {
+                        let engine = Arc::new(GraphEngine::new());
+
+                        // Pre-create base nodes for edges
+                        let mut base_ids = Vec::new();
+                        for i in 0..100 {
+                            base_ids.push(
+                                engine.create_node("Base", create_props(i as i64)).unwrap(),
+                            );
+                        }
+                        let base_ids = Arc::new(base_ids);
+
+                        let barrier = Arc::new(Barrier::new(threads));
+                        let start = std::time::Instant::now();
+
+                        let handles: Vec<_> = (0..threads)
+                            .map(|t| {
+                                let eng = Arc::clone(&engine);
+                                let bar = Arc::clone(&barrier);
+                                let bases = Arc::clone(&base_ids);
+                                thread::spawn(move || {
+                                    bar.wait();
+                                    for batch_idx in 0..batches_per_thread {
+                                        if (t + batch_idx) % 2 == 0 {
+                                            // Batch nodes
+                                            let nodes: Vec<graph_engine::NodeInput> = (0..batch_size)
+                                                .map(|i| graph_engine::NodeInput {
+                                                    labels: vec!["Batch".to_string()],
+                                                    properties: {
+                                                        let mut p = HashMap::new();
+                                                        p.insert(
+                                                            "idx".to_string(),
+                                                            PropertyValue::Int(i as i64),
+                                                        );
+                                                        p
+                                                    },
+                                                })
+                                                .collect();
+                                            let _ = eng.batch_create_nodes(nodes);
+                                        } else {
+                                            // Batch edges
+                                            let edges: Vec<graph_engine::EdgeInput> = (0..batch_size.min(99))
+                                                .map(|i| graph_engine::EdgeInput {
+                                                    from: bases[i % 100],
+                                                    to: bases[(i + 1) % 100],
+                                                    edge_type: "LINK".to_string(),
+                                                    properties: HashMap::new(),
+                                                    directed: true,
+                                                })
+                                                .collect();
+                                            let _ = eng.batch_create_edges(edges);
+                                        }
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+
+                        total_duration += start.elapsed();
+                    }
+
+                    total_duration
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_striped_lock_contention(c: &mut Criterion) {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let mut group = c.benchmark_group("striped_lock_contention");
+
+    for thread_count in [2, 4, 8, 16, 32, 64] {
+        let ops_per_thread = 500;
+
+        group.bench_with_input(
+            BenchmarkId::new("threads", thread_count),
+            &thread_count,
+            |b, &threads| {
+                b.iter_custom(|iters| {
+                    let mut total_duration = std::time::Duration::ZERO;
+
+                    for _ in 0..iters {
+                        let engine = Arc::new(GraphEngine::new());
+                        engine.create_node_property_index("key").unwrap();
+
+                        let barrier = Arc::new(Barrier::new(threads));
+                        let start = std::time::Instant::now();
+
+                        let handles: Vec<_> = (0..threads)
+                            .map(|t| {
+                                let eng = Arc::clone(&engine);
+                                let bar = Arc::clone(&barrier);
+                                thread::spawn(move || {
+                                    bar.wait();
+                                    for i in 0..ops_per_thread {
+                                        let mut props = HashMap::new();
+                                        // Distribute across stripes
+                                        let shard = (t * ops_per_thread + i) % 64;
+                                        let key = format!("{shard:02x}_t{t}_i{i}");
+                                        props.insert(
+                                            "key".to_string(),
+                                            PropertyValue::String(key),
+                                        );
+                                        eng.create_node("Contended", props).unwrap();
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().unwrap();
+                        }
+
+                        total_duration += start.elapsed();
+                    }
+
+                    total_duration
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_create_nodes,
@@ -266,4 +538,12 @@ criterion_group!(
     bench_find_path_branching,
 );
 
-criterion_main!(benches);
+criterion_group!(
+    concurrent_benches,
+    bench_concurrent_node_creation,
+    bench_concurrent_update_node,
+    bench_concurrent_batch_operations,
+    bench_striped_lock_contention,
+);
+
+criterion_main!(benches, concurrent_benches);
