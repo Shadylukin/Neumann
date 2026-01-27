@@ -58,6 +58,12 @@ message QueryResponse {
     ChainQueryResult chain = 17;
     PageRankResult page_rank = 18;
     CentralityResult centrality = 19;
+    CommunitiesResult communities = 21;
+    ConstraintsResult constraints = 22;
+    AggregateResult aggregate = 23;
+    BatchOperationResult batch_operation = 24;
+    GraphIndexesResult graph_indexes = 25;
+    PatternMatchResult pattern_match = 26;
   }
   optional ErrorInfo error = 20;
 }
@@ -170,8 +176,20 @@ message SimilarChunk {
 
 // === Graph Algorithm Result Types ===
 
+// Centrality algorithm type.
+enum CentralityType {
+  CENTRALITY_TYPE_UNSPECIFIED = 0;
+  CENTRALITY_TYPE_BETWEENNESS = 1;
+  CENTRALITY_TYPE_CLOSENESS = 2;
+  CENTRALITY_TYPE_EIGENVECTOR = 3;
+}
+
 message PageRankResult {
   repeated PageRankItem items = 1;
+  // Algorithm metadata.
+  optional uint32 iterations = 2;
+  optional double convergence = 3;
+  optional bool converged = 4;
 }
 
 message PageRankItem {
@@ -181,11 +199,119 @@ message PageRankItem {
 
 message CentralityResult {
   repeated CentralityItem items = 1;
+  // Algorithm metadata.
+  optional CentralityType centrality_type = 2;
+  optional uint32 iterations = 3;
+  optional bool converged = 4;
+  optional uint32 sample_count = 5;
 }
 
 message CentralityItem {
   uint64 node_id = 1;
   double score = 2;
+}
+
+// === Additional Graph Result Types ===
+
+message CommunitiesResult {
+  repeated CommunityItem items = 1;
+  // Algorithm metadata.
+  optional uint32 community_count = 2;
+  optional double modularity = 3;
+  optional uint32 passes = 4;
+  optional uint32 iterations = 5;
+  // Full community membership lists.
+  repeated CommunityMemberList communities = 6;
+}
+
+message CommunityItem {
+  uint64 node_id = 1;
+  uint64 community_id = 2;
+}
+
+// List of members for a community.
+message CommunityMemberList {
+  uint64 community_id = 1;
+  repeated uint64 member_node_ids = 2;
+}
+
+message ConstraintsResult {
+  repeated ConstraintItem items = 1;
+}
+
+message ConstraintItem {
+  string name = 1;
+  string target = 2;
+  string property = 3;
+  string constraint_type = 4;
+}
+
+message AggregateResult {
+  oneof value {
+    uint64 count = 1;
+    double sum = 2;
+    double avg = 3;
+    double min = 4;
+    double max = 5;
+  }
+}
+
+message BatchOperationResult {
+  string operation = 1;
+  uint64 affected_count = 2;
+  repeated uint64 created_ids = 3;
+}
+
+message GraphIndexesResult {
+  repeated string indexes = 1;
+}
+
+// Pattern Match types (preserves full match data)
+message PatternMatchResult {
+  repeated PatternMatchBinding matches = 1;
+  PatternMatchStats stats = 2;
+}
+
+message PatternMatchBinding {
+  repeated BindingEntry bindings = 1;
+}
+
+message BindingEntry {
+  string variable = 1;
+  BindingValue value = 2;
+}
+
+message BindingValue {
+  oneof value {
+    NodeBinding node = 1;
+    EdgeBinding edge = 2;
+    PathBinding path = 3;
+  }
+}
+
+message NodeBinding {
+  uint64 id = 1;
+  string label = 2;
+}
+
+message EdgeBinding {
+  uint64 id = 1;
+  string edge_type = 2;
+  uint64 from = 3;
+  uint64 to = 4;
+}
+
+message PathBinding {
+  repeated uint64 nodes = 1;
+  repeated uint64 edges = 2;
+  uint64 length = 3;
+}
+
+message PatternMatchStats {
+  uint64 matches_found = 1;
+  uint64 nodes_evaluated = 2;
+  uint64 edges_evaluated = 3;
+  bool truncated = 4;
 }
 
 message RowChunk {

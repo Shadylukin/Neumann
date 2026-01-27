@@ -2591,7 +2591,7 @@ mod tests {
     }
 
     #[test]
-    fn entity_store_entity_key() {
+    fn entity_storeentity_key() {
         assert_eq!(EntityStore::entity_key("user", 42), "user:42");
         assert_eq!(EntityStore::entity_key("post", 1), "post:1");
     }

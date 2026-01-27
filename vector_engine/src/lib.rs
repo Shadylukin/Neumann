@@ -75,6 +75,13 @@
 #![allow(clippy::missing_const_for_fn)] // Some functions can't be const due to dependencies
 #![warn(missing_docs)]
 
+use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
+
+use parking_lot::RwLock;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tensor_store::{
@@ -121,6 +128,14 @@ pub enum VectorError {
     },
     /// Configuration error.
     ConfigurationError(String),
+    /// Collection already exists.
+    CollectionExists(String),
+    /// Collection not found.
+    CollectionNotFound(String),
+    /// IO error during persistence operations.
+    IoError(String),
+    /// Serialization error during persistence operations.
+    SerializationError(String),
 }
 
 impl std::fmt::Display for VectorError {
@@ -140,6 +155,10 @@ impl std::fmt::Display for VectorError {
                 write!(f, "Batch operation error at index {index}: {cause}")
             },
             Self::ConfigurationError(msg) => write!(f, "Configuration error: {msg}"),
+            Self::CollectionExists(name) => write!(f, "Collection already exists: {name}"),
+            Self::CollectionNotFound(name) => write!(f, "Collection not found: {name}"),
+            Self::IoError(msg) => write!(f, "IO error: {msg}"),
+            Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
         }
     }
 }
@@ -149,6 +168,12 @@ impl std::error::Error for VectorError {}
 impl From<TensorStoreError> for VectorError {
     fn from(e: TensorStoreError) -> Self {
         Self::StorageError(e.to_string())
+    }
+}
+
+impl From<io::Error> for VectorError {
+    fn from(e: io::Error) -> Self {
+        Self::IoError(e.to_string())
     }
 }
 
@@ -194,6 +219,337 @@ pub enum DistanceMetric {
     Euclidean,
     /// Dot product: inner product of vectors.
     DotProduct,
+}
+
+// ========== Filtered Search Types ==========
+
+/// Filter condition for filtered similarity search.
+///
+/// Evaluates metadata fields attached to embeddings.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterCondition {
+    /// Equality: field = value.
+    Eq(String, FilterValue),
+    /// Not equal: field != value.
+    Ne(String, FilterValue),
+    /// Less than: field < value.
+    Lt(String, FilterValue),
+    /// Less than or equal: field <= value.
+    Le(String, FilterValue),
+    /// Greater than: field > value.
+    Gt(String, FilterValue),
+    /// Greater than or equal: field >= value.
+    Ge(String, FilterValue),
+    /// Logical AND of two conditions.
+    And(Box<Self>, Box<Self>),
+    /// Logical OR of two conditions.
+    Or(Box<Self>, Box<Self>),
+    /// Always true (matches all).
+    True,
+    /// Field exists check.
+    Exists(String),
+    /// String contains substring.
+    Contains(String, String),
+    /// String starts with prefix.
+    StartsWith(String, String),
+    /// Value in list.
+    In(String, Vec<FilterValue>),
+}
+
+impl FilterCondition {
+    /// Combines this condition with another using AND.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        Self::And(Box::new(self), Box::new(other))
+    }
+
+    /// Combines this condition with another using OR.
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        Self::Or(Box::new(self), Box::new(other))
+    }
+}
+
+/// Filter value for comparisons.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterValue {
+    /// Integer value.
+    Int(i64),
+    /// Float value.
+    Float(f64),
+    /// String value.
+    String(String),
+    /// Boolean value.
+    Bool(bool),
+    /// Null value.
+    Null,
+}
+
+impl From<i64> for FilterValue {
+    fn from(v: i64) -> Self {
+        Self::Int(v)
+    }
+}
+
+impl From<f64> for FilterValue {
+    fn from(v: f64) -> Self {
+        Self::Float(v)
+    }
+}
+
+impl From<String> for FilterValue {
+    fn from(v: String) -> Self {
+        Self::String(v)
+    }
+}
+
+impl From<&str> for FilterValue {
+    fn from(v: &str) -> Self {
+        Self::String(v.to_string())
+    }
+}
+
+impl From<bool> for FilterValue {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+
+/// Strategy for filtered search execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FilterStrategy {
+    /// Automatically choose strategy based on estimated selectivity.
+    #[default]
+    Auto,
+    /// Pre-filter: build subset of matching vectors, then search.
+    /// Better for highly selective filters (< 10% match).
+    PreFilter,
+    /// Post-filter: search full index, then filter results.
+    /// Better for non-selective filters (> 10% match).
+    PostFilter,
+}
+
+/// Configuration for filtered search behavior.
+#[derive(Debug, Clone)]
+pub struct FilteredSearchConfig {
+    /// Filter strategy selection.
+    pub strategy: FilterStrategy,
+    /// Selectivity threshold for auto strategy (0.0-1.0).
+    /// Below this threshold, use pre-filter; above, use post-filter.
+    pub selectivity_threshold: f32,
+    /// Oversample factor for post-filter strategy.
+    /// Fetches this many times more candidates before filtering.
+    pub oversample_factor: usize,
+}
+
+impl Default for FilteredSearchConfig {
+    fn default() -> Self {
+        Self {
+            strategy: FilterStrategy::Auto,
+            selectivity_threshold: 0.1,
+            oversample_factor: 3,
+        }
+    }
+}
+
+impl FilteredSearchConfig {
+    /// Creates a config that always uses pre-filtering.
+    #[must_use]
+    pub const fn pre_filter() -> Self {
+        Self {
+            strategy: FilterStrategy::PreFilter,
+            selectivity_threshold: 0.1,
+            oversample_factor: 3,
+        }
+    }
+
+    /// Creates a config that always uses post-filtering.
+    #[must_use]
+    pub const fn post_filter() -> Self {
+        Self {
+            strategy: FilterStrategy::PostFilter,
+            selectivity_threshold: 0.1,
+            oversample_factor: 3,
+        }
+    }
+
+    /// Creates a config with custom oversample factor.
+    #[must_use]
+    pub const fn with_oversample(mut self, factor: usize) -> Self {
+        self.oversample_factor = factor;
+        self
+    }
+}
+
+// ========== Collection Types ==========
+
+/// Configuration for a vector collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorCollectionConfig {
+    /// Expected embedding dimension (enforced on insert if set).
+    pub dimension: Option<usize>,
+    /// Default distance metric for this collection.
+    pub distance_metric: DistanceMetric,
+    /// Whether to auto-build HNSW index on insert threshold.
+    pub auto_index: bool,
+    /// Auto-index threshold (number of vectors before auto-building).
+    pub auto_index_threshold: usize,
+}
+
+impl Default for VectorCollectionConfig {
+    fn default() -> Self {
+        Self {
+            dimension: None,
+            distance_metric: DistanceMetric::Cosine,
+            auto_index: false,
+            auto_index_threshold: 1000,
+        }
+    }
+}
+
+impl VectorCollectionConfig {
+    /// Creates a collection config with specified dimension.
+    #[must_use]
+    pub const fn with_dimension(mut self, dim: usize) -> Self {
+        self.dimension = Some(dim);
+        self
+    }
+
+    /// Creates a collection config with specified distance metric.
+    #[must_use]
+    pub const fn with_metric(mut self, metric: DistanceMetric) -> Self {
+        self.distance_metric = metric;
+        self
+    }
+
+    /// Creates a collection config with auto-indexing enabled.
+    #[must_use]
+    pub const fn with_auto_index(mut self, threshold: usize) -> Self {
+        self.auto_index = true;
+        self.auto_index_threshold = threshold;
+        self
+    }
+}
+
+// ========== Index Persistence Types ==========
+
+/// Persistent vector index format for saving to disk.
+///
+/// This captures the essential data needed to restore a collection:
+/// vectors, their keys, and configuration. HNSW indices can be rebuilt
+/// from this data since the vectors contain all necessary information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentVectorIndex {
+    /// Collection this index belongs to ("default" for non-collection embeddings).
+    pub collection: String,
+    /// Collection configuration.
+    pub config: VectorCollectionConfig,
+    /// Vector data: (key, vector, optional metadata).
+    pub vectors: Vec<VectorEntry>,
+    /// Creation timestamp (Unix seconds).
+    pub created_at: u64,
+    /// Format version for future compatibility.
+    pub version: u32,
+}
+
+/// A single vector entry in the persistent index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorEntry {
+    /// The embedding key.
+    pub key: String,
+    /// The embedding vector.
+    pub vector: Vec<f32>,
+    /// Optional metadata (serialized as JSON-compatible map).
+    pub metadata: Option<HashMap<String, MetadataValue>>,
+}
+
+/// Metadata value for serialization (simplified from TensorValue).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum MetadataValue {
+    /// Null value.
+    Null,
+    /// Boolean value.
+    Bool(bool),
+    /// Integer value.
+    Int(i64),
+    /// Float value.
+    Float(f64),
+    /// String value.
+    String(String),
+}
+
+impl MetadataValue {
+    /// Convert from a `TensorValue` if possible.
+    #[must_use]
+    pub fn from_tensor_value(tv: &TensorValue) -> Option<Self> {
+        use tensor_store::ScalarValue;
+        match tv {
+            TensorValue::Scalar(ScalarValue::Null) => Some(Self::Null),
+            TensorValue::Scalar(ScalarValue::Bool(b)) => Some(Self::Bool(*b)),
+            TensorValue::Scalar(ScalarValue::Int(i)) => Some(Self::Int(*i)),
+            TensorValue::Scalar(ScalarValue::Float(f)) => Some(Self::Float(*f)),
+            TensorValue::Scalar(ScalarValue::String(s)) => Some(Self::String(s.clone())),
+            _ => None, // Vectors, sparse vectors, etc. not stored as metadata
+        }
+    }
+}
+
+impl From<MetadataValue> for TensorValue {
+    fn from(mv: MetadataValue) -> Self {
+        use tensor_store::ScalarValue;
+        match mv {
+            MetadataValue::Null => Self::Scalar(ScalarValue::Null),
+            MetadataValue::Bool(b) => Self::Scalar(ScalarValue::Bool(b)),
+            MetadataValue::Int(i) => Self::Scalar(ScalarValue::Int(i)),
+            MetadataValue::Float(f) => Self::Scalar(ScalarValue::Float(f)),
+            MetadataValue::String(s) => Self::Scalar(ScalarValue::String(s)),
+        }
+    }
+}
+
+impl PersistentVectorIndex {
+    /// Current format version.
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// Create a new empty persistent index.
+    #[must_use]
+    pub fn new(collection: String, config: VectorCollectionConfig) -> Self {
+        Self {
+            collection,
+            config,
+            vectors: Vec::new(),
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            version: Self::CURRENT_VERSION,
+        }
+    }
+
+    /// Add a vector entry.
+    pub fn push(
+        &mut self,
+        key: String,
+        vector: Vec<f32>,
+        metadata: Option<HashMap<String, MetadataValue>>,
+    ) {
+        self.vectors.push(VectorEntry {
+            key,
+            vector,
+            metadata,
+        });
+    }
+
+    /// Number of vectors.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.vectors.len()
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.vectors.is_empty()
+    }
 }
 
 // ========== Configuration ==========
@@ -493,6 +849,8 @@ impl<T> PagedResult<T> {
 pub struct VectorEngine {
     store: TensorStore,
     config: VectorEngineConfig,
+    /// Collection configurations (name -> config).
+    collections: Arc<RwLock<HashMap<String, VectorCollectionConfig>>>,
 }
 
 impl VectorEngine {
@@ -502,6 +860,7 @@ impl VectorEngine {
         Self {
             store: TensorStore::new(),
             config: VectorEngineConfig::default(),
+            collections: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -511,6 +870,7 @@ impl VectorEngine {
         Self {
             store,
             config: VectorEngineConfig::default(),
+            collections: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -522,6 +882,7 @@ impl VectorEngine {
         Ok(Self {
             store: TensorStore::new(),
             config,
+            collections: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -530,7 +891,11 @@ impl VectorEngine {
     /// Validates the configuration before construction.
     pub fn with_store_and_config(store: TensorStore, config: VectorEngineConfig) -> Result<Self> {
         config.validate()?;
-        Ok(Self { store, config })
+        Ok(Self {
+            store,
+            config,
+            collections: Arc::new(RwLock::new(HashMap::new())),
+        })
     }
 
     /// Get a reference to the underlying TensorStore.
@@ -551,6 +916,372 @@ impl VectorEngine {
     /// Key prefix for all embeddings (for scanning).
     fn embedding_prefix() -> &'static str {
         "emb:"
+    }
+
+    // ========== Collection Key Helpers ==========
+
+    /// Key prefix for embeddings in a named collection.
+    fn collection_embedding_key(collection: &str, key: &str) -> String {
+        format!("coll:{}:emb:{}", collection, key)
+    }
+
+    /// Key prefix for all embeddings in a collection (for scanning).
+    fn collection_embedding_prefix(collection: &str) -> String {
+        format!("coll:{}:emb:", collection)
+    }
+
+    /// The default collection name.
+    pub const DEFAULT_COLLECTION: &'static str = "default";
+
+    // ========== Collection Management ==========
+
+    /// Create a new collection with the given configuration.
+    ///
+    /// Returns an error if a collection with the same name already exists.
+    #[instrument(skip(self, config), fields(collection = %name))]
+    pub fn create_collection(&self, name: &str, config: VectorCollectionConfig) -> Result<()> {
+        let mut collections = self.collections.write();
+        if collections.contains_key(name) {
+            return Err(VectorError::CollectionExists(name.to_string()));
+        }
+        collections.insert(name.to_string(), config);
+        drop(collections);
+        Ok(())
+    }
+
+    /// Delete a collection and all its embeddings.
+    ///
+    /// Returns an error if the collection does not exist.
+    #[instrument(skip(self), fields(collection = %name))]
+    pub fn delete_collection(&self, name: &str) -> Result<()> {
+        {
+            let mut collections = self.collections.write();
+            if !collections.contains_key(name) {
+                return Err(VectorError::CollectionNotFound(name.to_string()));
+            }
+            collections.remove(name);
+        }
+
+        // Delete all embeddings in the collection
+        let prefix = Self::collection_embedding_prefix(name);
+        let keys = self.store.scan(&prefix);
+        for key in keys {
+            let _ = self.store.delete(&key);
+        }
+
+        Ok(())
+    }
+
+    /// List all collection names.
+    pub fn list_collections(&self) -> Vec<String> {
+        self.collections.read().keys().cloned().collect()
+    }
+
+    /// Get configuration for a collection.
+    ///
+    /// Returns None if the collection does not exist.
+    pub fn get_collection_config(&self, name: &str) -> Option<VectorCollectionConfig> {
+        self.collections.read().get(name).cloned()
+    }
+
+    /// Check if a collection exists.
+    pub fn collection_exists(&self, name: &str) -> bool {
+        self.collections.read().contains_key(name)
+    }
+
+    /// Count embeddings in a collection.
+    pub fn collection_count(&self, name: &str) -> usize {
+        let prefix = Self::collection_embedding_prefix(name);
+        self.store.scan(&prefix).len()
+    }
+
+    // ========== Collection-Aware Storage ==========
+
+    /// Store embedding in a specific collection.
+    ///
+    /// Creates the collection with default config if it doesn't exist.
+    #[instrument(skip(self, vector), fields(collection = %collection, key = %key, vector_dim = vector.len()))]
+    pub fn store_in_collection(&self, collection: &str, key: &str, vector: Vec<f32>) -> Result<()> {
+        self.store_in_collection_with_metadata(collection, key, vector, HashMap::new())
+    }
+
+    /// Store embedding with metadata in a specific collection.
+    #[instrument(skip(self, vector, metadata), fields(collection = %collection, key = %key, vector_dim = vector.len()))]
+    pub fn store_in_collection_with_metadata(
+        &self,
+        collection: &str,
+        key: &str,
+        vector: Vec<f32>,
+        metadata: HashMap<String, TensorValue>,
+    ) -> Result<()> {
+        if vector.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+
+        // Check collection config for dimension constraint
+        let collection_config = self.collections.read().get(collection).cloned();
+        if let Some(ref config) = collection_config {
+            if let Some(expected_dim) = config.dimension {
+                if vector.len() != expected_dim {
+                    return Err(VectorError::DimensionMismatch {
+                        expected: expected_dim,
+                        got: vector.len(),
+                    });
+                }
+            }
+        }
+
+        // Check global max_dimension
+        if let Some(max_dim) = self.config.max_dimension {
+            if vector.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: vector.len(),
+                });
+            }
+        }
+
+        let storage_key = Self::collection_embedding_key(collection, key);
+        let mut tensor = TensorData::new();
+
+        let storage = if self.should_use_sparse(&vector) {
+            TensorValue::Sparse(SparseVector::from_dense(&vector))
+        } else {
+            TensorValue::Vector(vector)
+        };
+        tensor.set("vector", storage);
+
+        // Store metadata with prefix
+        for (field, value) in metadata {
+            tensor.set(Self::metadata_field_key(&field), value);
+        }
+
+        self.store.put(storage_key, tensor)?;
+        Ok(())
+    }
+
+    /// Get embedding from a specific collection.
+    pub fn get_from_collection(&self, collection: &str, key: &str) -> Result<Vec<f32>> {
+        let storage_key = Self::collection_embedding_key(collection, key);
+        let tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(format!("{}:{}", collection, key)))?;
+
+        let vector_value = tensor
+            .get("vector")
+            .ok_or_else(|| VectorError::NotFound(format!("{}:{}", collection, key)))?;
+
+        Self::extract_vector(vector_value)
+            .ok_or_else(|| VectorError::NotFound(format!("{}:{}", collection, key)))
+    }
+
+    /// Delete embedding from a specific collection.
+    pub fn delete_from_collection(&self, collection: &str, key: &str) -> Result<()> {
+        let storage_key = Self::collection_embedding_key(collection, key);
+        if !self.store.exists(&storage_key) {
+            return Err(VectorError::NotFound(format!("{}:{}", collection, key)));
+        }
+        self.store.delete(&storage_key)?;
+        Ok(())
+    }
+
+    /// Check if embedding exists in a specific collection.
+    pub fn exists_in_collection(&self, collection: &str, key: &str) -> bool {
+        let storage_key = Self::collection_embedding_key(collection, key);
+        self.store.exists(&storage_key)
+    }
+
+    /// List all keys in a collection.
+    pub fn list_collection_keys(&self, collection: &str) -> Vec<String> {
+        let prefix = Self::collection_embedding_prefix(collection);
+        self.store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(&prefix).map(ToString::to_string))
+            .collect()
+    }
+
+    // ========== Collection-Aware Search ==========
+
+    /// Search within a specific collection.
+    #[instrument(skip(self, query), fields(collection = %collection, query_dim = query.len(), top_k))]
+    pub fn search_in_collection(
+        &self,
+        collection: &str,
+        query: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        // Check collection config for dimension constraint
+        let collection_config = self.collections.read().get(collection).cloned();
+        if let Some(ref config) = collection_config {
+            if let Some(expected_dim) = config.dimension {
+                if query.len() != expected_dim {
+                    return Err(VectorError::DimensionMismatch {
+                        expected: expected_dim,
+                        got: query.len(),
+                    });
+                }
+            }
+        }
+
+        let prefix = Self::collection_embedding_prefix(collection);
+        let query_magnitude = Self::magnitude(query);
+        if query_magnitude == 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let mut results: Vec<SearchResult> = self
+            .store
+            .scan(&prefix)
+            .into_iter()
+            .filter_map(|storage_key| {
+                let key = storage_key.strip_prefix(&prefix)?;
+                let tensor = self.store.get(&storage_key).ok()?;
+                let vector_value = tensor.get("vector")?;
+                let vector = Self::extract_vector(vector_value)?;
+
+                if vector.len() != query.len() {
+                    return None;
+                }
+
+                let score = Self::cosine_similarity(query, &vector, query_magnitude);
+                Some(SearchResult::new(key.to_string(), score))
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+
+        Ok(results)
+    }
+
+    /// Search with filter in a specific collection.
+    #[instrument(skip(self, query, filter, config), fields(collection = %collection, query_dim = query.len(), top_k))]
+    pub fn search_filtered_in_collection(
+        &self,
+        collection: &str,
+        query: &[f32],
+        top_k: usize,
+        filter: &FilterCondition,
+        config: Option<FilteredSearchConfig>,
+    ) -> Result<Vec<SearchResult>> {
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        // Check collection config for dimension constraint
+        let collection_config_opt = self.collections.read().get(collection).cloned();
+        if let Some(ref coll_config) = collection_config_opt {
+            if let Some(expected_dim) = coll_config.dimension {
+                if query.len() != expected_dim {
+                    return Err(VectorError::DimensionMismatch {
+                        expected: expected_dim,
+                        got: query.len(),
+                    });
+                }
+            }
+        }
+
+        let prefix = Self::collection_embedding_prefix(collection);
+        let query_magnitude = Self::magnitude(query);
+        if query_magnitude == 0.0 {
+            return Ok(Vec::new());
+        }
+
+        let filter_config = config.unwrap_or_default();
+        let strategy = match filter_config.strategy {
+            FilterStrategy::Auto => {
+                // Estimate selectivity for collection
+                let keys = self.store.scan(&prefix);
+                let sample_size = 100.min(keys.len());
+                if sample_size == 0 {
+                    FilterStrategy::PostFilter
+                } else {
+                    let matches = keys
+                        .iter()
+                        .take(sample_size)
+                        .filter(|k| {
+                            self.store
+                                .get(k)
+                                .map(|t| Self::evaluate_filter(&t, filter))
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    let selectivity = matches as f32 / sample_size as f32;
+                    if selectivity < filter_config.selectivity_threshold {
+                        FilterStrategy::PreFilter
+                    } else {
+                        FilterStrategy::PostFilter
+                    }
+                }
+            },
+            other => other,
+        };
+
+        let mut results: Vec<SearchResult> = match strategy {
+            FilterStrategy::PreFilter | FilterStrategy::Auto => {
+                // Pre-filter: filter first, then search
+                self.store
+                    .scan(&prefix)
+                    .into_iter()
+                    .filter_map(|storage_key| {
+                        let tensor = self.store.get(&storage_key).ok()?;
+                        if !Self::evaluate_filter(&tensor, filter) {
+                            return None;
+                        }
+                        let key = storage_key.strip_prefix(&prefix)?;
+                        let vector_value = tensor.get("vector")?;
+                        let vector = Self::extract_vector(vector_value)?;
+                        if vector.len() != query.len() {
+                            return None;
+                        }
+                        let score = Self::cosine_similarity(query, &vector, query_magnitude);
+                        Some(SearchResult::new(key.to_string(), score))
+                    })
+                    .collect()
+            },
+            FilterStrategy::PostFilter => {
+                // Post-filter: search first with oversample, then filter
+                let oversample_k = top_k
+                    .saturating_mul(filter_config.oversample_factor)
+                    .max(top_k);
+                let candidates = self.search_in_collection(collection, query, oversample_k)?;
+                candidates
+                    .into_iter()
+                    .filter(|r| {
+                        let storage_key = Self::collection_embedding_key(collection, &r.key);
+                        self.store
+                            .get(&storage_key)
+                            .map(|t| Self::evaluate_filter(&t, filter))
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            },
+        };
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+
+        Ok(results)
     }
 
     /// Store an embedding vector with the given key.
@@ -1461,6 +2192,659 @@ impl VectorEngine {
     /// Count entities with embeddings (unified mode).
     pub fn count_entities_with_embeddings(&self) -> usize {
         self.scan_entities_with_embeddings().len()
+    }
+
+    // ========== Metadata Storage for Filtered Search ==========
+
+    /// Metadata field prefix for embedding metadata.
+    const METADATA_PREFIX: &'static str = "meta:";
+
+    /// Convert a metadata field name to its storage key.
+    fn metadata_field_key(field: &str) -> String {
+        format!("{}{}", Self::METADATA_PREFIX, field)
+    }
+
+    /// Store embedding with associated metadata for filtered search.
+    ///
+    /// Metadata fields are stored alongside the vector in the same TensorData,
+    /// using a "meta:" prefix to distinguish them from the vector field.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use vector_engine::VectorEngine;
+    /// use tensor_store::TensorValue;
+    /// use std::collections::HashMap;
+    ///
+    /// let engine = VectorEngine::new();
+    /// let mut metadata = HashMap::new();
+    /// metadata.insert("category".to_string(), TensorValue::from("electronics"));
+    /// metadata.insert("price".to_string(), TensorValue::from(299.99_f64));
+    ///
+    /// engine.store_embedding_with_metadata("product1", vec![0.1, 0.2, 0.3], metadata).unwrap();
+    /// ```
+    #[instrument(skip(self, vector, metadata), fields(key = %key, vector_dim = vector.len()))]
+    pub fn store_embedding_with_metadata(
+        &self,
+        key: &str,
+        vector: Vec<f32>,
+        metadata: HashMap<String, TensorValue>,
+    ) -> Result<()> {
+        if vector.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if vector.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: vector.len(),
+                });
+            }
+        }
+
+        let storage_key = Self::embedding_key(key);
+        let mut tensor = TensorData::new();
+
+        // Store the vector
+        let storage = if self.should_use_sparse(&vector) {
+            TensorValue::Sparse(SparseVector::from_dense(&vector))
+        } else {
+            TensorValue::Vector(vector)
+        };
+        tensor.set("vector", storage);
+
+        // Store metadata fields with prefix
+        for (field, value) in metadata {
+            tensor.set(Self::metadata_field_key(&field), value);
+        }
+
+        self.store.put(storage_key, tensor)?;
+        Ok(())
+    }
+
+    /// Retrieve metadata fields for an embedding.
+    ///
+    /// Returns only the metadata fields, not the vector itself.
+    /// Metadata field names are returned without the internal "meta:" prefix.
+    #[instrument(skip(self), fields(key = %key))]
+    pub fn get_metadata(&self, key: &str) -> Result<HashMap<String, TensorValue>> {
+        let storage_key = Self::embedding_key(key);
+        let tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(key.to_string()))?;
+
+        let mut metadata = HashMap::new();
+        for (field, value) in tensor.fields_iter() {
+            if let Some(meta_field) = field.strip_prefix(Self::METADATA_PREFIX) {
+                metadata.insert(meta_field.to_string(), value.clone());
+            }
+        }
+
+        Ok(metadata)
+    }
+
+    /// Update metadata without touching the vector.
+    ///
+    /// Merges the provided metadata with existing metadata. To remove a field,
+    /// use `remove_metadata_field()` instead.
+    ///
+    /// Returns an error if the embedding does not exist.
+    #[instrument(skip(self, metadata), fields(key = %key))]
+    pub fn update_metadata(&self, key: &str, metadata: HashMap<String, TensorValue>) -> Result<()> {
+        let storage_key = Self::embedding_key(key);
+        let mut tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(key.to_string()))?;
+
+        // Verify the embedding exists
+        if tensor.get("vector").is_none() {
+            return Err(VectorError::NotFound(key.to_string()));
+        }
+
+        // Update metadata fields
+        for (field, value) in metadata {
+            tensor.set(Self::metadata_field_key(&field), value);
+        }
+
+        self.store.put(storage_key, tensor)?;
+        Ok(())
+    }
+
+    /// Remove a specific metadata field from an embedding.
+    #[instrument(skip(self), fields(key = %key, field = %field))]
+    pub fn remove_metadata_field(&self, key: &str, field: &str) -> Result<()> {
+        let storage_key = Self::embedding_key(key);
+        let mut tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(key.to_string()))?;
+
+        tensor.remove(&Self::metadata_field_key(field));
+        self.store.put(storage_key, tensor)?;
+        Ok(())
+    }
+
+    /// Check if an embedding has a specific metadata field.
+    pub fn has_metadata_field(&self, key: &str, field: &str) -> bool {
+        let storage_key = Self::embedding_key(key);
+        self.store
+            .get(&storage_key)
+            .map(|t| t.has(&Self::metadata_field_key(field)))
+            .unwrap_or(false)
+    }
+
+    /// Get a single metadata field value.
+    pub fn get_metadata_field(&self, key: &str, field: &str) -> Result<Option<TensorValue>> {
+        let storage_key = Self::embedding_key(key);
+        let tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(key.to_string()))?;
+
+        Ok(tensor.get(&Self::metadata_field_key(field)).cloned())
+    }
+
+    // ========== Filtered Search ==========
+
+    /// Search for similar embeddings with filter predicate applied.
+    ///
+    /// The filter is applied to metadata fields. Supports hybrid pre/post-filter
+    /// strategies based on estimated selectivity.
+    ///
+    /// # Strategy Selection
+    ///
+    /// - **Pre-filter**: Best when filter matches < 10% of embeddings.
+    ///   Filters first, then searches the subset.
+    /// - **Post-filter**: Best when filter matches > 10% of embeddings.
+    ///   Searches with oversample, then filters results.
+    /// - **Auto**: Estimates selectivity and chooses automatically.
+    #[instrument(skip(self, query, filter, config), fields(query_dim = query.len(), top_k))]
+    pub fn search_similar_filtered(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        filter: &FilterCondition,
+        config: Option<FilteredSearchConfig>,
+    ) -> Result<Vec<SearchResult>> {
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        if let Some(max_dim) = self.config.max_dimension {
+            if query.len() > max_dim {
+                return Err(VectorError::DimensionMismatch {
+                    expected: max_dim,
+                    got: query.len(),
+                });
+            }
+        }
+
+        let config = config.unwrap_or_default();
+
+        // Determine strategy
+        let strategy = match config.strategy {
+            FilterStrategy::Auto => self.choose_filter_strategy(filter, &config),
+            other => other,
+        };
+
+        match strategy {
+            FilterStrategy::PreFilter | FilterStrategy::Auto => {
+                Ok(self.search_with_pre_filter(query, top_k, filter))
+            },
+            FilterStrategy::PostFilter => {
+                self.search_with_post_filter(query, top_k, filter, &config)
+            },
+        }
+    }
+
+    /// Choose filter strategy based on estimated selectivity.
+    fn choose_filter_strategy(
+        &self,
+        filter: &FilterCondition,
+        config: &FilteredSearchConfig,
+    ) -> FilterStrategy {
+        // For True filter, always post-filter (nothing to filter)
+        if matches!(filter, FilterCondition::True) {
+            return FilterStrategy::PostFilter;
+        }
+
+        // Estimate selectivity by sampling
+        let sample_size = 100.min(self.count());
+        if sample_size == 0 {
+            return FilterStrategy::PostFilter;
+        }
+
+        let keys = self.list_keys();
+        let sample_keys: Vec<_> = keys.iter().take(sample_size).collect();
+        let matches = sample_keys
+            .iter()
+            .filter(|k| self.evaluate_filter_for_key(k, filter))
+            .count();
+
+        let selectivity = matches as f32 / sample_size as f32;
+
+        if selectivity < config.selectivity_threshold {
+            FilterStrategy::PreFilter
+        } else {
+            FilterStrategy::PostFilter
+        }
+    }
+
+    /// Pre-filter strategy: filter first, then search subset.
+    fn search_with_pre_filter(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        filter: &FilterCondition,
+    ) -> Vec<SearchResult> {
+        let query_magnitude = Self::magnitude(query);
+        if query_magnitude == 0.0 {
+            return Vec::new();
+        }
+
+        // Get all matching keys
+        let matching_keys: Vec<String> = self
+            .list_keys()
+            .into_iter()
+            .filter(|key| self.evaluate_filter_for_key(key, filter))
+            .collect();
+
+        if matching_keys.is_empty() {
+            return Vec::new();
+        }
+
+        // Search only matching embeddings
+        let mut results: Vec<SearchResult> = matching_keys
+            .iter()
+            .filter_map(|key| {
+                let vector = self.get_embedding(key).ok()?;
+                if vector.len() != query.len() {
+                    return None;
+                }
+                let score = Self::cosine_similarity(query, &vector, query_magnitude);
+                Some(SearchResult::new(key.clone(), score))
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+
+        results
+    }
+
+    /// Post-filter strategy: search with oversample, then filter.
+    fn search_with_post_filter(
+        &self,
+        query: &[f32],
+        top_k: usize,
+        filter: &FilterCondition,
+        config: &FilteredSearchConfig,
+    ) -> Result<Vec<SearchResult>> {
+        // Oversample to get more candidates
+        let oversample_k = top_k.saturating_mul(config.oversample_factor).max(top_k);
+        let candidates = self.search_similar(query, oversample_k)?;
+
+        // Filter candidates
+        let filtered: Vec<SearchResult> = candidates
+            .into_iter()
+            .filter(|r| self.evaluate_filter_for_key(&r.key, filter))
+            .take(top_k)
+            .collect();
+
+        Ok(filtered)
+    }
+
+    /// Evaluate a filter condition against an embedding's metadata.
+    fn evaluate_filter_for_key(&self, key: &str, filter: &FilterCondition) -> bool {
+        let storage_key = Self::embedding_key(key);
+        let Ok(tensor) = self.store.get(&storage_key) else {
+            return false;
+        };
+
+        Self::evaluate_filter(&tensor, filter)
+    }
+
+    /// Evaluate a filter condition against a TensorData.
+    fn evaluate_filter(tensor: &TensorData, filter: &FilterCondition) -> bool {
+        match filter {
+            FilterCondition::True => true,
+            FilterCondition::And(a, b) => {
+                Self::evaluate_filter(tensor, a) && Self::evaluate_filter(tensor, b)
+            },
+            FilterCondition::Or(a, b) => {
+                Self::evaluate_filter(tensor, a) || Self::evaluate_filter(tensor, b)
+            },
+            FilterCondition::Exists(field) => tensor.has(&Self::metadata_field_key(field)),
+            FilterCondition::Eq(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord == std::cmp::Ordering::Equal)
+            },
+            FilterCondition::Ne(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord != std::cmp::Ordering::Equal)
+            },
+            FilterCondition::Lt(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord == std::cmp::Ordering::Less)
+            },
+            FilterCondition::Le(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord != std::cmp::Ordering::Greater)
+            },
+            FilterCondition::Gt(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord == std::cmp::Ordering::Greater)
+            },
+            FilterCondition::Ge(field, val) => {
+                Self::compare_field(tensor, field, val, |ord| ord != std::cmp::Ordering::Less)
+            },
+            FilterCondition::Contains(field, substr) => {
+                Self::string_contains(tensor, field, substr)
+            },
+            FilterCondition::StartsWith(field, prefix) => {
+                Self::string_starts_with(tensor, field, prefix)
+            },
+            FilterCondition::In(field, values) => values.iter().any(|v| {
+                Self::compare_field(tensor, field, v, |ord| ord == std::cmp::Ordering::Equal)
+            }),
+        }
+    }
+
+    /// Compare a metadata field with a filter value.
+    fn compare_field<F>(tensor: &TensorData, field: &str, val: &FilterValue, cmp: F) -> bool
+    where
+        F: Fn(std::cmp::Ordering) -> bool,
+    {
+        let meta_key = Self::metadata_field_key(field);
+        let Some(stored) = tensor.get(&meta_key) else {
+            return false;
+        };
+
+        let ordering = Self::compare_tensor_value_to_filter(stored, val);
+        ordering.is_some_and(cmp)
+    }
+
+    /// Compare TensorValue to FilterValue, returning ordering if compatible.
+    fn compare_tensor_value_to_filter(
+        tensor_val: &TensorValue,
+        filter_val: &FilterValue,
+    ) -> Option<std::cmp::Ordering> {
+        use tensor_store::ScalarValue;
+
+        match (tensor_val, filter_val) {
+            (TensorValue::Scalar(ScalarValue::Int(a)), FilterValue::Int(b)) => Some(a.cmp(b)),
+            (TensorValue::Scalar(ScalarValue::Float(a)), FilterValue::Float(b)) => a.partial_cmp(b),
+            (TensorValue::Scalar(ScalarValue::Float(a)), FilterValue::Int(b)) => {
+                a.partial_cmp(&(*b as f64))
+            },
+            (TensorValue::Scalar(ScalarValue::Int(a)), FilterValue::Float(b)) => {
+                (*a as f64).partial_cmp(b)
+            },
+            (TensorValue::Scalar(ScalarValue::String(a)), FilterValue::String(b)) => Some(a.cmp(b)),
+            (TensorValue::Scalar(ScalarValue::Bool(a)), FilterValue::Bool(b)) => Some(a.cmp(b)),
+            (TensorValue::Scalar(ScalarValue::Null), FilterValue::Null) => {
+                Some(std::cmp::Ordering::Equal)
+            },
+            _ => None, // Incompatible types
+        }
+    }
+
+    /// Check if a string field contains a substring.
+    fn string_contains(tensor: &TensorData, field: &str, substr: &str) -> bool {
+        use tensor_store::ScalarValue;
+
+        let meta_key = Self::metadata_field_key(field);
+        match tensor.get(&meta_key) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.contains(substr),
+            _ => false,
+        }
+    }
+
+    /// Check if a string field starts with a prefix.
+    fn string_starts_with(tensor: &TensorData, field: &str, prefix: &str) -> bool {
+        use tensor_store::ScalarValue;
+
+        let meta_key = Self::metadata_field_key(field);
+        match tensor.get(&meta_key) {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => s.starts_with(prefix),
+            _ => false,
+        }
+    }
+
+    /// Estimate selectivity of a filter (fraction of embeddings that match).
+    ///
+    /// Returns a value between 0.0 and 1.0. This is useful for query planning.
+    pub fn estimate_filter_selectivity(&self, filter: &FilterCondition) -> f32 {
+        let count = self.count();
+        if count == 0 {
+            return 0.0;
+        }
+
+        let sample_size = 100.min(count);
+        let keys = self.list_keys();
+        let sample_keys: Vec<_> = keys.iter().take(sample_size).collect();
+        let matches = sample_keys
+            .iter()
+            .filter(|k| self.evaluate_filter_for_key(k, filter))
+            .count();
+
+        matches as f32 / sample_size as f32
+    }
+
+    /// Count embeddings matching a filter condition.
+    pub fn count_matching(&self, filter: &FilterCondition) -> usize {
+        self.list_keys()
+            .into_iter()
+            .filter(|key| self.evaluate_filter_for_key(key, filter))
+            .count()
+    }
+
+    /// List keys matching a filter condition.
+    pub fn list_keys_matching(&self, filter: &FilterCondition) -> Vec<String> {
+        self.list_keys()
+            .into_iter()
+            .filter(|key| self.evaluate_filter_for_key(key, filter))
+            .collect()
+    }
+
+    // ========== Index Persistence ==========
+
+    /// Create a snapshot of a collection that can be saved to disk.
+    ///
+    /// Captures all vectors, keys, and metadata from the specified collection.
+    /// For the default (non-collection) embeddings, use `DEFAULT_COLLECTION` as the name.
+    #[instrument(skip(self), fields(collection = %collection))]
+    pub fn snapshot_collection(&self, collection: &str) -> PersistentVectorIndex {
+        let config = self.get_collection_config(collection).unwrap_or_default();
+        let mut index = PersistentVectorIndex::new(collection.to_string(), config);
+
+        let prefix = if collection == Self::DEFAULT_COLLECTION {
+            Self::embedding_prefix().to_string()
+        } else {
+            Self::collection_embedding_prefix(collection)
+        };
+
+        for storage_key in self.store.scan(&prefix) {
+            let key = if collection == Self::DEFAULT_COLLECTION {
+                storage_key.strip_prefix(Self::embedding_prefix())
+            } else {
+                storage_key.strip_prefix(&prefix)
+            };
+
+            let Some(key) = key else { continue };
+            let Ok(tensor) = self.store.get(&storage_key) else {
+                continue;
+            };
+
+            // Extract vector
+            let Some(vector) = tensor.get("vector").and_then(Self::extract_vector) else {
+                continue;
+            };
+
+            // Extract metadata
+            let mut metadata: HashMap<String, MetadataValue> = HashMap::new();
+            for (field, value) in tensor.fields_iter() {
+                if let Some(meta_key) = field.strip_prefix(Self::METADATA_PREFIX) {
+                    if let Some(mv) = MetadataValue::from_tensor_value(value) {
+                        metadata.insert(meta_key.to_string(), mv);
+                    }
+                }
+            }
+
+            let metadata_opt = if metadata.is_empty() {
+                None
+            } else {
+                Some(metadata)
+            };
+            index.push(key.to_string(), vector, metadata_opt);
+        }
+
+        index
+    }
+
+    /// Save a collection's index to a file (JSON format).
+    ///
+    /// The file can be loaded later with `load_index()`.
+    #[instrument(skip(self, path), fields(collection = %collection))]
+    pub fn save_index(&self, collection: &str, path: impl AsRef<Path>) -> Result<()> {
+        let index = self.snapshot_collection(collection);
+        let json = serde_json::to_string_pretty(&index)
+            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Save a collection's index to a file in compact binary format.
+    ///
+    /// Uses bincode for efficient serialization. The file can be loaded
+    /// with `load_index_binary()`.
+    #[instrument(skip(self, path), fields(collection = %collection))]
+    pub fn save_index_binary(&self, collection: &str, path: impl AsRef<Path>) -> Result<()> {
+        let index = self.snapshot_collection(collection);
+        let bytes = bincode::serialize(&index)
+            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        fs::write(path, bytes)?;
+        Ok(())
+    }
+
+    /// Load an index from a JSON file and restore vectors to a collection.
+    ///
+    /// Returns the collection name from the loaded index.
+    /// If the collection already exists with vectors, they will be overwritten.
+    #[instrument(skip(self, path))]
+    pub fn load_index(&self, path: impl AsRef<Path>) -> Result<String> {
+        let json = fs::read_to_string(path)?;
+        let index: PersistentVectorIndex = serde_json::from_str(&json)
+            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        self.restore_from_index(index)
+    }
+
+    /// Load an index from a binary file and restore vectors to a collection.
+    ///
+    /// Returns the collection name from the loaded index.
+    #[instrument(skip(self, path))]
+    pub fn load_index_binary(&self, path: impl AsRef<Path>) -> Result<String> {
+        let bytes = fs::read(path)?;
+        let index: PersistentVectorIndex = bincode::deserialize(&bytes)
+            .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+        self.restore_from_index(index)
+    }
+
+    /// Restore vectors from a `PersistentVectorIndex`.
+    fn restore_from_index(&self, index: PersistentVectorIndex) -> Result<String> {
+        let collection = index.collection.clone();
+
+        // Create or update collection config
+        if collection != Self::DEFAULT_COLLECTION {
+            let mut collections = self.collections.write();
+            collections.insert(collection.clone(), index.config.clone());
+            drop(collections);
+        }
+
+        // Restore vectors
+        for entry in index.vectors {
+            let metadata: HashMap<String, TensorValue> = entry
+                .metadata
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(k, v)| (k, TensorValue::from(v)))
+                .collect();
+
+            if collection == Self::DEFAULT_COLLECTION {
+                self.store_embedding_with_metadata(&entry.key, entry.vector, metadata)?;
+            } else {
+                self.store_in_collection_with_metadata(
+                    &collection,
+                    &entry.key,
+                    entry.vector,
+                    metadata,
+                )?;
+            }
+        }
+
+        Ok(collection)
+    }
+
+    /// Save all collections to a directory.
+    ///
+    /// Creates one JSON file per collection (including default).
+    #[instrument(skip(self, dir))]
+    pub fn save_all_indices(&self, dir: impl AsRef<Path>) -> Result<Vec<String>> {
+        let dir = dir.as_ref();
+        fs::create_dir_all(dir)?;
+
+        let mut saved = Vec::new();
+
+        // Save default collection
+        let default_count = self.count();
+        if default_count > 0 {
+            let path = dir.join("default.json");
+            self.save_index(Self::DEFAULT_COLLECTION, &path)?;
+            saved.push(Self::DEFAULT_COLLECTION.to_string());
+        }
+
+        // Save named collections
+        for collection in self.list_collections() {
+            let count = self.collection_count(&collection);
+            if count > 0 {
+                let filename = format!("{}.json", collection);
+                let path = dir.join(filename);
+                self.save_index(&collection, &path)?;
+                saved.push(collection);
+            }
+        }
+
+        Ok(saved)
+    }
+
+    /// Load all indices from a directory.
+    ///
+    /// Returns the names of collections that were loaded.
+    #[instrument(skip(self, dir))]
+    pub fn load_all_indices(&self, dir: impl AsRef<Path>) -> Result<Vec<String>> {
+        let dir = dir.as_ref();
+        let mut loaded = Vec::new();
+
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                match self.load_index(&path) {
+                    Ok(collection) => loaded.push(collection),
+                    Err(e) => {
+                        // Log but continue with other files
+                        tracing::warn!("Failed to load index from {:?}: {}", path, e);
+                    },
+                }
+            }
+        }
+
+        Ok(loaded)
     }
 }
 
@@ -4021,5 +5405,1658 @@ mod tests {
 
         let result = engine.get_embedding("invalid");
         assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    // ========== Metadata Storage Tests ==========
+
+    #[test]
+    fn store_embedding_with_metadata_basic() {
+        let engine = VectorEngine::new();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("electronics".to_string())),
+        );
+        metadata.insert(
+            "price".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(299.99)),
+        );
+
+        engine
+            .store_embedding_with_metadata("product1", vec![0.1, 0.2, 0.3], metadata)
+            .unwrap();
+
+        // Verify embedding is stored
+        let vector = engine.get_embedding("product1").unwrap();
+        assert_eq!(vector.len(), 3);
+
+        // Verify metadata is stored
+        let retrieved_metadata = engine.get_metadata("product1").unwrap();
+        assert_eq!(retrieved_metadata.len(), 2);
+        assert!(retrieved_metadata.contains_key("category"));
+        assert!(retrieved_metadata.contains_key("price"));
+    }
+
+    #[test]
+    fn store_embedding_with_metadata_empty_metadata() {
+        let engine = VectorEngine::new();
+        let metadata = HashMap::new();
+
+        engine
+            .store_embedding_with_metadata("key", vec![1.0, 2.0], metadata)
+            .unwrap();
+
+        let vector = engine.get_embedding("key").unwrap();
+        assert_eq!(vector, vec![1.0, 2.0]);
+
+        let retrieved_metadata = engine.get_metadata("key").unwrap();
+        assert!(retrieved_metadata.is_empty());
+    }
+
+    #[test]
+    fn store_embedding_with_metadata_empty_vector_error() {
+        let engine = VectorEngine::new();
+        let metadata = HashMap::new();
+
+        let result = engine.store_embedding_with_metadata("key", vec![], metadata);
+        assert!(matches!(result, Err(VectorError::EmptyVector)));
+    }
+
+    #[test]
+    fn store_embedding_with_metadata_dimension_limit() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        let result = engine.store_embedding_with_metadata("key", vec![0.0; 10], HashMap::new());
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 5,
+                got: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn get_metadata_nonexistent_key() {
+        let engine = VectorEngine::new();
+        let result = engine.get_metadata("nonexistent");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn update_metadata_basic() {
+        let engine = VectorEngine::new();
+        let mut initial_metadata = HashMap::new();
+        initial_metadata.insert(
+            "color".to_string(),
+            TensorValue::Scalar(ScalarValue::String("red".to_string())),
+        );
+
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 2.0], initial_metadata)
+            .unwrap();
+
+        // Update with new metadata
+        let mut update = HashMap::new();
+        update.insert(
+            "size".to_string(),
+            TensorValue::Scalar(ScalarValue::String("large".to_string())),
+        );
+        update.insert(
+            "color".to_string(),
+            TensorValue::Scalar(ScalarValue::String("blue".to_string())),
+        );
+
+        engine.update_metadata("item", update).unwrap();
+
+        let metadata = engine.get_metadata("item").unwrap();
+        assert_eq!(metadata.len(), 2);
+
+        // Color should be updated to blue
+        match metadata.get("color") {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => assert_eq!(s, "blue"),
+            _ => panic!("Expected color to be 'blue'"),
+        }
+
+        // Size should be added
+        assert!(metadata.contains_key("size"));
+    }
+
+    #[test]
+    fn update_metadata_nonexistent_key() {
+        let engine = VectorEngine::new();
+        let metadata = HashMap::new();
+
+        let result = engine.update_metadata("nonexistent", metadata);
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn update_metadata_no_vector_error() {
+        let engine = VectorEngine::new();
+        // Create tensor without vector field
+        let mut tensor = TensorData::new();
+        tensor.set(
+            "meta:test",
+            TensorValue::Scalar(ScalarValue::String("value".to_string())),
+        );
+        engine.store().put("emb:orphan", tensor).unwrap();
+
+        let result = engine.update_metadata("orphan", HashMap::new());
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn remove_metadata_field_basic() {
+        let engine = VectorEngine::new();
+        let mut metadata = HashMap::new();
+        metadata.insert("a".to_string(), TensorValue::Scalar(ScalarValue::Int(1)));
+        metadata.insert("b".to_string(), TensorValue::Scalar(ScalarValue::Int(2)));
+
+        engine
+            .store_embedding_with_metadata("key", vec![1.0], metadata)
+            .unwrap();
+
+        engine.remove_metadata_field("key", "a").unwrap();
+
+        let retrieved = engine.get_metadata("key").unwrap();
+        assert!(!retrieved.contains_key("a"));
+        assert!(retrieved.contains_key("b"));
+    }
+
+    #[test]
+    fn remove_metadata_field_nonexistent_key() {
+        let engine = VectorEngine::new();
+        let result = engine.remove_metadata_field("nonexistent", "field");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn has_metadata_field_true() {
+        let engine = VectorEngine::new();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "field1".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(42)),
+        );
+
+        engine
+            .store_embedding_with_metadata("key", vec![1.0], metadata)
+            .unwrap();
+
+        assert!(engine.has_metadata_field("key", "field1"));
+    }
+
+    #[test]
+    fn has_metadata_field_false() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("key", vec![1.0]).unwrap();
+
+        assert!(!engine.has_metadata_field("key", "nonexistent_field"));
+    }
+
+    #[test]
+    fn has_metadata_field_nonexistent_key() {
+        let engine = VectorEngine::new();
+        assert!(!engine.has_metadata_field("nonexistent", "field"));
+    }
+
+    #[test]
+    fn get_metadata_field_basic() {
+        let engine = VectorEngine::new();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "score".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(0.95)),
+        );
+
+        engine
+            .store_embedding_with_metadata("key", vec![1.0], metadata)
+            .unwrap();
+
+        let value = engine.get_metadata_field("key", "score").unwrap();
+        match value {
+            Some(TensorValue::Scalar(ScalarValue::Float(f))) => {
+                assert!((f - 0.95).abs() < f64::EPSILON)
+            },
+            _ => panic!("Expected float value"),
+        }
+    }
+
+    #[test]
+    fn get_metadata_field_not_present() {
+        let engine = VectorEngine::new();
+        engine.store_embedding("key", vec![1.0]).unwrap();
+
+        let value = engine.get_metadata_field("key", "nonexistent").unwrap();
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn get_metadata_field_nonexistent_key() {
+        let engine = VectorEngine::new();
+        let result = engine.get_metadata_field("nonexistent", "field");
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn metadata_with_sparse_vector() {
+        let engine = VectorEngine::new();
+
+        // Create sparse vector (>50% zeros)
+        let mut sparse = vec![0.0f32; 100];
+        sparse[0] = 1.0;
+        sparse[50] = 2.0;
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "type".to_string(),
+            TensorValue::Scalar(ScalarValue::String("sparse".to_string())),
+        );
+
+        engine
+            .store_embedding_with_metadata("sparse_key", sparse.clone(), metadata)
+            .unwrap();
+
+        // Verify both vector and metadata work with sparse storage
+        let retrieved = engine.get_embedding("sparse_key").unwrap();
+        assert_eq!(retrieved.len(), 100);
+        assert_eq!(retrieved[0], 1.0);
+        assert_eq!(retrieved[50], 2.0);
+
+        let meta = engine.get_metadata("sparse_key").unwrap();
+        assert!(meta.contains_key("type"));
+    }
+
+    #[test]
+    fn metadata_field_key_helper() {
+        let key = VectorEngine::metadata_field_key("test_field");
+        assert_eq!(key, "meta:test_field");
+    }
+
+    #[test]
+    fn metadata_multiple_types() {
+        let engine = VectorEngine::new();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "int_field".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(42)),
+        );
+        metadata.insert(
+            "float_field".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(3.14)),
+        );
+        metadata.insert(
+            "string_field".to_string(),
+            TensorValue::Scalar(ScalarValue::String("hello".to_string())),
+        );
+        metadata.insert(
+            "bool_field".to_string(),
+            TensorValue::Scalar(ScalarValue::Bool(true)),
+        );
+
+        engine
+            .store_embedding_with_metadata("multi_type", vec![1.0, 2.0], metadata)
+            .unwrap();
+
+        let retrieved = engine.get_metadata("multi_type").unwrap();
+        assert_eq!(retrieved.len(), 4);
+
+        // Verify each type
+        match retrieved.get("int_field") {
+            Some(TensorValue::Scalar(ScalarValue::Int(i))) => assert_eq!(*i, 42),
+            _ => panic!("Expected int"),
+        }
+        match retrieved.get("float_field") {
+            Some(TensorValue::Scalar(ScalarValue::Float(f))) => {
+                assert!((*f - 3.14).abs() < f64::EPSILON)
+            },
+            _ => panic!("Expected float"),
+        }
+        match retrieved.get("string_field") {
+            Some(TensorValue::Scalar(ScalarValue::String(s))) => assert_eq!(s, "hello"),
+            _ => panic!("Expected string"),
+        }
+        match retrieved.get("bool_field") {
+            Some(TensorValue::Scalar(ScalarValue::Bool(b))) => assert!(*b),
+            _ => panic!("Expected bool"),
+        }
+    }
+
+    #[test]
+    fn metadata_overwrites_on_store() {
+        let engine = VectorEngine::new();
+
+        // First store
+        let mut meta1 = HashMap::new();
+        meta1.insert("a".to_string(), TensorValue::Scalar(ScalarValue::Int(1)));
+        meta1.insert("b".to_string(), TensorValue::Scalar(ScalarValue::Int(2)));
+        engine
+            .store_embedding_with_metadata("key", vec![1.0], meta1)
+            .unwrap();
+
+        // Second store with different metadata
+        let mut meta2 = HashMap::new();
+        meta2.insert("c".to_string(), TensorValue::Scalar(ScalarValue::Int(3)));
+        engine
+            .store_embedding_with_metadata("key", vec![2.0], meta2)
+            .unwrap();
+
+        // Only meta2 should exist
+        let retrieved = engine.get_metadata("key").unwrap();
+        assert_eq!(retrieved.len(), 1);
+        assert!(retrieved.contains_key("c"));
+        assert!(!retrieved.contains_key("a"));
+        assert!(!retrieved.contains_key("b"));
+    }
+
+    // ========== Filtered Search Tests ==========
+
+    fn setup_filtered_search_engine() -> VectorEngine {
+        let engine = VectorEngine::new();
+
+        // Create test data with various categories
+        let categories = ["electronics", "clothing", "food"];
+        let prices = [100, 50, 25];
+
+        for (i, (cat, price)) in categories.iter().zip(prices.iter()).enumerate() {
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                "category".to_string(),
+                TensorValue::Scalar(ScalarValue::String(cat.to_string())),
+            );
+            metadata.insert(
+                "price".to_string(),
+                TensorValue::Scalar(ScalarValue::Int(*price)),
+            );
+            metadata.insert(
+                "active".to_string(),
+                TensorValue::Scalar(ScalarValue::Bool(i % 2 == 0)),
+            );
+
+            // Use non-zero vectors (i+1) to avoid zero-magnitude issues
+            engine
+                .store_embedding_with_metadata(
+                    &format!("item{}", i),
+                    vec![(i + 1) as f32, 1.0, 1.0],
+                    metadata,
+                )
+                .unwrap();
+        }
+
+        engine
+    }
+
+    #[test]
+    fn search_filtered_eq_string() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item0");
+    }
+
+    #[test]
+    fn search_filtered_eq_int() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq("price".to_string(), FilterValue::Int(50));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_gt() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Gt("price".to_string(), FilterValue::Int(30));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // electronics (100) and clothing (50)
+    }
+
+    #[test]
+    fn search_filtered_lt() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Lt("price".to_string(), FilterValue::Int(60));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // clothing (50) and food (25)
+    }
+
+    #[test]
+    fn search_filtered_and() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Gt("price".to_string(), FilterValue::Int(30)).and(
+            FilterCondition::Lt("price".to_string(), FilterValue::Int(80)),
+        );
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1); // Only clothing (50)
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_or() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        )
+        .or(FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("food".to_string()),
+        ));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_filtered_true() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::True;
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 3); // All items
+    }
+
+    #[test]
+    fn search_filtered_exists() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "tag".to_string(),
+            TensorValue::Scalar(ScalarValue::String("a".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("with_tag", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        engine
+            .store_embedding("without_tag", vec![0.0, 1.0])
+            .unwrap();
+
+        let filter = FilterCondition::Exists("tag".to_string());
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "with_tag");
+    }
+
+    #[test]
+    fn search_filtered_contains() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "description".to_string(),
+            TensorValue::Scalar(ScalarValue::String("blue shirt".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item1", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "description".to_string(),
+            TensorValue::Scalar(ScalarValue::String("red pants".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item2", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        let filter = FilterCondition::Contains("description".to_string(), "shirt".to_string());
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_starts_with() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "sku".to_string(),
+            TensorValue::Scalar(ScalarValue::String("ABC123".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item1", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "sku".to_string(),
+            TensorValue::Scalar(ScalarValue::String("XYZ789".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("item2", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        let filter = FilterCondition::StartsWith("sku".to_string(), "ABC".to_string());
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn search_filtered_in() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::In(
+            "category".to_string(),
+            vec![
+                FilterValue::String("electronics".to_string()),
+                FilterValue::String("food".to_string()),
+            ],
+        );
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_filtered_ne() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Ne(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // clothing and food
+    }
+
+    #[test]
+    fn search_filtered_bool() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq("active".to_string(), FilterValue::Bool(true));
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 2); // item0 and item2
+    }
+
+    #[test]
+    fn search_filtered_empty_result() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("nonexistent".to_string()),
+        );
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, None)
+            .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_filtered_pre_filter_strategy() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let config = FilteredSearchConfig::pre_filter();
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, Some(config))
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_filtered_post_filter_strategy() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let config = FilteredSearchConfig::post_filter();
+        let results = engine
+            .search_similar_filtered(&[1.0, 1.0, 1.0], 10, &filter, Some(config))
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_filtered_empty_vector_error() {
+        let engine = VectorEngine::new();
+        let filter = FilterCondition::True;
+        let result = engine.search_similar_filtered(&[], 5, &filter, None);
+        assert!(matches!(result, Err(VectorError::EmptyVector)));
+    }
+
+    #[test]
+    fn search_filtered_zero_top_k_error() {
+        let engine = VectorEngine::new();
+        let filter = FilterCondition::True;
+        let result = engine.search_similar_filtered(&[1.0], 0, &filter, None);
+        assert!(matches!(result, Err(VectorError::InvalidTopK)));
+    }
+
+    #[test]
+    fn search_filtered_dimension_limit() {
+        let config = VectorEngineConfig {
+            max_dimension: Some(5),
+            ..Default::default()
+        };
+        let engine = VectorEngine::with_config(config).unwrap();
+        let filter = FilterCondition::True;
+
+        let result = engine.search_similar_filtered(&[0.0; 10], 5, &filter, None);
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 5,
+                got: 10
+            })
+        ));
+    }
+
+    #[test]
+    fn count_matching_basic() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Gt("price".to_string(), FilterValue::Int(30));
+        let count = engine.count_matching(&filter);
+
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn list_keys_matching_basic() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let keys = engine.list_keys_matching(&filter);
+
+        assert_eq!(keys.len(), 1);
+        assert!(keys.contains(&"item0".to_string()));
+    }
+
+    #[test]
+    fn estimate_filter_selectivity_basic() {
+        let engine = setup_filtered_search_engine();
+
+        let filter = FilterCondition::True;
+        let selectivity = engine.estimate_filter_selectivity(&filter);
+        assert!((selectivity - 1.0).abs() < 0.01);
+
+        let filter_specific = FilterCondition::Eq(
+            "category".to_string(),
+            FilterValue::String("electronics".to_string()),
+        );
+        let selectivity_specific = engine.estimate_filter_selectivity(&filter_specific);
+        assert!(selectivity_specific > 0.0 && selectivity_specific < 1.0);
+    }
+
+    #[test]
+    fn filter_condition_and_or_builders() {
+        let a = FilterCondition::Eq("x".to_string(), FilterValue::Int(1));
+        let b = FilterCondition::Eq("y".to_string(), FilterValue::Int(2));
+
+        let and_cond = a.clone().and(b.clone());
+        assert!(matches!(and_cond, FilterCondition::And(_, _)));
+
+        let or_cond = a.or(b);
+        assert!(matches!(or_cond, FilterCondition::Or(_, _)));
+    }
+
+    #[test]
+    fn filter_value_from_traits() {
+        let v1: FilterValue = 42_i64.into();
+        assert!(matches!(v1, FilterValue::Int(42)));
+
+        let v2: FilterValue = 3.14_f64.into();
+        assert!(matches!(v2, FilterValue::Float(f) if (f - 3.14).abs() < f64::EPSILON));
+
+        let v3: FilterValue = "hello".into();
+        assert!(matches!(v3, FilterValue::String(s) if s == "hello"));
+
+        let v4: FilterValue = "world".to_string().into();
+        assert!(matches!(v4, FilterValue::String(s) if s == "world"));
+
+        let v5: FilterValue = true.into();
+        assert!(matches!(v5, FilterValue::Bool(true)));
+    }
+
+    #[test]
+    fn filter_strategy_default() {
+        assert_eq!(FilterStrategy::default(), FilterStrategy::Auto);
+    }
+
+    #[test]
+    fn filtered_search_config_builders() {
+        let pre = FilteredSearchConfig::pre_filter();
+        assert_eq!(pre.strategy, FilterStrategy::PreFilter);
+
+        let post = FilteredSearchConfig::post_filter();
+        assert_eq!(post.strategy, FilterStrategy::PostFilter);
+
+        let custom = FilteredSearchConfig::default().with_oversample(5);
+        assert_eq!(custom.oversample_factor, 5);
+    }
+
+    #[test]
+    fn search_filtered_float_comparison() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "score".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(0.95)),
+        );
+        engine
+            .store_embedding_with_metadata("high", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "score".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(0.5)),
+        );
+        engine
+            .store_embedding_with_metadata("low", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        let filter = FilterCondition::Gt("score".to_string(), FilterValue::Float(0.8));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "high");
+    }
+
+    #[test]
+    fn search_filtered_mixed_int_float_comparison() {
+        let engine = VectorEngine::new();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "value".to_string(),
+            TensorValue::Scalar(ScalarValue::Float(50.5)),
+        );
+        engine
+            .store_embedding_with_metadata("item", vec![1.0, 0.0], meta)
+            .unwrap();
+
+        // Compare float field with int filter value
+        let filter = FilterCondition::Gt("value".to_string(), FilterValue::Int(50));
+        let results = engine
+            .search_similar_filtered(&[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_filtered_respects_top_k() {
+        let engine = VectorEngine::new();
+
+        for i in 0..10 {
+            let mut meta = HashMap::new();
+            meta.insert("idx".to_string(), TensorValue::Scalar(ScalarValue::Int(i)));
+            engine
+                .store_embedding_with_metadata(&format!("item{}", i), vec![i as f32, 0.0], meta)
+                .unwrap();
+        }
+
+        let filter = FilterCondition::True;
+        let results = engine
+            .search_similar_filtered(&[5.0, 0.0], 3, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+    }
+
+    // ========== Collection Tests ==========
+
+    #[test]
+    fn create_collection_basic() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+
+        engine.create_collection("test", config).unwrap();
+
+        assert!(engine.collection_exists("test"));
+        assert!(engine.get_collection_config("test").is_some());
+    }
+
+    #[test]
+    fn create_collection_already_exists() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default();
+
+        engine.create_collection("test", config.clone()).unwrap();
+        let result = engine.create_collection("test", config);
+
+        assert!(matches!(result, Err(VectorError::CollectionExists(_))));
+    }
+
+    #[test]
+    fn delete_collection_basic() {
+        let engine = VectorEngine::new();
+        engine
+            .create_collection("test", VectorCollectionConfig::default())
+            .unwrap();
+
+        // Add some embeddings
+        engine
+            .store_in_collection("test", "key1", vec![1.0, 2.0])
+            .unwrap();
+        engine
+            .store_in_collection("test", "key2", vec![3.0, 4.0])
+            .unwrap();
+
+        assert_eq!(engine.collection_count("test"), 2);
+
+        // Delete collection
+        engine.delete_collection("test").unwrap();
+
+        assert!(!engine.collection_exists("test"));
+        assert_eq!(engine.collection_count("test"), 0);
+    }
+
+    #[test]
+    fn delete_collection_not_found() {
+        let engine = VectorEngine::new();
+        let result = engine.delete_collection("nonexistent");
+
+        assert!(matches!(result, Err(VectorError::CollectionNotFound(_))));
+    }
+
+    #[test]
+    fn list_collections_basic() {
+        let engine = VectorEngine::new();
+        engine
+            .create_collection("alpha", VectorCollectionConfig::default())
+            .unwrap();
+        engine
+            .create_collection("beta", VectorCollectionConfig::default())
+            .unwrap();
+
+        let mut collections = engine.list_collections();
+        collections.sort();
+
+        assert_eq!(collections, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn store_in_collection_basic() {
+        let engine = VectorEngine::new();
+        engine
+            .create_collection("products", VectorCollectionConfig::default())
+            .unwrap();
+
+        engine
+            .store_in_collection("products", "item1", vec![1.0, 2.0, 3.0])
+            .unwrap();
+
+        let vector = engine.get_from_collection("products", "item1").unwrap();
+        assert_eq!(vector, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn store_in_collection_without_prior_create() {
+        let engine = VectorEngine::new();
+
+        // Store without creating collection first (should work)
+        engine
+            .store_in_collection("auto_created", "key", vec![1.0])
+            .unwrap();
+
+        let vector = engine.get_from_collection("auto_created", "key").unwrap();
+        assert_eq!(vector, vec![1.0]);
+    }
+
+    #[test]
+    fn store_in_collection_dimension_constraint() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default().with_dimension(3);
+        engine.create_collection("fixed_dim", config).unwrap();
+
+        // Correct dimension should work
+        engine
+            .store_in_collection("fixed_dim", "good", vec![1.0, 2.0, 3.0])
+            .unwrap();
+
+        // Wrong dimension should fail
+        let result = engine.store_in_collection("fixed_dim", "bad", vec![1.0, 2.0]);
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 3,
+                got: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn get_from_collection_not_found() {
+        let engine = VectorEngine::new();
+        let result = engine.get_from_collection("coll", "nonexistent");
+
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn delete_from_collection_basic() {
+        let engine = VectorEngine::new();
+        engine
+            .store_in_collection("test", "key", vec![1.0])
+            .unwrap();
+
+        assert!(engine.exists_in_collection("test", "key"));
+
+        engine.delete_from_collection("test", "key").unwrap();
+
+        assert!(!engine.exists_in_collection("test", "key"));
+    }
+
+    #[test]
+    fn delete_from_collection_not_found() {
+        let engine = VectorEngine::new();
+        let result = engine.delete_from_collection("coll", "nonexistent");
+
+        assert!(matches!(result, Err(VectorError::NotFound(_))));
+    }
+
+    #[test]
+    fn list_collection_keys_basic() {
+        let engine = VectorEngine::new();
+        engine
+            .store_in_collection("test", "alpha", vec![1.0])
+            .unwrap();
+        engine
+            .store_in_collection("test", "beta", vec![2.0])
+            .unwrap();
+
+        let mut keys = engine.list_collection_keys("test");
+        keys.sort();
+
+        assert_eq!(keys, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn collection_count_basic() {
+        let engine = VectorEngine::new();
+        assert_eq!(engine.collection_count("empty"), 0);
+
+        engine.store_in_collection("test", "a", vec![1.0]).unwrap();
+        engine.store_in_collection("test", "b", vec![2.0]).unwrap();
+
+        assert_eq!(engine.collection_count("test"), 2);
+    }
+
+    #[test]
+    fn search_in_collection_basic() {
+        let engine = VectorEngine::new();
+
+        engine
+            .store_in_collection("products", "p1", vec![1.0, 0.0, 0.0])
+            .unwrap();
+        engine
+            .store_in_collection("products", "p2", vec![0.0, 1.0, 0.0])
+            .unwrap();
+        engine
+            .store_in_collection("products", "p3", vec![0.0, 0.0, 1.0])
+            .unwrap();
+
+        let results = engine
+            .search_in_collection("products", &[1.0, 0.0, 0.0], 2)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].key, "p1");
+    }
+
+    #[test]
+    fn search_in_collection_empty() {
+        let engine = VectorEngine::new();
+
+        let results = engine
+            .search_in_collection("empty", &[1.0, 2.0], 5)
+            .unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_in_collection_dimension_constraint() {
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default().with_dimension(3);
+        engine.create_collection("fixed", config).unwrap();
+
+        // Wrong query dimension should fail
+        let result = engine.search_in_collection("fixed", &[1.0, 2.0], 5);
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 3,
+                got: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn search_filtered_in_collection_basic() {
+        let engine = VectorEngine::new();
+
+        let mut meta1 = HashMap::new();
+        meta1.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("A".to_string())),
+        );
+        engine
+            .store_in_collection_with_metadata("test", "item1", vec![1.0, 0.0], meta1)
+            .unwrap();
+
+        let mut meta2 = HashMap::new();
+        meta2.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("B".to_string())),
+        );
+        engine
+            .store_in_collection_with_metadata("test", "item2", vec![0.0, 1.0], meta2)
+            .unwrap();
+
+        let filter =
+            FilterCondition::Eq("category".to_string(), FilterValue::String("A".to_string()));
+        let results = engine
+            .search_filtered_in_collection("test", &[1.0, 0.0], 10, &filter, None)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "item1");
+    }
+
+    #[test]
+    fn collection_isolation() {
+        let engine = VectorEngine::new();
+
+        engine
+            .store_in_collection("coll_a", "key1", vec![1.0])
+            .unwrap();
+        engine
+            .store_in_collection("coll_b", "key1", vec![2.0])
+            .unwrap();
+
+        // Same key, different collections
+        let v_a = engine.get_from_collection("coll_a", "key1").unwrap();
+        let v_b = engine.get_from_collection("coll_b", "key1").unwrap();
+
+        assert_eq!(v_a, vec![1.0]);
+        assert_eq!(v_b, vec![2.0]);
+
+        // Search should be isolated
+        let results_a = engine.search_in_collection("coll_a", &[1.0], 10).unwrap();
+        let results_b = engine.search_in_collection("coll_b", &[1.0], 10).unwrap();
+
+        assert_eq!(results_a.len(), 1);
+        assert_eq!(results_b.len(), 1);
+    }
+
+    #[test]
+    fn collection_and_default_isolation() {
+        let engine = VectorEngine::new();
+
+        // Store in default (no collection prefix)
+        engine.store_embedding("key1", vec![1.0]).unwrap();
+
+        // Store in named collection
+        engine
+            .store_in_collection("named", "key1", vec![2.0])
+            .unwrap();
+
+        // Should be isolated
+        let default_v = engine.get_embedding("key1").unwrap();
+        let named_v = engine.get_from_collection("named", "key1").unwrap();
+
+        assert_eq!(default_v, vec![1.0]);
+        assert_eq!(named_v, vec![2.0]);
+    }
+
+    #[test]
+    fn collection_config_with_dimension() {
+        let config = VectorCollectionConfig::default().with_dimension(128);
+        assert_eq!(config.dimension, Some(128));
+    }
+
+    #[test]
+    fn collection_config_with_metric() {
+        let config = VectorCollectionConfig::default().with_metric(DistanceMetric::Euclidean);
+        assert_eq!(config.distance_metric, DistanceMetric::Euclidean);
+    }
+
+    #[test]
+    fn collection_config_with_auto_index() {
+        let config = VectorCollectionConfig::default().with_auto_index(500);
+        assert!(config.auto_index);
+        assert_eq!(config.auto_index_threshold, 500);
+    }
+
+    #[test]
+    fn collection_config_default() {
+        let config = VectorCollectionConfig::default();
+        assert_eq!(config.dimension, None);
+        assert_eq!(config.distance_metric, DistanceMetric::Cosine);
+        assert!(!config.auto_index);
+        assert_eq!(config.auto_index_threshold, 1000);
+    }
+
+    // ========== Phase 4: Persistence Tests ==========
+
+    #[test]
+    fn metadata_value_from_tensor_value() {
+        use tensor_store::ScalarValue;
+
+        // Test all supported scalar types
+        let null_tv = TensorValue::Scalar(ScalarValue::Null);
+        assert!(matches!(
+            MetadataValue::from_tensor_value(&null_tv),
+            Some(MetadataValue::Null)
+        ));
+
+        let bool_tv = TensorValue::Scalar(ScalarValue::Bool(true));
+        assert!(matches!(
+            MetadataValue::from_tensor_value(&bool_tv),
+            Some(MetadataValue::Bool(true))
+        ));
+
+        let int_tv = TensorValue::Scalar(ScalarValue::Int(42));
+        assert!(matches!(
+            MetadataValue::from_tensor_value(&int_tv),
+            Some(MetadataValue::Int(42))
+        ));
+
+        let float_tv = TensorValue::Scalar(ScalarValue::Float(3.14));
+        if let Some(MetadataValue::Float(f)) = MetadataValue::from_tensor_value(&float_tv) {
+            assert!((f - 3.14).abs() < 1e-10);
+        } else {
+            panic!("Expected Float");
+        }
+
+        let string_tv = TensorValue::Scalar(ScalarValue::String("hello".to_string()));
+        assert!(matches!(
+            MetadataValue::from_tensor_value(&string_tv),
+            Some(MetadataValue::String(s)) if s == "hello"
+        ));
+
+        // Vector types should return None
+        let vector_tv = TensorValue::Vector(vec![1.0, 2.0, 3.0]);
+        assert!(MetadataValue::from_tensor_value(&vector_tv).is_none());
+    }
+
+    #[test]
+    fn metadata_value_to_tensor_value() {
+        use tensor_store::ScalarValue;
+
+        let null_mv = MetadataValue::Null;
+        assert!(matches!(
+            TensorValue::from(null_mv),
+            TensorValue::Scalar(ScalarValue::Null)
+        ));
+
+        let bool_mv = MetadataValue::Bool(true);
+        assert!(matches!(
+            TensorValue::from(bool_mv),
+            TensorValue::Scalar(ScalarValue::Bool(true))
+        ));
+
+        let int_mv = MetadataValue::Int(42);
+        assert!(matches!(
+            TensorValue::from(int_mv),
+            TensorValue::Scalar(ScalarValue::Int(42))
+        ));
+
+        let float_mv = MetadataValue::Float(3.14);
+        if let TensorValue::Scalar(ScalarValue::Float(f)) = TensorValue::from(float_mv) {
+            assert!((f - 3.14).abs() < 1e-10);
+        } else {
+            panic!("Expected Float");
+        }
+
+        let string_mv = MetadataValue::String("hello".to_string());
+        assert!(matches!(
+            TensorValue::from(string_mv),
+            TensorValue::Scalar(ScalarValue::String(s)) if s == "hello"
+        ));
+    }
+
+    #[test]
+    fn persistent_vector_index_new() {
+        let config = VectorCollectionConfig::default();
+        let index = PersistentVectorIndex::new("test".to_string(), config);
+
+        assert_eq!(index.collection, "test");
+        assert!(index.vectors.is_empty());
+        assert_eq!(index.version, PersistentVectorIndex::CURRENT_VERSION);
+    }
+
+    #[test]
+    fn persistent_vector_index_push() {
+        let config = VectorCollectionConfig::default();
+        let mut index = PersistentVectorIndex::new("test".to_string(), config);
+
+        assert!(index.is_empty());
+
+        index.push("key1".to_string(), vec![1.0, 2.0], None);
+        assert_eq!(index.len(), 1);
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "tag".to_string(),
+            MetadataValue::String("value".to_string()),
+        );
+        index.push("key2".to_string(), vec![3.0, 4.0], Some(meta));
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_collection_default() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("vec1", vec![1.0, 2.0]).unwrap();
+        engine.store_embedding("vec2", vec![3.0, 4.0]).unwrap();
+
+        let index = engine.snapshot_collection(VectorEngine::DEFAULT_COLLECTION);
+
+        assert_eq!(index.collection, VectorEngine::DEFAULT_COLLECTION);
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_collection_with_metadata() {
+        let engine = VectorEngine::new();
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "category".to_string(),
+            TensorValue::Scalar(ScalarValue::String("test".to_string())),
+        );
+        engine
+            .store_embedding_with_metadata("vec1", vec![1.0, 2.0], meta)
+            .unwrap();
+
+        let index = engine.snapshot_collection(VectorEngine::DEFAULT_COLLECTION);
+
+        assert_eq!(index.len(), 1);
+        let entry = &index.vectors[0];
+        assert_eq!(entry.key, "vec1");
+        assert!(entry.metadata.is_some());
+
+        let meta = entry.metadata.as_ref().unwrap();
+        assert!(matches!(
+            meta.get("category"),
+            Some(MetadataValue::String(s)) if s == "test"
+        ));
+    }
+
+    #[test]
+    fn snapshot_collection_named() {
+        let engine = VectorEngine::new();
+
+        engine
+            .create_collection("mycoll", VectorCollectionConfig::default())
+            .unwrap();
+        engine
+            .store_in_collection("mycoll", "vec1", vec![1.0, 2.0])
+            .unwrap();
+
+        let index = engine.snapshot_collection("mycoll");
+
+        assert_eq!(index.collection, "mycoll");
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn save_and_load_index_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+
+        let engine = VectorEngine::new();
+        engine.store_embedding("vec1", vec![1.0, 2.0, 3.0]).unwrap();
+        engine.store_embedding("vec2", vec![4.0, 5.0, 6.0]).unwrap();
+
+        engine
+            .save_index(VectorEngine::DEFAULT_COLLECTION, &path)
+            .unwrap();
+
+        // Load into new engine
+        let engine2 = VectorEngine::new();
+        let collection = engine2.load_index(&path).unwrap();
+
+        assert_eq!(collection, VectorEngine::DEFAULT_COLLECTION);
+        assert_eq!(engine2.count(), 2);
+
+        let v1 = engine2.get_embedding("vec1").unwrap();
+        assert_eq!(v1, vec![1.0, 2.0, 3.0]);
+
+        let v2 = engine2.get_embedding("vec2").unwrap();
+        assert_eq!(v2, vec![4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn save_and_load_index_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.bin");
+
+        let engine = VectorEngine::new();
+        engine.store_embedding("vec1", vec![1.0, 2.0, 3.0]).unwrap();
+
+        engine
+            .save_index_binary(VectorEngine::DEFAULT_COLLECTION, &path)
+            .unwrap();
+
+        let engine2 = VectorEngine::new();
+        let collection = engine2.load_index_binary(&path).unwrap();
+
+        assert_eq!(collection, VectorEngine::DEFAULT_COLLECTION);
+        let v1 = engine2.get_embedding("vec1").unwrap();
+        assert_eq!(v1, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn save_and_load_index_with_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+
+        let engine = VectorEngine::new();
+        let mut meta = HashMap::new();
+        meta.insert(
+            "name".to_string(),
+            TensorValue::Scalar(ScalarValue::String("test".to_string())),
+        );
+        meta.insert(
+            "score".to_string(),
+            TensorValue::Scalar(ScalarValue::Int(42)),
+        );
+        engine
+            .store_embedding_with_metadata("vec1", vec![1.0, 2.0], meta)
+            .unwrap();
+
+        engine
+            .save_index(VectorEngine::DEFAULT_COLLECTION, &path)
+            .unwrap();
+
+        let engine2 = VectorEngine::new();
+        engine2.load_index(&path).unwrap();
+
+        let meta = engine2.get_metadata("vec1").unwrap();
+        assert!(matches!(
+            meta.get("name"),
+            Some(TensorValue::Scalar(ScalarValue::String(s))) if s == "test"
+        ));
+        assert!(matches!(
+            meta.get("score"),
+            Some(TensorValue::Scalar(ScalarValue::Int(42)))
+        ));
+    }
+
+    #[test]
+    fn save_and_load_named_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mycoll.json");
+
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default().with_dimension(3);
+        engine.create_collection("mycoll", config).unwrap();
+        engine
+            .store_in_collection("mycoll", "vec1", vec![1.0, 2.0, 3.0])
+            .unwrap();
+
+        engine.save_index("mycoll", &path).unwrap();
+
+        let engine2 = VectorEngine::new();
+        let collection = engine2.load_index(&path).unwrap();
+
+        assert_eq!(collection, "mycoll");
+        assert!(engine2.collection_exists("mycoll"));
+
+        let v1 = engine2.get_from_collection("mycoll", "vec1").unwrap();
+        assert_eq!(v1, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn save_all_indices_basic() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let engine = VectorEngine::new();
+        engine
+            .store_embedding("default_vec", vec![1.0, 2.0])
+            .unwrap();
+
+        engine
+            .create_collection("coll_a", VectorCollectionConfig::default())
+            .unwrap();
+        engine
+            .store_in_collection("coll_a", "vec_a", vec![3.0, 4.0])
+            .unwrap();
+
+        engine
+            .create_collection("coll_b", VectorCollectionConfig::default())
+            .unwrap();
+        engine
+            .store_in_collection("coll_b", "vec_b", vec![5.0, 6.0])
+            .unwrap();
+
+        let saved = engine.save_all_indices(dir.path()).unwrap();
+
+        assert_eq!(saved.len(), 3);
+        assert!(saved.contains(&VectorEngine::DEFAULT_COLLECTION.to_string()));
+        assert!(saved.contains(&"coll_a".to_string()));
+        assert!(saved.contains(&"coll_b".to_string()));
+
+        // Check files exist
+        assert!(dir.path().join("default.json").exists());
+        assert!(dir.path().join("coll_a.json").exists());
+        assert!(dir.path().join("coll_b.json").exists());
+    }
+
+    #[test]
+    fn load_all_indices_basic() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create and save
+        let engine = VectorEngine::new();
+        engine
+            .store_embedding("default_vec", vec![1.0, 2.0])
+            .unwrap();
+        engine
+            .create_collection("coll_a", VectorCollectionConfig::default())
+            .unwrap();
+        engine
+            .store_in_collection("coll_a", "vec_a", vec![3.0, 4.0])
+            .unwrap();
+
+        engine.save_all_indices(dir.path()).unwrap();
+
+        // Load into fresh engine
+        let engine2 = VectorEngine::new();
+        let loaded = engine2.load_all_indices(dir.path()).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+
+        // Verify data
+        let default_vec = engine2.get_embedding("default_vec").unwrap();
+        assert_eq!(default_vec, vec![1.0, 2.0]);
+
+        let vec_a = engine2.get_from_collection("coll_a", "vec_a").unwrap();
+        assert_eq!(vec_a, vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn save_empty_collection_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let engine = VectorEngine::new();
+        // Create empty collection
+        engine
+            .create_collection("empty", VectorCollectionConfig::default())
+            .unwrap();
+
+        let saved = engine.save_all_indices(dir.path()).unwrap();
+
+        // Empty collections should not be saved
+        assert!(saved.is_empty());
+        assert!(!dir.path().join("empty.json").exists());
+    }
+
+    #[test]
+    fn index_roundtrip_preserves_collection_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("coll.json");
+
+        let engine = VectorEngine::new();
+        let config = VectorCollectionConfig::default()
+            .with_dimension(128)
+            .with_metric(DistanceMetric::Euclidean)
+            .with_auto_index(500);
+
+        engine.create_collection("custom", config.clone()).unwrap();
+        engine
+            .store_in_collection("custom", "vec1", vec![1.0; 128])
+            .unwrap();
+
+        engine.save_index("custom", &path).unwrap();
+
+        let engine2 = VectorEngine::new();
+        engine2.load_index(&path).unwrap();
+
+        let loaded_config = engine2.get_collection_config("custom").unwrap();
+        assert_eq!(loaded_config.dimension, Some(128));
+        assert_eq!(loaded_config.distance_metric, DistanceMetric::Euclidean);
+        assert!(loaded_config.auto_index);
+        assert_eq!(loaded_config.auto_index_threshold, 500);
+    }
+
+    #[test]
+    fn load_index_io_error() {
+        let engine = VectorEngine::new();
+        let result = engine.load_index("/nonexistent/path/index.json");
+        assert!(matches!(result, Err(VectorError::IoError(_))));
+    }
+
+    #[test]
+    fn load_index_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.json");
+
+        fs::write(&path, "not valid json").unwrap();
+
+        let engine = VectorEngine::new();
+        let result = engine.load_index(&path);
+        assert!(matches!(result, Err(VectorError::SerializationError(_))));
+    }
+
+    #[test]
+    fn load_index_binary_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.bin");
+
+        fs::write(&path, &[0xFF, 0xFF, 0xFF]).unwrap();
+
+        let engine = VectorEngine::new();
+        let result = engine.load_index_binary(&path);
+        assert!(matches!(result, Err(VectorError::SerializationError(_))));
+    }
+
+    #[test]
+    fn vector_entry_serialization() {
+        let entry = VectorEntry {
+            key: "test".to_string(),
+            vector: vec![1.0, 2.0, 3.0],
+            metadata: None,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: VectorEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.key, "test");
+        assert_eq!(deserialized.vector, vec![1.0, 2.0, 3.0]);
+        assert!(deserialized.metadata.is_none());
+    }
+
+    #[test]
+    fn metadata_value_serialization() {
+        let values = vec![
+            MetadataValue::Null,
+            MetadataValue::Bool(true),
+            MetadataValue::Int(42),
+            MetadataValue::Float(3.14),
+            MetadataValue::String("hello".to_string()),
+        ];
+
+        for value in values {
+            let json = serde_json::to_string(&value).unwrap();
+            let deserialized: MetadataValue = serde_json::from_str(&json).unwrap();
+
+            match (&value, &deserialized) {
+                (MetadataValue::Null, MetadataValue::Null) => {},
+                (MetadataValue::Bool(a), MetadataValue::Bool(b)) => assert_eq!(a, b),
+                (MetadataValue::Int(a), MetadataValue::Int(b)) => assert_eq!(a, b),
+                (MetadataValue::Float(a), MetadataValue::Float(b)) => {
+                    assert!((a - b).abs() < 1e-10);
+                },
+                (MetadataValue::String(a), MetadataValue::String(b)) => assert_eq!(a, b),
+                _ => panic!("Type mismatch"),
+            }
+        }
     }
 }

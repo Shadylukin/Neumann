@@ -1,10 +1,14 @@
 //! Conversion between Neumann types and protobuf messages.
 
 use query_router::{
-    ArtifactInfoResult, BlobStatsResult, ChainBlockInfo, ChainCodebookInfo, ChainDriftResult,
-    ChainHistoryEntry, ChainResult, ChainSimilarResult, ChainTransitionAnalysis,
-    CheckpointInfo as RouterCheckpointInfo, EdgeResult, NodeResult, QueryResult,
-    SimilarResult as RouterSimilarResult, UnifiedResult,
+    AggregateResultValue, ArtifactInfoResult, BatchOperationResult as RouterBatchResult,
+    BindingValue as RouterBindingValue, BlobStatsResult, CentralityItem, CentralityResult,
+    CentralityType, ChainBlockInfo, ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry,
+    ChainResult, ChainSimilarResult, ChainTransitionAnalysis,
+    CheckpointInfo as RouterCheckpointInfo, CommunityItem, CommunityResult, ConstraintInfo,
+    EdgeResult, NodeResult, PageRankItem, PageRankResult,
+    PatternMatchBinding as RouterPatternMatchBinding, PatternMatchResultValue,
+    PatternMatchStatsValue, QueryResult, SimilarResult as RouterSimilarResult, UnifiedResult,
 };
 use relational_engine::{Row as RelationalRow, Value as RelationalValue};
 
@@ -82,86 +86,38 @@ pub fn query_result_to_proto(result: QueryResult) -> proto::QueryResponse {
             proto::query_response::Result::Chain(chain_result_to_proto(chain_result))
         },
 
-        QueryResult::PageRank(results) => {
-            proto::query_response::Result::PageRank(proto::PageRankResult {
-                items: results.into_iter().map(pagerank_item_to_proto).collect(),
-            })
+        QueryResult::PageRank(result) => {
+            proto::query_response::Result::PageRank(pagerank_result_to_proto(result))
         },
 
-        QueryResult::Centrality(results) => {
-            proto::query_response::Result::Centrality(proto::CentralityResult {
-                items: results.into_iter().map(centrality_item_to_proto).collect(),
-            })
+        QueryResult::Centrality(result) => {
+            proto::query_response::Result::Centrality(centrality_result_to_proto(result))
         },
 
-        QueryResult::Communities(results) => {
-            // Group nodes by community_id
-            let mut communities: std::collections::HashMap<u64, Vec<u64>> =
-                std::collections::HashMap::new();
-            for r in &results {
-                communities
-                    .entry(r.community_id)
-                    .or_default()
-                    .push(r.node_id);
-            }
-            let mut sorted: Vec<_> = communities.into_iter().collect();
-            sorted.sort_by_key(|(id, _)| *id);
-            let value = sorted
-                .iter()
-                .map(|(community_id, nodes)| {
-                    let node_list = nodes
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("Community {community_id}: [{node_list}]")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            proto::query_response::Result::Value(proto::StringValue { value })
+        QueryResult::Communities(result) => {
+            proto::query_response::Result::Communities(communities_result_to_proto(result))
         },
 
         QueryResult::Constraints(constraints) => {
-            let value = constraints
-                .iter()
-                .map(|c| {
-                    format!(
-                        "{} on {} property '{}' ({})",
-                        c.name, c.target, c.property, c.constraint_type
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            proto::query_response::Result::Value(proto::StringValue { value })
+            proto::query_response::Result::Constraints(proto::ConstraintsResult {
+                items: constraints.into_iter().map(constraint_to_proto).collect(),
+            })
         },
 
         QueryResult::GraphIndexes(indexes) => {
-            let value = indexes.join("\n");
-            proto::query_response::Result::Value(proto::StringValue { value })
+            proto::query_response::Result::GraphIndexes(proto::GraphIndexesResult { indexes })
         },
 
         QueryResult::Aggregate(agg) => {
-            let value = match agg {
-                query_router::AggregateResultValue::Count(n) => format!("Count: {n}"),
-                query_router::AggregateResultValue::Sum(v) => format!("Sum: {v}"),
-                query_router::AggregateResultValue::Avg(v) => format!("Avg: {v}"),
-                query_router::AggregateResultValue::Min(v) => format!("Min: {v}"),
-                query_router::AggregateResultValue::Max(v) => format!("Max: {v}"),
-            };
-            proto::query_response::Result::Value(proto::StringValue { value })
+            proto::query_response::Result::Aggregate(aggregate_to_proto(agg))
         },
 
         QueryResult::BatchResult(batch) => {
-            let value = format!("{}: {} affected", batch.operation, batch.affected_count);
-            proto::query_response::Result::Value(proto::StringValue { value })
+            proto::query_response::Result::BatchOperation(batch_result_to_proto(batch))
         },
 
         QueryResult::PatternMatch(pm) => {
-            let value = format!(
-                "Pattern Matches: {} found (truncated: {})",
-                pm.stats.matches_found, pm.stats.truncated
-            );
-            proto::query_response::Result::Value(proto::StringValue { value })
+            proto::query_response::Result::PatternMatch(pattern_match_to_proto(pm))
         },
     };
 
@@ -196,6 +152,16 @@ pub fn value_to_proto(value: RelationalValue) -> proto::Value {
         RelationalValue::Float(f) => proto::value::Kind::FloatValue(f),
         RelationalValue::String(s) => proto::value::Kind::StringValue(s),
         RelationalValue::Bool(b) => proto::value::Kind::BoolValue(b),
+        RelationalValue::Bytes(b) => {
+            // Convert bytes to hex string for transport
+            let mut hex = String::with_capacity(b.len() * 2);
+            for byte in b {
+                use std::fmt::Write;
+                let _ = write!(hex, "{byte:02x}");
+            }
+            proto::value::Kind::StringValue(hex)
+        },
+        RelationalValue::Json(j) => proto::value::Kind::StringValue(j.to_string()),
     };
     proto::Value { kind: Some(kind) }
 }
@@ -230,21 +196,203 @@ pub fn similar_to_proto(item: RouterSimilarResult) -> proto::SimilarItem {
     }
 }
 
-/// Convert a `PageRankResult` to protobuf.
+/// Convert a `PageRankItem` to protobuf.
 #[must_use]
-pub fn pagerank_item_to_proto(item: query_router::PageRankResult) -> proto::PageRankItem {
+pub fn pagerank_item_to_proto(item: PageRankItem) -> proto::PageRankItem {
     proto::PageRankItem {
         node_id: item.node_id,
         score: item.score,
     }
 }
 
-/// Convert a `CentralityResult` to protobuf.
+/// Convert a `PageRankResult` to protobuf with full metadata.
 #[must_use]
-pub fn centrality_item_to_proto(item: query_router::CentralityResult) -> proto::CentralityItem {
+pub fn pagerank_result_to_proto(result: PageRankResult) -> proto::PageRankResult {
+    proto::PageRankResult {
+        items: result
+            .items
+            .into_iter()
+            .map(pagerank_item_to_proto)
+            .collect(),
+        iterations: Some(result.iterations as u32),
+        convergence: Some(result.convergence),
+        converged: Some(result.converged),
+    }
+}
+
+/// Convert a `CentralityItem` to protobuf.
+#[must_use]
+pub fn centrality_item_to_proto(item: CentralityItem) -> proto::CentralityItem {
     proto::CentralityItem {
         node_id: item.node_id,
         score: item.score,
+    }
+}
+
+/// Convert a `CentralityType` to protobuf.
+#[must_use]
+pub fn centrality_type_to_proto(centrality_type: CentralityType) -> i32 {
+    match centrality_type {
+        CentralityType::Betweenness => proto::CentralityType::Betweenness as i32,
+        CentralityType::Closeness => proto::CentralityType::Closeness as i32,
+        CentralityType::Eigenvector => proto::CentralityType::Eigenvector as i32,
+    }
+}
+
+/// Convert a `CentralityResult` to protobuf with full metadata.
+#[must_use]
+pub fn centrality_result_to_proto(result: CentralityResult) -> proto::CentralityResult {
+    proto::CentralityResult {
+        items: result
+            .items
+            .into_iter()
+            .map(centrality_item_to_proto)
+            .collect(),
+        centrality_type: Some(centrality_type_to_proto(result.centrality_type)),
+        iterations: result.iterations.map(|i| i as u32),
+        converged: result.converged,
+        sample_count: result.sample_count.map(|s| s as u32),
+    }
+}
+
+/// Convert a `CommunityItem` to protobuf.
+#[must_use]
+pub fn community_item_to_proto(item: CommunityItem) -> proto::CommunityItem {
+    proto::CommunityItem {
+        node_id: item.node_id,
+        community_id: item.community_id,
+    }
+}
+
+/// Convert a `CommunityResult` to protobuf with full metadata.
+#[must_use]
+pub fn communities_result_to_proto(result: CommunityResult) -> proto::CommunitiesResult {
+    let communities: Vec<proto::CommunityMemberList> = result
+        .members
+        .into_iter()
+        .map(
+            |(community_id, member_node_ids)| proto::CommunityMemberList {
+                community_id,
+                member_node_ids,
+            },
+        )
+        .collect();
+
+    proto::CommunitiesResult {
+        items: result
+            .items
+            .into_iter()
+            .map(community_item_to_proto)
+            .collect(),
+        community_count: Some(result.community_count as u32),
+        modularity: result.modularity,
+        passes: result.passes.map(|p| p as u32),
+        iterations: result.iterations.map(|i| i as u32),
+        communities,
+    }
+}
+
+/// Convert a `ConstraintInfo` to protobuf.
+#[must_use]
+pub fn constraint_to_proto(item: ConstraintInfo) -> proto::ConstraintItem {
+    proto::ConstraintItem {
+        name: item.name,
+        target: item.target,
+        property: item.property,
+        constraint_type: item.constraint_type,
+    }
+}
+
+/// Convert an `AggregateResultValue` to protobuf.
+#[must_use]
+pub fn aggregate_to_proto(agg: AggregateResultValue) -> proto::AggregateResult {
+    let value = match agg {
+        AggregateResultValue::Count(n) => proto::aggregate_result::Value::Count(n),
+        AggregateResultValue::Sum(v) => proto::aggregate_result::Value::Sum(v),
+        AggregateResultValue::Avg(v) => proto::aggregate_result::Value::Avg(v),
+        AggregateResultValue::Min(v) => proto::aggregate_result::Value::Min(v),
+        AggregateResultValue::Max(v) => proto::aggregate_result::Value::Max(v),
+    };
+    proto::AggregateResult { value: Some(value) }
+}
+
+/// Convert a `BatchOperationResult` to protobuf.
+#[must_use]
+pub fn batch_result_to_proto(batch: RouterBatchResult) -> proto::BatchOperationResult {
+    proto::BatchOperationResult {
+        operation: batch.operation,
+        affected_count: batch.affected_count as u64,
+        created_ids: batch.created_ids.unwrap_or_default(),
+    }
+}
+
+/// Convert a `PatternMatchResultValue` to protobuf.
+#[must_use]
+pub fn pattern_match_to_proto(pm: PatternMatchResultValue) -> proto::PatternMatchResult {
+    proto::PatternMatchResult {
+        matches: pm
+            .matches
+            .into_iter()
+            .map(pattern_binding_to_proto)
+            .collect(),
+        stats: Some(pattern_stats_to_proto(pm.stats)),
+    }
+}
+
+/// Convert a `PatternMatchBinding` to protobuf.
+#[must_use]
+pub fn pattern_binding_to_proto(binding: RouterPatternMatchBinding) -> proto::PatternMatchBinding {
+    proto::PatternMatchBinding {
+        bindings: binding
+            .bindings
+            .into_iter()
+            .map(|(var, val)| proto::BindingEntry {
+                variable: var,
+                value: Some(binding_value_to_proto(val)),
+            })
+            .collect(),
+    }
+}
+
+/// Convert a `BindingValue` to protobuf.
+#[must_use]
+pub fn binding_value_to_proto(val: RouterBindingValue) -> proto::BindingValue {
+    let value = match val {
+        RouterBindingValue::Node { id, label } => {
+            proto::binding_value::Value::Node(proto::NodeBinding { id, label })
+        },
+        RouterBindingValue::Edge {
+            id,
+            edge_type,
+            from,
+            to,
+        } => proto::binding_value::Value::Edge(proto::EdgeBinding {
+            id,
+            edge_type,
+            from,
+            to,
+        }),
+        RouterBindingValue::Path {
+            nodes,
+            edges,
+            length,
+        } => proto::binding_value::Value::Path(proto::PathBinding {
+            nodes,
+            edges,
+            length: length as u64,
+        }),
+    };
+    proto::BindingValue { value: Some(value) }
+}
+
+/// Convert a `PatternMatchStatsValue` to protobuf.
+#[must_use]
+pub fn pattern_stats_to_proto(stats: PatternMatchStatsValue) -> proto::PatternMatchStats {
+    proto::PatternMatchStats {
+        matches_found: stats.matches_found as u64,
+        nodes_evaluated: stats.nodes_evaluated as u64,
+        edges_evaluated: stats.edges_evaluated as u64,
+        truncated: stats.truncated,
     }
 }
 
@@ -1371,20 +1519,25 @@ mod tests {
 
     #[test]
     fn test_pagerank_result_conversion() {
-        let result = QueryResult::PageRank(vec![
-            query_router::PageRankResult {
-                node_id: 1,
-                score: 0.25,
-            },
-            query_router::PageRankResult {
-                node_id: 2,
-                score: 0.15,
-            },
-            query_router::PageRankResult {
-                node_id: 3,
-                score: 0.10,
-            },
-        ]);
+        let result = QueryResult::PageRank(PageRankResult {
+            items: vec![
+                PageRankItem {
+                    node_id: 1,
+                    score: 0.25,
+                },
+                PageRankItem {
+                    node_id: 2,
+                    score: 0.15,
+                },
+                PageRankItem {
+                    node_id: 3,
+                    score: 0.10,
+                },
+            ],
+            iterations: 42,
+            convergence: 1e-7,
+            converged: true,
+        });
         let proto = query_result_to_proto(result);
         match proto.result {
             Some(proto::query_response::Result::PageRank(pr)) => {
@@ -1393,6 +1546,10 @@ mod tests {
                 assert!((pr.items[0].score - 0.25).abs() < 0.001);
                 assert_eq!(pr.items[1].node_id, 2);
                 assert!((pr.items[1].score - 0.15).abs() < 0.001);
+                // Check metadata
+                assert_eq!(pr.iterations, Some(42));
+                assert!(pr.convergence.is_some());
+                assert_eq!(pr.converged, Some(true));
             },
             _ => panic!("Expected PageRank result"),
         }
@@ -1400,22 +1557,36 @@ mod tests {
 
     #[test]
     fn test_centrality_result_conversion() {
-        let result = QueryResult::Centrality(vec![
-            query_router::CentralityResult {
-                node_id: 10,
-                score: 0.85,
-            },
-            query_router::CentralityResult {
-                node_id: 20,
-                score: 0.65,
-            },
-        ]);
+        let result = QueryResult::Centrality(CentralityResult {
+            items: vec![
+                CentralityItem {
+                    node_id: 10,
+                    score: 0.85,
+                },
+                CentralityItem {
+                    node_id: 20,
+                    score: 0.65,
+                },
+            ],
+            centrality_type: CentralityType::Betweenness,
+            iterations: Some(50),
+            converged: Some(true),
+            sample_count: Some(100),
+        });
         let proto = query_result_to_proto(result);
         match proto.result {
             Some(proto::query_response::Result::Centrality(c)) => {
                 assert_eq!(c.items.len(), 2);
                 assert_eq!(c.items[0].node_id, 10);
                 assert!((c.items[0].score - 0.85).abs() < 0.001);
+                // Check metadata
+                assert_eq!(
+                    c.centrality_type,
+                    Some(proto::CentralityType::Betweenness as i32)
+                );
+                assert_eq!(c.iterations, Some(50));
+                assert_eq!(c.converged, Some(true));
+                assert_eq!(c.sample_count, Some(100));
             },
             _ => panic!("Expected Centrality result"),
         }
@@ -1423,7 +1594,12 @@ mod tests {
 
     #[test]
     fn test_pagerank_empty_result() {
-        let result = QueryResult::PageRank(vec![]);
+        let result = QueryResult::PageRank(PageRankResult {
+            items: vec![],
+            iterations: 0,
+            convergence: 0.0,
+            converged: true,
+        });
         let proto = query_result_to_proto(result);
         match proto.result {
             Some(proto::query_response::Result::PageRank(pr)) => {
@@ -1435,11 +1611,21 @@ mod tests {
 
     #[test]
     fn test_centrality_empty_result() {
-        let result = QueryResult::Centrality(vec![]);
+        let result = QueryResult::Centrality(CentralityResult {
+            items: vec![],
+            centrality_type: CentralityType::Closeness,
+            iterations: None,
+            converged: None,
+            sample_count: None,
+        });
         let proto = query_result_to_proto(result);
         match proto.result {
             Some(proto::query_response::Result::Centrality(c)) => {
                 assert!(c.items.is_empty());
+                assert_eq!(
+                    c.centrality_type,
+                    Some(proto::CentralityType::Closeness as i32)
+                );
             },
             _ => panic!("Expected Centrality result"),
         }
@@ -1447,7 +1633,7 @@ mod tests {
 
     #[test]
     fn test_pagerank_item_to_proto() {
-        let item = query_router::PageRankResult {
+        let item = PageRankItem {
             node_id: 42,
             score: 0.123_456,
         };
@@ -1458,12 +1644,516 @@ mod tests {
 
     #[test]
     fn test_centrality_item_to_proto() {
-        let item = query_router::CentralityResult {
+        let item = CentralityItem {
             node_id: 99,
             score: 0.999,
         };
         let proto = centrality_item_to_proto(item);
         assert_eq!(proto.node_id, 99);
         assert!((proto.score - 0.999).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_centrality_type_all_variants() {
+        assert_eq!(
+            centrality_type_to_proto(CentralityType::Betweenness),
+            proto::CentralityType::Betweenness as i32
+        );
+        assert_eq!(
+            centrality_type_to_proto(CentralityType::Closeness),
+            proto::CentralityType::Closeness as i32
+        );
+        assert_eq!(
+            centrality_type_to_proto(CentralityType::Eigenvector),
+            proto::CentralityType::Eigenvector as i32
+        );
+    }
+
+    // === Communities Tests ===
+
+    #[test]
+    fn test_communities_result_conversion() {
+        use std::collections::HashMap;
+
+        let mut members = HashMap::new();
+        members.insert(100, vec![1, 2]);
+        members.insert(200, vec![3]);
+
+        let result = QueryResult::Communities(CommunityResult {
+            items: vec![
+                CommunityItem {
+                    node_id: 1,
+                    community_id: 100,
+                },
+                CommunityItem {
+                    node_id: 2,
+                    community_id: 100,
+                },
+                CommunityItem {
+                    node_id: 3,
+                    community_id: 200,
+                },
+            ],
+            members,
+            community_count: 2,
+            modularity: Some(0.75),
+            passes: Some(5),
+            iterations: Some(100),
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Communities(c)) => {
+                assert_eq!(c.items.len(), 3);
+                assert_eq!(c.items[0].node_id, 1);
+                assert_eq!(c.items[0].community_id, 100);
+                assert_eq!(c.items[2].community_id, 200);
+                // Check metadata
+                assert_eq!(c.community_count, Some(2));
+                assert!(c.modularity.is_some());
+                assert!((c.modularity.unwrap() - 0.75).abs() < 0.001);
+                assert_eq!(c.passes, Some(5));
+                assert_eq!(c.iterations, Some(100));
+                assert_eq!(c.communities.len(), 2);
+            },
+            _ => panic!("Expected Communities result"),
+        }
+    }
+
+    #[test]
+    fn test_communities_empty_result() {
+        use std::collections::HashMap;
+
+        let result = QueryResult::Communities(CommunityResult {
+            items: vec![],
+            members: HashMap::new(),
+            community_count: 0,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Communities(c)) => {
+                assert!(c.items.is_empty());
+                assert_eq!(c.community_count, Some(0));
+            },
+            _ => panic!("Expected Communities result"),
+        }
+    }
+
+    #[test]
+    fn test_community_member_list() {
+        use std::collections::HashMap;
+
+        let mut members = HashMap::new();
+        members.insert(1, vec![10, 20, 30]);
+        members.insert(2, vec![40, 50]);
+
+        let result = CommunityResult {
+            items: vec![],
+            members,
+            community_count: 2,
+            modularity: None,
+            passes: None,
+            iterations: None,
+        };
+
+        let proto = communities_result_to_proto(result);
+        assert_eq!(proto.communities.len(), 2);
+
+        // Find community 1 and verify its members
+        let comm1 = proto.communities.iter().find(|c| c.community_id == 1);
+        assert!(comm1.is_some());
+        assert_eq!(comm1.unwrap().member_node_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_community_item_to_proto() {
+        let item = CommunityItem {
+            node_id: 42,
+            community_id: 7,
+        };
+        let proto = community_item_to_proto(item);
+        assert_eq!(proto.node_id, 42);
+        assert_eq!(proto.community_id, 7);
+    }
+
+    // === Constraints Tests ===
+
+    #[test]
+    fn test_constraints_result_conversion() {
+        let result = QueryResult::Constraints(vec![ConstraintInfo {
+            name: "unique_email".to_string(),
+            target: "users".to_string(),
+            property: "email".to_string(),
+            constraint_type: "UNIQUE".to_string(),
+        }]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Constraints(c)) => {
+                assert_eq!(c.items.len(), 1);
+                assert_eq!(c.items[0].name, "unique_email");
+                assert_eq!(c.items[0].constraint_type, "UNIQUE");
+            },
+            _ => panic!("Expected Constraints result"),
+        }
+    }
+
+    #[test]
+    fn test_constraints_empty_result() {
+        let result = QueryResult::Constraints(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Constraints(c)) => {
+                assert!(c.items.is_empty());
+            },
+            _ => panic!("Expected Constraints result"),
+        }
+    }
+
+    #[test]
+    fn test_constraint_to_proto() {
+        let item = ConstraintInfo {
+            name: "pk".to_string(),
+            target: "table".to_string(),
+            property: "id".to_string(),
+            constraint_type: "PRIMARY".to_string(),
+        };
+        let proto = constraint_to_proto(item);
+        assert_eq!(proto.name, "pk");
+        assert_eq!(proto.target, "table");
+        assert_eq!(proto.property, "id");
+        assert_eq!(proto.constraint_type, "PRIMARY");
+    }
+
+    // === GraphIndexes Tests ===
+
+    #[test]
+    fn test_graph_indexes_result_conversion() {
+        let result = QueryResult::GraphIndexes(vec![
+            "idx_person_name".to_string(),
+            "idx_company_id".to_string(),
+        ]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::GraphIndexes(g)) => {
+                assert_eq!(g.indexes.len(), 2);
+                assert_eq!(g.indexes[0], "idx_person_name");
+            },
+            _ => panic!("Expected GraphIndexes result"),
+        }
+    }
+
+    #[test]
+    fn test_graph_indexes_empty_result() {
+        let result = QueryResult::GraphIndexes(vec![]);
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::GraphIndexes(g)) => {
+                assert!(g.indexes.is_empty());
+            },
+            _ => panic!("Expected GraphIndexes result"),
+        }
+    }
+
+    // === Aggregate Tests ===
+
+    #[test]
+    fn test_aggregate_count_conversion() {
+        let result = QueryResult::Aggregate(AggregateResultValue::Count(42));
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Aggregate(a)) => {
+                assert!(matches!(
+                    a.value,
+                    Some(proto::aggregate_result::Value::Count(42))
+                ));
+            },
+            _ => panic!("Expected Aggregate result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_sum_conversion() {
+        let result = QueryResult::Aggregate(AggregateResultValue::Sum(123.45));
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Aggregate(a)) => match a.value {
+                Some(proto::aggregate_result::Value::Sum(v)) => {
+                    assert!((v - 123.45).abs() < 0.001);
+                },
+                _ => panic!("Expected Sum"),
+            },
+            _ => panic!("Expected Aggregate result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_avg_conversion() {
+        let result = QueryResult::Aggregate(AggregateResultValue::Avg(50.5));
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Aggregate(a)) => match a.value {
+                Some(proto::aggregate_result::Value::Avg(v)) => {
+                    assert!((v - 50.5).abs() < 0.001);
+                },
+                _ => panic!("Expected Avg"),
+            },
+            _ => panic!("Expected Aggregate result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_min_conversion() {
+        let result = QueryResult::Aggregate(AggregateResultValue::Min(1.0));
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Aggregate(a)) => match a.value {
+                Some(proto::aggregate_result::Value::Min(v)) => {
+                    assert!((v - 1.0).abs() < 0.001);
+                },
+                _ => panic!("Expected Min"),
+            },
+            _ => panic!("Expected Aggregate result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_max_conversion() {
+        let result = QueryResult::Aggregate(AggregateResultValue::Max(999.0));
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::Aggregate(a)) => match a.value {
+                Some(proto::aggregate_result::Value::Max(v)) => {
+                    assert!((v - 999.0).abs() < 0.001);
+                },
+                _ => panic!("Expected Max"),
+            },
+            _ => panic!("Expected Aggregate result"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_to_proto_all_variants() {
+        // Count
+        let proto = aggregate_to_proto(AggregateResultValue::Count(10));
+        assert!(matches!(
+            proto.value,
+            Some(proto::aggregate_result::Value::Count(10))
+        ));
+
+        // Sum
+        let proto = aggregate_to_proto(AggregateResultValue::Sum(20.0));
+        assert!(matches!(
+            proto.value,
+            Some(proto::aggregate_result::Value::Sum(_))
+        ));
+    }
+
+    // === BatchResult Tests ===
+
+    #[test]
+    fn test_batch_result_conversion() {
+        let result = QueryResult::BatchResult(RouterBatchResult {
+            operation: "INSERT".to_string(),
+            affected_count: 5,
+            created_ids: Some(vec![1, 2, 3, 4, 5]),
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::BatchOperation(b)) => {
+                assert_eq!(b.operation, "INSERT");
+                assert_eq!(b.affected_count, 5);
+                assert_eq!(b.created_ids, vec![1, 2, 3, 4, 5]);
+            },
+            _ => panic!("Expected BatchOperation result"),
+        }
+    }
+
+    #[test]
+    fn test_batch_result_no_created_ids() {
+        let result = QueryResult::BatchResult(RouterBatchResult {
+            operation: "DELETE".to_string(),
+            affected_count: 10,
+            created_ids: None,
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::BatchOperation(b)) => {
+                assert_eq!(b.operation, "DELETE");
+                assert_eq!(b.affected_count, 10);
+                assert!(b.created_ids.is_empty());
+            },
+            _ => panic!("Expected BatchOperation result"),
+        }
+    }
+
+    #[test]
+    fn test_batch_result_to_proto() {
+        let batch = RouterBatchResult {
+            operation: "UPDATE".to_string(),
+            affected_count: 3,
+            created_ids: Some(vec![100, 200]),
+        };
+        let proto = batch_result_to_proto(batch);
+        assert_eq!(proto.operation, "UPDATE");
+        assert_eq!(proto.affected_count, 3);
+        assert_eq!(proto.created_ids, vec![100, 200]);
+    }
+
+    // === PatternMatch Tests ===
+
+    #[test]
+    fn test_pattern_match_result_conversion() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "n".to_string(),
+            RouterBindingValue::Node {
+                id: 1,
+                label: "Person".to_string(),
+            },
+        );
+        bindings.insert(
+            "e".to_string(),
+            RouterBindingValue::Edge {
+                id: 10,
+                edge_type: "KNOWS".to_string(),
+                from: 1,
+                to: 2,
+            },
+        );
+
+        let result = QueryResult::PatternMatch(PatternMatchResultValue {
+            matches: vec![RouterPatternMatchBinding { bindings }],
+            stats: PatternMatchStatsValue {
+                matches_found: 1,
+                nodes_evaluated: 100,
+                edges_evaluated: 50,
+                truncated: false,
+            },
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PatternMatch(pm)) => {
+                assert_eq!(pm.matches.len(), 1);
+                assert_eq!(pm.matches[0].bindings.len(), 2);
+                assert!(pm.stats.is_some());
+                let stats = pm.stats.unwrap();
+                assert_eq!(stats.matches_found, 1);
+                assert_eq!(stats.nodes_evaluated, 100);
+                assert!(!stats.truncated);
+            },
+            _ => panic!("Expected PatternMatch result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_match_empty_result() {
+        let result = QueryResult::PatternMatch(PatternMatchResultValue {
+            matches: vec![],
+            stats: PatternMatchStatsValue {
+                matches_found: 0,
+                nodes_evaluated: 10,
+                edges_evaluated: 5,
+                truncated: false,
+            },
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PatternMatch(pm)) => {
+                assert!(pm.matches.is_empty());
+                assert_eq!(pm.stats.unwrap().matches_found, 0);
+            },
+            _ => panic!("Expected PatternMatch result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_match_truncated() {
+        let result = QueryResult::PatternMatch(PatternMatchResultValue {
+            matches: vec![],
+            stats: PatternMatchStatsValue {
+                matches_found: 1000,
+                nodes_evaluated: 10000,
+                edges_evaluated: 5000,
+                truncated: true,
+            },
+        });
+        let proto = query_result_to_proto(result);
+        match proto.result {
+            Some(proto::query_response::Result::PatternMatch(pm)) => {
+                assert!(pm.stats.unwrap().truncated);
+            },
+            _ => panic!("Expected PatternMatch result"),
+        }
+    }
+
+    #[test]
+    fn test_binding_value_node_to_proto() {
+        let val = RouterBindingValue::Node {
+            id: 42,
+            label: "User".to_string(),
+        };
+        let proto = binding_value_to_proto(val);
+        match proto.value {
+            Some(proto::binding_value::Value::Node(n)) => {
+                assert_eq!(n.id, 42);
+                assert_eq!(n.label, "User");
+            },
+            _ => panic!("Expected Node binding"),
+        }
+    }
+
+    #[test]
+    fn test_binding_value_edge_to_proto() {
+        let val = RouterBindingValue::Edge {
+            id: 1,
+            edge_type: "FOLLOWS".to_string(),
+            from: 10,
+            to: 20,
+        };
+        let proto = binding_value_to_proto(val);
+        match proto.value {
+            Some(proto::binding_value::Value::Edge(e)) => {
+                assert_eq!(e.id, 1);
+                assert_eq!(e.edge_type, "FOLLOWS");
+                assert_eq!(e.from, 10);
+                assert_eq!(e.to, 20);
+            },
+            _ => panic!("Expected Edge binding"),
+        }
+    }
+
+    #[test]
+    fn test_binding_value_path_to_proto() {
+        let val = RouterBindingValue::Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![10, 20],
+            length: 2,
+        };
+        let proto = binding_value_to_proto(val);
+        match proto.value {
+            Some(proto::binding_value::Value::Path(p)) => {
+                assert_eq!(p.nodes, vec![1, 2, 3]);
+                assert_eq!(p.edges, vec![10, 20]);
+                assert_eq!(p.length, 2);
+            },
+            _ => panic!("Expected Path binding"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_stats_to_proto() {
+        let stats = PatternMatchStatsValue {
+            matches_found: 5,
+            nodes_evaluated: 100,
+            edges_evaluated: 200,
+            truncated: true,
+        };
+        let proto = pattern_stats_to_proto(stats);
+        assert_eq!(proto.matches_found, 5);
+        assert_eq!(proto.nodes_evaluated, 100);
+        assert_eq!(proto.edges_evaluated, 200);
+        assert!(proto.truncated);
     }
 }

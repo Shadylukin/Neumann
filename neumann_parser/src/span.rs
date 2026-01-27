@@ -5,6 +5,10 @@
 //! - `Span`: A range of bytes representing a source region
 //! - `Spanned<T>`: A value paired with its source location
 
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::map_unwrap_or)]
+
 use std::{fmt, ops::Range};
 
 /// A byte position in source code.

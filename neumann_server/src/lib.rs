@@ -57,6 +57,7 @@ pub mod config;
 pub mod convert;
 pub mod correlation;
 pub mod error;
+pub mod memory;
 pub mod metrics;
 pub mod rate_limit;
 pub mod service;
@@ -90,6 +91,7 @@ pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ServerConfig, TlsConfig};
 pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
 pub use error::{Result, ServerError};
+pub use memory::{MemoryBudgetConfig, MemoryTracker};
 pub use metrics::{init_metrics, MetricsConfig, MetricsHandle, ServerMetrics};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
 pub use service::{BlobServiceImpl, HealthServiceImpl, HealthState, QueryServiceImpl};
@@ -218,6 +220,12 @@ impl NeumannServer {
             })?;
             let ca = tonic::transport::Certificate::from_pem(ca_cert);
             tls_config = tls_config.client_ca_root(ca);
+
+            // When CA is set but require_client_cert is false, make client auth optional.
+            // When require_client_cert is true (or not set), client cert is required (default).
+            if !tls.require_client_cert {
+                tls_config = tls_config.client_auth_optional(true);
+            }
         }
 
         Ok(tls_config)
@@ -275,6 +283,23 @@ impl NeumannServer {
         } else {
             Server::builder()
         };
+
+        // Apply HTTP/2 settings
+        if let Some(max_streams) = self.config.max_concurrent_streams_per_connection {
+            builder = builder.http2_max_pending_accept_reset_streams(Some(max_streams as usize));
+        }
+        if let Some(window_size) = self.config.initial_window_size {
+            builder = builder.initial_stream_window_size(window_size);
+        }
+        if let Some(conn_window) = self.config.initial_connection_window_size {
+            builder = builder.initial_connection_window_size(conn_window);
+        }
+        if let Some(limit) = self.config.max_concurrent_connections {
+            builder = builder.concurrency_limit_per_connection(limit);
+        }
+        if let Some(timeout) = self.config.request_timeout {
+            builder = builder.timeout(timeout);
+        }
 
         // Apply gRPC-web layer if enabled
         if self.config.enable_grpc_web {
@@ -411,6 +436,23 @@ impl NeumannServer {
         } else {
             Server::builder()
         };
+
+        // Apply HTTP/2 settings
+        if let Some(max_streams) = self.config.max_concurrent_streams_per_connection {
+            builder = builder.http2_max_pending_accept_reset_streams(Some(max_streams as usize));
+        }
+        if let Some(window_size) = self.config.initial_window_size {
+            builder = builder.initial_stream_window_size(window_size);
+        }
+        if let Some(conn_window) = self.config.initial_connection_window_size {
+            builder = builder.initial_connection_window_size(conn_window);
+        }
+        if let Some(limit) = self.config.max_concurrent_connections {
+            builder = builder.concurrency_limit_per_connection(limit);
+        }
+        if let Some(timeout) = self.config.request_timeout {
+            builder = builder.timeout(timeout);
+        }
 
         // Apply gRPC-web layer if enabled
         if self.config.enable_grpc_web {

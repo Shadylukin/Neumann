@@ -66,12 +66,16 @@ use tensor_checkpoint::{
 };
 use tensor_store::{ConsistentHashConfig, ConsistentHashPartitioner, TensorStore};
 use tensor_unified::{
-    UnifiedEngine, UnifiedError, UnifiedItem, UnifiedResult as TensorUnifiedResult,
+    FindPattern as UnifiedFindPattern, UnifiedEngine, UnifiedError, UnifiedItem,
+    UnifiedResult as TensorUnifiedResult,
 };
 use tensor_vault::{Vault, VaultConfig, VaultError};
 use tokio::runtime::Runtime;
 use tracing::instrument;
 use vector_engine::{DistanceMetric as VectorDistanceMetric, HNSWIndex, VectorEngine, VectorError};
+
+// Re-export filter types for programmatic use by external consumers.
+pub use vector_engine::{FilterCondition, FilterStrategy, FilterValue, FilteredSearchConfig};
 
 /// Aggregate function types for SELECT queries.
 #[derive(Debug, Clone)]
@@ -255,12 +259,12 @@ pub enum QueryResult {
     CheckpointList(Vec<CheckpointInfo>),
     /// Chain operation result
     Chain(ChainResult),
-    /// PageRank algorithm results
-    PageRank(Vec<PageRankResult>),
-    /// Centrality algorithm results
-    Centrality(Vec<CentralityResult>),
-    /// Community detection results
-    Communities(Vec<CommunityResult>),
+    /// PageRank algorithm results with metadata
+    PageRank(PageRankResult),
+    /// Centrality algorithm results with metadata
+    Centrality(CentralityResult),
+    /// Community detection results with metadata
+    Communities(CommunityResult),
     /// Constraint list results
     Constraints(Vec<ConstraintInfo>),
     /// Graph index list results
@@ -434,25 +438,63 @@ pub struct ChainTransitionAnalysis {
     pub avg_validity_score: f32,
 }
 
-/// PageRank result for a node.
+/// PageRank score for a single node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageRankItem {
+    pub node_id: u64,
+    pub score: f64,
+}
+
+/// PageRank result with algorithm metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageRankResult {
+    pub items: Vec<PageRankItem>,
+    pub iterations: usize,
+    pub convergence: f64,
+    pub converged: bool,
+}
+
+/// Centrality algorithm type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CentralityType {
+    Betweenness,
+    Closeness,
+    Eigenvector,
+}
+
+/// Centrality score for a single node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CentralityItem {
     pub node_id: u64,
     pub score: f64,
 }
 
-/// Centrality result for a node.
+/// Centrality result with algorithm metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CentralityResult {
-    pub node_id: u64,
-    pub score: f64,
+    pub items: Vec<CentralityItem>,
+    pub centrality_type: CentralityType,
+    pub iterations: Option<usize>,
+    pub converged: Option<bool>,
+    pub sample_count: Option<usize>,
 }
 
-/// Community detection result.
+/// Community assignment for a single node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommunityResult {
+pub struct CommunityItem {
     pub node_id: u64,
     pub community_id: u64,
+}
+
+/// Community detection result with algorithm metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunityResult {
+    pub items: Vec<CommunityItem>,
+    pub members: HashMap<u64, Vec<u64>>,
+    pub community_count: usize,
+    pub modularity: Option<f64>,
+    pub passes: Option<usize>,
+    pub iterations: Option<usize>,
 }
 
 /// Constraint information.
@@ -1090,106 +1132,57 @@ impl QueryRouter {
     /// Returns entities that:
     /// 1. Have similar embeddings to the query entity
     /// 2. Are connected (directly or indirectly) to the specified connected_to entity
+    ///
+    /// Delegates to `UnifiedEngine::find_similar_connected_with_hnsw()`.
     pub fn find_similar_connected(
         &self,
         query_key: &str,
         connected_to: &str,
         top_k: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        let query_embedding = self
-            .vector
-            .get_entity_embedding(query_key)
-            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        // Use HNSW index if available, otherwise fall back to brute-force
-        let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
-            self.vector
-                .search_with_hnsw(index, keys, &query_embedding, top_k * 2)
-                .map_err(|e| RouterError::VectorError(e.to_string()))?
+        // Use HNSW if available for faster search
+        let hnsw_results = if let Some((ref index, ref keys)) = self.hnsw_index {
+            let query_embedding = self
+                .vector
+                .get_entity_embedding(query_key)
+                .map_err(|e| RouterError::VectorError(e.to_string()))?;
+            Some(
+                self.vector
+                    .search_with_hnsw(index, keys, &query_embedding, top_k * 2)
+                    .map_err(|e| RouterError::VectorError(e.to_string()))?,
+            )
         } else {
-            self.vector
-                .search_entities(&query_embedding, top_k * 2)
-                .map_err(|e| RouterError::VectorError(e.to_string()))?
+            None
         };
 
-        let connected_neighbors: std::collections::HashSet<String> = self
-            .graph
-            .get_entity_neighbors(connected_to)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-
-        // Delegate to UnifiedEngine if available and no HNSW index (HNSW optimization not yet in
-        // unified)
-        if self.unified.is_some() && self.hnsw_index.is_none() {
-            let unified = self.unified.as_ref().unwrap();
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-            return Ok(rt.block_on(unified.find_similar_connected(
+        runtime
+            .block_on(unified.find_similar_connected_with_hnsw(
                 query_key,
                 connected_to,
                 top_k,
-            ))?);
-        }
-
-        let mut items: Vec<UnifiedItem> = similar
-            .into_iter()
-            .filter(|s| connected_neighbors.contains(&s.key))
-            .take(top_k)
-            .map(|s| UnifiedItem::new("vector+graph", &s.key).with_score(s.score))
-            .collect();
-
-        items.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        Ok(items)
+                hnsw_results,
+            ))
+            .map_err(Into::into)
     }
 
     /// Find graph neighbors of an entity that have embeddings, sorted by similarity to a query.
+    ///
+    /// Delegates to `UnifiedEngine::find_neighbors_by_similarity()`.
     pub fn find_neighbors_by_similarity(
         &self,
         entity_key: &str,
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        // Delegate to UnifiedEngine if available
-        if let Some(unified) = &self.unified {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-            return Ok(rt.block_on(unified.find_neighbors_by_similarity(entity_key, query, top_k))?);
-        }
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        let neighbors = self
-            .graph
-            .get_entity_neighbors(entity_key)
-            .map_err(|e| RouterError::GraphError(e.to_string()))?;
-
-        let mut items: Vec<UnifiedItem> = neighbors
-            .into_iter()
-            .filter_map(|neighbor_key| {
-                let embedding = self.vector.get_entity_embedding(&neighbor_key).ok()?;
-                if embedding.len() != query.len() {
-                    return None;
-                }
-
-                let score =
-                    vector_engine::VectorEngine::compute_similarity(query, &embedding).ok()?;
-
-                Some(UnifiedItem::new("graph+vector", &neighbor_key).with_score(score))
-            })
-            .collect();
-
-        items.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        items.truncate(top_k);
-
-        Ok(items)
+        runtime
+            .block_on(unified.find_neighbors_by_similarity(entity_key, query, top_k))
+            .map_err(Into::into)
     }
 
     /// Store a unified entity with relational, graph, and vector data.
@@ -1223,6 +1216,7 @@ impl QueryRouter {
 
         runtime
             .block_on(unified.connect_entities(from_key, to_key, edge_type))
+            .map(|edge_id| format!("edge:{edge_type}:{edge_id}"))
             .map_err(|e| RouterError::GraphError(e.to_string()))
     }
 
@@ -1635,12 +1629,10 @@ impl QueryRouter {
             },
             DescribeTarget::Edge(edge_type) => {
                 // Report edge type info
-                let entities_with_edges = self.graph.scan_entities_with_edges();
+                let total_edges = self.graph.edge_count();
                 Ok(QueryResult::Value(format!(
-                    "Edge type '{}': Use EDGE LIST {} to see edges. Entities with edges: {}",
-                    edge_type.name,
-                    edge_type.name,
-                    entities_with_edges.len()
+                    "Edge type '{}': Use EDGE LIST {} to see edges. Total edges in graph: {}",
+                    edge_type.name, edge_type.name, total_edges
                 )))
             },
         }
@@ -2654,12 +2646,17 @@ impl QueryRouter {
                     edge_type: edge_type.as_ref().map(|e| e.name.clone()),
                 };
                 let result = self.graph.pagerank(Some(config))?;
-                let results: Vec<PageRankResult> = result
+                let items: Vec<PageRankItem> = result
                     .scores
                     .into_iter()
-                    .map(|(id, score)| PageRankResult { node_id: id, score })
+                    .map(|(node_id, score)| PageRankItem { node_id, score })
                     .collect();
-                Ok(QueryResult::PageRank(results))
+                Ok(QueryResult::PageRank(PageRankResult {
+                    items,
+                    iterations: result.iterations,
+                    convergence: result.convergence,
+                    converged: result.converged,
+                }))
             },
             GraphAlgorithmOp::BetweennessCentrality {
                 sampling_ratio,
@@ -2681,12 +2678,18 @@ impl QueryRouter {
                     tolerance: 1e-6,
                 };
                 let result = self.graph.betweenness_centrality(Some(config))?;
-                let results: Vec<CentralityResult> = result
+                let items: Vec<CentralityItem> = result
                     .scores
                     .into_iter()
-                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .map(|(node_id, score)| CentralityItem { node_id, score })
                     .collect();
-                Ok(QueryResult::Centrality(results))
+                Ok(QueryResult::Centrality(CentralityResult {
+                    items,
+                    centrality_type: CentralityType::Betweenness,
+                    iterations: result.iterations,
+                    converged: result.converged,
+                    sample_count: result.sample_count,
+                }))
             },
             GraphAlgorithmOp::ClosenessCentrality {
                 direction,
@@ -2703,12 +2706,18 @@ impl QueryRouter {
                     tolerance: 1e-6,
                 };
                 let result = self.graph.closeness_centrality(Some(config))?;
-                let results: Vec<CentralityResult> = result
+                let items: Vec<CentralityItem> = result
                     .scores
                     .into_iter()
-                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .map(|(node_id, score)| CentralityItem { node_id, score })
                     .collect();
-                Ok(QueryResult::Centrality(results))
+                Ok(QueryResult::Centrality(CentralityResult {
+                    items,
+                    centrality_type: CentralityType::Closeness,
+                    iterations: result.iterations,
+                    converged: result.converged,
+                    sample_count: result.sample_count,
+                }))
             },
             GraphAlgorithmOp::EigenvectorCentrality {
                 max_iterations,
@@ -2735,12 +2744,18 @@ impl QueryRouter {
                         .unwrap_or(1e-6),
                 };
                 let result = self.graph.eigenvector_centrality(Some(config))?;
-                let results: Vec<CentralityResult> = result
+                let items: Vec<CentralityItem> = result
                     .scores
                     .into_iter()
-                    .map(|(id, score)| CentralityResult { node_id: id, score })
+                    .map(|(node_id, score)| CentralityItem { node_id, score })
                     .collect();
-                Ok(QueryResult::Centrality(results))
+                Ok(QueryResult::Centrality(CentralityResult {
+                    items,
+                    centrality_type: CentralityType::Eigenvector,
+                    iterations: result.iterations,
+                    converged: result.converged,
+                    sample_count: result.sample_count,
+                }))
             },
             GraphAlgorithmOp::LouvainCommunities {
                 resolution,
@@ -2768,15 +2783,22 @@ impl QueryRouter {
                     seed: None,
                 };
                 let result = self.graph.louvain_communities(Some(config))?;
-                let results: Vec<CommunityResult> = result
+                let items: Vec<CommunityItem> = result
                     .communities
-                    .into_iter()
-                    .map(|(node_id, community_id)| CommunityResult {
+                    .iter()
+                    .map(|(&node_id, &community_id)| CommunityItem {
                         node_id,
                         community_id,
                     })
                     .collect();
-                Ok(QueryResult::Communities(results))
+                Ok(QueryResult::Communities(CommunityResult {
+                    items,
+                    members: result.members,
+                    community_count: result.community_count,
+                    modularity: result.modularity,
+                    passes: result.passes,
+                    iterations: result.iterations,
+                }))
             },
             GraphAlgorithmOp::LabelPropagation {
                 max_iterations,
@@ -2799,15 +2821,22 @@ impl QueryRouter {
                     seed: None,
                 };
                 let result = self.graph.label_propagation(Some(config))?;
-                let results: Vec<CommunityResult> = result
+                let items: Vec<CommunityItem> = result
                     .communities
-                    .into_iter()
-                    .map(|(node_id, community_id)| CommunityResult {
+                    .iter()
+                    .map(|(&node_id, &community_id)| CommunityItem {
                         node_id,
                         community_id,
                     })
                     .collect();
-                Ok(QueryResult::Communities(results))
+                Ok(QueryResult::Communities(CommunityResult {
+                    items,
+                    members: result.members,
+                    community_count: result.community_count,
+                    modularity: result.modularity,
+                    passes: result.passes,
+                    iterations: result.iterations,
+                }))
             },
         }
     }
@@ -4023,6 +4052,8 @@ impl QueryRouter {
                 Value::Float(f) => format!("F:{}", f),
                 Value::String(s) => format!("S:{}", s),
                 Value::Bool(b) => format!("B:{}", b),
+                Value::Bytes(b) => format!("BY:{}", hex::encode(b)),
+                Value::Json(j) => format!("J:{}", j),
             })
             .collect::<Vec<_>>()
             .join("|")
@@ -4690,6 +4721,8 @@ impl QueryRouter {
     }
 
     fn exec_embed(&self, embed: &EmbedStmt) -> Result<QueryResult> {
+        let collection = embed.collection.as_deref();
+
         match &embed.operation {
             EmbedOp::Store { key, vector } => {
                 let key_str = self.expr_to_string(key)?;
@@ -4697,12 +4730,21 @@ impl QueryRouter {
                     .iter()
                     .map(|e| self.expr_to_f32(e))
                     .collect::<Result<_>>()?;
-                self.vector.store_embedding(&key_str, vec)?;
+
+                if let Some(coll) = collection {
+                    self.vector.store_in_collection(coll, &key_str, vec)?;
+                } else {
+                    self.vector.store_embedding(&key_str, vec)?;
+                }
                 Ok(QueryResult::Empty)
             },
             EmbedOp::Get { key } => {
                 let key_str = self.expr_to_string(key)?;
-                let vec = self.vector.get_embedding(&key_str)?;
+                let vec = if let Some(coll) = collection {
+                    self.vector.get_from_collection(coll, &key_str)?
+                } else {
+                    self.vector.get_embedding(&key_str)?
+                };
                 Ok(QueryResult::Value(format!("{:?}", vec)))
             },
             EmbedOp::Delete { key } => {
@@ -4726,7 +4768,11 @@ impl QueryRouter {
                     },
                 }
 
-                self.vector.delete_embedding(&key_str)?;
+                if let Some(coll) = collection {
+                    self.vector.delete_from_collection(coll, &key_str)?;
+                } else {
+                    self.vector.delete_embedding(&key_str)?;
+                }
                 Ok(QueryResult::Count(1))
             },
             EmbedOp::BuildIndex => {
@@ -4748,7 +4794,12 @@ impl QueryRouter {
                         .iter()
                         .map(|e| self.expr_to_f32(e))
                         .collect::<Result<_>>()?;
-                    self.vector.store_embedding(&key_str, vec)?;
+
+                    if let Some(coll) = collection {
+                        self.vector.store_in_collection(coll, &key_str, vec)?;
+                    } else {
+                        self.vector.store_embedding(&key_str, vec)?;
+                    }
                     count += 1;
                 }
                 Ok(QueryResult::Count(count))
@@ -4763,6 +4814,8 @@ impl QueryRouter {
             .map(|e| self.expr_to_usize(e))
             .transpose()?
             .unwrap_or(10);
+
+        let collection = similar.collection.as_deref();
 
         // Handle SIMILAR...CONNECTED TO cross-engine query
         if let Some(ref connected_to_expr) = similar.connected_to {
@@ -4794,12 +4847,23 @@ impl QueryRouter {
         let query_vec = match &similar.query {
             SimilarQuery::Key(key) => {
                 let key_str = self.expr_to_string(key)?;
-                self.vector.get_embedding(&key_str)?
+                if let Some(coll) = collection {
+                    self.vector.get_from_collection(coll, &key_str)?
+                } else {
+                    self.vector.get_embedding(&key_str)?
+                }
             },
             SimilarQuery::Vector(exprs) => exprs
                 .iter()
                 .map(|e| self.expr_to_f32(e))
                 .collect::<Result<_>>()?,
+        };
+
+        // Convert WHERE clause to filter condition if present
+        let filter = if let Some(ref where_expr) = similar.where_clause {
+            Some(self.expr_to_filter_condition(where_expr)?)
+        } else {
+            None
         };
 
         // Convert parser metric to vector engine metric
@@ -4809,94 +4873,131 @@ impl QueryRouter {
             Some(ParsedDistanceMetric::DotProduct) => VectorDistanceMetric::DotProduct,
         };
 
-        let results = if let Some((ref index, ref keys)) = self.hnsw_index {
-            // HNSW currently only supports cosine - fall back to linear search for other metrics
-            if matches!(metric, VectorDistanceMetric::Cosine) {
-                self.vector
-                    .search_with_hnsw(index, keys, &query_vec, top_k)?
-                    .into_iter()
-                    .map(|r| SimilarResult {
-                        key: r.key,
-                        score: r.score,
-                    })
-                    .collect()
-            } else {
-                self.vector
-                    .search_similar_with_metric(&query_vec, top_k, metric)?
-                    .into_iter()
-                    .map(|r| SimilarResult {
-                        key: r.key,
-                        score: r.score,
-                    })
-                    .collect()
-            }
-        } else {
-            self.vector
-                .search_similar_with_metric(&query_vec, top_k, metric)?
+        // Execute search based on collection and filter
+        let results = match (collection, &filter) {
+            // Collection + filter: filtered search in collection
+            (Some(coll), Some(f)) => self
+                .vector
+                .search_filtered_in_collection(coll, &query_vec, top_k, f, None)?
                 .into_iter()
                 .map(|r| SimilarResult {
                     key: r.key,
                     score: r.score,
                 })
-                .collect()
+                .collect(),
+            // Collection only: search in collection
+            (Some(coll), None) => self
+                .vector
+                .search_in_collection(coll, &query_vec, top_k)?
+                .into_iter()
+                .map(|r| SimilarResult {
+                    key: r.key,
+                    score: r.score,
+                })
+                .collect(),
+            // Filter only (default collection): filtered search
+            (None, Some(f)) => self
+                .vector
+                .search_similar_filtered(&query_vec, top_k, f, None)?
+                .into_iter()
+                .map(|r| SimilarResult {
+                    key: r.key,
+                    score: r.score,
+                })
+                .collect(),
+            // No collection, no filter: use HNSW if available
+            (None, None) => {
+                if let Some((ref index, ref keys)) = self.hnsw_index {
+                    // HNSW currently only supports cosine
+                    if matches!(metric, VectorDistanceMetric::Cosine) {
+                        self.vector
+                            .search_with_hnsw(index, keys, &query_vec, top_k)?
+                            .into_iter()
+                            .map(|r| SimilarResult {
+                                key: r.key,
+                                score: r.score,
+                            })
+                            .collect()
+                    } else {
+                        self.vector
+                            .search_similar_with_metric(&query_vec, top_k, metric)?
+                            .into_iter()
+                            .map(|r| SimilarResult {
+                                key: r.key,
+                                score: r.score,
+                            })
+                            .collect()
+                    }
+                } else {
+                    self.vector
+                        .search_similar_with_metric(&query_vec, top_k, metric)?
+                        .into_iter()
+                        .map(|r| SimilarResult {
+                            key: r.key,
+                            score: r.score,
+                        })
+                        .collect()
+                }
+            },
         };
 
         Ok(QueryResult::Similar(results))
     }
 
     fn exec_find(&self, find: &FindStmt) -> Result<QueryResult> {
-        let limit = if let Some(ref limit_expr) = find.limit {
-            self.expr_to_usize(limit_expr)?
-        } else {
-            100 // Default limit
-        };
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
 
-        // Convert WHERE clause to Condition if present
-        let condition = if let Some(ref where_expr) = find.where_clause {
-            Some(self.expr_to_condition(where_expr)?)
-        } else {
-            None
-        };
+        let limit = find
+            .limit
+            .as_ref()
+            .map(|e| self.expr_to_usize(e))
+            .transpose()?;
 
-        // Handle different patterns
-        let (description, items) = match &find.pattern {
-            FindPattern::Nodes { label } => {
-                let label_filter = label.as_ref().map(|l| l.name.as_str());
-                let nodes = self.scan_find_nodes(label_filter, condition.as_ref(), limit)?;
+        let pattern = self.convert_find_pattern(&find.pattern);
 
-                let desc = format!(
-                    "Found {} node{}{}",
-                    nodes.len(),
-                    if nodes.len() == 1 { "" } else { "s" },
-                    label
-                        .as_ref()
-                        .map(|l| format!(" with label '{}'", l.name))
-                        .unwrap_or_default()
-                );
-                (desc, nodes)
-            },
-            FindPattern::Edges { edge_type } => {
-                let type_filter = edge_type.as_ref().map(|t| t.name.as_str());
-                let edges = self.scan_find_edges(type_filter, condition.as_ref(), limit)?;
+        // Handle WHERE clause by using find_nodes/find_edges/find_rows with condition
+        if let Some(ref where_expr) = find.where_clause {
+            let condition = self.expr_to_condition(where_expr)?;
+            let effective_limit = limit.unwrap_or(100);
 
-                let desc = format!(
-                    "Found {} edge{}{}",
-                    edges.len(),
-                    if edges.len() == 1 { "" } else { "s" },
-                    edge_type
-                        .as_ref()
-                        .map(|t| format!(" of type '{}'", t.name))
-                        .unwrap_or_default()
-                );
-                (desc, edges)
-            },
-            FindPattern::Path { .. } => {
-                // Path finding not yet implemented
-                ("Path finding not yet implemented".to_string(), Vec::new())
-            },
-        };
+            let (items, entity_type) = match &find.pattern {
+                FindPattern::Nodes { label } => {
+                    let label_filter = label.as_ref().map(|l| l.name.as_str());
+                    let items =
+                        self.scan_find_nodes(label_filter, Some(&condition), effective_limit)?;
+                    (items, "node")
+                },
+                FindPattern::Edges { edge_type } => {
+                    let type_filter = edge_type.as_ref().map(|t| t.name.as_str());
+                    let items =
+                        self.scan_find_edges(type_filter, Some(&condition), effective_limit)?;
+                    (items, "edge")
+                },
+                FindPattern::Path { .. } => (Vec::new(), "path"),
+            };
 
-        Ok(QueryResult::Unified(UnifiedResult { description, items }))
+            let description = format!(
+                "Found {} {}{}",
+                items.len(),
+                entity_type,
+                if items.len() == 1 { "" } else { "s" }
+            );
+            return Ok(QueryResult::Unified(UnifiedResult {
+                description,
+                items,
+            }));
+        }
+
+        // No WHERE clause - delegate to unified.find()
+        let result = runtime
+            .block_on(unified.find(&pattern, limit))
+            .map_err(|e| RouterError::GraphError(e.to_string()))?;
+
+        Ok(QueryResult::Unified(UnifiedResult {
+            description: result.description,
+            items: result.items,
+        }))
     }
 
     fn exec_entity(&self, entity: &EntityStmt) -> Result<QueryResult> {
@@ -4991,6 +5092,46 @@ impl QueryRouter {
                     from_str, to_str, edge_key
                 )))
             },
+            EntityOp::Batch { entities } => {
+                #[allow(clippy::type_complexity)]
+                let items: Vec<(
+                    String,
+                    HashMap<String, String>,
+                    Option<Vec<f32>>,
+                )> = entities
+                    .iter()
+                    .map(|e| {
+                        let key = self.expr_to_string(&e.key)?;
+                        let props: HashMap<String, String> = e
+                            .properties
+                            .iter()
+                            .filter_map(|p| {
+                                self.expr_to_string(&p.value)
+                                    .ok()
+                                    .map(|v| (p.key.name.clone(), v))
+                            })
+                            .collect();
+                        let emb = e
+                            .embedding
+                            .as_ref()
+                            .map(|v| v.iter().map(|ex| self.expr_to_f32(ex)).collect())
+                            .transpose()?;
+                        Ok((key, props, emb))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let unified = self.require_unified()?;
+                let runtime = Self::create_runtime()?;
+                let count = runtime
+                    .block_on(unified.create_entities_batch(items))
+                    .map_err(|e| RouterError::VectorError(e.to_string()))?;
+
+                Ok(QueryResult::BatchResult(BatchOperationResult {
+                    operation: "ENTITY CREATE".to_string(),
+                    affected_count: count,
+                    created_ids: None, // Entities use string keys, not numeric IDs
+                }))
+            },
         }
     }
 
@@ -5028,6 +5169,42 @@ impl QueryRouter {
 
         items.truncate(limit);
         Ok(items)
+    }
+
+    /// Delegates to `UnifiedEngine::find_rows()`.
+    #[allow(dead_code)] // Will be used when parser supports FIND ROW syntax
+    fn scan_find_rows(
+        &self,
+        table: &str,
+        condition: Option<&Condition>,
+        limit: usize,
+    ) -> Result<Vec<UnifiedItem>> {
+        let unified = self.require_unified()?;
+        let runtime = Self::create_runtime()?;
+
+        let mut items = runtime
+            .block_on(unified.find_rows(table, condition))
+            .map_err(|e| RouterError::RelationalError(e.to_string()))?;
+
+        items.truncate(limit);
+        Ok(items)
+    }
+
+    /// Converts AST FindPattern to unified FindPattern.
+    fn convert_find_pattern(&self, ast_pattern: &FindPattern) -> UnifiedFindPattern {
+        match ast_pattern {
+            FindPattern::Nodes { label } => UnifiedFindPattern::Nodes {
+                label: label.as_ref().map(|l| l.name.clone()),
+            },
+            FindPattern::Edges { edge_type } => UnifiedFindPattern::Edges {
+                edge_type: edge_type.as_ref().map(|t| t.name.clone()),
+            },
+            FindPattern::Path { from, edge, to } => UnifiedFindPattern::Path {
+                from: from.as_ref().map(|f| f.name.clone()),
+                edge: edge.as_ref().map(|e| e.name.clone()),
+                to: to.as_ref().map(|t| t.name.clone()),
+            },
+        }
     }
 
     // ========== AST Conversion Helpers ==========
@@ -5086,6 +5263,85 @@ impl QueryRouter {
         }
     }
 
+    /// Convert an expression to a vector engine FilterCondition.
+    ///
+    /// This method is public to allow programmatic construction of filters
+    /// from parsed expressions.
+    pub fn expr_to_filter_condition(&self, expr: &Expr) -> Result<FilterCondition> {
+        match &expr.kind {
+            ExprKind::Binary(left, op, right) => match op {
+                BinaryOp::And => {
+                    let l = self.expr_to_filter_condition(left)?;
+                    let r = self.expr_to_filter_condition(right)?;
+                    Ok(l.and(r))
+                },
+                BinaryOp::Or => {
+                    let l = self.expr_to_filter_condition(left)?;
+                    let r = self.expr_to_filter_condition(right)?;
+                    Ok(l.or(r))
+                },
+                BinaryOp::Eq => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Eq(col, val))
+                },
+                BinaryOp::Ne => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Ne(col, val))
+                },
+                BinaryOp::Lt => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Lt(col, val))
+                },
+                BinaryOp::Le => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Le(col, val))
+                },
+                BinaryOp::Gt => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Gt(col, val))
+                },
+                BinaryOp::Ge => {
+                    let col = self.expr_to_column_name(left)?;
+                    let val = self.expr_to_filter_value(right)?;
+                    Ok(FilterCondition::Ge(col, val))
+                },
+                _ => Err(RouterError::ParseError(format!(
+                    "Unsupported operator in filter condition: {:?}",
+                    op
+                ))),
+            },
+            _ => Err(RouterError::ParseError(
+                "Expected binary expression in filter condition".to_string(),
+            )),
+        }
+    }
+
+    /// Convert an expression to a vector engine FilterValue.
+    ///
+    /// This method is public to allow programmatic construction of filter values
+    /// from parsed expressions.
+    pub fn expr_to_filter_value(&self, expr: &Expr) -> Result<FilterValue> {
+        match &expr.kind {
+            ExprKind::Literal(lit) => match lit {
+                Literal::Null => Ok(FilterValue::String("null".to_string())),
+                Literal::Boolean(b) => Ok(FilterValue::Bool(*b)),
+                Literal::Integer(i) => Ok(FilterValue::Int(*i)),
+                Literal::Float(f) => Ok(FilterValue::Float(*f)),
+                Literal::String(s) => Ok(FilterValue::String(s.clone())),
+            },
+            ExprKind::Ident(ident) => Ok(FilterValue::String(ident.name.clone())),
+            _ => Err(RouterError::ParseError(format!(
+                "Cannot convert expression to filter value: {:?}",
+                expr.kind
+            ))),
+        }
+    }
+
     fn expr_to_value(&self, expr: &Expr) -> Result<Value> {
         match &expr.kind {
             ExprKind::Literal(lit) => match lit {
@@ -5103,7 +5359,11 @@ impl QueryRouter {
         }
     }
 
-    fn expr_to_column_name(&self, expr: &Expr) -> Result<String> {
+    /// Extract a column name from an expression.
+    ///
+    /// This method is public to allow programmatic extraction of column names
+    /// from parsed expressions.
+    pub fn expr_to_column_name(&self, expr: &Expr) -> Result<String> {
         match &expr.kind {
             ExprKind::Ident(ident) => Ok(ident.name.clone()),
             ExprKind::Qualified(_, name) => Ok(name.name.clone()),
@@ -6610,118 +6870,53 @@ impl QueryRouter {
             .map_err(|e| RouterError::VectorError(e.to_string()))
     }
 
-    /// Find similar entities connected to a target, with parallel graph/vector queries.
+    /// Find similar entities connected to a target asynchronously.
     ///
-    /// This async version uses `tokio::join!` to parallelize the vector similarity
-    /// search and graph neighbor lookup, then filters the intersection.
+    /// Delegates to `UnifiedEngine::find_similar_connected_with_hnsw()`.
     pub async fn find_similar_connected_async(
         &self,
         query_key: &str,
         connected_to: &str,
         top_k: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        // Get query embedding
-        let query_embedding = self
-            .vector
-            .get_entity_embedding(query_key)
-            .map_err(|e| RouterError::VectorError(e.to_string()))?;
+        let unified = self.require_unified()?;
 
-        // Clone Arcs for the async closures
-        let vector = Arc::clone(&self.vector);
-        let graph = Arc::clone(&self.graph);
-        let connected_to_owned = connected_to.to_string();
-        let hnsw_ref = self.hnsw_index.as_ref();
+        // Use HNSW if available for faster search
+        let hnsw_results = if let Some((ref index, ref keys)) = self.hnsw_index {
+            let query_embedding = self
+                .vector
+                .get_entity_embedding(query_key)
+                .map_err(|e| RouterError::VectorError(e.to_string()))?;
+            Some(
+                self.vector
+                    .search_with_hnsw(index, keys, &query_embedding, top_k * 2)
+                    .map_err(|e| RouterError::VectorError(e.to_string()))?,
+            )
+        } else {
+            None
+        };
 
-        // Run vector similarity and graph neighbor queries in parallel
-        let (similar_result, neighbors_result) = tokio::join!(
-            async {
-                if let Some((index, keys)) = hnsw_ref {
-                    vector.search_with_hnsw(index, keys, &query_embedding, top_k * 2)
-                } else {
-                    vector.search_entities(&query_embedding, top_k * 2)
-                }
-            },
-            async { graph.get_entity_neighbors(&connected_to_owned) }
-        );
-
-        let similar = similar_result.map_err(|e| RouterError::VectorError(e.to_string()))?;
-
-        let connected_neighbors: std::collections::HashSet<String> =
-            neighbors_result.unwrap_or_default().into_iter().collect();
-
-        let mut items: Vec<UnifiedItem> = similar
-            .into_iter()
-            .filter(|s| connected_neighbors.contains(&s.key))
-            .take(top_k)
-            .map(|s| UnifiedItem::new("vector+graph", &s.key).with_score(s.score))
-            .collect();
-
-        items.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        Ok(items)
+        unified
+            .find_similar_connected_with_hnsw(query_key, connected_to, top_k, hnsw_results)
+            .await
+            .map_err(Into::into)
     }
 
-    /// Find graph neighbors sorted by similarity, with parallel embedding lookups.
+    /// Find graph neighbors sorted by similarity asynchronously.
     ///
-    /// This async version fetches embeddings for all neighbors in parallel.
+    /// Delegates to `UnifiedEngine::find_neighbors_by_similarity()`.
     pub async fn find_neighbors_by_similarity_async(
         &self,
         entity_key: &str,
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<UnifiedItem>> {
-        use futures::future::join_all;
+        let unified = self.require_unified()?;
 
-        let neighbors = self
-            .graph
-            .get_entity_neighbors(entity_key)
-            .map_err(|e| RouterError::GraphError(e.to_string()))?;
-
-        let vector = Arc::clone(&self.vector);
-        let query_owned: Vec<f32> = query.to_vec();
-
-        // Fetch all embeddings in parallel
-        let futures: Vec<_> = neighbors
-            .iter()
-            .map(|key| {
-                let key = key.clone();
-                let vector = Arc::clone(&vector);
-                let query = query_owned.clone();
-                async move {
-                    if let Ok(embedding) = vector.get_entity_embedding(&key) {
-                        if embedding.len() == query.len() {
-                            if let Ok(score) =
-                                vector_engine::VectorEngine::compute_similarity(&query, &embedding)
-                            {
-                                return Some((key, score));
-                            }
-                        }
-                    }
-                    None
-                }
-            })
-            .collect();
-
-        let results = join_all(futures).await;
-
-        let mut items: Vec<UnifiedItem> = results
-            .into_iter()
-            .flatten()
-            .map(|(key, score)| UnifiedItem::new("graph+vector", key).with_score(score))
-            .collect();
-
-        items.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        items.truncate(top_k);
-        Ok(items)
+        unified
+            .find_neighbors_by_similarity(entity_key, query, top_k)
+            .await
+            .map_err(Into::into)
     }
 
     /// Get the Tokio runtime for async operations.
@@ -6782,6 +6977,74 @@ impl QueryExecutor for QueryRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to add edges between entity keys using the node-based API.
+    fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
+        let get_or_create = |key: &str| -> u64 {
+            if let Ok(nodes) =
+                graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+            {
+                if let Some(node) = nodes.first() {
+                    return node.id;
+                }
+            }
+            let mut props = HashMap::new();
+            props.insert(
+                "entity_key".to_string(),
+                PropertyValue::String(key.to_string()),
+            );
+            graph.create_node("TestEntity", props).unwrap_or(0)
+        };
+
+        let from_node = get_or_create(from_key);
+        let to_node = get_or_create(to_key);
+        graph
+            .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+            .ok();
+    }
+
+    /// Helper to get outgoing neighbor entity keys using the node-based API.
+    fn get_neighbors_out(graph: &GraphEngine, entity_key: &str) -> Vec<String> {
+        let node_id = graph
+            .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+            .ok()
+            .and_then(|nodes| nodes.first().map(|n| n.id));
+
+        let Some(id) = node_id else {
+            return Vec::new();
+        };
+
+        let mut neighbors = Vec::new();
+        if let Ok(edges) = graph.edges_of(id, Direction::Outgoing) {
+            for edge in edges {
+                let target_id = if edge.from == id { edge.to } else { edge.from };
+                if let Ok(target_node) = graph.get_node(target_id) {
+                    if let Some(PropertyValue::String(key)) =
+                        target_node.properties.get("entity_key")
+                    {
+                        neighbors.push(key.clone());
+                    }
+                }
+            }
+        }
+        neighbors
+    }
+
+    /// Helper to check if an entity has any edges using the node-based API.
+    fn entity_has_edges(graph: &GraphEngine, entity_key: &str) -> bool {
+        let node_id = graph
+            .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+            .ok()
+            .and_then(|nodes| nodes.first().map(|n| n.id));
+
+        let Some(id) = node_id else {
+            return false;
+        };
+
+        graph
+            .edges_of(id, Direction::Both)
+            .map_or(false, |edges| !edges.is_empty())
+    }
 
     // ========== Basic Routing Tests ==========
 
@@ -10140,14 +10403,8 @@ mod tests {
             .unwrap();
 
         // Connect neighbors
-        router
-            .graph()
-            .add_entity_edge("center", "neighbor1", "connected")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "neighbor2", "connected")
-            .unwrap();
+        add_test_edge(router.graph(), "center", "neighbor1", "connected");
+        add_test_edge(router.graph(), "center", "neighbor2", "connected");
 
         // Find neighbors by similarity - should delegate to UnifiedEngine
         let query = vec![1.0, 0.0, 0.0];
@@ -10186,14 +10443,8 @@ mod tests {
             .unwrap();
 
         // Connect some entities to hub
-        router
-            .graph()
-            .add_entity_edge("hub", "connected1", "links")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("hub", "connected2", "links")
-            .unwrap();
+        add_test_edge(router.graph(), "hub", "connected1", "links");
+        add_test_edge(router.graph(), "hub", "connected2", "links");
         // not_connected is NOT linked to hub
 
         // Find similar AND connected - should delegate to UnifiedEngine
@@ -10249,7 +10500,7 @@ mod tests {
 
         assert!(edge_key.starts_with("edge:follows:"));
 
-        let neighbors = router.graph().get_entity_neighbors_out("user:1").unwrap();
+        let neighbors = get_neighbors_out(router.graph(), "user:1");
         assert_eq!(neighbors.len(), 1);
         assert_eq!(neighbors[0], "user:2");
     }
@@ -10278,14 +10529,8 @@ mod tests {
             .unwrap();
 
         // Connect users to hub
-        router
-            .graph()
-            .add_entity_edge("hub", "user:1", "connects")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("hub", "user:2", "connects")
-            .unwrap();
+        add_test_edge(router.graph(), "hub", "user:1", "connects");
+        add_test_edge(router.graph(), "hub", "user:2", "connects");
         // user:3 is NOT connected to hub
 
         let results = router.find_similar_connected("query", "hub", 5).unwrap();
@@ -10328,18 +10573,9 @@ mod tests {
             .unwrap();
 
         // Create graph edges from center to others
-        router
-            .graph()
-            .add_entity_edge("center", "user:1", "knows")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "user:2", "knows")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "user:3", "knows")
-            .unwrap();
+        add_test_edge(router.graph(), "center", "user:1", "knows");
+        add_test_edge(router.graph(), "center", "user:2", "knows");
+        add_test_edge(router.graph(), "center", "user:3", "knows");
 
         // Query similar to [1, 0, 0]
         let query = vec![1.0, 0.0, 0.0];
@@ -10358,8 +10594,10 @@ mod tests {
         let store = tensor_store::TensorStore::new();
         let router = QueryRouter::with_shared_store(store);
 
+        // Nonexistent entity has no neighbors, returns empty list
         let result = router.find_neighbors_by_similarity("nonexistent", &[1.0, 0.0], 5);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     #[test]
@@ -10377,14 +10615,8 @@ mod tests {
             .set_entity_embedding("user:2", vec![1.0, 0.0, 0.0])
             .unwrap(); // Different dim
 
-        router
-            .graph()
-            .add_entity_edge("center", "user:1", "knows")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "user:2", "knows")
-            .unwrap();
+        add_test_edge(router.graph(), "center", "user:1", "knows");
+        add_test_edge(router.graph(), "center", "user:2", "knows");
 
         let query = vec![1.0, 0.0]; // 2D query
         let results = router
@@ -10408,14 +10640,11 @@ mod tests {
             .unwrap();
 
         // Add graph edges via graph engine
-        router
-            .graph()
-            .add_entity_edge("entity:1", "entity:2", "relates")
-            .unwrap();
+        add_test_edge(router.graph(), "entity:1", "entity:2", "relates");
 
         // Verify both are accessible via unified entity
         assert!(router.vector().entity_has_embedding("entity:1"));
-        assert!(router.graph().entity_has_edges("entity:1"));
+        assert!(entity_has_edges(router.graph(), "entity:1"));
     }
 
     #[test]
@@ -11726,14 +11955,8 @@ mod tests {
             .unwrap();
 
         // Connect users to hub
-        router
-            .graph()
-            .add_entity_edge("hub", "user:1", "connects")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("hub", "user:2", "connects")
-            .unwrap();
+        add_test_edge(router.graph(), "hub", "user:1", "connects");
+        add_test_edge(router.graph(), "hub", "user:2", "connects");
 
         // Query similar connected to hub
         let result = router.execute_parsed("SIMILAR 'query' CONNECTED TO 'hub' LIMIT 5");
@@ -11772,14 +11995,8 @@ mod tests {
             .unwrap();
 
         // Create graph edges from center
-        router
-            .graph()
-            .add_entity_edge("center", "user:1", "knows")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "user:2", "knows")
-            .unwrap();
+        add_test_edge(router.graph(), "center", "user:1", "knows");
+        add_test_edge(router.graph(), "center", "user:2", "knows");
 
         // Query neighbors by similarity
         let result = router.execute_parsed("NEIGHBORS 'center' BY SIMILAR [1.0, 0.0] LIMIT 5");
@@ -12508,14 +12725,8 @@ mod tests {
             .unwrap();
 
         // Connect entities via graph
-        router
-            .graph()
-            .add_entity_edge("hub", "user:1", "connects")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("hub", "user:2", "connects")
-            .unwrap();
+        add_test_edge(router.graph(), "hub", "user:1", "connects");
+        add_test_edge(router.graph(), "hub", "user:2", "connects");
 
         // Find similar connected async
         let result = router.find_similar_connected_async("query", "hub", 5).await;
@@ -12529,18 +12740,9 @@ mod tests {
         let router = QueryRouter::new();
 
         // Set up graph with embeddings
-        router
-            .graph()
-            .add_entity_edge("center", "neighbor:1", "links")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "neighbor:2", "links")
-            .unwrap();
-        router
-            .graph()
-            .add_entity_edge("center", "neighbor:3", "links")
-            .unwrap();
+        add_test_edge(router.graph(), "center", "neighbor:1", "links");
+        add_test_edge(router.graph(), "center", "neighbor:2", "links");
+        add_test_edge(router.graph(), "center", "neighbor:3", "links");
 
         router
             .vector()
@@ -15022,8 +15224,8 @@ mod tests {
         let result = router.execute("GRAPH PAGERANK").unwrap();
         match result {
             QueryResult::PageRank(pr) => {
-                assert_eq!(pr.len(), 3);
-                for item in &pr {
+                assert_eq!(pr.items.len(), 3);
+                for item in &pr.items {
                     assert!(item.score > 0.0);
                 }
             },
@@ -15083,7 +15285,7 @@ mod tests {
         let result = router.execute("GRAPH BETWEENNESS CENTRALITY").unwrap();
         match result {
             QueryResult::Centrality(scores) => {
-                assert_eq!(scores.len(), 3);
+                assert_eq!(scores.items.len(), 3);
             },
             _ => panic!("Expected Centrality result"),
         }
@@ -15355,5 +15557,305 @@ mod tests {
             result,
             QueryResult::Aggregate(AggregateResultValue::Sum(_))
         ));
+    }
+
+    // ========== Collection and WHERE Clause Integration Tests ==========
+
+    #[test]
+    fn parsed_embed_store_into_collection() {
+        let router = QueryRouter::new();
+
+        // Store into a named collection
+        router
+            .execute_parsed("EMBED STORE 'doc1' [1.0, 2.0, 3.0] INTO my_collection")
+            .unwrap();
+
+        // Get from the collection
+        let result = router
+            .execute_parsed("EMBED GET 'doc1' INTO my_collection")
+            .unwrap();
+        assert!(matches!(result, QueryResult::Value(_)));
+    }
+
+    #[test]
+    fn parsed_embed_delete_from_collection() {
+        let router = QueryRouter::new();
+
+        // Store into collection
+        router
+            .execute_parsed("EMBED STORE 'to_delete' [1.0, 2.0] INTO test_coll")
+            .unwrap();
+
+        // Delete from collection
+        let result = router
+            .execute_parsed("EMBED DELETE 'to_delete' INTO test_coll")
+            .unwrap();
+        assert!(matches!(result, QueryResult::Count(1)));
+
+        // Verify it's gone
+        let get_result = router.execute_parsed("EMBED GET 'to_delete' INTO test_coll");
+        assert!(get_result.is_err());
+    }
+
+    #[test]
+    fn parsed_similar_into_collection() {
+        let router = QueryRouter::new();
+
+        // Store vectors into a collection
+        router
+            .execute_parsed("EMBED STORE 'vec_a' [1.0, 0.0, 0.0] INTO vectors")
+            .unwrap();
+        router
+            .execute_parsed("EMBED STORE 'vec_b' [0.9, 0.1, 0.0] INTO vectors")
+            .unwrap();
+        router
+            .execute_parsed("EMBED STORE 'vec_c' [0.0, 1.0, 0.0] INTO vectors")
+            .unwrap();
+
+        // Search within the collection
+        let result = router
+            .execute_parsed("SIMILAR [1.0, 0.0, 0.0] LIMIT 3 INTO vectors")
+            .unwrap();
+
+        match result {
+            QueryResult::Similar(results) => {
+                assert_eq!(results.len(), 3);
+                // Most similar should be vec_a
+                assert_eq!(results[0].key, "vec_a");
+            },
+            _ => panic!("Expected Similar"),
+        }
+    }
+
+    #[test]
+    fn parsed_similar_with_where_clause() {
+        let router = QueryRouter::new();
+
+        // Store vectors with metadata using the vector engine directly
+        use std::collections::HashMap;
+        use tensor_store::ScalarValue;
+        let mut meta_a = HashMap::new();
+        meta_a.insert(
+            "category".to_string(),
+            tensor_store::TensorValue::Scalar(ScalarValue::String("science".to_string())),
+        );
+        router
+            .vector()
+            .store_embedding_with_metadata("item_a", vec![1.0, 0.0], meta_a)
+            .unwrap();
+
+        let mut meta_b = HashMap::new();
+        meta_b.insert(
+            "category".to_string(),
+            tensor_store::TensorValue::Scalar(ScalarValue::String("tech".to_string())),
+        );
+        router
+            .vector()
+            .store_embedding_with_metadata("item_b", vec![0.9, 0.1], meta_b)
+            .unwrap();
+
+        let mut meta_c = HashMap::new();
+        meta_c.insert(
+            "category".to_string(),
+            tensor_store::TensorValue::Scalar(ScalarValue::String("science".to_string())),
+        );
+        router
+            .vector()
+            .store_embedding_with_metadata("item_c", vec![0.8, 0.2], meta_c)
+            .unwrap();
+
+        // Search with WHERE filter
+        let result = router
+            .execute_parsed("SIMILAR [1.0, 0.0] LIMIT 10 WHERE category = 'science'")
+            .unwrap();
+
+        match result {
+            QueryResult::Similar(results) => {
+                // Should only return items with category = 'science'
+                assert_eq!(results.len(), 2);
+                for r in &results {
+                    assert!(r.key == "item_a" || r.key == "item_c");
+                }
+            },
+            _ => panic!("Expected Similar"),
+        }
+    }
+
+    #[test]
+    fn parsed_embed_batch_into_collection() {
+        let router = QueryRouter::new();
+
+        // Batch store into collection
+        let result = router
+            .execute_parsed("EMBED BATCH [('b1', [1.0, 2.0]), ('b2', [3.0, 4.0])] INTO batch_test")
+            .unwrap();
+        assert!(matches!(result, QueryResult::Count(2)));
+
+        // Verify both exist
+        let r1 = router.execute_parsed("EMBED GET 'b1' INTO batch_test");
+        let r2 = router.execute_parsed("EMBED GET 'b2' INTO batch_test");
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+    }
+
+    #[test]
+    fn parsed_collection_isolation() {
+        let router = QueryRouter::new();
+
+        // Store same key in different collections
+        router
+            .execute_parsed("EMBED STORE 'shared_key' [1.0, 0.0] INTO coll_a")
+            .unwrap();
+        router
+            .execute_parsed("EMBED STORE 'shared_key' [0.0, 1.0] INTO coll_b")
+            .unwrap();
+
+        // Each collection should have its own value
+        let result_a = router
+            .execute_parsed("EMBED GET 'shared_key' INTO coll_a")
+            .unwrap();
+        let result_b = router
+            .execute_parsed("EMBED GET 'shared_key' INTO coll_b")
+            .unwrap();
+
+        // Values should be different
+        match (result_a, result_b) {
+            (QueryResult::Value(va), QueryResult::Value(vb)) => {
+                assert_ne!(va, vb);
+            },
+            _ => panic!("Expected Value results"),
+        }
+    }
+
+    // ========== Filter Condition Re-export Tests ==========
+
+    #[test]
+    fn filter_condition_reexport_accessible() {
+        // Verify that FilterCondition can be constructed programmatically
+        let filter = FilterCondition::Eq(
+            "status".to_string(),
+            FilterValue::String("active".to_string()),
+        );
+        assert!(matches!(filter, FilterCondition::Eq(_, _)));
+
+        // Verify FilterValue variants
+        let int_val = FilterValue::Int(42);
+        let float_val = FilterValue::Float(3.14);
+        let bool_val = FilterValue::Bool(true);
+        assert!(matches!(int_val, FilterValue::Int(42)));
+        assert!(matches!(float_val, FilterValue::Float(_)));
+        assert!(matches!(bool_val, FilterValue::Bool(true)));
+    }
+
+    #[test]
+    fn filter_strategy_reexport_accessible() {
+        let auto = FilterStrategy::Auto;
+        let pre = FilterStrategy::PreFilter;
+        let post = FilterStrategy::PostFilter;
+        assert!(matches!(auto, FilterStrategy::Auto));
+        assert!(matches!(pre, FilterStrategy::PreFilter));
+        assert!(matches!(post, FilterStrategy::PostFilter));
+    }
+
+    #[test]
+    fn filtered_search_config_reexport_accessible() {
+        let config = FilteredSearchConfig::default();
+        assert!(matches!(config.strategy, FilterStrategy::Auto));
+
+        let pre_config = FilteredSearchConfig::pre_filter();
+        assert!(matches!(pre_config.strategy, FilterStrategy::PreFilter));
+
+        let post_config = FilteredSearchConfig::post_filter();
+        assert!(matches!(post_config.strategy, FilterStrategy::PostFilter));
+    }
+
+    #[test]
+    fn expr_to_filter_condition_public() {
+        use neumann_parser::parse_expr;
+
+        let router = QueryRouter::new();
+
+        // Parse a simple equality expression
+        let expr = parse_expr("status = 'active'").unwrap();
+        let filter = router.expr_to_filter_condition(&expr).unwrap();
+        assert!(matches!(filter, FilterCondition::Eq(_, _)));
+    }
+
+    #[test]
+    fn expr_to_filter_condition_comparisons() {
+        use neumann_parser::parse_expr;
+
+        let router = QueryRouter::new();
+
+        // Less than
+        let lt_expr = parse_expr("age < 30").unwrap();
+        let lt_filter = router.expr_to_filter_condition(&lt_expr).unwrap();
+        assert!(matches!(lt_filter, FilterCondition::Lt(_, _)));
+
+        // Greater than or equal
+        let ge_expr = parse_expr("score >= 80").unwrap();
+        let ge_filter = router.expr_to_filter_condition(&ge_expr).unwrap();
+        assert!(matches!(ge_filter, FilterCondition::Ge(_, _)));
+
+        // Not equal
+        let ne_expr = parse_expr("status != 'deleted'").unwrap();
+        let ne_filter = router.expr_to_filter_condition(&ne_expr).unwrap();
+        assert!(matches!(ne_filter, FilterCondition::Ne(_, _)));
+    }
+
+    #[test]
+    fn expr_to_filter_condition_and_or() {
+        use neumann_parser::parse_expr;
+
+        let router = QueryRouter::new();
+
+        // AND
+        let and_expr = parse_expr("status = 'active' AND age > 18").unwrap();
+        let and_filter = router.expr_to_filter_condition(&and_expr).unwrap();
+        assert!(matches!(and_filter, FilterCondition::And(_, _)));
+
+        // OR
+        let or_expr = parse_expr("status = 'active' OR status = 'pending'").unwrap();
+        let or_filter = router.expr_to_filter_condition(&or_expr).unwrap();
+        assert!(matches!(or_filter, FilterCondition::Or(_, _)));
+    }
+
+    #[test]
+    fn expr_to_filter_value_types() {
+        use neumann_parser::parse_expr;
+
+        let router = QueryRouter::new();
+
+        // Integer
+        let int_expr = parse_expr("42").unwrap();
+        let int_val = router.expr_to_filter_value(&int_expr).unwrap();
+        assert!(matches!(int_val, FilterValue::Int(42)));
+
+        // Float
+        let float_expr = parse_expr("3.14").unwrap();
+        let float_val = router.expr_to_filter_value(&float_expr).unwrap();
+        assert!(matches!(float_val, FilterValue::Float(_)));
+
+        // String
+        let str_expr = parse_expr("'hello'").unwrap();
+        let str_val = router.expr_to_filter_value(&str_expr).unwrap();
+        assert!(matches!(str_val, FilterValue::String(_)));
+
+        // Boolean
+        let bool_expr = parse_expr("true").unwrap();
+        let bool_val = router.expr_to_filter_value(&bool_expr).unwrap();
+        assert!(matches!(bool_val, FilterValue::Bool(true)));
+    }
+
+    #[test]
+    fn expr_to_column_name_public() {
+        use neumann_parser::parse_expr;
+
+        let router = QueryRouter::new();
+
+        // Simple identifier
+        let ident_expr = parse_expr("column_name").unwrap();
+        let col = router.expr_to_column_name(&ident_expr).unwrap();
+        assert_eq!(col, "column_name");
     }
 }

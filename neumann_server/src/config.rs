@@ -2,12 +2,125 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::audit::AuditConfig;
 use crate::error::{Result, ServerError};
+use crate::memory::MemoryBudgetConfig;
 use crate::metrics::MetricsConfig;
 use crate::rate_limit::RateLimitConfig;
 use crate::shutdown::ShutdownConfig;
+
+// Environment variable names for configuration.
+
+/// Bind address environment variable.
+pub const ENV_BIND_ADDR: &str = "NEUMANN_BIND_ADDR";
+/// Maximum message size environment variable.
+pub const ENV_MAX_MESSAGE_SIZE: &str = "NEUMANN_MAX_MESSAGE_SIZE";
+/// Maximum upload size environment variable.
+pub const ENV_MAX_UPLOAD_SIZE: &str = "NEUMANN_MAX_UPLOAD_SIZE";
+/// Enable gRPC-Web environment variable.
+pub const ENV_ENABLE_GRPC_WEB: &str = "NEUMANN_ENABLE_GRPC_WEB";
+/// Enable reflection environment variable.
+pub const ENV_ENABLE_REFLECTION: &str = "NEUMANN_ENABLE_REFLECTION";
+/// TLS certificate path environment variable.
+pub const ENV_TLS_CERT_PATH: &str = "NEUMANN_TLS_CERT_PATH";
+/// TLS key path environment variable.
+pub const ENV_TLS_KEY_PATH: &str = "NEUMANN_TLS_KEY_PATH";
+/// TLS CA certificate path environment variable.
+pub const ENV_TLS_CA_CERT_PATH: &str = "NEUMANN_TLS_CA_CERT_PATH";
+/// TLS require client certificate environment variable.
+pub const ENV_TLS_REQUIRE_CLIENT_CERT: &str = "NEUMANN_TLS_REQUIRE_CLIENT_CERT";
+/// Rate limit max requests environment variable.
+pub const ENV_RATE_LIMIT_MAX_REQUESTS: &str = "NEUMANN_RATE_LIMIT_MAX_REQUESTS";
+/// Rate limit max queries environment variable.
+pub const ENV_RATE_LIMIT_MAX_QUERIES: &str = "NEUMANN_RATE_LIMIT_MAX_QUERIES";
+/// Rate limit window seconds environment variable.
+pub const ENV_RATE_LIMIT_WINDOW_SECS: &str = "NEUMANN_RATE_LIMIT_WINDOW_SECS";
+/// Shutdown drain timeout seconds environment variable.
+pub const ENV_SHUTDOWN_DRAIN_TIMEOUT_SECS: &str = "NEUMANN_SHUTDOWN_DRAIN_TIMEOUT_SECS";
+/// Shutdown grace period seconds environment variable.
+pub const ENV_SHUTDOWN_GRACE_PERIOD_SECS: &str = "NEUMANN_SHUTDOWN_GRACE_PERIOD_SECS";
+/// Blob chunk size environment variable.
+pub const ENV_BLOB_CHUNK_SIZE: &str = "NEUMANN_BLOB_CHUNK_SIZE";
+/// Stream channel capacity environment variable.
+pub const ENV_STREAM_CHANNEL_CAPACITY: &str = "NEUMANN_STREAM_CHANNEL_CAPACITY";
+/// Max concurrent connections environment variable.
+pub const ENV_MAX_CONCURRENT_CONNECTIONS: &str = "NEUMANN_MAX_CONCURRENT_CONNECTIONS";
+/// Max concurrent streams per connection environment variable.
+pub const ENV_MAX_CONCURRENT_STREAMS: &str = "NEUMANN_MAX_CONCURRENT_STREAMS";
+/// Initial window size environment variable.
+pub const ENV_INITIAL_WINDOW_SIZE: &str = "NEUMANN_INITIAL_WINDOW_SIZE";
+/// Initial connection window size environment variable.
+pub const ENV_INITIAL_CONNECTION_WINDOW_SIZE: &str = "NEUMANN_INITIAL_CONNECTION_WINDOW_SIZE";
+/// Request timeout seconds environment variable.
+pub const ENV_REQUEST_TIMEOUT_SECS: &str = "NEUMANN_REQUEST_TIMEOUT_SECS";
+/// Memory budget max bytes environment variable.
+pub const ENV_MEMORY_BUDGET_MAX_BYTES: &str = "NEUMANN_MEMORY_BUDGET_MAX_BYTES";
+/// Memory budget enable load shedding environment variable.
+pub const ENV_MEMORY_BUDGET_LOAD_SHEDDING: &str = "NEUMANN_MEMORY_BUDGET_LOAD_SHEDDING";
+
+/// Environment variable parsing helpers.
+mod env_parse {
+    use std::net::SocketAddr;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{Result, ServerError};
+
+    /// Parse a socket address from an environment variable.
+    pub fn parse_socket_addr(key: &str) -> Option<Result<SocketAddr>> {
+        std::env::var(key).ok().map(|val| {
+            val.parse()
+                .map_err(|e| ServerError::Config(format!("invalid {key}: {e}")))
+        })
+    }
+
+    /// Parse a usize from an environment variable.
+    pub fn parse_usize(key: &str) -> Option<Result<usize>> {
+        std::env::var(key).ok().map(|val| {
+            val.parse()
+                .map_err(|e| ServerError::Config(format!("invalid {key}: {e}")))
+        })
+    }
+
+    /// Parse a u32 from an environment variable.
+    pub fn parse_u32(key: &str) -> Option<Result<u32>> {
+        std::env::var(key).ok().map(|val| {
+            val.parse()
+                .map_err(|e| ServerError::Config(format!("invalid {key}: {e}")))
+        })
+    }
+
+    /// Parse a boolean from an environment variable.
+    /// Accepts "true", "1", "yes", "on" as true (case-insensitive).
+    /// Accepts "false", "0", "no", "off" as false (case-insensitive).
+    pub fn parse_bool(key: &str) -> Option<Result<bool>> {
+        std::env::var(key)
+            .ok()
+            .map(|val| match val.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Ok(true),
+                "false" | "0" | "no" | "off" => Ok(false),
+                _ => Err(ServerError::Config(format!(
+                    "invalid {key}: expected boolean (true/false/1/0/yes/no/on/off)"
+                ))),
+            })
+    }
+
+    /// Parse a duration in seconds from an environment variable.
+    pub fn parse_duration_secs(key: &str) -> Option<Result<Duration>> {
+        std::env::var(key).ok().map(|val| {
+            val.parse::<u64>()
+                .map(Duration::from_secs)
+                .map_err(|e| ServerError::Config(format!("invalid {key}: {e}")))
+        })
+    }
+
+    /// Parse a path from an environment variable.
+    pub fn parse_path(key: &str) -> Option<PathBuf> {
+        std::env::var(key).ok().map(PathBuf::from)
+    }
+}
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -38,6 +151,18 @@ pub struct ServerConfig {
     pub shutdown: Option<ShutdownConfig>,
     /// Metrics configuration (optional).
     pub metrics: Option<MetricsConfig>,
+    /// Maximum concurrent connections (None = unlimited).
+    pub max_concurrent_connections: Option<usize>,
+    /// Maximum HTTP/2 streams per connection.
+    pub max_concurrent_streams_per_connection: Option<u32>,
+    /// HTTP/2 initial window size.
+    pub initial_window_size: Option<u32>,
+    /// HTTP/2 connection window size.
+    pub initial_connection_window_size: Option<u32>,
+    /// Request timeout.
+    pub request_timeout: Option<Duration>,
+    /// Memory budget configuration (optional).
+    pub memory_budget: Option<MemoryBudgetConfig>,
 }
 
 impl Default for ServerConfig {
@@ -59,6 +184,12 @@ impl Default for ServerConfig {
             audit: None,
             shutdown: None,
             metrics: None,
+            max_concurrent_connections: None,
+            max_concurrent_streams_per_connection: None,
+            initial_window_size: None,
+            initial_connection_window_size: None,
+            request_timeout: None,
+            memory_budget: None,
         }
     }
 }
@@ -68,6 +199,143 @@ impl ServerConfig {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Load configuration from environment variables.
+    ///
+    /// Unset variables use defaults. Invalid values return an error.
+    ///
+    /// # Supported Environment Variables
+    ///
+    /// - `NEUMANN_BIND_ADDR` - Server bind address (e.g., "0.0.0.0:9200")
+    /// - `NEUMANN_MAX_MESSAGE_SIZE` - Maximum message size in bytes
+    /// - `NEUMANN_MAX_UPLOAD_SIZE` - Maximum upload size in bytes
+    /// - `NEUMANN_ENABLE_GRPC_WEB` - Enable gRPC-Web (true/false)
+    /// - `NEUMANN_ENABLE_REFLECTION` - Enable reflection (true/false)
+    /// - `NEUMANN_TLS_CERT_PATH` - Path to TLS certificate
+    /// - `NEUMANN_TLS_KEY_PATH` - Path to TLS private key
+    /// - `NEUMANN_TLS_CA_CERT_PATH` - Path to CA certificate (optional)
+    /// - `NEUMANN_RATE_LIMIT_MAX_REQUESTS` - Max requests per window
+    /// - `NEUMANN_RATE_LIMIT_MAX_QUERIES` - Max queries per window
+    /// - `NEUMANN_RATE_LIMIT_WINDOW_SECS` - Rate limit window in seconds
+    /// - `NEUMANN_SHUTDOWN_DRAIN_TIMEOUT_SECS` - Shutdown drain timeout
+    /// - `NEUMANN_SHUTDOWN_GRACE_PERIOD_SECS` - Shutdown grace period
+    /// - `NEUMANN_BLOB_CHUNK_SIZE` - Blob streaming chunk size
+    /// - `NEUMANN_STREAM_CHANNEL_CAPACITY` - Stream channel capacity
+    /// - `NEUMANN_MAX_CONCURRENT_CONNECTIONS` - Max concurrent connections
+    /// - `NEUMANN_MAX_CONCURRENT_STREAMS` - Max HTTP/2 streams per connection
+    /// - `NEUMANN_INITIAL_WINDOW_SIZE` - HTTP/2 initial window size
+    /// - `NEUMANN_INITIAL_CONNECTION_WINDOW_SIZE` - HTTP/2 connection window
+    /// - `NEUMANN_REQUEST_TIMEOUT_SECS` - Request timeout in seconds
+    /// - `NEUMANN_MEMORY_BUDGET_MAX_BYTES` - Memory budget in bytes
+    /// - `NEUMANN_MEMORY_BUDGET_LOAD_SHEDDING` - Enable load shedding (true/false)
+    pub fn from_env() -> Result<Self> {
+        let mut config = Self::default();
+
+        // Core server settings
+        if let Some(result) = env_parse::parse_socket_addr(ENV_BIND_ADDR) {
+            config.bind_addr = result?;
+        }
+        if let Some(result) = env_parse::parse_usize(ENV_MAX_MESSAGE_SIZE) {
+            config.max_message_size = result?;
+        }
+        if let Some(result) = env_parse::parse_usize(ENV_MAX_UPLOAD_SIZE) {
+            config.max_upload_size = result?;
+        }
+        if let Some(result) = env_parse::parse_bool(ENV_ENABLE_GRPC_WEB) {
+            config.enable_grpc_web = result?;
+        }
+        if let Some(result) = env_parse::parse_bool(ENV_ENABLE_REFLECTION) {
+            config.enable_reflection = result?;
+        }
+        if let Some(result) = env_parse::parse_usize(ENV_BLOB_CHUNK_SIZE) {
+            config.blob_chunk_size = result?;
+        }
+        if let Some(result) = env_parse::parse_usize(ENV_STREAM_CHANNEL_CAPACITY) {
+            config.stream_channel_capacity = result?;
+        }
+
+        // TLS configuration (requires both cert and key)
+        let cert_path = env_parse::parse_path(ENV_TLS_CERT_PATH);
+        let key_path = env_parse::parse_path(ENV_TLS_KEY_PATH);
+        if let (Some(cert), Some(key)) = (cert_path, key_path) {
+            let mut tls = TlsConfig::new(cert, key);
+            if let Some(ca) = env_parse::parse_path(ENV_TLS_CA_CERT_PATH) {
+                tls = tls.with_ca_cert(ca);
+            }
+            if let Some(result) = env_parse::parse_bool(ENV_TLS_REQUIRE_CLIENT_CERT) {
+                tls = tls.with_required_client_cert(result?);
+            }
+            config.tls = Some(tls);
+        }
+
+        // Rate limiting configuration
+        let has_rate_limit = std::env::var(ENV_RATE_LIMIT_MAX_REQUESTS).is_ok()
+            || std::env::var(ENV_RATE_LIMIT_MAX_QUERIES).is_ok()
+            || std::env::var(ENV_RATE_LIMIT_WINDOW_SECS).is_ok();
+
+        if has_rate_limit {
+            let mut rate_limit = RateLimitConfig::default();
+            if let Some(result) = env_parse::parse_u32(ENV_RATE_LIMIT_MAX_REQUESTS) {
+                rate_limit.max_requests = result?;
+            }
+            if let Some(result) = env_parse::parse_u32(ENV_RATE_LIMIT_MAX_QUERIES) {
+                rate_limit.max_queries = result?;
+            }
+            if let Some(result) = env_parse::parse_duration_secs(ENV_RATE_LIMIT_WINDOW_SECS) {
+                rate_limit.window = result?;
+            }
+            config.rate_limit = Some(rate_limit);
+        }
+
+        // Shutdown configuration
+        let has_shutdown = std::env::var(ENV_SHUTDOWN_DRAIN_TIMEOUT_SECS).is_ok()
+            || std::env::var(ENV_SHUTDOWN_GRACE_PERIOD_SECS).is_ok();
+
+        if has_shutdown {
+            let mut shutdown = ShutdownConfig::default();
+            if let Some(result) = env_parse::parse_duration_secs(ENV_SHUTDOWN_DRAIN_TIMEOUT_SECS) {
+                shutdown.drain_timeout = result?;
+            }
+            if let Some(result) = env_parse::parse_duration_secs(ENV_SHUTDOWN_GRACE_PERIOD_SECS) {
+                shutdown.grace_period = result?;
+            }
+            config.shutdown = Some(shutdown);
+        }
+
+        // Connection limits
+        if let Some(result) = env_parse::parse_usize(ENV_MAX_CONCURRENT_CONNECTIONS) {
+            config.max_concurrent_connections = Some(result?);
+        }
+        if let Some(result) = env_parse::parse_u32(ENV_MAX_CONCURRENT_STREAMS) {
+            config.max_concurrent_streams_per_connection = Some(result?);
+        }
+        if let Some(result) = env_parse::parse_u32(ENV_INITIAL_WINDOW_SIZE) {
+            config.initial_window_size = Some(result?);
+        }
+        if let Some(result) = env_parse::parse_u32(ENV_INITIAL_CONNECTION_WINDOW_SIZE) {
+            config.initial_connection_window_size = Some(result?);
+        }
+        if let Some(result) = env_parse::parse_duration_secs(ENV_REQUEST_TIMEOUT_SECS) {
+            config.request_timeout = Some(result?);
+        }
+
+        // Memory budget configuration
+        let has_memory = std::env::var(ENV_MEMORY_BUDGET_MAX_BYTES).is_ok()
+            || std::env::var(ENV_MEMORY_BUDGET_LOAD_SHEDDING).is_ok();
+
+        if has_memory {
+            let mut memory = MemoryBudgetConfig::default();
+            if let Some(result) = env_parse::parse_usize(ENV_MEMORY_BUDGET_MAX_BYTES) {
+                memory.max_bytes = result?;
+            }
+            if let Some(result) = env_parse::parse_bool(ENV_MEMORY_BUDGET_LOAD_SHEDDING) {
+                memory.enable_load_shedding = result?;
+            }
+            config.memory_budget = Some(memory);
+        }
+
+        Ok(config)
     }
 
     /// Set the bind address.
@@ -161,6 +429,48 @@ impl ServerConfig {
     #[must_use]
     pub fn with_metrics(mut self, config: MetricsConfig) -> Self {
         self.metrics = Some(config);
+        self
+    }
+
+    /// Set maximum concurrent connections.
+    #[must_use]
+    pub const fn with_max_concurrent_connections(mut self, max: usize) -> Self {
+        self.max_concurrent_connections = Some(max);
+        self
+    }
+
+    /// Set maximum concurrent HTTP/2 streams per connection.
+    #[must_use]
+    pub const fn with_max_concurrent_streams_per_connection(mut self, max: u32) -> Self {
+        self.max_concurrent_streams_per_connection = Some(max);
+        self
+    }
+
+    /// Set HTTP/2 initial window size.
+    #[must_use]
+    pub const fn with_initial_window_size(mut self, size: u32) -> Self {
+        self.initial_window_size = Some(size);
+        self
+    }
+
+    /// Set HTTP/2 connection window size.
+    #[must_use]
+    pub const fn with_initial_connection_window_size(mut self, size: u32) -> Self {
+        self.initial_connection_window_size = Some(size);
+        self
+    }
+
+    /// Set request timeout.
+    #[must_use]
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = Some(timeout);
+        self
+    }
+
+    /// Set memory budget configuration.
+    #[must_use]
+    pub fn with_memory_budget(mut self, config: MemoryBudgetConfig) -> Self {
+        self.memory_budget = Some(config);
         self
     }
 
@@ -258,6 +568,14 @@ impl TlsConfig {
                     ca_path.display()
                 )));
             }
+        }
+
+        if self.require_client_cert && self.ca_cert_path.is_none() {
+            return Err(ServerError::Config(
+                "require_client_cert is true but ca_cert_path is not set; \
+                 cannot verify client certificates without a CA"
+                    .to_string(),
+            ));
         }
 
         Ok(())
@@ -619,6 +937,66 @@ mod tests {
     }
 
     #[test]
+    fn test_require_client_cert_without_ca_fails_validation() {
+        use tempfile::NamedTempFile;
+
+        let cert_file = NamedTempFile::new().unwrap();
+        let key_file = NamedTempFile::new().unwrap();
+
+        // require_client_cert = true but no CA cert path
+        let tls = TlsConfig::new(
+            cert_file.path().to_path_buf(),
+            key_file.path().to_path_buf(),
+        )
+        .with_required_client_cert(true);
+
+        let result = tls.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("require_client_cert"));
+        assert!(err.contains("ca_cert_path"));
+    }
+
+    #[test]
+    fn test_require_client_cert_with_ca_passes_validation() {
+        use tempfile::NamedTempFile;
+
+        let cert_file = NamedTempFile::new().unwrap();
+        let key_file = NamedTempFile::new().unwrap();
+        let ca_file = NamedTempFile::new().unwrap();
+
+        // require_client_cert = true with CA cert path
+        let tls = TlsConfig::new(
+            cert_file.path().to_path_buf(),
+            key_file.path().to_path_buf(),
+        )
+        .with_ca_cert(ca_file.path().to_path_buf())
+        .with_required_client_cert(true);
+
+        assert!(tls.validate().is_ok());
+    }
+
+    #[test]
+    fn test_optional_client_cert_with_ca_passes_validation() {
+        use tempfile::NamedTempFile;
+
+        let cert_file = NamedTempFile::new().unwrap();
+        let key_file = NamedTempFile::new().unwrap();
+        let ca_file = NamedTempFile::new().unwrap();
+
+        // require_client_cert = false with CA cert path (optional mTLS)
+        let tls = TlsConfig::new(
+            cert_file.path().to_path_buf(),
+            key_file.path().to_path_buf(),
+        )
+        .with_ca_cert(ca_file.path().to_path_buf())
+        .with_required_client_cert(false);
+
+        assert!(tls.validate().is_ok());
+        assert!(!tls.require_client_cert);
+    }
+
+    #[test]
     fn test_auth_config_with_header() {
         let auth = AuthConfig::new()
             .with_header("Authorization".to_string())
@@ -704,5 +1082,416 @@ mod tests {
 
         assert!(config.shutdown.is_none());
         assert!(config.metrics.is_none());
+    }
+
+    #[test]
+    fn test_server_config_with_max_concurrent_connections() {
+        let config = ServerConfig::new().with_max_concurrent_connections(100);
+
+        assert_eq!(config.max_concurrent_connections, Some(100));
+    }
+
+    #[test]
+    fn test_server_config_with_max_concurrent_streams() {
+        let config = ServerConfig::new().with_max_concurrent_streams_per_connection(50);
+
+        assert_eq!(config.max_concurrent_streams_per_connection, Some(50));
+    }
+
+    #[test]
+    fn test_server_config_with_window_sizes() {
+        let config = ServerConfig::new()
+            .with_initial_window_size(65535)
+            .with_initial_connection_window_size(1024 * 1024);
+
+        assert_eq!(config.initial_window_size, Some(65535));
+        assert_eq!(config.initial_connection_window_size, Some(1024 * 1024));
+    }
+
+    #[test]
+    fn test_server_config_with_request_timeout() {
+        let config = ServerConfig::new().with_request_timeout(Duration::from_secs(30));
+
+        assert_eq!(config.request_timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_server_config_with_memory_budget() {
+        let config = ServerConfig::new().with_memory_budget(
+            MemoryBudgetConfig::new()
+                .with_max_bytes(512 * 1024 * 1024)
+                .with_load_shedding(true),
+        );
+
+        assert!(config.memory_budget.is_some());
+        let budget = config.memory_budget.as_ref().unwrap();
+        assert_eq!(budget.max_bytes, 512 * 1024 * 1024);
+        assert!(budget.enable_load_shedding);
+    }
+
+    #[test]
+    fn test_default_config_no_connection_limits() {
+        let config = ServerConfig::default();
+
+        assert!(config.max_concurrent_connections.is_none());
+        assert!(config.max_concurrent_streams_per_connection.is_none());
+        assert!(config.initial_window_size.is_none());
+        assert!(config.initial_connection_window_size.is_none());
+        assert!(config.request_timeout.is_none());
+        assert!(config.memory_budget.is_none());
+    }
+
+    #[test]
+    fn test_server_config_all_connection_limits() {
+        let config = ServerConfig::new()
+            .with_max_concurrent_connections(200)
+            .with_max_concurrent_streams_per_connection(100)
+            .with_initial_window_size(65535)
+            .with_initial_connection_window_size(2 * 1024 * 1024)
+            .with_request_timeout(Duration::from_secs(60))
+            .with_memory_budget(MemoryBudgetConfig::default());
+
+        assert_eq!(config.max_concurrent_connections, Some(200));
+        assert_eq!(config.max_concurrent_streams_per_connection, Some(100));
+        assert_eq!(config.initial_window_size, Some(65535));
+        assert_eq!(config.initial_connection_window_size, Some(2 * 1024 * 1024));
+        assert_eq!(config.request_timeout, Some(Duration::from_secs(60)));
+        assert!(config.memory_budget.is_some());
+    }
+
+    // Environment variable tests
+    mod env_tests {
+        use super::*;
+        use std::sync::Mutex;
+
+        // Use a mutex to ensure env var tests don't interfere with each other
+        static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+        fn with_env_vars<F, R>(vars: &[(&str, &str)], f: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+            // Save and set env vars
+            let saved: Vec<_> = vars
+                .iter()
+                .map(|(k, v)| {
+                    let old = std::env::var(k).ok();
+                    std::env::set_var(k, v);
+                    (*k, old)
+                })
+                .collect();
+
+            let result = f();
+
+            // Restore env vars
+            for (k, old) in saved {
+                match old {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+
+            result
+        }
+
+        fn without_env_vars<F, R>(keys: &[&str], f: F) -> R
+        where
+            F: FnOnce() -> R,
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+            // Save and remove env vars
+            let saved: Vec<_> = keys
+                .iter()
+                .map(|k| {
+                    let old = std::env::var(k).ok();
+                    std::env::remove_var(k);
+                    (*k, old)
+                })
+                .collect();
+
+            let result = f();
+
+            // Restore env vars
+            for (k, old) in saved {
+                if let Some(v) = old {
+                    std::env::set_var(k, v);
+                }
+            }
+
+            result
+        }
+
+        #[test]
+        fn test_from_env_defaults() {
+            // Ensure no env vars are set
+            without_env_vars(
+                &[
+                    ENV_BIND_ADDR,
+                    ENV_MAX_MESSAGE_SIZE,
+                    ENV_ENABLE_GRPC_WEB,
+                    ENV_RATE_LIMIT_MAX_REQUESTS,
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert_eq!(config.bind_addr.port(), 9200);
+                    assert!(config.enable_grpc_web);
+                    assert!(config.enable_reflection);
+                    assert!(config.rate_limit.is_none());
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_bind_addr() {
+            with_env_vars(&[(ENV_BIND_ADDR, "0.0.0.0:8080")], || {
+                let config = ServerConfig::from_env().unwrap();
+                assert_eq!(config.bind_addr.to_string(), "0.0.0.0:8080");
+            });
+        }
+
+        #[test]
+        fn test_from_env_invalid_bind_addr() {
+            with_env_vars(&[(ENV_BIND_ADDR, "not-an-address")], || {
+                let result = ServerConfig::from_env();
+                assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains(ENV_BIND_ADDR));
+            });
+        }
+
+        #[test]
+        fn test_from_env_max_message_size() {
+            with_env_vars(&[(ENV_MAX_MESSAGE_SIZE, "1048576")], || {
+                let config = ServerConfig::from_env().unwrap();
+                assert_eq!(config.max_message_size, 1048576);
+            });
+        }
+
+        #[test]
+        fn test_from_env_invalid_max_message_size() {
+            with_env_vars(&[(ENV_MAX_MESSAGE_SIZE, "not-a-number")], || {
+                let result = ServerConfig::from_env();
+                assert!(result.is_err());
+            });
+        }
+
+        #[test]
+        fn test_from_env_bool_true_variants() {
+            for val in &["true", "1", "yes", "on", "TRUE", "YES", "ON"] {
+                with_env_vars(&[(ENV_ENABLE_GRPC_WEB, val)], || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.enable_grpc_web, "failed for value: {val}");
+                });
+            }
+        }
+
+        #[test]
+        fn test_from_env_bool_false_variants() {
+            for val in &["false", "0", "no", "off", "FALSE", "NO", "OFF"] {
+                with_env_vars(&[(ENV_ENABLE_GRPC_WEB, val)], || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(!config.enable_grpc_web, "failed for value: {val}");
+                });
+            }
+        }
+
+        #[test]
+        fn test_from_env_invalid_bool() {
+            with_env_vars(&[(ENV_ENABLE_GRPC_WEB, "maybe")], || {
+                let result = ServerConfig::from_env();
+                assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains("boolean"));
+            });
+        }
+
+        #[test]
+        fn test_from_env_rate_limit() {
+            with_env_vars(
+                &[
+                    (ENV_RATE_LIMIT_MAX_REQUESTS, "500"),
+                    (ENV_RATE_LIMIT_MAX_QUERIES, "100"),
+                    (ENV_RATE_LIMIT_WINDOW_SECS, "120"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.rate_limit.is_some());
+                    let rate = config.rate_limit.unwrap();
+                    assert_eq!(rate.max_requests, 500);
+                    assert_eq!(rate.max_queries, 100);
+                    assert_eq!(rate.window, Duration::from_secs(120));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_shutdown() {
+            with_env_vars(
+                &[
+                    (ENV_SHUTDOWN_DRAIN_TIMEOUT_SECS, "60"),
+                    (ENV_SHUTDOWN_GRACE_PERIOD_SECS, "10"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.shutdown.is_some());
+                    let shutdown = config.shutdown.unwrap();
+                    assert_eq!(shutdown.drain_timeout, Duration::from_secs(60));
+                    assert_eq!(shutdown.grace_period, Duration::from_secs(10));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_connection_limits() {
+            with_env_vars(
+                &[
+                    (ENV_MAX_CONCURRENT_CONNECTIONS, "100"),
+                    (ENV_MAX_CONCURRENT_STREAMS, "50"),
+                    (ENV_INITIAL_WINDOW_SIZE, "65535"),
+                    (ENV_REQUEST_TIMEOUT_SECS, "30"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert_eq!(config.max_concurrent_connections, Some(100));
+                    assert_eq!(config.max_concurrent_streams_per_connection, Some(50));
+                    assert_eq!(config.initial_window_size, Some(65535));
+                    assert_eq!(config.request_timeout, Some(Duration::from_secs(30)));
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_memory_budget() {
+            with_env_vars(
+                &[
+                    (ENV_MEMORY_BUDGET_MAX_BYTES, "536870912"),
+                    (ENV_MEMORY_BUDGET_LOAD_SHEDDING, "true"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.memory_budget.is_some());
+                    let memory = config.memory_budget.unwrap();
+                    assert_eq!(memory.max_bytes, 536_870_912);
+                    assert!(memory.enable_load_shedding);
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_tls_requires_both_paths() {
+            // Only cert path - should not create TLS config
+            with_env_vars(&[(ENV_TLS_CERT_PATH, "/path/to/cert.pem")], || {
+                let config = ServerConfig::from_env().unwrap();
+                assert!(config.tls.is_none());
+            });
+
+            // Only key path - should not create TLS config
+            with_env_vars(&[(ENV_TLS_KEY_PATH, "/path/to/key.pem")], || {
+                let config = ServerConfig::from_env().unwrap();
+                assert!(config.tls.is_none());
+            });
+
+            // Both paths - should create TLS config
+            with_env_vars(
+                &[
+                    (ENV_TLS_CERT_PATH, "/path/to/cert.pem"),
+                    (ENV_TLS_KEY_PATH, "/path/to/key.pem"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.tls.is_some());
+                    let tls = config.tls.unwrap();
+                    assert_eq!(tls.cert_path.to_string_lossy(), "/path/to/cert.pem");
+                    assert_eq!(tls.key_path.to_string_lossy(), "/path/to/key.pem");
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_tls_with_ca() {
+            with_env_vars(
+                &[
+                    (ENV_TLS_CERT_PATH, "/path/to/cert.pem"),
+                    (ENV_TLS_KEY_PATH, "/path/to/key.pem"),
+                    (ENV_TLS_CA_CERT_PATH, "/path/to/ca.pem"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.tls.is_some());
+                    let tls = config.tls.unwrap();
+                    assert!(tls.ca_cert_path.is_some());
+                    assert_eq!(
+                        tls.ca_cert_path.unwrap().to_string_lossy(),
+                        "/path/to/ca.pem"
+                    );
+                },
+            );
+        }
+
+        #[test]
+        fn test_from_env_require_client_cert() {
+            // Test with require_client_cert = true
+            with_env_vars(
+                &[
+                    (ENV_TLS_CERT_PATH, "/path/to/cert.pem"),
+                    (ENV_TLS_KEY_PATH, "/path/to/key.pem"),
+                    (ENV_TLS_CA_CERT_PATH, "/path/to/ca.pem"),
+                    (ENV_TLS_REQUIRE_CLIENT_CERT, "true"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.tls.is_some());
+                    let tls = config.tls.unwrap();
+                    assert!(tls.require_client_cert);
+                },
+            );
+
+            // Test with require_client_cert = false
+            with_env_vars(
+                &[
+                    (ENV_TLS_CERT_PATH, "/path/to/cert.pem"),
+                    (ENV_TLS_KEY_PATH, "/path/to/key.pem"),
+                    (ENV_TLS_CA_CERT_PATH, "/path/to/ca.pem"),
+                    (ENV_TLS_REQUIRE_CLIENT_CERT, "false"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.tls.is_some());
+                    let tls = config.tls.unwrap();
+                    assert!(!tls.require_client_cert);
+                },
+            );
+
+            // Test default (no env var) - should be false
+            with_env_vars(
+                &[
+                    (ENV_TLS_CERT_PATH, "/path/to/cert.pem"),
+                    (ENV_TLS_KEY_PATH, "/path/to/key.pem"),
+                ],
+                || {
+                    let config = ServerConfig::from_env().unwrap();
+                    assert!(config.tls.is_some());
+                    let tls = config.tls.unwrap();
+                    assert!(!tls.require_client_cert);
+                },
+            );
+        }
+
+        #[test]
+        fn test_env_var_constants() {
+            // Verify all env var constants follow the NEUMANN_ prefix convention
+            assert!(ENV_BIND_ADDR.starts_with("NEUMANN_"));
+            assert!(ENV_MAX_MESSAGE_SIZE.starts_with("NEUMANN_"));
+            assert!(ENV_ENABLE_GRPC_WEB.starts_with("NEUMANN_"));
+            assert!(ENV_TLS_CERT_PATH.starts_with("NEUMANN_"));
+            assert!(ENV_TLS_REQUIRE_CLIENT_CERT.starts_with("NEUMANN_"));
+            assert!(ENV_RATE_LIMIT_MAX_REQUESTS.starts_with("NEUMANN_"));
+            assert!(ENV_SHUTDOWN_DRAIN_TIMEOUT_SECS.starts_with("NEUMANN_"));
+            assert!(ENV_MAX_CONCURRENT_CONNECTIONS.starts_with("NEUMANN_"));
+            assert!(ENV_MEMORY_BUDGET_MAX_BYTES.starts_with("NEUMANN_"));
+        }
     }
 }

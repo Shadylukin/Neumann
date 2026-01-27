@@ -31,6 +31,7 @@ mod rate_limit;
 mod ttl;
 
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -38,7 +39,7 @@ use std::{
 pub use access::AccessController;
 pub use audit::{AuditEntry, AuditLog, AuditOperation};
 pub use encryption::{Cipher, NONCE_SIZE};
-use graph_engine::GraphEngine;
+use graph_engine::{Direction, GraphEngine, PropertyValue};
 pub use key::{MasterKey, KEY_SIZE, SALT_SIZE};
 pub use obfuscation::{Obfuscator, PaddingSize};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
@@ -329,6 +330,10 @@ impl Vault {
     }
 
     fn ensure_root_exists(&self) -> Result<()> {
+        // Ensure root node exists in graph
+        let _ = self.get_or_create_entity_node(Self::ROOT);
+
+        // Also store in TensorStore for backwards compatibility
         if !self.store.exists(Self::ROOT) {
             let mut root = TensorData::new();
             root.set(
@@ -344,6 +349,63 @@ impl Vault {
                 .map_err(|e| VaultError::StorageError(e.to_string()))?;
         }
         Ok(())
+    }
+
+    // ========== Node-based Graph API Helpers ==========
+    // These methods provide a string-key interface on top of the node-based graph API.
+
+    /// Get or create a graph node for an entity key.
+    /// Uses the "entity_key" property to look up existing nodes.
+    fn get_or_create_entity_node(&self, entity_key: &str) -> u64 {
+        // Try to find existing node by property
+        if let Ok(nodes) = self.graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+            if let Some(node) = nodes.first() {
+                return node.id;
+            }
+        }
+
+        // Create new node with entity key property
+        let mut props = HashMap::new();
+        props.insert("entity_key".to_string(), graph_engine::PropertyValue::String(entity_key.to_string()));
+
+        self.graph.create_node("VaultEntity", props).unwrap_or(0)
+    }
+
+    /// Add an edge between two entity keys.
+    fn add_entity_graph_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<u64> {
+        let from_node = self.get_or_create_entity_node(from_key);
+        let to_node = self.get_or_create_entity_node(to_key);
+
+        self.graph
+            .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+            .map_err(|e| VaultError::GraphError(e.to_string()))
+    }
+
+    /// Get outgoing edges for an entity, returning (edge_id, target_key, edge_type).
+    fn get_entity_outgoing_edges(&self, entity_key: &str) -> Vec<(u64, String, String)> {
+        let node_id = self.get_or_create_entity_node(entity_key);
+        let mut result = Vec::new();
+
+        if let Ok(edges) = self.graph.edges_of(node_id, Direction::Outgoing) {
+            for edge in edges {
+                // Get the target node's entity key
+                let target_id = if edge.from == node_id { edge.to } else { edge.from };
+                if let Ok(target_node) = self.graph.get_node(target_id) {
+                    if let Some(graph_engine::PropertyValue::String(key)) = target_node.properties.get("entity_key") {
+                        result.push((edge.id, key.clone(), edge.edge_type.clone()));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Delete an edge by ID.
+    fn delete_graph_edge(&self, edge_id: u64) -> Result<()> {
+        self.graph
+            .delete_edge(edge_id)
+            .map_err(|e| VaultError::GraphError(e.to_string()))
     }
 
     fn vault_key(&self, secret_key: &str) -> String {
@@ -490,9 +552,7 @@ impl Vault {
 
             // Root always has Admin access to secrets it creates
             let edge_type = format!("{}{}", Self::ACCESS_EDGE, Permission::Admin.edge_suffix());
-            self.graph
-                .add_entity_edge(Self::ROOT, &secret_node, &edge_type)
-                .map_err(|e| VaultError::GraphError(e.to_string()))?;
+            self.add_entity_graph_edge(Self::ROOT, &secret_node, &edge_type)?;
         }
 
         // Log audit
@@ -693,9 +753,7 @@ impl Vault {
 
         // Create edge with permission level encoded in type
         let edge_type = format!("{}{}", Self::ACCESS_EDGE, level.edge_suffix());
-        self.graph
-            .add_entity_edge(entity, &secret_node, &edge_type)
-            .map_err(|e| VaultError::GraphError(e.to_string()))?;
+        self.add_entity_graph_edge(entity, &secret_node, &edge_type)?;
 
         // Log audit
         self.log_operation(
@@ -739,15 +797,9 @@ impl Vault {
         let secret_node = self.secret_node_key(key);
 
         // Find and delete the access edge (handles all permission levels)
-        if let Ok(edges) = self.graph.get_entity_outgoing(entity) {
-            for edge_key in edges {
-                if let Ok((_, to, edge_type, _)) = self.graph.get_entity_edge(&edge_key) {
-                    if to == secret_node && edge_type.starts_with(Self::ACCESS_EDGE) {
-                        self.graph
-                            .delete_entity_edge(&edge_key)
-                            .map_err(|e| VaultError::GraphError(e.to_string()))?;
-                    }
-                }
+        for (edge_id, to, edge_type) in self.get_entity_outgoing_edges(entity) {
+            if to == secret_node && edge_type.starts_with(Self::ACCESS_EDGE) {
+                self.delete_graph_edge(edge_id)?;
             }
         }
 
@@ -778,16 +830,12 @@ impl Vault {
             let secret_node = self.secret_node_key(&key);
 
             // Find and delete the access edge
-            if let Ok(edges) = self.graph.get_entity_outgoing(&entity) {
-                for edge_key in edges {
-                    if let Ok((_, to, edge_type, _)) = self.graph.get_entity_edge(&edge_key) {
-                        if to == secret_node
-                            && edge_type.starts_with(Self::ACCESS_EDGE)
-                            && self.graph.delete_entity_edge(&edge_key).is_ok()
-                        {
-                            revoked += 1;
-                        }
-                    }
+            for (edge_id, to, edge_type) in self.get_entity_outgoing_edges(&entity) {
+                if to == secret_node
+                    && edge_type.starts_with(Self::ACCESS_EDGE)
+                    && self.delete_graph_edge(edge_id).is_ok()
+                {
+                    revoked += 1;
                 }
             }
         }
@@ -1206,11 +1254,74 @@ impl<'a> NamespacedVault<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use graph_engine::PropertyValue;
 
     fn create_test_vault() -> Vault {
         let store = TensorStore::new();
         let graph = Arc::new(GraphEngine::new());
         Vault::new(b"test_password", graph, store, VaultConfig::default()).unwrap()
+    }
+
+    /// Helper to add edges between entity keys using the node-based API.
+    fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
+        let get_or_create = |key: &str| -> u64 {
+            if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+                if let Some(node) = nodes.first() {
+                    return node.id;
+                }
+            }
+            let mut props = HashMap::new();
+            props.insert(
+                "entity_key".to_string(),
+                PropertyValue::String(key.to_string()),
+            );
+            graph.create_node("TestEntity", props).unwrap_or(0)
+        };
+
+        let from_node = get_or_create(from_key);
+        let to_node = get_or_create(to_key);
+        graph
+            .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+            .ok();
+    }
+
+    /// Helper to get outgoing edges for an entity key.
+    fn get_test_outgoing_edges(graph: &GraphEngine, entity_key: &str) -> Vec<(String, String)> {
+        let find_node = |key: &str| -> Option<u64> {
+            graph
+                .find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+                .ok()
+                .and_then(|nodes| nodes.first().map(|n| n.id))
+        };
+
+        let get_key = |id: u64| -> Option<String> {
+            graph.get_node(id).ok().and_then(|node| {
+                if let Some(PropertyValue::String(key)) = node.properties.get("entity_key") {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        let Some(node_id) = find_node(entity_key) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        if let Ok(edges) = graph.edges_of(node_id, Direction::Outgoing) {
+            for edge in edges {
+                let target_id = if edge.from == node_id {
+                    edge.to
+                } else {
+                    edge.from
+                };
+                if let Some(target_key) = get_key(target_id) {
+                    result.push((target_key, edge.edge_type.clone()));
+                }
+            }
+        }
+        result
     }
 
     #[test]
@@ -1368,10 +1479,7 @@ mod tests {
 
         // Create a chain: alice -> team -> secret
         // Use MEMBER edge for team membership (manually, as it's not a vault operation)
-        vault
-            .graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
         // Use grant() to properly create the team -> secret edge with obfuscated key
         vault.grant(Vault::ROOT, "team:devs", "secret").unwrap();
 
@@ -1994,10 +2102,7 @@ mod tests {
         vault.set(Vault::ROOT, "secret", "value").unwrap();
 
         // Create chain: alice -> team (MEMBER) -> secret (VAULT_ACCESS_READ)
-        vault
-            .graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
+        add_test_edge(&vault.graph, "user:alice", "team:devs", "MEMBER");
         vault
             .grant_with_permission(Vault::ROOT, "team:devs", "secret", Permission::Read)
             .unwrap();
@@ -2026,14 +2131,10 @@ mod tests {
             .unwrap();
 
         // Verify that plaintext secret name is NOT in graph node keys
-        let edge_keys = vault.graph.get_entity_outgoing("user:alice").unwrap();
-        assert!(!edge_keys.is_empty(), "Expected grant to create edge");
+        let edges = get_test_outgoing_edges(&vault.graph, "user:alice");
+        assert!(!edges.is_empty(), "Expected grant to create edge");
 
-        for edge_key in &edge_keys {
-            let (from, to, edge_type, _undirected) = vault.graph.get_entity_edge(edge_key).unwrap();
-
-            // Sanity check: edge is from alice
-            assert_eq!(from, "user:alice");
+        for (to, edge_type) in &edges {
             assert!(edge_type.starts_with("VAULT_ACCESS"));
 
             // Edge target should NOT contain plaintext secret name

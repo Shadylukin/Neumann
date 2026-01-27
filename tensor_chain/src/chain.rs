@@ -7,12 +7,15 @@
 //! - Height-indexed block lookup
 //! - Similarity search over block embeddings
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
-use graph_engine::GraphEngine;
+use graph_engine::{GraphEngine, PropertyValue};
 use parking_lot::{Mutex, RwLock};
 use tensor_store::SparseVector;
 
@@ -58,6 +61,29 @@ impl Chain {
             node_id,
             append_lock: Mutex::new(()),
         }
+    }
+
+    /// Helper to add a chain edge between two block keys.
+    fn add_chain_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<u64> {
+        let get_or_create = |key: &str| -> u64 {
+            if let Ok(nodes) = self.graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+                if let Some(node) = nodes.first() {
+                    return node.id;
+                }
+            }
+            let mut props = HashMap::new();
+            props.insert(
+                "entity_key".to_string(),
+                PropertyValue::String(key.to_string()),
+            );
+            self.graph.create_node("ChainBlock", props).unwrap_or(0)
+        };
+
+        let from_node = get_or_create(from_key);
+        let to_node = get_or_create(to_key);
+        self.graph
+            .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+            .map_err(|e| ChainError::GraphError(e.to_string()))
     }
 
     /// Initialize the chain, creating genesis block if needed.
@@ -151,9 +177,7 @@ impl Chain {
         // Create chain link edge
         let prev_key = block_key(current_height);
         let new_key = block_key(expected_height);
-        self.graph
-            .add_entity_edge(&prev_key, &new_key, CHAIN_EDGE_TYPE)
-            .map_err(|e| ChainError::GraphError(e.to_string()))?;
+        self.add_chain_edge(&prev_key, &new_key, CHAIN_EDGE_TYPE)?;
 
         // Update chain state
         self.height.store(expected_height, Ordering::SeqCst);

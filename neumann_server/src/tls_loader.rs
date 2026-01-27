@@ -31,6 +31,7 @@ impl std::fmt::Debug for LoadedTls {
 struct LoadedTls {
     identity: Identity,
     client_ca: Option<Certificate>,
+    require_client_cert: bool,
 }
 
 impl TlsLoader {
@@ -80,6 +81,7 @@ impl TlsLoader {
         Ok(LoadedTls {
             identity,
             client_ca,
+            require_client_cert: self.config.require_client_cert,
         })
     }
 
@@ -93,6 +95,12 @@ impl TlsLoader {
 
         if let Some(ref ca) = loaded.client_ca {
             tls_config = tls_config.client_ca_root(ca.clone());
+
+            // When CA is set but require_client_cert is false, make client auth optional.
+            // When require_client_cert is true (or not set), client cert is required (default).
+            if !loaded.require_client_cert {
+                tls_config = tls_config.client_auth_optional(true);
+            }
         }
 
         // Store the loaded configuration
@@ -141,6 +149,12 @@ impl TlsLoader {
 
         if let Some(ref ca) = loaded.client_ca {
             tls_config = tls_config.client_ca_root(ca.clone());
+
+            // When CA is set but require_client_cert is false, make client auth optional.
+            // When require_client_cert is true (or not set), client cert is required (default).
+            if !loaded.require_client_cert {
+                tls_config = tls_config.client_auth_optional(true);
+            }
         }
 
         Ok(tls_config)

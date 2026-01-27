@@ -3,8 +3,34 @@
 //! Tests cross-engine entity operations: ENTITY CREATE, ENTITY CONNECT,
 //! SIMILAR...CONNECTED TO, and NEIGHBORS...BY SIMILARITY.
 
+use std::collections::HashMap;
+
+use graph_engine::{GraphEngine, PropertyValue};
 use integration_tests::create_shared_router;
 use query_router::QueryResult;
+
+/// Helper to add edges between entity keys using the node-based API.
+fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
+    let get_or_create = |key: &str| -> u64 {
+        if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+            if let Some(node) = nodes.first() {
+                return node.id;
+            }
+        }
+        let mut props = HashMap::new();
+        props.insert(
+            "entity_key".to_string(),
+            PropertyValue::String(key.to_string()),
+        );
+        graph.create_node("TestEntity", props).unwrap_or(0)
+    };
+
+    let from_node = get_or_create(from_key);
+    let to_node = get_or_create(to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+        .ok();
+}
 
 #[test]
 fn test_entity_create_basic() {
@@ -126,14 +152,8 @@ fn test_similar_connected_to() {
         .unwrap();
 
     // Connect users to hub using graph engine
-    router
-        .graph()
-        .add_entity_edge("hub", "user:1", "connects")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub", "user:2", "connects")
-        .unwrap();
+    add_test_edge(router.graph(), "hub", "user:1", "connects");
+    add_test_edge(router.graph(), "hub", "user:2", "connects");
 
     // Query similar connected to hub
     let result = router.execute_parsed("SIMILAR 'query' CONNECTED TO 'hub' LIMIT 5");
@@ -340,31 +360,13 @@ fn test_similar_with_multiple_connections() {
 
     // Connect docs to different hubs using graph engine
     // hub:1 gets doc:0, doc:1, doc:2
-    router
-        .graph()
-        .add_entity_edge("hub:1", "doc:0", "has")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub:1", "doc:1", "has")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub:1", "doc:2", "has")
-        .unwrap();
+    add_test_edge(router.graph(), "hub:1", "doc:0", "has");
+    add_test_edge(router.graph(), "hub:1", "doc:1", "has");
+    add_test_edge(router.graph(), "hub:1", "doc:2", "has");
     // hub:2 gets doc:3, doc:4, doc:5
-    router
-        .graph()
-        .add_entity_edge("hub:2", "doc:3", "has")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub:2", "doc:4", "has")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub:2", "doc:5", "has")
-        .unwrap();
+    add_test_edge(router.graph(), "hub:2", "doc:3", "has");
+    add_test_edge(router.graph(), "hub:2", "doc:4", "has");
+    add_test_edge(router.graph(), "hub:2", "doc:5", "has");
 
     // Query similar to doc:0 but only connected to hub:1
     let result = router.execute_parsed("SIMILAR 'doc:0' CONNECTED TO 'hub:1' LIMIT 5");

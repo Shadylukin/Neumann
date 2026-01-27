@@ -6,6 +6,15 @@
 //! - Vector commands (EMBED, SIMILAR)
 //! - Unified queries (FIND)
 
+#![allow(clippy::wildcard_imports)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+
 use crate::{
     ast::*,
     error::{ParseError, ParseErrorKind, ParseResult},
@@ -1778,7 +1787,17 @@ impl<'a> Parser<'a> {
             ));
         };
 
-        Ok(StatementKind::Embed(EmbedStmt { operation }))
+        // Parse optional INTO collection_name
+        let collection = if self.eat(&TokenKind::Into) {
+            Some(self.expect_ident()?.name)
+        } else {
+            None
+        };
+
+        Ok(StatementKind::Embed(EmbedStmt {
+            operation,
+            collection,
+        }))
     }
 
     fn parse_similar(&mut self) -> ParseResult<StatementKind> {
@@ -1825,11 +1844,27 @@ impl<'a> Parser<'a> {
             None
         };
 
+        // Parse optional INTO collection_name
+        let collection = if self.eat(&TokenKind::Into) {
+            Some(self.expect_ident()?.name)
+        } else {
+            None
+        };
+
+        // Parse optional WHERE clause for filtered search
+        let where_clause = if self.eat(&TokenKind::Where) {
+            Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+
         Ok(StatementKind::Similar(SimilarStmt {
             query,
             limit,
             metric,
             connected_to,
+            collection,
+            where_clause,
         }))
     }
 
@@ -1903,7 +1938,12 @@ impl<'a> Parser<'a> {
     fn parse_entity(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Entity)?;
 
-        let operation = if self.eat(&TokenKind::Create) {
+        let operation = if self.eat(&TokenKind::Batch) {
+            // ENTITY BATCH CREATE [{key: 'k1', name: 'Alice'}, ...]
+            self.expect(&TokenKind::Create)?;
+            let entities = self.parse_batch_entity_list()?;
+            EntityOp::Batch { entities }
+        } else if self.eat(&TokenKind::Create) {
             // ENTITY CREATE 'key' { properties } [EMBEDDING [vector]]
             let key = self.parse_expr()?;
             let properties = self.parse_properties()?;
@@ -1938,12 +1978,81 @@ impl<'a> Parser<'a> {
             }
         } else {
             return Err(ParseError::invalid(
-                "expected CREATE, GET, or CONNECT after ENTITY",
+                "expected CREATE, GET, CONNECT, or BATCH after ENTITY",
                 self.current.span,
             ));
         };
 
         Ok(StatementKind::Entity(EntityStmt { operation }))
+    }
+
+    /// Parses a list of batch entity definitions: `[{key: 'k1', name: 'Alice'}, ...]`
+    fn parse_batch_entity_list(&mut self) -> ParseResult<Vec<BatchEntityDef>> {
+        self.expect(&TokenKind::LBracket)?;
+
+        let mut entities = Vec::new();
+
+        if !self.check(&TokenKind::RBracket) {
+            loop {
+                let entity = self.parse_batch_entity_def()?;
+                entities.push(entity);
+
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBracket)?;
+        Ok(entities)
+    }
+
+    /// Parses a single batch entity definition: `{key: 'k1', name: 'Alice', embedding: [0.1, 0.2]}`
+    fn parse_batch_entity_def(&mut self) -> ParseResult<BatchEntityDef> {
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut key: Option<Expr> = None;
+        let mut properties = Vec::new();
+        let mut embedding: Option<Vec<Expr>> = None;
+
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                // Use expect_ident_or_any_keyword since "key" and "embedding" are reserved keywords
+                let prop_name = self.expect_ident_or_any_keyword()?;
+                self.expect(&TokenKind::Colon)?;
+
+                if prop_name.name.eq_ignore_ascii_case("key") {
+                    key = Some(self.parse_expr()?);
+                } else if prop_name.name.eq_ignore_ascii_case("embedding") {
+                    embedding = Some(self.parse_vector_literal()?);
+                } else {
+                    let value = self.parse_expr()?;
+                    properties.push(Property {
+                        key: prop_name,
+                        value,
+                    });
+                }
+
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+
+        let key = key.ok_or_else(|| {
+            ParseError::invalid(
+                "batch entity definition requires 'key' field",
+                self.current.span,
+            )
+        })?;
+
+        Ok(BatchEntityDef {
+            key,
+            properties,
+            embedding,
+        })
     }
 
     // =========================================================================
@@ -3685,7 +3794,8 @@ mod tests {
         assert!(matches!(
             stmt.kind,
             StatementKind::Embed(EmbedStmt {
-                operation: EmbedOp::Get { .. }
+                operation: EmbedOp::Get { .. },
+                ..
             })
         ));
     }
@@ -3971,7 +4081,8 @@ mod tests {
         assert!(matches!(
             stmt.kind,
             StatementKind::Embed(EmbedStmt {
-                operation: EmbedOp::Delete { .. }
+                operation: EmbedOp::Delete { .. },
+                ..
             })
         ));
     }
@@ -6872,6 +6983,137 @@ mod tests {
             } else {
                 panic!("expected GraphAggregate");
             }
+        }
+    }
+
+    // =========================================================================
+    // Collection and WHERE clause tests
+    // =========================================================================
+
+    #[test]
+    fn test_embed_store_in_collection() {
+        let stmt = parse_stmt("EMBED STORE 'doc1' [1.0, 2.0, 3.0] INTO my_collection");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(matches!(embed.operation, EmbedOp::Store { .. }));
+            assert_eq!(embed.collection, Some("my_collection".to_string()));
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_embed_get_in_collection() {
+        let stmt = parse_stmt("EMBED GET 'doc1' INTO my_collection");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(matches!(embed.operation, EmbedOp::Get { .. }));
+            assert_eq!(embed.collection, Some("my_collection".to_string()));
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_embed_delete_in_collection() {
+        let stmt = parse_stmt("EMBED DELETE 'doc1' INTO my_collection");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(matches!(embed.operation, EmbedOp::Delete { .. }));
+            assert_eq!(embed.collection, Some("my_collection".to_string()));
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_embed_without_collection() {
+        let stmt = parse_stmt("EMBED STORE 'doc1' [1.0, 2.0]");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(embed.collection.is_none());
+        } else {
+            panic!("expected EMBED");
+        }
+    }
+
+    #[test]
+    fn test_similar_in_collection() {
+        let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 INTO my_collection");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(matches!(similar.query, SimilarQuery::Vector(_)));
+            assert!(similar.limit.is_some());
+            assert_eq!(similar.collection, Some("my_collection".to_string()));
+            assert!(similar.where_clause.is_none());
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_similar_with_where() {
+        let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 10 WHERE category = 'science'");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(matches!(similar.query, SimilarQuery::Vector(_)));
+            assert!(similar.limit.is_some());
+            assert!(similar.collection.is_none());
+            assert!(similar.where_clause.is_some());
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_similar_with_collection_and_where() {
+        let stmt = parse_stmt("SIMILAR [1.0, 2.0] LIMIT 5 INTO docs WHERE author = 'Alice'");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(matches!(similar.query, SimilarQuery::Vector(_)));
+            assert!(similar.limit.is_some());
+            assert_eq!(similar.collection, Some("docs".to_string()));
+            assert!(similar.where_clause.is_some());
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_similar_where_with_and() {
+        let stmt = parse_stmt("SIMILAR 'doc1' LIMIT 10 WHERE category = 'tech' AND score > 5");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(matches!(similar.query, SimilarQuery::Key(_)));
+            assert!(similar.where_clause.is_some());
+            // WHERE clause is an AND expression
+            if let Some(ref where_expr) = similar.where_clause {
+                assert!(matches!(
+                    where_expr.kind,
+                    ExprKind::Binary(_, BinaryOp::And, _)
+                ));
+            }
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_similar_where_with_or() {
+        let stmt = parse_stmt("SIMILAR [1.0] WHERE status = 'active' OR status = 'pending'");
+        if let StatementKind::Similar(similar) = stmt.kind {
+            assert!(similar.where_clause.is_some());
+            if let Some(ref where_expr) = similar.where_clause {
+                assert!(matches!(
+                    where_expr.kind,
+                    ExprKind::Binary(_, BinaryOp::Or, _)
+                ));
+            }
+        } else {
+            panic!("expected SIMILAR");
+        }
+    }
+
+    #[test]
+    fn test_embed_batch_in_collection() {
+        let stmt = parse_stmt("EMBED BATCH [('k1', [1.0]), ('k2', [2.0])] INTO batch_coll");
+        if let StatementKind::Embed(embed) = stmt.kind {
+            assert!(matches!(embed.operation, EmbedOp::Batch { .. }));
+            assert_eq!(embed.collection, Some("batch_coll".to_string()));
+        } else {
+            panic!("expected EMBED BATCH");
         }
     }
 }

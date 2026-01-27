@@ -1,9 +1,9 @@
 //! Benchmarks for tensor_vault operations.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use graph_engine::GraphEngine;
+use graph_engine::{GraphEngine, PropertyValue};
 use peak_alloc::PeakAlloc;
 use tensor_store::TensorStore;
 use tensor_vault::{Vault, VaultConfig};
@@ -15,6 +15,29 @@ fn create_vault() -> Vault {
     let store = TensorStore::new();
     let graph = Arc::new(GraphEngine::new());
     Vault::new(b"benchmark_password", graph, store, VaultConfig::default()).unwrap()
+}
+
+/// Helper to add edges between entity keys using the node-based API.
+fn add_bench_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
+    let get_or_create = |key: &str| -> u64 {
+        if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+            if let Some(node) = nodes.first() {
+                return node.id;
+            }
+        }
+        let mut props = HashMap::new();
+        props.insert(
+            "entity_key".to_string(),
+            PropertyValue::String(key.to_string()),
+        );
+        graph.create_node("BenchEntity", props).unwrap_or(0)
+    };
+
+    let from_node = get_or_create(from_key);
+    let to_node = get_or_create(to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+        .ok();
 }
 
 fn bench_key_derivation(c: &mut Criterion) {
@@ -139,12 +162,9 @@ fn bench_access_control(c: &mut Criterion) {
                 format!("node:{}", i - 1)
             };
             let to = format!("node:{i}");
-            vault.graph().add_entity_edge(&from, &to, "LINK").unwrap();
+            add_bench_edge(vault.graph(), &from, &to, "LINK");
         }
-        vault
-            .graph()
-            .add_entity_edge("node:9", "vault_secret:secret", "VAULT_ACCESS")
-            .unwrap();
+        add_bench_edge(vault.graph(), "node:9", "vault_secret:secret", "VAULT_ACCESS");
 
         b.iter(|| {
             let _ = vault.get(black_box("user:start"), black_box("secret"));

@@ -63,20 +63,23 @@ impl ParseError {
     }
 
     /// Adds a help message to the error.
+    #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self
     }
 
     /// Formats the error with source context.
+    #[allow(clippy::format_push_string)]
     pub fn format_with_source(&self, source: &str) -> String {
         let (line, col) = line_col(source, self.span.start);
         let line_text = get_line(source, self.span.start);
 
-        let mut result = format!("error: {}\n", self.kind);
-        result.push_str(&format!("  --> line {}:{}\n", line, col));
+        let kind = &self.kind;
+        let mut result = format!("error: {kind}\n");
+        result.push_str(&format!("  --> line {line}:{col}\n"));
         result.push_str("   |\n");
-        result.push_str(&format!("{:3} | {}\n", line, line_text));
+        result.push_str(&format!("{line:3} | {line_text}\n"));
         result.push_str("   | ");
 
         // Add carets under the error
@@ -91,7 +94,7 @@ impl ParseError {
         result.push('\n');
 
         if let Some(help) = &self.help {
-            result.push_str(&format!("   = help: {}\n", help));
+            result.push_str(&format!("   = help: {help}\n"));
         }
 
         result
@@ -134,20 +137,19 @@ pub enum ParseErrorKind {
 impl fmt::Display for ParseErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseErrorKind::UnexpectedToken { found, expected } => {
-                write!(f, "unexpected {}, expected {}", found, expected)
+            Self::UnexpectedToken { found, expected } => {
+                write!(f, "unexpected {found}, expected {expected}")
             },
-            ParseErrorKind::UnexpectedEof { expected } => {
-                write!(f, "unexpected end of input, expected {}", expected)
+            Self::UnexpectedEof { expected } => {
+                write!(f, "unexpected end of input, expected {expected}")
             },
-            ParseErrorKind::InvalidSyntax(msg) => write!(f, "{}", msg),
-            ParseErrorKind::InvalidNumber(msg) => write!(f, "invalid number: {}", msg),
-            ParseErrorKind::UnterminatedString => write!(f, "unterminated string literal"),
-            ParseErrorKind::UnknownCommand(cmd) => write!(f, "unknown command: {}", cmd),
-            ParseErrorKind::DuplicateColumn(col) => write!(f, "duplicate column: {}", col),
-            ParseErrorKind::InvalidEscape(c) => write!(f, "invalid escape sequence: \\{}", c),
-            ParseErrorKind::TooDeep => write!(f, "expression nesting too deep"),
-            ParseErrorKind::Custom(msg) => write!(f, "{}", msg),
+            Self::InvalidSyntax(msg) | Self::Custom(msg) => write!(f, "{msg}"),
+            Self::InvalidNumber(msg) => write!(f, "invalid number: {msg}"),
+            Self::UnterminatedString => write!(f, "unterminated string literal"),
+            Self::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
+            Self::DuplicateColumn(col) => write!(f, "duplicate column: {col}"),
+            Self::InvalidEscape(c) => write!(f, "invalid escape sequence: \\{c}"),
+            Self::TooDeep => write!(f, "expression nesting too deep"),
         }
     }
 }

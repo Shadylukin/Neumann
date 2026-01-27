@@ -1,11 +1,11 @@
-//! GraphEngine Entity API integration tests.
+//! GraphEngine Node-based API integration tests.
 //!
-//! Tests string-keyed entity operations for graph connectivity.
-//! Note: Entities are auto-created when adding edges via add_entity_edge().
+//! Tests node-based graph operations using the recommended API.
+//! Nodes are created with properties, and edges link them together.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use graph_engine::GraphEngine;
+use graph_engine::{Direction, GraphEngine, PropertyValue};
 use tensor_store::TensorStore;
 
 fn create_graph() -> Arc<GraphEngine> {
@@ -13,404 +13,415 @@ fn create_graph() -> Arc<GraphEngine> {
     Arc::new(GraphEngine::with_store(store))
 }
 
-#[test]
-fn test_add_entity_edge_basic() {
-    let graph = create_graph();
+/// Helper to create a node with an entity key property.
+fn create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
+    let mut props = HashMap::new();
+    props.insert(
+        "entity_key".to_string(),
+        PropertyValue::String(entity_key.to_string()),
+    );
+    graph.create_node("Entity", props).unwrap()
+}
 
-    // Add edge between entities (auto-creates entities)
-    let edge_key = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
+/// Helper to get or create a node for an entity key.
+fn get_or_create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
+    if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+        if let Some(node) = nodes.first() {
+            return node.id;
+        }
+    }
+    create_entity_node(graph, entity_key)
+}
 
-    assert!(!edge_key.is_empty());
-    assert!(edge_key.contains("follows"));
+/// Helper to add a directed edge between entity keys.
+fn add_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) -> u64 {
+    let from_node = get_or_create_entity_node(graph, from_key);
+    let to_node = get_or_create_entity_node(graph, to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+        .unwrap()
+}
+
+/// Helper to add an undirected edge between entity keys.
+fn add_undirected_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) -> u64 {
+    let from_node = get_or_create_entity_node(graph, from_key);
+    let to_node = get_or_create_entity_node(graph, to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), false)
+        .unwrap()
+}
+
+/// Helper to get entity key from a node ID.
+fn get_entity_key(graph: &GraphEngine, node_id: u64) -> Option<String> {
+    graph.get_node(node_id).ok().and_then(|node| {
+        if let Some(PropertyValue::String(key)) = node.properties.get("entity_key") {
+            Some(key.clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Helper to get outgoing neighbor entity keys.
+fn get_neighbors_out(graph: &GraphEngine, entity_key: &str) -> Vec<String> {
+    let node_id = get_or_create_entity_node(graph, entity_key);
+    let mut result = Vec::new();
+    if let Ok(edges) = graph.edges_of(node_id, Direction::Outgoing) {
+        for edge in edges {
+            let target_id = if edge.from == node_id {
+                edge.to
+            } else {
+                edge.from
+            };
+            if let Some(key) = get_entity_key(graph, target_id) {
+                result.push(key);
+            }
+        }
+    }
+    result
+}
+
+/// Helper to get incoming neighbor entity keys.
+fn get_neighbors_in(graph: &GraphEngine, entity_key: &str) -> Vec<String> {
+    let node_id = get_or_create_entity_node(graph, entity_key);
+    let mut result = Vec::new();
+    if let Ok(edges) = graph.edges_of(node_id, Direction::Incoming) {
+        for edge in edges {
+            let source_id = if edge.to == node_id {
+                edge.from
+            } else {
+                edge.to
+            };
+            if let Some(key) = get_entity_key(graph, source_id) {
+                result.push(key);
+            }
+        }
+    }
+    result
+}
+
+/// Helper to get all neighbor entity keys (both directions).
+fn get_neighbors_both(graph: &GraphEngine, entity_key: &str) -> Vec<String> {
+    let node_id = get_or_create_entity_node(graph, entity_key);
+    let mut result = Vec::new();
+    if let Ok(edges) = graph.edges_of(node_id, Direction::Both) {
+        for edge in edges {
+            let other_id = if edge.from == node_id {
+                edge.to
+            } else {
+                edge.from
+            };
+            if let Some(key) = get_entity_key(graph, other_id) {
+                if !result.contains(&key) {
+                    result.push(key);
+                }
+            }
+        }
+    }
+    result
 }
 
 #[test]
-fn test_add_entity_edge_undirected() {
+fn test_add_edge_basic() {
     let graph = create_graph();
 
-    // Add undirected edge (auto-creates entities)
-    let edge_key = graph
-        .add_entity_edge_undirected("user:alice", "user:bob", "friends")
-        .unwrap();
+    // Add edge between entities
+    let edge_id = add_edge(&graph, "user:alice", "user:bob", "follows");
 
-    assert!(!edge_key.is_empty());
+    assert!(edge_id > 0);
+
+    // Verify edge exists
+    let edge = graph.get_edge(edge_id).unwrap();
+    assert_eq!(edge.edge_type, "follows");
+}
+
+#[test]
+fn test_add_undirected_edge() {
+    let graph = create_graph();
+
+    // Add undirected edge
+    let edge_id = add_undirected_edge(&graph, "user:alice", "user:bob", "friends");
+
+    assert!(edge_id > 0);
 
     // Both directions should show neighbors
-    let alice_neighbors = graph.get_entity_neighbors("user:alice").unwrap();
-    let bob_neighbors = graph.get_entity_neighbors("user:bob").unwrap();
+    let alice_neighbors = get_neighbors_both(&graph, "user:alice");
+    let bob_neighbors = get_neighbors_both(&graph, "user:bob");
 
     assert!(alice_neighbors.contains(&"user:bob".to_string()));
     assert!(bob_neighbors.contains(&"user:alice".to_string()));
 }
 
 #[test]
-fn test_get_entity_neighbors_out() {
+fn test_get_neighbors_out() {
     let graph = create_graph();
 
     // Alice follows Bob and Carol
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    graph
-        .add_entity_edge("user:alice", "user:carol", "follows")
-        .unwrap();
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:alice", "user:carol", "follows");
 
     // Check outgoing neighbors
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
+    let neighbors = get_neighbors_out(&graph, "user:alice");
     assert_eq!(neighbors.len(), 2);
     assert!(neighbors.contains(&"user:bob".to_string()));
     assert!(neighbors.contains(&"user:carol".to_string()));
 
     // Bob has no outgoing edges
-    let bob_out = graph.get_entity_neighbors_out("user:bob").unwrap();
+    let bob_out = get_neighbors_out(&graph, "user:bob");
     assert!(bob_out.is_empty());
 }
 
 #[test]
-fn test_get_entity_neighbors_in() {
+fn test_get_neighbors_in() {
     let graph = create_graph();
 
     // Bob and Carol follow Alice
-    graph
-        .add_entity_edge("user:bob", "user:alice", "follows")
-        .unwrap();
-    graph
-        .add_entity_edge("user:carol", "user:alice", "follows")
-        .unwrap();
+    add_edge(&graph, "user:bob", "user:alice", "follows");
+    add_edge(&graph, "user:carol", "user:alice", "follows");
 
     // Check incoming neighbors
-    let neighbors = graph.get_entity_neighbors_in("user:alice").unwrap();
+    let neighbors = get_neighbors_in(&graph, "user:alice");
     assert_eq!(neighbors.len(), 2);
     assert!(neighbors.contains(&"user:bob".to_string()));
     assert!(neighbors.contains(&"user:carol".to_string()));
 
     // Bob has no incoming edges
-    let bob_in = graph.get_entity_neighbors_in("user:bob").unwrap();
+    let bob_in = get_neighbors_in(&graph, "user:bob");
     assert!(bob_in.is_empty());
 }
 
 #[test]
-fn test_get_entity_neighbors_both_directions() {
+fn test_get_neighbors_both() {
     let graph = create_graph();
 
-    // Alice -> Bob (Alice follows Bob)
-    // Carol -> Alice (Carol follows Alice)
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    graph
-        .add_entity_edge("user:carol", "user:alice", "follows")
-        .unwrap();
+    // Alice follows Bob, Carol follows Alice
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:carol", "user:alice", "follows");
 
-    // Alice has neighbors in both directions
-    let all_neighbors = graph.get_entity_neighbors("user:alice").unwrap();
-    assert_eq!(all_neighbors.len(), 2);
-    assert!(all_neighbors.contains(&"user:bob".to_string()));
-    assert!(all_neighbors.contains(&"user:carol".to_string()));
-}
-
-#[test]
-fn test_delete_entity_edge() {
-    let graph = create_graph();
-
-    // Add edge
-    let edge_key = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-
-    // Verify edge exists
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
-    assert_eq!(neighbors.len(), 1);
-
-    // Delete edge
-    graph.delete_entity_edge(&edge_key).unwrap();
-
-    // Verify edge is gone
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
-    assert!(neighbors.is_empty());
-}
-
-#[test]
-fn test_delete_entity_edge_nonexistent() {
-    let graph = create_graph();
-
-    // Deleting non-existent edge should fail
-    let result = graph.delete_entity_edge("nonexistent:edge:key");
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_multiple_edge_types_same_entities() {
-    let graph = create_graph();
-
-    // Add multiple edge types
-    let edge1 = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    let edge2 = graph
-        .add_entity_edge("user:alice", "user:bob", "mentions")
-        .unwrap();
-    let edge3 = graph
-        .add_entity_edge("user:alice", "user:bob", "likes")
-        .unwrap();
-
-    // All edge keys should be different
-    assert_ne!(edge1, edge2);
-    assert_ne!(edge2, edge3);
-    assert_ne!(edge1, edge3);
-
-    // Bob appears in neighbors
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
+    // Alice has both directions
+    let neighbors = get_neighbors_both(&graph, "user:alice");
+    assert_eq!(neighbors.len(), 2);
     assert!(neighbors.contains(&"user:bob".to_string()));
+    assert!(neighbors.contains(&"user:carol".to_string()));
 }
 
 #[test]
-fn test_entity_graph_traversal() {
+fn test_edge_details() {
     let graph = create_graph();
 
-    // Create a chain: A -> B -> C -> D
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    graph
-        .add_entity_edge("user:bob", "user:carol", "follows")
-        .unwrap();
-    graph
-        .add_entity_edge("user:carol", "user:dave", "follows")
-        .unwrap();
+    let edge_id = add_edge(&graph, "user:alice", "user:bob", "follows");
 
-    // Traverse from alice
-    let mut current = "user:alice".to_string();
-    let mut path = vec![current.clone()];
+    let edge = graph.get_edge(edge_id).unwrap();
+    assert_eq!(edge.edge_type, "follows");
 
-    for _ in 0..3 {
-        let neighbors = graph.get_entity_neighbors_out(&current).unwrap();
-        if neighbors.is_empty() {
-            break;
-        }
-        current = neighbors[0].clone();
-        path.push(current.clone());
-    }
-
-    assert_eq!(path.len(), 4);
-    assert_eq!(path[0], "user:alice");
-    assert_eq!(path[3], "user:dave");
+    // Verify nodes
+    let from_key = get_entity_key(&graph, edge.from).unwrap();
+    let to_key = get_entity_key(&graph, edge.to).unwrap();
+    assert_eq!(from_key, "user:alice");
+    assert_eq!(to_key, "user:bob");
 }
 
 #[test]
-fn test_entity_self_loop() {
+fn test_multiple_edge_types() {
     let graph = create_graph();
 
-    // Add self-loop
-    let edge_key = graph
-        .add_entity_edge("user:narcissist", "user:narcissist", "admires")
-        .unwrap();
-    assert!(!edge_key.is_empty());
+    // Same source/target with different edge types
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:alice", "user:bob", "mentions");
+    add_edge(&graph, "user:alice", "user:bob", "likes");
 
-    // Should appear in both in and out neighbors
-    let neighbors_out = graph.get_entity_neighbors_out("user:narcissist").unwrap();
-    let neighbors_in = graph.get_entity_neighbors_in("user:narcissist").unwrap();
+    // Alice has 3 outgoing edges to Bob
+    let alice_node = get_or_create_entity_node(&graph, "user:alice");
+    let edges = graph.edges_of(alice_node, Direction::Outgoing).unwrap();
+    assert_eq!(edges.len(), 3);
 
-    assert!(neighbors_out.contains(&"user:narcissist".to_string()));
-    assert!(neighbors_in.contains(&"user:narcissist".to_string()));
+    let edge_types: Vec<&str> = edges.iter().map(|e| e.edge_type.as_str()).collect();
+    assert!(edge_types.contains(&"follows"));
+    assert!(edge_types.contains(&"mentions"));
+    assert!(edge_types.contains(&"likes"));
 }
 
 #[test]
-fn test_concurrent_entity_edge_operations() {
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering},
-        thread,
-    };
+fn test_chain_navigation() {
+    let graph = create_graph();
+
+    // Alice -> Bob -> Carol -> Dave
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:bob", "user:carol", "follows");
+    add_edge(&graph, "user:carol", "user:dave", "follows");
+
+    // Navigate the chain
+    let alice_out = get_neighbors_out(&graph, "user:alice");
+    assert_eq!(alice_out, vec!["user:bob".to_string()]);
+
+    let bob_out = get_neighbors_out(&graph, "user:bob");
+    assert_eq!(bob_out, vec!["user:carol".to_string()]);
+
+    let carol_out = get_neighbors_out(&graph, "user:carol");
+    assert_eq!(carol_out, vec!["user:dave".to_string()]);
+
+    // End of chain
+    let dave_out = get_neighbors_out(&graph, "user:dave");
+    assert!(dave_out.is_empty());
+}
+
+#[test]
+fn test_self_loop() {
+    let graph = create_graph();
+
+    // Self-referential edge
+    add_edge(&graph, "user:narcissist", "user:narcissist", "admires");
+
+    let neighbors = get_neighbors_out(&graph, "user:narcissist");
+    assert_eq!(neighbors.len(), 1);
+    assert!(neighbors.contains(&"user:narcissist".to_string()));
+}
+
+#[test]
+fn test_concurrent_edge_creation() {
+    use std::thread;
 
     let graph = create_graph();
-    let success_count = Arc::new(AtomicUsize::new(0));
+    let hub_key = "hub:center";
 
-    let mut handles = vec![];
+    // Pre-create the hub node
+    get_or_create_entity_node(&graph, hub_key);
 
-    // 4 threads add edges to different targets (avoid race on single hub)
-    for t in 0..4 {
-        let graph = Arc::clone(&graph);
-        let counter = Arc::clone(&success_count);
-
-        handles.push(thread::spawn(move || {
-            for i in 0..5 {
-                let spoke_key = format!("spoke:t{}:{}", t, i);
-                let hub_key = format!("hub:{}", t); // Each thread has its own hub
-                if graph
-                    .add_entity_edge(&spoke_key, &hub_key, "connects")
-                    .is_ok()
-                {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-        }));
-    }
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let graph = Arc::clone(&graph);
+            let hub = hub_key.to_string();
+            thread::spawn(move || {
+                let spoke_key = format!("spoke:{}", i);
+                add_edge(&graph, &spoke_key, &hub, "connects");
+            })
+        })
+        .collect();
 
     for handle in handles {
         handle.join().unwrap();
     }
 
-    // All 20 edges should be created
-    assert_eq!(success_count.load(Ordering::SeqCst), 20);
-
-    // Each hub should have 5 incoming connections
-    for t in 0..4 {
-        let hub_key = format!("hub:{}", t);
-        let neighbors = graph.get_entity_neighbors_in(&hub_key).unwrap();
-        assert_eq!(neighbors.len(), 5);
-    }
-}
-
-#[test]
-fn test_entity_edge_delete_and_recreate() {
-    let graph = create_graph();
-
-    // Add, delete, add again
-    let edge1 = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    graph.delete_entity_edge(&edge1).unwrap();
-
-    let edge2 = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-
-    // Should work and be a different edge key
-    assert_ne!(edge1, edge2);
-
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
-    assert!(neighbors.contains(&"user:bob".to_string()));
-}
-
-#[test]
-fn test_entity_has_edges() {
-    let graph = create_graph();
-
-    // No edges initially (entity doesn't exist)
-    assert!(!graph.entity_has_edges("user:alice"));
-
-    // Add an edge
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-
-    // Now alice has edges
-    assert!(graph.entity_has_edges("user:alice"));
-}
-
-#[test]
-fn test_entity_bidirectional_edges() {
-    let graph = create_graph();
-
-    // Alice follows Bob
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-
-    // Bob follows Alice back
-    graph
-        .add_entity_edge("user:bob", "user:alice", "follows")
-        .unwrap();
-
-    // Both should see each other as neighbors
-    let alice_neighbors = graph.get_entity_neighbors("user:alice").unwrap();
-    let bob_neighbors = graph.get_entity_neighbors("user:bob").unwrap();
-
-    assert!(alice_neighbors.contains(&"user:bob".to_string()));
-    assert!(bob_neighbors.contains(&"user:alice".to_string()));
-}
-
-#[test]
-fn test_entity_neighbors_empty_entity() {
-    let graph = create_graph();
-
-    // Create an entity by having it as an edge target
-    graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-
-    // Alice has outgoing, Bob has incoming
-    let alice_out = graph.get_entity_neighbors_out("user:alice").unwrap();
-    let bob_out = graph.get_entity_neighbors_out("user:bob").unwrap();
-
-    assert_eq!(alice_out.len(), 1);
-    assert!(bob_out.is_empty());
-}
-
-#[test]
-fn test_entity_star_topology() {
-    let graph = create_graph();
-
-    // Create star topology with hub in center
-    for i in 0..10 {
-        graph
-            .add_entity_edge(&format!("spoke:{}", i), "hub:center", "connects")
-            .unwrap();
-    }
-
-    // Hub should have 10 incoming connections
-    let hub_in = graph.get_entity_neighbors_in("hub:center").unwrap();
+    // All spokes should connect to hub
+    let hub_in = get_neighbors_in(&graph, hub_key);
     assert_eq!(hub_in.len(), 10);
-
-    // Hub should have 0 outgoing connections
-    let hub_out = graph.get_entity_neighbors_out("hub:center").unwrap();
-    assert!(hub_out.is_empty());
-
-    // Each spoke should have 1 outgoing connection
-    for i in 0..10 {
-        let spoke_out = graph
-            .get_entity_neighbors_out(&format!("spoke:{}", i))
-            .unwrap();
-        assert_eq!(spoke_out.len(), 1);
-    }
 }
 
 #[test]
-fn test_entity_ring_topology() {
+fn test_duplicate_edges_allowed() {
     let graph = create_graph();
 
-    // Create ring: 0 -> 1 -> 2 -> 3 -> 4 -> 0
-    for i in 0..5 {
+    // Same edge twice is allowed (creates two edges)
+    let edge1 = add_edge(&graph, "user:alice", "user:bob", "follows");
+    let edge2 = add_edge(&graph, "user:alice", "user:bob", "follows");
+
+    // Should be different edge IDs
+    assert_ne!(edge1, edge2);
+}
+
+#[test]
+fn test_delete_edge() {
+    let graph = create_graph();
+
+    let edge_id = add_edge(&graph, "user:alice", "user:bob", "follows");
+
+    // Verify edge exists
+    assert!(graph.get_edge(edge_id).is_ok());
+
+    // Delete edge
+    graph.delete_edge(edge_id).unwrap();
+
+    // Verify edge is gone
+    assert!(graph.get_edge(edge_id).is_err());
+}
+
+#[test]
+fn test_bidirectional_edges() {
+    let graph = create_graph();
+
+    // Mutual follow
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:bob", "user:alice", "follows");
+
+    // Check both directions
+    let alice_out = get_neighbors_out(&graph, "user:alice");
+    let alice_in = get_neighbors_in(&graph, "user:alice");
+
+    assert!(alice_out.contains(&"user:bob".to_string()));
+    assert!(alice_in.contains(&"user:bob".to_string()));
+}
+
+#[test]
+fn test_edge_with_properties() {
+    let graph = create_graph();
+
+    let from_node = get_or_create_entity_node(&graph, "user:alice");
+    let to_node = get_or_create_entity_node(&graph, "user:bob");
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(0.8));
+    props.insert(
+        "created".to_string(),
+        PropertyValue::String("2024-01-01".to_string()),
+    );
+
+    let edge_id = graph
+        .create_edge(from_node, to_node, "follows", props, true)
+        .unwrap();
+
+    let edge = graph.get_edge(edge_id).unwrap();
+    assert_eq!(
+        edge.properties.get("weight"),
+        Some(&PropertyValue::Float(0.8))
+    );
+}
+
+#[test]
+fn test_many_edges_performance() {
+    let graph = create_graph();
+
+    // Create 100 edges from hub to spokes
+    for i in 0..100 {
+        add_edge(&graph, "hub:center", &format!("spoke:{}", i), "connects");
+    }
+
+    // Query should be fast
+    let neighbors = get_neighbors_out(&graph, "hub:center");
+    assert_eq!(neighbors.len(), 100);
+}
+
+#[test]
+fn test_long_chain() {
+    let graph = create_graph();
+
+    // Create a chain: node:0 -> node:1 -> ... -> node:99
+    for i in 0..99 {
         let from = format!("node:{}", i);
-        let to = format!("node:{}", (i + 1) % 5);
-        graph.add_entity_edge(&from, &to, "next").unwrap();
+        let to = format!("node:{}", i + 1);
+        add_edge(&graph, &from, &to, "next");
     }
 
-    // Each node should have 1 in and 1 out
-    for i in 0..5 {
-        let key = format!("node:{}", i);
-        let neighbors_out = graph.get_entity_neighbors_out(&key).unwrap();
-        let neighbors_in = graph.get_entity_neighbors_in(&key).unwrap();
+    // Verify first link
+    let first_out = get_neighbors_out(&graph, "node:0");
+    assert_eq!(first_out, vec!["node:1".to_string()]);
 
-        assert_eq!(neighbors_out.len(), 1);
-        assert_eq!(neighbors_in.len(), 1);
-    }
+    // Verify last link
+    let last_in = get_neighbors_in(&graph, "node:99");
+    assert_eq!(last_in, vec!["node:98".to_string()]);
 }
 
 #[test]
-fn test_entity_delete_preserves_other_edges() {
+fn test_node_with_many_edge_types() {
     let graph = create_graph();
 
-    // Create multiple edges from alice
-    let edge1 = graph
-        .add_entity_edge("user:alice", "user:bob", "follows")
-        .unwrap();
-    let _edge2 = graph
-        .add_entity_edge("user:alice", "user:carol", "follows")
-        .unwrap();
-    let _edge3 = graph
-        .add_entity_edge("user:alice", "user:dave", "follows")
-        .unwrap();
+    // Alice has different relationships with different people
+    add_edge(&graph, "user:alice", "user:bob", "follows");
+    add_edge(&graph, "user:alice", "user:carol", "follows");
+    add_edge(&graph, "user:alice", "user:dave", "follows");
 
-    // Delete one edge
-    graph.delete_entity_edge(&edge1).unwrap();
-
-    // Should still have 2 neighbors
-    let neighbors = graph.get_entity_neighbors_out("user:alice").unwrap();
-    assert_eq!(neighbors.len(), 2);
+    let neighbors = get_neighbors_out(&graph, "user:alice");
+    assert_eq!(neighbors.len(), 3);
+    assert!(neighbors.contains(&"user:bob".to_string()));
     assert!(neighbors.contains(&"user:carol".to_string()));
     assert!(neighbors.contains(&"user:dave".to_string()));
-    assert!(!neighbors.contains(&"user:bob".to_string()));
 }

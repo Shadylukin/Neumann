@@ -799,6 +799,27 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "graph_index_ops"
+path = "fuzz_targets/graph_index_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_aggregation"
+path = "fuzz_targets/graph_aggregation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graph_degree"
+path = "fuzz_targets/graph_degree.rs"
+test = false
+doc = false
+bench = false
+
 # Tier 40: Vector engine targets
 
 [[bin]]

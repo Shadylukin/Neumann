@@ -1,13 +1,117 @@
 //! Graph-based access control using topological path verification.
 
 use std::collections::{HashSet, VecDeque};
+#[cfg(test)]
+use std::collections::HashMap;
 
-use graph_engine::GraphEngine;
+use graph_engine::{Direction, GraphEngine, PropertyValue};
 
 use crate::Permission;
 
 /// Access controller using graph topology for authorization.
 pub struct AccessController;
+
+// ========== Node-based Graph API Helpers ==========
+// These functions provide a string-key interface on top of the node-based graph API.
+
+/// Ensure the entity_key index exists.
+fn ensure_entity_key_index(graph: &GraphEngine) {
+    // Create index if it doesn't exist (idempotent operation)
+    let _ = graph.create_node_property_index("entity_key");
+}
+
+/// Get or create a graph node for an entity key (test helper).
+#[cfg(test)]
+fn get_or_create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
+    ensure_entity_key_index(graph);
+
+    if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+        if let Some(node) = nodes.first() {
+            return node.id;
+        }
+    }
+
+    let mut props = HashMap::new();
+    props.insert(
+        "entity_key".to_string(),
+        PropertyValue::String(entity_key.to_string()),
+    );
+    graph.create_node("AccessEntity", props).unwrap_or(0)
+}
+
+/// Find node by entity key without creating.
+fn find_entity_node(graph: &GraphEngine, entity_key: &str) -> Option<u64> {
+    ensure_entity_key_index(graph);
+    graph
+        .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+        .ok()
+        .and_then(|nodes| nodes.first().map(|n| n.id))
+}
+
+/// Get the entity key for a node ID.
+fn get_entity_key(graph: &GraphEngine, node_id: u64) -> Option<String> {
+    graph.get_node(node_id).ok().and_then(|node| {
+        if let Some(PropertyValue::String(key)) = node.properties.get("entity_key") {
+            Some(key.clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Get outgoing edges for an entity, returning (target_key, edge_type).
+fn get_outgoing_edges(graph: &GraphEngine, entity_key: &str) -> Vec<(String, String)> {
+    let Some(node_id) = find_entity_node(graph, entity_key) else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    if let Ok(edges) = graph.edges_of(node_id, Direction::Outgoing) {
+        for edge in edges {
+            let target_id = if edge.from == node_id {
+                edge.to
+            } else {
+                edge.from
+            };
+            if let Some(target_key) = get_entity_key(graph, target_id) {
+                result.push((target_key, edge.edge_type.clone()));
+            }
+        }
+    }
+    result
+}
+
+/// Get incoming edges for an entity, returning (source_key, edge_type).
+fn get_incoming_edges(graph: &GraphEngine, entity_key: &str) -> Vec<(String, String)> {
+    let Some(node_id) = find_entity_node(graph, entity_key) else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    if let Ok(edges) = graph.edges_of(node_id, Direction::Incoming) {
+        for edge in edges {
+            let source_id = if edge.to == node_id {
+                edge.from
+            } else {
+                edge.to
+            };
+            if let Some(source_key) = get_entity_key(graph, source_id) {
+                result.push((source_key, edge.edge_type.clone()));
+            }
+        }
+    }
+    result
+}
+
+/// Add an edge between two entity keys (test helper).
+#[cfg(test)]
+fn add_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) -> u64 {
+    let from_node = get_or_create_entity_node(graph, from_key);
+    let to_node = get_or_create_entity_node(graph, to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+        .unwrap_or(0)
+}
 
 /// Edge type prefix for vault access grants.
 const VAULT_ACCESS_PREFIX: &str = "VAULT_ACCESS";
@@ -50,24 +154,19 @@ impl AccessController {
         visited.insert(source.to_string());
 
         while let Some(current) = queue.pop_front() {
-            // Get outgoing edges to check their types
-            if let Ok(outgoing) = graph.get_entity_outgoing(&current) {
-                for edge_key in outgoing {
-                    if let Ok((_, to, edge_type, _)) = graph.get_entity_edge(&edge_key) {
-                        // Only traverse allowed edge types
-                        if !is_allowed_edge_type(&edge_type) {
-                            continue;
-                        }
+            for (to, edge_type) in get_outgoing_edges(graph, &current) {
+                // Only traverse allowed edge types
+                if !is_allowed_edge_type(&edge_type) {
+                    continue;
+                }
 
-                        if to == target {
-                            return true;
-                        }
+                if to == target {
+                    return true;
+                }
 
-                        if !visited.contains(&to) {
-                            visited.insert(to.clone());
-                            queue.push_back(to);
-                        }
-                    }
+                if !visited.contains(&to) {
+                    visited.insert(to.clone());
+                    queue.push_back(to);
                 }
             }
         }
@@ -79,13 +178,9 @@ impl AccessController {
     pub fn get_direct_accessors(graph: &GraphEngine, target: &str) -> Vec<String> {
         let mut accessors = Vec::new();
 
-        if let Ok(incoming) = graph.get_entity_incoming(target) {
-            for edge_key in incoming {
-                if let Ok((from, _, edge_type, _)) = graph.get_entity_edge(&edge_key) {
-                    if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
-                        accessors.push(from);
-                    }
-                }
+        for (from, edge_type) in get_incoming_edges(graph, target) {
+            if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
+                accessors.push(from);
             }
         }
 
@@ -117,36 +212,31 @@ impl AccessController {
         visited.insert(source.to_string());
 
         while let Some(current) = queue.pop_front() {
-            // Get outgoing edges to check their types
-            if let Ok(outgoing) = graph.get_entity_outgoing(&current) {
-                for edge_key in outgoing {
-                    if let Ok((_, to, edge_type, _)) = graph.get_entity_edge(&edge_key) {
-                        // Only traverse allowed edge types
-                        if !is_allowed_edge_type(&edge_type) {
-                            continue;
-                        }
+            for (to, edge_type) in get_outgoing_edges(graph, &current) {
+                // Only traverse allowed edge types
+                if !is_allowed_edge_type(&edge_type) {
+                    continue;
+                }
 
-                        // SECURITY FIX: Only VAULT_ACCESS_* edges can grant permission
-                        // MEMBER edges allow traversal but do NOT grant permission to target
-                        if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
-                            if to == target {
-                                // Found target via VAULT_ACCESS edge - extract permission
-                                if let Some(perm) = Permission::from_edge_type(&edge_type) {
-                                    best_permission = Some(match best_permission {
-                                        None => perm,
-                                        Some(existing) => Self::max_permission(existing, perm),
-                                    });
-                                }
-                            }
-                            // Don't continue traversal past VAULT_ACCESS edges
-                            // (they point to secrets, not to groups)
-                        } else {
-                            // MEMBER edge - allow traversal but no permission granted
-                            if !visited.contains(&to) {
-                                visited.insert(to.clone());
-                                queue.push_back(to);
-                            }
+                // SECURITY FIX: Only VAULT_ACCESS_* edges can grant permission
+                // MEMBER edges allow traversal but do NOT grant permission to target
+                if edge_type.starts_with(VAULT_ACCESS_PREFIX) {
+                    if to == target {
+                        // Found target via VAULT_ACCESS edge - extract permission
+                        if let Some(perm) = Permission::from_edge_type(&edge_type) {
+                            best_permission = Some(match best_permission {
+                                None => perm,
+                                Some(existing) => Self::max_permission(existing, perm),
+                            });
                         }
+                    }
+                    // Don't continue traversal past VAULT_ACCESS edges
+                    // (they point to secrets, not to groups)
+                } else {
+                    // MEMBER edge - allow traversal but no permission granted
+                    if !visited.contains(&to) {
+                        visited.insert(to.clone());
+                        queue.push_back(to);
                     }
                 }
             }
@@ -184,6 +274,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_node_creation_and_lookup() {
+        let graph = GraphEngine::new();
+
+        // Create a node
+        let node_id = get_or_create_entity_node(&graph, "test:entity");
+        assert!(node_id > 0, "Node should be created with positive ID");
+
+        // Verify we can find it again
+        let found = find_entity_node(&graph, "test:entity");
+        assert_eq!(found, Some(node_id), "Should find the same node");
+
+        // Verify the property is set correctly
+        let node = graph.get_node(node_id).expect("Should get node");
+        let key = node.properties.get("entity_key");
+        assert_eq!(
+            key,
+            Some(&PropertyValue::String("test:entity".to_string())),
+            "Node should have correct entity_key property"
+        );
+    }
+
+    #[test]
+    fn test_edge_creation_and_lookup() {
+        let graph = GraphEngine::new();
+
+        // Create edge
+        let edge_id = add_edge(&graph, "from:a", "to:b", "TEST_EDGE");
+        assert!(edge_id > 0, "Edge should be created");
+
+        // Verify outgoing edges
+        let outgoing = get_outgoing_edges(&graph, "from:a");
+        assert_eq!(outgoing.len(), 1, "Should have 1 outgoing edge");
+        assert_eq!(outgoing[0].0, "to:b", "Target should be to:b");
+        assert_eq!(outgoing[0].1, "TEST_EDGE", "Edge type should be TEST_EDGE");
+    }
+
+    #[test]
     fn test_same_node() {
         let graph = GraphEngine::new();
 
@@ -198,9 +325,7 @@ mod tests {
     fn test_direct_path() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:api_key", "VAULT_ACCESS")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:api_key", "VAULT_ACCESS");
 
         assert!(AccessController::check_path(
             &graph,
@@ -219,12 +344,8 @@ mod tests {
         let graph = GraphEngine::new();
 
         // alice -> team -> secret
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:api_key", "VAULT_ACCESS")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:api_key", "VAULT_ACCESS");
 
         assert!(AccessController::check_path(
             &graph,
@@ -237,12 +358,8 @@ mod tests {
     fn test_no_path() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:one", "VAULT_ACCESS")
-            .unwrap();
-        graph
-            .add_entity_edge("user:bob", "secret:two", "VAULT_ACCESS")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:one", "VAULT_ACCESS");
+        add_edge(&graph, "user:bob", "secret:two", "VAULT_ACCESS");
 
         assert!(!AccessController::check_path(
             &graph,
@@ -256,9 +373,9 @@ mod tests {
         let graph = GraphEngine::new();
 
         // Create a cycle: a -> b -> c -> a using allowed MEMBER edges
-        graph.add_entity_edge("node:a", "node:b", "MEMBER").unwrap();
-        graph.add_entity_edge("node:b", "node:c", "MEMBER").unwrap();
-        graph.add_entity_edge("node:c", "node:a", "MEMBER").unwrap();
+        add_edge(&graph, "node:a", "node:b", "MEMBER");
+        add_edge(&graph, "node:b", "node:c", "MEMBER");
+        add_edge(&graph, "node:c", "node:a", "MEMBER");
 
         // Should not hang, should find path
         assert!(AccessController::check_path(&graph, "node:a", "node:c"));
@@ -273,9 +390,7 @@ mod tests {
 
         // Create a long chain: node:0 -> node:1 -> ... -> node:10 using allowed MEMBER edges
         for i in 0..10 {
-            graph
-                .add_entity_edge(&format!("node:{i}"), &format!("node:{}", i + 1), "MEMBER")
-                .unwrap();
+            add_edge(&graph, &format!("node:{i}"), &format!("node:{}", i + 1), "MEMBER");
         }
 
         // Forward direction works
@@ -289,9 +404,7 @@ mod tests {
         let graph = GraphEngine::new();
 
         // Create path using disallowed edge type
-        graph
-            .add_entity_edge("node:a", "node:b", "RANDOM_EDGE")
-            .unwrap();
+        add_edge(&graph, "node:a", "node:b", "RANDOM_EDGE");
 
         // Path should NOT be found because RANDOM_EDGE is not allowlisted
         assert!(!AccessController::check_path(&graph, "node:a", "node:b"));
@@ -301,7 +414,7 @@ mod tests {
     fn test_directional_path() {
         let graph = GraphEngine::new();
 
-        graph.add_entity_edge("node:a", "node:b", "MEMBER").unwrap();
+        add_edge(&graph, "node:a", "node:b", "MEMBER");
 
         // Only forward direction works (a -> b)
         assert!(AccessController::check_path(&graph, "node:a", "node:b"));
@@ -313,15 +426,9 @@ mod tests {
     fn test_get_direct_accessors() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS")
-            .unwrap();
-        graph
-            .add_entity_edge("user:bob", "secret:key", "VAULT_ACCESS")
-            .unwrap();
-        graph
-            .add_entity_edge("user:carol", "secret:key", "OTHER_EDGE")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS");
+        add_edge(&graph, "user:bob", "secret:key", "VAULT_ACCESS");
+        add_edge(&graph, "user:carol", "secret:key", "OTHER_EDGE");
 
         let accessors = AccessController::get_direct_accessors(&graph, "secret:key");
 
@@ -348,9 +455,7 @@ mod tests {
 
         let graph = Arc::new(GraphEngine::new());
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS");
 
         let handles: Vec<_> = (0..4)
             .map(|_| {
@@ -376,9 +481,7 @@ mod tests {
     fn test_permission_level_direct_read() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_READ");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Read));
@@ -388,9 +491,7 @@ mod tests {
     fn test_permission_level_direct_write() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_WRITE")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_WRITE");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Write));
@@ -400,9 +501,7 @@ mod tests {
     fn test_permission_level_direct_admin() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_ADMIN")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_ADMIN");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Admin));
@@ -413,9 +512,7 @@ mod tests {
         let graph = GraphEngine::new();
 
         // Old-style VAULT_ACCESS edge should be treated as Admin
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Admin));
@@ -427,12 +524,8 @@ mod tests {
 
         // alice -> team (MEMBER) -> secret (VAULT_ACCESS_READ)
         // The path gives Alice only Read permission via the chain
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:key", "VAULT_ACCESS_READ");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Read));
@@ -446,15 +539,9 @@ mod tests {
         // Path 1: alice -> secret (VAULT_ACCESS_READ)
         // Path 2: alice -> team -> secret (VAULT_ACCESS_ADMIN)
         // Should get Admin (best of both)
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:key", "VAULT_ACCESS_ADMIN")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_READ");
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:key", "VAULT_ACCESS_ADMIN");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Admin));
@@ -464,9 +551,7 @@ mod tests {
     fn test_permission_level_no_path() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:bob", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:bob", "secret:key", "VAULT_ACCESS_READ");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, None);
@@ -476,9 +561,7 @@ mod tests {
     fn test_check_path_with_permission_read_ok() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_READ");
 
         assert!(AccessController::check_path_with_permission(
             &graph,
@@ -492,9 +575,7 @@ mod tests {
     fn test_check_path_with_permission_read_denied_write() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_READ");
 
         // Read permission doesn't allow Write
         assert!(!AccessController::check_path_with_permission(
@@ -509,9 +590,7 @@ mod tests {
     fn test_check_path_with_permission_write_allows_read() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_WRITE")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_WRITE");
 
         // Write permission allows Read
         assert!(AccessController::check_path_with_permission(
@@ -526,9 +605,7 @@ mod tests {
     fn test_check_path_with_permission_admin_allows_all() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_ADMIN")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_ADMIN");
 
         assert!(AccessController::check_path_with_permission(
             &graph,
@@ -554,15 +631,9 @@ mod tests {
     fn test_get_direct_accessors_with_permission_levels() {
         let graph = GraphEngine::new();
 
-        graph
-            .add_entity_edge("user:alice", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
-        graph
-            .add_entity_edge("user:bob", "secret:key", "VAULT_ACCESS_WRITE")
-            .unwrap();
-        graph
-            .add_entity_edge("user:carol", "secret:key", "VAULT_ACCESS_ADMIN")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "VAULT_ACCESS_READ");
+        add_edge(&graph, "user:bob", "secret:key", "VAULT_ACCESS_WRITE");
+        add_edge(&graph, "user:carol", "secret:key", "VAULT_ACCESS_ADMIN");
 
         let accessors = AccessController::get_direct_accessors(&graph, "secret:key");
 
@@ -579,9 +650,7 @@ mod tests {
         let graph = GraphEngine::new();
 
         // SECURITY: MEMBER edge directly to secret should NOT grant permission
-        graph
-            .add_entity_edge("user:alice", "secret:key", "MEMBER")
-            .unwrap();
+        add_edge(&graph, "user:alice", "secret:key", "MEMBER");
 
         // Should return None - no VAULT_ACCESS_* edge to secret
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
@@ -594,12 +663,8 @@ mod tests {
 
         // alice -> team (MEMBER) -> secret (MEMBER)
         // SECURITY: This should NOT grant any permission
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:key", "MEMBER")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:key", "MEMBER");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, None);
@@ -611,12 +676,8 @@ mod tests {
 
         // alice -> team (MEMBER) -> secret (VAULT_ACCESS_WRITE)
         // Should grant Write permission via the chain
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:key", "VAULT_ACCESS_WRITE")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:key", "VAULT_ACCESS_WRITE");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Write));
@@ -629,18 +690,10 @@ mod tests {
         // alice -> team1 (MEMBER) -> secret (MEMBER) - no permission
         // alice -> team2 (MEMBER) -> secret (VAULT_ACCESS_READ) - Read permission
         // Should get Read from the valid path
-        graph
-            .add_entity_edge("user:alice", "team:team1", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:team1", "secret:key", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("user:alice", "team:team2", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:team2", "secret:key", "VAULT_ACCESS_READ")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:team1", "MEMBER");
+        add_edge(&graph, "team:team1", "secret:key", "MEMBER");
+        add_edge(&graph, "user:alice", "team:team2", "MEMBER");
+        add_edge(&graph, "team:team2", "secret:key", "VAULT_ACCESS_READ");
 
         let perm = AccessController::get_permission_level(&graph, "user:alice", "secret:key");
         assert_eq!(perm, Some(Permission::Read));
@@ -651,12 +704,8 @@ mod tests {
         let graph = GraphEngine::new();
 
         // check_path (for path existence) should still work with MEMBER edges
-        graph
-            .add_entity_edge("user:alice", "team:devs", "MEMBER")
-            .unwrap();
-        graph
-            .add_entity_edge("team:devs", "secret:key", "MEMBER")
-            .unwrap();
+        add_edge(&graph, "user:alice", "team:devs", "MEMBER");
+        add_edge(&graph, "team:devs", "secret:key", "MEMBER");
 
         // Path exists (MEMBER edges connect the nodes)
         assert!(AccessController::check_path(

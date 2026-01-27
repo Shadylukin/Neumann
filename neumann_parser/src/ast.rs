@@ -514,6 +514,8 @@ pub enum PathAlgorithm {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbedStmt {
     pub operation: EmbedOp,
+    /// Optional collection name (e.g., `IN my_collection`).
+    pub collection: Option<String>,
 }
 
 /// EMBED operations.
@@ -539,6 +541,10 @@ pub struct SimilarStmt {
     pub metric: Option<DistanceMetric>,
     /// Optional CONNECTED TO constraint for cross-engine queries
     pub connected_to: Option<Expr>,
+    /// Optional collection name (e.g., `IN my_collection`).
+    pub collection: Option<String>,
+    /// Optional WHERE clause for filtered search.
+    pub where_clause: Option<Box<Expr>>,
 }
 
 /// Query for SIMILAR search.
@@ -610,6 +616,16 @@ pub enum EntityOp {
         to_key: Expr,
         edge_type: Ident,
     },
+    /// Batch create entities: `ENTITY BATCH CREATE [{key: 'k1', props...}, ...]`
+    Batch { entities: Vec<BatchEntityDef> },
+}
+
+/// Batch entity definition for ENTITY BATCH CREATE.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchEntityDef {
+    pub key: Expr,
+    pub properties: Vec<Property>,
+    pub embedding: Option<Vec<Expr>>,
 }
 
 // =============================================================================
@@ -1255,17 +1271,16 @@ pub enum BinaryOp {
 impl BinaryOp {
     /// Returns the precedence of this operator (higher = binds tighter).
     pub const fn precedence(self) -> u8 {
-        use BinaryOp::*;
         match self {
-            Or => 1,
-            And => 2,
-            Eq | Ne | Lt | Le | Gt | Ge => 3,
-            BitOr => 4,
-            BitXor => 5,
-            BitAnd => 6,
-            Shl | Shr => 7,
-            Add | Sub | Concat => 8,
-            Mul | Div | Mod => 9,
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge => 3,
+            Self::BitOr => 4,
+            Self::BitXor => 5,
+            Self::BitAnd => 6,
+            Self::Shl | Self::Shr => 7,
+            Self::Add | Self::Sub | Self::Concat => 8,
+            Self::Mul | Self::Div | Self::Mod => 9,
         }
     }
 
@@ -1277,29 +1292,28 @@ impl BinaryOp {
 
 impl fmt::Display for BinaryOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use BinaryOp::*;
         let s = match self {
-            Add => "+",
-            Sub => "-",
-            Mul => "*",
-            Div => "/",
-            Mod => "%",
-            Eq => "=",
-            Ne => "!=",
-            Lt => "<",
-            Le => "<=",
-            Gt => ">",
-            Ge => ">=",
-            And => "AND",
-            Or => "OR",
-            Concat => "||",
-            BitAnd => "&",
-            BitOr => "|",
-            BitXor => "^",
-            Shl => "<<",
-            Shr => ">>",
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Mod => "%",
+            Self::Eq => "=",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::And => "AND",
+            Self::Or => "OR",
+            Self::Concat => "||",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::BitXor => "^",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1314,11 +1328,11 @@ pub enum UnaryOp {
 impl fmt::Display for UnaryOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            UnaryOp::Not => "NOT",
-            UnaryOp::Neg => "-",
-            UnaryOp::BitNot => "~",
+            Self::Not => "NOT",
+            Self::Neg => "-",
+            Self::BitNot => "~",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1367,21 +1381,21 @@ impl fmt::Display for DataType {
             DataType::Double => write!(f, "DOUBLE"),
             DataType::Real => write!(f, "REAL"),
             DataType::Decimal(p, s) => match (p, s) {
-                (Some(p), Some(s)) => write!(f, "DECIMAL({}, {})", p, s),
-                (Some(p), None) => write!(f, "DECIMAL({})", p),
+                (Some(p), Some(s)) => write!(f, "DECIMAL({p}, {s})"),
+                (Some(p), None) => write!(f, "DECIMAL({p})"),
                 _ => write!(f, "DECIMAL"),
             },
             DataType::Numeric(p, s) => match (p, s) {
-                (Some(p), Some(s)) => write!(f, "NUMERIC({}, {})", p, s),
-                (Some(p), None) => write!(f, "NUMERIC({})", p),
+                (Some(p), Some(s)) => write!(f, "NUMERIC({p}, {s})"),
+                (Some(p), None) => write!(f, "NUMERIC({p})"),
                 _ => write!(f, "NUMERIC"),
             },
             DataType::Varchar(n) => match n {
-                Some(n) => write!(f, "VARCHAR({})", n),
+                Some(n) => write!(f, "VARCHAR({n})"),
                 None => write!(f, "VARCHAR"),
             },
             DataType::Char(n) => match n {
-                Some(n) => write!(f, "CHAR({})", n),
+                Some(n) => write!(f, "CHAR({n})"),
                 None => write!(f, "CHAR"),
             },
             DataType::Text => write!(f, "TEXT"),
@@ -1390,7 +1404,7 @@ impl fmt::Display for DataType {
             DataType::Time => write!(f, "TIME"),
             DataType::Timestamp => write!(f, "TIMESTAMP"),
             DataType::Blob => write!(f, "BLOB"),
-            DataType::Custom(name) => write!(f, "{}", name),
+            DataType::Custom(name) => write!(f, "{name}"),
         }
     }
 }
@@ -1398,14 +1412,14 @@ impl fmt::Display for DataType {
 impl fmt::Display for JoinKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            JoinKind::Inner => "INNER JOIN",
-            JoinKind::Left => "LEFT JOIN",
-            JoinKind::Right => "RIGHT JOIN",
-            JoinKind::Full => "FULL JOIN",
-            JoinKind::Cross => "CROSS JOIN",
-            JoinKind::Natural => "NATURAL JOIN",
+            Self::Inner => "INNER JOIN",
+            Self::Left => "LEFT JOIN",
+            Self::Right => "RIGHT JOIN",
+            Self::Full => "FULL JOIN",
+            Self::Cross => "CROSS JOIN",
+            Self::Natural => "NATURAL JOIN",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1441,11 +1455,14 @@ impl fmt::Display for DistanceMetric {
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Literal::Null => write!(f, "NULL"),
-            Literal::Boolean(b) => write!(f, "{}", if *b { "TRUE" } else { "FALSE" }),
-            Literal::Integer(n) => write!(f, "{}", n),
-            Literal::Float(n) => write!(f, "{}", n),
-            Literal::String(s) => write!(f, "'{}'", s.replace('\'', "''")),
+            Self::Null => write!(f, "NULL"),
+            Self::Boolean(b) => write!(f, "{}", if *b { "TRUE" } else { "FALSE" }),
+            Self::Integer(n) => write!(f, "{n}"),
+            Self::Float(n) => write!(f, "{n}"),
+            Self::String(s) => {
+                let escaped = s.replace('\'', "''");
+                write!(f, "'{escaped}'")
+            },
         }
     }
 }

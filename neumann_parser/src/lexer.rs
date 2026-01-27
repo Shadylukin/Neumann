@@ -9,6 +9,9 @@
 //! - Comments (-- and /* */)
 //! - Whitespace (skipped)
 
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::manual_let_else)]
+
 use std::str::Chars;
 
 use crate::{
@@ -206,12 +209,12 @@ impl<'a> Lexer<'a> {
         let kind = if is_float || has_exponent {
             match text.parse::<f64>() {
                 Ok(n) => TokenKind::Float(n),
-                Err(e) => TokenKind::Error(format!("invalid float: {}", e)),
+                Err(e) => TokenKind::Error(format!("invalid float: {e}")),
             }
         } else {
             match text.parse::<i64>() {
                 Ok(n) => TokenKind::Integer(n),
-                Err(e) => TokenKind::Error(format!("invalid integer: {}", e)),
+                Err(e) => TokenKind::Error(format!("invalid integer: {e}")),
             }
         };
 
@@ -405,7 +408,7 @@ impl<'a> Lexer<'a> {
             '$' => Token::new(TokenKind::Dollar, Span::from_offsets(start, self.pos)),
 
             _ => Token::new(
-                TokenKind::Error(format!("unexpected character: '{}'", c)),
+                TokenKind::Error(format!("unexpected character: '{c}'")),
                 Span::from_offsets(start, self.pos),
             ),
         }

@@ -762,7 +762,7 @@ pub struct AggregateResult {
 
 impl AggregateResult {
     #[must_use]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             count: 0,
             sum: None,
@@ -772,8 +772,9 @@ impl AggregateResult {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn count_only(count: u64) -> Self {
+    pub(crate) fn count_only(count: u64) -> Self {
         Self {
             count,
             sum: None,
@@ -787,6 +788,126 @@ impl AggregateResult {
 impl Default for AggregateResult {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+// ========== Graph Engine Configuration ==========
+
+/// Configuration for `GraphEngine` runtime behavior.
+#[derive(Debug, Clone)]
+pub struct GraphEngineConfig {
+    /// Default limit for pattern matching results.
+    pub default_match_limit: usize,
+    /// Threshold for parallel processing of pattern matches.
+    pub pattern_parallel_threshold: usize,
+    /// Maximum hops for variable-length edge patterns.
+    pub max_variable_length_hops: usize,
+    /// Default damping factor for `PageRank`.
+    pub pagerank_default_damping: f64,
+    /// Default convergence tolerance for `PageRank`.
+    pub pagerank_default_tolerance: f64,
+    /// Default max iterations for `PageRank`.
+    pub pagerank_default_max_iterations: usize,
+    /// Threshold for parallel centrality computation.
+    pub centrality_parallel_threshold: usize,
+    /// Maximum passes for community detection.
+    pub community_max_passes: usize,
+    /// Maximum iterations for label propagation.
+    pub label_propagation_max_iterations: usize,
+    /// Number of striped locks for index operations.
+    pub index_lock_count: usize,
+    /// Maximum memory (bytes) for path search before truncation.
+    pub max_path_search_memory_bytes: usize,
+}
+
+impl Default for GraphEngineConfig {
+    fn default() -> Self {
+        Self {
+            default_match_limit: 1000,
+            pattern_parallel_threshold: 100,
+            max_variable_length_hops: 20,
+            pagerank_default_damping: 0.85,
+            pagerank_default_tolerance: 1e-6,
+            pagerank_default_max_iterations: 100,
+            centrality_parallel_threshold: 100,
+            community_max_passes: 10,
+            label_propagation_max_iterations: 100,
+            index_lock_count: 64,
+            max_path_search_memory_bytes: 100 * 1024 * 1024,
+        }
+    }
+}
+
+impl GraphEngineConfig {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn default_match_limit(mut self, limit: usize) -> Self {
+        self.default_match_limit = limit;
+        self
+    }
+
+    #[must_use]
+    pub fn pattern_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.pattern_parallel_threshold = threshold;
+        self
+    }
+
+    #[must_use]
+    pub fn max_variable_length_hops(mut self, max_hops: usize) -> Self {
+        self.max_variable_length_hops = max_hops;
+        self
+    }
+
+    #[must_use]
+    pub fn pagerank_default_damping(mut self, damping: f64) -> Self {
+        self.pagerank_default_damping = damping;
+        self
+    }
+
+    #[must_use]
+    pub fn pagerank_default_tolerance(mut self, tolerance: f64) -> Self {
+        self.pagerank_default_tolerance = tolerance;
+        self
+    }
+
+    #[must_use]
+    pub fn pagerank_default_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.pagerank_default_max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn centrality_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.centrality_parallel_threshold = threshold;
+        self
+    }
+
+    #[must_use]
+    pub fn community_max_passes(mut self, max_passes: usize) -> Self {
+        self.community_max_passes = max_passes;
+        self
+    }
+
+    #[must_use]
+    pub fn label_propagation_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.label_propagation_max_iterations = max_iterations;
+        self
+    }
+
+    #[must_use]
+    pub fn index_lock_count(mut self, count: usize) -> Self {
+        self.index_lock_count = count.max(1);
+        self
+    }
+
+    #[must_use]
+    pub fn max_path_search_memory_bytes(mut self, bytes: usize) -> Self {
+        self.max_path_search_memory_bytes = bytes;
+        self
     }
 }
 
@@ -978,7 +1099,8 @@ impl PathPattern {
         self
     }
 
-    pub fn node_patterns(&self) -> impl Iterator<Item = &NodePattern> {
+    #[allow(dead_code)]
+    pub(crate) fn node_patterns(&self) -> impl Iterator<Item = &NodePattern> {
         self.elements.iter().filter_map(|e| {
             if let PatternElement::Node(np) = e {
                 Some(np)
@@ -988,7 +1110,8 @@ impl PathPattern {
         })
     }
 
-    pub fn edge_patterns(&self) -> impl Iterator<Item = &EdgePattern> {
+    #[allow(dead_code)]
+    pub(crate) fn edge_patterns(&self) -> impl Iterator<Item = &EdgePattern> {
         self.elements.iter().filter_map(|e| {
             if let PatternElement::Edge(ep) = e {
                 Some(ep)
@@ -1119,7 +1242,7 @@ pub struct PatternMatchResult {
 
 impl PatternMatchResult {
     #[must_use]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             matches: Vec::new(),
             stats: PatternMatchStats::default(),
@@ -1224,7 +1347,7 @@ pub struct PageRankResult {
 
 impl PageRankResult {
     #[must_use]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             scores: HashMap::new(),
             iterations: 0,
@@ -1327,7 +1450,7 @@ pub struct CentralityResult {
 
 impl CentralityResult {
     #[must_use]
-    pub fn empty(centrality_type: CentralityType) -> Self {
+    pub(crate) fn empty(centrality_type: CentralityType) -> Self {
         Self {
             scores: HashMap::new(),
             centrality_type,
@@ -1426,7 +1549,7 @@ pub struct CommunityResult {
 
 impl CommunityResult {
     #[must_use]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             communities: HashMap::new(),
             members: HashMap::new(),
@@ -1701,9 +1824,6 @@ impl From<TensorStoreError> for GraphError {
 
 pub type Result<T> = std::result::Result<T, GraphError>;
 
-/// Number of striped locks for index operations.
-const INDEX_LOCK_COUNT: usize = 64;
-
 /// Type alias for the `BTreeMap` index structure.
 type PropertyIndex = BTreeMap<OrderedPropertyValue, Vec<u64>>;
 
@@ -1719,8 +1839,7 @@ pub struct GraphEngine {
     /// In-memory `BTreeMap` indexes for O(log n) property lookups.
     btree_indexes: RwLock<HashMap<(IndexTarget, String), PropertyIndex>>,
     /// Striped locks for concurrent index updates.
-    #[allow(clippy::type_complexity)]
-    index_locks: [RwLock<()>; INDEX_LOCK_COUNT],
+    index_locks: Vec<RwLock<()>>,
     /// Whether the label index has been initialized (for lazy auto-creation).
     label_index_initialized: AtomicBool,
     /// Whether the edge type index has been initialized (for lazy auto-creation).
@@ -1729,6 +1848,8 @@ pub struct GraphEngine {
     constraints: RwLock<HashMap<String, Constraint>>,
     /// Serializes batch operations involving unique constraints to prevent TOCTOU races.
     batch_unique_lock: RwLock<()>,
+    /// Runtime configuration.
+    config: GraphEngineConfig,
 }
 
 impl std::fmt::Debug for GraphEngine {
@@ -1740,13 +1861,14 @@ impl std::fmt::Debug for GraphEngine {
             .field("edge_counter", &self.edge_counter.load(Ordering::Relaxed))
             .field("index_count", &index_count)
             .field("constraint_count", &constraint_count)
+            .field("config", &self.config)
             .finish_non_exhaustive()
     }
 }
 
-/// Creates array of `RwLock`s for striped locking.
-fn create_index_locks() -> [RwLock<()>; INDEX_LOCK_COUNT] {
-    std::array::from_fn(|_| RwLock::new(()))
+/// Creates vector of `RwLock`s for striped locking.
+fn create_index_locks(count: usize) -> Vec<RwLock<()>> {
+    (0..count).map(|_| RwLock::new(())).collect()
 }
 
 impl GraphEngine {
@@ -1756,17 +1878,29 @@ impl GraphEngine {
 
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(GraphEngineConfig::default())
+    }
+
+    #[must_use]
+    pub fn with_config(config: GraphEngineConfig) -> Self {
+        let lock_count = config.index_lock_count.max(1);
         Self {
             store: TensorStore::new(),
             node_counter: AtomicU64::new(0),
             edge_counter: AtomicU64::new(0),
             btree_indexes: RwLock::new(HashMap::new()),
-            index_locks: create_index_locks(),
+            index_locks: create_index_locks(lock_count),
             label_index_initialized: AtomicBool::new(false),
             edge_type_index_initialized: AtomicBool::new(false),
             constraints: RwLock::new(HashMap::new()),
             batch_unique_lock: RwLock::new(()),
+            config,
         }
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &GraphEngineConfig {
+        &self.config
     }
 
     /// Create a `GraphEngine` with an existing store.
@@ -1816,16 +1950,18 @@ impl GraphEngine {
         // Load existing constraints from store
         let constraints = Self::load_constraints_from_store(&store);
 
+        let config = GraphEngineConfig::default();
         Self {
             store,
             node_counter: AtomicU64::new(max_node_id),
             edge_counter: AtomicU64::new(max_edge_id),
             btree_indexes: RwLock::new(btree_indexes),
-            index_locks: create_index_locks(),
+            index_locks: create_index_locks(config.index_lock_count),
             label_index_initialized: AtomicBool::new(label_index_exists),
             edge_type_index_initialized: AtomicBool::new(edge_type_index_exists),
             constraints: RwLock::new(constraints),
             batch_unique_lock: RwLock::new(()),
+            config,
         }
     }
 
@@ -2008,8 +2144,8 @@ impl GraphEngine {
     /// Get the striped lock index for a given id.
     #[inline]
     #[allow(clippy::cast_possible_truncation)]
-    const fn lock_index(id: u64) -> usize {
-        (id as usize) % INDEX_LOCK_COUNT
+    fn lock_index(&self, id: u64) -> usize {
+        (id as usize) % self.index_locks.len()
     }
 
     // ========== Index CRUD Methods ==========
@@ -2312,7 +2448,7 @@ impl GraphEngine {
         id: u64,
     ) {
         let key = (target, property.to_string());
-        let _lock = self.index_locks[Self::lock_index(id)].write();
+        let _lock = self.index_locks[self.lock_index(id)].write();
 
         let mut indexes = self.btree_indexes.write();
         if let Some(btree) = indexes.get_mut(&key) {
@@ -2328,7 +2464,7 @@ impl GraphEngine {
         id: u64,
     ) {
         let key = (target, property.to_string());
-        let _lock = self.index_locks[Self::lock_index(id)].write();
+        let _lock = self.index_locks[self.lock_index(id)].write();
 
         let mut indexes = self.btree_indexes.write();
         if let Some(btree) = indexes.get_mut(&key) {
@@ -4937,8 +5073,9 @@ impl GraphEngine {
     /// Unlike `find_path` (shortest path) or `find_all_paths` (all shortest paths),
     /// this method finds all paths within a specified hop range, supporting
     /// Neo4j-style variable-length patterns like `[:KNOWS*1..5]`.
+    ///
+    /// Uses iterative deepening DFS with backtracking for O(D) memory instead of O(B^D).
     #[allow(clippy::too_many_lines)]
-    #[allow(clippy::type_complexity)]
     #[instrument(skip(self, config), fields(from = from, to = to))]
     pub fn find_variable_paths(
         &self,
@@ -4955,6 +5092,8 @@ impl GraphEngine {
 
         let mut paths = Vec::new();
         let mut stats = PathSearchStats::default();
+        let max_memory = self.config.max_path_search_memory_bytes;
+        let mut memory_used = 0usize;
 
         // Handle from == to with min_hops == 0
         if from == to && config.min_hops == 0 {
@@ -4970,93 +5109,151 @@ impl GraphEngine {
             }
         }
 
-        // DFS with explicit stack: (current_node, path_nodes, path_edges, visited)
-        // Uses Arc<HashSet> for copy-on-write to avoid O(B^D) memory explosion
-        let mut stack: Vec<(u64, Vec<u64>, Vec<u64>, Arc<HashSet<u64>>)> = Vec::new();
-
-        let mut initial_visited = HashSet::new();
-        if !config.allow_cycles {
-            initial_visited.insert(from);
-        }
-        stack.push((from, vec![from], vec![], Arc::new(initial_visited)));
-
         let edge_type_set: Option<HashSet<&str>> = config
             .edge_types
             .as_ref()
             .map(|types| types.iter().map(String::as_str).collect());
 
-        while let Some((current, path_nodes, path_edges, visited)) = stack.pop() {
-            if paths.len() >= config.max_paths {
+        // Iterative deepening: search depth by depth to find shorter paths first
+        // and to avoid cloning paths per branch (backtracking approach)
+        for target_depth in config.min_hops.max(1)..=config.max_hops {
+            if paths.len() >= config.max_paths || memory_used > max_memory {
                 stats.truncated = true;
                 break;
             }
 
-            let current_depth = path_edges.len();
-            if current_depth >= config.max_hops {
-                continue;
+            // Use backtracking DFS for this depth level
+            let mut path_nodes = Vec::with_capacity(target_depth + 1);
+            let mut path_edges = Vec::with_capacity(target_depth);
+            let mut visited = HashSet::new();
+
+            path_nodes.push(from);
+            if !config.allow_cycles {
+                visited.insert(from);
             }
 
-            stats.nodes_explored += 1;
-
-            let neighbors = self.get_variable_path_neighbors_filtered(
-                current,
+            self.find_paths_dfs_backtrack(
+                from,
+                to,
+                target_depth,
+                &config,
                 edge_type_set.as_ref(),
-                config.direction,
-                config.filter.as_ref(),
+                &mut path_nodes,
+                &mut path_edges,
+                &mut visited,
+                &mut paths,
+                &mut stats,
+                &mut memory_used,
+                max_memory,
             );
-
-            for (neighbor_id, edge_id) in neighbors {
-                stats.edges_traversed += 1;
-
-                if !config.allow_cycles && visited.contains(&neighbor_id) {
-                    continue;
-                }
-
-                // Apply node filter (except for destination which we always want to reach)
-                if neighbor_id != to {
-                    if let Some(ref f) = config.filter {
-                        if let Ok(node) = self.get_node(neighbor_id) {
-                            if !f.matches_node(&node) {
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                let new_depth = current_depth + 1;
-                let mut new_nodes = path_nodes.clone();
-                let mut new_edges = path_edges.clone();
-                new_nodes.push(neighbor_id);
-                new_edges.push(edge_id);
-
-                // Check if path reaches destination within hop range
-                if neighbor_id == to && new_depth >= config.min_hops {
-                    paths.push(Path {
-                        nodes: new_nodes.clone(),
-                        edges: new_edges.clone(),
-                    });
-                    stats.paths_found += 1;
-                    stats.min_length =
-                        Some(stats.min_length.map_or(new_depth, |m| m.min(new_depth)));
-                    stats.max_length =
-                        Some(stats.max_length.map_or(new_depth, |m| m.max(new_depth)));
-                }
-
-                // Continue exploring if under max_hops
-                if new_depth < config.max_hops {
-                    let new_visited = if config.allow_cycles {
-                        Arc::clone(&visited)
-                    } else {
-                        let mut cloned = Arc::clone(&visited);
-                        Arc::make_mut(&mut cloned).insert(neighbor_id);
-                        cloned
-                    };
-                    stack.push((neighbor_id, new_nodes, new_edges, new_visited));
-                }
-            }
         }
 
         Ok(VariableLengthPaths { paths, stats })
+    }
+
+    /// DFS with backtracking for memory-efficient path finding.
+    /// Uses O(D) memory by modifying vectors in place rather than cloning.
+    #[allow(clippy::too_many_arguments)]
+    fn find_paths_dfs_backtrack(
+        &self,
+        current: u64,
+        to: u64,
+        target_depth: usize,
+        config: &VariableLengthConfig,
+        edge_type_set: Option<&HashSet<&str>>,
+        path_nodes: &mut Vec<u64>,
+        path_edges: &mut Vec<u64>,
+        visited: &mut HashSet<u64>,
+        paths: &mut Vec<Path>,
+        stats: &mut PathSearchStats,
+        memory_used: &mut usize,
+        max_memory: usize,
+    ) {
+        // Check termination conditions
+        if paths.len() >= config.max_paths || *memory_used > max_memory {
+            stats.truncated = true;
+            return;
+        }
+
+        let current_depth = path_edges.len();
+
+        // At target depth, check if we reached destination
+        if current_depth == target_depth {
+            if current == to {
+                // Clone only when we find a valid path
+                let path_memory = (path_nodes.len() + path_edges.len()) * std::mem::size_of::<u64>();
+                *memory_used += path_memory;
+
+                paths.push(Path {
+                    nodes: path_nodes.clone(),
+                    edges: path_edges.clone(),
+                });
+                stats.paths_found += 1;
+                stats.min_length = Some(stats.min_length.map_or(target_depth, |m| m.min(target_depth)));
+                stats.max_length = Some(stats.max_length.map_or(target_depth, |m| m.max(target_depth)));
+            }
+            return;
+        }
+
+        stats.nodes_explored += 1;
+
+        // Get neighbors
+        let neighbors = self.get_variable_path_neighbors_filtered(
+            current,
+            edge_type_set,
+            config.direction,
+            config.filter.as_ref(),
+        );
+
+        for (neighbor_id, edge_id) in neighbors {
+            stats.edges_traversed += 1;
+
+            // Skip if already visited (unless cycles allowed)
+            if !config.allow_cycles && visited.contains(&neighbor_id) {
+                continue;
+            }
+
+            // Apply node filter (except for destination)
+            if neighbor_id != to {
+                if let Some(ref f) = config.filter {
+                    if let Ok(node) = self.get_node(neighbor_id) {
+                        if !f.matches_node(&node) {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Push onto path (backtracking)
+            path_nodes.push(neighbor_id);
+            path_edges.push(edge_id);
+            if !config.allow_cycles {
+                visited.insert(neighbor_id);
+            }
+
+            // Recurse
+            self.find_paths_dfs_backtrack(
+                neighbor_id,
+                to,
+                target_depth,
+                config,
+                edge_type_set,
+                path_nodes,
+                path_edges,
+                visited,
+                paths,
+                stats,
+                memory_used,
+                max_memory,
+            );
+
+            // Backtrack
+            path_nodes.pop();
+            path_edges.pop();
+            if !config.allow_cycles {
+                visited.remove(&neighbor_id);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -5997,6 +6194,7 @@ impl GraphEngine {
     // ========== Unified Entity Mode ==========
     // These methods work with entity keys directly (e.g., "user:1") and use
     // _out/_in fields for graph edges, enabling cross-engine queries.
+    // DEPRECATED: Use node ID-based API methods instead.
 
     /// Get or create an entity for graph operations.
     fn get_or_create_entity(&self, key: &str) -> TensorData {
@@ -6004,6 +6202,7 @@ impl GraphEngine {
     }
 
     /// Add an outgoing edge to an entity's _out field.
+    #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn add_entity_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<String> {
         let edge_id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let edge_key = format!("edge:{}:{}", edge_type, edge_id);
@@ -6044,6 +6243,7 @@ impl GraphEngine {
     }
 
     /// Add an undirected edge between two entities.
+    #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn add_entity_edge_undirected(
         &self,
         key1: &str,
@@ -6091,6 +6291,7 @@ impl GraphEngine {
     }
 
     /// Get outgoing edge keys for an entity.
+    #[deprecated(since = "0.2.0", note = "Use edges_of() instead")]
     pub fn get_entity_outgoing(&self, key: &str) -> Result<Vec<String>> {
         let entity = self
             .store
@@ -6101,6 +6302,7 @@ impl GraphEngine {
     }
 
     /// Get incoming edge keys for an entity.
+    #[deprecated(since = "0.2.0", note = "Use edges_of() instead")]
     pub fn get_entity_incoming(&self, key: &str) -> Result<Vec<String>> {
         let entity = self
             .store
@@ -6111,6 +6313,7 @@ impl GraphEngine {
     }
 
     /// Get edge data by edge key.
+    #[deprecated(since = "0.2.0", note = "Use get_edge() instead")]
     pub fn get_entity_edge(&self, edge_key: &str) -> Result<(String, String, String, bool)> {
         let edge = self
             .store
@@ -6138,6 +6341,8 @@ impl GraphEngine {
     }
 
     /// Get outgoing neighbor entity keys.
+    #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Outgoing instead")]
+    #[allow(deprecated)]
     pub fn get_entity_neighbors_out(&self, key: &str) -> Result<Vec<String>> {
         let edges = self.get_entity_outgoing(key)?;
         let mut neighbors = Vec::new();
@@ -6156,6 +6361,8 @@ impl GraphEngine {
     }
 
     /// Get incoming neighbor entity keys.
+    #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Incoming instead")]
+    #[allow(deprecated)]
     pub fn get_entity_neighbors_in(&self, key: &str) -> Result<Vec<String>> {
         let edges = self.get_entity_incoming(key)?;
         let mut neighbors = Vec::new();
@@ -6174,6 +6381,8 @@ impl GraphEngine {
     }
 
     /// Get all neighbor entity keys (both directions).
+    #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Both instead")]
+    #[allow(deprecated)]
     pub fn get_entity_neighbors(&self, key: &str) -> Result<Vec<String>> {
         let mut neighbors = HashSet::new();
 
@@ -6189,11 +6398,14 @@ impl GraphEngine {
     }
 
     /// Check if an entity has graph edges.
+    #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn entity_has_edges(&self, key: &str) -> bool {
         self.store.get(key).map(|e| e.has_edges()).unwrap_or(false)
     }
 
     /// Delete an edge by key, updating connected entities.
+    #[deprecated(since = "0.2.0", note = "Use delete_edge() instead")]
+    #[allow(deprecated)]
     pub fn delete_entity_edge(&self, edge_key: &str) -> Result<()> {
         let (from, to, _, _) = self.get_entity_edge(edge_key)?;
 
@@ -6232,6 +6444,8 @@ impl GraphEngine {
     }
 
     /// Scan for entities with graph edges.
+    #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
+    #[allow(deprecated)]
     pub fn scan_entities_with_edges(&self) -> Vec<String> {
         self.store
             .scan("")
@@ -6520,6 +6734,9 @@ impl GraphEngine {
         direction: Direction,
         edge_type: Option<&str>,
     ) -> HashMap<u64, f64> {
+        // Create node set for O(1) membership checks - neighbors may be outside sampling set
+        let node_set: HashSet<u64> = nodes.iter().copied().collect();
+
         let mut sigma: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
         let mut dist: HashMap<u64, i64> = nodes.iter().map(|&n| (n, -1)).collect();
         let mut pred: HashMap<u64, Vec<u64>> = nodes.iter().map(|&n| (n, Vec::new())).collect();
@@ -6533,15 +6750,27 @@ impl GraphEngine {
 
         while let Some(v) = queue.pop_front() {
             stack.push(v);
-            let v_dist = dist[&v];
+            let v_dist = dist.get(&v).copied().unwrap_or(-1);
+            if v_dist < 0 {
+                continue;
+            }
 
             for neighbor in self.get_neighbor_ids(v, edge_type, direction) {
-                if dist[&neighbor] < 0 {
+                // Skip neighbors not in our node set (sampling may exclude them)
+                if !node_set.contains(&neighbor) {
+                    continue;
+                }
+
+                let neighbor_dist = dist.get(&neighbor).copied().unwrap_or(-1);
+                if neighbor_dist < 0 {
                     queue.push_back(neighbor);
                     dist.insert(neighbor, v_dist + 1);
                 }
-                if dist[&neighbor] == v_dist + 1 {
-                    sigma.insert(neighbor, sigma[&neighbor] + sigma[&v]);
+                let neighbor_dist = dist.get(&neighbor).copied().unwrap_or(-1);
+                if neighbor_dist == v_dist + 1 {
+                    let v_sigma = sigma.get(&v).copied().unwrap_or(0.0);
+                    let n_sigma = sigma.get(&neighbor).copied().unwrap_or(0.0);
+                    sigma.insert(neighbor, n_sigma + v_sigma);
                     if let Some(p) = pred.get_mut(&neighbor) {
                         p.push(v);
                     }
@@ -6552,9 +6781,18 @@ impl GraphEngine {
         let mut delta: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
 
         while let Some(w) = stack.pop() {
-            for &v in &pred[&w] {
-                let contrib = (sigma[&v] / sigma[&w]) * (1.0 + delta[&w]);
-                delta.insert(v, delta[&v] + contrib);
+            if let Some(predecessors) = pred.get(&w) {
+                for &v in predecessors {
+                    let v_sigma = sigma.get(&v).copied().unwrap_or(0.0);
+                    let w_sigma = sigma.get(&w).copied().unwrap_or(1.0);
+                    let w_delta = delta.get(&w).copied().unwrap_or(0.0);
+
+                    if w_sigma > 0.0 {
+                        let contrib = (v_sigma / w_sigma) * (1.0 + w_delta);
+                        let v_delta = delta.get(&v).copied().unwrap_or(0.0);
+                        delta.insert(v, v_delta + contrib);
+                    }
+                }
             }
         }
 
@@ -8312,9 +8550,10 @@ mod tests {
         assert!(!engine.node_exists(hub));
     }
 
-    // Unified Entity Mode tests
+    // Unified Entity Mode tests (deprecated API - retained for backwards compatibility testing)
 
     #[test]
+    #[allow(deprecated)]
     fn entity_edge_directed() {
         let engine = GraphEngine::new();
 
@@ -8334,6 +8573,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_edge_undirected() {
         let engine = GraphEngine::new();
 
@@ -8353,6 +8593,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_get_edge() {
         let engine = GraphEngine::new();
 
@@ -8368,6 +8609,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_neighbors_out() {
         let engine = GraphEngine::new();
 
@@ -8385,6 +8627,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_neighbors_in() {
         let engine = GraphEngine::new();
 
@@ -8402,6 +8645,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_neighbors_both() {
         let engine = GraphEngine::new();
 
@@ -8417,6 +8661,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_has_edges() {
         let engine = GraphEngine::new();
 
@@ -8430,6 +8675,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_delete_edge() {
         let engine = GraphEngine::new();
 
@@ -8447,6 +8693,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_preserves_other_fields() {
         let store = TensorStore::new();
 
@@ -8468,6 +8715,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_scan_with_edges() {
         let engine = GraphEngine::new();
 
@@ -8483,6 +8731,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_edge_nonexistent_returns_error() {
         let engine = GraphEngine::new();
         let result = engine.get_entity_edge("nonexistent:edge");
@@ -8490,6 +8739,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn entity_outgoing_nonexistent_returns_error() {
         let engine = GraphEngine::new();
         let result = engine.get_entity_outgoing("nonexistent:entity");
@@ -11611,6 +11861,32 @@ mod tests {
 
         assert_eq!(result.paths.len(), 5);
         assert!(result.stats.truncated);
+    }
+
+    #[test]
+    fn variable_paths_memory_budget() {
+        // Create a graph with many paths, use low memory budget
+        let config = GraphEngineConfig::new().max_path_search_memory_bytes(100);
+        let engine = GraphEngine::with_config(config);
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let z = engine.create_node("Z", HashMap::new()).unwrap();
+
+        // Create many intermediate nodes for exponential paths
+        for i in 0..20 {
+            let n = engine
+                .create_node(&format!("N{i}"), HashMap::new())
+                .unwrap();
+            engine.create_edge(a, n, "E", HashMap::new(), true).unwrap();
+            engine.create_edge(n, z, "E", HashMap::new(), true).unwrap();
+        }
+
+        let path_config = VariableLengthConfig::with_hops(1, 3);
+        let result = engine.find_variable_paths(a, z, path_config).unwrap();
+
+        // Should have found some paths but stopped due to memory limit
+        assert!(result.stats.truncated);
+        // Should have found at least a few paths before memory limit
+        assert!(!result.paths.is_empty());
     }
 
     #[test]
@@ -15578,6 +15854,44 @@ mod tests {
         assert_eq!(config.edge_type, Some("KNOWS".to_string()));
     }
 
+    #[test]
+    fn graph_engine_config_default() {
+        let config = GraphEngineConfig::default();
+        assert_eq!(config.default_match_limit, 1000);
+        assert_eq!(config.pattern_parallel_threshold, 100);
+        assert_eq!(config.max_variable_length_hops, 20);
+        assert!((config.pagerank_default_damping - 0.85).abs() < 1e-10);
+        assert!((config.pagerank_default_tolerance - 1e-6).abs() < 1e-12);
+        assert_eq!(config.pagerank_default_max_iterations, 100);
+        assert_eq!(config.centrality_parallel_threshold, 100);
+        assert_eq!(config.community_max_passes, 10);
+        assert_eq!(config.label_propagation_max_iterations, 100);
+        assert_eq!(config.index_lock_count, 64);
+        assert_eq!(config.max_path_search_memory_bytes, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn graph_engine_config_builder() {
+        let config = GraphEngineConfig::new()
+            .default_match_limit(500)
+            .pattern_parallel_threshold(50)
+            .max_variable_length_hops(10)
+            .index_lock_count(32);
+
+        assert_eq!(config.default_match_limit, 500);
+        assert_eq!(config.pattern_parallel_threshold, 50);
+        assert_eq!(config.max_variable_length_hops, 10);
+        assert_eq!(config.index_lock_count, 32);
+    }
+
+    #[test]
+    fn graph_engine_with_config() {
+        let config = GraphEngineConfig::new().index_lock_count(16);
+        let engine = GraphEngine::with_config(config);
+        assert_eq!(engine.config().index_lock_count, 16);
+        assert_eq!(engine.index_locks.len(), 16);
+    }
+
     // ==================== Centrality Tests ====================
 
     #[test]
@@ -15693,6 +16007,37 @@ mod tests {
         let result = engine.betweenness_centrality(Some(config)).unwrap();
         assert!(result.sample_count.is_some());
         assert!(result.sample_count.unwrap() <= 10);
+    }
+
+    #[test]
+    fn betweenness_with_external_neighbors() {
+        // Graph where neighbors may be outside the sampling set
+        // This tests that brandes_single_source doesn't panic when
+        // get_neighbor_ids returns nodes not in the nodes slice
+        let engine = GraphEngine::new();
+        let mut nodes = Vec::new();
+        for _ in 0..10 {
+            nodes.push(engine.create_node("Person", HashMap::new()).unwrap());
+        }
+        // Create a fully connected graph
+        for i in 0..10 {
+            for j in (i + 1)..10 {
+                engine
+                    .create_edge(nodes[i], nodes[j], "KNOWS", HashMap::new(), true)
+                    .unwrap();
+                engine
+                    .create_edge(nodes[j], nodes[i], "KNOWS", HashMap::new(), true)
+                    .unwrap();
+            }
+        }
+
+        // With 50% sampling, not all nodes will be in the sample set
+        // but they may still be returned as neighbors - this should not panic
+        let config = CentralityConfig::new().sampling_ratio(0.5);
+        let result = engine.betweenness_centrality(Some(config)).unwrap();
+        assert!(result.sample_count.is_some());
+        // Should complete without panic even with external neighbors
+        assert_eq!(result.centrality_type, CentralityType::Betweenness);
     }
 
     #[test]

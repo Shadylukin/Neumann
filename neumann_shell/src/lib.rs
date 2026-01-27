@@ -220,6 +220,19 @@ impl Shell {
                     || upper.contains("BLOB REPAIR")
                     || upper.contains("BLOB META SET")
             },
+            "ENTITY" => {
+                // ENTITY CREATE, ENTITY CONNECT, and ENTITY BATCH are write ops
+                // ENTITY GET is read-only
+                !upper.contains("ENTITY GET")
+            },
+            "GRAPH" => {
+                // GRAPH BATCH and GRAPH CONSTRAINT CREATE/DROP are write ops
+                upper.contains("GRAPH BATCH")
+                    || upper.contains("CONSTRAINT CREATE")
+                    || upper.contains("CONSTRAINT DROP")
+                    || upper.contains("INDEX CREATE")
+                    || upper.contains("INDEX DROP")
+            },
             _ => false,
         }
     }
@@ -735,27 +748,82 @@ Query Types:
     UPDATE table SET col = val [WHERE condition]
     DELETE FROM table [WHERE condition]
     DROP TABLE name
+    DESCRIBE TABLE name            Show table schema
 
   Graph:
     NODE CREATE label {prop: value, ...}
     NODE LIST [label]              List all nodes or filter by label
     NODE GET id                    Get node by ID
+    NODE DELETE id                 Delete node by ID
     EDGE CREATE node1 -> node2 : label [{props}]
     EDGE LIST [type]               List all edges or filter by type
     EDGE GET id                    Get edge by ID
+    EDGE DELETE id                 Delete edge by ID
     NEIGHBORS node_id OUTGOING|INCOMING|BOTH [: label]
     PATH node1 -> node2 [LIMIT n]
+    DESCRIBE NODE id               Show node details
+    DESCRIBE EDGE id               Show edge details
+
+  Graph Algorithms:
+    GRAPH ALGORITHM PAGERANK [DAMPING d] [ITERATIONS n]
+    GRAPH ALGORITHM BETWEENNESS
+    GRAPH ALGORITHM CLOSENESS
+    GRAPH ALGORITHM EIGENVECTOR
+    GRAPH ALGORITHM LOUVAIN
+    GRAPH ALGORITHM LABEL_PROPAGATION
+
+  Graph Patterns:
+    GRAPH PATTERN MATCH (a)-[r]->(b) [LIMIT n]
+    GRAPH PATTERN COUNT (a)-[r]->(b)
+    GRAPH PATTERN EXISTS (a)-[r]->(b)
+
+  Graph Batch:
+    GRAPH BATCH CREATE NODES [{label: 'x', props...}, ...]
+    GRAPH BATCH CREATE EDGES [{from: 1, to: 2, type: 'x'}, ...]
+    GRAPH BATCH DELETE NODES [id1, id2, ...]
+    GRAPH BATCH DELETE EDGES [id1, id2, ...]
+    GRAPH BATCH UPDATE NODES [{id: 1, props...}, ...]
+
+  Graph Aggregates:
+    GRAPH AGGREGATE COUNT NODES [label]
+    GRAPH AGGREGATE COUNT EDGES [type]
+    GRAPH AGGREGATE SUM property ON NODES [label]
+    GRAPH AGGREGATE AVG property ON NODES [label]
+    GRAPH AGGREGATE MIN property ON NODES [label]
+    GRAPH AGGREGATE MAX property ON NODES [label]
+
+  Graph Constraints:
+    GRAPH CONSTRAINT CREATE name UNIQUE ON NODE (property)
+    GRAPH CONSTRAINT CREATE name EXISTS ON NODE (property)
+    GRAPH CONSTRAINT DROP name
+    GRAPH CONSTRAINT LIST
+
+  Graph Indexes:
+    GRAPH INDEX CREATE ON NODE (property)
+    GRAPH INDEX CREATE ON EDGE (property)
+    GRAPH INDEX DROP ON NODE (property)
+    GRAPH INDEX DROP ON EDGE (property)
+    GRAPH INDEX SHOW NODES
+    GRAPH INDEX SHOW EDGES
 
   Vector:
     EMBED STORE 'key' [vector values]
     EMBED GET 'key'
     EMBED DELETE 'key'
+    EMBED BUILD INDEX
+    EMBED BATCH [('key1', [v1, v2]), ('key2', [v1, v2])]
     SIMILAR 'key' [COSINE|EUCLIDEAN|DOT_PRODUCT] LIMIT n
     SIMILAR [vector] [metric] LIMIT n
 
   Unified (Cross-Engine):
     FIND NODE [label] [WHERE condition] [LIMIT n]
     FIND EDGE [type] [WHERE condition] [LIMIT n]
+
+  Entity (Unified Objects):
+    ENTITY CREATE 'key' {prop: val, ...} [EMBEDDING [vec]]
+    ENTITY GET 'key'
+    ENTITY CONNECT 'from' -> 'to' : edge_type
+    ENTITY BATCH CREATE [{key: 'k1', name: 'Alice'}, ...]
 
   Blob Storage:
     BLOB PUT 'path' [CHUNK size] [TAGS 'a','b'] [FOR 'entity']
@@ -802,6 +870,7 @@ Examples:
   > SELECT * FROM users
   > NODE CREATE person {name: 'Bob', age: 30}
   > EMBED STORE 'doc1' [0.1, 0.2, 0.3]
+  > ENTITY CREATE 'user:1' {name: 'Alice'} EMBEDDING [0.1, 0.2]
   > SAVE 'backup.bin'
   > SAVE COMPRESSED 'backup.bin'
   > LOAD 'backup.bin'
@@ -950,7 +1019,7 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::Edges(edges) => format_edges(edges),
         QueryResult::Path(path) => format_path(path),
         QueryResult::Similar(results) => format_similar(results),
-        QueryResult::Unified(unified) => unified.description.clone(),
+        QueryResult::Unified(unified) => format_unified(unified),
         QueryResult::TableList(tables) => format_table_list(tables),
         QueryResult::Blob(data) => format_blob(data),
         QueryResult::ArtifactInfo(info) => format_artifact_info(info),
@@ -1059,6 +1128,41 @@ fn format_similar(results: &[query_router::SimilarResult]) -> String {
             .collect();
         format!("Similar:\n{}", lines.join("\n"))
     }
+}
+
+/// Formats unified query results.
+fn format_unified(unified: &query_router::UnifiedResult) -> String {
+    let mut output = String::new();
+
+    output.push_str(&unified.description);
+    output.push('\n');
+
+    if unified.items.is_empty() {
+        output.push_str("(no items)\n");
+        return output;
+    }
+
+    for item in &unified.items {
+        output.push_str(&format!("  [{}] ({})", item.id, item.source));
+
+        if !item.data.is_empty() {
+            let fields: Vec<String> = item.data.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            output.push_str(&format!(" {{{}}}", fields.join(", ")));
+        }
+
+        if let Some(score) = item.score {
+            output.push_str(&format!(" [score: {score:.4}]"));
+        }
+
+        if let Some(ref emb) = item.embedding {
+            output.push_str(&format!(" [embedding: {}D]", emb.len()));
+        }
+
+        output.push('\n');
+    }
+
+    output.push_str(&format!("({} items)\n", unified.items.len()));
+    output
 }
 
 /// Formats a list of table names.
@@ -1869,17 +1973,29 @@ mod tests {
     }
 
     #[test]
-    fn test_format_unified() {
+    fn test_format_unified_empty() {
         use query_router::UnifiedResult;
 
+        // Test with empty items
         let unified = UnifiedResult {
             description: "Combined result".to_string(),
             items: vec![],
         };
-        assert_eq!(
-            format_result(&QueryResult::Unified(unified)),
-            "Combined result"
-        );
+        let result = format_result(&QueryResult::Unified(unified));
+        assert!(result.contains("Combined result"));
+        assert!(result.contains("(no items)"));
+    }
+
+    #[test]
+    fn test_format_unified_function() {
+        // Test the format_unified function directly
+        let unified = query_router::UnifiedResult {
+            description: "Test".to_string(),
+            items: vec![],
+        };
+        let result = format_unified(&unified);
+        assert!(result.starts_with("Test\n"));
+        assert!(result.contains("(no items)"));
     }
 
     #[test]

@@ -195,7 +195,7 @@ fuzz_target!(|input: FuzzInput| {
                     continue;
                 }
 
-                if let Ok(count) = engine.batch_delete_nodes(ids_to_delete.clone()) {
+                if engine.batch_delete_nodes(ids_to_delete.clone()).is_ok() {
                     // Remove deleted nodes from our tracking
                     created_nodes.retain(|id| !ids_to_delete.contains(id));
                 }
@@ -225,15 +225,17 @@ fuzz_target!(|input: FuzzInput| {
                     continue;
                 }
 
-                let update_inputs: Vec<(u64, HashMap<String, PropertyValue>)> = updates
-                    .into_iter()
-                    .take(50)
-                    .map(|u| {
-                        let id = created_nodes[u.node_idx as usize % created_nodes.len()];
-                        let props = build_properties(u.properties);
-                        (id, props)
-                    })
-                    .collect();
+                #[allow(clippy::type_complexity)]
+                let update_inputs: Vec<(u64, Option<Vec<String>>, HashMap<String, PropertyValue>)> =
+                    updates
+                        .into_iter()
+                        .take(50)
+                        .map(|u| {
+                            let id = created_nodes[u.node_idx as usize % created_nodes.len()];
+                            let props = build_properties(u.properties);
+                            (id, None, props)
+                        })
+                        .collect();
 
                 if update_inputs.is_empty() {
                     continue;
@@ -244,22 +246,14 @@ fuzz_target!(|input: FuzzInput| {
         }
     }
 
-    // Verify invariants: count of nodes should be consistent
-    let mut valid_node_count = 0;
-    for &node_id in &created_nodes {
-        if engine.get_node(node_id).is_ok() {
-            valid_node_count += 1;
-        }
-    }
-
-    // Verify invariants: count of edges should be consistent
-    let mut valid_edge_count = 0;
-    for &edge_id in &created_edges {
-        if engine.get_edge(edge_id).is_ok() {
-            valid_edge_count += 1;
-        }
-    }
-
-    // Nodes and edges should still be retrievable or properly deleted
+    // Verify invariants: nodes should still be retrievable or properly deleted
     // (no panics or corrupted state)
+    for &node_id in &created_nodes {
+        let _ = engine.get_node(node_id);
+    }
+
+    // Verify invariants: edges should still be retrievable or properly deleted
+    for &edge_id in &created_edges {
+        let _ = engine.get_edge(edge_id);
+    }
 });

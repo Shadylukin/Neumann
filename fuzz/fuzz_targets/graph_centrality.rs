@@ -94,8 +94,8 @@ fn build_random_graph(engine: &GraphEngine, node_count: u8, edge_density: u8) ->
     // Add some hub structure
     if n > 3 {
         let hub = node_ids[0];
-        for i in 1..n.min(10) {
-            let _ = engine.create_edge(hub, node_ids[i], "HUB", HashMap::new(), true);
+        for &spoke in node_ids.iter().take(n.min(10)).skip(1) {
+            let _ = engine.create_edge(hub, spoke, "HUB", HashMap::new(), true);
         }
     }
 
@@ -124,7 +124,7 @@ fuzz_target!(|input: FuzzInput| {
                 let result = engine.pagerank(Some(pr_config));
                 if let Ok(pr_result) = result {
                     // Verify scores are non-negative
-                    for (_, score) in &pr_result.scores {
+                    for score in pr_result.scores.values() {
                         assert!(
                             *score >= 0.0,
                             "PageRank scores should be non-negative"
@@ -145,7 +145,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let result = engine.betweenness_centrality(Some(c_config));
                 if let Ok(centrality_result) = result {
-                    for (_, score) in &centrality_result.scores {
+                    for score in centrality_result.scores.values() {
                         assert!(
                             *score >= 0.0,
                             "Betweenness centrality should be non-negative"
@@ -165,7 +165,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let result = engine.closeness_centrality(Some(c_config));
                 if let Ok(centrality_result) = result {
-                    for (_, score) in &centrality_result.scores {
+                    for score in centrality_result.scores.values() {
                         assert!(
                             *score >= 0.0 && *score <= 1.0,
                             "Closeness centrality should be in [0, 1]"
@@ -185,7 +185,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let result = engine.eigenvector_centrality(Some(c_config));
                 if let Ok(centrality_result) = result {
-                    for (_, score) in &centrality_result.scores {
+                    for score in centrality_result.scores.values() {
                         assert!(
                             *score >= 0.0,
                             "Eigenvector centrality should be non-negative"

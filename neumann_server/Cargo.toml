@@ -32,6 +32,7 @@ opentelemetry = { version = "0.24", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.24", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.17", features = ["metrics", "grpc-tonic"] }
 uuid = { version = "1", features = ["v4"] }
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
 
 [build-dependencies]
 tonic-build = "0.12"
@@ -41,6 +42,8 @@ tokio-test = "0.4"
 tempfile = "3"
 tensor_unified = { path = "../tensor_unified" }
 query_router = { path = "../query_router" }
+futures = "0.3"
+tokio-stream = "0.1"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -53,22 +53,19 @@ pub fn register_sighup_handler(_tls_loader: Arc<TlsLoader>) {
 
 /// Wait for a shutdown signal (SIGTERM or SIGINT).
 ///
-/// Returns when either signal is received.
+/// Returns when either signal is received, or if signal registration fails.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if signal handlers cannot be registered. This should only happen
-/// if the operating system rejects the signal registration, which is rare.
-#[allow(clippy::expect_used)]
-pub async fn wait_for_shutdown_signal() {
+/// Returns an error if signal handlers cannot be registered. This should only
+/// happen if the operating system rejects the signal registration, which is rare.
+pub async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        let mut sigint =
-            signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
 
         tokio::select! {
             _ = sigterm.recv() => {
@@ -82,11 +79,11 @@ pub async fn wait_for_shutdown_signal() {
 
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl+c");
+        tokio::signal::ctrl_c().await?;
         tracing::info!("Received Ctrl+C");
     }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -220,14 +220,14 @@ fuzz_target!(|input: FuzzInput| {
     for name in &created_constraints {
         let result = engine.get_constraint(name);
         assert!(
-            result.is_ok(),
+            result.is_some(),
             "Constraint '{}' should still exist",
             name
         );
     }
 
     // Verify list_constraints returns all created constraints
-    let all_constraints = engine.list_constraints().unwrap_or_default();
+    let all_constraints = engine.list_constraints();
     for name in &created_constraints {
         assert!(
             all_constraints.iter().any(|c| &c.name == name),

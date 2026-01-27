@@ -7,6 +7,9 @@
 //! - Operators and punctuation
 //! - Literals (strings, numbers, identifiers)
 
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::uninlined_format_args)]
+
 use std::fmt;
 
 use crate::span::Span;

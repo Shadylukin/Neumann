@@ -128,6 +128,42 @@ mod tests {
     }
 
     #[test]
+    fn test_entity_batch_create() {
+        let stmt =
+            parse("ENTITY BATCH CREATE [{key: 'u1', name: 'Alice'}, {key: 'u2', name: 'Bob'}]")
+                .unwrap();
+        if let StatementKind::Entity(EntityStmt {
+            operation: EntityOp::Batch { entities },
+        }) = stmt.kind
+        {
+            assert_eq!(entities.len(), 2);
+            assert!(entities[0].embedding.is_none());
+            assert_eq!(entities[0].properties.len(), 1);
+        } else {
+            panic!("expected ENTITY BATCH");
+        }
+    }
+
+    #[test]
+    fn test_entity_batch_with_embedding() {
+        let stmt = parse(
+            "ENTITY BATCH CREATE [{key: 'e1', name: 'A', embedding: [1.0, 2.0]}, {key: 'e2'}]",
+        )
+        .unwrap();
+        if let StatementKind::Entity(EntityStmt {
+            operation: EntityOp::Batch { entities },
+        }) = stmt.kind
+        {
+            assert_eq!(entities.len(), 2);
+            assert!(entities[0].embedding.is_some());
+            assert_eq!(entities[0].embedding.as_ref().unwrap().len(), 2);
+            assert!(entities[1].embedding.is_none());
+        } else {
+            panic!("expected ENTITY BATCH");
+        }
+    }
+
+    #[test]
     fn test_similar_connected_to() {
         let stmt = parse("SIMILAR 'key' CONNECTED TO 'hub' LIMIT 10").unwrap();
         if let StatementKind::Similar(similar) = stmt.kind {

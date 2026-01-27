@@ -3,8 +3,34 @@
 //! Tests SIMILAR queries with different distance metrics:
 //! COSINE, EUCLIDEAN, and DotProduct.
 
+use std::collections::HashMap;
+
+use graph_engine::{GraphEngine, PropertyValue};
 use integration_tests::create_shared_router;
 use query_router::QueryResult;
+
+/// Helper to add edges between entity keys using the node-based API.
+fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
+    let get_or_create = |key: &str| -> u64 {
+        if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+            if let Some(node) = nodes.first() {
+                return node.id;
+            }
+        }
+        let mut props = HashMap::new();
+        props.insert(
+            "entity_key".to_string(),
+            PropertyValue::String(key.to_string()),
+        );
+        graph.create_node("TestEntity", props).unwrap_or(0)
+    };
+
+    let from_node = get_or_create(from_key);
+    let to_node = get_or_create(to_key);
+    graph
+        .create_edge(from_node, to_node, edge_type, HashMap::new(), true)
+        .ok();
+}
 
 #[test]
 fn test_similar_default_metric() {
@@ -199,14 +225,8 @@ fn test_similar_connected_with_metric() {
         .unwrap();
 
     // Connect items to hub
-    router
-        .graph()
-        .add_entity_edge("hub:metric", "item:1", "has")
-        .unwrap();
-    router
-        .graph()
-        .add_entity_edge("hub:metric", "item:2", "has")
-        .unwrap();
+    add_test_edge(router.graph(), "hub:metric", "item:1", "has");
+    add_test_edge(router.graph(), "hub:metric", "item:2", "has");
 
     // Query with metric
     let result =

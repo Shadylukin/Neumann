@@ -16,6 +16,12 @@
 //! 10. Unary (NOT, -, ~)
 //! 11. Postfix (function calls, IS NULL, IN, BETWEEN, LIKE)
 
+#![allow(clippy::wildcard_imports)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::enum_glob_use)]
+
 use crate::{
     ast::*,
     error::{ParseError, ParseResult},

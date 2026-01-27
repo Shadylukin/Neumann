@@ -677,11 +677,13 @@ fn test_graph_striped_lock_saturation_100_threads() {
     let expected = thread_count * ops_per_thread;
     assert_eq!(success_count.load(Ordering::SeqCst), expected);
 
-    // Verify index integrity with a random lookup
+    // Verify index integrity with a lookup
+    // Key format: "{:02x}_thread{t}_op{i}" where prefix = (t + i) % 256
+    // For t=0, i=0: prefix = 0 = 0x00, key = "00_thread0_op0"
     let results = graph
         .find_nodes_by_property(
             "key",
-            &PropertyValue::String("00_thread50_op50".into()),
+            &PropertyValue::String("00_thread0_op0".into()),
         )
         .unwrap();
     assert_eq!(results.len(), 1);
