@@ -495,8 +495,14 @@ Embedding storage and similarity search.
 | `VectorEngine` | Main engine for embedding operations |
 | `SearchResult` | Key and similarity score |
 | `DistanceMetric` | Cosine, Euclidean, DotProduct |
+| `FilterCondition` | Metadata filter (Eq, Ne, Lt, Gt, And, Or, In, etc.) |
+| `FilterValue` | Filter value type (Int, Float, String, Bool, Null) |
+| `FilterStrategy` | Filter strategy (Auto, PreFilter, PostFilter) |
+| `FilteredSearchConfig` | Configuration for filtered search |
+| `VectorCollectionConfig` | Configuration for collections |
+| `MetadataValue` | Simplified metadata value type |
 
-### Operations
+### Basic Operations
 
 ```rust
 use vector_engine::{VectorEngine, DistanceMetric};
@@ -536,6 +542,66 @@ let results = engine.search_similar_with_metric(
     10,
     DistanceMetric::Euclidean,
 )?;
+```
+
+### Filtered Search
+
+```rust
+use vector_engine::{FilterCondition, FilterValue, FilteredSearchConfig};
+
+// Build filter
+let filter = FilterCondition::Eq("category".into(), FilterValue::String("science".into()))
+    .and(FilterCondition::Gt("year".into(), FilterValue::Int(2020)));
+
+// Search with filter
+let results = engine.search_similar_filtered(&query, 10, &filter, None)?;
+
+// With explicit strategy
+let config = FilteredSearchConfig::pre_filter();
+let results = engine.search_similar_filtered(&query, 10, &filter, Some(config))?;
+```
+
+### Metadata Storage
+
+```rust
+use tensor_store::TensorValue;
+use std::collections::HashMap;
+
+// Store embedding with metadata
+let mut metadata = HashMap::new();
+metadata.insert("category".into(), TensorValue::from("science"));
+metadata.insert("year".into(), TensorValue::from(2024i64));
+engine.store_embedding_with_metadata("doc:1", vec![0.1, 0.2], metadata)?;
+
+// Get metadata
+let meta = engine.get_metadata("doc:1")?;
+
+// Update metadata
+let mut updates = HashMap::new();
+updates.insert("year".into(), TensorValue::from(2025i64));
+engine.update_metadata("doc:1", updates)?;
+```
+
+### Collections
+
+```rust
+use vector_engine::VectorCollectionConfig;
+
+// Create collection
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+engine.create_collection("documents", config)?;
+
+// Store in collection
+engine.store_in_collection("documents", "doc:1", vec![0.1; 768])?;
+
+// Search in collection
+let results = engine.search_in_collection("documents", &query, 10)?;
+
+// List/delete collections
+let collections = engine.list_collections();
+engine.delete_collection("documents")?;
 ```
 
 ---

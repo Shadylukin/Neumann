@@ -25,6 +25,10 @@ caching, and distributed query execution when cluster mode is enabled.
 | `ShardResult` | Result from a single shard with timing and error info |
 | `DistributedQueryConfig` | Configuration for distributed execution |
 | `DistributedQueryStats` | Statistics tracking for distributed queries |
+| `FilterCondition` | Re-exported from vector_engine for programmatic filter building |
+| `FilterValue` | Re-exported from vector_engine for filter values |
+| `FilterStrategy` | Re-exported from vector_engine for search strategy |
+| `FilteredSearchConfig` | Re-exported from vector_engine for filtered search config |
 
 ### QueryResult Variants
 

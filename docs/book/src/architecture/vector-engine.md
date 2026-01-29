@@ -71,6 +71,13 @@ graph TB
 | `HNSWIndex` | Hierarchical navigable small world graph (re-exported from tensor_store) |
 | `HNSWConfig` | HNSW index configuration (re-exported from tensor_store) |
 | `SparseVector` | Memory-efficient sparse embedding storage |
+| `FilterCondition` | Filter for metadata-based search (Eq, Ne, Lt, Gt, And, Or, In, etc.) |
+| `FilterValue` | Value type for filters (Int, Float, String, Bool, Null) |
+| `FilterStrategy` | Strategy selection (Auto, PreFilter, PostFilter) |
+| `FilteredSearchConfig` | Configuration for filtered search behavior |
+| `VectorCollectionConfig` | Configuration for vector collections |
+| `MetadataValue` | Simplified value type for embedding metadata |
+| `PersistentVectorIndex` | Serializable index for disk persistence |
 
 ### VectorError Variants
 
@@ -84,6 +91,10 @@ graph TB
 | `BatchValidationError` | Invalid input in batch | `batch_store_embeddings` validation |
 | `BatchOperationError` | Operation failed in batch | `batch_store_embeddings` execution |
 | `ConfigurationError` | Invalid configuration | `VectorEngineConfig::validate()` |
+| `CollectionExists` | Collection already exists | `create_collection` with existing name |
+| `CollectionNotFound` | Collection not found | Collection operations on missing collection |
+| `IoError` | IO error during persistence | `save_to_file`, `load_from_file` |
+| `SerializationError` | Serialization error | Index persistence operations |
 
 ## Configuration
 
@@ -343,6 +354,103 @@ let results = engine.search_similar_with_metric(
 let similarity = VectorEngine::compute_similarity(&vec_a, &vec_b)?;
 ```
 
+### Filtered Search
+
+Search with metadata filters to narrow results without post-processing:
+
+```rust
+use vector_engine::{FilterCondition, FilterValue, FilteredSearchConfig, FilterStrategy};
+
+// Build a filter condition
+let filter = FilterCondition::Eq("category".to_string(), FilterValue::String("science".to_string()))
+    .and(FilterCondition::Gt("year".to_string(), FilterValue::Int(2020)));
+
+// Search with filter (auto strategy)
+let results = engine.search_similar_filtered(&query, 10, &filter, None)?;
+
+// Search with explicit pre-filter strategy (best for selective filters)
+let config = FilteredSearchConfig::pre_filter();
+let results = engine.search_similar_filtered(&query, 10, &filter, Some(config))?;
+
+// Search with post-filter and custom oversample
+let config = FilteredSearchConfig::post_filter().with_oversample(5);
+let results = engine.search_similar_filtered(&query, 10, &filter, Some(config))?;
+```
+
+#### Filter Conditions
+
+| Condition | Description | Example |
+| --- | --- | --- |
+| `Eq(field, value)` | Equality | `category = "science"` |
+| `Ne(field, value)` | Not equal | `status != "deleted"` |
+| `Lt(field, value)` | Less than | `price < 100` |
+| `Le(field, value)` | Less than or equal | `price <= 100` |
+| `Gt(field, value)` | Greater than | `year > 2020` |
+| `Ge(field, value)` | Greater than or equal | `year >= 2020` |
+| `And(a, b)` | Logical AND | Combined conditions |
+| `Or(a, b)` | Logical OR | Alternative conditions |
+| `In(field, values)` | Value in list | `status IN ["active", "pending"]` |
+| `Contains(field, substr)` | String contains | `title CONTAINS "rust"` |
+| `StartsWith(field, prefix)` | String prefix | `name STARTS WITH "doc:"` |
+| `Exists(field)` | Field exists | `HAS embedding` |
+| `True` | Always matches | No filter |
+
+#### Filter Strategies
+
+| Strategy | When to Use | Behavior |
+| --- | --- | --- |
+| `Auto` | Default | Estimates selectivity and chooses |
+| `PreFilter` | < 10% matches | Filters first, then searches subset |
+| `PostFilter` | > 10% matches | Searches with oversample, then filters |
+
+```mermaid
+flowchart TD
+    Query[Query + Filter] --> Strategy{Which Strategy?}
+
+    Strategy -->|Auto| Estimate[Estimate Selectivity]
+    Estimate -->|< 10%| Pre[Pre-Filter]
+    Estimate -->|>= 10%| Post[Post-Filter]
+
+    Strategy -->|PreFilter| Pre
+    Strategy -->|PostFilter| Post
+
+    Pre --> Filter1[Filter all keys]
+    Filter1 --> Search1[Search filtered subset]
+    Search1 --> Result[Top-K Results]
+
+    Post --> Search2[Search with oversample]
+    Search2 --> Filter2[Filter candidates]
+    Filter2 --> Result
+```
+
+### Metadata Storage
+
+Store and retrieve metadata alongside embeddings:
+
+```rust
+use tensor_store::TensorValue;
+use std::collections::HashMap;
+
+// Store embedding with metadata
+let mut metadata = HashMap::new();
+metadata.insert("category".to_string(), TensorValue::from("science"));
+metadata.insert("year".to_string(), TensorValue::from(2024i64));
+metadata.insert("score".to_string(), TensorValue::from(0.95f64));
+
+engine.store_embedding_with_metadata("doc1", vec![0.1, 0.2, 0.3], metadata)?;
+
+// Get all metadata
+let meta = engine.get_metadata("doc1")?;
+
+// Get specific field
+let category = engine.get_metadata_field("doc1", "category")?;
+
+// Update metadata (merges with existing)
+let mut updates = HashMap::new();
+updates.insert("score".to_string(), TensorValue::from(0.98f64));
+engine.update_metadata("doc1", updates)?;
+```
+
 ### Batch Operations
 
 For bulk insert and delete operations with parallel processing:
@@ -508,6 +616,132 @@ let count = engine.count_entities_with_embeddings();
 
 Unified entity embeddings are stored in the `_embedding` field of the entity's
 TensorData.
+
+## Collections
+
+Collections provide isolated namespaces for organizing embeddings by type or
+purpose. Each collection can have its own dimension constraints and distance
+metric configuration.
+
+### Creating and Managing Collections
+
+```rust
+use vector_engine::{VectorEngine, VectorCollectionConfig, DistanceMetric};
+
+let engine = VectorEngine::new();
+
+// Create collection with custom config
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine)
+    .with_auto_index(5000);  // Auto-build HNSW at 5000 vectors
+
+engine.create_collection("documents", config)?;
+
+// List collections
+let collections = engine.list_collections();
+
+// Check if collection exists
+engine.collection_exists("documents");  // -> true
+
+// Get collection config
+let config = engine.get_collection_config("documents");
+
+// Delete collection (removes all vectors in it)
+engine.delete_collection("documents")?;
+```
+
+### Storing in Collections
+
+```rust
+use std::collections::HashMap;
+use tensor_store::TensorValue;
+
+// Store vector in collection
+engine.store_in_collection("documents", "doc1", vec![0.1, 0.2, 0.3])?;
+
+// Store with metadata
+let mut metadata = HashMap::new();
+metadata.insert("title".to_string(), TensorValue::from("Introduction to Rust"));
+metadata.insert("author".to_string(), TensorValue::from("Alice"));
+
+engine.store_in_collection_with_metadata(
+    "documents",
+    "doc1",
+    vec![0.1, 0.2, 0.3],
+    metadata
+)?;
+```
+
+### Searching in Collections
+
+```rust
+use vector_engine::{FilterCondition, FilterValue};
+
+// Basic search in collection
+let results = engine.search_in_collection("documents", &query, 10)?;
+
+// Filtered search in collection
+let filter = FilterCondition::Eq("author".to_string(), FilterValue::String("Alice".to_string()));
+let results = engine.search_filtered_in_collection(
+    "documents",
+    &query,
+    10,
+    &filter,
+    None
+)?;
+```
+
+### Collection Key Isolation
+
+Collections use prefixed storage keys to ensure isolation:
+
+| Operation | Storage Key Pattern |
+| --- | --- |
+| Default embeddings | `emb:{key}` |
+| Collection embeddings | `coll:{collection}:emb:{key}` |
+| Entity embeddings | `{entity_key}._embedding` |
+
+### VectorCollectionConfig
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dimension` | `Option<usize>` | `None` | Enforced dimension (rejects mismatches) |
+| `distance_metric` | `DistanceMetric` | `Cosine` | Default metric for this collection |
+| `auto_index` | `bool` | `false` | Auto-build HNSW on threshold |
+| `auto_index_threshold` | `usize` | `1000` | Vector count to trigger auto-index |
+
+## Index Persistence
+
+Save and restore vector indices for fast startup:
+
+```rust
+use std::path::Path;
+
+// Save all collections to directory
+engine.save_to_directory(Path::new("./vector_index"))?;
+
+// Load from directory (restores collections and embeddings)
+let engine = VectorEngine::load_from_directory(Path::new("./vector_index"))?;
+
+// Save single collection
+let index = engine.export_collection("documents")?;
+index.save_to_file(Path::new("./documents.idx"))?;
+
+// Load single collection
+let index = PersistentVectorIndex::load_from_file(Path::new("./documents.idx"))?;
+engine.import_collection(index)?;
+```
+
+### PersistentVectorIndex Format
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `collection` | `String` | Collection name |
+| `config` | `VectorCollectionConfig` | Collection configuration |
+| `vectors` | `Vec<VectorEntry>` | All vectors with metadata |
+| `created_at` | `u64` | Unix timestamp |
+| `version` | `u32` | Format version (currently 1) |
 
 ## Storage Model
 

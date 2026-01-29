@@ -70,6 +70,9 @@ sequenceDiagram
 | `DistanceMetric` | Similarity metric (Cosine, Euclidean, DotProduct) |
 | `EntityInput` | Tuple type for batch operations: (key, fields, embedding) |
 | `Unified` | Trait for converting engine types to UnifiedItem |
+| `FilterCondition` | Re-exported from vector_engine for filtered search |
+| `FilterValue` | Re-exported from vector_engine for filter values |
+| `VectorCollectionConfig` | Re-exported from vector_engine for collection config |
 
 ### UnifiedItem
 
@@ -308,6 +311,40 @@ let results = engine.find_similar_connected(
 
 **Edge case:** If `query_key` has no embedding, returns `VectorError::NotFound`.
 
+### Find Similar Connected with Filter
+
+Enhanced version that combines vector similarity, graph connectivity, and
+metadata filtering:
+
+```rust
+use vector_engine::{FilterCondition, FilterValue};
+
+// Build a filter for metadata
+let filter = FilterCondition::Eq(
+    "category".to_string(),
+    FilterValue::String("article".to_string())
+);
+
+// Find entities similar to query, connected to hub, matching filter
+let results = engine.find_similar_connected_filtered(
+    "user:1",      // Query entity (uses its embedding)
+    "hub:main",    // Find entities connected to this
+    Some(&filter), // Optional metadata filter
+    10             // Top-k results
+).await?;
+```
+
+**Algorithm:**
+
+1. Gets query embedding from `query_key`
+2. Gets connected neighbor keys from graph
+3. Builds combined filter: `key IN neighbors AND user_filter`
+4. Uses pre-filter strategy for high selectivity
+5. Returns filtered results with source `"vector+graph"`
+
+The filtered version eliminates post-processing by pushing filters into the
+vector search, improving performance for selective queries.
+
 ### Find Neighbors by Similarity
 
 Find graph neighbors sorted by similarity to a query vector:
@@ -346,6 +383,120 @@ let results = engine.find_neighbors_by_similarity(
 5. Returns results with source `"graph+vector"`
 
 **Gotcha:** Neighbors without embeddings are silently skipped.
+
+## Unified Entity Storage
+
+The unified entity storage methods provide a streamlined API for storing entity
+fields as vector metadata, eliminating double-storage overhead.
+
+### Creating Unified Entities
+
+```rust
+use std::collections::HashMap;
+
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "Introduction to Rust".to_string());
+fields.insert("author".to_string(), "Alice".to_string());
+
+// Store entity with fields as vector metadata
+engine.create_entity_unified(
+    "doc:1",
+    fields,
+    Some(vec![0.1, 0.2, 0.3, 0.4])
+).await?;
+
+// Without embedding, stores to TensorStore only
+engine.create_entity_unified("doc:2", fields, None).await?;
+```
+
+When an embedding is provided, fields are stored as vector metadata alongside
+the embedding. This enables filtered search without requiring a separate storage
+lookup.
+
+### Retrieving Unified Entities
+
+```rust
+// Get entity with fields from vector metadata
+let item = engine.get_entity_unified("doc:1").await?;
+
+println!("Title: {:?}", item.data.get("title"));
+println!("Embedding: {:?}", item.embedding);
+```
+
+The retrieval first attempts to load from vector metadata. If not found, it
+falls back to the standard TensorStore lookup.
+
+## Collection-Based Entity Organization
+
+Collections provide type-based organization for entities, enabling scoped
+searches and dimension enforcement.
+
+### Creating Entities in Collections
+
+```rust
+use vector_engine::VectorCollectionConfig;
+use std::collections::HashMap;
+
+// Create a collection for documents
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+
+engine.create_entity_collection("documents", config)?;
+
+// Store entity in collection
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "ML Paper".to_string());
+
+engine.create_entity_in_collection(
+    "documents",
+    "paper:1",
+    fields,
+    vec![0.1; 768]
+).await?;
+```
+
+### Searching in Collections
+
+```rust
+use vector_engine::FilterCondition;
+
+// Basic search in collection
+let results = engine.find_similar_in_collection(
+    "documents",
+    &query_embedding,
+    None,  // No filter
+    10
+).await?;
+
+// Filtered search in collection
+let filter = FilterCondition::Eq("author".to_string(), "Alice".into());
+let results = engine.find_similar_in_collection(
+    "documents",
+    &query_embedding,
+    Some(&filter),
+    10
+).await?;
+```
+
+### Managing Collections
+
+```rust
+// List all entity collections
+let collections = engine.list_entity_collections();
+
+// Delete a collection
+engine.delete_entity_collection("documents")?;
+```
+
+### Collection Isolation
+
+Collections ensure entity isolation:
+
+- Each collection has its own key namespace
+- Dimension mismatches are rejected per-collection config
+- Searches only see entities within the specified collection
+- Deleting a collection removes all entities in it
 
 ### Find Nodes and Edges
 
@@ -581,6 +732,11 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 | `get_entity` | O(1) | Single store get + optional embedding lookup |
 | `find_similar_connected` | O(k log n) | HNSW search + graph intersection |
 | `find_similar_connected` (brute) | O(n) | Linear scan when no HNSW index |
+| `find_similar_connected_filtered` | O(m) | Pre-filter search, m = matching keys |
+| `create_entity_unified` | O(1) | Single store with metadata |
+| `get_entity_unified` | O(1) | Metadata lookup with fallback |
+| `create_entity_in_collection` | O(1) | Collection-scoped store |
+| `find_similar_in_collection` | O(c) | c = collection size |
 | `find_neighbors_by_similarity` | O(d * k) | Neighbor fetch + k similarity computations |
 | `find_nodes` | O(n) | Full scan with prefix filter |
 | `find_edges` | O(e) | Full scan with prefix filter |
@@ -696,8 +852,8 @@ For `find_neighbors_by_similarity`:
 | `tensor_store` | Shared storage backend, provides `TensorData` and `fields` constants |
 | `relational_engine` | Relational data, conditions for filtering |
 | `graph_engine` | Graph connectivity, entity edges, neighbor queries |
-| `vector_engine` | Embeddings, similarity search, HNSW index |
-| `query_router` | Query execution, language integration, HNSW optimization |
+| `vector_engine` | Embeddings, similarity search, HNSW index, `FilterCondition`, `FilterValue`, `VectorCollectionConfig` |
+| `query_router` | Query execution, language integration, HNSW optimization, re-exports filter types |
 
 ## Dependencies
 
