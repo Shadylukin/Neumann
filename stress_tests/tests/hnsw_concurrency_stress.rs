@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HNSW index concurrency stress tests.
 //!
 //! Tests high-thread-count concurrent insert and search operations.

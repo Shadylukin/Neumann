@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for Raft snapshot transfer in tensor_chain.
 //!
 //! Tests snapshot creation, transfer, and installation including:

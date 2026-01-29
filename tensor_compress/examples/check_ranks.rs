@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use tensor_compress::{tt_decompose, TTConfig};
 
 fn main() {

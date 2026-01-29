@@ -312,6 +312,7 @@ Neumann finishes the thought: one mathematical substrate for all your data.
 
 ## Documentation
 
+- [API Documentation](https://shadylukin.github.io/Neumann/) - Full rustdoc API reference
 - [Installation](docs/book/src/getting-started/installation.md)
 - [Quick Start](docs/book/src/getting-started/quick-start.md)
 - [Architecture](docs/architecture.md)

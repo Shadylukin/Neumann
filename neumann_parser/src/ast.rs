@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Abstract Syntax Tree (AST) nodes for the Neumann query language.
 //!
 //! Defines all AST node types for:
@@ -19,6 +20,7 @@ pub struct Statement {
 
 impl Statement {
     /// Creates a new statement.
+    #[must_use]
     pub const fn new(kind: StatementKind, span: Span) -> Self {
         Self { kind, span }
     }
@@ -108,7 +110,7 @@ pub enum StatementKind {
     Cluster(ClusterStmt),
 
     // === Extended Graph Statements ===
-    /// GRAPH ALGORITHM command (PageRank, centrality, etc.)
+    /// GRAPH ALGORITHM command (`PageRank`, centrality, etc.)
     GraphAlgorithm(GraphAlgorithmStmt),
     /// GRAPH CONSTRAINT command
     GraphConstraint(GraphConstraintStmt),
@@ -428,8 +430,12 @@ pub enum NodeOp {
     Get { id: Expr },
     /// Delete a node: `NODE DELETE id`
     Delete { id: Expr },
-    /// List nodes: `NODE LIST`
-    List { label: Option<Ident> },
+    /// List nodes: `NODE LIST [label] [LIMIT n] [OFFSET m]`
+    List {
+        label: Option<Ident>,
+        limit: Option<Box<Expr>>,
+        offset: Option<Box<Expr>>,
+    },
 }
 
 /// EDGE command.
@@ -452,8 +458,12 @@ pub enum EdgeOp {
     Get { id: Expr },
     /// Delete an edge: `EDGE DELETE id`
     Delete { id: Expr },
-    /// List edges: `EDGE LIST`
-    List { edge_type: Option<Ident> },
+    /// List edges: `EDGE LIST [type] [LIMIT n] [OFFSET m]`
+    List {
+        edge_type: Option<Ident>,
+        limit: Option<Box<Expr>>,
+        offset: Option<Box<Expr>>,
+    },
 }
 
 /// A property key-value pair.
@@ -585,6 +595,8 @@ pub enum FindPattern {
     Nodes { label: Option<Ident> },
     /// Match edges by type
     Edges { edge_type: Option<Ident> },
+    /// Match rows in a relational table: `FIND ROWS FROM table`
+    Rows { table: Ident },
     /// Match path pattern
     Path {
         from: Option<Ident>,
@@ -610,6 +622,14 @@ pub enum EntityOp {
     },
     /// Get an entity: `ENTITY GET 'key'`
     Get { key: Expr },
+    /// Update an entity: `ENTITY UPDATE 'key' { properties } [EMBEDDING [vector]]`
+    Update {
+        key: Expr,
+        properties: Vec<Property>,
+        embedding: Option<Vec<Expr>>,
+    },
+    /// Delete an entity: `ENTITY DELETE 'key'`
+    Delete { key: Expr },
     /// Connect entities: `ENTITY CONNECT 'from' -> 'to' : type`
     Connect {
         from_key: Expr,
@@ -1134,11 +1154,13 @@ pub struct Expr {
 
 impl Expr {
     /// Creates a new expression.
+    #[must_use]
     pub const fn new(kind: ExprKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Creates a boxed expression.
+    #[must_use]
     pub fn boxed(kind: ExprKind, span: Span) -> Box<Self> {
         Box::new(Self::new(kind, span))
     }
@@ -1270,6 +1292,7 @@ pub enum BinaryOp {
 
 impl BinaryOp {
     /// Returns the precedence of this operator (higher = binds tighter).
+    #[must_use]
     pub const fn precedence(self) -> u8 {
         match self {
             Self::Or => 1,
@@ -1285,6 +1308,7 @@ impl BinaryOp {
     }
 
     /// Returns true if this operator is left-associative.
+    #[must_use]
     pub const fn is_left_assoc(self) -> bool {
         true
     }

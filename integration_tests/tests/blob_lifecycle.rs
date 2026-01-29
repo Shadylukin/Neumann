@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Blob lifecycle integration tests.
 //!
 //! Tests garbage collection, repair, streaming, and deduplication.

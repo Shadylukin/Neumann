@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transaction support for `RelationalEngine`.
 //!
 //! Provides ACID transactions with row-level locking and undo logging:
@@ -163,10 +164,8 @@ impl Transaction {
 #[derive(Debug, Clone)]
 pub(crate) struct RowLock {
     /// Table name.
-    #[allow(dead_code)]
     pub table: String,
     /// Row ID (1-based engine row ID).
-    #[allow(dead_code)]
     pub row_id: u64,
     /// Transaction ID holding the lock.
     pub tx_id: u64,
@@ -221,9 +220,9 @@ impl Deadline {
 
     /// Returns the remaining time in milliseconds, or `None` if no deadline is set.
     #[must_use]
+    #[allow(dead_code)]
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::trivially_copy_pass_by_ref)]
-    #[allow(dead_code)]
     pub fn remaining_ms(&self) -> Option<u64> {
         self.deadline
             .map(|d| d.saturating_duration_since(Instant::now()).as_millis() as u64)
@@ -355,7 +354,6 @@ impl RowLockManager {
     /// Check if a row is locked.
     #[must_use]
     #[instrument(skip(self), fields(table = %table, row_id))]
-    #[allow(dead_code)]
     pub fn is_locked(&self, table: &str, row_id: u64) -> bool {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -365,7 +363,6 @@ impl RowLockManager {
     /// Get the transaction ID holding a lock on a row.
     #[must_use]
     #[instrument(skip(self), fields(table = %table, row_id))]
-    #[allow(dead_code)]
     pub fn lock_holder(&self, table: &str, row_id: u64) -> Option<u64> {
         let locks = self.locks.read();
         let key = (table.to_string(), row_id);
@@ -378,7 +375,6 @@ impl RowLockManager {
     /// Clean up expired locks.
     #[allow(clippy::significant_drop_tightening)]
     #[instrument(skip(self))]
-    #[allow(dead_code)]
     pub fn cleanup_expired(&self) -> usize {
         let mut locks = self.locks.write();
         let mut tx_locks = self.tx_locks.write();
@@ -386,10 +382,16 @@ impl RowLockManager {
         let expired: Vec<_> = locks
             .iter()
             .filter(|(_, lock)| lock.is_expired())
-            .map(|(k, lock)| (k.clone(), lock.tx_id))
+            .map(|(k, lock)| (k.clone(), lock.tx_id, lock.table.clone(), lock.row_id))
             .collect();
 
-        for (key, tx_id) in &expired {
+        for (key, tx_id, table, row_id) in &expired {
+            debug!(
+                tx_id,
+                table = %table,
+                row_id,
+                "expired lock removed"
+            );
             locks.remove(key);
             if let Some(tx_keys) = tx_locks.get_mut(tx_id) {
                 tx_keys.retain(|k| k != key);
@@ -407,7 +409,6 @@ impl RowLockManager {
     /// Get the number of active locks.
     #[must_use]
     #[instrument(skip(self))]
-    #[allow(dead_code)]
     pub fn active_lock_count(&self) -> usize {
         self.locks.read().len()
     }
@@ -415,7 +416,6 @@ impl RowLockManager {
     /// Get the number of locks held by a transaction.
     #[must_use]
     #[instrument(skip(self), fields(tx_id))]
-    #[allow(dead_code)]
     pub fn locks_held_by(&self, tx_id: u64) -> usize {
         self.tx_locks.read().get(&tx_id).map_or(0, Vec::len)
     }
@@ -582,6 +582,40 @@ impl TransactionManager {
             debug!(count = removed, "cleaned up expired transactions");
         }
         removed
+    }
+
+    /// Clean up expired row locks.
+    #[instrument(skip(self))]
+    pub fn cleanup_expired_locks(&self) -> usize {
+        self.lock_manager.cleanup_expired()
+    }
+
+    /// Returns the number of active row locks.
+    #[must_use]
+    #[instrument(skip(self))]
+    pub fn active_lock_count(&self) -> usize {
+        self.lock_manager.active_lock_count()
+    }
+
+    /// Returns the number of locks held by a transaction.
+    #[must_use]
+    #[instrument(skip(self), fields(tx_id))]
+    pub fn locks_held_by(&self, tx_id: u64) -> usize {
+        self.lock_manager.locks_held_by(tx_id)
+    }
+
+    /// Checks if a specific row is locked.
+    #[must_use]
+    #[instrument(skip(self), fields(table = %table, row_id))]
+    pub fn is_row_locked(&self, table: &str, row_id: u64) -> bool {
+        self.lock_manager.is_locked(table, row_id)
+    }
+
+    /// Gets the transaction ID holding a lock on a row.
+    #[must_use]
+    #[instrument(skip(self), fields(table = %table, row_id))]
+    pub fn row_lock_holder(&self, table: &str, row_id: u64) -> Option<u64> {
+        self.lock_manager.lock_holder(table, row_id)
     }
 }
 

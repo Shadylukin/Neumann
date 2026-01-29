@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Embedding-aware peer ranking for geometric routing in cluster membership.
 //!
 //! # Overview

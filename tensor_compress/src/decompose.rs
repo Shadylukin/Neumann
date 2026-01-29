@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Low-level matrix decomposition primitives for tensor operations.
 //!
 //! Implements pure-Rust SVD and matrix operations required for Tensor Train decomposition.

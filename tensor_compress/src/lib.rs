@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor-native compression library.
 //!
 //! Exploits the mathematical structure of high-dimensional embeddings using

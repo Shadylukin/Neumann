@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for semantic partitioner.
 //!
 //! Tests basic semantic routing functionality.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Write-Ahead Log for crash recovery.
 //!
 //! Provides durable logging of all mutations to enable recovery after crashes.

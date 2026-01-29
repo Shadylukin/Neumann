@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Health check service implementation.
 
 use std::sync::atomic::{AtomicBool, Ordering};

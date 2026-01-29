@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for partition merge protocol.
 //!
 //! Tests the full merge flow: heal detection, view exchange, data reconciliation,

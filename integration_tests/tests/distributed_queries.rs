@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for distributed query execution.
 //!
 //! Tests query planning and result merging.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * Scalar value types supported by Neumann.
  */

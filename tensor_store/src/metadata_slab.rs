@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sharded `BTreeMap`-based metadata storage slab.
 //!
 //! `MetadataSlab` provides key-value storage for metadata, vault secrets, and

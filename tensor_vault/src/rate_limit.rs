@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Rate limiting for vault operations.
 //!
 //! Prevents brute-force enumeration and throttles aggressive agents.

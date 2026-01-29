@@ -1,0 +1,33 @@
+[package]
+name = "neumann-examples"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Example code for Neumann database"
+publish = false
+
+[dependencies]
+relational_engine = { path = "../relational_engine" }
+graph_engine = { path = "../graph_engine" }
+vector_engine = { path = "../vector_engine" }
+query_router = { path = "../query_router" }
+tensor_unified = { path = "../tensor_unified" }
+tensor_store = { path = "../tensor_store" }
+
+[[example]]
+name = "basic_relational"
+path = "basic_relational.rs"
+
+[[example]]
+name = "graph_traversal"
+path = "graph_traversal.rs"
+
+[[example]]
+name = "vector_search"
+path = "vector_search.rs"
+
+[[example]]
+name = "unified_query"
+path = "unified_query.rs"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for TLS key parsing.
 //!
 //! Ensures that malformed PEM/DER key data does not cause panics.

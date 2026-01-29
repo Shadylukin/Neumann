@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TLS support for TCP transport.
 //!
 //! Provides wrapper functions to upgrade TCP streams to TLS,

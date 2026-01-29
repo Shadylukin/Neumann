@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Transaction support for Neumann database."""
 
 from __future__ import annotations

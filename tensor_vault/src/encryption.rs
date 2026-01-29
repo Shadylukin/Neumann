@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! AES-256-GCM encryption for vault secrets.
 
 use aes_gcm::{

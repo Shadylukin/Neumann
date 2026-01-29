@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Obfuscation layer for hiding metadata and storage patterns.
 //!
 //! Provides:

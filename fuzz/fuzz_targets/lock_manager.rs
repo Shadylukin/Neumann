@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz target for LockManager operations.
 //!
 //! Tests lock acquire, release, and conflict detection.

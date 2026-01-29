@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native Python bindings for Neumann database via `PyO3`.
 #![allow(clippy::useless_conversion)]
 
@@ -235,6 +236,93 @@ fn convert_result_to_python(py: Python<'_>, result: QueryResult) -> PyResult<PyO
             dict.set_item("type", "chain")?;
             dict.set_item("data", convert_chain_result_to_python(py, &chain_result)?)?;
         },
+        QueryResult::Constraints(constraints) => {
+            dict.set_item("type", "constraints")?;
+            let py_list = PyList::empty_bound(py);
+            for c in constraints {
+                let constraint_dict = PyDict::new_bound(py);
+                constraint_dict.set_item("name", &c.name)?;
+                constraint_dict.set_item("target", &c.target)?;
+                constraint_dict.set_item("property", &c.property)?;
+                constraint_dict.set_item("constraint_type", &c.constraint_type)?;
+                py_list.append(constraint_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+        },
+        QueryResult::GraphIndexes(indexes) => {
+            dict.set_item("type", "graph_indexes")?;
+            dict.set_item("data", PyList::new_bound(py, &indexes))?;
+        },
+        QueryResult::PageRank(result) => {
+            dict.set_item("type", "pagerank")?;
+            let py_list = PyList::empty_bound(py);
+            for item in &result.items {
+                let item_dict = PyDict::new_bound(py);
+                item_dict.set_item("node_id", item.node_id)?;
+                item_dict.set_item("score", item.score)?;
+                py_list.append(item_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+            dict.set_item("iterations", result.iterations)?;
+            dict.set_item("convergence", result.convergence)?;
+            dict.set_item("converged", result.converged)?;
+        },
+        QueryResult::Centrality(result) => {
+            dict.set_item("type", "centrality")?;
+            let py_list = PyList::empty_bound(py);
+            for item in &result.items {
+                let item_dict = PyDict::new_bound(py);
+                item_dict.set_item("node_id", item.node_id)?;
+                item_dict.set_item("score", item.score)?;
+                py_list.append(item_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+        },
+        QueryResult::Communities(result) => {
+            dict.set_item("type", "communities")?;
+            let py_list = PyList::empty_bound(py);
+            for item in &result.items {
+                let item_dict = PyDict::new_bound(py);
+                item_dict.set_item("node_id", item.node_id)?;
+                item_dict.set_item("community_id", item.community_id)?;
+                py_list.append(item_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+            dict.set_item("community_count", result.community_count)?;
+        },
+        QueryResult::Aggregate(result) => {
+            dict.set_item("type", "aggregate")?;
+            use query_router::AggregateResultValue;
+            match result {
+                AggregateResultValue::Count(v) => dict.set_item("data", v)?,
+                AggregateResultValue::Sum(v) => dict.set_item("data", v)?,
+                AggregateResultValue::Avg(v) => dict.set_item("data", v)?,
+                AggregateResultValue::Min(v) => dict.set_item("data", v)?,
+                AggregateResultValue::Max(v) => dict.set_item("data", v)?,
+            }
+        },
+        QueryResult::BatchResult(result) => {
+            dict.set_item("type", "batch")?;
+            let result_dict = PyDict::new_bound(py);
+            result_dict.set_item("operation", &result.operation)?;
+            result_dict.set_item("affected_count", result.affected_count)?;
+            if let Some(ref ids) = result.created_ids {
+                result_dict.set_item("created_ids", PyList::new_bound(py, ids))?;
+            }
+            dict.set_item("data", result_dict)?;
+        },
+        QueryResult::PatternMatch(result) => {
+            dict.set_item("type", "pattern_match")?;
+            let py_list = PyList::empty_bound(py);
+            for matched in &result.matches {
+                let bindings_dict = PyDict::new_bound(py);
+                for (name, _binding) in &matched.bindings {
+                    bindings_dict.set_item(name, name)?;
+                }
+                py_list.append(bindings_dict)?;
+            }
+            dict.set_item("data", py_list)?;
+        },
     }
 
     Ok(dict.into())
@@ -251,6 +339,8 @@ fn convert_value_to_python(py: Python<'_>, value: &relational_engine::Value) -> 
         Value::Float(f) => (*f).into_py(py),
         Value::String(s) => s.clone().into_py(py),
         Value::Bool(b) => (*b).into_py(py),
+        Value::Bytes(b) => b.clone().into_py(py),
+        Value::Json(j) => j.to_string().into_py(py),
     }
 }
 

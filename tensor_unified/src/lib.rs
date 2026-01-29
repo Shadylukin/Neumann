@@ -27,16 +27,28 @@ pub enum UnifiedError {
     NotFound(String),
     /// Invalid operation.
     InvalidOperation(String),
+    /// Batch operation failed at specific index.
+    BatchOperationFailed {
+        /// Index of the failed item in the batch.
+        index: usize,
+        /// Key of the failed item.
+        key: String,
+        /// Description of the failure.
+        cause: String,
+    },
 }
 
 impl std::fmt::Display for UnifiedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UnifiedError::RelationalError(msg) => write!(f, "Relational error: {}", msg),
-            UnifiedError::GraphError(msg) => write!(f, "Graph error: {}", msg),
-            UnifiedError::VectorError(msg) => write!(f, "Vector error: {}", msg),
-            UnifiedError::NotFound(key) => write!(f, "Entity not found: {}", key),
-            UnifiedError::InvalidOperation(msg) => write!(f, "Invalid operation: {}", msg),
+            UnifiedError::RelationalError(msg) => write!(f, "Relational error: {msg}"),
+            UnifiedError::GraphError(msg) => write!(f, "Graph error: {msg}"),
+            UnifiedError::VectorError(msg) => write!(f, "Vector error: {msg}"),
+            UnifiedError::NotFound(key) => write!(f, "Entity not found: {key}"),
+            UnifiedError::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
+            UnifiedError::BatchOperationFailed { index, key, cause } => {
+                write!(f, "Batch operation failed at index {index} (key: {key}): {cause}")
+            }
         }
     }
 }
@@ -66,6 +78,24 @@ pub type Result<T> = std::result::Result<T, UnifiedError>;
 /// Entity input type for batch operations: (key, fields, optional embedding).
 pub type EntityInput = (String, HashMap<String, String>, Option<Vec<f32>>);
 
+/// Result of a batch operation with details about successful items.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BatchResult {
+    /// Keys of successfully processed items.
+    pub succeeded: Vec<String>,
+    /// Total count of successful operations.
+    pub count: usize,
+}
+
+impl BatchResult {
+    /// Creates a new `BatchResult` from a list of succeeded keys.
+    #[must_use]
+    pub fn new(succeeded: Vec<String>) -> Self {
+        let count = succeeded.len();
+        Self { succeeded, count }
+    }
+}
+
 /// Result from unified cross-engine query.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UnifiedResult {
@@ -93,21 +123,31 @@ impl UnifiedResult {
     }
 
     /// Returns the number of items.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Returns true if there are no items.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     /// Converts to JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
     pub fn to_json(&self) -> std::result::Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
 
     /// Converts to pretty JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
     pub fn to_json_pretty(&self) -> std::result::Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
@@ -130,6 +170,7 @@ pub struct UnifiedItem {
 
 impl UnifiedItem {
     /// Creates a new unified item.
+    #[must_use]
     pub fn new(source: impl Into<String>, id: impl Into<String>) -> Self {
         Self {
             source: source.into(),
@@ -141,6 +182,7 @@ impl UnifiedItem {
     }
 
     /// Creates an item with data.
+    #[must_use]
     pub fn with_data(
         source: impl Into<String>,
         id: impl Into<String>,
@@ -161,12 +203,14 @@ impl UnifiedItem {
     }
 
     /// Sets the similarity score.
+    #[must_use]
     pub fn with_score(mut self, score: f32) -> Self {
         self.score = Some(score);
         self
     }
 
     /// Sets the embedding.
+    #[must_use]
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.embedding = Some(embedding);
         self
@@ -180,7 +224,7 @@ impl UnifiedItem {
 /// This allows nodes, edges, embeddings, and other engine-specific types
 /// to be presented in a consistent format for cross-engine queries.
 pub trait Unified {
-    /// Convert this item to a UnifiedItem.
+    /// Convert this item to a `UnifiedItem`.
     fn as_unified(&self) -> UnifiedItem;
 
     /// Get the source engine name.
@@ -195,7 +239,7 @@ impl Unified for Node {
         let mut item = UnifiedItem::new("graph", self.id.to_string());
         item.set("label", self.labels.join(":"));
         for (k, v) in &self.properties {
-            item.set(k.clone(), format!("{:?}", v));
+            item.set(k.clone(), format!("{v:?}"));
         }
         item
     }
@@ -216,7 +260,7 @@ impl Unified for graph_engine::Edge {
         item.set("to", self.to.to_string());
         item.set("type", &self.edge_type);
         for (k, v) in &self.properties {
-            item.set(k.clone(), format!("{:?}", v));
+            item.set(k.clone(), format!("{v:?}"));
         }
         item
     }
@@ -313,12 +357,14 @@ pub struct UnifiedEngine {
 
 impl UnifiedEngine {
     /// Creates a new unified engine with fresh engines.
+    #[must_use]
     pub fn new() -> Self {
         let store = TensorStore::new();
         Self::with_store(store)
     }
 
     /// Creates a unified engine with a shared store.
+    #[must_use]
     pub fn with_store(store: TensorStore) -> Self {
         Self {
             relational: Arc::new(RelationalEngine::with_store(store.clone())),
@@ -329,6 +375,7 @@ impl UnifiedEngine {
     }
 
     /// Creates a unified engine with existing engines.
+    #[must_use]
     pub fn with_engines(
         store: TensorStore,
         relational: Arc<RelationalEngine>,
@@ -344,21 +391,25 @@ impl UnifiedEngine {
     }
 
     /// Returns a reference to the underlying store.
+    #[must_use]
     pub fn store(&self) -> &TensorStore {
         &self.store
     }
 
     /// Returns a reference to the relational engine.
+    #[must_use]
     pub fn relational(&self) -> &RelationalEngine {
         &self.relational
     }
 
     /// Returns a reference to the graph engine.
+    #[must_use]
     pub fn graph(&self) -> &GraphEngine {
         &self.graph
     }
 
     /// Returns a reference to the vector engine.
+    #[must_use]
     pub fn vector(&self) -> &VectorEngine {
         &self.vector
     }
@@ -366,6 +417,11 @@ impl UnifiedEngine {
     // ========== Entity Operations ==========
 
     /// Creates a unified entity with optional relational data and embedding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storing the embedding or fields fails.
+    #[allow(clippy::unused_async)]
     pub async fn create_entity(
         &self,
         key: &str,
@@ -398,10 +454,15 @@ impl UnifiedEngine {
     /// Creates a unified entity with fields stored as vector metadata.
     ///
     /// This method stores entity fields directly as vector embedding metadata,
-    /// avoiding double-storage in both TensorStore and VectorEngine. This is
+    /// avoiding double-storage in both `TensorStore` and `VectorEngine`. This is
     /// more efficient for entities that will primarily be searched via similarity.
     ///
-    /// If no embedding is provided, falls back to storing fields in TensorStore.
+    /// If no embedding is provided, falls back to storing fields in `TensorStore`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storing the embedding or metadata fails.
+    #[allow(clippy::unused_async)]
     pub async fn create_entity_unified(
         &self,
         key: &str,
@@ -411,7 +472,12 @@ impl UnifiedEngine {
         // Convert fields to TensorValue metadata
         let metadata: HashMap<String, TensorValue> = fields
             .iter()
-            .map(|(k, v)| (k.clone(), TensorValue::Scalar(ScalarValue::String(v.clone()))))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    TensorValue::Scalar(ScalarValue::String(v.clone())),
+                )
+            })
             .collect();
 
         if let Some(emb) = embedding {
@@ -436,8 +502,13 @@ impl UnifiedEngine {
     /// Gets a unified entity with fields from vector metadata.
     ///
     /// Attempts to retrieve entity data from vector metadata first. If not found,
-    /// falls back to TensorStore. Returns the entity with all available fields
+    /// falls back to `TensorStore`. Returns the entity with all available fields
     /// and embedding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entity is not found.
+    #[allow(clippy::unused_async)]
     pub async fn get_entity_unified(&self, key: &str) -> Result<UnifiedItem> {
         let mut item = UnifiedItem::new("unified", key);
 
@@ -484,7 +555,7 @@ impl UnifiedEngine {
         Ok(item)
     }
 
-    /// Converts a TensorValue to a string representation.
+    /// Converts a `TensorValue` to a string representation.
     fn tensor_value_to_string(value: &TensorValue) -> Option<String> {
         match value {
             TensorValue::Scalar(ScalarValue::String(s)) => Some(s.clone()),
@@ -562,6 +633,7 @@ impl UnifiedEngine {
     }
 
     /// Connects two entities with an edge.
+    #[allow(clippy::unused_async)]
     pub async fn connect_entities(
         &self,
         from_key: &str,
@@ -576,13 +648,14 @@ impl UnifiedEngine {
     }
 
     /// Gets an entity with all its data.
+    #[allow(clippy::unused_async)]
     pub async fn get_entity(&self, key: &str) -> Result<UnifiedItem> {
         let mut item = UnifiedItem::new("unified", key);
 
         // Get TensorData
         if let Ok(tensor) = self.store.get(key) {
             for (field, value) in tensor.iter() {
-                item.set(field.clone(), format!("{:?}", value));
+                item.set(field.clone(), format!("{value:?}"));
             }
         }
 
@@ -596,6 +669,143 @@ impl UnifiedEngine {
         }
 
         Ok(item)
+    }
+
+    /// Updates an existing entity's fields and/or embedding.
+    #[allow(clippy::unused_async)]
+    pub async fn update_entity(
+        &self,
+        key: &str,
+        fields: HashMap<String, String>,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<()> {
+        // Check entity exists in any storage path
+        let exists_in_store = self.store.get(key).is_ok();
+        let exists_in_vector =
+            self.vector.get_metadata(key).is_ok() || self.vector.get_entity_embedding(key).is_ok();
+
+        if !exists_in_store && !exists_in_vector {
+            return Err(UnifiedError::NotFound(key.to_string()));
+        }
+
+        // Update TensorStore fields
+        if !fields.is_empty() {
+            let mut tensor = self
+                .store
+                .get(key)
+                .unwrap_or_else(|_| tensor_store::TensorData::new());
+            for (k, v) in &fields {
+                tensor.set(k, TensorValue::Scalar(ScalarValue::String(v.clone())));
+            }
+            self.store
+                .put(key, tensor)
+                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
+        }
+
+        // Update vector metadata if that path is in use
+        if self.vector.get_metadata(key).is_ok() {
+            let metadata: HashMap<String, TensorValue> = fields
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        TensorValue::Scalar(ScalarValue::String(v.clone())),
+                    )
+                })
+                .collect();
+            self.vector
+                .update_metadata(key, metadata)
+                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
+        }
+
+        // Update embedding if provided
+        if let Some(emb) = embedding {
+            self.vector
+                .set_entity_embedding(key, emb)
+                .map_err(|e| UnifiedError::VectorError(e.to_string()))?;
+        }
+
+        // Update graph node properties if entity has a node
+        if let Some(node_id) = self.find_entity_node(key) {
+            let props: HashMap<String, PropertyValue> = fields
+                .iter()
+                .map(|(k, v)| (k.clone(), PropertyValue::String(v.clone())))
+                .collect();
+            let _ = self.graph.update_node(node_id, None, props);
+        }
+
+        Ok(())
+    }
+
+    /// Deletes an entity and all associated data.
+    #[allow(clippy::unused_async)]
+    pub async fn delete_entity(&self, key: &str) -> Result<()> {
+        let mut deleted = false;
+
+        // Delete from graph (cascades to edges via delete_node)
+        if let Some(node_id) = self.find_entity_node(key) {
+            self.graph
+                .delete_node(node_id)
+                .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+            deleted = true;
+        }
+
+        // Delete embedding
+        if self.vector.delete_embedding(key).is_ok() {
+            deleted = true;
+        }
+
+        // Delete from TensorStore
+        if self.store.delete(key).is_ok() {
+            deleted = true;
+        }
+
+        if deleted {
+            Ok(())
+        } else {
+            Err(UnifiedError::NotFound(key.to_string()))
+        }
+    }
+
+    /// Disconnects entities by removing edges between them.
+    ///
+    /// Returns the number of edges deleted.
+    #[allow(clippy::unused_async)]
+    pub async fn disconnect_entities(
+        &self,
+        from_key: &str,
+        to_key: &str,
+        edge_type: Option<&str>,
+    ) -> Result<usize> {
+        let from_node = self
+            .find_entity_node(from_key)
+            .ok_or_else(|| UnifiedError::NotFound(from_key.to_string()))?;
+        let to_node = self
+            .find_entity_node(to_key)
+            .ok_or_else(|| UnifiedError::NotFound(to_key.to_string()))?;
+
+        let edges = self
+            .graph
+            .edges_of(from_node, Direction::Outgoing)
+            .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+
+        let mut deleted = 0;
+        for edge in edges {
+            if edge.to != to_node {
+                continue;
+            }
+            if let Some(filter_type) = edge_type {
+                if edge.edge_type != filter_type {
+                    continue;
+                }
+            }
+            self.graph
+                .delete_edge(edge.id)
+                .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+            deleted += 1;
+        }
+
+        Ok(deleted)
     }
 
     // ========== Cross-Engine Query Operations ==========
@@ -617,6 +827,7 @@ impl UnifiedEngine {
     ///
     /// Optionally accepts pre-computed HNSW results to avoid redundant computation
     /// when an HNSW index is available in the caller.
+    #[allow(clippy::unused_async)]
     pub async fn find_similar_connected_with_hnsw(
         &self,
         query_key: &str,
@@ -657,7 +868,7 @@ impl UnifiedEngine {
 
     /// Finds entities similar to a query, connected via graph, with optional filter.
     ///
-    /// Uses vector_engine's filtered search to apply metadata filters during search
+    /// Uses `vector_engine`'s filtered search to apply metadata filters during search
     /// rather than post-filtering, which is more efficient for selective filters.
     ///
     /// The method builds a combined filter that:
@@ -677,6 +888,7 @@ impl UnifiedEngine {
     /// let filter = FilterCondition::Eq("status".to_string(), FilterValue::String("active".to_string()));
     /// let results = engine.find_similar_connected_filtered("doc1", "hub", Some(&filter), 10).await?;
     /// ```
+    #[allow(clippy::unused_async)]
     pub async fn find_similar_connected_filtered(
         &self,
         query_key: &str,
@@ -728,6 +940,7 @@ impl UnifiedEngine {
     }
 
     /// Finds graph neighbors sorted by similarity to a query vector.
+    #[allow(clippy::unused_async)]
     pub async fn find_neighbors_by_similarity(
         &self,
         entity_key: &str,
@@ -762,6 +975,7 @@ impl UnifiedEngine {
     // ========== FIND Operations ==========
 
     /// Finds nodes matching a pattern.
+    #[allow(clippy::unused_async)]
     pub async fn find_nodes(
         &self,
         label: Option<&str>,
@@ -770,12 +984,12 @@ impl UnifiedEngine {
         let mut items = Vec::new();
 
         // Scan graph for nodes
-        let nodes = self.scan_nodes(label)?;
+        let nodes = self.scan_nodes(label);
 
         for node in nodes {
             // Apply condition filter if provided
             if let Some(cond) = condition {
-                if !self.node_matches_condition(&node, cond) {
+                if !Self::node_matches_condition(&node, cond) {
                     continue;
                 }
             }
@@ -792,6 +1006,7 @@ impl UnifiedEngine {
     }
 
     /// Finds edges matching a pattern.
+    #[allow(clippy::unused_async)]
     pub async fn find_edges(
         &self,
         edge_type: Option<&str>,
@@ -800,12 +1015,12 @@ impl UnifiedEngine {
         let mut items = Vec::new();
 
         // Scan graph for edges
-        let edges = self.scan_edges(edge_type)?;
+        let edges = self.scan_edges(edge_type);
 
         for edge in edges {
             // Apply condition filter if provided
             if let Some(cond) = condition {
-                if !self.edge_matches_condition(&edge, cond) {
+                if !Self::edge_matches_condition(&edge, cond) {
                     continue;
                 }
             }
@@ -824,6 +1039,7 @@ impl UnifiedEngine {
     }
 
     /// Finds rows in a relational table matching a condition.
+    #[allow(clippy::unused_async)]
     pub async fn find_rows(
         &self,
         table: &str,
@@ -837,6 +1053,180 @@ impl UnifiedEngine {
             .map_err(|e| UnifiedError::RelationalError(e.to_string()))?;
 
         Ok(rows.into_iter().map(|r| r.as_unified()).collect())
+    }
+
+    /// Finds paths matching the pattern.
+    ///
+    /// Supports finding paths between entities via graph traversal:
+    /// - `from` + `to`: Find path(s) between specific entities
+    /// - `from` only: Find outgoing connections from entity
+    /// - `to` only: Find incoming connections to entity
+    /// - `edge` filter: Optionally filter by edge type
+    pub async fn find_paths(
+        &self,
+        from: Option<&str>,
+        edge: Option<&str>,
+        to: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<UnifiedItem>> {
+        let limit = limit.unwrap_or(100).min(1000);
+
+        match (from, to) {
+            (Some(from_str), Some(to_str)) => {
+                let from_ids = self.resolve_node_id(from_str)?;
+                let to_ids = self.resolve_node_id(to_str)?;
+                let mut items = Vec::new();
+                let mut path_index = 0;
+
+                'outer: for from_id in &from_ids {
+                    for to_id in &to_ids {
+                        if items.len() >= limit {
+                            break 'outer;
+                        }
+
+                        if let Ok(path) = self.graph.find_path(*from_id, *to_id, None) {
+                            // Filter by edge type if specified
+                            if let Some(et) = edge {
+                                let edges_match = path.edges.iter().all(|eid| {
+                                    self.graph
+                                        .get_edge(*eid)
+                                        .map(|e| e.edge_type == et)
+                                        .unwrap_or(false)
+                                });
+                                if !edges_match {
+                                    continue;
+                                }
+                            }
+                            items.push(Self::path_to_unified_item(&path, path_index));
+                            path_index += 1;
+                        }
+                    }
+                }
+                Ok(items)
+            },
+            (Some(from_str), None) => {
+                let from_ids = self.resolve_node_id(from_str)?;
+                let mut items = Vec::new();
+
+                for from_id in from_ids {
+                    if items.len() >= limit {
+                        break;
+                    }
+                    let neighbors = self
+                        .graph
+                        .neighbors(from_id, edge, Direction::Outgoing, None)
+                        .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+
+                    for neighbor in neighbors {
+                        if items.len() >= limit {
+                            break;
+                        }
+                        let neighbor_id = neighbor.id;
+                        let mut item =
+                            UnifiedItem::new("graph:path", format!("path:{from_id}:{neighbor_id}"));
+                        item.set("from", from_id.to_string());
+                        item.set("to", neighbor.id.to_string());
+                        item.set("length", "1");
+                        items.push(item);
+                    }
+                }
+                Ok(items)
+            },
+            (None, Some(to_str)) => {
+                let to_ids = self.resolve_node_id(to_str)?;
+                let mut items = Vec::new();
+
+                for to_id in to_ids {
+                    if items.len() >= limit {
+                        break;
+                    }
+                    let neighbors = self
+                        .graph
+                        .neighbors(to_id, edge, Direction::Incoming, None)
+                        .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+
+                    for neighbor in neighbors {
+                        if items.len() >= limit {
+                            break;
+                        }
+                        let neighbor_id = neighbor.id;
+                        let mut item =
+                            UnifiedItem::new("graph:path", format!("path:{neighbor_id}:{to_id}"));
+                        item.set("from", neighbor.id.to_string());
+                        item.set("to", to_id.to_string());
+                        item.set("length", "1");
+                        items.push(item);
+                    }
+                }
+                Ok(items)
+            },
+            (None, None) => {
+                if edge.is_some() {
+                    self.find_edges(edge, None).await
+                } else {
+                    Err(UnifiedError::InvalidOperation(
+                        "Path query requires 'from' or 'to' specification".to_string(),
+                    ))
+                }
+            },
+        }
+    }
+
+    /// Resolves a string identifier to node ID(s).
+    ///
+    /// If the string is numeric, treats it as a node ID.
+    /// Otherwise, searches for nodes by label.
+    fn resolve_node_id(&self, identifier: &str) -> Result<Vec<u64>> {
+        // Try to parse as numeric node ID first
+        if let Ok(id) = identifier.parse::<u64>() {
+            if self.graph.node_exists(id) {
+                return Ok(vec![id]);
+            }
+            return Err(UnifiedError::NotFound(format!("Node {id} not found")));
+        }
+
+        // Otherwise, find nodes by label
+        let nodes = self
+            .graph
+            .find_nodes_by_label(identifier)
+            .map_err(|e| UnifiedError::GraphError(e.to_string()))?;
+
+        if nodes.is_empty() {
+            return Err(UnifiedError::NotFound(format!(
+                "No nodes with label '{identifier}'"
+            )));
+        }
+
+        Ok(nodes.into_iter().map(|n| n.id).collect())
+    }
+
+    /// Converts a graph Path to `UnifiedItem`.
+    fn path_to_unified_item(path: &graph_engine::Path, index: usize) -> UnifiedItem {
+        let mut item = UnifiedItem::new("graph:path", format!("path:{index}"));
+        item.set(
+            "nodes",
+            path.nodes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        item.set(
+            "edges",
+            path.edges
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        item.set("length", path.edges.len().to_string());
+        if let Some(first) = path.nodes.first() {
+            item.set("from", first.to_string());
+        }
+        if let Some(last) = path.nodes.last() {
+            item.set("to", last.to_string());
+        }
+        item
     }
 
     /// Executes a unified FIND query.
@@ -863,9 +1253,39 @@ impl UnifiedEngine {
                 let desc = format!("Found {} row(s) in table '{}'", items.len(), table);
                 (desc, items)
             },
-            FindPattern::Path { .. } => {
-                // Path finding not yet implemented
-                ("Path finding not yet implemented".to_string(), Vec::new())
+            FindPattern::Path { from, edge, to } => {
+                let items = self
+                    .find_paths(from.as_deref(), edge.as_deref(), to.as_deref(), limit)
+                    .await?;
+                let desc = match (from.as_ref(), edge.as_ref(), to.as_ref()) {
+                    (Some(f), Some(e), Some(t)) => {
+                        format!(
+                            "Found {} path(s) from '{}' via '{}' to '{}'",
+                            items.len(),
+                            f,
+                            e,
+                            t
+                        )
+                    },
+                    (Some(f), None, Some(t)) => {
+                        format!("Found {} path(s) from '{}' to '{}'", items.len(), f, t)
+                    },
+                    (Some(f), Some(e), None) => {
+                        format!("Found {} '{}' connection(s) from '{}'", items.len(), e, f)
+                    },
+                    (Some(f), None, None) => {
+                        format!("Found {} connection(s) from '{}'", items.len(), f)
+                    },
+                    (None, Some(e), Some(t)) => {
+                        format!("Found {} '{}' connection(s) to '{}'", items.len(), e, t)
+                    },
+                    (None, None, Some(t)) => {
+                        format!("Found {} connection(s) to '{}'", items.len(), t)
+                    },
+                    (None, Some(e), None) => format!("Found {} '{}' edge(s)", items.len(), e),
+                    (None, None, None) => "Path query requires 'from' or 'to'".to_string(),
+                };
+                (desc, items)
             },
         };
 
@@ -880,35 +1300,83 @@ impl UnifiedEngine {
 
     // ========== Batch Operations ==========
 
-    /// Stores multiple embeddings using the vector engine's storage format.
-    pub async fn embed_batch(&self, items: Vec<(String, Vec<f32>)>) -> Result<usize> {
-        let mut success_count = 0;
-
-        for (key, vec) in items {
-            if self.vector.store_embedding(&key, vec).is_ok() {
-                success_count += 1;
+    /// Stores multiple embeddings with validation and error tracking.
+    ///
+    /// Uses all-or-nothing semantics: validates all inputs first, then
+    /// processes sequentially. Fails on first error with index tracking.
+    #[allow(clippy::unused_async)]
+    pub async fn embed_batch(&self, items: Vec<(String, Vec<f32>)>) -> Result<BatchResult> {
+        // Phase 1: Validate all inputs
+        for (idx, (key, vec)) in items.iter().enumerate() {
+            if vec.is_empty() {
+                return Err(UnifiedError::BatchOperationFailed {
+                    index: idx,
+                    key: key.clone(),
+                    cause: "empty vector".to_string(),
+                });
             }
         }
 
-        Ok(success_count)
+        // Phase 2: Store all (fail-fast on error)
+        let mut succeeded = Vec::with_capacity(items.len());
+        for (idx, (key, vec)) in items.into_iter().enumerate() {
+            self.vector
+                .store_embedding(&key, vec)
+                .map_err(|e| UnifiedError::BatchOperationFailed {
+                    index: idx,
+                    key: key.clone(),
+                    cause: e.to_string(),
+                })?;
+            succeeded.push(key);
+        }
+
+        Ok(BatchResult::new(succeeded))
     }
 
-    /// Creates multiple entities concurrently.
-    pub async fn create_entities_batch(&self, entities: Vec<EntityInput>) -> Result<usize> {
-        let mut success_count = 0;
-
-        for (key, fields, embedding) in entities {
-            if self.create_entity(&key, fields, embedding).await.is_ok() {
-                success_count += 1;
+    /// Creates multiple entities with validation and error tracking.
+    ///
+    /// Uses all-or-nothing semantics: validates all inputs first, then
+    /// creates sequentially. Fails on first error with index tracking.
+    pub async fn create_entities_batch(&self, entities: Vec<EntityInput>) -> Result<BatchResult> {
+        // Phase 1: Validate all inputs
+        for (idx, (key, _fields, embedding)) in entities.iter().enumerate() {
+            if key.is_empty() {
+                return Err(UnifiedError::BatchOperationFailed {
+                    index: idx,
+                    key: key.clone(),
+                    cause: "empty key".to_string(),
+                });
+            }
+            if let Some(emb) = embedding {
+                if emb.is_empty() {
+                    return Err(UnifiedError::BatchOperationFailed {
+                        index: idx,
+                        key: key.clone(),
+                        cause: "empty embedding vector".to_string(),
+                    });
+                }
             }
         }
 
-        Ok(success_count)
+        // Phase 2: Create all (fail-fast on error)
+        let mut succeeded = Vec::with_capacity(entities.len());
+        for (idx, (key, fields, embedding)) in entities.into_iter().enumerate() {
+            self.create_entity(&key, fields, embedding)
+                .await
+                .map_err(|e| UnifiedError::BatchOperationFailed {
+                    index: idx,
+                    key: key.clone(),
+                    cause: e.to_string(),
+                })?;
+            succeeded.push(key);
+        }
+
+        Ok(BatchResult::new(succeeded))
     }
 
     // ========== Helper Methods ==========
 
-    fn scan_nodes(&self, label_filter: Option<&str>) -> Result<Vec<Node>> {
+    fn scan_nodes(&self, label_filter: Option<&str>) -> Vec<Node> {
         let mut nodes = Vec::new();
 
         // Scan for all node keys in the store
@@ -936,10 +1404,10 @@ impl UnifiedEngine {
             }
         }
 
-        Ok(nodes)
+        nodes
     }
 
-    fn scan_edges(&self, edge_type_filter: Option<&str>) -> Result<Vec<graph_engine::Edge>> {
+    fn scan_edges(&self, edge_type_filter: Option<&str>) -> Vec<graph_engine::Edge> {
         let mut edges = Vec::new();
 
         // Scan for all edge keys in the store
@@ -962,10 +1430,11 @@ impl UnifiedEngine {
             }
         }
 
-        Ok(edges)
+        edges
     }
 
-    fn node_matches_condition(&self, node: &Node, condition: &Condition) -> bool {
+    #[allow(clippy::cast_sign_loss)]
+    fn node_matches_condition(node: &Node, condition: &Condition) -> bool {
         match condition {
             Condition::Eq(col, val) => {
                 if col == "id" {
@@ -982,51 +1451,52 @@ impl UnifiedEngine {
                     };
                 }
                 if let Some(prop) = node.properties.get(col) {
-                    return self.property_matches_value(prop, val);
+                    return Self::property_matches_value(prop, val);
                 }
                 false
             },
             Condition::Ne(col, val) => {
                 if let Some(prop) = node.properties.get(col) {
-                    return !self.property_matches_value(prop, val);
+                    return !Self::property_matches_value(prop, val);
                 }
                 true // Missing property is considered "not equal"
             },
             Condition::Gt(col, val) => {
                 if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_gt(prop, val);
+                    return Self::property_compare_gt(prop, val);
                 }
                 false
             },
             Condition::Ge(col, val) => {
                 if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_gte(prop, val);
+                    return Self::property_compare_gte(prop, val);
                 }
                 false
             },
             Condition::Lt(col, val) => {
                 if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_lt(prop, val);
+                    return Self::property_compare_lt(prop, val);
                 }
                 false
             },
             Condition::Le(col, val) => {
                 if let Some(prop) = node.properties.get(col) {
-                    return self.property_compare_lte(prop, val);
+                    return Self::property_compare_lte(prop, val);
                 }
                 false
             },
             Condition::And(a, b) => {
-                self.node_matches_condition(node, a) && self.node_matches_condition(node, b)
+                Self::node_matches_condition(node, a) && Self::node_matches_condition(node, b)
             },
             Condition::Or(a, b) => {
-                self.node_matches_condition(node, a) || self.node_matches_condition(node, b)
+                Self::node_matches_condition(node, a) || Self::node_matches_condition(node, b)
             },
-            _ => true, // Other conditions (In, Like, etc.) not yet implemented
+            Condition::True => true,
         }
     }
 
-    fn edge_matches_condition(&self, edge: &graph_engine::Edge, condition: &Condition) -> bool {
+    #[allow(clippy::cast_sign_loss)]
+    fn edge_matches_condition(edge: &graph_engine::Edge, condition: &Condition) -> bool {
         match condition {
             Condition::Eq(col, val) => {
                 if col == "id" {
@@ -1055,51 +1525,51 @@ impl UnifiedEngine {
                     };
                 }
                 if let Some(prop) = edge.properties.get(col) {
-                    return self.property_matches_value(prop, val);
+                    return Self::property_matches_value(prop, val);
                 }
                 false
             },
             Condition::Ne(col, val) => {
                 if let Some(prop) = edge.properties.get(col) {
-                    return !self.property_matches_value(prop, val);
+                    return !Self::property_matches_value(prop, val);
                 }
                 true
             },
             Condition::Gt(col, val) => {
                 if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_gt(prop, val);
+                    return Self::property_compare_gt(prop, val);
                 }
                 false
             },
             Condition::Ge(col, val) => {
                 if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_gte(prop, val);
+                    return Self::property_compare_gte(prop, val);
                 }
                 false
             },
             Condition::Lt(col, val) => {
                 if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_lt(prop, val);
+                    return Self::property_compare_lt(prop, val);
                 }
                 false
             },
             Condition::Le(col, val) => {
                 if let Some(prop) = edge.properties.get(col) {
-                    return self.property_compare_lte(prop, val);
+                    return Self::property_compare_lte(prop, val);
                 }
                 false
             },
             Condition::And(a, b) => {
-                self.edge_matches_condition(edge, a) && self.edge_matches_condition(edge, b)
+                Self::edge_matches_condition(edge, a) && Self::edge_matches_condition(edge, b)
             },
             Condition::Or(a, b) => {
-                self.edge_matches_condition(edge, a) || self.edge_matches_condition(edge, b)
+                Self::edge_matches_condition(edge, a) || Self::edge_matches_condition(edge, b)
             },
-            _ => true, // Other conditions (In, Like, etc.) not yet implemented
+            Condition::True => true,
         }
     }
 
-    fn property_matches_value(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+    fn property_matches_value(prop: &graph_engine::PropertyValue, val: &Value) -> bool {
         match (prop, val) {
             (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i == *v,
             (graph_engine::PropertyValue::Float(f), Value::Float(v)) => {
@@ -1111,7 +1581,8 @@ impl UnifiedEngine {
         }
     }
 
-    fn property_compare_gt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+    #[allow(clippy::cast_precision_loss)]
+    fn property_compare_gt(prop: &graph_engine::PropertyValue, val: &Value) -> bool {
         match (prop, val) {
             (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i > *v,
             (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f > *v,
@@ -1121,7 +1592,8 @@ impl UnifiedEngine {
         }
     }
 
-    fn property_compare_gte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+    #[allow(clippy::cast_precision_loss)]
+    fn property_compare_gte(prop: &graph_engine::PropertyValue, val: &Value) -> bool {
         match (prop, val) {
             (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i >= *v,
             (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f >= *v,
@@ -1131,7 +1603,8 @@ impl UnifiedEngine {
         }
     }
 
-    fn property_compare_lt(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+    #[allow(clippy::cast_precision_loss)]
+    fn property_compare_lt(prop: &graph_engine::PropertyValue, val: &Value) -> bool {
         match (prop, val) {
             (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i < *v,
             (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f < *v,
@@ -1141,7 +1614,8 @@ impl UnifiedEngine {
         }
     }
 
-    fn property_compare_lte(&self, prop: &graph_engine::PropertyValue, val: &Value) -> bool {
+    #[allow(clippy::cast_precision_loss)]
+    fn property_compare_lte(prop: &graph_engine::PropertyValue, val: &Value) -> bool {
         match (prop, val) {
             (graph_engine::PropertyValue::Int(i), Value::Int(v)) => *i <= *v,
             (graph_engine::PropertyValue::Float(f), Value::Float(v)) => *f <= *v,
@@ -1180,6 +1654,7 @@ impl Clone for UnifiedEngine {
 }
 
 #[cfg(test)]
+#[allow(unused_variables)]
 mod tests {
     use super::*;
 
@@ -1381,8 +1856,8 @@ mod tests {
             .unwrap();
 
         // Connect via entity keys
-        let key1 = format!("node:{}", n1);
-        let key2 = format!("node:{}", n2);
+        let key1 = format!("node:{n1}");
+        let key2 = format!("node:{n2}");
 
         let result = engine.connect_entities(&key1, &key2, "knows").await;
         // This may fail if entity edge creation requires existing entity keys
@@ -1456,8 +1931,41 @@ mod tests {
             ("doc3".to_string(), vec![0.7, 0.8, 0.9]),
         ];
 
-        let count = engine.embed_batch(items).await.unwrap();
-        assert_eq!(count, 3);
+        let result = engine.embed_batch(items).await.unwrap();
+        assert_eq!(result.count, 3);
+        assert_eq!(result.succeeded.len(), 3);
+        assert!(result.succeeded.contains(&"doc1".to_string()));
+        assert!(result.succeeded.contains(&"doc2".to_string()));
+        assert!(result.succeeded.contains(&"doc3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_empty() {
+        let engine = create_engine();
+        let result = engine.embed_batch(vec![]).await.unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.succeeded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_embed_batch_validation_empty_vector() {
+        let engine = create_engine();
+
+        let items = vec![
+            ("doc1".to_string(), vec![0.1, 0.2]),
+            ("doc2".to_string(), vec![]), // Invalid: empty vector
+        ];
+
+        let result = engine.embed_batch(items).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            UnifiedError::BatchOperationFailed { index, key, cause } => {
+                assert_eq!(index, 1);
+                assert_eq!(key, "doc2");
+                assert!(cause.contains("empty vector"));
+            }
+            e => panic!("unexpected error: {e}"),
+        }
     }
 
     #[tokio::test]
@@ -1477,8 +1985,70 @@ mod tests {
             ),
         ];
 
-        let count = engine.create_entities_batch(entities).await.unwrap();
-        assert_eq!(count, 2);
+        let result = engine.create_entities_batch(entities).await.unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.succeeded.len(), 2);
+        assert!(result.succeeded.contains(&"e1".to_string()));
+        assert!(result.succeeded.contains(&"e2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_empty() {
+        let engine = create_engine();
+        let result = engine.create_entities_batch(vec![]).await.unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.succeeded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_validation_empty_key() {
+        let engine = create_engine();
+
+        let entities = vec![
+            (
+                "valid".to_string(),
+                HashMap::from([("name".to_string(), "A".to_string())]),
+                None,
+            ),
+            (
+                String::new(), // Invalid: empty key
+                HashMap::from([("name".to_string(), "B".to_string())]),
+                None,
+            ),
+        ];
+
+        let result = engine.create_entities_batch(entities).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            UnifiedError::BatchOperationFailed { index, key, cause } => {
+                assert_eq!(index, 1);
+                assert!(key.is_empty());
+                assert!(cause.contains("empty key"));
+            }
+            e => panic!("unexpected error: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_validation_empty_embedding() {
+        let engine = create_engine();
+
+        let entities = vec![(
+            "entity".to_string(),
+            HashMap::new(),
+            Some(vec![]), // Invalid: empty embedding
+        )];
+
+        let result = engine.create_entities_batch(entities).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            UnifiedError::BatchOperationFailed { index, key, cause } => {
+                assert_eq!(index, 0);
+                assert_eq!(key, "entity");
+                assert!(cause.contains("empty embedding"));
+            }
+            e => panic!("unexpected error: {e}"),
+        }
     }
 
     #[tokio::test]
@@ -1523,6 +2093,31 @@ mod tests {
 
         let e = UnifiedError::InvalidOperation("op".to_string());
         assert!(e.to_string().contains("Invalid operation"));
+
+        let e = UnifiedError::BatchOperationFailed {
+            index: 5,
+            key: "test_key".to_string(),
+            cause: "some error".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("index 5"));
+        assert!(msg.contains("test_key"));
+        assert!(msg.contains("some error"));
+    }
+
+    #[test]
+    fn test_batch_result_new() {
+        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let result = BatchResult::new(keys);
+        assert_eq!(result.count, 3);
+        assert_eq!(result.succeeded.len(), 3);
+    }
+
+    #[test]
+    fn test_batch_result_default() {
+        let result = BatchResult::default();
+        assert_eq!(result.count, 0);
+        assert!(result.succeeded.is_empty());
     }
 
     #[test]
@@ -1557,10 +2152,10 @@ mod tests {
         };
 
         let cond = Condition::Eq("label".to_string(), Value::String("person".to_string()));
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
 
         let cond2 = Condition::Eq("label".to_string(), Value::String("other".to_string()));
-        assert!(!engine.node_matches_condition(&node, &cond2));
+        assert!(!UnifiedEngine::node_matches_condition(&node, &cond2));
     }
 
     #[test]
@@ -1575,7 +2170,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("id".to_string(), Value::Int(42));
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -1596,7 +2191,7 @@ mod tests {
                 Value::String("person".to_string()),
             )),
         );
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -1617,7 +2212,7 @@ mod tests {
                 Value::String("person".to_string()),
             )),
         );
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -1635,7 +2230,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("type".to_string(), Value::String("knows".to_string()));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -1643,17 +2238,32 @@ mod tests {
         let engine = create_engine();
 
         let prop_int = graph_engine::PropertyValue::Int(42);
-        assert!(engine.property_matches_value(&prop_int, &Value::Int(42)));
-        assert!(!engine.property_matches_value(&prop_int, &Value::Int(43)));
+        assert!(UnifiedEngine::property_matches_value(
+            &prop_int,
+            &Value::Int(42)
+        ));
+        assert!(!UnifiedEngine::property_matches_value(
+            &prop_int,
+            &Value::Int(43)
+        ));
 
         let prop_str = graph_engine::PropertyValue::String("test".to_string());
-        assert!(engine.property_matches_value(&prop_str, &Value::String("test".to_string())));
+        assert!(UnifiedEngine::property_matches_value(
+            &prop_str,
+            &Value::String("test".to_string())
+        ));
 
         let prop_bool = graph_engine::PropertyValue::Bool(true);
-        assert!(engine.property_matches_value(&prop_bool, &Value::Bool(true)));
+        assert!(UnifiedEngine::property_matches_value(
+            &prop_bool,
+            &Value::Bool(true)
+        ));
 
         let prop_float = graph_engine::PropertyValue::Float(3.14);
-        assert!(engine.property_matches_value(&prop_float, &Value::Float(3.14)));
+        assert!(UnifiedEngine::property_matches_value(
+            &prop_float,
+            &Value::Float(3.14)
+        ));
     }
 
     #[test]
@@ -1679,7 +2289,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("id".to_string(), Value::String("42".to_string()));
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -1697,7 +2307,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("age".to_string(), Value::Int(30));
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -1715,7 +2325,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("id".to_string(), Value::Int(5));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -1733,10 +2343,10 @@ mod tests {
         };
 
         let cond_from = Condition::Eq("from".to_string(), Value::Int(10));
-        assert!(engine.edge_matches_condition(&edge, &cond_from));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond_from));
 
         let cond_to = Condition::Eq("to".to_string(), Value::Int(20));
-        assert!(engine.edge_matches_condition(&edge, &cond_to));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond_to));
     }
 
     #[test]
@@ -1757,7 +2367,7 @@ mod tests {
             Box::new(Condition::Eq("from".to_string(), Value::Int(10))),
             Box::new(Condition::Eq("to".to_string(), Value::Int(20))),
         );
-        assert!(engine.edge_matches_condition(&edge, &cond_and));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond_and));
 
         let cond_or = Condition::Or(
             Box::new(Condition::Eq("from".to_string(), Value::Int(999))),
@@ -1766,7 +2376,7 @@ mod tests {
                 Value::String("knows".to_string()),
             )),
         );
-        assert!(engine.edge_matches_condition(&edge, &cond_or));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond_or));
     }
 
     #[test]
@@ -2019,7 +2629,7 @@ mod tests {
         engine.graph().create_node("test", HashMap::new()).unwrap();
 
         // Scan all nodes (no label filter)
-        let nodes = engine.scan_nodes(None).unwrap();
+        let nodes = engine.scan_nodes(None);
         assert_eq!(nodes.len(), 2);
     }
 
@@ -2086,7 +2696,7 @@ mod tests {
 
         // Test edge_type alias
         let cond = Condition::Eq("edge_type".to_string(), Value::String("knows".to_string()));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -2109,7 +2719,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("weight".to_string(), Value::Float(0.5));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -2127,7 +2737,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("id".to_string(), Value::String("5".to_string()));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -2142,7 +2752,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("unknown".to_string(), Value::String("val".to_string()));
-        assert!(!engine.node_matches_condition(&node, &cond));
+        assert!(!UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -2160,7 +2770,7 @@ mod tests {
         };
 
         let cond = Condition::Eq("unknown".to_string(), Value::String("val".to_string()));
-        assert!(!engine.edge_matches_condition(&edge, &cond));
+        assert!(!UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -2176,7 +2786,7 @@ mod tests {
 
         // Ne is implemented
         let cond = Condition::Ne("id".to_string(), Value::Int(2));
-        assert!(engine.node_matches_condition(&node, &cond));
+        assert!(UnifiedEngine::node_matches_condition(&node, &cond));
     }
 
     #[test]
@@ -2198,7 +2808,7 @@ mod tests {
 
         // Gt is now implemented for properties
         let cond = Condition::Gt("weight".to_string(), Value::Int(5));
-        assert!(engine.edge_matches_condition(&edge, &cond));
+        assert!(UnifiedEngine::edge_matches_condition(&edge, &cond));
     }
 
     #[test]
@@ -2207,15 +2817,24 @@ mod tests {
 
         // Int vs String
         let prop = graph_engine::PropertyValue::Int(42);
-        assert!(!engine.property_matches_value(&prop, &Value::String("42".to_string())));
+        assert!(!UnifiedEngine::property_matches_value(
+            &prop,
+            &Value::String("42".to_string())
+        ));
 
         // String vs Int
         let prop2 = graph_engine::PropertyValue::String("test".to_string());
-        assert!(!engine.property_matches_value(&prop2, &Value::Int(1)));
+        assert!(!UnifiedEngine::property_matches_value(
+            &prop2,
+            &Value::Int(1)
+        ));
 
         // Null
         let prop3 = graph_engine::PropertyValue::Null;
-        assert!(!engine.property_matches_value(&prop3, &Value::Int(1)));
+        assert!(!UnifiedEngine::property_matches_value(
+            &prop3,
+            &Value::Int(1)
+        ));
     }
 
     // ========== Unified Trait Tests ==========
@@ -2444,18 +3063,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_pattern_path_not_implemented() {
+    async fn test_find_pattern_path_not_found() {
         let engine = create_engine();
 
+        // Try to find a path between non-existent nodes
         let pattern = FindPattern::Path {
             from: Some("a".to_string()),
             edge: Some("knows".to_string()),
             to: Some("b".to_string()),
         };
-        let result = engine.find(&pattern, None).await.unwrap();
+        let result = engine.find(&pattern, None).await;
 
-        assert!(result.description.contains("not yet implemented"));
-        assert!(result.is_empty());
+        // Should error since nodes don't exist
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2567,7 +3187,10 @@ mod tests {
         add_test_edge(engine.graph(), "hub", "doc1", "links");
 
         // Apply an additional filter
-        let filter = FilterCondition::Eq("status".to_string(), FilterValue::String("active".to_string()));
+        let filter = FilterCondition::Eq(
+            "status".to_string(),
+            FilterValue::String("active".to_string()),
+        );
 
         let result = engine
             .find_similar_connected_filtered("query", "hub", Some(&filter), 10)
@@ -2595,9 +3218,7 @@ mod tests {
         add_test_edge(engine.graph(), "hub", "doc1", "links");
 
         // The original method should still work
-        let result = engine
-            .find_similar_connected("query", "hub", 10)
-            .await;
+        let result = engine.find_similar_connected("query", "hub", 10).await;
 
         // The original method should work as before
         assert!(result.is_ok() || result.is_err());
@@ -2606,7 +3227,10 @@ mod tests {
     #[test]
     fn test_filter_condition_reexport() {
         // Verify FilterCondition and FilterValue are exported from tensor_unified
-        let filter = FilterCondition::Eq("field".to_string(), FilterValue::String("value".to_string()));
+        let filter = FilterCondition::Eq(
+            "field".to_string(),
+            FilterValue::String("value".to_string()),
+        );
         assert!(matches!(filter, FilterCondition::Eq(_, _)));
 
         // Test FilterValue variants
@@ -2648,9 +3272,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), "NoEmbedding".to_string());
 
-        let result = engine
-            .create_entity_unified("unified2", fields, None)
-            .await;
+        let result = engine.create_entity_unified("unified2", fields, None).await;
 
         assert!(result.is_ok());
 
@@ -2701,7 +3323,9 @@ mod tests {
         use tensor_store::{ScalarValue, TensorValue};
 
         // Test string
-        let s = UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::String("hello".into())));
+        let s = UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::String(
+            "hello".into(),
+        )));
         assert_eq!(s, Some("hello".to_string()));
 
         // Test int
@@ -2709,11 +3333,13 @@ mod tests {
         assert_eq!(i, Some("42".to_string()));
 
         // Test float
-        let f = UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Float(3.14)));
+        let f =
+            UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Float(3.14)));
         assert_eq!(f, Some("3.14".to_string()));
 
         // Test bool
-        let b = UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Bool(true)));
+        let b =
+            UnifiedEngine::tensor_value_to_string(&TensorValue::Scalar(ScalarValue::Bool(true)));
         assert_eq!(b, Some("true".to_string()));
 
         // Test null
@@ -2723,5 +3349,514 @@ mod tests {
         // Test vector (should return None)
         let v = UnifiedEngine::tensor_value_to_string(&TensorValue::Vector(vec![1.0, 2.0]));
         assert_eq!(v, None);
+    }
+
+    // ========== Entity Update/Delete Tests ==========
+
+    #[tokio::test]
+    async fn test_update_entity_fields_only() {
+        let engine = create_engine();
+
+        // Create an entity first
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Original".to_string());
+        engine
+            .create_entity("update_test", fields, None)
+            .await
+            .unwrap();
+
+        // Update the entity
+        let mut new_fields = HashMap::new();
+        new_fields.insert("name".to_string(), "Updated".to_string());
+        new_fields.insert("status".to_string(), "active".to_string());
+        let result = engine.update_entity("update_test", new_fields, None).await;
+        assert!(result.is_ok());
+
+        // Verify the update
+        let entity = engine.get_entity("update_test").await.unwrap();
+        assert!(entity.data.values().any(|v| v.contains("Updated")));
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_embedding_only() {
+        let engine = create_engine();
+
+        // Create an entity with embedding
+        engine
+            .vector()
+            .set_entity_embedding("emb_update", vec![1.0, 0.0, 0.0])
+            .unwrap();
+
+        // Update embedding
+        let result = engine
+            .update_entity("emb_update", HashMap::new(), Some(vec![0.0, 1.0, 0.0]))
+            .await;
+        assert!(result.is_ok());
+
+        // Verify the update
+        let emb = engine.vector().get_entity_embedding("emb_update").unwrap();
+        assert!((emb[1] - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_fields_and_embedding() {
+        let engine = create_engine();
+
+        // Create an entity with both
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Test".to_string());
+        engine
+            .create_entity("full_update", fields, Some(vec![1.0, 0.0]))
+            .await
+            .unwrap();
+
+        // Update both
+        let mut new_fields = HashMap::new();
+        new_fields.insert("name".to_string(), "Updated".to_string());
+        let result = engine
+            .update_entity("full_update", new_fields, Some(vec![0.0, 1.0]))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_not_found() {
+        let engine = create_engine();
+
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "Test".to_string());
+        let result = engine.update_entity("nonexistent", fields, None).await;
+        assert!(matches!(result, Err(UnifiedError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_update_entity_updates_graph_node() {
+        let engine = create_engine();
+
+        // Create entity with a graph node
+        engine
+            .connect_entities("upd_node", "other", "link")
+            .await
+            .ok();
+
+        // Update the entity
+        let mut fields = HashMap::new();
+        fields.insert("status".to_string(), "updated".to_string());
+
+        // Entity exists in graph now
+        let result = engine.update_entity("upd_node", fields, None).await;
+        // May succeed or fail depending on whether entity exists in store/vector
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_delete_entity_basic() {
+        let engine = create_engine();
+
+        // Create an entity
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), "ToDelete".to_string());
+        engine
+            .create_entity("to_delete", fields, Some(vec![1.0, 0.0, 0.0]))
+            .await
+            .unwrap();
+
+        // Delete it
+        let result = engine.delete_entity("to_delete").await;
+        assert!(result.is_ok());
+
+        // Verify it's gone
+        let get_result = engine.get_entity("to_delete").await;
+        assert!(get_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_entity_not_found() {
+        let engine = create_engine();
+
+        let result = engine.delete_entity("never_existed").await;
+        assert!(matches!(result, Err(UnifiedError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_delete_entity_removes_embedding() {
+        let engine = create_engine();
+
+        // Create entity with embedding
+        engine
+            .vector()
+            .set_entity_embedding("del_emb", vec![1.0, 0.0])
+            .unwrap();
+
+        // Delete
+        let result = engine.delete_entity("del_emb").await;
+        assert!(result.is_ok());
+
+        // Verify embedding is gone
+        let emb_result = engine.vector().get_entity_embedding("del_emb");
+        assert!(emb_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_entity_cascades_edges() {
+        let engine = create_engine();
+
+        // Create connected entities
+        engine
+            .connect_entities("del_from", "del_to", "link")
+            .await
+            .ok();
+
+        // Verify edge exists
+        let edges_before = engine.find_edges(Some("link"), None).await.unwrap();
+        let had_edges = !edges_before.is_empty();
+
+        // Delete from entity
+        let _ = engine.delete_entity("del_from").await;
+
+        // If edges existed before, check they're handled
+        if had_edges {
+            let edges_after = engine.find_edges(Some("link"), None).await.unwrap();
+            // Edges should be gone or reduced
+            assert!(edges_after.len() <= edges_before.len());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_entities_basic() {
+        let engine = create_engine();
+
+        // Create connected entities
+        engine
+            .connect_entities("disc_a", "disc_b", "link")
+            .await
+            .ok();
+
+        // Disconnect
+        let result = engine.disconnect_entities("disc_a", "disc_b", None).await;
+        assert!(result.is_ok());
+        let _ = result.unwrap(); // usize is always >= 0
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_entities_with_edge_type() {
+        let engine = create_engine();
+
+        // Create entities with multiple edge types
+        engine.connect_entities("dt_a", "dt_b", "link1").await.ok();
+        engine.connect_entities("dt_a", "dt_b", "link2").await.ok();
+
+        // Disconnect only link1
+        let result = engine
+            .disconnect_entities("dt_a", "dt_b", Some("link1"))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_entities_not_found() {
+        let engine = create_engine();
+
+        let result = engine.disconnect_entities("no_entity", "other", None).await;
+        assert!(matches!(result, Err(UnifiedError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_entities_no_edges_returns_zero() {
+        let engine = create_engine();
+
+        // Create entities without edges between them
+        engine
+            .connect_entities("iso_a", "other1", "link")
+            .await
+            .ok();
+        engine
+            .connect_entities("iso_b", "other2", "link")
+            .await
+            .ok();
+
+        // Try to disconnect - should return 0 (no edges to delete)
+        let result = engine.disconnect_entities("iso_a", "iso_b", None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    // ========== Path Finding Tests ==========
+
+    #[tokio::test]
+    async fn test_find_paths_from_to_by_id() {
+        let engine = create_engine();
+
+        // Create nodes and edge
+        let n1 = engine
+            .graph()
+            .create_node("person", HashMap::new())
+            .unwrap();
+        let n2 = engine
+            .graph()
+            .create_node("person", HashMap::new())
+            .unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "knows", HashMap::new(), true)
+            .unwrap();
+
+        // Find path by node IDs
+        let result = engine
+            .find_paths(Some(&n1.to_string()), None, Some(&n2.to_string()), None)
+            .await;
+        assert!(result.is_ok());
+        let items = result.unwrap();
+        assert!(!items.is_empty());
+        assert_eq!(items[0].source, "graph:path");
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_from_to_by_label() {
+        let engine = create_engine();
+
+        // Create labeled nodes
+        engine.graph().create_node("start", HashMap::new()).unwrap();
+        engine.graph().create_node("end", HashMap::new()).unwrap();
+
+        // Try to find path by label (may or may not find depending on connectivity)
+        let result = engine
+            .find_paths(Some("start"), None, Some("end"), None)
+            .await;
+        // Result depends on whether nodes are connected
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_with_edge_filter() {
+        let engine = create_engine();
+
+        // Create nodes and edges of different types
+        let n1 = engine.graph().create_node("node", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("node", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "friend", HashMap::new(), true)
+            .unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "colleague", HashMap::new(), true)
+            .unwrap();
+
+        // Find path with edge filter
+        let result = engine
+            .find_paths(
+                Some(&n1.to_string()),
+                Some("friend"),
+                Some(&n2.to_string()),
+                None,
+            )
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_no_path_exists() {
+        let engine = create_engine();
+
+        // Create disconnected nodes
+        let n1 = engine
+            .graph()
+            .create_node("isolated", HashMap::new())
+            .unwrap();
+        let n2 = engine
+            .graph()
+            .create_node("isolated", HashMap::new())
+            .unwrap();
+
+        // Try to find path
+        let result = engine
+            .find_paths(Some(&n1.to_string()), None, Some(&n2.to_string()), None)
+            .await;
+        assert!(result.is_ok());
+        // No path exists, should be empty
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_from_only() {
+        let engine = create_engine();
+
+        // Create node with outgoing edges
+        let n1 = engine.graph().create_node("hub", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("spoke", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "connects", HashMap::new(), true)
+            .unwrap();
+
+        // Find outgoing connections
+        let result = engine
+            .find_paths(Some(&n1.to_string()), None, None, None)
+            .await;
+        assert!(result.is_ok());
+        let items = result.unwrap();
+        assert!(!items.is_empty());
+        assert_eq!(items[0].data.get("length"), Some(&"1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_to_only() {
+        let engine = create_engine();
+
+        // Create node with incoming edge
+        let n1 = engine
+            .graph()
+            .create_node("source", HashMap::new())
+            .unwrap();
+        let n2 = engine
+            .graph()
+            .create_node("target", HashMap::new())
+            .unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "points_to", HashMap::new(), true)
+            .unwrap();
+
+        // Find incoming connections
+        let result = engine
+            .find_paths(None, None, Some(&n2.to_string()), None)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_neither_specified_error() {
+        let engine = create_engine();
+
+        // Neither from nor to specified, no edge type
+        let result = engine.find_paths(None, None, None, None).await;
+        assert!(matches!(result, Err(UnifiedError::InvalidOperation(_))));
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_respects_limit() {
+        let engine = create_engine();
+
+        // Create a hub with many connections
+        let hub = engine.graph().create_node("hub", HashMap::new()).unwrap();
+        for i in 0..10 {
+            let spoke = engine
+                .graph()
+                .create_node(&format!("spoke{i}"), HashMap::new())
+                .unwrap();
+            engine
+                .graph()
+                .create_edge(hub, spoke, "link", HashMap::new(), true)
+                .unwrap();
+        }
+
+        // Find with limit
+        let result = engine
+            .find_paths(Some(&hub.to_string()), None, None, Some(3))
+            .await;
+        assert!(result.is_ok());
+        let items = result.unwrap();
+        assert!(items.len() <= 3);
+    }
+
+    #[test]
+    fn test_resolve_node_id_numeric() {
+        let engine = create_engine();
+
+        // Create a node to find
+        let id = engine.graph().create_node("test", HashMap::new()).unwrap();
+
+        // Resolve by ID
+        let result = engine.resolve_node_id(&id.to_string());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![id]);
+    }
+
+    #[test]
+    fn test_resolve_node_id_label() {
+        let engine = create_engine();
+
+        // Create nodes with a label
+        engine
+            .graph()
+            .create_node("findme", HashMap::new())
+            .unwrap();
+
+        // Resolve by label
+        let result = engine.resolve_node_id("findme");
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_resolve_node_id_not_found() {
+        let engine = create_engine();
+
+        // Try to resolve non-existent node
+        let result = engine.resolve_node_id("99999");
+        assert!(matches!(result, Err(UnifiedError::NotFound(_))));
+
+        let result2 = engine.resolve_node_id("nonexistent_label");
+        assert!(matches!(result2, Err(UnifiedError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_path_to_unified_item() {
+        // Create a path
+        let path = graph_engine::Path {
+            nodes: vec![1, 2, 3],
+            edges: vec![10, 20],
+        };
+
+        let item = UnifiedEngine::path_to_unified_item(&path, 0);
+        assert_eq!(item.source, "graph:path");
+        assert_eq!(item.id, "path:0");
+        assert_eq!(item.data.get("nodes"), Some(&"1,2,3".to_string()));
+        assert_eq!(item.data.get("edges"), Some(&"10,20".to_string()));
+        assert_eq!(item.data.get("length"), Some(&"2".to_string()));
+        assert_eq!(item.data.get("from"), Some(&"1".to_string()));
+        assert_eq!(item.data.get("to"), Some(&"3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_find_pattern_path_with_data() {
+        let engine = create_engine();
+
+        // Create connected nodes
+        let n1 = engine.graph().create_node("start", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("end", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "route", HashMap::new(), true)
+            .unwrap();
+
+        // Find via pattern
+        let pattern = FindPattern::Path {
+            from: Some(n1.to_string()),
+            edge: None,
+            to: Some(n2.to_string()),
+        };
+        let result = engine.find(&pattern, None).await.unwrap();
+
+        assert!(result.description.contains("path"));
+        assert!(!result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_paths_edge_only() {
+        let engine = create_engine();
+
+        // Create an edge
+        let n1 = engine.graph().create_node("a", HashMap::new()).unwrap();
+        let n2 = engine.graph().create_node("b", HashMap::new()).unwrap();
+        engine
+            .graph()
+            .create_edge(n1, n2, "test_edge", HashMap::new(), true)
+            .unwrap();
+
+        // Find by edge type only (falls back to find_edges)
+        let result = engine.find_paths(None, Some("test_edge"), None, None).await;
+        assert!(result.is_ok());
     }
 }

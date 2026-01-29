@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Delete operation consistency tests.
 //!
 //! Tests that delete operations work correctly and maintain cross-engine consistency.

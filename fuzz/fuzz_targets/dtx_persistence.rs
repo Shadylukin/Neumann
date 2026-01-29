@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz target for distributed transaction persistence types.
 //!
 //! Tests that CoordinatorState, ParticipantState, and SerializableLockState

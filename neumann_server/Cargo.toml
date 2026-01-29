@@ -33,6 +33,7 @@ opentelemetry_sdk = { version = "0.24", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.17", features = ["metrics", "grpc-tonic"] }
 uuid = { version = "1", features = ["v4"] }
 tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
+x509-parser = "0.16"
 
 [build-dependencies]
 tonic-build = "0.12"

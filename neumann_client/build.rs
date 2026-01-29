@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Build script for compiling protobuf definitions.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

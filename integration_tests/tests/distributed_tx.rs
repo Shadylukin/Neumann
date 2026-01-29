@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for cross-shard distributed transactions with 2PC.
 //!
 //! Tests the two-phase commit protocol with delta-based conflict detection.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Neumann gRPC Server
 //!
 //! This crate provides a gRPC server that exposes the Neumann database via
@@ -90,7 +91,7 @@ use tensor_store::TensorStore;
 pub use audit::{AuditConfig, AuditEntry, AuditEvent, AuditLogger};
 pub use config::{AuthConfig, ServerConfig, TlsConfig};
 pub use correlation::{extract_or_generate, request_span, RequestSpan, TRACE_ID_HEADER};
-pub use error::{Result, ServerError};
+pub use error::{sanitize_error, sanitize_internal_error, Result, ServerError};
 pub use memory::{MemoryBudgetConfig, MemoryTracker};
 pub use metrics::{init_metrics, MetricsConfig, MetricsHandle, ServerMetrics};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};

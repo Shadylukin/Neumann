@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for client configuration."""
 
 from neumann.config import (

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for TxAbortMsg serialization roundtrip.
 //!
 //! Tests that TxAbortMsg serialization is robust:

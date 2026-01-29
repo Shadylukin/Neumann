@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Test configuration presets for stress tests.
 
 use std::env;

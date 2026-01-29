@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for distributed cluster startup.
 //!
 //! Tests 3-node cluster initialization and basic operations:

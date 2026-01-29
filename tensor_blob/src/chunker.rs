@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use sha2::{Digest, Sha256};
 
 /// A content-addressed chunk of data.
@@ -64,7 +65,7 @@ pub fn compute_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
-    format!("sha256:{:x}", result)
+    format!("sha256:{result:x}")
 }
 
 /// Compute SHA-256 hash of multiple data segments.
@@ -74,7 +75,7 @@ pub fn compute_hash_streaming<'a>(segments: impl Iterator<Item = &'a [u8]>) -> S
         hasher.update(segment);
     }
     let result = hasher.finalize();
-    format!("sha256:{:x}", result)
+    format!("sha256:{result:x}")
 }
 
 /// A streaming hasher for computing checksums incrementally.
@@ -101,7 +102,7 @@ impl StreamingHasher {
 
     pub fn finalize(self) -> String {
         let result = self.hasher.finalize();
-        format!("sha256:{:x}", result)
+        format!("sha256:{result:x}")
     }
 }
 

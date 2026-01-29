@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Transaction workspace for isolated execution and atomic commit.
 //!
 //! Provides ACID transaction semantics:

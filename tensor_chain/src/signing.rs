@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Ed25519 identity management with geometric embedding derivation.
 //!
 //! # Overview

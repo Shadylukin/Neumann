@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TCP transport configuration.
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};

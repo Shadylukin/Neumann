@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Relational JOIN operation integration tests.
 //!
 //! Tests hash-based JOIN functionality across tables.

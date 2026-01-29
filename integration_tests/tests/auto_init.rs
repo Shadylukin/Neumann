@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Auto-initialization integration tests.
 //!
 //! Tests lazy initialization of optional modules: Vault, Cache, and Blob.

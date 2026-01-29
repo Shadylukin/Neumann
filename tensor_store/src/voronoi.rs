@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Voronoi partitioner with explicit geometric region boundaries.
 //!
 //! Extends `SemanticPartitioner` with explicit Voronoi regions per node,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Block structure for the tensor chain.
 //!
 //! A block contains:

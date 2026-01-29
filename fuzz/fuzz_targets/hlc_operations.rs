@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for Hybrid Logical Clock operations.
 //!
 //! Ensures HLC operations maintain monotonicity and don't panic

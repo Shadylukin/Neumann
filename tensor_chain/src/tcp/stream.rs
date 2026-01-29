@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stream abstraction for TCP and TLS connections.
 //!
 //! Provides type aliases for dynamic dispatch over different stream types,

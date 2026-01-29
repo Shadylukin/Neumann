@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Error types for Neumann database."""
 
 from __future__ import annotations

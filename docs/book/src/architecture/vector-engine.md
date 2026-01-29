@@ -95,6 +95,7 @@ graph TB
 | `CollectionNotFound` | Collection not found | Collection operations on missing collection |
 | `IoError` | IO error during persistence | `save_to_file`, `load_from_file` |
 | `SerializationError` | Serialization error | Index persistence operations |
+| `SearchTimeout` | Search operation timed out | Search operations exceeding configured timeout |
 
 ## Configuration
 
@@ -111,6 +112,7 @@ Configuration for the Vector Engine with memory bounds and performance tuning.
 | `max_dimension` | `Option<usize>` | `None` | Maximum allowed dimension |
 | `max_keys_per_scan` | `Option<usize>` | `None` | Limit for unbounded scans |
 | `batch_parallel_threshold` | `usize` | `100` | Batch size for parallel processing |
+| `search_timeout` | `Option<Duration>` | `None` | Search operation timeout |
 
 ### Configuration Presets
 
@@ -118,13 +120,15 @@ Configuration for the Vector Engine with memory bounds and performance tuning.
 | --- | --- | --- |
 | `default()` | Balanced for most workloads | All defaults |
 | `high_throughput()` | Optimized for write-heavy loads | `parallel_threshold: 1000` |
-| `low_memory()` | Memory-constrained environments | `max_dimension: 4096`, `max_keys_per_scan: 10000` |
+| `low_memory()` | Memory-constrained environments | `max_dimension: 4096`, `max_keys_per_scan: 10000`, `search_timeout: 30s` |
 
 ### Builder Methods
 
 All builder methods are `const fn` for compile-time configuration:
 
 ```rust
+use std::time::Duration;
+
 let config = VectorEngineConfig::default()
     .with_default_dimension(768)
     .with_sparse_threshold(0.7)
@@ -132,7 +136,8 @@ let config = VectorEngineConfig::default()
     .with_default_metric(DistanceMetric::Cosine)
     .with_max_dimension(4096)
     .with_max_keys_per_scan(50_000)
-    .with_batch_parallel_threshold(200);
+    .with_batch_parallel_threshold(200)
+    .with_search_timeout(Duration::from_secs(5));
 
 let engine = VectorEngine::with_config(config)?;
 ```
@@ -152,6 +157,31 @@ let engine = VectorEngine::with_config(config)?;
 // This will fail with DimensionMismatch
 engine.store_embedding("too_big", vec![0.0; 5000])?; // Error!
 ```
+
+### Search Timeout
+
+Configure a timeout for search operations to prevent runaway queries:
+
+```rust
+use std::time::Duration;
+use vector_engine::{VectorEngine, VectorEngineConfig, VectorError};
+
+let config = VectorEngineConfig::default()
+    .with_search_timeout(Duration::from_secs(5));
+
+let engine = VectorEngine::with_config(config)?;
+
+match engine.search_similar(&query, 10) {
+    Ok(results) => { /* process results */ },
+    Err(VectorError::SearchTimeout { operation, timeout_ms }) => {
+        eprintln!("Search '{}' timed out after {}ms", operation, timeout_ms);
+    },
+    Err(e) => { /* handle other errors */ },
+}
+```
+
+The timeout applies to all search methods. When a timeout occurs, no partial
+results are returned to prevent misleading results that may miss better matches.
 
 ## Distance Metrics
 
@@ -423,6 +453,21 @@ flowchart TD
     Filter2 --> Result
 ```
 
+#### Filter Helper Methods
+
+Utilities for working with filters:
+
+```rust
+// Estimate how selective a filter is (0.0 = matches nothing, 1.0 = matches all)
+let selectivity = engine.estimate_filter_selectivity(&filter);
+
+// Count how many embeddings match a filter
+let matching = engine.count_matching(&filter);
+
+// Get keys of all matching embeddings
+let keys = engine.list_keys_matching(&filter);
+```
+
 ### Metadata Storage
 
 Store and retrieve metadata alongside embeddings:
@@ -449,6 +494,12 @@ let category = engine.get_metadata_field("doc1", "category")?;
 let mut updates = HashMap::new();
 updates.insert("score".to_string(), TensorValue::from(0.98f64));
 engine.update_metadata("doc1", updates)?;
+
+// Check if metadata field exists
+if engine.has_metadata_field("doc1", "category") {
+    // Remove specific metadata field
+    engine.remove_metadata_field("doc1", "category")?;
+}
 ```
 
 ### Batch Operations
@@ -718,19 +769,26 @@ Save and restore vector indices for fast startup:
 ```rust
 use std::path::Path;
 
-// Save all collections to directory
-engine.save_to_directory(Path::new("./vector_index"))?;
+// Save all collections to directory (one JSON file per collection)
+let saved = engine.save_all_indices(Path::new("./vector_index"))?;
 
-// Load from directory (restores collections and embeddings)
-let engine = VectorEngine::load_from_directory(Path::new("./vector_index"))?;
+// Load all indices from directory
+let loaded = engine.load_all_indices(Path::new("./vector_index"))?;
 
-// Save single collection
-let index = engine.export_collection("documents")?;
-index.save_to_file(Path::new("./documents.idx"))?;
+// Save single collection to JSON
+engine.save_index("documents", Path::new("./documents.json"))?;
 
-// Load single collection
-let index = PersistentVectorIndex::load_from_file(Path::new("./documents.idx"))?;
-engine.import_collection(index)?;
+// Save single collection to compact binary format
+engine.save_index_binary("documents", Path::new("./documents.bin"))?;
+
+// Load single collection from JSON (returns collection name)
+let collection = engine.load_index(Path::new("./documents.json"))?;
+
+// Load single collection from binary
+let collection = engine.load_index_binary(Path::new("./documents.bin"))?;
+
+// Get a snapshot for manual serialization
+let index: PersistentVectorIndex = engine.snapshot_collection("documents");
 ```
 
 ### PersistentVectorIndex Format
@@ -747,7 +805,8 @@ engine.import_collection(index)?;
 
 | Key Pattern | Content | Use Case |
 | --- | --- | --- |
-| `emb:{key}` | TensorData with "vector" field | Standalone embeddings |
+| `emb:{key}` | TensorData with "vector" field | Default collection embeddings |
+| `coll:{collection}:emb:{key}` | TensorData with "vector" field | Named collection embeddings |
 | `{entity_key}` | TensorData with "_embedding" field | Unified entities |
 
 ### Automatic Sparse Storage

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for atomic snapshot and WAL operations.
 //!
 //! These tests verify that:

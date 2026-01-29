@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Benchmarks for tensor_cache.
 
 use std::time::Duration;

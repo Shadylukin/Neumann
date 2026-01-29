@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-engine integration tests.
 //!
 //! Tests data flow and operations across multiple engines sharing a TensorStore.

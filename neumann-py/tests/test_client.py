@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Comprehensive tests for NeumannClient."""
 
 from __future__ import annotations

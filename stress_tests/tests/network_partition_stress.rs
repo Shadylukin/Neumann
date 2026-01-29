@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stress tests for network partition resilience.
 //!
 //! Tests distributed system behavior under sustained partition scenarios:

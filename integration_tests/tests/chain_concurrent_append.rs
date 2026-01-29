@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for Chain concurrent append serialization.
 //!
 //! Verifies that the append_lock prevents TOCTOU race conditions

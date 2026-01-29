@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for tensor_cache geometric operations.
 //!
 //! Tests distance metric configuration, auto-selection, and consistency

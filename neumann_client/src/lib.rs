@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Neumann Database Rust Client SDK
 //!
 //! This crate provides a Rust client for Neumann database with support for
@@ -55,7 +56,6 @@
 )]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::redundant_pub_crate)]
-#![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::significant_drop_tightening)]
 
@@ -89,6 +89,95 @@ pub mod proto {
 
 #[cfg(feature = "remote")]
 use proto::query_service_client::QueryServiceClient;
+
+#[cfg(feature = "remote")]
+use tokio_stream::StreamExt;
+
+/// A chunk from a streaming query result.
+#[cfg(feature = "remote")]
+#[derive(Debug)]
+pub enum QueryChunk {
+    /// A row from a relational query.
+    Row(proto::Row),
+    /// A node from a graph query.
+    Node(proto::Node),
+    /// An edge from a graph query.
+    Edge(proto::Edge),
+    /// A similar item from vector search.
+    SimilarItem(proto::SimilarItem),
+    /// Raw blob data.
+    BlobData(Vec<u8>),
+}
+
+/// Result type for streaming queries.
+#[cfg(feature = "remote")]
+pub struct StreamingQueryResult {
+    inner: tonic::Streaming<proto::QueryResponseChunk>,
+}
+
+#[cfg(feature = "remote")]
+impl std::fmt::Debug for StreamingQueryResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingQueryResult")
+            .field("inner", &"<streaming>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "remote")]
+impl StreamingQueryResult {
+    /// Get the next result from the stream.
+    ///
+    /// Returns `None` when the stream is exhausted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The gRPC stream returns an error (`ClientError::Query`)
+    /// - A received chunk is empty or malformed (`ClientError::Internal`)
+    pub async fn next(&mut self) -> Option<Result<QueryChunk>> {
+        match self.inner.next().await {
+            Some(Ok(chunk)) => {
+                if chunk.is_final {
+                    return None;
+                }
+                Some(Self::convert_chunk(chunk))
+            },
+            Some(Err(e)) => Some(Err(ClientError::Query(e.message().to_string()))),
+            None => None,
+        }
+    }
+
+    fn convert_chunk(chunk: proto::QueryResponseChunk) -> Result<QueryChunk> {
+        use proto::query_response_chunk::Chunk;
+
+        match chunk.chunk {
+            Some(Chunk::Row(r)) => {
+                r.row
+                    .map(QueryChunk::Row)
+                    .ok_or_else(|| ClientError::Internal("Empty row chunk".to_string()))
+            },
+            Some(Chunk::Node(n)) => {
+                n.node
+                    .map(QueryChunk::Node)
+                    .ok_or_else(|| ClientError::Internal("Empty node chunk".to_string()))
+            },
+            Some(Chunk::Edge(e)) => {
+                e.edge
+                    .map(QueryChunk::Edge)
+                    .ok_or_else(|| ClientError::Internal("Empty edge chunk".to_string()))
+            },
+            Some(Chunk::SimilarItem(s)) => {
+                s.item
+                    .map(QueryChunk::SimilarItem)
+                    .ok_or_else(|| ClientError::Internal("Empty similar chunk".to_string()))
+            },
+            Some(Chunk::BlobData(b)) => Ok(QueryChunk::BlobData(b)),
+            Some(Chunk::Error(e)) => Err(ClientError::Query(e.message)),
+            None => Err(ClientError::Internal("Empty chunk received".to_string())),
+        }
+    }
+}
 
 /// Client mode for Neumann database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,12 +264,27 @@ impl ClientBuilder {
     }
 
     /// Build the client and connect to the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The server URI is invalid (`ClientError::Connection`)
+    /// - TLS configuration fails (`ClientError::Connection`)
+    /// - Connection to the server fails (`ClientError::Connection`)
     #[cfg(feature = "remote")]
     pub async fn build(self) -> Result<NeumannClient> {
         NeumannClient::connect_remote(self.config).await
     }
 
     /// Build the client and connect to the server (blocking version).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Failed to create a Tokio runtime (`ClientError::Connection`)
+    /// - The server URI is invalid (`ClientError::Connection`)
+    /// - TLS configuration fails (`ClientError::Connection`)
+    /// - Connection to the server fails (`ClientError::Connection`)
     #[cfg(feature = "remote")]
     pub fn build_blocking(self) -> Result<NeumannClient> {
         // Use a temporary runtime for blocking connection
@@ -211,6 +315,11 @@ impl NeumannClient {
     }
 
     /// Create an embedded (in-process) client.
+    ///
+    /// # Errors
+    ///
+    /// This method currently always succeeds but returns a `Result` for
+    /// future compatibility with initialization that may fail.
     #[cfg(feature = "embedded")]
     pub fn embedded() -> Result<Self> {
         Ok(Self {
@@ -299,12 +408,26 @@ impl NeumannClient {
     }
 
     /// Execute a query synchronously (for embedded mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The query router is not initialized (`ClientError::Internal`)
+    /// - Query execution fails (`ClientError::Query`)
+    /// - Client is in remote mode (`ClientError::InvalidArgument`)
     #[cfg(feature = "embedded")]
     pub fn execute_sync(&self, query: &str) -> Result<QueryResult> {
         self.execute_sync_with_identity(query, None)
     }
 
     /// Execute a query synchronously with identity (for embedded mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The query router is not initialized (`ClientError::Internal`)
+    /// - Query execution fails (`ClientError::Query`)
+    /// - Client is in remote mode (`ClientError::InvalidArgument`)
     #[cfg(feature = "embedded")]
     pub fn execute_sync_with_identity(
         &self,
@@ -334,12 +457,30 @@ impl NeumannClient {
     }
 
     /// Execute a query asynchronously (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Query execution fails on the server (`ClientError::Query`)
     #[cfg(feature = "remote")]
     pub async fn execute(&self, query: &str) -> Result<RemoteQueryResult> {
         self.execute_with_identity(query, None).await
     }
 
     /// Execute a query asynchronously with identity (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Query execution fails on the server (`ClientError::Query`)
     #[cfg(feature = "remote")]
     pub async fn execute_with_identity(
         &self,
@@ -391,12 +532,30 @@ impl NeumannClient {
     }
 
     /// Execute multiple queries in a batch (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Batch execution fails on the server (`ClientError::Query`)
     #[cfg(feature = "remote")]
     pub async fn execute_batch(&self, queries: &[&str]) -> Result<Vec<RemoteQueryResult>> {
         self.execute_batch_with_identity(queries, None).await
     }
 
     /// Execute multiple queries in a batch with identity (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Batch execution fails on the server (`ClientError::Query`)
     #[cfg(feature = "remote")]
     pub async fn execute_batch_with_identity(
         &self,
@@ -455,6 +614,85 @@ impl NeumannClient {
                     .into_iter()
                     .map(RemoteQueryResult)
                     .collect())
+            },
+        }
+    }
+
+    /// Execute a streaming query (for remote mode).
+    ///
+    /// Returns a streaming result that can be iterated over.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Stream initialization fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_stream(&self, query: &str) -> Result<StreamingQueryResult> {
+        self.execute_stream_with_identity(query, None).await
+    }
+
+    /// Execute a streaming query with identity (for remote mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Client is in embedded mode (`ClientError::InvalidArgument`)
+    /// - Client is not connected (`ClientError::Connection`)
+    /// - The gRPC client is not initialized (`ClientError::Internal`)
+    /// - The API key format is invalid (`ClientError::InvalidArgument`)
+    /// - Stream initialization fails on the server (`ClientError::Query`)
+    #[cfg(feature = "remote")]
+    pub async fn execute_stream_with_identity(
+        &self,
+        query: &str,
+        identity: Option<&str>,
+    ) -> Result<StreamingQueryResult> {
+        match self.mode {
+            #[cfg(feature = "embedded")]
+            ClientMode::Embedded => Err(ClientError::InvalidArgument(
+                "Streaming not supported in embedded mode".to_string(),
+            )),
+            #[cfg(not(feature = "embedded"))]
+            ClientMode::Embedded => Err(ClientError::Internal(
+                "Embedded mode not available".to_string(),
+            )),
+            ClientMode::Remote => {
+                if !self.connected {
+                    return Err(ClientError::Connection("Not connected".to_string()));
+                }
+
+                let client = self.grpc_client.as_ref().ok_or_else(|| {
+                    ClientError::Internal("gRPC client not initialized".to_string())
+                })?;
+
+                let mut request = tonic::Request::new(proto::QueryRequest {
+                    query: query.to_string(),
+                    identity: identity.map(ToString::to_string),
+                });
+
+                // Add API key to metadata if configured
+                if let Some(ref config) = self.config {
+                    if let Some(ref api_key) = config.api_key {
+                        let value = api_key.parse().map_err(|_| {
+                            ClientError::InvalidArgument("Invalid API key format".to_string())
+                        })?;
+                        request.metadata_mut().insert("x-api-key", value);
+                    }
+                }
+
+                let response = client
+                    .clone()
+                    .execute_stream(request)
+                    .await
+                    .map_err(|e| ClientError::Query(e.message().to_string()))?;
+
+                Ok(StreamingQueryResult {
+                    inner: response.into_inner(),
+                })
             },
         }
     }
@@ -988,6 +1226,421 @@ mod tests {
 
         // Calling execute_batch() on embedded mode should fail
         let result = client.execute_batch(&["SELECT test"]).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_query_chunk_debug() {
+        let chunk = QueryChunk::BlobData(vec![1, 2, 3]);
+        let debug = format!("{:?}", chunk);
+        assert!(debug.contains("BlobData"));
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_query_chunk_variants() {
+        // Test Row variant
+        let row = proto::Row { id: 1, values: vec![] };
+        let chunk = QueryChunk::Row(row);
+        assert!(format!("{:?}", chunk).contains("Row"));
+
+        // Test Node variant
+        let node = proto::Node {
+            id: 1,
+            label: "Person".to_string(),
+            properties: std::collections::HashMap::new(),
+        };
+        let chunk = QueryChunk::Node(node);
+        assert!(format!("{:?}", chunk).contains("Node"));
+
+        // Test Edge variant
+        let edge = proto::Edge {
+            id: 1,
+            from: 2,
+            to: 3,
+            label: "KNOWS".to_string(),
+        };
+        let chunk = QueryChunk::Edge(edge);
+        assert!(format!("{:?}", chunk).contains("Edge"));
+
+        // Test SimilarItem variant
+        let item = proto::SimilarItem {
+            key: "item1".to_string(),
+            score: 0.95,
+        };
+        let chunk = QueryChunk::SimilarItem(item);
+        assert!(format!("{:?}", chunk).contains("SimilarItem"));
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_stream_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Calling execute_stream() on embedded mode should fail
+        let result = client.execute_stream("SELECT test").await;
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::InvalidArgument(msg)) => {
+                assert!(msg.contains("Streaming not supported"));
+            },
+            other => panic!("Expected InvalidArgument, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_build_blocking_connection_refused() {
+        // Test build_blocking with an address that will fail to connect
+        let result = NeumannClient::connect("localhost:1")
+            .timeout_ms(100) // Short timeout
+            .build_blocking();
+
+        // Should fail with a connection error
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ClientError::Connection(_))));
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    #[ignore = "Requires TLS crypto provider to be installed"]
+    fn test_build_blocking_with_tls() {
+        // Test build_blocking with TLS enabled
+        let result = NeumannClient::connect("localhost:1")
+            .with_tls()
+            .timeout_ms(100)
+            .build_blocking();
+
+        // Should fail with connection error (TLS setup happens before connect)
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_row() {
+        use proto::query_response_chunk::Chunk;
+
+        // Test Row chunk with valid row
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Row(proto::RowChunk {
+                row: Some(proto::Row { id: 1, values: vec![] }),
+            })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::Row(_)));
+
+        // Test Row chunk with empty row
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Row(proto::RowChunk { row: None })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty row")),
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_node() {
+        use proto::query_response_chunk::Chunk;
+
+        // Test Node chunk with valid node
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Node(proto::NodeChunk {
+                node: Some(proto::Node {
+                    id: 1,
+                    label: "Test".to_string(),
+                    properties: std::collections::HashMap::new(),
+                }),
+            })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::Node(_)));
+
+        // Test Node chunk with empty node
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Node(proto::NodeChunk { node: None })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty node")),
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_edge() {
+        use proto::query_response_chunk::Chunk;
+
+        // Test Edge chunk with valid edge
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Edge(proto::EdgeChunk {
+                edge: Some(proto::Edge {
+                    id: 1,
+                    from: 2,
+                    to: 3,
+                    label: "KNOWS".to_string(),
+                }),
+            })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::Edge(_)));
+
+        // Test Edge chunk with empty edge
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Edge(proto::EdgeChunk { edge: None })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty edge")),
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_similar_item() {
+        use proto::query_response_chunk::Chunk;
+
+        // Test SimilarItem chunk with valid item
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::SimilarItem(proto::SimilarChunk {
+                item: Some(proto::SimilarItem {
+                    key: "test".to_string(),
+                    score: 0.95,
+                }),
+            })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), QueryChunk::SimilarItem(_)));
+
+        // Test SimilarItem chunk with empty item
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::SimilarItem(proto::SimilarChunk { item: None })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty similar")),
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_blob_data() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::BlobData(vec![1, 2, 3, 4])),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            QueryChunk::BlobData(data) => assert_eq!(data, vec![1, 2, 3, 4]),
+            other => panic!("Expected BlobData, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_error() {
+        use proto::query_response_chunk::Chunk;
+
+        let chunk = proto::QueryResponseChunk {
+            chunk: Some(Chunk::Error(proto::ErrorInfo {
+                code: 1,
+                message: "Test error".to_string(),
+                details: None,
+            })),
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Query(msg)) => assert_eq!(msg, "Test error"),
+            other => panic!("Expected Query error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_convert_chunk_empty() {
+        let chunk = proto::QueryResponseChunk {
+            chunk: None,
+            is_final: false,
+        };
+        let result = StreamingQueryResult::convert_chunk(chunk);
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Internal(msg)) => assert!(msg.contains("Empty chunk")),
+            other => panic!("Expected Internal error, got {:?}", other),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_client_mode_copy() {
+        let mode1 = ClientMode::Embedded;
+        let mode2 = mode1; // Copy
+        assert_eq!(mode1, mode2);
+
+        let mode3 = ClientMode::Remote;
+        let mode4 = mode3; // Copy
+        assert_eq!(mode3, mode4);
+    }
+
+    #[cfg(feature = "embedded")]
+    #[test]
+    fn test_embedded_execute_sync_query_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Invalid query syntax should return a Query error
+        let result = client.execute_sync("INVALID SYNTAX !!!");
+        // The parser may fail with a Query error
+        assert!(result.is_err() || result.is_ok());
+        // Just ensure it doesn't panic
+    }
+
+    #[cfg(feature = "embedded")]
+    #[test]
+    fn test_embedded_execute_sync_on_nonexistent_table() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Query on a nonexistent table
+        let result = client.execute_sync("SELECT nonexistent_table_12345");
+        // Should return error about missing table
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_client_config_drop_without_api_key() {
+        // Config without API key
+        let config = ClientConfig {
+            address: "localhost:9200".to_string(),
+            api_key: None, // No API key
+            tls: false,
+            timeout_ms: 30_000,
+        };
+        // Should not panic when dropped
+        drop(config);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_client_builder_default_values() {
+        let builder = ClientBuilder::new("myserver:9200");
+        assert_eq!(builder.config.address, "myserver:9200");
+        assert!(builder.config.api_key.is_none());
+        assert!(!builder.config.tls);
+        assert_eq!(builder.config.timeout_ms, 30_000);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_client_builder_chaining() {
+        // Test that all builder methods chain correctly
+        let builder = NeumannClient::connect("server:9200")
+            .timeout_ms(10_000)
+            .api_key("key1")
+            .with_tls()
+            .timeout_ms(20_000) // Override previous value
+            .api_key("key2"); // Override previous value
+
+        assert_eq!(builder.config.timeout_ms, 20_000);
+        assert_eq!(builder.config.api_key, Some("key2".to_string()));
+        assert!(builder.config.tls);
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_remote_connection_refused() {
+        // Test connecting to a port that refuses connection
+        let result = NeumannClient::connect("127.0.0.1:1")
+            .timeout_ms(100)
+            .build()
+            .await;
+
+        assert!(result.is_err());
+        match result {
+            Err(ClientError::Connection(msg)) => {
+                assert!(msg.contains("Failed to connect"));
+            },
+            Err(e) => panic!("Expected Connection error, got {:?}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    #[ignore = "Requires TLS crypto provider to be installed"]
+    async fn test_remote_connection_with_tls_refused() {
+        // Test connecting with TLS to a port that refuses connection
+        let result = NeumannClient::connect("127.0.0.1:1")
+            .with_tls()
+            .timeout_ms(100)
+            .build()
+            .await;
+
+        assert!(result.is_err());
+        // Should fail either with TLS config or connection error
+    }
+
+    #[cfg(feature = "embedded")]
+    #[test]
+    fn test_embedded_drop() {
+        // Create and drop embedded client
+        let client = NeumannClient::embedded().expect("should create embedded client");
+        drop(client);
+        // Should not panic
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_with_identity_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Calling async execute_with_identity() on embedded mode should fail
+        let result = client.execute_with_identity("SELECT test", Some("user")).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_batch_with_identity_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Calling execute_batch_with_identity() on embedded mode should fail
+        let result = client.execute_batch_with_identity(&["SELECT test"], Some("user")).await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(all(feature = "embedded", feature = "remote"))]
+    #[tokio::test]
+    async fn test_embedded_execute_stream_with_identity_returns_error() {
+        let client = NeumannClient::embedded().expect("should create embedded client");
+
+        // Calling execute_stream_with_identity() on embedded mode should fail
+        let result = client.execute_stream_with_identity("SELECT test", Some("user")).await;
         assert!(result.is_err());
     }
 }

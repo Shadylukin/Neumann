@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stress test utilities for Neumann.
 //!
 //! Provides data generators, latency histograms, memory tracking,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Columnar storage for relational data.
 //!
 //! `RelationalSlab` stores table rows in a column-oriented format, optimizing

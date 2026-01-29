@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Server configuration types.
 
 use std::net::SocketAddr;

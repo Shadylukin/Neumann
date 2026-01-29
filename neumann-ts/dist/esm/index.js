@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * @neumann/client - TypeScript SDK for Neumann database
  *

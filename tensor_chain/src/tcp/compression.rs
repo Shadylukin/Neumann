@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Network message compression for TCP transport.
 //!
 //! Provides frame-level LZ4 compression with capability negotiation.

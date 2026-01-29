@@ -1,9 +1,18 @@
-// Pedantic lint configuration for graph_engine
-#![allow(clippy::cast_possible_wrap)] // u64 IDs won't exceed i64::MAX
-#![allow(clippy::cast_sign_loss)] // i64 values from store are always non-negative IDs
-#![allow(clippy::needless_pass_by_value)] // HashMap ownership is intentional for API design
-#![allow(clippy::missing_errors_doc)] // Error conditions are self-evident from Result types
-#![allow(clippy::uninlined_format_args)] // Keep format strings readable
+//! Graph engine for property graphs with nodes, edges, and traversal algorithms.
+//!
+//! This crate provides a thread-safe graph database engine supporting:
+//! - Labeled nodes with arbitrary properties
+//! - Directed and undirected edges with properties
+//! - Property indexes for efficient lookups
+//! - Unique and existence constraints
+//! - Graph algorithms (`PageRank`, betweenness centrality, connected components)
+//! - BFS/DFS traversal with filtering
+//! - Batch operations for high-throughput scenarios
+//!
+//! # Thread Safety
+//!
+//! `GraphEngine` is thread-safe and can be shared across threads using `Arc`.
+//! All operations use fine-grained locking via `parking_lot::RwLock`.
 
 use std::{
     cmp::Ordering as CmpOrdering,
@@ -118,12 +127,18 @@ impl From<&PropertyValue> for OrderedPropertyValue {
     }
 }
 
+/// A typed property value for nodes and edges.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PropertyValue {
+    /// Absence of value.
     Null,
+    /// 64-bit signed integer.
     Int(i64),
+    /// 64-bit floating point.
     Float(f64),
+    /// UTF-8 string.
     String(String),
+    /// Boolean value.
     Bool(bool),
 }
 
@@ -149,7 +164,7 @@ impl PropertyValue {
     }
 
     #[must_use]
-    pub fn value_type(&self) -> PropertyValueType {
+    pub const fn value_type(&self) -> PropertyValueType {
         match self {
             Self::Null => PropertyValueType::Null,
             Self::Int(_) => PropertyValueType::Int,
@@ -212,7 +227,7 @@ pub struct NodeInput {
 
 impl NodeInput {
     #[must_use]
-    pub fn new(labels: Vec<String>, properties: HashMap<String, PropertyValue>) -> Self {
+    pub const fn new(labels: Vec<String>, properties: HashMap<String, PropertyValue>) -> Self {
         Self { labels, properties }
     }
 }
@@ -288,6 +303,7 @@ impl PropertyCondition {
         self.evaluate_properties(&edge.properties)
     }
 
+    #[allow(clippy::option_if_let_else)] // match is clearer for this logic
     fn evaluate_properties(&self, props: &HashMap<String, PropertyValue>) -> bool {
         match props.get(&self.property) {
             None => {
@@ -429,7 +445,7 @@ impl TraversalFilter {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.node_conditions.is_empty() && self.edge_conditions.is_empty()
     }
 }
@@ -598,7 +614,7 @@ impl VariableLengthConfig {
     }
 
     #[must_use]
-    pub fn direction(mut self, dir: Direction) -> Self {
+    pub const fn direction(mut self, dir: Direction) -> Self {
         self.direction = dir;
         self
     }
@@ -659,7 +675,7 @@ impl VariableLengthPaths {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }
 }
@@ -707,7 +723,7 @@ impl Pagination {
 }
 
 /// Result of a paginated graph query.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PagedResult<T> {
     pub items: Vec<T>,
     pub total_count: Option<usize>,
@@ -716,7 +732,7 @@ pub struct PagedResult<T> {
 
 impl<T> PagedResult<T> {
     #[must_use]
-    pub fn new(items: Vec<T>, total_count: Option<usize>, has_more: bool) -> Self {
+    pub const fn new(items: Vec<T>, total_count: Option<usize>, has_more: bool) -> Self {
         Self {
             items,
             total_count,
@@ -725,12 +741,12 @@ impl<T> PagedResult<T> {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.items.len()
     }
 }
@@ -762,7 +778,7 @@ pub struct AggregateResult {
 
 impl AggregateResult {
     #[must_use]
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             count: 0,
             sum: None,
@@ -774,7 +790,7 @@ impl AggregateResult {
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn count_only(count: u64) -> Self {
+    pub(crate) const fn count_only(count: u64) -> Self {
         Self {
             count,
             sum: None,
@@ -818,6 +834,12 @@ pub struct GraphEngineConfig {
     pub index_lock_count: usize,
     /// Maximum memory (bytes) for path search before truncation.
     pub max_path_search_memory_bytes: usize,
+    /// Threshold for parallel edge operations during node deletion.
+    pub parallel_threshold: usize,
+    /// Threshold for parallel numeric aggregations.
+    pub aggregate_parallel_threshold: usize,
+    /// Maximum results returned without pagination (safety limit).
+    pub max_unpaginated_results: usize,
 }
 
 impl Default for GraphEngineConfig {
@@ -834,6 +856,9 @@ impl Default for GraphEngineConfig {
             label_propagation_max_iterations: 100,
             index_lock_count: 64,
             max_path_search_memory_bytes: 100 * 1024 * 1024,
+            parallel_threshold: 100,
+            aggregate_parallel_threshold: 1000,
+            max_unpaginated_results: 100_000,
         }
     }
 }
@@ -845,55 +870,55 @@ impl GraphEngineConfig {
     }
 
     #[must_use]
-    pub fn default_match_limit(mut self, limit: usize) -> Self {
+    pub const fn default_match_limit(mut self, limit: usize) -> Self {
         self.default_match_limit = limit;
         self
     }
 
     #[must_use]
-    pub fn pattern_parallel_threshold(mut self, threshold: usize) -> Self {
+    pub const fn pattern_parallel_threshold(mut self, threshold: usize) -> Self {
         self.pattern_parallel_threshold = threshold;
         self
     }
 
     #[must_use]
-    pub fn max_variable_length_hops(mut self, max_hops: usize) -> Self {
+    pub const fn max_variable_length_hops(mut self, max_hops: usize) -> Self {
         self.max_variable_length_hops = max_hops;
         self
     }
 
     #[must_use]
-    pub fn pagerank_default_damping(mut self, damping: f64) -> Self {
+    pub const fn pagerank_default_damping(mut self, damping: f64) -> Self {
         self.pagerank_default_damping = damping;
         self
     }
 
     #[must_use]
-    pub fn pagerank_default_tolerance(mut self, tolerance: f64) -> Self {
+    pub const fn pagerank_default_tolerance(mut self, tolerance: f64) -> Self {
         self.pagerank_default_tolerance = tolerance;
         self
     }
 
     #[must_use]
-    pub fn pagerank_default_max_iterations(mut self, max_iterations: usize) -> Self {
+    pub const fn pagerank_default_max_iterations(mut self, max_iterations: usize) -> Self {
         self.pagerank_default_max_iterations = max_iterations;
         self
     }
 
     #[must_use]
-    pub fn centrality_parallel_threshold(mut self, threshold: usize) -> Self {
+    pub const fn centrality_parallel_threshold(mut self, threshold: usize) -> Self {
         self.centrality_parallel_threshold = threshold;
         self
     }
 
     #[must_use]
-    pub fn community_max_passes(mut self, max_passes: usize) -> Self {
+    pub const fn community_max_passes(mut self, max_passes: usize) -> Self {
         self.community_max_passes = max_passes;
         self
     }
 
     #[must_use]
-    pub fn label_propagation_max_iterations(mut self, max_iterations: usize) -> Self {
+    pub const fn label_propagation_max_iterations(mut self, max_iterations: usize) -> Self {
         self.label_propagation_max_iterations = max_iterations;
         self
     }
@@ -905,22 +930,34 @@ impl GraphEngineConfig {
     }
 
     #[must_use]
-    pub fn max_path_search_memory_bytes(mut self, bytes: usize) -> Self {
+    pub const fn max_path_search_memory_bytes(mut self, bytes: usize) -> Self {
         self.max_path_search_memory_bytes = bytes;
+        self
+    }
+
+    #[must_use]
+    pub const fn parallel_threshold(mut self, threshold: usize) -> Self {
+        self.parallel_threshold = threshold;
+        self
+    }
+
+    #[must_use]
+    pub const fn aggregate_parallel_threshold(mut self, threshold: usize) -> Self {
+        self.aggregate_parallel_threshold = threshold;
+        self
+    }
+
+    #[must_use]
+    pub const fn max_unpaginated_results(mut self, max: usize) -> Self {
+        self.max_unpaginated_results = max;
         self
     }
 }
 
 // ========== Pattern Matching Types ==========
 
-/// Default limit for pattern matching results.
-const DEFAULT_MATCH_LIMIT: usize = 1000;
-
-/// Threshold for parallel processing of pattern matches.
-const PATTERN_PARALLEL_THRESHOLD: usize = 100;
-
-/// Maximum hops for variable-length edge patterns.
-const MAX_VARIABLE_LENGTH_HOPS: usize = 20;
+/// Maximum hops for variable-length edge patterns (safety cap for `VariableLengthSpec`).
+pub const MAX_VARIABLE_LENGTH_HOPS: usize = 20;
 
 /// Variable-length path specification (e.g., *1..5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1031,7 +1068,7 @@ impl EdgePattern {
     }
 
     #[must_use]
-    pub fn direction(mut self, dir: Direction) -> Self {
+    pub const fn direction(mut self, dir: Direction) -> Self {
         self.direction = dir;
         self
     }
@@ -1151,12 +1188,12 @@ pub struct Pattern {
 
 impl Pattern {
     #[must_use]
-    pub fn new(path: PathPattern) -> Self {
+    pub const fn new(path: PathPattern) -> Self {
         Self { path, limit: None }
     }
 
     #[must_use]
-    pub fn limit(mut self, max: usize) -> Self {
+    pub const fn limit(mut self, max: usize) -> Self {
         self.limit = Some(max);
         self
     }
@@ -1250,12 +1287,12 @@ impl PatternMatchResult {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.matches.is_empty()
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.matches.len()
     }
 }
@@ -1273,7 +1310,6 @@ impl Default for PatternMatchResult {
 const PAGERANK_DEFAULT_DAMPING: f64 = 0.85;
 const PAGERANK_DEFAULT_TOLERANCE: f64 = 1e-6;
 const PAGERANK_DEFAULT_MAX_ITERATIONS: usize = 100;
-const CENTRALITY_PARALLEL_THRESHOLD: usize = 100;
 const COMMUNITY_MAX_PASSES: usize = 10;
 const LABEL_PROPAGATION_MAX_ITERATIONS: usize = 100;
 
@@ -1306,25 +1342,25 @@ impl PageRankConfig {
     }
 
     #[must_use]
-    pub fn damping(mut self, damping: f64) -> Self {
+    pub const fn damping(mut self, damping: f64) -> Self {
         self.damping = damping;
         self
     }
 
     #[must_use]
-    pub fn tolerance(mut self, tolerance: f64) -> Self {
+    pub const fn tolerance(mut self, tolerance: f64) -> Self {
         self.tolerance = tolerance;
         self
     }
 
     #[must_use]
-    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+    pub const fn max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self
     }
 
     #[must_use]
-    pub fn direction(mut self, direction: Direction) -> Self {
+    pub const fn direction(mut self, direction: Direction) -> Self {
         self.direction = direction;
         self
     }
@@ -1408,7 +1444,7 @@ impl CentralityConfig {
     }
 
     #[must_use]
-    pub fn direction(mut self, direction: Direction) -> Self {
+    pub const fn direction(mut self, direction: Direction) -> Self {
         self.direction = direction;
         self
     }
@@ -1420,19 +1456,20 @@ impl CentralityConfig {
     }
 
     #[must_use]
+    #[allow(clippy::missing_const_for_fn)] // clamp() is not const
     pub fn sampling_ratio(mut self, ratio: f64) -> Self {
         self.sampling_ratio = ratio.clamp(0.0, 1.0);
         self
     }
 
     #[must_use]
-    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+    pub const fn max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self
     }
 
     #[must_use]
-    pub fn tolerance(mut self, tolerance: f64) -> Self {
+    pub const fn tolerance(mut self, tolerance: f64) -> Self {
         self.tolerance = tolerance;
         self
     }
@@ -1500,7 +1537,7 @@ impl CommunityConfig {
     }
 
     #[must_use]
-    pub fn direction(mut self, direction: Direction) -> Self {
+    pub const fn direction(mut self, direction: Direction) -> Self {
         self.direction = direction;
         self
     }
@@ -1512,25 +1549,25 @@ impl CommunityConfig {
     }
 
     #[must_use]
-    pub fn resolution(mut self, resolution: f64) -> Self {
+    pub const fn resolution(mut self, resolution: f64) -> Self {
         self.resolution = resolution;
         self
     }
 
     #[must_use]
-    pub fn max_passes(mut self, max_passes: usize) -> Self {
+    pub const fn max_passes(mut self, max_passes: usize) -> Self {
         self.max_passes = max_passes;
         self
     }
 
     #[must_use]
-    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+    pub const fn max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self
     }
 
     #[must_use]
-    pub fn seed(mut self, seed: u64) -> Self {
+    pub const fn seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
     }
@@ -1678,11 +1715,11 @@ pub enum GraphError {
     ConstraintNotFound(String),
     BatchValidationError {
         index: usize,
-        cause: Box<GraphError>,
+        cause: Box<Self>,
     },
     BatchCreationError {
         index: usize,
-        cause: Box<GraphError>,
+        cause: Box<Self>,
     },
     PartialDeletionError {
         node_id: u64,
@@ -1899,7 +1936,7 @@ impl GraphEngine {
     }
 
     #[must_use]
-    pub fn config(&self) -> &GraphEngineConfig {
+    pub const fn config(&self) -> &GraphEngineConfig {
         &self.config
     }
 
@@ -2144,7 +2181,7 @@ impl GraphEngine {
     /// Get the striped lock index for a given id.
     #[inline]
     #[allow(clippy::cast_possible_truncation)]
-    fn lock_index(&self, id: u64) -> usize {
+    const fn lock_index(&self, id: u64) -> usize {
         (id as usize) % self.index_locks.len()
     }
 
@@ -3034,6 +3071,9 @@ impl GraphEngine {
         edges
     }
 
+    /// # Errors
+    /// Returns `ConstraintViolation` if a unique/exists constraint is violated.
+    /// Returns `StorageError` if the underlying store operation fails.
     #[instrument(skip(self, label, properties))]
     pub fn create_node(
         &self,
@@ -3043,6 +3083,10 @@ impl GraphEngine {
         self.create_node_with_labels(vec![label.into()], properties)
     }
 
+    /// # Errors
+    /// Returns `ConstraintViolation` if a unique/exists constraint is violated.
+    /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::needless_pass_by_value)] // ownership avoids caller clones
     #[instrument(skip(self, labels, properties))]
     pub fn create_node_with_labels(
         &self,
@@ -3066,7 +3110,7 @@ impl GraphEngine {
         let id = self.node_counter.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut tensor = TensorData::new();
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id.cast_signed())));
         tensor.set(
             "_type",
             TensorValue::Scalar(ScalarValue::String("node".into())),
@@ -3074,7 +3118,7 @@ impl GraphEngine {
         tensor.set("_labels", TensorValue::Pointers(labels.clone()));
         tensor.set(
             "_created_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         for (key, value) in &properties {
@@ -3095,6 +3139,11 @@ impl GraphEngine {
         Ok(id)
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if source or target node doesn't exist.
+    /// Returns `ConstraintViolation` if a unique/exists constraint is violated.
+    /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::needless_pass_by_value)] // ownership avoids caller clones
     #[instrument(skip(self, edge_type, properties), fields(from = from, to = to))]
     pub fn create_edge(
         &self,
@@ -3131,13 +3180,13 @@ impl GraphEngine {
         let id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut tensor = TensorData::new();
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id.cast_signed())));
         tensor.set(
             "_type",
             TensorValue::Scalar(ScalarValue::String("edge".into())),
         );
-        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(from as i64)));
-        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to as i64)));
+        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(from.cast_signed())));
+        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to.cast_signed())));
         tensor.set(
             "_edge_type",
             TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
@@ -3148,7 +3197,7 @@ impl GraphEngine {
         );
         tensor.set(
             "_created_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         for (key, value) in &properties {
@@ -3177,10 +3226,10 @@ impl GraphEngine {
     fn add_edge_to_list(&self, key: String, edge_id: u64) -> Result<()> {
         let mut tensor = self.store.get(&key).unwrap_or_else(|_| TensorData::new());
 
-        let edge_key = format!("e{}", edge_id);
+        let edge_key = format!("e{edge_id}");
         tensor.set(
             &edge_key,
-            TensorValue::Scalar(ScalarValue::Int(edge_id as i64)),
+            TensorValue::Scalar(ScalarValue::Int(edge_id.cast_signed())),
         );
 
         self.store.put(key, tensor)?;
@@ -3196,7 +3245,7 @@ impl GraphEngine {
         for k in tensor.keys() {
             if k.starts_with('e') {
                 if let Some(TensorValue::Scalar(ScalarValue::Int(id))) = tensor.get(k) {
-                    edges.push(*id as u64);
+                    edges.push((*id).cast_unsigned());
                 }
             }
         }
@@ -3207,6 +3256,8 @@ impl GraphEngine {
         self.store.exists(&Self::node_key(id))
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     #[instrument(skip(self), fields(node_id = id))]
     pub fn get_node(&self, id: u64) -> Result<Node> {
         let tensor = self
@@ -3234,11 +3285,11 @@ impl GraphEngine {
         }
 
         let created_at = match tensor.get("_created_at") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some((*v).cast_unsigned()),
             _ => None,
         };
         let updated_at = match tensor.get("_updated_at") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some((*v).cast_unsigned()),
             _ => None,
         };
 
@@ -3251,6 +3302,9 @@ impl GraphEngine {
         })
     }
 
+    /// # Errors
+    /// Returns `EdgeNotFound` if the edge doesn't exist.
+    /// Returns `CorruptedEdge` if required fields are missing.
     pub fn get_edge(&self, id: u64) -> Result<Edge> {
         let tensor = self
             .store
@@ -3258,7 +3312,7 @@ impl GraphEngine {
             .map_err(|_| GraphError::EdgeNotFound(id))?;
 
         let from = match tensor.get("_from") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => *v as u64,
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => (*v).cast_unsigned(),
             _ => {
                 return Err(GraphError::CorruptedEdge {
                     edge_id: id,
@@ -3268,7 +3322,7 @@ impl GraphEngine {
         };
 
         let to = match tensor.get("_to") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => *v as u64,
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => (*v).cast_unsigned(),
             _ => {
                 return Err(GraphError::CorruptedEdge {
                     edge_id: id,
@@ -3298,11 +3352,11 @@ impl GraphEngine {
         }
 
         let created_at = match tensor.get("_created_at") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some((*v).cast_unsigned()),
             _ => None,
         };
         let updated_at = match tensor.get("_updated_at") {
-            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some(*v as u64),
+            Some(TensorValue::Scalar(ScalarValue::Int(v))) => Some((*v).cast_unsigned()),
             _ => None,
         };
 
@@ -3322,6 +3376,11 @@ impl GraphEngine {
     ///
     /// Pass `None` to leave labels unchanged. Properties are merged with
     /// existing properties; pass `PropertyValue::Null` to remove a property.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
+    /// Returns `ConstraintViolation` if the update violates a constraint.
+    #[allow(clippy::needless_pass_by_value)] // ownership avoids caller clones
     pub fn update_node(
         &self,
         id: u64,
@@ -3379,7 +3438,7 @@ impl GraphEngine {
 
         tensor.set(
             "_updated_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         self.store.put(key, tensor)?;
@@ -3409,6 +3468,9 @@ impl GraphEngine {
     }
 
     /// Add a label to an existing node.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn add_label(&self, id: u64, label: &str) -> Result<()> {
         let node = self.get_node(id)?;
 
@@ -3428,7 +3490,7 @@ impl GraphEngine {
         tensor.set("_labels", TensorValue::Pointers(new_labels));
         tensor.set(
             "_updated_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
         self.store.put(key, tensor)?;
 
@@ -3444,6 +3506,9 @@ impl GraphEngine {
     }
 
     /// Remove a label from an existing node.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn remove_label(&self, id: u64, label: &str) -> Result<()> {
         let node = self.get_node(id)?;
 
@@ -3467,7 +3532,7 @@ impl GraphEngine {
         tensor.set("_labels", TensorValue::Pointers(new_labels));
         tensor.set(
             "_updated_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
         self.store.put(key, tensor)?;
 
@@ -3483,12 +3548,18 @@ impl GraphEngine {
     }
 
     /// Get all labels for a node.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn get_node_labels(&self, id: u64) -> Result<Vec<String>> {
         let node = self.get_node(id)?;
         Ok(node.labels)
     }
 
     /// Check if a node has a specific label.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn node_has_label(&self, id: u64, label: &str) -> Result<bool> {
         let node = self.get_node(id)?;
         Ok(node.has_label(label))
@@ -3499,6 +3570,10 @@ impl GraphEngine {
     /// Properties are merged with existing properties; pass `PropertyValue::Null`
     /// to remove a property. The edge type, from/to nodes, and directedness cannot
     /// be changed after creation.
+    ///
+    /// # Errors
+    /// Returns `EdgeNotFound` if the edge doesn't exist.
+    #[allow(clippy::needless_pass_by_value)] // ownership avoids caller clones
     pub fn update_edge(&self, id: u64, properties: HashMap<String, PropertyValue>) -> Result<()> {
         // Get old edge for index maintenance
         let old_edge = self.get_edge(id)?;
@@ -3532,7 +3607,7 @@ impl GraphEngine {
 
         tensor.set(
             "_updated_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         self.store.put(key, tensor)?;
@@ -3551,6 +3626,9 @@ impl GraphEngine {
     }
 
     /// Returns all edges connected to a node.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3585,6 +3663,9 @@ impl GraphEngine {
     /// Returns the number of outgoing edges from a node.
     ///
     /// Equivalent to Neo4j's `size((n)-->())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn out_degree(&self, node_id: u64) -> Result<usize> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3595,6 +3676,9 @@ impl GraphEngine {
     /// Returns the number of incoming edges to a node.
     ///
     /// Equivalent to Neo4j's `size((n)<--())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn in_degree(&self, node_id: u64) -> Result<usize> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3607,6 +3691,9 @@ impl GraphEngine {
     /// For undirected edges, each edge is counted once in outgoing and once in incoming,
     /// so total degree counts each undirected edge twice (consistent with graph theory).
     /// Equivalent to Neo4j's `size((n)--())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn degree(&self, node_id: u64) -> Result<usize> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3619,6 +3706,9 @@ impl GraphEngine {
     /// Returns the number of outgoing edges of a specific type from a node.
     ///
     /// Equivalent to Neo4j's `size((n)-[:TYPE]->())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn out_degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3638,6 +3728,9 @@ impl GraphEngine {
     /// Returns the number of incoming edges of a specific type to a node.
     ///
     /// Equivalent to Neo4j's `size((n)<-[:TYPE]-())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn in_degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
         if !self.node_exists(node_id) {
             return Err(GraphError::NodeNotFound(node_id));
@@ -3657,6 +3750,9 @@ impl GraphEngine {
     /// Returns the total degree of a node for a specific edge type.
     ///
     /// Equivalent to Neo4j's `size((n)-[:TYPE]-())`.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     pub fn degree_by_type(&self, node_id: u64, edge_type: &str) -> Result<usize> {
         let out = self.out_degree_by_type(node_id, edge_type)?;
         let in_ = self.in_degree_by_type(node_id, edge_type)?;
@@ -3725,6 +3821,8 @@ impl GraphEngine {
         edges
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist.
     #[instrument(skip(self, filter), fields(node_id = node_id))]
     pub fn neighbors(
         &self,
@@ -3893,6 +3991,7 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::option_if_let_else)]
     pub fn find_nodes_by_property_paginated(
         &self,
         property: &str,
@@ -3934,6 +4033,7 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::option_if_let_else)]
     pub fn find_nodes_where_paginated(
         &self,
         property: &str,
@@ -4013,6 +4113,7 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::option_if_let_else)]
     pub fn find_edges_by_property_paginated(
         &self,
         property: &str,
@@ -4054,6 +4155,7 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `StorageError` if the underlying store operation fails.
+    #[allow(clippy::option_if_let_else)]
     pub fn find_edges_where_paginated(
         &self,
         property: &str,
@@ -4165,6 +4267,7 @@ impl GraphEngine {
     /// # Errors
     ///
     /// Returns `NodeNotFound` if the node does not exist.
+    #[allow(clippy::option_if_let_else)]
     #[instrument(skip(self, filter), fields(node_id = node_id))]
     pub fn neighbors_paginated(
         &self,
@@ -4377,6 +4480,8 @@ impl GraphEngine {
         ids
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if the start node doesn't exist.
     pub fn traverse(
         &self,
         start: u64,
@@ -4494,6 +4599,9 @@ impl GraphEngine {
         neighbor_ids.into_iter().collect()
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if either node doesn't exist.
+    /// Returns `PathNotFound` if no path exists between the nodes.
     pub fn find_path(&self, from: u64, to: u64, filter: Option<&TraversalFilter>) -> Result<Path> {
         if !self.node_exists(from) {
             return Err(GraphError::NodeNotFound(from));
@@ -4617,6 +4725,11 @@ impl GraphEngine {
     ///
     /// Uses the specified edge property as weight. Missing properties default to 1.0.
     /// Returns error if any traversed edge has negative weight.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if either node doesn't exist.
+    /// Returns `NegativeWeight` if an edge has a negative weight.
+    /// Returns `PathNotFound` if no path exists.
     #[instrument(skip(self, weight_property), fields(from = from, to = to))]
     pub fn find_weighted_path(
         &self,
@@ -4756,6 +4869,10 @@ impl GraphEngine {
     ///
     /// Returns all paths with the minimum hop count between two nodes.
     /// Use `config` to limit memory usage for graphs with many equal-length paths.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if either node doesn't exist.
+    /// Returns `PathNotFound` if no path exists.
     #[instrument(skip(self, config), fields(from = from, to = to))]
     pub fn find_all_paths(
         &self,
@@ -4885,6 +5002,11 @@ impl GraphEngine {
     ///
     /// Returns all paths with the minimum total weight between two nodes.
     /// Use `config` to limit memory usage for graphs with many equal-weight paths.
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if either node doesn't exist.
+    /// Returns `NegativeWeight` if an edge has a negative weight.
+    /// Returns `PathNotFound` if no path exists.
     #[allow(clippy::too_many_lines)]
     #[instrument(skip(self, weight_property, config), fields(from = from, to = to))]
     pub fn find_all_weighted_paths(
@@ -5075,7 +5197,11 @@ impl GraphEngine {
     /// Neo4j-style variable-length patterns like `[:KNOWS*1..5]`.
     ///
     /// Uses iterative deepening DFS with backtracking for O(D) memory instead of O(B^D).
+    ///
+    /// # Errors
+    /// Returns `NodeNotFound` if either node doesn't exist.
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::needless_pass_by_value)] // config is consumed during path finding
     #[instrument(skip(self, config), fields(from = from, to = to))]
     pub fn find_variable_paths(
         &self,
@@ -5181,7 +5307,8 @@ impl GraphEngine {
         if current_depth == target_depth {
             if current == to {
                 // Clone only when we find a valid path
-                let path_memory = (path_nodes.len() + path_edges.len()) * std::mem::size_of::<u64>();
+                let path_memory =
+                    (path_nodes.len() + path_edges.len()) * std::mem::size_of::<u64>();
                 *memory_used += path_memory;
 
                 paths.push(Path {
@@ -5189,8 +5316,16 @@ impl GraphEngine {
                     edges: path_edges.clone(),
                 });
                 stats.paths_found += 1;
-                stats.min_length = Some(stats.min_length.map_or(target_depth, |m| m.min(target_depth)));
-                stats.max_length = Some(stats.max_length.map_or(target_depth, |m| m.max(target_depth)));
+                stats.min_length = Some(
+                    stats
+                        .min_length
+                        .map_or(target_depth, |m| m.min(target_depth)),
+                );
+                stats.max_length = Some(
+                    stats
+                        .max_length
+                        .map_or(target_depth, |m| m.max(target_depth)),
+                );
             }
             return;
         }
@@ -5373,6 +5508,9 @@ impl GraphEngine {
     }
 
     /// Returns the count of nodes with a specific label.
+    ///
+    /// # Errors
+    /// Returns an error if the label lookup fails.
     pub fn count_nodes_by_label(&self, label: &str) -> Result<u64> {
         Ok(self.find_nodes_by_label(label)?.len() as u64)
     }
@@ -5384,6 +5522,9 @@ impl GraphEngine {
     }
 
     /// Returns the count of edges with a specific type.
+    ///
+    /// # Errors
+    /// Returns an error if the edge type lookup fails.
     pub fn count_edges_by_type(&self, edge_type: &str) -> Result<u64> {
         Ok(self.find_edges_by_type(edge_type)?.len() as u64)
     }
@@ -5396,6 +5537,9 @@ impl GraphEngine {
     }
 
     /// Aggregates a property across nodes with a specific label.
+    ///
+    /// # Errors
+    /// Returns an error if the label lookup fails.
     pub fn aggregate_node_property_by_label(
         &self,
         label: &str,
@@ -5408,6 +5552,9 @@ impl GraphEngine {
     }
 
     /// Aggregates a property across nodes matching a filter condition.
+    ///
+    /// # Errors
+    /// Returns an error if the filter condition lookup fails.
     pub fn aggregate_node_property_where(
         &self,
         filter_prop: &str,
@@ -5429,6 +5576,9 @@ impl GraphEngine {
     }
 
     /// Aggregates a property across edges with a specific type.
+    ///
+    /// # Errors
+    /// Returns an error if the edge type lookup fails.
     pub fn aggregate_edge_property_by_type(
         &self,
         edge_type: &str,
@@ -5441,6 +5591,9 @@ impl GraphEngine {
     }
 
     /// Aggregates a property across edges matching a filter condition.
+    ///
+    /// # Errors
+    /// Returns an error if the filter condition lookup fails.
     pub fn aggregate_edge_property_where(
         &self,
         filter_prop: &str,
@@ -5586,7 +5739,7 @@ impl GraphEngine {
     /// Returns `StorageError` if the underlying store operation fails.
     #[instrument(skip(self, pattern))]
     pub fn match_pattern(&self, pattern: &Pattern) -> Result<PatternMatchResult> {
-        let limit = pattern.limit.unwrap_or(DEFAULT_MATCH_LIMIT);
+        let limit = pattern.limit.unwrap_or(self.config.default_match_limit);
         let mut stats = PatternMatchStats::default();
         let mut matches = Vec::new();
 
@@ -5594,7 +5747,7 @@ impl GraphEngine {
         let candidates = self.find_pattern_candidates(pattern.path.node_pattern_at(0))?;
 
         // Check if we should use parallel processing
-        let use_parallel = candidates.len() >= PATTERN_PARALLEL_THRESHOLD;
+        let use_parallel = candidates.len() >= self.config.pattern_parallel_threshold;
 
         if use_parallel {
             // Parallel processing for large candidate sets
@@ -5899,6 +6052,7 @@ impl GraphEngine {
     /// Extend match for variable-length edge patterns.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::needless_pass_by_value)] // bindings is extended during recursion
     fn extend_variable_length_match(
         &self,
         path: &PathPattern,
@@ -6053,6 +6207,9 @@ impl GraphEngine {
     }
 
     /// Delete an edge by ID, cleaning up edge lists on both connected nodes.
+    ///
+    /// # Errors
+    /// Returns `EdgeNotFound` if the edge doesn't exist, or a storage error on failure.
     pub fn delete_edge(&self, edge_id: u64) -> Result<()> {
         let edge = self.get_edge(edge_id)?;
 
@@ -6078,13 +6235,16 @@ impl GraphEngine {
 
     fn remove_edge_from_list(&self, key: &str, edge_id: u64) -> Result<()> {
         if let Ok(mut tensor) = self.store.get(key) {
-            let edge_key = format!("e{}", edge_id);
+            let edge_key = format!("e{edge_id}");
             tensor.remove(&edge_key);
             self.store.put(key, tensor)?;
         }
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `NodeNotFound` if the node doesn't exist, or `PartialDeletionError`
+    /// if some connected edges fail to delete.
     pub fn delete_node(&self, id: u64) -> Result<()> {
         // Get node for index cleanup before deletion
         let node = self.get_node(id)?;
@@ -6202,10 +6362,13 @@ impl GraphEngine {
     }
 
     /// Add an outgoing edge to an entity's _out field.
+    ///
+    /// # Errors
+    /// Returns a storage error if the edge or entity cannot be written.
     #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn add_entity_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<String> {
         let edge_id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let edge_key = format!("edge:{}:{}", edge_type, edge_id);
+        let edge_key = format!("edge:{edge_type}:{edge_id}");
 
         let mut edge_data = TensorData::new();
         edge_data.set(
@@ -6243,6 +6406,9 @@ impl GraphEngine {
     }
 
     /// Add an undirected edge between two entities.
+    ///
+    /// # Errors
+    /// Returns a storage error if the edge or entities cannot be written.
     #[deprecated(since = "0.2.0", note = "Use node ID-based API instead")]
     pub fn add_entity_edge_undirected(
         &self,
@@ -6251,7 +6417,7 @@ impl GraphEngine {
         edge_type: &str,
     ) -> Result<String> {
         let edge_id = self.edge_counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let edge_key = format!("edge:{}:{}", edge_type, edge_id);
+        let edge_key = format!("edge:{edge_type}:{edge_id}");
 
         let mut edge_data = TensorData::new();
         edge_data.set(
@@ -6291,34 +6457,43 @@ impl GraphEngine {
     }
 
     /// Get outgoing edge keys for an entity.
+    ///
+    /// # Errors
+    /// Returns a storage error if the entity is not found.
     #[deprecated(since = "0.2.0", note = "Use edges_of() instead")]
     pub fn get_entity_outgoing(&self, key: &str) -> Result<Vec<String>> {
         let entity = self
             .store
             .get(key)
-            .map_err(|_| GraphError::StorageError(format!("Entity not found: {}", key)))?;
+            .map_err(|_| GraphError::StorageError(format!("Entity not found: {key}")))?;
 
         Ok(entity.outgoing_edges().cloned().unwrap_or_default())
     }
 
     /// Get incoming edge keys for an entity.
+    ///
+    /// # Errors
+    /// Returns a storage error if the entity is not found.
     #[deprecated(since = "0.2.0", note = "Use edges_of() instead")]
     pub fn get_entity_incoming(&self, key: &str) -> Result<Vec<String>> {
         let entity = self
             .store
             .get(key)
-            .map_err(|_| GraphError::StorageError(format!("Entity not found: {}", key)))?;
+            .map_err(|_| GraphError::StorageError(format!("Entity not found: {key}")))?;
 
         Ok(entity.incoming_edges().cloned().unwrap_or_default())
     }
 
     /// Get edge data by edge key.
+    ///
+    /// # Errors
+    /// Returns a storage error if the edge is not found.
     #[deprecated(since = "0.2.0", note = "Use get_edge() instead")]
     pub fn get_entity_edge(&self, edge_key: &str) -> Result<(String, String, String, bool)> {
         let edge = self
             .store
             .get(edge_key)
-            .map_err(|_| GraphError::StorageError(format!("Edge not found: {}", edge_key)))?;
+            .map_err(|_| GraphError::StorageError(format!("Edge not found: {edge_key}")))?;
 
         let from = match edge.get(fields::FROM) {
             Some(TensorValue::Scalar(ScalarValue::String(s))) => s.clone(),
@@ -6341,7 +6516,13 @@ impl GraphEngine {
     }
 
     /// Get outgoing neighbor entity keys.
-    #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Outgoing instead")]
+    ///
+    /// # Errors
+    /// Returns a storage error if the entity is not found.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use neighbors() with Direction::Outgoing instead"
+    )]
     #[allow(deprecated)]
     pub fn get_entity_neighbors_out(&self, key: &str) -> Result<Vec<String>> {
         let edges = self.get_entity_outgoing(key)?;
@@ -6361,7 +6542,13 @@ impl GraphEngine {
     }
 
     /// Get incoming neighbor entity keys.
-    #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Incoming instead")]
+    ///
+    /// # Errors
+    /// Returns a storage error if the entity is not found.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use neighbors() with Direction::Incoming instead"
+    )]
     #[allow(deprecated)]
     pub fn get_entity_neighbors_in(&self, key: &str) -> Result<Vec<String>> {
         let edges = self.get_entity_incoming(key)?;
@@ -6381,6 +6568,9 @@ impl GraphEngine {
     }
 
     /// Get all neighbor entity keys (both directions).
+    ///
+    /// # Errors
+    /// Returns a storage error if the entity is not found.
     #[deprecated(since = "0.2.0", note = "Use neighbors() with Direction::Both instead")]
     #[allow(deprecated)]
     pub fn get_entity_neighbors(&self, key: &str) -> Result<Vec<String>> {
@@ -6404,6 +6594,9 @@ impl GraphEngine {
     }
 
     /// Delete an edge by key, updating connected entities.
+    ///
+    /// # Errors
+    /// Returns a storage error if the edge is not found or cannot be deleted.
     #[deprecated(since = "0.2.0", note = "Use delete_edge() instead")]
     #[allow(deprecated)]
     pub fn delete_entity_edge(&self, edge_key: &str) -> Result<()> {
@@ -6488,6 +6681,9 @@ impl GraphEngine {
     }
 
     /// Find connected components using Union-Find.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     pub fn connected_components(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
         let cfg = config.unwrap_or_default();
         let nodes = self.all_node_ids();
@@ -6529,6 +6725,9 @@ impl GraphEngine {
     }
 
     /// Compute `PageRank` scores using power iteration.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_precision_loss)]
     pub fn pagerank(&self, config: Option<PageRankConfig>) -> Result<PageRankResult> {
         let cfg = config.unwrap_or_default();
@@ -6579,7 +6778,7 @@ impl GraphEngine {
                 .sum();
             let dangling_contrib = cfg.damping * dangling_sum / n_f64;
 
-            let new_scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+            let new_scores: HashMap<u64, f64> = if n >= self.config.centrality_parallel_threshold {
                 nodes
                     .par_iter()
                     .map(|&node| {
@@ -6591,7 +6790,7 @@ impl GraphEngine {
                                 })
                                 .sum()
                         });
-                        (node, teleport + dangling_contrib + cfg.damping * sum)
+                        (node, cfg.damping.mul_add(sum, teleport + dangling_contrib))
                     })
                     .collect()
             } else {
@@ -6606,7 +6805,7 @@ impl GraphEngine {
                                 })
                                 .sum()
                         });
-                        (node, teleport + dangling_contrib + cfg.damping * sum)
+                        (node, cfg.damping.mul_add(sum, teleport + dangling_contrib))
                     })
                     .collect()
             };
@@ -6641,6 +6840,9 @@ impl GraphEngine {
     }
 
     /// Compute betweenness centrality using Brandes' algorithm.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     pub fn betweenness_centrality(
         &self,
@@ -6654,6 +6856,7 @@ impl GraphEngine {
             return Ok(CentralityResult::empty(CentralityType::Betweenness));
         }
 
+        #[allow(clippy::cast_sign_loss)] // sampling_ratio is clamped to [0.0, 1.0]
         let sample_count = ((n as f64) * cfg.sampling_ratio).ceil() as usize;
         let sources: Vec<u64> = if cfg.sampling_ratio < 1.0 && sample_count < n {
             use std::collections::hash_map::DefaultHasher;
@@ -6674,31 +6877,32 @@ impl GraphEngine {
             nodes.clone()
         };
 
-        let partial_scores: Vec<HashMap<u64, f64>> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
-            sources
-                .par_iter()
-                .map(|&source| {
-                    self.brandes_single_source(
-                        source,
-                        &nodes,
-                        cfg.direction,
-                        cfg.edge_type.as_deref(),
-                    )
-                })
-                .collect()
-        } else {
-            sources
-                .iter()
-                .map(|&source| {
-                    self.brandes_single_source(
-                        source,
-                        &nodes,
-                        cfg.direction,
-                        cfg.edge_type.as_deref(),
-                    )
-                })
-                .collect()
-        };
+        let partial_scores: Vec<HashMap<u64, f64>> =
+            if n >= self.config.centrality_parallel_threshold {
+                sources
+                    .par_iter()
+                    .map(|&source| {
+                        self.brandes_single_source(
+                            source,
+                            &nodes,
+                            cfg.direction,
+                            cfg.edge_type.as_deref(),
+                        )
+                    })
+                    .collect()
+            } else {
+                sources
+                    .iter()
+                    .map(|&source| {
+                        self.brandes_single_source(
+                            source,
+                            &nodes,
+                            cfg.direction,
+                            cfg.edge_type.as_deref(),
+                        )
+                    })
+                    .collect()
+            };
 
         let mut scores: HashMap<u64, f64> = nodes.iter().map(|&n| (n, 0.0)).collect();
         for partial in partial_scores {
@@ -6800,6 +7004,9 @@ impl GraphEngine {
     }
 
     /// Compute closeness centrality using harmonic variant.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_precision_loss)]
     pub fn closeness_centrality(
         &self,
@@ -6813,7 +7020,7 @@ impl GraphEngine {
             return Ok(CentralityResult::empty(CentralityType::Closeness));
         }
 
-        let scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+        let scores: HashMap<u64, f64> = if n >= self.config.centrality_parallel_threshold {
             nodes
                 .par_iter()
                 .map(|&node| {
@@ -6853,6 +7060,9 @@ impl GraphEngine {
     }
 
     /// Compute eigenvector centrality using power iteration.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_precision_loss)]
     pub fn eigenvector_centrality(
         &self,
@@ -6874,7 +7084,7 @@ impl GraphEngine {
         for iter in 0..cfg.max_iterations {
             iterations = iter + 1;
 
-            let new_scores: HashMap<u64, f64> = if n >= CENTRALITY_PARALLEL_THRESHOLD {
+            let new_scores: HashMap<u64, f64> = if n >= self.config.centrality_parallel_threshold {
                 nodes
                     .par_iter()
                     .map(|&node| {
@@ -6933,6 +7143,9 @@ impl GraphEngine {
     }
 
     /// Detect communities using label propagation.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_possible_truncation)]
     pub fn label_propagation(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
         let cfg = config.unwrap_or_default();
@@ -6945,7 +7158,7 @@ impl GraphEngine {
 
         let mut labels: HashMap<u64, u64> = nodes.iter().map(|&n| (n, n)).collect();
 
-        let mut order: Vec<u64> = nodes.clone();
+        let mut order: Vec<u64> = nodes;
         let seed = cfg.seed.unwrap_or(42);
         let mut lcg = seed;
         for i in (1..n).rev() {
@@ -7011,6 +7224,9 @@ impl GraphEngine {
     }
 
     /// Detect communities using Louvain algorithm.
+    ///
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     pub fn louvain_communities(&self, config: Option<CommunityConfig>) -> Result<CommunityResult> {
         let cfg = config.unwrap_or_default();
@@ -7180,8 +7396,12 @@ impl Default for GraphEngine {
 
 // Constraint management methods
 impl GraphEngine {
+    /// # Errors
+    /// Returns `ConstraintAlreadyExists` if a constraint with the same name exists,
+    /// or `ConstraintViolation` if existing data violates the constraint.
     pub fn create_constraint(&self, constraint: Constraint) -> Result<()> {
-        let key = format!("_graph_constraint:{}", constraint.name);
+        let constraint_name = &constraint.name;
+        let key = format!("_graph_constraint:{constraint_name}");
         if self.store.exists(&key) {
             return Err(GraphError::ConstraintAlreadyExists(constraint.name));
         }
@@ -7243,6 +7463,8 @@ impl GraphEngine {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns `ConstraintNotFound` if the constraint doesn't exist.
     pub fn drop_constraint(&self, name: &str) -> Result<()> {
         let key = format!("_graph_constraint:{name}");
         if !self.store.exists(&key) {
@@ -7406,6 +7628,7 @@ impl GraphEngine {
         Ok(())
     }
 
+    #[allow(clippy::significant_drop_in_scrutinee, clippy::significant_drop_tightening)]
     fn validate_node_constraints(
         &self,
         labels: &[String],
@@ -7481,6 +7704,7 @@ impl GraphEngine {
         Ok(())
     }
 
+    #[allow(clippy::significant_drop_in_scrutinee, clippy::significant_drop_tightening)]
     fn validate_edge_constraints(
         &self,
         edge_type: &str,
@@ -7579,6 +7803,10 @@ impl GraphEngine {
 
 // Batch operations
 impl GraphEngine {
+    /// # Errors
+    /// Returns `BatchValidationError` if any node violates constraints, or
+    /// `BatchCreationError` if storage fails.
+    #[allow(clippy::needless_pass_by_value)] // batch input is consumed
     pub fn batch_create_nodes(&self, nodes: Vec<NodeInput>) -> Result<BatchResult> {
         if nodes.is_empty() {
             return Ok(BatchResult {
@@ -7656,7 +7884,7 @@ impl GraphEngine {
         properties: &HashMap<String, PropertyValue>,
     ) -> Result<()> {
         let mut tensor = TensorData::new();
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id.cast_signed())));
         tensor.set(
             "_type",
             TensorValue::Scalar(ScalarValue::String("node".into())),
@@ -7664,7 +7892,7 @@ impl GraphEngine {
         tensor.set("_labels", TensorValue::Pointers(labels.to_vec()));
         tensor.set(
             "_created_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         for (key, value) in properties {
@@ -7691,6 +7919,10 @@ impl GraphEngine {
     /// Node existence is validated before edge creation. If nodes are deleted
     /// concurrently by another thread, edge creation will fail with `NodeNotFound`.
     /// This is by design - the caller should retry if this race is possible.
+    ///
+    /// # Errors
+    /// Returns `BatchValidationError` if nodes don't exist or constraints are violated.
+    #[allow(clippy::needless_pass_by_value)] // batch input is consumed
     pub fn batch_create_edges(&self, edges: Vec<EdgeInput>) -> Result<BatchResult> {
         if edges.is_empty() {
             return Ok(BatchResult {
@@ -7771,13 +8003,13 @@ impl GraphEngine {
         directed: bool,
     ) -> Result<()> {
         let mut tensor = TensorData::new();
-        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id as i64)));
+        tensor.set("_id", TensorValue::Scalar(ScalarValue::Int(id.cast_signed())));
         tensor.set(
             "_type",
             TensorValue::Scalar(ScalarValue::String("edge".into())),
         );
-        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(from as i64)));
-        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to as i64)));
+        tensor.set("_from", TensorValue::Scalar(ScalarValue::Int(from.cast_signed())));
+        tensor.set("_to", TensorValue::Scalar(ScalarValue::Int(to.cast_signed())));
         tensor.set(
             "_edge_type",
             TensorValue::Scalar(ScalarValue::String(edge_type.to_string())),
@@ -7788,7 +8020,7 @@ impl GraphEngine {
         );
         tensor.set(
             "_created_at",
-            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis() as i64)),
+            TensorValue::Scalar(ScalarValue::Int(current_timestamp_millis().cast_signed())),
         );
 
         for (key, value) in properties {
@@ -7814,6 +8046,8 @@ impl GraphEngine {
         Ok(())
     }
 
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     pub fn batch_delete_nodes(&self, ids: Vec<u64>) -> Result<usize> {
         let mut deleted = 0;
         for id in ids {
@@ -7824,6 +8058,8 @@ impl GraphEngine {
         Ok(deleted)
     }
 
+    /// # Errors
+    /// This method currently doesn't fail, but returns `Result` for API consistency.
     pub fn batch_delete_edges(&self, ids: Vec<u64>) -> Result<usize> {
         let mut deleted = 0;
         for id in ids {
@@ -7834,6 +8070,8 @@ impl GraphEngine {
         Ok(deleted)
     }
 
+    /// # Errors
+    /// Returns `BatchValidationError` if any node doesn't exist or violates constraints.
     #[allow(clippy::type_complexity)]
     pub fn batch_update_nodes(
         &self,
@@ -18251,7 +18489,8 @@ mod tests {
             let prop_name = format!("prop_{t}");
             assert!(
                 node.properties.contains_key(&prop_name),
-                "property {prop_name} missing on node {}", node_ids[t]
+                "property {prop_name} missing on node {}",
+                node_ids[t]
             );
         }
     }
@@ -18279,7 +18518,10 @@ mod tests {
                     // Each thread adds its own label then updates with different label set
                     let label = format!("Label{t}");
                     let labels = vec!["Base".to_string(), label];
-                    if eng.update_node(node_id, Some(labels), HashMap::new()).is_ok() {
+                    if eng
+                        .update_node(node_id, Some(labels), HashMap::new())
+                        .is_ok()
+                    {
                         cnt.fetch_add(1, Ordering::SeqCst);
                     }
                 })
@@ -18354,10 +18596,10 @@ mod tests {
             Ok(batch_result) => {
                 // Some edges created successfully
                 assert!(batch_result.count <= 20);
-            }
+            },
             Err(_) => {
                 // Clean validation error is acceptable
-            }
+            },
         }
 
         // Verify engine is still usable
@@ -18406,7 +18648,10 @@ mod tests {
 
         // Verify index integrity by looking up a random value
         let results = engine
-            .find_nodes_by_property("indexed_field", &PropertyValue::String("value_25_50".into()))
+            .find_nodes_by_property(
+                "indexed_field",
+                &PropertyValue::String("value_25_50".into()),
+            )
             .unwrap();
         assert_eq!(results.len(), 1);
     }
@@ -18452,8 +18697,8 @@ mod tests {
             .collect();
 
         // Calculate variance to check fairness
-        let avg_ms: f64 = durations.iter().map(|d| d.as_millis() as f64).sum::<f64>()
-            / thread_count as f64;
+        let avg_ms: f64 =
+            durations.iter().map(|d| d.as_millis() as f64).sum::<f64>() / thread_count as f64;
         let max_ms = durations.iter().map(|d| d.as_millis()).max().unwrap() as f64;
 
         // No thread should take more than 5x the average (fairness check)
@@ -18477,5 +18722,845 @@ mod tests {
             "expected {expected_total} nodes, found {}",
             actual_count.load(Ordering::Relaxed)
         );
+    }
+
+    #[test]
+    fn test_batch_delete_nodes_concurrent_20_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Pre-create 1000 nodes with edges
+        let mut node_ids = Vec::new();
+        for i in 0..1000 {
+            let mut props = HashMap::new();
+            props.insert("idx".to_string(), PropertyValue::Int(i));
+            node_ids.push(engine.create_node("Deletable", props).unwrap());
+        }
+
+        // Create edges between consecutive nodes
+        for i in 0..999 {
+            engine
+                .create_edge(node_ids[i], node_ids[i + 1], "LINK", HashMap::new(), true)
+                .unwrap();
+        }
+
+        let thread_count = 20;
+        let nodes_per_thread = 50;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let deleted_count = Arc::new(AtomicUsize::new(0));
+        let node_ids = Arc::new(node_ids);
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&deleted_count);
+                let ids = Arc::clone(&node_ids);
+                thread::spawn(move || {
+                    bar.wait();
+                    let start_idx = t * nodes_per_thread;
+                    let end_idx = start_idx + nodes_per_thread;
+                    let batch: Vec<u64> = ids[start_idx..end_idx].to_vec();
+                    if let Ok(count) = eng.batch_delete_nodes(batch) {
+                        cnt.fetch_add(count, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All targeted nodes should be deleted (1000 nodes)
+        let expected = thread_count * nodes_per_thread;
+        assert_eq!(deleted_count.load(Ordering::SeqCst), expected);
+
+        // Verify nodes are gone
+        for i in 0..expected {
+            assert!(
+                engine.get_node(node_ids[i]).is_err(),
+                "node {} should be deleted",
+                node_ids[i]
+            );
+        }
+
+        // Engine should still be usable
+        let _ = engine.create_node("Test", HashMap::new()).unwrap();
+    }
+
+    #[test]
+    fn test_batch_delete_edges_concurrent_20_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create hub and spoke topology: 1 hub + 99 spokes with 500 edges total
+        let hub = engine.create_node("Hub", HashMap::new()).unwrap();
+        let mut spoke_ids = Vec::new();
+        for i in 0..99 {
+            let mut props = HashMap::new();
+            props.insert("idx".to_string(), PropertyValue::Int(i));
+            spoke_ids.push(engine.create_node("Spoke", props).unwrap());
+        }
+
+        // Create 500 edges from hub to spokes (cycling through spokes)
+        let mut edge_ids = Vec::new();
+        for i in 0..500 {
+            let spoke = spoke_ids[i % 99];
+            let mut props = HashMap::new();
+            props.insert("edge_idx".to_string(), PropertyValue::Int(i as i64));
+            let edge_id = engine
+                .create_edge(hub, spoke, "CONNECTS", props, true)
+                .unwrap();
+            edge_ids.push(edge_id);
+        }
+
+        let thread_count = 20;
+        let edges_per_thread = 25;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let deleted_count = Arc::new(AtomicUsize::new(0));
+        let edge_ids = Arc::new(edge_ids);
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&deleted_count);
+                let ids = Arc::clone(&edge_ids);
+                thread::spawn(move || {
+                    bar.wait();
+                    let start_idx = t * edges_per_thread;
+                    let end_idx = start_idx + edges_per_thread;
+                    let batch: Vec<u64> = ids[start_idx..end_idx].to_vec();
+                    if let Ok(count) = eng.batch_delete_edges(batch) {
+                        cnt.fetch_add(count, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All edges should be deleted
+        let expected = thread_count * edges_per_thread;
+        assert_eq!(deleted_count.load(Ordering::SeqCst), expected);
+
+        // Verify hub node still exists
+        assert!(engine.get_node(hub).is_ok());
+
+        // Verify all spoke nodes still exist
+        for spoke in &spoke_ids {
+            assert!(engine.get_node(*spoke).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_batch_update_nodes_concurrent_10_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Pre-create 100 nodes (10 per thread)
+        let mut node_ids = Vec::new();
+        for i in 0..100 {
+            let mut props = HashMap::new();
+            props.insert("initial".to_string(), PropertyValue::Int(i));
+            node_ids.push(engine.create_node("Updatable", props).unwrap());
+        }
+        let node_ids = Arc::new(node_ids);
+
+        let thread_count = 10;
+        let nodes_per_thread = 10;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                let ids = Arc::clone(&node_ids);
+                thread::spawn(move || {
+                    bar.wait();
+                    let start_idx = t * nodes_per_thread;
+                    let end_idx = start_idx + nodes_per_thread;
+                    let batch_ids: Vec<u64> = ids[start_idx..end_idx].to_vec();
+
+                    let updates: Vec<(u64, Option<Vec<String>>, HashMap<String, PropertyValue>)> =
+                        batch_ids
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, id)| {
+                                let mut props = HashMap::new();
+                                props.insert(
+                                    format!("thread_{t}"),
+                                    PropertyValue::String(format!("updated_{i}")),
+                                );
+                                props.insert("updated_by".to_string(), PropertyValue::Int(t as i64));
+                                (id, None, props)
+                            })
+                            .collect();
+
+                    if eng.batch_update_nodes(updates).is_ok() {
+                        cnt.fetch_add(nodes_per_thread, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::SeqCst),
+            thread_count * nodes_per_thread
+        );
+
+        // Verify each node has its thread-specific property
+        for t in 0..thread_count {
+            let start_idx = t * nodes_per_thread;
+            for i in 0..nodes_per_thread {
+                let node = engine.get_node(node_ids[start_idx + i]).unwrap();
+                let prop_name = format!("thread_{t}");
+                assert!(
+                    node.properties.contains_key(&prop_name),
+                    "node {} missing property {prop_name}",
+                    node_ids[start_idx + i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_constraint_validation_concurrent_30_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        engine.create_node_property_index("email").unwrap();
+        engine
+            .create_constraint(Constraint {
+                name: "unique_email".to_string(),
+                target: ConstraintTarget::AllNodes,
+                property: "email".to_string(),
+                constraint_type: ConstraintType::Unique,
+            })
+            .unwrap();
+
+        let thread_count = 30;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+        let duplicate_rejected = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let success = Arc::clone(&success_count);
+                let rejected = Arc::clone(&duplicate_rejected);
+                thread::spawn(move || {
+                    bar.wait();
+                    // First 15 threads use unique emails, last 15 try duplicates
+                    let email = if t < 15 {
+                        format!("unique_{t}@example.com")
+                    } else {
+                        // Attempt duplicate of first 15
+                        format!("unique_{}@example.com", t - 15)
+                    };
+
+                    let mut props = HashMap::new();
+                    props.insert("email".to_string(), PropertyValue::String(email));
+
+                    match eng.create_node("User", props) {
+                        Ok(_) => {
+                            success.fetch_add(1, Ordering::Relaxed);
+                        },
+                        Err(GraphError::ConstraintViolation { .. }) => {
+                            rejected.fetch_add(1, Ordering::Relaxed);
+                        },
+                        Err(e) => panic!("unexpected error: {e:?}"),
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // Exactly 15 unique emails should succeed
+        let successes = success_count.load(Ordering::SeqCst);
+        let rejections = duplicate_rejected.load(Ordering::SeqCst);
+
+        // Due to race conditions, we should have 15 successes total
+        // (either the unique thread or the duplicate thread wins for each email)
+        assert_eq!(
+            successes + rejections,
+            thread_count,
+            "total should be {thread_count}, got {successes} successes + {rejections} rejections"
+        );
+        assert_eq!(successes, 15, "exactly 15 unique emails should succeed");
+    }
+
+    #[test]
+    fn test_index_create_drop_concurrent_10_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Pre-create 5 indexes to drop
+        for i in 0..5 {
+            engine
+                .create_node_property_index(&format!("existing_{i}"))
+                .unwrap();
+        }
+
+        let thread_count = 10;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let create_success = Arc::new(AtomicUsize::new(0));
+        let drop_success = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let c_cnt = Arc::clone(&create_success);
+                let d_cnt = Arc::clone(&drop_success);
+                thread::spawn(move || {
+                    bar.wait();
+                    if t < 5 {
+                        // Create new indexes
+                        if eng
+                            .create_node_property_index(&format!("new_{t}"))
+                            .is_ok()
+                        {
+                            c_cnt.fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        // Drop existing indexes
+                        if eng.drop_node_index(&format!("existing_{}", t - 5)).is_ok() {
+                            d_cnt.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All operations should succeed
+        assert_eq!(create_success.load(Ordering::SeqCst), 5);
+        assert_eq!(drop_success.load(Ordering::SeqCst), 5);
+
+        // Verify engine is consistent
+        let _ = engine.create_node("Test", HashMap::new()).unwrap();
+    }
+
+    #[test]
+    fn test_high_contention_single_node_100_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+        let mut props = HashMap::new();
+        props.insert("counter".to_string(), PropertyValue::Int(0));
+        let node_id = engine.create_node("Contended", props).unwrap();
+
+        let thread_count = 100;
+        let updates_per_thread = 100;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..thread_count)
+            .map(|t| {
+                let eng = Arc::clone(&engine);
+                let bar = Arc::clone(&barrier);
+                let cnt = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    bar.wait();
+                    for i in 0..updates_per_thread {
+                        let mut props = HashMap::new();
+                        let value = (t * updates_per_thread + i) as i64;
+                        props.insert("counter".to_string(), PropertyValue::Int(value));
+                        if eng.update_node(node_id, None, props).is_ok() {
+                            cnt.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All updates should succeed (no corruption, no starvation)
+        let expected = thread_count * updates_per_thread;
+        assert_eq!(
+            success_count.load(Ordering::SeqCst),
+            expected,
+            "all {expected} updates should succeed"
+        );
+
+        // Verify node is still valid
+        let node = engine.get_node(node_id).unwrap();
+        assert!(matches!(
+            node.properties.get("counter"),
+            Some(PropertyValue::Int(_))
+        ));
+    }
+
+    #[test]
+    fn test_concurrent_traverse_during_modifications_20_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create initial chain of 50 nodes
+        let mut chain_ids = Vec::new();
+        for i in 0..50 {
+            let mut props = HashMap::new();
+            props.insert("idx".to_string(), PropertyValue::Int(i));
+            chain_ids.push(engine.create_node("Chain", props).unwrap());
+        }
+        for i in 0..49 {
+            engine
+                .create_edge(chain_ids[i], chain_ids[i + 1], "NEXT", HashMap::new(), true)
+                .unwrap();
+        }
+        let chain_ids = Arc::new(chain_ids);
+
+        let thread_count = 20;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let traversal_count = Arc::new(AtomicUsize::new(0));
+        let edge_count = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        // 10 traverser threads
+        for t in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&traversal_count);
+            let ids = Arc::clone(&chain_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for _ in 0..50 {
+                    let start_idx = t % 25;
+                    if eng
+                        .traverse(ids[start_idx], Direction::Outgoing, 10, None, None)
+                        .is_ok()
+                    {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        // 10 edge writer threads
+        for _ in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&edge_count);
+            let ids = Arc::clone(&chain_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for i in 0..20 {
+                    let from = ids[i % 50];
+                    let to = ids[(i + 10) % 50];
+                    if eng
+                        .create_edge(from, to, "CROSS", HashMap::new(), true)
+                        .is_ok()
+                    {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All traversals and edge creations should complete
+        assert_eq!(traversal_count.load(Ordering::SeqCst), 10 * 50);
+        assert_eq!(edge_count.load(Ordering::SeqCst), 10 * 20);
+    }
+
+    #[test]
+    fn test_concurrent_find_path_during_modifications_20_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create 10x10 grid graph
+        let mut grid_ids = Vec::new();
+        for row in 0..10 {
+            for col in 0..10 {
+                let mut props = HashMap::new();
+                props.insert("row".to_string(), PropertyValue::Int(row));
+                props.insert("col".to_string(), PropertyValue::Int(col));
+                grid_ids.push(engine.create_node("Grid", props).unwrap());
+            }
+        }
+
+        // Connect horizontally and vertically
+        for row in 0..10 {
+            for col in 0..10 {
+                let idx = row * 10 + col;
+                if col < 9 {
+                    engine
+                        .create_edge(
+                            grid_ids[idx as usize],
+                            grid_ids[(idx + 1) as usize],
+                            "ADJACENT",
+                            HashMap::new(),
+                            false,
+                        )
+                        .unwrap();
+                }
+                if row < 9 {
+                    engine
+                        .create_edge(
+                            grid_ids[idx as usize],
+                            grid_ids[(idx + 10) as usize],
+                            "ADJACENT",
+                            HashMap::new(),
+                            false,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
+        let grid_ids = Arc::new(grid_ids);
+        let thread_count = 20;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let path_found = Arc::new(AtomicUsize::new(0));
+        let updates_done = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        // 10 path finder threads
+        for t in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&path_found);
+            let ids = Arc::clone(&grid_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for _ in 0..20 {
+                    let start = ids[t % 50];
+                    let end = ids[99 - (t % 50)];
+                    if eng.find_path(start, end, None).is_ok() {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        // 10 modifier threads (update edge properties)
+        for t in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&updates_done);
+            let ids = Arc::clone(&grid_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for i in 0..20 {
+                    let idx = (t * 10 + i) % 100;
+                    let mut props = HashMap::new();
+                    props.insert("weight".to_string(), PropertyValue::Float(i as f64 * 0.1));
+                    if eng.update_node(ids[idx], None, props).is_ok() {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // All operations should complete without panic
+        assert!(path_found.load(Ordering::SeqCst) > 0, "some paths should be found");
+        assert_eq!(updates_done.load(Ordering::SeqCst), 10 * 20);
+    }
+
+    #[test]
+    fn test_concurrent_pagerank_during_writes_16_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Create initial graph: 100 nodes with random-ish connections
+        let mut node_ids = Vec::new();
+        for i in 0..100 {
+            let mut props = HashMap::new();
+            props.insert("idx".to_string(), PropertyValue::Int(i));
+            node_ids.push(engine.create_node("PageRank", props).unwrap());
+        }
+
+        // Create edges: each node connects to a few others
+        for i in 0..100 {
+            for j in 1..=3 {
+                let target = (i + j * 7) % 100;
+                if target != i {
+                    let _ = engine.create_edge(
+                        node_ids[i],
+                        node_ids[target],
+                        "LINKS",
+                        HashMap::new(),
+                        true,
+                    );
+                }
+            }
+        }
+
+        let node_ids = Arc::new(node_ids);
+        let thread_count = 16;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let pagerank_runs = Arc::new(AtomicUsize::new(0));
+        let write_ops = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        // 8 pagerank reader threads
+        for _ in 0..8 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&pagerank_runs);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for _ in 0..5 {
+                    if let Ok(result) = eng.pagerank(Some(PageRankConfig {
+                        damping: 0.85,
+                        tolerance: 0.01,
+                        max_iterations: 20,
+                        direction: Direction::Outgoing,
+                        edge_type: None,
+                    })) {
+                        // Verify no NaN or infinite values
+                        for (_, score) in &result.scores {
+                            assert!(score.is_finite(), "score must be finite");
+                        }
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        // 8 writer threads
+        for t in 0..8 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&write_ops);
+            let ids = Arc::clone(&node_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                for i in 0..20 {
+                    let from = ids[(t * 10 + i) % 100];
+                    let to = ids[(t * 10 + i + 5) % 100];
+                    if eng
+                        .create_edge(from, to, "NEW_LINK", HashMap::new(), true)
+                        .is_ok()
+                    {
+                        cnt.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // Pagerank should complete successfully multiple times
+        assert!(
+            pagerank_runs.load(Ordering::SeqCst) > 0,
+            "some pagerank runs should complete"
+        );
+        assert!(
+            write_ops.load(Ordering::SeqCst) > 0,
+            "some writes should complete"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_batch_mixed_operations_30_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let engine = Arc::new(GraphEngine::new());
+
+        // Pre-create 500 nodes
+        let mut node_ids = Vec::new();
+        for i in 0..500 {
+            let mut props = HashMap::new();
+            props.insert("idx".to_string(), PropertyValue::Int(i));
+            node_ids.push(engine.create_node("Mixed", props).unwrap());
+        }
+
+        // Pre-create edges between consecutive nodes
+        let mut edge_ids = Vec::new();
+        for i in 0..400 {
+            let edge_id = engine
+                .create_edge(
+                    node_ids[i],
+                    node_ids[i + 1],
+                    "INITIAL",
+                    HashMap::new(),
+                    true,
+                )
+                .unwrap();
+            edge_ids.push(edge_id);
+        }
+
+        let node_ids = Arc::new(node_ids);
+        let edge_ids = Arc::new(edge_ids);
+        let thread_count = 30;
+        let barrier = Arc::new(Barrier::new(thread_count));
+
+        let nodes_created = Arc::new(AtomicUsize::new(0));
+        let edges_created = Arc::new(AtomicUsize::new(0));
+        let nodes_deleted = Arc::new(AtomicUsize::new(0));
+        let edges_deleted = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        // 10 batch_create_nodes threads
+        for t in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&nodes_created);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                let nodes: Vec<NodeInput> = (0..20)
+                    .map(|i| NodeInput {
+                        labels: vec!["BatchCreated".to_string()],
+                        properties: {
+                            let mut p = HashMap::new();
+                            p.insert("thread".to_string(), PropertyValue::Int(t as i64));
+                            p.insert("idx".to_string(), PropertyValue::Int(i as i64));
+                            p
+                        },
+                    })
+                    .collect();
+                if let Ok(result) = eng.batch_create_nodes(nodes) {
+                    cnt.fetch_add(result.count, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        // 10 batch_create_edges threads
+        for t in 0..10 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&edges_created);
+            let ids = Arc::clone(&node_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                let edges: Vec<EdgeInput> = (0..15)
+                    .map(|i| {
+                        let from_idx = (t * 40 + i) % 500;
+                        let to_idx = (t * 40 + i + 10) % 500;
+                        EdgeInput {
+                            from: ids[from_idx],
+                            to: ids[to_idx],
+                            edge_type: "BATCH_EDGE".to_string(),
+                            properties: HashMap::new(),
+                            directed: true,
+                        }
+                    })
+                    .collect();
+                if let Ok(result) = eng.batch_create_edges(edges) {
+                    cnt.fetch_add(result.count, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        // 5 batch_delete_nodes threads (delete from higher indices to avoid conflicts)
+        for t in 0..5 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&nodes_deleted);
+            let ids = Arc::clone(&node_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                // Delete nodes from the end (450-499 range split among 5 threads)
+                let start_idx = 450 + t * 10;
+                let batch: Vec<u64> = ids[start_idx..start_idx + 10].to_vec();
+                if let Ok(count) = eng.batch_delete_nodes(batch) {
+                    cnt.fetch_add(count, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        // 5 batch_delete_edges threads
+        for t in 0..5 {
+            let eng = Arc::clone(&engine);
+            let bar = Arc::clone(&barrier);
+            let cnt = Arc::clone(&edges_deleted);
+            let ids = Arc::clone(&edge_ids);
+            handles.push(thread::spawn(move || {
+                bar.wait();
+                // Delete edges from different ranges
+                let start_idx = t * 20;
+                let end_idx = (start_idx + 20).min(400);
+                let batch: Vec<u64> = ids[start_idx..end_idx].to_vec();
+                if let Ok(count) = eng.batch_delete_edges(batch) {
+                    cnt.fetch_add(count, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // Verify operations completed
+        assert!(
+            nodes_created.load(Ordering::SeqCst) > 0,
+            "some nodes should be created"
+        );
+        assert!(
+            edges_created.load(Ordering::SeqCst) > 0,
+            "some edges should be created"
+        );
+        assert!(
+            nodes_deleted.load(Ordering::SeqCst) > 0,
+            "some nodes should be deleted"
+        );
+        assert!(
+            edges_deleted.load(Ordering::SeqCst) > 0,
+            "some edges should be deleted"
+        );
+
+        // Verify engine is still consistent and usable
+        let _ = engine.create_node("FinalTest", HashMap::new()).unwrap();
     }
 }

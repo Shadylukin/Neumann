@@ -3541,6 +3541,13 @@ with automatic sparse vector optimization for memory efficiency.</p>
 <tr><td><code>HNSWIndex</code></td><td>Hierarchical navigable small world graph (re-exported from tensor_store)</td></tr>
 <tr><td><code>HNSWConfig</code></td><td>HNSW index configuration (re-exported from tensor_store)</td></tr>
 <tr><td><code>SparseVector</code></td><td>Memory-efficient sparse embedding storage</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Filter for metadata-based search (Eq, Ne, Lt, Gt, And, Or, In, etc.)</td></tr>
+<tr><td><code>FilterValue</code></td><td>Value type for filters (Int, Float, String, Bool, Null)</td></tr>
+<tr><td><code>FilterStrategy</code></td><td>Strategy selection (Auto, PreFilter, PostFilter)</td></tr>
+<tr><td><code>FilteredSearchConfig</code></td><td>Configuration for filtered search behavior</td></tr>
+<tr><td><code>VectorCollectionConfig</code></td><td>Configuration for vector collections</td></tr>
+<tr><td><code>MetadataValue</code></td><td>Simplified value type for embedding metadata</td></tr>
+<tr><td><code>PersistentVectorIndex</code></td><td>Serializable index for disk persistence</td></tr>
 </tbody></table>
 </div>
 <h3 id="vectorerror-variants"><a class="header" href="#vectorerror-variants">VectorError Variants</a></h3>
@@ -3553,6 +3560,11 @@ with automatic sparse vector optimization for memory efficiency.</p>
 <tr><td><code>BatchValidationError</code></td><td>Invalid input in batch</td><td><code>batch_store_embeddings</code> validation</td></tr>
 <tr><td><code>BatchOperationError</code></td><td>Operation failed in batch</td><td><code>batch_store_embeddings</code> execution</td></tr>
 <tr><td><code>ConfigurationError</code></td><td>Invalid configuration</td><td><code>VectorEngineConfig::validate()</code></td></tr>
+<tr><td><code>CollectionExists</code></td><td>Collection already exists</td><td><code>create_collection</code> with existing name</td></tr>
+<tr><td><code>CollectionNotFound</code></td><td>Collection not found</td><td>Collection operations on missing collection</td></tr>
+<tr><td><code>IoError</code></td><td>IO error during persistence</td><td><code>save_to_file</code>, <code>load_from_file</code></td></tr>
+<tr><td><code>SerializationError</code></td><td>Serialization error</td><td>Index persistence operations</td></tr>
+<tr><td><code>SearchTimeout</code></td><td>Search operation timed out</td><td>Search operations exceeding configured timeout</td></tr>
 </tbody></table>
 </div>
 <h2 id="configuration-3"><a class="header" href="#configuration-3">Configuration</a></h2>
@@ -3566,27 +3578,31 @@ with automatic sparse vector optimization for memory efficiency.</p>
 <tr><td><code>max_dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Maximum allowed dimension</td></tr>
 <tr><td><code>max_keys_per_scan</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Limit for unbounded scans</td></tr>
 <tr><td><code>batch_parallel_threshold</code></td><td><code>usize</code></td><td><code>100</code></td><td>Batch size for parallel processing</td></tr>
+<tr><td><code>search_timeout</code></td><td><code>Option&lt;Duration&gt;</code></td><td><code>None</code></td><td>Search operation timeout</td></tr>
 </tbody></table>
 </div>
 <h3 id="configuration-presets-1"><a class="header" href="#configuration-presets-1">Configuration Presets</a></h3>
 <div class="table-wrapper"><table><thead><tr><th>Preset</th><th>Description</th><th>Key Settings</th></tr></thead><tbody>
 <tr><td><code>default()</code></td><td>Balanced for most workloads</td><td>All defaults</td></tr>
 <tr><td><code>high_throughput()</code></td><td>Optimized for write-heavy loads</td><td><code>parallel_threshold: 1000</code></td></tr>
-<tr><td><code>low_memory()</code></td><td>Memory-constrained environments</td><td><code>max_dimension: 4096</code>, <code>max_keys_per_scan: 10000</code></td></tr>
+<tr><td><code>low_memory()</code></td><td>Memory-constrained environments</td><td><code>max_dimension: 4096</code>, <code>max_keys_per_scan: 10000</code>, <code>search_timeout: 30s</code></td></tr>
 </tbody></table>
 </div>
 <h3 id="builder-methods"><a class="header" href="#builder-methods">Builder Methods</a></h3>
 <p>All builder methods are <code>const fn</code> for compile-time configuration:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let config = VectorEngineConfig::default()
+</span>use std::time::Duration;
+
+let config = VectorEngineConfig::default()
     .with_default_dimension(768)
     .with_sparse_threshold(0.7)
     .with_parallel_threshold(1000)
     .with_default_metric(DistanceMetric::Cosine)
     .with_max_dimension(4096)
     .with_max_keys_per_scan(50_000)
-    .with_batch_parallel_threshold(200);
+    .with_batch_parallel_threshold(200)
+    .with_search_timeout(Duration::from_secs(5));
 
 let engine = VectorEngine::with_config(config)?;
 <span class="boring">}</span></code></pre></pre>
@@ -3604,6 +3620,28 @@ let engine = VectorEngine::with_config(config)?;
 // This will fail with DimensionMismatch
 engine.store_embedding("too_big", vec![0.0; 5000])?; // Error!
 <span class="boring">}</span></code></pre></pre>
+<h3 id="search-timeout"><a class="header" href="#search-timeout">Search Timeout</a></h3>
+<p>Configure a timeout for search operations to prevent runaway queries:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::time::Duration;
+use vector_engine::{VectorEngine, VectorEngineConfig, VectorError};
+
+let config = VectorEngineConfig::default()
+    .with_search_timeout(Duration::from_secs(5));
+
+let engine = VectorEngine::with_config(config)?;
+
+match engine.search_similar(&amp;query, 10) {
+    Ok(results) =&gt; { /* process results */ },
+    Err(VectorError::SearchTimeout { operation, timeout_ms }) =&gt; {
+        eprintln!("Search '{}' timed out after {}ms", operation, timeout_ms);
+    },
+    Err(e) =&gt; { /* handle other errors */ },
+}
+<span class="boring">}</span></code></pre></pre>
+<p>The timeout applies to all search methods. When a timeout occurs, no partial
+results are returned to prevent misleading results that may miss better matches.</p>
 <h2 id="distance-metrics-1"><a class="header" href="#distance-metrics-1">Distance Metrics</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Metric</th><th>Formula</th><th>Score Range</th><th>Use Case</th><th>HNSW Support</th></tr></thead><tbody>
 <tr><td>Cosine</td><td><code>a.b / (‖a‖ * ‖b‖)</code></td><td>-1.0 to 1.0</td><td>Semantic similarity</td><td>Yes</td></tr>
@@ -3786,6 +3824,113 @@ let results = engine.search_similar_with_metric(
 // Direct similarity computation
 let similarity = VectorEngine::compute_similarity(&amp;vec_a, &amp;vec_b)?;
 <span class="boring">}</span></code></pre></pre>
+<h3 id="filtered-search"><a class="header" href="#filtered-search">Filtered Search</a></h3>
+<p>Search with metadata filters to narrow results without post-processing:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue, FilteredSearchConfig, FilterStrategy};
+
+// Build a filter condition
+let filter = FilterCondition::Eq("category".to_string(), FilterValue::String("science".to_string()))
+    .and(FilterCondition::Gt("year".to_string(), FilterValue::Int(2020)));
+
+// Search with filter (auto strategy)
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, None)?;
+
+// Search with explicit pre-filter strategy (best for selective filters)
+let config = FilteredSearchConfig::pre_filter();
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, Some(config))?;
+
+// Search with post-filter and custom oversample
+let config = FilteredSearchConfig::post_filter().with_oversample(5);
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, Some(config))?;
+<span class="boring">}</span></code></pre></pre>
+<h4 id="filter-conditions"><a class="header" href="#filter-conditions">Filter Conditions</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Condition</th><th>Description</th><th>Example</th></tr></thead><tbody>
+<tr><td><code>Eq(field, value)</code></td><td>Equality</td><td><code>category = "science"</code></td></tr>
+<tr><td><code>Ne(field, value)</code></td><td>Not equal</td><td><code>status != "deleted"</code></td></tr>
+<tr><td><code>Lt(field, value)</code></td><td>Less than</td><td><code>price &lt; 100</code></td></tr>
+<tr><td><code>Le(field, value)</code></td><td>Less than or equal</td><td><code>price &lt;= 100</code></td></tr>
+<tr><td><code>Gt(field, value)</code></td><td>Greater than</td><td><code>year &gt; 2020</code></td></tr>
+<tr><td><code>Ge(field, value)</code></td><td>Greater than or equal</td><td><code>year &gt;= 2020</code></td></tr>
+<tr><td><code>And(a, b)</code></td><td>Logical AND</td><td>Combined conditions</td></tr>
+<tr><td><code>Or(a, b)</code></td><td>Logical OR</td><td>Alternative conditions</td></tr>
+<tr><td><code>In(field, values)</code></td><td>Value in list</td><td><code>status IN ["active", "pending"]</code></td></tr>
+<tr><td><code>Contains(field, substr)</code></td><td>String contains</td><td><code>title CONTAINS "rust"</code></td></tr>
+<tr><td><code>StartsWith(field, prefix)</code></td><td>String prefix</td><td><code>name STARTS WITH "doc:"</code></td></tr>
+<tr><td><code>Exists(field)</code></td><td>Field exists</td><td><code>HAS embedding</code></td></tr>
+<tr><td><code>True</code></td><td>Always matches</td><td>No filter</td></tr>
+</tbody></table>
+</div>
+<h4 id="filter-strategies"><a class="header" href="#filter-strategies">Filter Strategies</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Strategy</th><th>When to Use</th><th>Behavior</th></tr></thead><tbody>
+<tr><td><code>Auto</code></td><td>Default</td><td>Estimates selectivity and chooses</td></tr>
+<tr><td><code>PreFilter</code></td><td>&lt; 10% matches</td><td>Filters first, then searches subset</td></tr>
+<tr><td><code>PostFilter</code></td><td>&gt; 10% matches</td><td>Searches with oversample, then filters</td></tr>
+</tbody></table>
+</div><pre class="mermaid">flowchart TD
+    Query[Query + Filter] --&gt; Strategy{Which Strategy?}
+
+    Strategy --&gt;|Auto| Estimate[Estimate Selectivity]
+    Estimate --&gt;|&lt; 10%| Pre[Pre-Filter]
+    Estimate --&gt;|&gt;= 10%| Post[Post-Filter]
+
+    Strategy --&gt;|PreFilter| Pre
+    Strategy --&gt;|PostFilter| Post
+
+    Pre --&gt; Filter1[Filter all keys]
+    Filter1 --&gt; Search1[Search filtered subset]
+    Search1 --&gt; Result[Top-K Results]
+
+    Post --&gt; Search2[Search with oversample]
+    Search2 --&gt; Filter2[Filter candidates]
+    Filter2 --&gt; Result
+</pre>
+<h4 id="filter-helper-methods"><a class="header" href="#filter-helper-methods">Filter Helper Methods</a></h4>
+<p>Utilities for working with filters:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Estimate how selective a filter is (0.0 = matches nothing, 1.0 = matches all)
+let selectivity = engine.estimate_filter_selectivity(&amp;filter);
+
+// Count how many embeddings match a filter
+let matching = engine.count_matching(&amp;filter);
+
+// Get keys of all matching embeddings
+let keys = engine.list_keys_matching(&amp;filter);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="metadata-storage"><a class="header" href="#metadata-storage">Metadata Storage</a></h3>
+<p>Store and retrieve metadata alongside embeddings:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::TensorValue;
+use std::collections::HashMap;
+
+// Store embedding with metadata
+let mut metadata = HashMap::new();
+metadata.insert("category".to_string(), TensorValue::from("science"));
+metadata.insert("year".to_string(), TensorValue::from(2024i64));
+metadata.insert("score".to_string(), TensorValue::from(0.95f64));
+
+engine.store_embedding_with_metadata("doc1", vec![0.1, 0.2, 0.3], metadata)?;
+
+// Get all metadata
+let meta = engine.get_metadata("doc1")?;
+
+// Get specific field
+let category = engine.get_metadata_field("doc1", "category")?;
+
+// Update metadata (merges with existing)
+let mut updates = HashMap::new();
+updates.insert("score".to_string(), TensorValue::from(0.98f64));
+engine.update_metadata("doc1", updates)?;
+
+// Check if metadata field exists
+if engine.has_metadata_field("doc1", "category") {
+    // Remove specific metadata field
+    engine.remove_metadata_field("doc1", "category")?;
+}
+<span class="boring">}</span></code></pre></pre>
 <h3 id="batch-operations-1"><a class="header" href="#batch-operations-1">Batch Operations</a></h3>
 <p>For bulk insert and delete operations with parallel processing:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -3935,9 +4080,132 @@ let count = engine.count_entities_with_embeddings();
 <span class="boring">}</span></code></pre></pre>
 <p>Unified entity embeddings are stored in the <code>_embedding</code> field of the entity’s
 TensorData.</p>
+<h2 id="collections"><a class="header" href="#collections">Collections</a></h2>
+<p>Collections provide isolated namespaces for organizing embeddings by type or
+purpose. Each collection can have its own dimension constraints and distance
+metric configuration.</p>
+<h3 id="creating-and-managing-collections"><a class="header" href="#creating-and-managing-collections">Creating and Managing Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{VectorEngine, VectorCollectionConfig, DistanceMetric};
+
+let engine = VectorEngine::new();
+
+// Create collection with custom config
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine)
+    .with_auto_index(5000);  // Auto-build HNSW at 5000 vectors
+
+engine.create_collection("documents", config)?;
+
+// List collections
+let collections = engine.list_collections();
+
+// Check if collection exists
+engine.collection_exists("documents");  // -&gt; true
+
+// Get collection config
+let config = engine.get_collection_config("documents");
+
+// Delete collection (removes all vectors in it)
+engine.delete_collection("documents")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="storing-in-collections"><a class="header" href="#storing-in-collections">Storing in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::collections::HashMap;
+use tensor_store::TensorValue;
+
+// Store vector in collection
+engine.store_in_collection("documents", "doc1", vec![0.1, 0.2, 0.3])?;
+
+// Store with metadata
+let mut metadata = HashMap::new();
+metadata.insert("title".to_string(), TensorValue::from("Introduction to Rust"));
+metadata.insert("author".to_string(), TensorValue::from("Alice"));
+
+engine.store_in_collection_with_metadata(
+    "documents",
+    "doc1",
+    vec![0.1, 0.2, 0.3],
+    metadata
+)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="searching-in-collections"><a class="header" href="#searching-in-collections">Searching in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue};
+
+// Basic search in collection
+let results = engine.search_in_collection("documents", &amp;query, 10)?;
+
+// Filtered search in collection
+let filter = FilterCondition::Eq("author".to_string(), FilterValue::String("Alice".to_string()));
+let results = engine.search_filtered_in_collection(
+    "documents",
+    &amp;query,
+    10,
+    &amp;filter,
+    None
+)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="collection-key-isolation"><a class="header" href="#collection-key-isolation">Collection Key Isolation</a></h3>
+<p>Collections use prefixed storage keys to ensure isolation:</p>
+<div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Storage Key Pattern</th></tr></thead><tbody>
+<tr><td>Default embeddings</td><td><code>emb:{key}</code></td></tr>
+<tr><td>Collection embeddings</td><td><code>coll:{collection}:emb:{key}</code></td></tr>
+<tr><td>Entity embeddings</td><td><code>{entity_key}._embedding</code></td></tr>
+</tbody></table>
+</div>
+<h3 id="vectorcollectionconfig"><a class="header" href="#vectorcollectionconfig">VectorCollectionConfig</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>dimension</code></td><td><code>Option&lt;usize&gt;</code></td><td><code>None</code></td><td>Enforced dimension (rejects mismatches)</td></tr>
+<tr><td><code>distance_metric</code></td><td><code>DistanceMetric</code></td><td><code>Cosine</code></td><td>Default metric for this collection</td></tr>
+<tr><td><code>auto_index</code></td><td><code>bool</code></td><td><code>false</code></td><td>Auto-build HNSW on threshold</td></tr>
+<tr><td><code>auto_index_threshold</code></td><td><code>usize</code></td><td><code>1000</code></td><td>Vector count to trigger auto-index</td></tr>
+</tbody></table>
+</div>
+<h2 id="index-persistence"><a class="header" href="#index-persistence">Index Persistence</a></h2>
+<p>Save and restore vector indices for fast startup:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::path::Path;
+
+// Save all collections to directory (one JSON file per collection)
+let saved = engine.save_all_indices(Path::new("./vector_index"))?;
+
+// Load all indices from directory
+let loaded = engine.load_all_indices(Path::new("./vector_index"))?;
+
+// Save single collection to JSON
+engine.save_index("documents", Path::new("./documents.json"))?;
+
+// Save single collection to compact binary format
+engine.save_index_binary("documents", Path::new("./documents.bin"))?;
+
+// Load single collection from JSON (returns collection name)
+let collection = engine.load_index(Path::new("./documents.json"))?;
+
+// Load single collection from binary
+let collection = engine.load_index_binary(Path::new("./documents.bin"))?;
+
+// Get a snapshot for manual serialization
+let index: PersistentVectorIndex = engine.snapshot_collection("documents");
+<span class="boring">}</span></code></pre></pre>
+<h3 id="persistentvectorindex-format"><a class="header" href="#persistentvectorindex-format">PersistentVectorIndex Format</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>collection</code></td><td><code>String</code></td><td>Collection name</td></tr>
+<tr><td><code>config</code></td><td><code>VectorCollectionConfig</code></td><td>Collection configuration</td></tr>
+<tr><td><code>vectors</code></td><td><code>Vec&lt;VectorEntry&gt;</code></td><td>All vectors with metadata</td></tr>
+<tr><td><code>created_at</code></td><td><code>u64</code></td><td>Unix timestamp</td></tr>
+<tr><td><code>version</code></td><td><code>u32</code></td><td>Format version (currently 1)</td></tr>
+</tbody></table>
+</div>
 <h2 id="storage-model-2"><a class="header" href="#storage-model-2">Storage Model</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Key Pattern</th><th>Content</th><th>Use Case</th></tr></thead><tbody>
-<tr><td><code>emb:{key}</code></td><td>TensorData with “vector” field</td><td>Standalone embeddings</td></tr>
+<tr><td><code>emb:{key}</code></td><td>TensorData with “vector” field</td><td>Default collection embeddings</td></tr>
+<tr><td><code>coll:{collection}:emb:{key}</code></td><td>TensorData with “vector” field</td><td>Named collection embeddings</td></tr>
 <tr><td><code>{entity_key}</code></td><td>TensorData with “_embedding” field</td><td>Unified entities</td></tr>
 </tbody></table>
 </div>
@@ -8832,6 +9100,9 @@ without data duplication.</p>
 <tr><td><code>DistanceMetric</code></td><td>Similarity metric (Cosine, Euclidean, DotProduct)</td></tr>
 <tr><td><code>EntityInput</code></td><td>Tuple type for batch operations: (key, fields, embedding)</td></tr>
 <tr><td><code>Unified</code></td><td>Trait for converting engine types to UnifiedItem</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Re-exported from vector_engine for filtered search</td></tr>
+<tr><td><code>FilterValue</code></td><td>Re-exported from vector_engine for filter values</td></tr>
+<tr><td><code>VectorCollectionConfig</code></td><td>Re-exported from vector_engine for collection config</td></tr>
 </tbody></table>
 </div>
 <h3 id="unifieditem"><a class="header" href="#unifieditem">UnifiedItem</a></h3>
@@ -9045,6 +9316,37 @@ let results = engine.find_similar_connected(
 <li>Returns top-k results with source <code>"vector+graph"</code></li>
 </ol>
 <p><strong>Edge case:</strong> If <code>query_key</code> has no embedding, returns <code>VectorError::NotFound</code>.</p>
+<h3 id="find-similar-connected-with-filter"><a class="header" href="#find-similar-connected-with-filter">Find Similar Connected with Filter</a></h3>
+<p>Enhanced version that combines vector similarity, graph connectivity, and
+metadata filtering:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue};
+
+// Build a filter for metadata
+let filter = FilterCondition::Eq(
+    "category".to_string(),
+    FilterValue::String("article".to_string())
+);
+
+// Find entities similar to query, connected to hub, matching filter
+let results = engine.find_similar_connected_filtered(
+    "user:1",      // Query entity (uses its embedding)
+    "hub:main",    // Find entities connected to this
+    Some(&amp;filter), // Optional metadata filter
+    10             // Top-k results
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Algorithm:</strong></p>
+<ol>
+<li>Gets query embedding from <code>query_key</code></li>
+<li>Gets connected neighbor keys from graph</li>
+<li>Builds combined filter: <code>key IN neighbors AND user_filter</code></li>
+<li>Uses pre-filter strategy for high selectivity</li>
+<li>Returns filtered results with source <code>"vector+graph"</code></li>
+</ol>
+<p>The filtered version eliminates post-processing by pushing filters into the
+vector search, improving performance for selective queries.</p>
 <h3 id="find-neighbors-by-similarity"><a class="header" href="#find-neighbors-by-similarity">Find Neighbors by Similarity</a></h3>
 <p>Find graph neighbors sorted by similarity to a query vector:</p>
 <pre class="mermaid">flowchart LR
@@ -9082,6 +9384,108 @@ let results = engine.find_neighbors_by_similarity(
 <li>Returns results with source <code>"graph+vector"</code></li>
 </ol>
 <p><strong>Gotcha:</strong> Neighbors without embeddings are silently skipped.</p>
+<h2 id="unified-entity-storage"><a class="header" href="#unified-entity-storage">Unified Entity Storage</a></h2>
+<p>The unified entity storage methods provide a streamlined API for storing entity
+fields as vector metadata, eliminating double-storage overhead.</p>
+<h3 id="creating-unified-entities"><a class="header" href="#creating-unified-entities">Creating Unified Entities</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::collections::HashMap;
+
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "Introduction to Rust".to_string());
+fields.insert("author".to_string(), "Alice".to_string());
+
+// Store entity with fields as vector metadata
+engine.create_entity_unified(
+    "doc:1",
+    fields,
+    Some(vec![0.1, 0.2, 0.3, 0.4])
+).await?;
+
+// Without embedding, stores to TensorStore only
+engine.create_entity_unified("doc:2", fields, None).await?;
+<span class="boring">}</span></code></pre></pre>
+<p>When an embedding is provided, fields are stored as vector metadata alongside
+the embedding. This enables filtered search without requiring a separate storage
+lookup.</p>
+<h3 id="retrieving-unified-entities"><a class="header" href="#retrieving-unified-entities">Retrieving Unified Entities</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Get entity with fields from vector metadata
+let item = engine.get_entity_unified("doc:1").await?;
+
+println!("Title: {:?}", item.data.get("title"));
+println!("Embedding: {:?}", item.embedding);
+<span class="boring">}</span></code></pre></pre>
+<p>The retrieval first attempts to load from vector metadata. If not found, it
+falls back to the standard TensorStore lookup.</p>
+<h2 id="collection-based-entity-organization"><a class="header" href="#collection-based-entity-organization">Collection-Based Entity Organization</a></h2>
+<p>Collections provide type-based organization for entities, enabling scoped
+searches and dimension enforcement.</p>
+<h3 id="creating-entities-in-collections"><a class="header" href="#creating-entities-in-collections">Creating Entities in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::VectorCollectionConfig;
+use std::collections::HashMap;
+
+// Create a collection for documents
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+
+engine.create_entity_collection("documents", config)?;
+
+// Store entity in collection
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "ML Paper".to_string());
+
+engine.create_entity_in_collection(
+    "documents",
+    "paper:1",
+    fields,
+    vec![0.1; 768]
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="searching-in-collections-1"><a class="header" href="#searching-in-collections-1">Searching in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::FilterCondition;
+
+// Basic search in collection
+let results = engine.find_similar_in_collection(
+    "documents",
+    &amp;query_embedding,
+    None,  // No filter
+    10
+).await?;
+
+// Filtered search in collection
+let filter = FilterCondition::Eq("author".to_string(), "Alice".into());
+let results = engine.find_similar_in_collection(
+    "documents",
+    &amp;query_embedding,
+    Some(&amp;filter),
+    10
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="managing-collections"><a class="header" href="#managing-collections">Managing Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// List all entity collections
+let collections = engine.list_entity_collections();
+
+// Delete a collection
+engine.delete_entity_collection("documents")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="collection-isolation"><a class="header" href="#collection-isolation">Collection Isolation</a></h3>
+<p>Collections ensure entity isolation:</p>
+<ul>
+<li>Each collection has its own key namespace</li>
+<li>Dimension mismatches are rejected per-collection config</li>
+<li>Searches only see entities within the specified collection</li>
+<li>Deleting a collection removes all entities in it</li>
+</ul>
 <h3 id="find-nodes-and-edges"><a class="header" href="#find-nodes-and-edges">Find Nodes and Edges</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -9288,6 +9692,11 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 <tr><td><code>get_entity</code></td><td>O(1)</td><td>Single store get + optional embedding lookup</td></tr>
 <tr><td><code>find_similar_connected</code></td><td>O(k log n)</td><td>HNSW search + graph intersection</td></tr>
 <tr><td><code>find_similar_connected</code> (brute)</td><td>O(n)</td><td>Linear scan when no HNSW index</td></tr>
+<tr><td><code>find_similar_connected_filtered</code></td><td>O(m)</td><td>Pre-filter search, m = matching keys</td></tr>
+<tr><td><code>create_entity_unified</code></td><td>O(1)</td><td>Single store with metadata</td></tr>
+<tr><td><code>get_entity_unified</code></td><td>O(1)</td><td>Metadata lookup with fallback</td></tr>
+<tr><td><code>create_entity_in_collection</code></td><td>O(1)</td><td>Collection-scoped store</td></tr>
+<tr><td><code>find_similar_in_collection</code></td><td>O(c)</td><td>c = collection size</td></tr>
 <tr><td><code>find_neighbors_by_similarity</code></td><td>O(d * k)</td><td>Neighbor fetch + k similarity computations</td></tr>
 <tr><td><code>find_nodes</code></td><td>O(n)</td><td>Full scan with prefix filter</td></tr>
 <tr><td><code>find_edges</code></td><td>O(e)</td><td>Full scan with prefix filter</td></tr>
@@ -9391,8 +9800,8 @@ computations)</li>
 <tr><td><code>tensor_store</code></td><td>Shared storage backend, provides <code>TensorData</code> and <code>fields</code> constants</td></tr>
 <tr><td><code>relational_engine</code></td><td>Relational data, conditions for filtering</td></tr>
 <tr><td><code>graph_engine</code></td><td>Graph connectivity, entity edges, neighbor queries</td></tr>
-<tr><td><code>vector_engine</code></td><td>Embeddings, similarity search, HNSW index</td></tr>
-<tr><td><code>query_router</code></td><td>Query execution, language integration, HNSW optimization</td></tr>
+<tr><td><code>vector_engine</code></td><td>Embeddings, similarity search, HNSW index, <code>FilterCondition</code>, <code>FilterValue</code>, <code>VectorCollectionConfig</code></td></tr>
+<tr><td><code>query_router</code></td><td>Query execution, language integration, HNSW optimization, re-exports filter types</td></tr>
 </tbody></table>
 </div>
 <h2 id="dependencies-7"><a class="header" href="#dependencies-7">Dependencies</a></h2>
@@ -11690,6 +12099,10 @@ caching, and distributed query execution when cluster mode is enabled.</p>
 <tr><td><code>ShardResult</code></td><td>Result from a single shard with timing and error info</td></tr>
 <tr><td><code>DistributedQueryConfig</code></td><td>Configuration for distributed execution</td></tr>
 <tr><td><code>DistributedQueryStats</code></td><td>Statistics tracking for distributed queries</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Re-exported from vector_engine for programmatic filter building</td></tr>
+<tr><td><code>FilterValue</code></td><td>Re-exported from vector_engine for filter values</td></tr>
+<tr><td><code>FilterStrategy</code></td><td>Re-exported from vector_engine for search strategy</td></tr>
+<tr><td><code>FilteredSearchConfig</code></td><td>Re-exported from vector_engine for filtered search config</td></tr>
 </tbody></table>
 </div>
 <h3 id="queryresult-variants"><a class="header" href="#queryresult-variants">QueryResult Variants</a></h3>
@@ -22732,9 +23145,15 @@ let results = engine.find_by_range(
 <tr><td><code>VectorEngine</code></td><td>Main engine for embedding operations</td></tr>
 <tr><td><code>SearchResult</code></td><td>Key and similarity score</td></tr>
 <tr><td><code>DistanceMetric</code></td><td>Cosine, Euclidean, DotProduct</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Metadata filter (Eq, Ne, Lt, Gt, And, Or, In, etc.)</td></tr>
+<tr><td><code>FilterValue</code></td><td>Filter value type (Int, Float, String, Bool, Null)</td></tr>
+<tr><td><code>FilterStrategy</code></td><td>Filter strategy (Auto, PreFilter, PostFilter)</td></tr>
+<tr><td><code>FilteredSearchConfig</code></td><td>Configuration for filtered search</td></tr>
+<tr><td><code>VectorCollectionConfig</code></td><td>Configuration for collections</td></tr>
+<tr><td><code>MetadataValue</code></td><td>Simplified metadata value type</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-3"><a class="header" href="#operations-3">Operations</a></h3>
+<h3 id="basic-operations-4"><a class="header" href="#basic-operations-4">Basic Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use vector_engine::{VectorEngine, DistanceMetric};
@@ -22773,6 +23192,63 @@ let results = engine.search_similar_with_metric(
     10,
     DistanceMetric::Euclidean,
 )?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="filtered-search-1"><a class="header" href="#filtered-search-1">Filtered Search</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue, FilteredSearchConfig};
+
+// Build filter
+let filter = FilterCondition::Eq("category".into(), FilterValue::String("science".into()))
+    .and(FilterCondition::Gt("year".into(), FilterValue::Int(2020)));
+
+// Search with filter
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, None)?;
+
+// With explicit strategy
+let config = FilteredSearchConfig::pre_filter();
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, Some(config))?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="metadata-storage-1"><a class="header" href="#metadata-storage-1">Metadata Storage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::TensorValue;
+use std::collections::HashMap;
+
+// Store embedding with metadata
+let mut metadata = HashMap::new();
+metadata.insert("category".into(), TensorValue::from("science"));
+metadata.insert("year".into(), TensorValue::from(2024i64));
+engine.store_embedding_with_metadata("doc:1", vec![0.1, 0.2], metadata)?;
+
+// Get metadata
+let meta = engine.get_metadata("doc:1")?;
+
+// Update metadata
+let mut updates = HashMap::new();
+updates.insert("year".into(), TensorValue::from(2025i64));
+engine.update_metadata("doc:1", updates)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="collections-1"><a class="header" href="#collections-1">Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::VectorCollectionConfig;
+
+// Create collection
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+engine.create_collection("documents", config)?;
+
+// Store in collection
+engine.store_in_collection("documents", "doc:1", vec![0.1; 768])?;
+
+// Search in collection
+let results = engine.search_in_collection("documents", &amp;query, 10)?;
+
+// List/delete collections
+let collections = engine.list_collections();
+engine.delete_collection("documents")?;
 <span class="boring">}</span></code></pre></pre>
 <hr />
 <h2 id="tensor_chain"><a class="header" href="#tensor_chain">tensor_chain</a></h2>
@@ -22999,7 +23475,7 @@ let final_result = merger.merge(shard_results)?;
 <tr><td><code>EvictionStrategy</code></td><td>LRU, LFU, CostBased, Hybrid</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-4"><a class="header" href="#operations-4">Operations</a></h3>
+<h3 id="operations-3"><a class="header" href="#operations-3">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_cache::{Cache, CacheConfig, EvictionStrategy};
@@ -23041,7 +23517,7 @@ println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 <tr><td><code>MasterKey</code></td><td>Derived encryption key</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-5"><a class="header" href="#operations-5">Operations</a></h3>
+<h3 id="operations-4"><a class="header" href="#operations-4">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_vault::{Vault, VaultConfig, Permission};
@@ -23080,7 +23556,7 @@ vault.delete("admin", "db/password")?;
 <tr><td><code>BlobReader</code></td><td>Streaming download</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-6"><a class="header" href="#operations-6">Operations</a></h3>
+<h3 id="operations-5"><a class="header" href="#operations-5">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_blob::{BlobStore, BlobConfig, PutOptions};
@@ -23128,7 +23604,7 @@ let metadata = store.metadata(&amp;artifact_id).await?;
 <tr><td><code>ConfirmationHandler</code></td><td>Custom confirmation logic</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-7"><a class="header" href="#operations-7">Operations</a></h3>
+<h3 id="operations-6"><a class="header" href="#operations-6">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_checkpoint::{CheckpointManager, CheckpointConfig, AutoConfirm};

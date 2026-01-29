@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HNSW index integration tests.
 //!
 //! Tests Hierarchical Navigable Small World graph index operations.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Statement parser for the Neumann query language.
 //!
 //! Parses complete statements including:
@@ -52,6 +53,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Creates a new parser for the given source.
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
@@ -64,11 +66,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Returns the source text.
+    #[must_use]
     pub fn source(&self) -> &'a str {
         self.source
     }
 
     /// Returns the current token.
+    #[must_use]
     pub fn current(&self) -> &Token {
         &self.current
     }
@@ -664,6 +668,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not a valid statement.
     pub fn parse_statement(&mut self) -> ParseResult<Statement> {
         // Skip empty statements (just semicolons)
         while self.eat(&TokenKind::Semicolon) {}
@@ -1571,12 +1579,33 @@ impl<'a> Parser<'a> {
             let id = self.parse_expr()?;
             NodeOp::Delete { id }
         } else if self.eat(&TokenKind::List) {
-            let label = if !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            // Parse optional label (identifier that isn't LIMIT or OFFSET)
+            let label = if !self.current.is_eof()
+                && !self.check(&TokenKind::Semicolon)
+                && !self.check(&TokenKind::Limit)
+                && !self.check(&TokenKind::Offset)
+            {
                 Some(self.expect_ident()?)
             } else {
                 None
             };
-            NodeOp::List { label }
+            // Parse optional LIMIT
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            // Parse optional OFFSET
+            let offset = if self.eat(&TokenKind::Offset) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            NodeOp::List {
+                label,
+                limit,
+                offset,
+            }
         } else {
             return Err(ParseError::invalid(
                 "expected CREATE, GET, DELETE, or LIST after NODE",
@@ -1610,12 +1639,33 @@ impl<'a> Parser<'a> {
             let id = self.parse_expr()?;
             EdgeOp::Delete { id }
         } else if self.eat(&TokenKind::List) {
-            let edge_type = if !self.current.is_eof() && !self.check(&TokenKind::Semicolon) {
+            // Parse optional edge_type (identifier that isn't LIMIT or OFFSET)
+            let edge_type = if !self.current.is_eof()
+                && !self.check(&TokenKind::Semicolon)
+                && !self.check(&TokenKind::Limit)
+                && !self.check(&TokenKind::Offset)
+            {
                 Some(self.expect_ident()?)
             } else {
                 None
             };
-            EdgeOp::List { edge_type }
+            // Parse optional LIMIT
+            let limit = if self.eat(&TokenKind::Limit) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            // Parse optional OFFSET
+            let offset = if self.eat(&TokenKind::Offset) {
+                Some(Box::new(self.parse_expr()?))
+            } else {
+                None
+            };
+            EdgeOp::List {
+                edge_type,
+                limit,
+                offset,
+            }
         } else {
             return Err(ParseError::invalid(
                 "expected CREATE, GET, DELETE, or LIST after EDGE",
@@ -1898,6 +1948,11 @@ impl<'a> Parser<'a> {
                 None
             };
             FindPattern::Edges { edge_type }
+        } else if self.eat(&TokenKind::Rows) {
+            // FIND ROWS FROM table
+            self.expect(&TokenKind::From)?;
+            let table = self.expect_ident()?;
+            FindPattern::Rows { table }
         } else {
             FindPattern::Nodes { label: None }
         };
@@ -1963,6 +2018,26 @@ impl<'a> Parser<'a> {
             // ENTITY GET 'key'
             let key = self.parse_expr()?;
             EntityOp::Get { key }
+        } else if self.eat(&TokenKind::Update) {
+            // ENTITY UPDATE 'key' { properties } [EMBEDDING [vector]]
+            let key = self.parse_expr()?;
+            let properties = self.parse_properties()?;
+
+            let embedding = if self.eat(&TokenKind::Embedding) {
+                Some(self.parse_vector_literal()?)
+            } else {
+                None
+            };
+
+            EntityOp::Update {
+                key,
+                properties,
+                embedding,
+            }
+        } else if self.eat(&TokenKind::Delete) {
+            // ENTITY DELETE 'key'
+            let key = self.parse_expr()?;
+            EntityOp::Delete { key }
         } else if self.eat(&TokenKind::Connect) {
             // ENTITY CONNECT 'from' -> 'to' : type
             let from_key = self.parse_expr()?;
@@ -1978,7 +2053,7 @@ impl<'a> Parser<'a> {
             }
         } else {
             return Err(ParseError::invalid(
-                "expected CREATE, GET, CONNECT, or BATCH after ENTITY",
+                "expected CREATE, GET, UPDATE, DELETE, CONNECT, or BATCH after ENTITY",
                 self.current.span,
             ));
         };
@@ -2510,6 +2585,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    #[allow(clippy::too_many_lines)] // Complex subcommand parsing
     fn parse_graph_index(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Index)?;
 
@@ -3110,6 +3186,7 @@ impl<'a> Parser<'a> {
     // Blob Storage Statement Parsers
     // =========================================================================
 
+    #[allow(clippy::too_many_lines)] // Complex subcommand parsing
     fn parse_blob(&mut self) -> ParseResult<StatementKind> {
         self.expect(&TokenKind::Blob)?;
 
@@ -3449,12 +3526,20 @@ impl<'a> Parser<'a> {
 }
 
 /// Parses a single statement from source text.
+///
+/// # Errors
+///
+/// Returns an error if the input is not a valid statement.
 pub fn parse(source: &str) -> ParseResult<Statement> {
     let mut parser = Parser::new(source);
     parser.parse_statement()
 }
 
 /// Parses multiple statements from source text.
+///
+/// # Errors
+///
+/// Returns an error if any statement in the input is invalid.
 pub fn parse_all(source: &str) -> ParseResult<Vec<Statement>> {
     let mut parser = Parser::new(source);
     let mut statements = Vec::new();
@@ -3734,7 +3819,7 @@ mod tests {
         assert!(matches!(
             stmt.kind,
             StatementKind::Node(NodeStmt {
-                operation: NodeOp::List { label: Some(_) }
+                operation: NodeOp::List { label: Some(_), .. }
             })
         ));
     }
@@ -4037,7 +4122,7 @@ mod tests {
     fn test_edge_list() {
         let stmt = parse_stmt("EDGE LIST FOLLOWS");
         if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::List { edge_type } = edge.operation {
+            if let EdgeOp::List { edge_type, .. } = edge.operation {
                 assert!(edge_type.is_some());
             } else {
                 panic!("expected EDGE LIST");
@@ -4051,7 +4136,7 @@ mod tests {
     fn test_edge_list_no_type() {
         let stmt = parse_stmt("EDGE LIST");
         if let StatementKind::Edge(edge) = stmt.kind {
-            if let EdgeOp::List { edge_type } = edge.operation {
+            if let EdgeOp::List { edge_type, .. } = edge.operation {
                 assert!(edge_type.is_none());
             } else {
                 panic!("expected EDGE LIST");
@@ -4065,13 +4150,76 @@ mod tests {
     fn test_node_list_no_label() {
         let stmt = parse_stmt("NODE LIST");
         if let StatementKind::Node(node) = stmt.kind {
-            if let NodeOp::List { label } = node.operation {
+            if let NodeOp::List { label, .. } = node.operation {
                 assert!(label.is_none());
             } else {
                 panic!("expected NODE LIST");
             }
         } else {
             panic!("expected NODE");
+        }
+    }
+
+    #[test]
+    fn test_node_list_with_limit() {
+        let stmt = parse_stmt("NODE LIST LIMIT 10");
+        if let StatementKind::Node(node) = stmt.kind {
+            if let NodeOp::List {
+                label,
+                limit,
+                offset,
+            } = node.operation
+            {
+                assert!(label.is_none());
+                assert!(limit.is_some());
+                assert!(offset.is_none());
+            } else {
+                panic!("expected NODE LIST");
+            }
+        } else {
+            panic!("expected NODE");
+        }
+    }
+
+    #[test]
+    fn test_node_list_with_limit_offset() {
+        let stmt = parse_stmt("NODE LIST user LIMIT 50 OFFSET 100");
+        if let StatementKind::Node(node) = stmt.kind {
+            if let NodeOp::List {
+                label,
+                limit,
+                offset,
+            } = node.operation
+            {
+                assert!(label.is_some());
+                assert!(limit.is_some());
+                assert!(offset.is_some());
+            } else {
+                panic!("expected NODE LIST");
+            }
+        } else {
+            panic!("expected NODE");
+        }
+    }
+
+    #[test]
+    fn test_edge_list_with_limit_offset() {
+        let stmt = parse_stmt("EDGE LIST FOLLOWS LIMIT 25 OFFSET 50");
+        if let StatementKind::Edge(edge) = stmt.kind {
+            if let EdgeOp::List {
+                edge_type,
+                limit,
+                offset,
+            } = edge.operation
+            {
+                assert!(edge_type.is_some());
+                assert!(limit.is_some());
+                assert!(offset.is_some());
+            } else {
+                panic!("expected EDGE LIST");
+            }
+        } else {
+            panic!("expected EDGE");
         }
     }
 

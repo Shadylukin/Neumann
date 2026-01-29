@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for distributed transaction crash recovery.
 //!
 //! Tests the persistence and recovery of 2PC coordinator and participant state:

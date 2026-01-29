@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for Transaction class."""
 
 from __future__ import annotations

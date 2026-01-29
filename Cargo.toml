@@ -22,6 +22,7 @@ members = [
     "experiments",
     "seed_model",
     "neumann_docs",
+    "examples",
 ]
 exclude = ["fuzz", "neumann-py/neumann-native"]
 

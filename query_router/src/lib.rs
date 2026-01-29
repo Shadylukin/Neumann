@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Query Router - Module 5 of Neumann
 //!
 //! Parses shell commands, routes to appropriate engine(s), and combines results.
@@ -216,6 +217,9 @@ impl From<UnifiedError> for RouterError {
             UnifiedError::VectorError(msg) => RouterError::VectorError(msg),
             UnifiedError::NotFound(msg) => RouterError::VectorError(format!("Not found: {}", msg)),
             UnifiedError::InvalidOperation(msg) => RouterError::InvalidArgument(msg),
+            UnifiedError::BatchOperationFailed { index, key, cause } => RouterError::VectorError(
+                format!("Batch operation failed at index {index} (key: {key}): {cause}"),
+            ),
         }
     }
 }
@@ -1254,11 +1258,14 @@ impl QueryRouter {
             "EMBED" => self.execute_embed(command),
             "SIMILAR" => self.execute_similar(command),
 
-            // Unified queries
-            "FIND" => self.execute_find(command),
+            // Unified queries (use parser-based execution)
+            "FIND" => self.execute_parsed(command),
 
             // Extended graph commands (use parser-based execution)
             "GRAPH" | "CONSTRAINT" | "BATCH" | "AGGREGATE" => self.execute_parsed(command),
+
+            // Cluster commands (use parser-based execution)
+            "CLUSTER" => self.execute_parsed(command),
 
             // Show commands (use parser-based execution)
             "SHOW" => self.execute_parsed(command),
@@ -4550,10 +4557,25 @@ impl QueryRouter {
                 self.graph.delete_node(node_id)?;
                 Ok(QueryResult::Count(1))
             },
-            NodeOp::List { label } => {
-                // List all nodes with optional label filter
+            NodeOp::List {
+                label,
+                limit,
+                offset,
+            } => {
+                // List all nodes with optional label filter and pagination
                 let label_filter = label.as_ref().map(|l| l.name.as_str());
-                let unified_items = self.scan_find_nodes(label_filter, None, 1000)?;
+                let limit_val = limit
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(1000);
+                let offset_val = offset
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(0);
+                let unified_items =
+                    self.scan_find_nodes(label_filter, None, limit_val, offset_val)?;
 
                 // Convert UnifiedItem to NodeResult
                 let nodes: Vec<NodeResult> = unified_items
@@ -4626,10 +4648,25 @@ impl QueryRouter {
                 self.graph.delete_edge(edge_id)?;
                 Ok(QueryResult::Count(1))
             },
-            EdgeOp::List { edge_type } => {
-                // List all edges with optional type filter
+            EdgeOp::List {
+                edge_type,
+                limit,
+                offset,
+            } => {
+                // List all edges with optional type filter and pagination
                 let type_filter = edge_type.as_ref().map(|t| t.name.as_str());
-                let unified_items = self.scan_find_edges(type_filter, None, 1000)?;
+                let limit_val = limit
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(1000);
+                let offset_val = offset
+                    .as_ref()
+                    .map(|e| self.expr_to_usize(e))
+                    .transpose()?
+                    .unwrap_or(0);
+                let unified_items =
+                    self.scan_find_edges(type_filter, None, limit_val, offset_val)?;
 
                 // Convert UnifiedItem to EdgeResult
                 let edges: Vec<EdgeResult> = unified_items
@@ -4965,14 +5002,19 @@ impl QueryRouter {
                 FindPattern::Nodes { label } => {
                     let label_filter = label.as_ref().map(|l| l.name.as_str());
                     let items =
-                        self.scan_find_nodes(label_filter, Some(&condition), effective_limit)?;
+                        self.scan_find_nodes(label_filter, Some(&condition), effective_limit, 0)?;
                     (items, "node")
                 },
                 FindPattern::Edges { edge_type } => {
                     let type_filter = edge_type.as_ref().map(|t| t.name.as_str());
                     let items =
-                        self.scan_find_edges(type_filter, Some(&condition), effective_limit)?;
+                        self.scan_find_edges(type_filter, Some(&condition), effective_limit, 0)?;
                     (items, "edge")
+                },
+                FindPattern::Rows { table } => {
+                    let items =
+                        self.scan_find_rows(&table.name, Some(&condition), effective_limit)?;
+                    (items, "row")
                 },
                 FindPattern::Path { .. } => (Vec::new(), "path"),
             };
@@ -4983,10 +5025,7 @@ impl QueryRouter {
                 entity_type,
                 if items.len() == 1 { "" } else { "s" }
             );
-            return Ok(QueryResult::Unified(UnifiedResult {
-                description,
-                items,
-            }));
+            return Ok(QueryResult::Unified(UnifiedResult { description, items }));
         }
 
         // No WHERE clause - delegate to unified.find()
@@ -5122,15 +5161,60 @@ impl QueryRouter {
 
                 let unified = self.require_unified()?;
                 let runtime = Self::create_runtime()?;
-                let count = runtime
+                let batch_result = runtime
                     .block_on(unified.create_entities_batch(items))
                     .map_err(|e| RouterError::VectorError(e.to_string()))?;
 
                 Ok(QueryResult::BatchResult(BatchOperationResult {
                     operation: "ENTITY CREATE".to_string(),
-                    affected_count: count,
+                    affected_count: batch_result.count,
                     created_ids: None, // Entities use string keys, not numeric IDs
                 }))
+            },
+            EntityOp::Update {
+                key,
+                properties,
+                embedding,
+            } => {
+                let key_str = self.expr_to_string(key)?;
+
+                // Convert properties to HashMap
+                let fields: HashMap<String, String> = properties
+                    .iter()
+                    .filter_map(|p| {
+                        self.expr_to_string(&p.value)
+                            .ok()
+                            .map(|v| (p.key.name.clone(), v))
+                    })
+                    .collect();
+
+                // Convert embedding if present
+                let emb = if let Some(vec_exprs) = embedding {
+                    let embedding_vec: Result<Vec<f32>> =
+                        vec_exprs.iter().map(|e| self.expr_to_f32(e)).collect();
+                    Some(embedding_vec?)
+                } else {
+                    None
+                };
+
+                let unified = self.require_unified()?;
+                let runtime = Self::create_runtime()?;
+                runtime
+                    .block_on(unified.update_entity(&key_str, fields, emb))
+                    .map_err(|e| RouterError::NotFound(e.to_string()))?;
+
+                Ok(QueryResult::Value(format!("Entity '{}' updated", key_str)))
+            },
+            EntityOp::Delete { key } => {
+                let key_str = self.expr_to_string(key)?;
+
+                let unified = self.require_unified()?;
+                let runtime = Self::create_runtime()?;
+                runtime
+                    .block_on(unified.delete_entity(&key_str))
+                    .map_err(|e| RouterError::NotFound(e.to_string()))?;
+
+                Ok(QueryResult::Value(format!("Entity '{}' deleted", key_str)))
             },
         }
     }
@@ -5141,15 +5225,16 @@ impl QueryRouter {
         label_filter: Option<&str>,
         condition: Option<&Condition>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<UnifiedItem>> {
         let unified = self.require_unified()?;
         let runtime = Self::create_runtime()?;
 
-        let mut items = runtime
+        let items = runtime
             .block_on(unified.find_nodes(label_filter, condition))
             .map_err(|e| RouterError::GraphError(e.to_string()))?;
 
-        items.truncate(limit);
+        let items: Vec<UnifiedItem> = items.into_iter().skip(offset).take(limit).collect();
         Ok(items)
     }
 
@@ -5159,20 +5244,20 @@ impl QueryRouter {
         type_filter: Option<&str>,
         condition: Option<&Condition>,
         limit: usize,
+        offset: usize,
     ) -> Result<Vec<UnifiedItem>> {
         let unified = self.require_unified()?;
         let runtime = Self::create_runtime()?;
 
-        let mut items = runtime
+        let items = runtime
             .block_on(unified.find_edges(type_filter, condition))
             .map_err(|e| RouterError::GraphError(e.to_string()))?;
 
-        items.truncate(limit);
+        let items: Vec<UnifiedItem> = items.into_iter().skip(offset).take(limit).collect();
         Ok(items)
     }
 
     /// Delegates to `UnifiedEngine::find_rows()`.
-    #[allow(dead_code)] // Will be used when parser supports FIND ROW syntax
     fn scan_find_rows(
         &self,
         table: &str,
@@ -5198,6 +5283,9 @@ impl QueryRouter {
             },
             FindPattern::Edges { edge_type } => UnifiedFindPattern::Edges {
                 edge_type: edge_type.as_ref().map(|t| t.name.clone()),
+            },
+            FindPattern::Rows { table } => UnifiedFindPattern::Rows {
+                table: table.name.clone(),
             },
             FindPattern::Path { from, edge, to } => UnifiedFindPattern::Path {
                 from: from.as_ref().map(|f| f.name.clone()),
@@ -6089,140 +6177,6 @@ impl QueryRouter {
         Ok(QueryResult::Similar(results))
     }
 
-    // ========== Unified Commands ==========
-
-    fn execute_find(&self, command: &str) -> Result<QueryResult> {
-        // FIND posts SIMILAR TO "embedding_key" CONNECTED TO users
-        // FIND users WHERE age > 25 CONNECTED TO posts
-        let upper = command.to_uppercase();
-
-        // Parse the FIND command structure
-        let parts = self.parse_find_command(&upper, command)?;
-
-        // Execute based on parsed parts
-        self.execute_unified_query(parts)
-    }
-
-    fn parse_find_command(&self, upper: &str, original: &str) -> Result<UnifiedQueryParts> {
-        // Basic structure: FIND <entity> [clauses...]
-        let tokens: Vec<&str> = original.split_whitespace().collect();
-        if tokens.len() < 2 {
-            return Err(RouterError::MissingArgument("entity name".to_string()));
-        }
-
-        let entity = tokens[1].to_string();
-        let mut parts = UnifiedQueryParts {
-            entity,
-            where_clause: None,
-            similar_to: None,
-            connected_to: None,
-            top_k: 10,
-        };
-
-        // Parse WHERE clause
-        if let Some(where_pos) = upper.find(" WHERE ") {
-            let end_pos = upper[where_pos + 7..]
-                .find(" SIMILAR ")
-                .or_else(|| upper[where_pos + 7..].find(" CONNECTED "))
-                .map(|p| where_pos + 7 + p)
-                .unwrap_or(original.len());
-            parts.where_clause = Some(original[where_pos + 7..end_pos].trim().to_string());
-        }
-
-        // Parse SIMILAR TO clause
-        if let Some(sim_pos) = upper.find(" SIMILAR TO ") {
-            let start = sim_pos + 12;
-            let end_pos = upper[start..]
-                .find(" CONNECTED ")
-                .or_else(|| upper[start..].find(" TOP "))
-                .map(|p| start + p)
-                .unwrap_or(original.len());
-            let similar_key = original[start..end_pos].trim().trim_matches('"');
-            parts.similar_to = Some(similar_key.to_string());
-        }
-
-        // Parse CONNECTED TO clause
-        if let Some(conn_pos) = upper.find(" CONNECTED TO ") {
-            let start = conn_pos + 14;
-            let end_pos = upper[start..]
-                .find(" TOP ")
-                .map(|p| start + p)
-                .unwrap_or(original.len());
-            parts.connected_to = Some(original[start..end_pos].trim().to_string());
-        }
-
-        // Parse TOP k
-        if let Some(top_pos) = upper.find(" TOP ") {
-            let k_str = original[top_pos + 5..].trim();
-            parts.top_k = k_str
-                .parse()
-                .map_err(|_| RouterError::InvalidArgument("Invalid TOP value".to_string()))?;
-        }
-
-        Ok(parts)
-    }
-
-    fn execute_unified_query(&self, parts: UnifiedQueryParts) -> Result<QueryResult> {
-        let mut items = Vec::new();
-        let mut description = format!("Finding {}", parts.entity);
-
-        // Step 1: If SIMILAR TO, find similar vectors first
-        let similar_keys: Option<Vec<(String, f32)>> = if let Some(ref key) = parts.similar_to {
-            description.push_str(&format!(" similar to '{}'", key));
-
-            // Get the query vector
-            let query_vec = self.vector.get_embedding(key)?;
-
-            // Search for similar
-            let results = self.vector.search_similar(&query_vec, parts.top_k)?;
-            Some(
-                results
-                    .into_iter()
-                    .map(|r| (r.key.clone(), r.score))
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        // Step 2: If CONNECTED TO, find connected nodes
-        if let Some(ref connected_entity) = parts.connected_to {
-            description.push_str(&format!(" connected to {}", connected_entity));
-            // Note: Full graph traversal not yet implemented
-            // For now, include similar items with connection context
-            if let Some(similar) = &similar_keys {
-                for (key, score) in similar {
-                    let mut data = HashMap::new();
-                    data.insert("key".to_string(), key.clone());
-                    data.insert("connected_to".to_string(), connected_entity.clone());
-                    items.push(
-                        UnifiedItem::with_data("vector+graph", key.clone(), data)
-                            .with_score(*score),
-                    );
-                }
-            }
-        } else if let Some(similar) = similar_keys {
-            // Just return similar results
-            for (key, score) in similar {
-                let mut data = HashMap::new();
-                data.insert("key".to_string(), key.clone());
-                items.push(UnifiedItem::with_data("vector", key, data).with_score(score));
-            }
-        }
-
-        // Step 3: Apply WHERE clause filter if present
-        if let Some(ref where_clause) = parts.where_clause {
-            description.push_str(&format!(" where {}", where_clause));
-            // Filter items based on condition (simplified)
-            // In a real implementation, this would evaluate the condition
-        }
-
-        // Limit to top_k
-        items.truncate(parts.top_k);
-
-        Ok(QueryResult::Unified(UnifiedResult { description, items }))
-    }
-
     // ========== Parsing Helpers ==========
 
     fn parse_condition(&self, cond_str: &str) -> Result<Condition> {
@@ -6867,6 +6821,7 @@ impl QueryRouter {
         unified
             .embed_batch(items)
             .await
+            .map(|result| result.count)
             .map_err(|e| RouterError::VectorError(e.to_string()))
     }
 
@@ -6942,15 +6897,6 @@ impl Default for QueryRouter {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Internal structure for unified query parsing.
-struct UnifiedQueryParts {
-    entity: String,
-    where_clause: Option<String>,
-    similar_to: Option<String>,
-    connected_to: Option<String>,
-    top_k: usize,
 }
 
 impl QueryRouter {

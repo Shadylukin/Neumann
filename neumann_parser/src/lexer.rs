@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lexer for the Neumann query language.
 //!
 //! Converts source text into a stream of tokens. Handles:
@@ -33,6 +34,7 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     /// Creates a new lexer for the given source.
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
@@ -43,11 +45,13 @@ impl<'a> Lexer<'a> {
     }
 
     /// Returns the source text.
+    #[must_use]
     pub fn source(&self) -> &'a str {
         self.source
     }
 
     /// Returns the current byte position.
+    #[must_use]
     pub fn pos(&self) -> BytePos {
         BytePos(self.pos)
     }
@@ -415,6 +419,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Tokenizes the entire source, returning all tokens.
+    #[must_use]
     pub fn tokenize(mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
         loop {
@@ -430,6 +435,7 @@ impl<'a> Lexer<'a> {
 }
 
 /// Tokenizes source text into a vector of tokens.
+#[must_use]
 pub fn tokenize(source: &str) -> Vec<Token> {
     Lexer::new(source).tokenize()
 }

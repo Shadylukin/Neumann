@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * Error codes from the Neumann server.
  */

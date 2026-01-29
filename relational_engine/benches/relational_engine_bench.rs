@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(missing_docs)]
 
 use std::collections::HashMap;

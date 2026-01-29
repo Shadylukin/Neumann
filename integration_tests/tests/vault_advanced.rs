@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Advanced vault integration tests.
 //!
 //! Tests grants, revokes, TTL, permissions, audit logging, and namespacing.

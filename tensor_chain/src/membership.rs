@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cluster membership management with health checking.
 //!
 //! Provides:

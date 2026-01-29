@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Index operation integration tests.
 //!
 //! Tests hash index and B-tree index functionality.

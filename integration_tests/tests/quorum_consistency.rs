@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for quorum calculation consistency.
 
 use tensor_chain::quorum_size;

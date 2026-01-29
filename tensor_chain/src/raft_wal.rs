@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Write-Ahead Log (WAL) for Raft consensus.
 //!
 //! Ensures durability of Raft state transitions by persisting changes to disk

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor-Raft consensus implementation.
 //!
 //! This module implements a modified Raft protocol with tensor-native optimizations

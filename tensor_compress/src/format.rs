@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Compressed snapshot format for tensor data.
 
 #![allow(clippy::missing_errors_doc)]

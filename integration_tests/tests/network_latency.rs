@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for network latency simulation.
 //!
 //! Tests distributed system behavior under various latency conditions:

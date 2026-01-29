@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Write-Ahead Log (WAL) for Two-Phase Commit (2PC) transactions.
 //!
 //! Ensures durability of transaction phase transitions by persisting changes

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Conversion between Neumann types and protobuf messages.
 
 use query_router::{

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor Vault: Secure secret storage with graph-based access control.
 //!
 //! Secrets are encrypted at rest using AES-256-GCM. Access is controlled

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Error types and diagnostics for the Neumann parser.
 //!
 //! Provides rich error messages with source context, including:
@@ -28,6 +29,7 @@ pub struct ParseError {
 
 impl ParseError {
     /// Creates a new parse error.
+    #[must_use]
     pub fn new(kind: ParseErrorKind, span: Span) -> Self {
         Self {
             kind,
@@ -70,6 +72,7 @@ impl ParseError {
     }
 
     /// Formats the error with source context.
+    #[must_use]
     #[allow(clippy::format_push_string)]
     pub fn format_with_source(&self, source: &str) -> String {
         let (line, col) = line_col(source, self.span.start);
@@ -162,6 +165,7 @@ pub struct Errors {
 
 impl Errors {
     /// Creates an empty error collection.
+    #[must_use]
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
@@ -172,11 +176,13 @@ impl Errors {
     }
 
     /// Returns true if there are no errors.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Returns the number of errors.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
@@ -187,11 +193,13 @@ impl Errors {
     }
 
     /// Consumes the collection and returns the errors.
+    #[must_use]
     pub fn into_vec(self) -> Vec<ParseError> {
         self.errors
     }
 
     /// Formats all errors with source context.
+    #[must_use]
     pub fn format_with_source(&self, source: &str) -> String {
         self.errors
             .iter()

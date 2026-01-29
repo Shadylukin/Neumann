@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Retry logic with exponential backoff for transient failures."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HNSW (Hierarchical Navigable Small World) index for approximate nearest neighbor search.
 //!
 //! This module provides a shared HNSW implementation used by both `VectorEngine`

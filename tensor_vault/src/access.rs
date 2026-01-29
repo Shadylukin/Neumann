@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graph-based access control using topological path verification.
 
 use std::collections::{HashSet, VecDeque};

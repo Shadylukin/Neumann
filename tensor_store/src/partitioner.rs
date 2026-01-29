@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Data partitioning traits for distributed storage.
 //!
 //! Provides abstractions for mapping keys to partitions across a cluster.

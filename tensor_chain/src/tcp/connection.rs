@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Connection management for TCP transport.
 //!
 //! Provides connection pooling and state management for peer connections.

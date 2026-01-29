@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Neumann Shell - Interactive CLI for Neumann database
 //!
 //! Provides a readline-based interface for executing queries against the
@@ -29,6 +30,11 @@ use tensor_checkpoint::{
     format_confirmation_prompt, ConfirmationHandler, DestructiveOp, OperationPreview,
 };
 use tensor_store::TensorStore;
+
+// BLOB display constants
+const BLOB_TEXT_DISPLAY_LIMIT: usize = 4096; // 4KB for text
+const BLOB_HEX_PREVIEW_BYTES: usize = 64; // First 64 bytes for hex dump
+const BLOB_HEX_BYTES_PER_LINE: usize = 16; // Standard hex dump width
 
 /// Write-Ahead Log for crash recovery.
 ///
@@ -64,6 +70,51 @@ impl Wal {
 
     fn size(&self) -> std::io::Result<u64> {
         std::fs::metadata(&self.path).map(|m| m.len())
+    }
+}
+
+/// Recovery mode for WAL replay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WalRecoveryMode {
+    /// Fail-fast on any error (default, preserves consistency).
+    #[default]
+    Strict,
+    /// Skip corrupted lines and continue replay, report warnings at end.
+    Recover,
+}
+
+/// Result of WAL replay operation.
+#[derive(Debug, Clone)]
+pub struct WalReplayResult {
+    /// Number of commands successfully replayed.
+    pub replayed: usize,
+    /// Errors encountered during replay (only populated in Recover mode).
+    pub errors: Vec<WalReplayError>,
+}
+
+/// Error encountered during WAL replay.
+#[derive(Debug, Clone)]
+pub struct WalReplayError {
+    /// Line number in the WAL file (1-indexed).
+    pub line: usize,
+    /// The command that failed (truncated if >80 chars).
+    pub command: String,
+    /// The error message.
+    pub error: String,
+}
+
+impl WalReplayError {
+    fn new(line: usize, command: &str, error: String) -> Self {
+        let command = if command.len() > 80 {
+            format!("{}...", &command[..77])
+        } else {
+            command.to_string()
+        };
+        Self {
+            line,
+            command,
+            error,
+        }
     }
 }
 
@@ -112,7 +163,7 @@ pub enum CommandResult {
 pub struct Shell {
     router: Arc<RwLock<QueryRouter>>,
     config: ShellConfig,
-    wal: Option<Wal>,
+    wal: Mutex<Option<Wal>>,
 }
 
 /// Wrapper to implement `QueryExecutor` for `Arc<RwLock<QueryRouter>>`.
@@ -161,7 +212,7 @@ impl Shell {
         Self {
             router: Arc::new(RwLock::new(QueryRouter::new())),
             config: ShellConfig::default(),
-            wal: None,
+            wal: Mutex::new(None),
         }
     }
 
@@ -171,7 +222,7 @@ impl Shell {
         Self {
             router: Arc::new(RwLock::new(QueryRouter::new())),
             config,
-            wal: None,
+            wal: Mutex::new(None),
         }
     }
 
@@ -233,32 +284,71 @@ impl Shell {
                     || upper.contains("INDEX CREATE")
                     || upper.contains("INDEX DROP")
             },
+            // Checkpoint creates a snapshot (state change)
+            "CHECKPOINT" => true,
+            // Rollback restores state (destructive operation)
+            "ROLLBACK" => true,
+            // Chain transaction commands (distributed tx)
+            "BEGIN" => upper.contains("BEGIN CHAIN"),
+            "COMMIT" => upper.contains("COMMIT CHAIN"),
             _ => false,
         }
     }
 
     /// Replay commands from a WAL file.
-    fn replay_wal(&self, wal_path: &Path) -> Result<usize, String> {
+    fn replay_wal(
+        &self,
+        wal_path: &Path,
+        mode: WalRecoveryMode,
+    ) -> Result<WalReplayResult, String> {
         let file = File::open(wal_path).map_err(|e| format!("Failed to open WAL: {e}"))?;
         let reader = BufReader::new(file);
 
-        let mut count = 0;
-        for (line_num, line) in reader.lines().enumerate() {
-            let cmd = line.map_err(|e| format!("Failed to read WAL line {}: {e}", line_num + 1))?;
-            let cmd = cmd.trim();
+        let mut replayed = 0;
+        let mut errors = Vec::new();
 
+        for (line_num, line) in reader.lines().enumerate() {
+            let line_number = line_num + 1;
+
+            let cmd = match line {
+                Ok(c) => c,
+                Err(e) => {
+                    let error = format!("Failed to read line: {e}");
+                    match mode {
+                        WalRecoveryMode::Strict => {
+                            return Err(format!(
+                                "WAL replay failed at line {line_number}: {error}"
+                            ));
+                        },
+                        WalRecoveryMode::Recover => {
+                            errors.push(WalReplayError::new(line_number, "<unreadable>", error));
+                            continue;
+                        },
+                    }
+                },
+            };
+
+            let cmd = cmd.trim();
             if cmd.is_empty() {
                 continue;
             }
 
             let result = self.router.read().execute_parsed(cmd);
             if let Err(e) = result {
-                return Err(format!("WAL replay failed at line {}: {e}", line_num + 1));
+                match mode {
+                    WalRecoveryMode::Strict => {
+                        return Err(format!("WAL replay failed at line {line_number}: {e}"));
+                    },
+                    WalRecoveryMode::Recover => {
+                        errors.push(WalReplayError::new(line_number, cmd, e.to_string()));
+                        continue;
+                    },
+                }
             }
-            count += 1;
+            replayed += 1;
         }
 
-        Ok(count)
+        Ok(WalReplayResult { replayed, errors })
     }
 
     /// Executes a single command and returns the result.
@@ -327,7 +417,8 @@ impl Shell {
             Ok(result) => {
                 // Log write commands to WAL after successful execution
                 if Self::is_write_command(trimmed) {
-                    if let Some(ref mut wal) = self.wal {
+                    let mut wal_guard = self.wal.lock();
+                    if let Some(ref mut wal) = *wal_guard {
                         if let Err(e) = wal.append(trimmed) {
                             return CommandResult::Error(format!(
                                 "Command succeeded but WAL write failed: {e}"
@@ -355,7 +446,7 @@ impl Shell {
         }
 
         // Truncate WAL after successful save (snapshot now contains all data)
-        if let Some(ref mut wal) = self.wal {
+        if let Some(ref mut wal) = *self.wal.lock() {
             if let Err(e) = wal.truncate() {
                 return CommandResult::Error(format!(
                     "Saved snapshot but WAL truncate failed: {e}"
@@ -383,7 +474,7 @@ impl Shell {
         }
 
         // Truncate WAL after successful save (snapshot now contains all data)
-        if let Some(ref mut wal) = self.wal {
+        if let Some(ref mut wal) = *self.wal.lock() {
             if let Err(e) = wal.truncate() {
                 return CommandResult::Error(format!(
                     "Saved snapshot but WAL truncate failed: {e}"
@@ -396,10 +487,13 @@ impl Shell {
 
     /// Handles the LOAD command.
     fn handle_load(&mut self, input: &str) -> CommandResult {
-        let Some(p) = Self::extract_path(input, "load") else {
-            return CommandResult::Error(
-                "Usage: LOAD 'path/to/file.bin' or LOAD path/to/file.bin".to_string(),
-            );
+        let (p, recovery_mode) = match Self::extract_load_path_and_mode(input) {
+            Some(result) => result,
+            None => {
+                return CommandResult::Error(
+                    "Usage: LOAD 'path/to/file.bin' or LOAD 'path' RECOVER".to_string(),
+                );
+            },
         };
 
         // Try compressed format first (auto-detects via magic bytes), fall back to legacy
@@ -415,14 +509,16 @@ impl Shell {
 
                 // Replay WAL if it exists
                 let replay_msg = if wal_path.exists() {
-                    match self.replay_wal(&wal_path) {
-                        Ok(count) if count > 0 => {
-                            format!("\nReplayed {count} commands from WAL")
-                        },
-                        Ok(_) => String::new(),
+                    match self.replay_wal(&wal_path, recovery_mode) {
+                        Ok(result) => Self::format_wal_replay_result(&result, recovery_mode),
                         Err(e) => {
+                            let hint = if recovery_mode == WalRecoveryMode::Strict {
+                                "\nHint: Use 'LOAD path RECOVER' to skip corrupted entries"
+                            } else {
+                                ""
+                            };
                             return CommandResult::Error(format!(
-                                "Loaded snapshot but WAL replay failed: {e}"
+                                "Loaded snapshot but WAL replay failed: {e}{hint}"
                             ));
                         },
                     }
@@ -433,7 +529,7 @@ impl Shell {
                 // Initialize WAL for new writes
                 match Wal::open_append(&wal_path) {
                     Ok(wal) => {
-                        self.wal = Some(wal);
+                        *self.wal.lock() = Some(wal);
                         CommandResult::Output(format!("Loaded snapshot from: {p}{replay_msg}"))
                     },
                     Err(e) => CommandResult::Error(format!(
@@ -443,6 +539,85 @@ impl Shell {
             },
             Err(e) => CommandResult::Error(format!("Failed to load: {e}")),
         }
+    }
+
+    /// Extracts path and recovery mode from LOAD command.
+    fn extract_load_path_and_mode(input: &str) -> Option<(String, WalRecoveryMode)> {
+        let rest = input
+            .strip_prefix("load")
+            .or_else(|| input.strip_prefix("LOAD"))?
+            .trim();
+
+        if rest.is_empty() {
+            return None;
+        }
+
+        // Check for RECOVER keyword at the end (case-insensitive)
+        let upper_rest = rest.to_uppercase();
+
+        // If the entire input is just "RECOVER", no path was provided
+        if upper_rest == "RECOVER" {
+            return None;
+        }
+
+        let (path_part, mode) = if upper_rest.ends_with(" RECOVER") {
+            let path_end = rest.len() - " RECOVER".len();
+            (&rest[..path_end], WalRecoveryMode::Recover)
+        } else {
+            (rest, WalRecoveryMode::Strict)
+        };
+
+        let path_part = path_part.trim();
+        if path_part.is_empty() {
+            return None;
+        }
+
+        // Handle quoted path
+        let path = if (path_part.starts_with('\'') && path_part.ends_with('\''))
+            || (path_part.starts_with('"') && path_part.ends_with('"'))
+        {
+            if path_part.len() > 2 {
+                path_part[1..path_part.len() - 1].to_string()
+            } else {
+                return None;
+            }
+        } else {
+            path_part.to_string()
+        };
+
+        Some((path, mode))
+    }
+
+    /// Formats the WAL replay result for display.
+    fn format_wal_replay_result(result: &WalReplayResult, mode: WalRecoveryMode) -> String {
+        let mut output = String::new();
+
+        if result.replayed > 0 {
+            let _ = write!(output, "\nReplayed {} commands from WAL", result.replayed);
+        }
+
+        if mode == WalRecoveryMode::Recover && !result.errors.is_empty() {
+            let _ = write!(
+                output,
+                "\nWarning: Skipped {} corrupted WAL entries:",
+                result.errors.len()
+            );
+
+            // Show at most 5 errors
+            for error in result.errors.iter().take(5) {
+                let _ = write!(
+                    output,
+                    "\n  Line {}: {} ({})",
+                    error.line, error.command, error.error
+                );
+            }
+
+            if result.errors.len() > 5 {
+                let _ = write!(output, "\n  ... and {} more", result.errors.len() - 5);
+            }
+        }
+
+        output
     }
 
     /// Extracts the path from a SAVE or LOAD command.
@@ -495,7 +670,7 @@ impl Shell {
 
     /// Handles the WAL STATUS command.
     fn handle_wal_status(&self) -> CommandResult {
-        self.wal.as_ref().map_or_else(
+        self.wal.lock().as_ref().map_or_else(
             || {
                 CommandResult::Output(
                     "WAL not active (use LOAD to enable WAL for a snapshot)".to_string(),
@@ -513,8 +688,8 @@ impl Shell {
     }
 
     /// Handles the WAL TRUNCATE command.
-    fn handle_wal_truncate(&mut self) -> CommandResult {
-        self.wal.as_mut().map_or_else(
+    fn handle_wal_truncate(&self) -> CommandResult {
+        self.wal.lock().as_mut().map_or_else(
             || {
                 CommandResult::Error(
                     "WAL not active (use LOAD to enable WAL for a snapshot)".to_string(),
@@ -736,7 +911,8 @@ Commands:
 Persistence:
   save 'path'            Save database snapshot to file
   save compressed 'path' Save compressed snapshot (int8 quantization)
-  load 'path'            Load snapshot and enable WAL
+  load 'path'            Load snapshot with strict WAL replay
+  load 'path' recover    Load snapshot, skip corrupted WAL entries
   wal status             Show write-ahead log status
   wal truncate           Clear the write-ahead log
 
@@ -801,6 +977,8 @@ Query Types:
   Graph Indexes:
     GRAPH INDEX CREATE ON NODE (property)
     GRAPH INDEX CREATE ON EDGE (property)
+    GRAPH INDEX CREATE ON LABEL          Index node labels for fast lookup
+    GRAPH INDEX CREATE ON EDGE TYPE      Index edge types for fast lookup
     GRAPH INDEX DROP ON NODE (property)
     GRAPH INDEX DROP ON EDGE (property)
     GRAPH INDEX SHOW NODES
@@ -814,6 +992,9 @@ Query Types:
     EMBED BATCH [('key1', [v1, v2]), ('key2', [v1, v2])]
     SIMILAR 'key' [COSINE|EUCLIDEAN|DOT_PRODUCT] LIMIT n
     SIMILAR [vector] [metric] LIMIT n
+    SHOW EMBEDDINGS [LIMIT n]      List stored embeddings
+    SHOW VECTOR INDEX              Show HNSW index status
+    COUNT EMBEDDINGS               Count total embeddings
 
   Unified (Cross-Engine):
     FIND NODE [label] [WHERE condition] [LIMIT n]
@@ -826,14 +1007,23 @@ Query Types:
     ENTITY BATCH CREATE [{key: 'k1', name: 'Alice'}, ...]
 
   Blob Storage:
+    BLOB INIT                      Initialize blob store
     BLOB PUT 'path' [CHUNK size] [TAGS 'a','b'] [FOR 'entity']
     BLOB GET 'id' TO 'path'        Download blob to file
     BLOB DELETE 'id'               Delete blob
     BLOB INFO 'id'                 Show blob metadata
     BLOB LINK 'id' TO 'entity'     Link blob to entity
     BLOB UNLINK 'id' FROM 'entity' Unlink blob from entity
+    BLOB LINKS 'id'                List entities linked to blob
     BLOB TAG 'id' 'tag'            Add tag to blob
     BLOB UNTAG 'id' 'tag'          Remove tag from blob
+    BLOB VERIFY 'id'               Verify blob integrity
+    BLOB GC                        Run garbage collection
+    BLOB GC FULL                   Run full garbage collection
+    BLOB REPAIR                    Repair blob storage
+    BLOB STATS                     Show blob storage statistics
+    BLOB META SET 'id' 'key' 'val' Set custom metadata
+    BLOB META GET 'id' 'key'       Get custom metadata
     BLOBS                          List all blobs
     BLOBS FOR 'entity'             List blobs linked to entity
     BLOBS BY TAG 'tag'             Find blobs by tag
@@ -856,6 +1046,10 @@ Query Types:
     CACHE EVICT [n]                Evict n entries (default: 100)
     CACHE GET 'key'                Get cached response
     CACHE PUT 'key' 'value'        Store cache entry
+    CACHE SEMANTIC GET 'query' [THRESHOLD n]
+                                   Semantic similarity lookup
+    CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [vec]
+                                   Store with semantic embedding
 
   Checkpoints (Rollback):
     CHECKPOINT                     Create checkpoint with auto-generated name
@@ -863,6 +1057,29 @@ Query Types:
     CHECKPOINTS                    List all checkpoints
     CHECKPOINTS LIMIT n            List last n checkpoints
     ROLLBACK TO 'name-or-id'       Restore database to checkpoint
+
+  Chain (Distributed Ledger):
+    BEGIN CHAIN TRANSACTION        Start a chain transaction
+    COMMIT CHAIN                   Commit chain transaction
+    ROLLBACK CHAIN TO height       Rollback to specific height
+    CHAIN HEIGHT                   Get current chain height
+    CHAIN TIP                      Get chain tip (hash and height)
+    CHAIN BLOCK height             Get block at height
+    CHAIN VERIFY                   Verify chain integrity
+    CHAIN HISTORY 'key'            Get transaction history for key
+    CHAIN SIMILAR [embedding] LIMIT n
+                                   Find blocks by embedding similarity
+    CHAIN DRIFT FROM h1 TO h2      Analyze semantic drift between heights
+    SHOW CODEBOOK GLOBAL           Show global quantization codebook
+    SHOW CODEBOOK LOCAL 'domain'   Show domain-specific codebook
+    ANALYZE CODEBOOK TRANSITIONS   Analyze codebook transition patterns
+
+  Cluster (Distributed):
+    CLUSTER CONNECT 'node@addr'    Connect to cluster
+    CLUSTER DISCONNECT             Leave cluster
+    CLUSTER STATUS                 Show cluster status
+    CLUSTER NODES                  List cluster nodes
+    CLUSTER LEADER                 Show current leader
 
 Examples:
   > CREATE TABLE users (id INT, name TEXT)
@@ -874,6 +1091,7 @@ Examples:
   > SAVE 'backup.bin'
   > SAVE COMPRESSED 'backup.bin'
   > LOAD 'backup.bin'
+  > LOAD 'backup.bin' RECOVER
 "
         .to_string()
     }
@@ -1027,9 +1245,9 @@ fn format_result(result: &QueryResult) -> String {
         QueryResult::BlobStats(stats) => format_blob_stats(stats),
         QueryResult::CheckpointList(checkpoints) => format_checkpoint_list(checkpoints),
         QueryResult::Chain(chain) => format_chain_result(chain),
-        QueryResult::PageRank(results) => format_pagerank(results),
-        QueryResult::Centrality(results) => format_centrality(results),
-        QueryResult::Communities(results) => format_communities(results),
+        QueryResult::PageRank(ref result) => format_pagerank(result),
+        QueryResult::Centrality(ref result) => format_centrality(result),
+        QueryResult::Communities(ref result) => format_communities(result),
         QueryResult::Constraints(constraints) => format_constraints(constraints),
         QueryResult::GraphIndexes(indexes) => format_graph_indexes(indexes),
         QueryResult::Aggregate(agg) => format_aggregate(agg),
@@ -1181,19 +1399,96 @@ fn format_table_list(tables: &[String]) -> String {
     }
 }
 
-/// Formats blob data for display.
+fn format_hex_dump(data: &[u8], max_bytes: usize) -> String {
+    let bytes_to_show = data.len().min(max_bytes);
+    let mut output = String::new();
+
+    for (i, chunk) in data[..bytes_to_show]
+        .chunks(BLOB_HEX_BYTES_PER_LINE)
+        .enumerate()
+    {
+        // Offset
+        let _ = write!(output, "{:08x}  ", i * BLOB_HEX_BYTES_PER_LINE);
+
+        // Hex bytes with midpoint spacing
+        for (j, byte) in chunk.iter().enumerate() {
+            let _ = write!(output, "{byte:02x} ");
+            if j == 7 {
+                output.push(' ');
+            }
+        }
+
+        // Padding for incomplete lines
+        for j in chunk.len()..BLOB_HEX_BYTES_PER_LINE {
+            output.push_str("   ");
+            if j == 7 {
+                output.push(' ');
+            }
+        }
+
+        // ASCII representation
+        output.push_str(" |");
+        for byte in chunk {
+            let c = if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte as char
+            } else {
+                '.'
+            };
+            output.push(c);
+        }
+        output.push_str("|\n");
+    }
+    output
+}
+
 fn format_blob(data: &[u8]) -> String {
     let size = data.len();
-    if size <= 256 {
-        // Try to display as UTF-8 if valid, otherwise show hex
+
+    // Try UTF-8 text display (up to 4KB)
+    if size <= BLOB_TEXT_DISPLAY_LIMIT {
         if let Ok(s) = std::str::from_utf8(data) {
-            if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') {
+            if s.chars()
+                .all(|c| !c.is_control() || c == '\n' || c == '\t' || c == '\r')
+            {
                 return s.to_string();
             }
         }
     }
-    // Show summary for binary/large data
-    format!("<binary data: {size} bytes>")
+
+    // Large text files: show preview
+    if size > BLOB_TEXT_DISPLAY_LIMIT {
+        if let Ok(s) = std::str::from_utf8(data) {
+            if s.chars()
+                .all(|c| !c.is_control() || c == '\n' || c == '\t' || c == '\r')
+            {
+                let preview_end = s
+                    .char_indices()
+                    .take_while(|(i, _)| *i < BLOB_TEXT_DISPLAY_LIMIT)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(BLOB_TEXT_DISPLAY_LIMIT);
+
+                return format!(
+                    "{}\n... ({} more bytes, {} total)",
+                    &s[..preview_end],
+                    size - preview_end,
+                    size
+                );
+            }
+        }
+    }
+
+    // Binary data: hex dump preview
+    let mut output = format!("<binary data: {size} bytes>\n\n");
+    output.push_str(&format_hex_dump(data, BLOB_HEX_PREVIEW_BYTES));
+
+    if size > BLOB_HEX_PREVIEW_BYTES {
+        output.push_str(&format!(
+            "... ({} more bytes)\n",
+            size - BLOB_HEX_PREVIEW_BYTES
+        ));
+    }
+    output
 }
 
 /// Formats artifact info for display.
@@ -1515,43 +1810,51 @@ fn format_rows(rows: &[Row]) -> String {
     output
 }
 
-fn format_pagerank(results: &[PageRankResult]) -> String {
-    if results.is_empty() {
+fn format_pagerank(result: &PageRankResult) -> String {
+    if result.items.is_empty() {
         return "No PageRank results".to_string();
     }
     let mut output = String::from("PageRank Results:\n");
-    for r in results {
-        let _ = writeln!(output, "  Node {}: {:.6}", r.node_id, r.score);
+    let mut sorted = result.items.clone();
+    sorted.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for item in &sorted {
+        let _ = writeln!(output, "  Node {}: {:.6}", item.node_id, item.score);
     }
+    let _ = writeln!(
+        output,
+        "Iterations: {}, Converged: {}",
+        result.iterations, result.converged
+    );
     output.trim_end().to_string()
 }
 
-fn format_centrality(results: &[CentralityResult]) -> String {
-    if results.is_empty() {
+fn format_centrality(result: &CentralityResult) -> String {
+    if result.items.is_empty() {
         return "No centrality results".to_string();
     }
-    let mut output = String::from("Centrality Results:\n");
-    for r in results {
-        let _ = writeln!(output, "  Node {}: {:.6}", r.node_id, r.score);
+    let mut output = format!("{:?} Results:\n", result.centrality_type);
+    let mut sorted = result.items.clone();
+    sorted.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for item in &sorted {
+        let _ = writeln!(output, "  Node {}: {:.6}", item.node_id, item.score);
     }
     output.trim_end().to_string()
 }
 
-fn format_communities(results: &[CommunityResult]) -> String {
-    if results.is_empty() {
+fn format_communities(result: &CommunityResult) -> String {
+    if result.members.is_empty() {
         return "No communities found".to_string();
     }
-    // Group nodes by community_id
-    let mut communities: std::collections::HashMap<u64, Vec<u64>> =
-        std::collections::HashMap::new();
-    for r in results {
-        communities
-            .entry(r.community_id)
-            .or_default()
-            .push(r.node_id);
-    }
     let mut output = String::from("Communities:\n");
-    let mut sorted: Vec<_> = communities.into_iter().collect();
+    let mut sorted: Vec<_> = result.members.iter().collect();
     sorted.sort_by_key(|(id, _)| *id);
     for (community_id, nodes) in sorted {
         let node_list = nodes
@@ -1560,6 +1863,9 @@ fn format_communities(results: &[CommunityResult]) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         let _ = writeln!(output, "  Community {}: [{}]", community_id, node_list);
+    }
+    if let Some(modularity) = result.modularity {
+        let _ = writeln!(output, "Modularity: {modularity:.6}");
     }
     output.trim_end().to_string()
 }
@@ -3000,6 +3306,35 @@ mod tests {
     }
 
     #[test]
+    fn test_is_write_command_checkpoint_and_chain() {
+        // Checkpoint write commands
+        assert!(Shell::is_write_command("CHECKPOINT"));
+        assert!(Shell::is_write_command("CHECKPOINT 'my-snapshot'"));
+        assert!(Shell::is_write_command("checkpoint 'lowercase'"));
+
+        // Rollback commands (checkpoint and chain)
+        assert!(Shell::is_write_command("ROLLBACK TO 'my-snapshot'"));
+        assert!(Shell::is_write_command("ROLLBACK CHAIN TO 5"));
+        assert!(Shell::is_write_command("rollback to 'case-insensitive'"));
+
+        // Chain transaction commands
+        assert!(Shell::is_write_command("BEGIN CHAIN TRANSACTION"));
+        assert!(Shell::is_write_command("BEGIN CHAIN"));
+        assert!(Shell::is_write_command("COMMIT CHAIN"));
+        assert!(Shell::is_write_command("begin chain"));
+        assert!(Shell::is_write_command("commit chain"));
+
+        // Read-only commands (should NOT be logged)
+        assert!(!Shell::is_write_command("CHECKPOINTS"));
+        assert!(!Shell::is_write_command("CHECKPOINTS LIMIT 10"));
+        assert!(!Shell::is_write_command("CHAIN HEIGHT"));
+        assert!(!Shell::is_write_command("CHAIN TIP"));
+        assert!(!Shell::is_write_command("CHAIN BLOCK 5"));
+        assert!(!Shell::is_write_command("CHAIN VERIFY"));
+        assert!(!Shell::is_write_command("CHAIN HISTORY 'key'"));
+    }
+
+    #[test]
     fn test_cache_init() {
         let mut shell = Shell::new();
         let result = shell.execute("CACHE INIT");
@@ -3015,6 +3350,8 @@ mod tests {
         let mut shell = Shell::new();
         // Initialize cache first
         shell.execute("CACHE INIT");
+        // Set identity (required for cache operations)
+        shell.execute("VAULT IDENTITY 'user:test'");
         let result = shell.execute("CACHE STATS");
         if let CommandResult::Output(output) = result {
             assert!(output.contains("Cache Statistics"));
@@ -3139,5 +3476,375 @@ mod tests {
         // Verify data is restored
         let result = shell.execute("EMBED GET 'rollback-test'");
         assert!(matches!(result, CommandResult::Output(_)));
+    }
+
+    #[test]
+    fn test_help_contains_cluster() {
+        let help = Shell::help_text();
+        assert!(help.contains("Cluster (Distributed)"));
+        assert!(help.contains("CLUSTER CONNECT"));
+        assert!(help.contains("CLUSTER DISCONNECT"));
+        assert!(help.contains("CLUSTER STATUS"));
+        assert!(help.contains("CLUSTER NODES"));
+        assert!(help.contains("CLUSTER LEADER"));
+    }
+
+    #[test]
+    fn test_wal_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let shell = Arc::new(Mutex::new(Shell::new()));
+
+        // Set up WAL by saving
+        {
+            let mut s = shell.lock();
+            s.execute("EMBED STORE 'key' [1.0, 2.0, 3.0]");
+            let path = std::env::temp_dir().join("test_concurrent_wal.bin");
+            s.execute(&format!("SAVE '{}'", path.display()));
+            s.execute(&format!("LOAD '{}'", path.display()));
+        }
+
+        // Concurrent writes should not panic or corrupt
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                let shell = Arc::clone(&shell);
+                thread::spawn(move || {
+                    let mut s = shell.lock();
+                    for j in 0..10 {
+                        s.execute(&format!("EMBED STORE 'key{i}{j}' [1.0]"));
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Cleanup
+        let path = std::env::temp_dir().join("test_concurrent_wal.bin");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("log"));
+    }
+
+    #[test]
+    fn test_wal_recovery_mode_skips_corrupted() {
+        use std::io::Write;
+
+        let shell = Shell::new();
+
+        // Create a temp WAL file with: valid, invalid, valid commands
+        let wal_path = std::env::temp_dir().join("test_recovery_wal.log");
+        {
+            let mut f = std::fs::File::create(&wal_path).unwrap();
+            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
+            writeln!(f, "INVALID GARBAGE COMMAND").unwrap();
+            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
+        }
+
+        // Recover mode should skip invalid line and continue
+        let result = shell
+            .replay_wal(&wal_path, WalRecoveryMode::Recover)
+            .unwrap();
+        assert_eq!(result.replayed, 2);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].line, 2);
+        assert!(result.errors[0].command.contains("INVALID"));
+
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_strict_mode_fails_on_corrupt() {
+        use std::io::Write;
+
+        let shell = Shell::new();
+
+        let wal_path = std::env::temp_dir().join("test_strict_wal.log");
+        {
+            let mut f = std::fs::File::create(&wal_path).unwrap();
+            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
+            writeln!(f, "INVALID GARBAGE COMMAND").unwrap();
+            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
+        }
+
+        // Strict mode should fail on invalid line
+        let result = shell.replay_wal(&wal_path, WalRecoveryMode::Strict);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.contains("line 2"));
+
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_recovery_truncated_line() {
+        use std::io::Write;
+
+        let shell = Shell::new();
+
+        let wal_path = std::env::temp_dir().join("test_truncated_wal.log");
+        {
+            let mut f = std::fs::File::create(&wal_path).unwrap();
+            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
+            // Empty line should be skipped
+            writeln!(f, "").unwrap();
+            writeln!(f, "   ").unwrap();
+            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
+        }
+
+        // Empty lines should be skipped, not counted as errors
+        let result = shell
+            .replay_wal(&wal_path, WalRecoveryMode::Recover)
+            .unwrap();
+        assert_eq!(result.replayed, 2);
+        assert_eq!(result.errors.len(), 0);
+
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn test_wal_replay_error_truncates_long_command() {
+        let short_error = WalReplayError::new(1, "short command", "error".to_string());
+        assert_eq!(short_error.command, "short command");
+
+        let long_command = "A".repeat(100);
+        let long_error = WalReplayError::new(1, &long_command, "error".to_string());
+        assert_eq!(long_error.command.len(), 80);
+        assert!(long_error.command.ends_with("..."));
+    }
+
+    #[test]
+    fn test_help_contains_recover() {
+        let help = Shell::help_text();
+        assert!(help.contains("load 'path' recover"));
+        assert!(help.contains("skip corrupted WAL"));
+    }
+
+    #[test]
+    fn test_help_contains_vector_commands() {
+        let help = Shell::help_text();
+        assert!(help.contains("SHOW EMBEDDINGS"));
+        assert!(help.contains("SHOW VECTOR INDEX"));
+        assert!(help.contains("COUNT EMBEDDINGS"));
+    }
+
+    #[test]
+    fn test_help_contains_blob_management() {
+        let help = Shell::help_text();
+        assert!(help.contains("BLOB INIT"));
+        assert!(help.contains("BLOB LINKS"));
+        assert!(help.contains("BLOB VERIFY"));
+        assert!(help.contains("BLOB GC"));
+        assert!(help.contains("BLOB GC FULL"));
+        assert!(help.contains("BLOB REPAIR"));
+        assert!(help.contains("BLOB STATS"));
+        assert!(help.contains("BLOB META SET"));
+        assert!(help.contains("BLOB META GET"));
+    }
+
+    #[test]
+    fn test_help_contains_cache_semantic() {
+        let help = Shell::help_text();
+        assert!(help.contains("CACHE SEMANTIC GET"));
+        assert!(help.contains("CACHE SEMANTIC PUT"));
+    }
+
+    #[test]
+    fn test_help_contains_chain_commands() {
+        let help = Shell::help_text();
+        assert!(help.contains("Chain (Distributed Ledger):"));
+        assert!(help.contains("BEGIN CHAIN TRANSACTION"));
+        assert!(help.contains("COMMIT CHAIN"));
+        assert!(help.contains("ROLLBACK CHAIN TO"));
+        assert!(help.contains("CHAIN HEIGHT"));
+        assert!(help.contains("CHAIN TIP"));
+        assert!(help.contains("CHAIN BLOCK"));
+        assert!(help.contains("CHAIN VERIFY"));
+        assert!(help.contains("CHAIN HISTORY"));
+        assert!(help.contains("CHAIN SIMILAR"));
+        assert!(help.contains("CHAIN DRIFT"));
+        assert!(help.contains("SHOW CODEBOOK GLOBAL"));
+        assert!(help.contains("SHOW CODEBOOK LOCAL"));
+        assert!(help.contains("ANALYZE CODEBOOK TRANSITIONS"));
+    }
+
+    #[test]
+    fn test_extract_load_path_and_mode_basic() {
+        // Quoted path without recover
+        let result = Shell::extract_load_path_and_mode("load 'data.bin'");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
+        );
+
+        // Quoted path with recover
+        let result = Shell::extract_load_path_and_mode("load 'data.bin' recover");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
+        );
+
+        // Unquoted path without recover
+        let result = Shell::extract_load_path_and_mode("load data.bin");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
+        );
+
+        // Unquoted path with recover (case insensitive)
+        let result = Shell::extract_load_path_and_mode("LOAD data.bin RECOVER");
+        assert_eq!(
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
+        );
+
+        // Empty path should return None
+        let result = Shell::extract_load_path_and_mode("load ");
+        assert!(result.is_none());
+
+        // Just recover without path should return None
+        let result = Shell::extract_load_path_and_mode("load recover");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_basic() {
+        // Successful replay in strict mode
+        let result = WalReplayResult {
+            replayed: 5,
+            errors: vec![],
+        };
+        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
+        assert!(output.contains("Replayed 5 commands"));
+
+        // Zero replayed should not show message
+        let result = WalReplayResult {
+            replayed: 0,
+            errors: vec![],
+        };
+        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_with_errors() {
+        // Recover mode with errors should show warnings
+        let result = WalReplayResult {
+            replayed: 3,
+            errors: vec![
+                WalReplayError::new(2, "bad command 1", "error1".to_string()),
+                WalReplayError::new(5, "bad command 2", "error2".to_string()),
+            ],
+        };
+        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
+        assert!(output.contains("Replayed 3 commands"));
+        assert!(output.contains("Skipped 2 corrupted"));
+        assert!(output.contains("Line 2:"));
+        assert!(output.contains("Line 5:"));
+    }
+
+    #[test]
+    fn test_format_wal_replay_result_truncates_many_errors() {
+        // Should only show first 5 errors
+        let errors: Vec<_> = (0..10)
+            .map(|i| WalReplayError::new(i + 1, &format!("cmd{i}"), "err".to_string()))
+            .collect();
+        let result = WalReplayResult {
+            replayed: 0,
+            errors,
+        };
+        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
+        assert!(output.contains("Skipped 10 corrupted"));
+        assert!(output.contains("... and 5 more"));
+    }
+
+    #[test]
+    fn test_format_blob_small_text() {
+        let data = b"Hello, World!";
+        let result = format_blob(data);
+        assert_eq!(result, "Hello, World!");
+    }
+
+    #[test]
+    fn test_format_blob_4kb_text() {
+        let data = "a".repeat(4096);
+        let result = format_blob(data.as_bytes());
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_format_blob_large_text_truncated() {
+        let data = "a".repeat(5000);
+        let result = format_blob(data.as_bytes());
+        assert!(result.contains("... ("));
+        assert!(result.contains("more bytes"));
+        assert!(result.contains("5000 total"));
+        // Should contain truncated content
+        assert!(result.starts_with("aaaa"));
+    }
+
+    #[test]
+    fn test_format_blob_binary_with_hex_dump() {
+        let data: Vec<u8> = (0..100).collect();
+        let result = format_blob(&data);
+        assert!(result.contains("<binary data: 100 bytes>"));
+        // Should have hex dump with offset
+        assert!(result.contains("00000000"));
+        // Should have ASCII representation
+        assert!(result.contains("|"));
+        // Should indicate more bytes
+        assert!(result.contains("... (36 more bytes)"));
+    }
+
+    #[test]
+    fn test_format_blob_control_chars_treated_as_binary() {
+        // Data with control chars (not newline/tab/carriage return) treated as binary
+        let data = b"Hello\x00World";
+        let result = format_blob(data);
+        assert!(result.contains("<binary data:"));
+        assert!(result.contains("00000000"));
+    }
+
+    #[test]
+    fn test_format_hex_dump_alignment() {
+        // Test that hex dump has proper 16-byte line formatting
+        let data: Vec<u8> = (0..32).collect();
+        let result = format_hex_dump(&data, 32);
+
+        // Should have two lines
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        // First line should start with offset 00000000
+        assert!(lines[0].starts_with("00000000"));
+        // Second line should start with offset 00000010
+        assert!(lines[1].starts_with("00000010"));
+
+        // Should have midpoint spacing (extra space after byte 7)
+        // The format is "XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX"
+        assert!(lines[0].contains("07 "));
+    }
+
+    #[test]
+    fn test_format_hex_dump_incomplete_line() {
+        // Test incomplete last line is properly padded
+        let data: Vec<u8> = (0..5).collect();
+        let result = format_hex_dump(&data, 16);
+
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 1);
+        // Should still have ASCII section
+        assert!(result.contains("|"));
+    }
+
+    #[test]
+    fn test_help_contains_graph_index_label_and_edge_type() {
+        let help = Shell::help_text();
+        assert!(help.contains("GRAPH INDEX CREATE ON LABEL"));
+        assert!(help.contains("GRAPH INDEX CREATE ON EDGE TYPE"));
+        assert!(help.contains("Index node labels for fast lookup"));
+        assert!(help.contains("Index edge types for fast lookup"));
     }
 }

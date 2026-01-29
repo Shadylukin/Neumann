@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Sparse Vector - Storage where zero doesn't exist
 //!
 //! Philosophy: Zero represents absence of information, not a value to store.

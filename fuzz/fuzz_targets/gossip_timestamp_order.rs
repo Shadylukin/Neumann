@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for gossip timestamp ordering.
 //!
 //! Ensures gossip state timestamps maintain proper ordering and

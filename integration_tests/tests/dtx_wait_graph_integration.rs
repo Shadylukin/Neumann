@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for wait-for graph tracking in 2PC distributed transactions.
 //!
 //! Tests that the wait-for graph is properly updated during lock conflicts in

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Configuration classes for Neumann client."""
 
 from __future__ import annotations

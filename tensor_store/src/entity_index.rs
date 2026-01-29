@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vocabulary-based entity index for O(log n) lookup with stable IDs.
 //!
 //! The `EntityIndex` maps string keys to `EntityId` values using an append-only

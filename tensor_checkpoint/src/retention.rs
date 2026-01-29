@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use tensor_blob::BlobStore;
 
 use crate::{error::Result, storage::CheckpointStorage};

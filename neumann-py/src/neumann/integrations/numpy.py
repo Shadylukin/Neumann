@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """NumPy integration for Neumann database."""
 
 from __future__ import annotations

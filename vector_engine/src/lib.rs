@@ -81,6 +81,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -137,6 +138,13 @@ pub enum VectorError {
     IoError(String),
     /// Serialization error during persistence operations.
     SerializationError(String),
+    /// Search operation timed out.
+    SearchTimeout {
+        /// Operation that timed out.
+        operation: String,
+        /// Configured timeout in milliseconds.
+        timeout_ms: u64,
+    },
 }
 
 impl std::fmt::Display for VectorError {
@@ -160,6 +168,12 @@ impl std::fmt::Display for VectorError {
             Self::CollectionNotFound(name) => write!(f, "Collection not found: {name}"),
             Self::IoError(msg) => write!(f, "IO error: {msg}"),
             Self::SerializationError(msg) => write!(f, "Serialization error: {msg}"),
+            Self::SearchTimeout {
+                operation,
+                timeout_ms,
+            } => {
+                write!(f, "search timeout: {operation} exceeded {timeout_ms}ms")
+            },
         }
     }
 }
@@ -192,6 +206,39 @@ impl From<DistanceMetric> for ExtendedDistanceMetric {
 
 /// A specialized Result type for vector operations.
 pub type Result<T> = std::result::Result<T, VectorError>;
+
+/// Monotonic deadline for search timeout checking.
+#[derive(Debug, Clone, Copy)]
+struct Deadline {
+    deadline: Option<Instant>,
+    timeout_ms: u64,
+}
+
+impl Deadline {
+    fn from_duration(timeout: Option<Duration>) -> Self {
+        Self {
+            deadline: timeout.map(|d| Instant::now() + d),
+            timeout_ms: timeout.map_or(0, |d| d.as_millis() as u64),
+        }
+    }
+
+    #[cfg(test)]
+    const fn never() -> Self {
+        Self {
+            deadline: None,
+            timeout_ms: 0,
+        }
+    }
+
+    #[inline]
+    fn is_expired(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    const fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+}
 
 /// Result of a similarity search.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -572,6 +619,12 @@ pub struct VectorEngineConfig {
     pub max_keys_per_scan: Option<usize>,
     /// Threshold for using parallel iteration in batch operations.
     pub batch_parallel_threshold: usize,
+    /// Search operation timeout. `None` means no timeout (default).
+    pub search_timeout: Option<Duration>,
+    /// Maximum index file size in bytes (default: 100MB).
+    pub max_index_file_bytes: Option<usize>,
+    /// Maximum entries in a loaded index (default: 1M).
+    pub max_index_entries: Option<usize>,
 }
 
 impl Default for VectorEngineConfig {
@@ -584,6 +637,9 @@ impl Default for VectorEngineConfig {
             max_dimension: None,
             max_keys_per_scan: None,
             batch_parallel_threshold: 100,
+            search_timeout: None,
+            max_index_file_bytes: Some(100 * 1024 * 1024), // 100MB default
+            max_index_entries: Some(1_000_000),            // 1M entries
         }
     }
 }
@@ -602,6 +658,9 @@ impl VectorEngineConfig {
             max_dimension: None,
             max_keys_per_scan: None,
             batch_parallel_threshold: 100,
+            search_timeout: None,
+            max_index_file_bytes: Some(100 * 1024 * 1024), // 100MB
+            max_index_entries: Some(1_000_000),
         }
     }
 
@@ -618,6 +677,9 @@ impl VectorEngineConfig {
             max_dimension: Some(4096),
             max_keys_per_scan: Some(10_000),
             batch_parallel_threshold: 100,
+            search_timeout: Some(Duration::from_secs(30)),
+            max_index_file_bytes: Some(10 * 1024 * 1024), // 10MB for low memory
+            max_index_entries: Some(100_000),             // 100K entries
         }
     }
 
@@ -653,6 +715,20 @@ impl VectorEngineConfig {
             return Err(VectorError::ConfigurationError(
                 "batch_parallel_threshold must be greater than 0".to_string(),
             ));
+        }
+        if let Some(max_bytes) = self.max_index_file_bytes {
+            if max_bytes == 0 {
+                return Err(VectorError::ConfigurationError(
+                    "max_index_file_bytes must be greater than 0".to_string(),
+                ));
+            }
+        }
+        if let Some(max_entries) = self.max_index_entries {
+            if max_entries == 0 {
+                return Err(VectorError::ConfigurationError(
+                    "max_index_entries must be greater than 0".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -703,6 +779,27 @@ impl VectorEngineConfig {
     #[must_use]
     pub const fn with_batch_parallel_threshold(mut self, threshold: usize) -> Self {
         self.batch_parallel_threshold = threshold;
+        self
+    }
+
+    /// Set the search operation timeout.
+    #[must_use]
+    pub const fn with_search_timeout(mut self, timeout: Duration) -> Self {
+        self.search_timeout = Some(timeout);
+        self
+    }
+
+    /// Set the maximum index file size in bytes.
+    #[must_use]
+    pub const fn with_max_index_file_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_index_file_bytes = Some(max_bytes);
+        self
+    }
+
+    /// Set the maximum number of entries in a loaded index.
+    #[must_use]
+    pub const fn with_max_index_entries(mut self, max_entries: usize) -> Self {
+        self.max_index_entries = Some(max_entries);
         self
     }
 }
@@ -852,6 +949,8 @@ pub struct VectorEngine {
     config: VectorEngineConfig,
     /// Collection configurations (name -> config).
     collections: Arc<RwLock<HashMap<String, VectorCollectionConfig>>>,
+    /// Lock to serialize delete operations and prevent TOCTOU races.
+    delete_lock: RwLock<()>,
 }
 
 impl VectorEngine {
@@ -862,6 +961,7 @@ impl VectorEngine {
             store: TensorStore::new(),
             config: VectorEngineConfig::default(),
             collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
         }
     }
 
@@ -872,6 +972,7 @@ impl VectorEngine {
             store,
             config: VectorEngineConfig::default(),
             collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
         }
     }
 
@@ -884,6 +985,7 @@ impl VectorEngine {
             store: TensorStore::new(),
             config,
             collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
         })
     }
 
@@ -896,6 +998,7 @@ impl VectorEngine {
             store,
             config,
             collections: Arc::new(RwLock::new(HashMap::new())),
+            delete_lock: RwLock::new(()),
         })
     }
 
@@ -1113,6 +1216,8 @@ impl VectorEngine {
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1139,9 +1244,16 @@ impl VectorEngine {
             return Ok(Vec::new());
         }
 
-        let mut results: Vec<SearchResult> = self
-            .store
-            .scan(&prefix)
+        let keys: Vec<_> = self.store.scan(&prefix);
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_in_collection".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
+        let mut results: Vec<SearchResult> = keys
             .into_iter()
             .filter_map(|storage_key| {
                 let key = storage_key.strip_prefix(&prefix)?;
@@ -1158,6 +1270,13 @@ impl VectorEngine {
             })
             .collect();
 
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_in_collection".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -1169,6 +1288,7 @@ impl VectorEngine {
     }
 
     /// Search with filter in a specific collection.
+    #[allow(clippy::too_many_lines)]
     #[instrument(skip(self, query, filter, config), fields(collection = %collection, query_dim = query.len(), top_k))]
     pub fn search_filtered_in_collection(
         &self,
@@ -1178,6 +1298,8 @@ impl VectorEngine {
         filter: &FilterCondition,
         config: Option<FilteredSearchConfig>,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1234,6 +1356,13 @@ impl VectorEngine {
             other => other,
         };
 
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_filtered_in_collection".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         let mut results: Vec<SearchResult> = match strategy {
             FilterStrategy::PreFilter | FilterStrategy::Auto => {
                 // Pre-filter: filter first, then search
@@ -1274,6 +1403,13 @@ impl VectorEngine {
                     .collect()
             },
         };
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_filtered_in_collection".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         results.sort_by(|a, b| {
             b.score
@@ -1355,6 +1491,8 @@ impl VectorEngine {
     /// Delete an embedding by key.
     #[instrument(skip(self), fields(key = %key))]
     pub fn delete_embedding(&self, key: &str) -> Result<()> {
+        let _guard = self.delete_lock.write();
+
         let storage_key = Self::embedding_key(key);
         if !self.store.exists(&storage_key) {
             return Err(VectorError::NotFound(key.to_string()));
@@ -1383,6 +1521,8 @@ impl VectorEngine {
     /// Automatically uses parallel iteration for large datasets.
     #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_similar(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1408,12 +1548,26 @@ impl VectorEngine {
 
         let keys = self.store.scan(Self::embedding_prefix());
 
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_similar".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         // Use parallel iteration for large datasets, sequential for small
         let mut results: Vec<SearchResult> = if keys.len() >= self.config.parallel_threshold {
             Self::search_parallel(&self.store, &keys, query, query_magnitude)
         } else {
             Self::search_sequential(&self.store, &keys, query, query_magnitude)
         };
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_similar".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         // Sort by score descending
         results.sort_by(|a, b| {
@@ -1440,6 +1594,8 @@ impl VectorEngine {
         top_k: usize,
         metric: DistanceMetric,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1455,11 +1611,25 @@ impl VectorEngine {
 
         let keys = self.store.scan(Self::embedding_prefix());
 
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_similar_with_metric".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         let mut results: Vec<SearchResult> = if keys.len() >= self.config.parallel_threshold {
             Self::search_parallel_with_metric(&self.store, &keys, query, query_magnitude, metric)
         } else {
             Self::search_sequential_with_metric(&self.store, &keys, query, query_magnitude, metric)
         };
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_similar_with_metric".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         // Sort by score descending (higher is better for all metrics after transformation)
         results.sort_by(|a, b| {
@@ -1622,7 +1792,7 @@ impl VectorEngine {
         let dot_product = simd::dot_product(a, b);
         let b_magnitude = simd::magnitude(b);
 
-        if b_magnitude == 0.0 {
+        if a_magnitude == 0.0 || b_magnitude == 0.0 {
             return 0.0;
         }
 
@@ -1667,14 +1837,10 @@ impl VectorEngine {
         None
     }
 
-    /// List all embedding keys.
+    /// List embedding keys, respecting `config.max_keys_per_scan` if set.
     #[instrument(skip(self))]
     pub fn list_keys(&self) -> Vec<String> {
-        self.store
-            .scan(Self::embedding_prefix())
-            .into_iter()
-            .filter_map(|k| k.strip_prefix(Self::embedding_prefix()).map(String::from))
-            .collect()
+        self.list_keys_bounded()
     }
 
     /// List embedding keys with memory safety bounds.
@@ -1692,14 +1858,25 @@ impl VectorEngine {
             .collect()
     }
 
-    /// Clear all embeddings.
+    /// Clear embeddings, respecting `max_keys_per_scan` if set.
+    ///
+    /// Returns the number of embeddings deleted. If `max_keys_per_scan` is set
+    /// and there were more embeddings than the limit, call again until 0 is returned.
     #[instrument(skip(self))]
-    pub fn clear(&self) -> Result<()> {
-        let keys = self.store.scan(Self::embedding_prefix());
+    pub fn clear(&self) -> Result<usize> {
+        let max_keys = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
+        let keys: Vec<_> = self
+            .store
+            .scan(Self::embedding_prefix())
+            .into_iter()
+            .take(max_keys)
+            .collect();
+
+        let count = keys.len();
         for key in keys {
             self.store.delete(&key)?;
         }
-        Ok(())
+        Ok(count)
     }
 
     /// Build an HNSW index from all stored embeddings.
@@ -1805,6 +1982,8 @@ impl VectorEngine {
         query: &[f32],
         top_k: usize,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1813,6 +1992,14 @@ impl VectorEngine {
         }
 
         let results = index.search(query, top_k);
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_with_hnsw".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         Ok(results
             .into_iter()
             .filter_map(|(node_id, score)| {
@@ -1836,6 +2023,8 @@ impl VectorEngine {
         top_k: usize,
         metric: ExtendedDistanceMetric,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -1846,6 +2035,13 @@ impl VectorEngine {
         // Fetch 2x candidates from HNSW
         let candidate_count = top_k.saturating_mul(2).max(10);
         let candidates = index.search(query, candidate_count);
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_with_hnsw_and_metric".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         let query_sparse = SparseVector::from_dense(query);
 
@@ -1861,6 +2057,13 @@ impl VectorEngine {
                 Some(SearchResult::new(key.clone(), score))
             })
             .collect();
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_with_hnsw_and_metric".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         // Sort by score descending
         results.sort_by(|a, b| {
@@ -1936,25 +2139,21 @@ impl VectorEngine {
     /// Silently skips keys that don't exist.
     #[instrument(skip(self, keys), fields(count = keys.len()))]
     pub fn batch_delete_embeddings(&self, keys: Vec<String>) -> Result<usize> {
-        if keys.is_empty() {
-            return Ok(0);
-        }
+        let _guard = self.delete_lock.write();
 
-        if keys.len() >= self.config.batch_parallel_threshold {
-            let count: usize = keys
-                .par_iter()
-                .filter_map(|key| self.delete_embedding(key).ok())
-                .count();
-            Ok(count)
-        } else {
-            let mut count = 0;
-            for key in &keys {
-                if self.delete_embedding(key).is_ok() {
-                    count += 1;
+        let deleted = keys
+            .into_iter()
+            .filter(|key| {
+                let storage_key = Self::embedding_key(key);
+                if self.store.exists(&storage_key) {
+                    self.store.delete(&storage_key).is_ok()
+                } else {
+                    false
                 }
-            }
-            Ok(count)
-        }
+            })
+            .count();
+
+        Ok(deleted)
     }
 
     // ========== Pagination ==========
@@ -1962,28 +2161,37 @@ impl VectorEngine {
     /// List embedding keys with pagination.
     #[instrument(skip(self, pagination))]
     pub fn list_keys_paginated(&self, pagination: Pagination) -> PagedResult<String> {
-        let all_keys: Vec<String> = self
+        // Apply memory bound from config
+        let max_scan = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
+
+        // Calculate fetch limit: skip + limit, bounded by config (saturating to prevent overflow)
+        let fetch_limit = pagination
+            .skip
+            .saturating_add(pagination.limit.unwrap_or(max_scan))
+            .min(max_scan);
+
+        // Single pass: scan -> take -> filter -> skip -> take -> collect
+        let items: Vec<String> = self
             .store
             .scan(Self::embedding_prefix())
             .into_iter()
+            .take(fetch_limit)
             .filter_map(|k| k.strip_prefix(Self::embedding_prefix()).map(String::from))
+            .skip(pagination.skip)
+            .take(pagination.limit.unwrap_or(usize::MAX))
             .collect();
 
-        let total = all_keys.len();
+        // Get total count if requested (uses count() which is O(n) but no extra Vec)
         let total_count = if pagination.count_total {
-            Some(total)
+            Some(self.count())
         } else {
             None
         };
 
-        let skipped: Vec<String> = all_keys.into_iter().skip(pagination.skip).collect();
-
-        let items: Vec<String> = match pagination.limit {
-            Some(limit) => skipped.into_iter().take(limit).collect(),
-            None => skipped,
-        };
-
-        let has_more = pagination.skip + items.len() < total;
+        let has_more = total_count.map_or_else(
+            || items.len() == pagination.limit.unwrap_or(0),
+            |total| pagination.skip.saturating_add(items.len()) < total,
+        );
 
         PagedResult::new(items, total_count, has_more)
     }
@@ -1996,8 +2204,10 @@ impl VectorEngine {
         top_k: usize,
         pagination: Pagination,
     ) -> Result<PagedResult<SearchResult>> {
-        // Get full results up to skip + limit
-        let total_needed = pagination.skip + pagination.limit.unwrap_or(top_k);
+        // Get full results up to skip + limit (saturating to prevent overflow)
+        let total_needed = pagination
+            .skip
+            .saturating_add(pagination.limit.unwrap_or(top_k));
         let results = self.search_similar(query, total_needed.min(top_k))?;
 
         let total_count = if pagination.count_total {
@@ -2014,7 +2224,7 @@ impl VectorEngine {
         };
 
         let has_more = match (pagination.limit, total_count) {
-            (Some(_), Some(total)) => pagination.skip + items.len() < total,
+            (Some(_), Some(total)) => pagination.skip.saturating_add(items.len()) < total,
             _ => false,
         };
 
@@ -2029,7 +2239,10 @@ impl VectorEngine {
         top_k: usize,
         pagination: Pagination,
     ) -> Result<PagedResult<SearchResult>> {
-        let total_needed = pagination.skip + pagination.limit.unwrap_or(top_k);
+        // Saturating add to prevent overflow
+        let total_needed = pagination
+            .skip
+            .saturating_add(pagination.limit.unwrap_or(top_k));
         let results = self.search_entities(query, total_needed.min(top_k))?;
 
         let total_count = if pagination.count_total {
@@ -2046,7 +2259,7 @@ impl VectorEngine {
         };
 
         let has_more = match (pagination.limit, total_count) {
-            (Some(_), Some(total)) => pagination.skip + items.len() < total,
+            (Some(_), Some(total)) => pagination.skip.saturating_add(items.len()) < total,
             _ => false,
         };
 
@@ -2133,6 +2346,8 @@ impl VectorEngine {
     /// Search for similar entities using _embedding field.
     #[instrument(skip(self, query), fields(query_dim = query.len(), top_k = top_k))]
     pub fn search_entities(&self, query: &[f32], top_k: usize) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -2154,7 +2369,15 @@ impl VectorEngine {
             return Ok(Vec::new());
         }
 
-        let keys = self.store.scan("");
+        let max_scan = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
+        let keys: Vec<_> = self.store.scan("").into_iter().take(max_scan).collect();
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_entities".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         let mut results: Vec<SearchResult> = keys
             .iter()
@@ -2171,6 +2394,13 @@ impl VectorEngine {
             })
             .collect();
 
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_entities".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -2182,10 +2412,14 @@ impl VectorEngine {
     }
 
     /// Scan for all entity keys that have embeddings.
+    ///
+    /// Respects `max_keys_per_scan` if set.
     pub fn scan_entities_with_embeddings(&self) -> Vec<String> {
+        let max_scan = self.config.max_keys_per_scan.unwrap_or(usize::MAX);
         self.store
             .scan("")
             .into_iter()
+            .take(max_scan)
             .filter(|key| self.entity_has_embedding(key))
             .collect()
     }
@@ -2369,6 +2603,8 @@ impl VectorEngine {
         filter: &FilterCondition,
         config: Option<FilteredSearchConfig>,
     ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
         if query.is_empty() {
             return Err(VectorError::EmptyVector);
         }
@@ -2392,6 +2628,13 @@ impl VectorEngine {
             FilterStrategy::Auto => self.choose_filter_strategy(filter, &config),
             other => other,
         };
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_similar_filtered".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
 
         match strategy {
             FilterStrategy::PreFilter | FilterStrategy::Auto => {
@@ -2738,9 +2981,35 @@ impl VectorEngine {
     /// If the collection already exists with vectors, they will be overwritten.
     #[instrument(skip(self, path))]
     pub fn load_index(&self, path: impl AsRef<Path>) -> Result<String> {
+        let path = path.as_ref();
+
+        // Check file size before reading
+        if let Some(max_bytes) = self.config.max_index_file_bytes {
+            let metadata = fs::metadata(path)?;
+            if metadata.len() > max_bytes as u64 {
+                return Err(VectorError::ConfigurationError(format!(
+                    "index file size {} exceeds limit {}",
+                    metadata.len(),
+                    max_bytes
+                )));
+            }
+        }
+
         let json = fs::read_to_string(path)?;
         let index: PersistentVectorIndex = serde_json::from_str(&json)
             .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+
+        // Check entry count after deserialization
+        if let Some(max_entries) = self.config.max_index_entries {
+            if index.vectors.len() > max_entries {
+                return Err(VectorError::ConfigurationError(format!(
+                    "index entry count {} exceeds limit {}",
+                    index.vectors.len(),
+                    max_entries
+                )));
+            }
+        }
+
         self.restore_from_index(index)
     }
 
@@ -2749,9 +3018,35 @@ impl VectorEngine {
     /// Returns the collection name from the loaded index.
     #[instrument(skip(self, path))]
     pub fn load_index_binary(&self, path: impl AsRef<Path>) -> Result<String> {
+        let path = path.as_ref();
+
+        // Check file size before reading
+        if let Some(max_bytes) = self.config.max_index_file_bytes {
+            let metadata = fs::metadata(path)?;
+            if metadata.len() > max_bytes as u64 {
+                return Err(VectorError::ConfigurationError(format!(
+                    "index file size {} exceeds limit {}",
+                    metadata.len(),
+                    max_bytes
+                )));
+            }
+        }
+
         let bytes = fs::read(path)?;
         let index: PersistentVectorIndex = bincode::deserialize(&bytes)
             .map_err(|e| VectorError::SerializationError(e.to_string()))?;
+
+        // Check entry count after deserialization
+        if let Some(max_entries) = self.config.max_index_entries {
+            if index.vectors.len() > max_entries {
+                return Err(VectorError::ConfigurationError(format!(
+                    "index entry count {} exceeds limit {}",
+                    index.vectors.len(),
+                    max_entries
+                )));
+            }
+        }
+
         self.restore_from_index(index)
     }
 
@@ -3063,6 +3358,16 @@ mod tests {
     }
 
     #[test]
+    fn cosine_similarity_both_zero_vectors() {
+        let a = vec![0.0, 0.0];
+        let b = vec![0.0, 0.0];
+        let score = VectorEngine::compute_similarity(&a, &b).unwrap();
+        // Both zero vectors should return 0.0, not NaN
+        assert_eq!(score, 0.0);
+        assert!(!score.is_nan());
+    }
+
+    #[test]
     fn search_skips_dimension_mismatch() {
         let engine = VectorEngine::new();
 
@@ -3198,7 +3503,8 @@ mod tests {
 
         assert_eq!(engine.count(), 2);
 
-        engine.clear().unwrap();
+        let cleared = engine.clear().unwrap();
+        assert_eq!(cleared, 2);
 
         assert_eq!(engine.count(), 0);
     }
@@ -5033,6 +5339,32 @@ mod tests {
         assert!(matches!(
             result,
             Err(VectorError::ConfigurationError(msg)) if msg.contains("batch_parallel_threshold")
+        ));
+    }
+
+    #[test]
+    fn config_validate_invalid_max_index_file_bytes_zero() {
+        let config = VectorEngineConfig {
+            max_index_file_bytes: Some(0),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("max_index_file_bytes")
+        ));
+    }
+
+    #[test]
+    fn config_validate_invalid_max_index_entries_zero() {
+        let config = VectorEngineConfig {
+            max_index_entries: Some(0),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("max_index_entries")
         ));
     }
 
@@ -7019,6 +7351,72 @@ mod tests {
     }
 
     #[test]
+    fn load_index_file_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.json");
+
+        // Create a file larger than 100 bytes
+        fs::write(&path, vec![b'x'; 200]).unwrap();
+
+        let config = VectorEngineConfig::default().with_max_index_file_bytes(100);
+        let engine = VectorEngine::with_config(config).unwrap();
+        let result = engine.load_index(&path);
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("exceeds limit")
+        ));
+    }
+
+    #[test]
+    fn load_index_binary_file_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+
+        // Create a file larger than 100 bytes
+        fs::write(&path, vec![0u8; 200]).unwrap();
+
+        let config = VectorEngineConfig::default().with_max_index_file_bytes(100);
+        let engine = VectorEngine::with_config(config).unwrap();
+        let result = engine.load_index_binary(&path);
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("exceeds limit")
+        ));
+    }
+
+    #[test]
+    fn load_index_entry_count_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.json");
+
+        // Create valid index with 5 entries
+        let index = PersistentVectorIndex {
+            collection: "test".to_string(),
+            config: VectorCollectionConfig::default(),
+            vectors: (0..5)
+                .map(|i| VectorEntry {
+                    key: format!("key{i}"),
+                    vector: vec![1.0, 2.0, 3.0],
+                    metadata: None,
+                })
+                .collect(),
+            created_at: 0,
+            version: 1,
+        };
+        let json = serde_json::to_string(&index).unwrap();
+        fs::write(&path, json).unwrap();
+
+        // Limit to 2 entries
+        let config = VectorEngineConfig::default().with_max_index_entries(2);
+        let engine = VectorEngine::with_config(config).unwrap();
+        let result = engine.load_index(&path);
+        assert!(matches!(
+            result,
+            Err(VectorError::ConfigurationError(msg)) if msg.contains("entry count") && msg.contains("exceeds limit")
+        ));
+    }
+
+    #[test]
     fn vector_entry_serialization() {
         let entry = VectorEntry {
             key: "test".to_string(),
@@ -7059,5 +7457,113 @@ mod tests {
                 _ => panic!("Type mismatch"),
             }
         }
+    }
+
+    // ========== Search Timeout Tests ==========
+
+    #[test]
+    fn config_with_search_timeout() {
+        let config = VectorEngineConfig::default().with_search_timeout(Duration::from_secs(5));
+        assert_eq!(config.search_timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn search_timeout_error_display() {
+        let err = VectorError::SearchTimeout {
+            operation: "search_similar".to_string(),
+            timeout_ms: 5000,
+        };
+        let display = err.to_string();
+        assert!(display.contains("search_similar"));
+        assert!(display.contains("5000"));
+    }
+
+    #[test]
+    fn search_similar_respects_timeout() {
+        let config = VectorEngineConfig::default().with_search_timeout(Duration::from_nanos(1));
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        for i in 0..1000 {
+            engine
+                .store_embedding(&format!("v{i}"), vec![i as f32; 128])
+                .unwrap();
+        }
+
+        let result = engine.search_similar(&[0.5f32; 128], 10);
+        assert!(matches!(result, Err(VectorError::SearchTimeout { .. })));
+    }
+
+    #[test]
+    fn search_similar_no_timeout_when_none() {
+        let engine = VectorEngine::new();
+        for i in 0..100 {
+            engine
+                .store_embedding(&format!("v{i}"), vec![i as f32, 0.0])
+                .unwrap();
+        }
+        let result = engine.search_similar(&[50.0, 0.0], 10);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deadline_never_does_not_expire() {
+        let deadline = Deadline::never();
+        assert!(!deadline.is_expired());
+        assert_eq!(deadline.timeout_ms(), 0);
+    }
+
+    #[test]
+    fn deadline_from_duration_expires() {
+        let deadline = Deadline::from_duration(Some(Duration::from_nanos(1)));
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(deadline.is_expired());
+    }
+
+    #[test]
+    fn deadline_none_duration_never_expires() {
+        let deadline = Deadline::from_duration(None);
+        assert!(!deadline.is_expired());
+    }
+
+    #[test]
+    fn low_memory_config_has_timeout() {
+        let config = VectorEngineConfig::low_memory();
+        assert_eq!(config.search_timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn high_throughput_config_has_no_timeout() {
+        let config = VectorEngineConfig::high_throughput();
+        assert!(config.search_timeout.is_none());
+    }
+
+    #[test]
+    fn search_with_metric_respects_timeout() {
+        let config = VectorEngineConfig::default().with_search_timeout(Duration::from_nanos(1));
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        for i in 0..1000 {
+            engine
+                .store_embedding(&format!("v{i}"), vec![i as f32; 128])
+                .unwrap();
+        }
+
+        let result = engine.search_similar_with_metric(&[0.5f32; 128], 10, DistanceMetric::Cosine);
+        assert!(matches!(result, Err(VectorError::SearchTimeout { .. })));
+    }
+
+    #[test]
+    fn search_entities_respects_timeout() {
+        let config = VectorEngineConfig::default().with_search_timeout(Duration::from_nanos(1));
+        let engine = VectorEngine::with_config(config).unwrap();
+
+        for i in 0..1000 {
+            engine
+                .set_entity_embedding(&format!("entity:{i}"), vec![i as f32; 128])
+                .unwrap();
+        }
+
+        let result = engine.search_entities(&[0.5f32; 128], 10);
+        assert!(matches!(result, Err(VectorError::SearchTimeout { .. })));
     }
 }

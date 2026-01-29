@@ -131,6 +131,73 @@ Add vector similarity search with cosine metric
 5. Address feedback promptly
 6. Squash commits if requested
 
+## Project Governance
+
+### Roles and Responsibilities
+
+**Maintainers**
+
+Maintainers have commit access and are responsible for:
+
+- Reviewing and merging pull requests
+- Triaging issues and setting priorities
+- Making release decisions
+- Enforcing code quality standards
+- Mentoring contributors
+
+Current maintainers:
+- Lukin Ackroyd ([@Shadylukin](https://github.com/Shadylukin)) - Project Lead
+
+**Contributors**
+
+Anyone who has had a pull request merged is a contributor. Contributors:
+
+- Propose and implement features
+- Report and fix bugs
+- Improve documentation
+- Help others in discussions
+
+**Becoming a Maintainer**
+
+Contributors who demonstrate sustained high-quality contributions may be
+invited to become maintainers. The decision is made by existing maintainers
+based on:
+
+- Quality and impact of contributions
+- Understanding of the codebase and architecture
+- Positive collaboration with the community
+- Commitment to the project's values
+
+### RFC Process for Major Changes
+
+Major changes require a Request for Comments (RFC):
+
+1. **Proposal**: Open an issue with the `rfc` label describing the change
+2. **Discussion**: Community discussion period (minimum 2 weeks)
+3. **Decision**: Maintainers review and decide (accept, reject, or request changes)
+4. **Implementation**: If accepted, implementation begins
+
+Major changes include:
+- Breaking API changes
+- New crate additions
+- Architectural changes
+- Storage format changes
+- New dependencies with significant impact
+
+### Release Schedule
+
+- **Minor releases**: Monthly during active development
+- **Patch releases**: As needed for critical bug fixes or security issues
+- **Major releases**: As needed for breaking changes
+
+See [ROADMAP.md](ROADMAP.md) for the release timeline and planned features.
+
+### Decision Making
+
+- Decisions are made by consensus when possible
+- For contentious issues, maintainers have final say
+- Transparency: Major decisions are documented in issues or discussions
+
 ## Community
 
 - [Discord](https://discord.gg/uN3KbAyKvw) - Chat with the community

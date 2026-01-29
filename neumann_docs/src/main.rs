@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Neumann Documentation CLI
 //!
 //! Index and search Neumann documentation using all three engines.

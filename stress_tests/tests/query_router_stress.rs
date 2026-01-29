@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! QueryRouter async stress tests.
 
 use std::{

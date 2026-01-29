@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Source location tracking for error reporting.
 //!
 //! Provides types for tracking positions within source code:
@@ -18,18 +19,21 @@ pub struct BytePos(pub u32);
 impl BytePos {
     /// Creates a new byte position.
     #[inline]
+    #[must_use]
     pub const fn new(pos: u32) -> Self {
         Self(pos)
     }
 
     /// Returns the byte offset as usize.
     #[inline]
+    #[must_use]
     pub const fn as_usize(self) -> usize {
         self.0 as usize
     }
 
     /// Advances the position by `n` bytes.
     #[inline]
+    #[must_use]
     pub const fn advance(self, n: u32) -> Self {
         Self(self.0 + n)
     }
@@ -65,12 +69,14 @@ pub struct Span {
 impl Span {
     /// Creates a new span from start to end positions.
     #[inline]
+    #[must_use]
     pub const fn new(start: BytePos, end: BytePos) -> Self {
         Self { start, end }
     }
 
     /// Creates a span from byte offsets.
     #[inline]
+    #[must_use]
     pub const fn from_offsets(start: u32, end: u32) -> Self {
         Self {
             start: BytePos(start),
@@ -80,6 +86,7 @@ impl Span {
 
     /// Creates a zero-width span at a position.
     #[inline]
+    #[must_use]
     pub const fn point(pos: BytePos) -> Self {
         Self {
             start: pos,
@@ -89,6 +96,7 @@ impl Span {
 
     /// Creates a dummy/unknown span.
     #[inline]
+    #[must_use]
     pub const fn dummy() -> Self {
         Self {
             start: BytePos(0),
@@ -98,24 +106,28 @@ impl Span {
 
     /// Returns the length in bytes.
     #[inline]
+    #[must_use]
     pub const fn len(&self) -> u32 {
         self.end.0 - self.start.0
     }
 
     /// Returns true if the span has zero length.
     #[inline]
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.start.0 == self.end.0
     }
 
     /// Returns true if this is a dummy span.
     #[inline]
+    #[must_use]
     pub const fn is_dummy(&self) -> bool {
         self.start.0 == 0 && self.end.0 == 0
     }
 
     /// Combines two spans into one that covers both.
     #[inline]
+    #[must_use]
     pub const fn merge(self, other: Span) -> Span {
         let start = if self.start.0 < other.start.0 {
             self.start
@@ -132,24 +144,28 @@ impl Span {
 
     /// Returns true if this span contains the given position.
     #[inline]
+    #[must_use]
     pub const fn contains(&self, pos: BytePos) -> bool {
         pos.0 >= self.start.0 && pos.0 < self.end.0
     }
 
     /// Returns true if this span overlaps with another.
     #[inline]
+    #[must_use]
     pub const fn overlaps(&self, other: Span) -> bool {
         self.start.0 < other.end.0 && other.start.0 < self.end.0
     }
 
     /// Converts to a `Range<usize>` for slicing.
     #[inline]
+    #[must_use]
     pub const fn as_range(&self) -> Range<usize> {
         self.start.as_usize()..self.end.as_usize()
     }
 
     /// Extracts the spanned text from source.
     #[inline]
+    #[must_use]
     pub fn extract<'a>(&self, source: &'a str) -> &'a str {
         &source[self.as_range()]
     }
@@ -218,6 +234,7 @@ impl<T: Default> Default for Spanned<T> {
 }
 
 /// Computes line and column from a byte position.
+#[must_use]
 pub fn line_col(source: &str, pos: BytePos) -> (usize, usize) {
     let offset = pos.as_usize().min(source.len());
     let mut line = 1;
@@ -239,6 +256,7 @@ pub fn line_col(source: &str, pos: BytePos) -> (usize, usize) {
 }
 
 /// Returns the line containing a position.
+#[must_use]
 pub fn get_line(source: &str, pos: BytePos) -> &str {
     let offset = pos.as_usize().min(source.len());
 
@@ -253,6 +271,7 @@ pub fn get_line(source: &str, pos: BytePos) -> &str {
 }
 
 /// Returns the line number (1-indexed) for a position.
+#[must_use]
 pub fn line_number(source: &str, pos: BytePos) -> usize {
     let offset = pos.as_usize().min(source.len());
     source[..offset].matches('\n').count() + 1

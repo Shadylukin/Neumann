@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Memory-mapped cold storage for tensor data.
 //!
 //! Provides persistent, memory-efficient storage using OS-level

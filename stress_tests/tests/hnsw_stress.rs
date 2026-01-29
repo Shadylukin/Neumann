@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! HNSW index stress tests at 100K-1M vector scale.
 
 use std::{

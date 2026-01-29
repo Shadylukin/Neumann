@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Incremental (append-only) snapshot format.
 //!
 //! Supports delta snapshots that only contain changes since a base snapshot.

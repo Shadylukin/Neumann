@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Embedding state machine for transaction workspaces.
 //!
 //! Provides type-safe state transitions for embedding lifecycle:

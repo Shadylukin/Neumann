@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![no_main]
 
 //! Fuzz target for graph aggregation operations.
@@ -144,9 +145,10 @@ fuzz_target!(|input: FuzzInput| {
             AggregateOp::AggregateNodePropertyByLabel { label, property } => {
                 let label = sanitize_name(&label);
                 let prop = sanitize_name(&property);
-                let result = engine.aggregate_node_property_by_label(&label, &prop);
-                if let Some(sum) = result.sum {
-                    assert!(!sum.is_nan(), "Sum should not be NaN");
+                if let Ok(result) = engine.aggregate_node_property_by_label(&label, &prop) {
+                    if let Some(sum) = result.sum {
+                        assert!(!sum.is_nan(), "Sum should not be NaN");
+                    }
                 }
             }
             AggregateOp::AggregateNodePropertyWhere { filter_prop, op, value, agg_prop } => {

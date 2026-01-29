@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import type {
   QueryResult,
   Row,
@@ -9,7 +10,16 @@ import type {
   ArtifactInfo,
 } from './types/query-result.js';
 import type { Value } from './types/value.js';
-import { ConnectionError } from './types/errors.js';
+import {
+  ConnectionError,
+  AuthenticationError,
+  PermissionDeniedError,
+  NotFoundError,
+  InvalidArgumentError,
+  InternalError,
+  errorFromCode,
+} from './types/errors.js';
+import type { NeumannError } from './types/errors.js';
 import {
   nullValue,
   intValue,
@@ -18,6 +28,8 @@ import {
   boolValue,
   bytesValue,
 } from './types/value.js';
+import type * as grpc from '@grpc/grpc-js';
+import type { QueryServiceClient } from './grpc.js';
 
 /**
  * Options for connecting to a Neumann server.
@@ -53,6 +65,8 @@ export class NeumannClient {
   private client: unknown = null;
   private apiKey: string | undefined;
   private address: string | undefined;
+  private grpcClient: QueryServiceClient | null = null;
+  private grpcMetadata: grpc.Metadata | null = null;
 
   private constructor(mode: ClientMode) {
     this.mode = mode;
@@ -71,16 +85,31 @@ export class NeumannClient {
     client.address = address;
 
     try {
-      // Dynamic import for Node.js gRPC
       const grpc = await import('@grpc/grpc-js');
+      const { loadProto, getQueryServiceClient } = await import('./grpc.js');
 
+      const proto = await loadProto();
       const credentials = options.tls
         ? grpc.credentials.createSsl()
         : grpc.credentials.createInsecure();
 
-      // Create gRPC channel
-      const channel = new grpc.Channel(address, credentials, {});
-      client.client = { channel, metadata: options.metadata };
+      client.grpcClient = getQueryServiceClient(
+        proto,
+        address,
+        credentials
+      ) as QueryServiceClient;
+
+      // Setup metadata for authentication
+      client.grpcMetadata = new grpc.Metadata();
+      if (options.apiKey) {
+        client.grpcMetadata.set('x-api-key', options.apiKey);
+      }
+      if (options.metadata) {
+        for (const [key, value] of Object.entries(options.metadata)) {
+          client.grpcMetadata.set(key, value);
+        }
+      }
+
       client.connected = true;
     } catch (err) {
       throw new ConnectionError(`Failed to connect to ${address}: ${String(err)}`);
@@ -143,24 +172,32 @@ export class NeumannClient {
    * @returns Query result.
    */
   async execute(query: string, options: QueryOptions = {}): Promise<QueryResult> {
-    if (!this.connected) {
+    if (!this.connected || !this.grpcClient) {
       throw new ConnectionError('Client is not connected');
     }
 
-    const _clientInfo = this.client as {
-      channel?: { getTarget: () => string };
-      metadata?: Record<string, string>;
-    };
-
-    // Build request object (will be used when proto stubs are generated)
-    const _request = {
+    const request = {
       query,
-      identity: options.identity,
+      identity: options.identity ?? '',
     };
 
-    // Stub: return empty result as proto loading is not implemented
-    // In production, this would use the generated proto stubs
-    return await Promise.resolve({ type: 'empty' as const });
+    return new Promise((resolve, reject) => {
+      this.grpcClient!.Execute(
+        request,
+        this.grpcMetadata!,
+        (err: grpc.ServiceError | null, response: unknown) => {
+          if (err) {
+            reject(this.handleGrpcError(err));
+            return;
+          }
+          try {
+            resolve(this.convertProtoResponse(response));
+          } catch (e) {
+            reject(e);
+          }
+        }
+      );
+    });
   }
 
   /**
@@ -171,19 +208,36 @@ export class NeumannClient {
    * @returns Async iterator of query results.
    */
   async *executeStream(query: string, options: QueryOptions = {}): AsyncIterable<QueryResult> {
-    if (!this.connected) {
+    if (!this.connected || !this.grpcClient) {
       throw new ConnectionError('Client is not connected');
     }
 
-    // Build request object (will be used when proto stubs are generated)
-    const _request = {
+    const request = {
       query,
-      identity: options.identity,
+      identity: options.identity ?? '',
     };
 
-    // Stub: yield empty result as proto loading is not implemented
-    // In production, this would iterate over the gRPC stream
-    yield await Promise.resolve({ type: 'empty' as const });
+    const stream = this.grpcClient.ExecuteStream(request, this.grpcMetadata!);
+
+    for await (const chunk of stream as AsyncIterable<unknown>) {
+      const c = chunk as {
+        isFinal?: boolean;
+        error?: { code: number; message: string };
+        row?: unknown;
+        node?: unknown;
+        edge?: unknown;
+        similarItem?: unknown;
+        blobData?: Uint8Array;
+      };
+
+      if (c.isFinal) {
+        break;
+      }
+      if (c.error) {
+        throw errorFromCode(c.error.code, c.error.message);
+      }
+      yield this.convertProtoChunk(chunk);
+    }
   }
 
   /**
@@ -194,19 +248,156 @@ export class NeumannClient {
    * @returns List of query results.
    */
   async executeBatch(queries: string[], options: QueryOptions = {}): Promise<QueryResult[]> {
-    if (!this.connected) {
+    if (!this.connected || !this.grpcClient) {
       throw new ConnectionError('Client is not connected');
     }
 
-    // Build request objects (will be used when proto stubs are generated)
-    const _requests = queries.map((q) => ({
-      query: q,
-      identity: options.identity,
-    }));
+    const request = {
+      queries: queries.map((q) => ({
+        query: q,
+        identity: options.identity ?? '',
+      })),
+    };
 
-    // Stub: return empty results as proto loading is not implemented
-    // In production, this would use the generated proto stubs
-    return await Promise.resolve(queries.map(() => ({ type: 'empty' as const })));
+    return new Promise((resolve, reject) => {
+      this.grpcClient!.ExecuteBatch(
+        request,
+        this.grpcMetadata!,
+        (err: grpc.ServiceError | null, response: unknown) => {
+          if (err) {
+            reject(this.handleGrpcError(err));
+            return;
+          }
+          try {
+            const r = response as { results?: unknown[] };
+            const results = (r.results ?? []).map((res) => this.convertProtoResponse(res));
+            resolve(results);
+          } catch (e) {
+            reject(e);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Convert a proto QueryResponse to a QueryResult.
+   */
+  private convertProtoResponse(response: unknown): QueryResult {
+    const r = response as {
+      empty?: object;
+      count?: { count: number };
+      rows?: { rows: unknown[] };
+      nodes?: { nodes: unknown[] };
+      edges?: { edges: unknown[] };
+      path?: { nodeIds: number[] };
+      similar?: { items: unknown[] };
+      ids?: { ids: string[] | number[] };
+      tableList?: { tables: string[] };
+      blob?: { data: Uint8Array };
+      artifactInfo?: unknown;
+      error?: { code: number; message: string };
+    };
+
+    if (r.error) {
+      return { type: 'error', code: r.error.code, message: r.error.message };
+    }
+    if (r.empty !== undefined) {
+      return { type: 'empty' };
+    }
+    if (r.count !== undefined) {
+      return { type: 'count', count: r.count.count };
+    }
+    if (r.rows !== undefined) {
+      return { type: 'rows', rows: r.rows.rows.map((row) => convertProtoRow(row)) };
+    }
+    if (r.nodes !== undefined) {
+      return { type: 'nodes', nodes: r.nodes.nodes.map((node) => convertProtoNode(node)) };
+    }
+    if (r.edges !== undefined) {
+      return { type: 'edges', edges: r.edges.edges.map((edge) => convertProtoEdge(edge)) };
+    }
+    if (r.path !== undefined) {
+      return { type: 'paths', paths: [convertProtoPath(r.path)] };
+    }
+    if (r.similar !== undefined) {
+      return { type: 'similar', items: r.similar.items.map((item) => convertProtoSimilarItem(item)) };
+    }
+    if (r.ids !== undefined) {
+      return { type: 'ids', ids: r.ids.ids.map(String) };
+    }
+    if (r.tableList !== undefined) {
+      return { type: 'tableList', names: r.tableList.tables };
+    }
+    if (r.blob !== undefined) {
+      return { type: 'blob', data: r.blob.data };
+    }
+    if (r.artifactInfo !== undefined) {
+      return { type: 'blobInfo', info: convertProtoArtifactInfo(r.artifactInfo) };
+    }
+
+    return { type: 'empty' };
+  }
+
+  /**
+   * Convert a proto QueryResponseChunk to a QueryResult.
+   */
+  private convertProtoChunk(chunk: unknown): QueryResult {
+    const c = chunk as {
+      row?: { row: unknown };
+      node?: { node: unknown };
+      edge?: { edge: unknown };
+      similarItem?: { item: unknown };
+      blobData?: Uint8Array;
+    };
+
+    if (c.row?.row) {
+      return { type: 'rows', rows: [convertProtoRow(c.row.row)] };
+    }
+    if (c.node?.node) {
+      return { type: 'nodes', nodes: [convertProtoNode(c.node.node)] };
+    }
+    if (c.edge?.edge) {
+      return { type: 'edges', edges: [convertProtoEdge(c.edge.edge)] };
+    }
+    if (c.similarItem?.item) {
+      return { type: 'similar', items: [convertProtoSimilarItem(c.similarItem.item)] };
+    }
+    if (c.blobData) {
+      return { type: 'blob', data: c.blobData };
+    }
+
+    return { type: 'empty' };
+  }
+
+  /**
+   * Convert a gRPC error to a NeumannError.
+   */
+  private handleGrpcError(err: grpc.ServiceError): NeumannError {
+    // gRPC status codes
+    const code = err.code as number;
+    const UNAUTHENTICATED = 16;
+    const PERMISSION_DENIED = 7;
+    const NOT_FOUND = 5;
+    const INVALID_ARGUMENT = 3;
+    const UNAVAILABLE = 14;
+
+    if (code === UNAUTHENTICATED) {
+      return new AuthenticationError(err.details || 'Authentication failed');
+    }
+    if (code === PERMISSION_DENIED) {
+      return new PermissionDeniedError(err.details || 'Permission denied');
+    }
+    if (code === NOT_FOUND) {
+      return new NotFoundError(err.details || 'Not found');
+    }
+    if (code === INVALID_ARGUMENT) {
+      return new InvalidArgumentError(err.details || 'Invalid argument');
+    }
+    if (code === UNAVAILABLE) {
+      return new ConnectionError(err.details || 'Service unavailable');
+    }
+    return new InternalError(err.details || err.message || 'Internal error');
   }
 }
 

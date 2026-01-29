@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `TensorStore` - Unified Storage Layer for Neumann
 //!
 //! A thread-safe, sharded key-value store optimized for tensor data:

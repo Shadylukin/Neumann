@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for Neumann data types."""
 
 import pytest

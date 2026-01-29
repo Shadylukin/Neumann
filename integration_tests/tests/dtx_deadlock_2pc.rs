@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for deadlock detection in 2PC flow.
 //!
 //! Tests deadlock detection during prepare phase, cross-shard deadlocks,

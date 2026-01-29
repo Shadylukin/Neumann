@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Core data types for Neumann database."""
 
 from __future__ import annotations

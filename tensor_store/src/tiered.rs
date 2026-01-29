@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Two-tier hot/cold storage with automatic data migration.
 //!
 //! Combines fast in-memory storage (hot tier) with memory-mapped file

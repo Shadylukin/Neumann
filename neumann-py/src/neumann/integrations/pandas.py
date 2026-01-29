@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Pandas integration for Neumann database."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Byzantine Fault Tolerance and Geometry Experiments
 //!
 //! This crate provides:

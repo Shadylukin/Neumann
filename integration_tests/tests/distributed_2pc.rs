@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for distributed 2PC transactions.
 //!
 //! Tests the two-phase commit protocol across multiple participants:

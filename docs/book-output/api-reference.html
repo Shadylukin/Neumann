@@ -636,9 +636,15 @@ let results = engine.find_by_range(
 <tr><td><code>VectorEngine</code></td><td>Main engine for embedding operations</td></tr>
 <tr><td><code>SearchResult</code></td><td>Key and similarity score</td></tr>
 <tr><td><code>DistanceMetric</code></td><td>Cosine, Euclidean, DotProduct</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Metadata filter (Eq, Ne, Lt, Gt, And, Or, In, etc.)</td></tr>
+<tr><td><code>FilterValue</code></td><td>Filter value type (Int, Float, String, Bool, Null)</td></tr>
+<tr><td><code>FilterStrategy</code></td><td>Filter strategy (Auto, PreFilter, PostFilter)</td></tr>
+<tr><td><code>FilteredSearchConfig</code></td><td>Configuration for filtered search</td></tr>
+<tr><td><code>VectorCollectionConfig</code></td><td>Configuration for collections</td></tr>
+<tr><td><code>MetadataValue</code></td><td>Simplified metadata value type</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
+<h3 id="basic-operations"><a class="header" href="#basic-operations">Basic Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use vector_engine::{VectorEngine, DistanceMetric};
@@ -677,6 +683,63 @@ let results = engine.search_similar_with_metric(
     10,
     DistanceMetric::Euclidean,
 )?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="filtered-search"><a class="header" href="#filtered-search">Filtered Search</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue, FilteredSearchConfig};
+
+// Build filter
+let filter = FilterCondition::Eq("category".into(), FilterValue::String("science".into()))
+    .and(FilterCondition::Gt("year".into(), FilterValue::Int(2020)));
+
+// Search with filter
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, None)?;
+
+// With explicit strategy
+let config = FilteredSearchConfig::pre_filter();
+let results = engine.search_similar_filtered(&amp;query, 10, &amp;filter, Some(config))?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="metadata-storage"><a class="header" href="#metadata-storage">Metadata Storage</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use tensor_store::TensorValue;
+use std::collections::HashMap;
+
+// Store embedding with metadata
+let mut metadata = HashMap::new();
+metadata.insert("category".into(), TensorValue::from("science"));
+metadata.insert("year".into(), TensorValue::from(2024i64));
+engine.store_embedding_with_metadata("doc:1", vec![0.1, 0.2], metadata)?;
+
+// Get metadata
+let meta = engine.get_metadata("doc:1")?;
+
+// Update metadata
+let mut updates = HashMap::new();
+updates.insert("year".into(), TensorValue::from(2025i64));
+engine.update_metadata("doc:1", updates)?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="collections"><a class="header" href="#collections">Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::VectorCollectionConfig;
+
+// Create collection
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+engine.create_collection("documents", config)?;
+
+// Store in collection
+engine.store_in_collection("documents", "doc:1", vec![0.1; 768])?;
+
+// Search in collection
+let results = engine.search_in_collection("documents", &amp;query, 10)?;
+
+// List/delete collections
+let collections = engine.list_collections();
+engine.delete_collection("documents")?;
 <span class="boring">}</span></code></pre></pre>
 <hr />
 <h2 id="tensor_chain"><a class="header" href="#tensor_chain">tensor_chain</a></h2>
@@ -903,7 +966,7 @@ let final_result = merger.merge(shard_results)?;
 <tr><td><code>EvictionStrategy</code></td><td>LRU, LFU, CostBased, Hybrid</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-1"><a class="header" href="#operations-1">Operations</a></h3>
+<h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_cache::{Cache, CacheConfig, EvictionStrategy};
@@ -945,7 +1008,7 @@ println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 <tr><td><code>MasterKey</code></td><td>Derived encryption key</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-2"><a class="header" href="#operations-2">Operations</a></h3>
+<h3 id="operations-1"><a class="header" href="#operations-1">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_vault::{Vault, VaultConfig, Permission};
@@ -984,7 +1047,7 @@ vault.delete("admin", "db/password")?;
 <tr><td><code>BlobReader</code></td><td>Streaming download</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-3"><a class="header" href="#operations-3">Operations</a></h3>
+<h3 id="operations-2"><a class="header" href="#operations-2">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_blob::{BlobStore, BlobConfig, PutOptions};
@@ -1032,7 +1095,7 @@ let metadata = store.metadata(&amp;artifact_id).await?;
 <tr><td><code>ConfirmationHandler</code></td><td>Custom confirmation logic</td></tr>
 </tbody></table>
 </div>
-<h3 id="operations-4"><a class="header" href="#operations-4">Operations</a></h3>
+<h3 id="operations-3"><a class="header" href="#operations-3">Operations</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use tensor_checkpoint::{CheckpointManager, CheckpointConfig, AutoConfirm};

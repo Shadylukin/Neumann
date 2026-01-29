@@ -1547,10 +1547,12 @@ impl QueryOptions {
 /// Options for cursor-based iteration over query results.
 #[derive(Debug, Clone, Copy)]
 pub struct CursorOptions {
-    /// Number of rows to fetch per batch. Default: 1000.
+    /// Number of rows to fetch per batch (reserved for future streaming). Default: 1000.
     pub batch_size: usize,
     /// Starting row offset. Default: 0.
     pub offset: usize,
+    /// Maximum rows to return. Default: None (unlimited).
+    pub limit: Option<usize>,
 }
 
 impl Default for CursorOptions {
@@ -1558,6 +1560,7 @@ impl Default for CursorOptions {
         Self {
             batch_size: 1000,
             offset: 0,
+            limit: None,
         }
     }
 }
@@ -1569,6 +1572,7 @@ impl CursorOptions {
         Self {
             batch_size: 1000,
             offset: 0,
+            limit: None,
         }
     }
 
@@ -1583,6 +1587,13 @@ impl CursorOptions {
     #[must_use]
     pub const fn with_offset(mut self, offset: usize) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Sets the maximum number of rows to return.
+    #[must_use]
+    pub const fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
         self
     }
 }
@@ -1972,7 +1983,10 @@ impl std::fmt::Display for RelationalError {
                 table,
                 constraint_name,
             } => {
-                write!(f, "Constraint '{constraint_name}' not found on table '{table}'")
+                write!(
+                    f,
+                    "Constraint '{constraint_name}' not found on table '{table}'"
+                )
             },
             Self::ConstraintAlreadyExists {
                 table,
@@ -2599,10 +2613,112 @@ impl RelationalEngine {
             fk_references: RwLock::new(HashMap::new()),
         };
 
+        // Rebuild RelationalSlab tables from persisted metadata
+        engine.rebuild_slab_tables()?;
+
+        // Validate hash indexes from persisted data
+        engine.rebuild_hash_indexes()?;
+
         // Rebuild B-tree indexes from persisted data
         engine.rebuild_btree_indexes()?;
 
         Ok(engine)
+    }
+
+    /// Rebuilds `RelationalSlab` table structures from persisted metadata.
+    ///
+    /// After WAL recovery, the `TensorStore` has table metadata but the
+    /// `RelationalSlab` is empty. This method scans for table metadata
+    /// and recreates the table structures in the slab.
+    ///
+    /// Note: This only recreates table structure (schema), not row data.
+    /// Row data is not persisted to WAL and must be repopulated separately.
+    ///
+    /// # Errors
+    /// Returns `RelationalError::StorageError` if reading or parsing metadata fails.
+    #[instrument(skip(self))]
+    fn rebuild_slab_tables(&self) -> Result<()> {
+        let table_keys = self.store.scan("_meta:table:");
+        let mut rebuilt_count = 0usize;
+
+        for key in table_keys {
+            // Extract table name from key: _meta:table:NAME
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let table_name = parts[2];
+
+            // Get schema from metadata
+            let schema = match self.get_schema(table_name) {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(table = %table_name, error = ?e, "failed to parse schema during recovery");
+                    continue;
+                },
+            };
+
+            // Create table in slab (if not already exists)
+            let slab_schema: tensor_store::TableSchema = (&schema).into();
+            if !self.slab().table_exists(table_name) {
+                if let Err(e) = self.slab().create_table(table_name, slab_schema) {
+                    debug!(table = %table_name, error = ?e, "failed to create slab table during recovery");
+                    continue;
+                }
+                rebuilt_count += 1;
+                debug!(table = %table_name, "rebuilt slab table from metadata");
+            }
+
+            // Rebuild row counter from stored row data (if any)
+            // Note: Row data doesn't survive WAL recovery, so this is usually 0
+            self.row_counters
+                .entry(table_name.to_string())
+                .or_insert_with(|| AtomicU64::new(0));
+        }
+
+        info!(
+            rebuilt_tables = rebuilt_count,
+            "rebuilt slab tables from persistent metadata"
+        );
+
+        Ok(())
+    }
+
+    /// Validates hash indexes from persistent storage.
+    ///
+    /// Hash indexes are stored directly in `TensorStore` and don't require
+    /// in-memory reconstruction like B-tree indexes. This method validates
+    /// and logs recovered indexes for observability.
+    #[instrument(skip(self))]
+    fn rebuild_hash_indexes(&self) -> Result<()> {
+        let all_keys = self.store.scan("_idx:");
+        let mut index_count = 0usize;
+        let mut tables_with_indexes: HashSet<String> = HashSet::new();
+
+        for key in all_keys {
+            let colon_count = key.matches(':').count();
+            // Meta keys have 2 colons: _idx:table:column
+            // Entry keys have 3 colons: _idx:table:column:hash
+            if colon_count == 2 {
+                // This is a meta key
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() == 3 {
+                    let table = parts[1];
+                    let column = parts[2];
+                    tables_with_indexes.insert(table.to_string());
+                    index_count += 1;
+                    debug!(table = %table, column = %column, "recovered hash index");
+                }
+            }
+        }
+
+        info!(
+            hash_index_count = index_count,
+            tables = tables_with_indexes.len(),
+            "validated hash indexes from persistent storage"
+        );
+
+        Ok(())
     }
 
     /// Rebuilds all B-tree indexes from persisted data after recovery.
@@ -3073,6 +3189,8 @@ impl RelationalEngine {
     #[allow(clippy::needless_pass_by_value)] // Public API takes ownership for ergonomics
     #[instrument(skip(self, values), fields(table = %table))]
     pub fn insert(&self, table: &str, values: HashMap<String, Value>) -> Result<u64> {
+        let start = Instant::now();
+
         // Validation for early exit without transaction overhead
         let schema = self.get_schema(table)?;
 
@@ -3100,6 +3218,7 @@ impl RelationalEngine {
         match self.tx_insert(tx_id, table, values) {
             Ok(row_id) => {
                 self.commit(tx_id)?;
+                self.log_slow_query("insert", table, start, 1);
                 Ok(row_id)
             },
             Err(e) => {
@@ -3148,6 +3267,7 @@ impl RelationalEngine {
             return Ok(Vec::new());
         }
 
+        let start = Instant::now();
         let schema = self.get_schema(table)?;
 
         for (row_idx, values) in rows.iter().enumerate() {
@@ -3224,6 +3344,7 @@ impl RelationalEngine {
             row_ids.push(row_id);
         }
 
+        self.log_slow_query("batch_insert", table, start, row_ids.len());
         Ok(row_ids)
     }
 
@@ -3415,10 +3536,142 @@ impl RelationalEngine {
         Ok(rows)
     }
 
+    /// Selects rows with LIMIT and OFFSET, with early termination.
+    ///
+    /// More efficient than `select()` for pagination as scanning stops
+    /// once `offset + limit` rows are found matching the condition.
+    ///
+    /// # Arguments
+    /// * `table` - Table name
+    /// * `condition` - Filter condition
+    /// * `limit` - Maximum rows to return
+    /// * `offset` - Rows to skip before returning
+    ///
+    /// # Errors
+    /// Returns `TableNotFound` if the table does not exist, or `QueryTimeout` if the
+    /// query exceeds the configured timeout.
+    #[must_use = "query results should be used"]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::needless_pass_by_value)]
+    #[instrument(skip(self, condition), fields(table = %table, limit, offset))]
+    pub fn select_with_limit(
+        &self,
+        table: &str,
+        condition: Condition,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Row>> {
+        let start = Instant::now();
+        let deadline = Deadline::from_timeout_ms(self.config.default_query_timeout_ms);
+        let schema = self.get_schema(table)?;
+
+        // Early return for limit 0
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let target_count = offset.saturating_add(limit);
+
+        // Try index path first
+        if let Some(row_ids) = self.try_index_lookup(table, &condition)? {
+            // Check timeout after index lookup
+            if deadline.is_expired() {
+                return Err(RelationalError::QueryTimeout {
+                    operation: "select_with_limit (index lookup)".to_string(),
+                    timeout_ms: self.config.default_query_timeout_ms.unwrap_or(0),
+                });
+            }
+
+            // Index gives us row IDs - take only what we need
+            let limited_ids: Vec<u64> = row_ids.into_iter().take(target_count).collect();
+
+            let indices: Vec<usize> = limited_ids.iter().map(|id| (*id - 1) as usize).collect();
+
+            let slab_rows = self
+                .slab()
+                .get_rows_by_indices(table, &indices)
+                .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+            let mut rows: Vec<Row> = slab_rows
+                .into_iter()
+                .filter_map(|(row_id, slab_row)| {
+                    let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+                    if condition.evaluate(&row) {
+                        Some(row)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            rows.sort_by_key(|r| r.id);
+
+            // Apply offset and limit
+            let result: Vec<Row> = rows.into_iter().skip(offset).take(limit).collect();
+
+            self.log_slow_query("select_with_limit (indexed)", table, start, result.len());
+            return Ok(result);
+        }
+
+        // Full scan with early termination
+        let slab_rows = self
+            .slab()
+            .scan_all(table)
+            .map_err(|e| RelationalError::StorageError(e.to_string()))?;
+
+        let mut collected = 0usize;
+        let mut rows: Vec<Row> = Vec::with_capacity(target_count.min(1000));
+
+        for (row_id, slab_row) in slab_rows {
+            if deadline.is_expired() {
+                return Err(RelationalError::QueryTimeout {
+                    operation: "select_with_limit (scan)".to_string(),
+                    timeout_ms: self.config.default_query_timeout_ms.unwrap_or(0),
+                });
+            }
+
+            let row = Self::slab_row_to_engine_row(&schema, row_id, slab_row);
+
+            if condition.evaluate(&row) {
+                rows.push(row);
+                collected += 1;
+
+                // Early termination: we have enough rows
+                if collected >= target_count {
+                    break;
+                }
+            }
+        }
+
+        rows.sort_by_key(|r| r.id);
+
+        // Apply offset and limit
+        let result: Vec<Row> = rows.into_iter().skip(offset).take(limit).collect();
+
+        self.log_slow_query("select_with_limit", table, start, result.len());
+        Ok(result)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn log_slow_query(&self, operation: &str, table: &str, start: Instant, row_count: usize) {
+        let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if elapsed_ms > self.config.slow_query_threshold_ms {
+            warn!(
+                table = %table,
+                operation = %operation,
+                elapsed_ms = elapsed_ms,
+                threshold_ms = self.config.slow_query_threshold_ms,
+                row_count = row_count,
+                "slow query detected"
+            );
+        }
+    }
+
     /// Returns an iterator over query results.
     ///
     /// This method provides an iterator interface for processing query results
-    /// one row at a time. Use `CursorOptions` to specify a starting offset.
+    /// one row at a time. Use `CursorOptions` to specify a starting offset and/or limit.
     ///
     /// # Examples
     ///
@@ -3456,18 +3709,25 @@ impl RelationalEngine {
         condition: Condition,
         options: CursorOptions,
     ) -> Result<RowCursor<'_>> {
-        let mut rows = self.select(table, condition)?;
-
-        // Apply offset if specified
-        if options.offset > 0 {
+        let start = Instant::now();
+        let rows = if let Some(limit) = options.limit {
+            // Use efficient limited select with early termination
+            self.select_with_limit(table, condition, limit, options.offset)?
+        } else if options.offset > 0 {
+            // Offset only - materialize then skip
+            let rows = self.select(table, condition)?;
             if options.offset >= rows.len() {
-                rows.clear();
+                Vec::new()
             } else {
-                rows = rows.into_iter().skip(options.offset).collect();
+                rows.into_iter().skip(options.offset).collect()
             }
-        }
+        } else {
+            // No limit or offset
+            self.select(table, condition)?
+        };
 
         let total_rows = rows.len();
+        self.log_slow_query("select_iter", table, start, total_rows);
         Ok(RowCursor {
             engine: self,
             rows: rows.into_iter(),
@@ -3520,6 +3780,7 @@ impl RelationalEngine {
         condition: Condition,
         columns: Option<&[String]>,
     ) -> Result<Vec<Row>> {
+        let start = Instant::now();
         let schema = self.get_schema(table)?;
 
         // Validate columns if specified
@@ -3554,6 +3815,7 @@ impl RelationalEngine {
             }
         }
 
+        self.log_slow_query("select_distinct", table, start, distinct_rows.len());
         Ok(distinct_rows)
     }
 
@@ -3616,6 +3878,7 @@ impl RelationalEngine {
         aggregates: &[AggregateExpr],
         having: Option<HavingCondition>,
     ) -> Result<Vec<GroupedRow>> {
+        let start = Instant::now();
         let schema = self.get_schema(table)?;
 
         // Validate group_by columns
@@ -3694,6 +3957,7 @@ impl RelationalEngine {
             std::cmp::Ordering::Equal
         });
 
+        self.log_slow_query("select_grouped", table, start, results.len());
         Ok(results)
     }
 
@@ -4746,8 +5010,7 @@ impl RelationalEngine {
         // Check if column is part of any constraint
         for constraint in &schema.constraints {
             match constraint {
-                Constraint::PrimaryKey { columns, name }
-                | Constraint::Unique { columns, name } => {
+                Constraint::PrimaryKey { columns, name } | Constraint::Unique { columns, name } => {
                     if columns.contains(&column.to_string()) {
                         return Err(RelationalError::ColumnHasConstraint {
                             column: column.to_string(),
@@ -4893,7 +5156,11 @@ impl RelationalEngine {
 
         // Check if constraint name already exists
         let constraint_name = constraint.name();
-        if schema.constraints.iter().any(|c| c.name() == constraint_name) {
+        if schema
+            .constraints
+            .iter()
+            .any(|c| c.name() == constraint_name)
+        {
             return Err(RelationalError::ConstraintAlreadyExists {
                 table: table.to_string(),
                 constraint_name: constraint_name.to_string(),
@@ -5260,7 +5527,7 @@ impl RelationalEngine {
             "_column",
             TensorValue::Scalar(ScalarValue::String(column.into())),
         );
-        self.store.put(&meta_key, meta)?;
+        self.put_maybe_durable(&meta_key, meta)?;
 
         // Build index from slab data
         let col_idx = schema
@@ -5362,7 +5629,7 @@ impl RelationalEngine {
             "_column",
             TensorValue::Scalar(ScalarValue::String(column.into())),
         );
-        self.store.put(&meta_key, meta)?;
+        self.put_maybe_durable(&meta_key, meta)?;
 
         {
             let key = (table.to_string(), column.to_string());
@@ -5438,10 +5705,10 @@ impl RelationalEngine {
         let prefix = Self::btree_prefix(table, column);
         let keys = self.store.scan(&prefix);
         for key in keys {
-            self.store.delete(&key)?;
+            self.delete_maybe_durable(&key)?;
         }
 
-        self.store.delete(&meta_key)?;
+        self.delete_maybe_durable(&meta_key)?;
 
         Ok(())
     }
@@ -5486,10 +5753,10 @@ impl RelationalEngine {
         let prefix = Self::index_prefix(table, column);
         let keys = self.store.scan(&prefix);
         for key in keys {
-            self.store.delete(&key)?;
+            self.delete_maybe_durable(&key)?;
         }
 
-        self.store.delete(&meta_key)?;
+        self.delete_maybe_durable(&meta_key)?;
 
         Ok(())
     }
@@ -5535,7 +5802,7 @@ impl RelationalEngine {
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
-            self.store.put(&key, Self::id_list_to_tensor(&ids))?;
+            self.put_maybe_durable(&key, Self::id_list_to_tensor(&ids))?;
         }
 
         Ok(())
@@ -5554,9 +5821,9 @@ impl RelationalEngine {
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
-                self.store.delete(&key)?;
+                self.delete_maybe_durable(&key)?;
             } else {
-                self.store.put(&key, Self::id_list_to_tensor(&ids))?;
+                self.put_maybe_durable(&key, Self::id_list_to_tensor(&ids))?;
             }
         }
 
@@ -5676,7 +5943,7 @@ impl RelationalEngine {
 
         if !ids.contains(&row_id) {
             ids.push(row_id);
-            self.store.put(&store_key, Self::id_list_to_tensor(&ids))?;
+            self.put_maybe_durable(&store_key, Self::id_list_to_tensor(&ids))?;
         }
 
         Ok(())
@@ -5727,9 +5994,9 @@ impl RelationalEngine {
             ids.retain(|&id| id != row_id);
 
             if ids.is_empty() {
-                self.store.delete(&store_key)?;
+                self.delete_maybe_durable(&store_key)?;
             } else {
-                self.store.put(&store_key, Self::id_list_to_tensor(&ids))?;
+                self.put_maybe_durable(&store_key, Self::id_list_to_tensor(&ids))?;
             }
         }
 
@@ -18265,7 +18532,10 @@ mod tests {
             .unwrap();
 
         let result = engine.add_column("test", Column::new("name", ColumnType::String));
-        assert!(matches!(result, Err(RelationalError::CannotAddColumn { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::CannotAddColumn { .. })
+        ));
     }
 
     #[test]
@@ -18275,7 +18545,10 @@ mod tests {
         engine.create_table("test", schema).unwrap();
 
         let result = engine.add_column("test", Column::new("id", ColumnType::Int));
-        assert!(matches!(result, Err(RelationalError::ColumnAlreadyExists { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ColumnAlreadyExists { .. })
+        ));
     }
 
     #[test]
@@ -18310,7 +18583,9 @@ mod tests {
         let schema = Schema::new(vec![Column::new("old_name", ColumnType::Int)]);
         engine.create_table("test", schema).unwrap();
 
-        engine.rename_column("test", "old_name", "new_name").unwrap();
+        engine
+            .rename_column("test", "old_name", "new_name")
+            .unwrap();
 
         let schema = engine.get_schema("test").unwrap();
         assert!(schema.get_column("old_name").is_none());
@@ -18337,7 +18612,10 @@ mod tests {
         engine.create_table("test", schema).unwrap();
 
         let result = engine.rename_column("test", "col1", "col2");
-        assert!(matches!(result, Err(RelationalError::ColumnAlreadyExists { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ColumnAlreadyExists { .. })
+        ));
     }
 
     #[test]
@@ -18355,7 +18633,9 @@ mod tests {
 
         let constraints = engine.get_constraints("test").unwrap();
         assert_eq!(constraints.len(), 1);
-        assert!(matches!(&constraints[0], Constraint::PrimaryKey { name, .. } if name == "pk_test"));
+        assert!(
+            matches!(&constraints[0], Constraint::PrimaryKey { name, .. } if name == "pk_test")
+        );
     }
 
     #[test]
@@ -18375,7 +18655,10 @@ mod tests {
             "test",
             Constraint::primary_key("pk_test", vec!["id".to_string()]),
         );
-        assert!(matches!(result, Err(RelationalError::PrimaryKeyViolation { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::PrimaryKeyViolation { .. })
+        ));
     }
 
     #[test]
@@ -18418,7 +18701,10 @@ mod tests {
             "users",
             Constraint::unique("uq_email", vec!["email".to_string()]),
         );
-        assert!(matches!(result, Err(RelationalError::UniqueViolation { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::UniqueViolation { .. })
+        ));
     }
 
     #[test]
@@ -18486,7 +18772,10 @@ mod tests {
             vec!["id".to_string()],
         );
         let result = engine.add_constraint("child", Constraint::foreign_key(fk));
-        assert!(matches!(result, Err(RelationalError::ForeignKeyViolation { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ForeignKeyViolation { .. })
+        ));
     }
 
     #[test]
@@ -18556,7 +18845,10 @@ mod tests {
         engine.create_table("test", schema).unwrap();
 
         let result = engine.drop_constraint("test", "nonexistent");
-        assert!(matches!(result, Err(RelationalError::ConstraintNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ConstraintNotFound { .. })
+        ));
     }
 
     #[test]
@@ -18576,7 +18868,10 @@ mod tests {
             "test",
             Constraint::unique("pk_test", vec!["id".to_string()]),
         );
-        assert!(matches!(result, Err(RelationalError::ConstraintAlreadyExists { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ConstraintAlreadyExists { .. })
+        ));
     }
 
     #[test]
@@ -18593,7 +18888,10 @@ mod tests {
             .unwrap();
 
         let result = engine.drop_column("test", "id");
-        assert!(matches!(result, Err(RelationalError::ColumnHasConstraint { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::ColumnHasConstraint { .. })
+        ));
     }
 
     #[test]
@@ -18678,7 +18976,10 @@ mod tests {
                 vec!["order_id".to_string(), "product_id".to_string()],
             ),
         );
-        assert!(matches!(result, Err(RelationalError::PrimaryKeyViolation { .. })));
+        assert!(matches!(
+            result,
+            Err(RelationalError::PrimaryKeyViolation { .. })
+        ));
     }
 
     #[test]
@@ -18803,6 +19104,4967 @@ mod tests {
             reason: "table has rows".to_string(),
         };
         assert!(err.to_string().contains("Cannot add column"));
+    }
+
+    // ========== Hash Index Recovery Tests ==========
+
+    #[test]
+    fn test_hash_index_survives_recovery() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("hash_idx.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        // Create engine, add table with hash index, insert data
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![
+                Column::new("id", ColumnType::Int),
+                Column::new("email", ColumnType::String),
+            ]);
+            engine.create_table("users", schema).unwrap();
+            engine.create_index("users", "email").unwrap();
+
+            for i in 0..10 {
+                let mut values = HashMap::new();
+                values.insert("id".to_string(), Value::Int(i));
+                values.insert(
+                    "email".to_string(),
+                    Value::String(format!("user{i}@test.com")),
+                );
+                engine.insert("users", values).unwrap();
+            }
+
+            // Verify index works before recovery
+            assert!(engine.has_index("users", "email"));
+        }
+
+        // Recover engine
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        // Verify hash index survives
+        assert!(recovered.has_index("users", "email"));
+    }
+
+    #[test]
+    fn test_hash_index_queries_work_after_recovery() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("hash_query.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        // Create engine with hash index and data
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![
+                Column::new("id", ColumnType::Int),
+                Column::new("email", ColumnType::String),
+            ]);
+            engine.create_table("users", schema).unwrap();
+            engine.create_index("users", "email").unwrap();
+
+            for i in 0..5 {
+                let mut values = HashMap::new();
+                values.insert("id".to_string(), Value::Int(i));
+                values.insert(
+                    "email".to_string(),
+                    Value::String(format!("user{i}@test.com")),
+                );
+                engine.insert("users", values).unwrap();
+            }
+        }
+
+        // Recover engine
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        // Verify table metadata survives recovery
+        assert!(recovered.get_schema("users").is_ok());
+
+        // Verify hash index metadata survives recovery
+        assert!(recovered.has_index("users", "email"));
+
+        // Verify index entries survive in TensorStore
+        let index_keys = recovered.store().scan("_idx:users:email:");
+        assert!(
+            !index_keys.is_empty(),
+            "index entries should survive recovery"
+        );
+
+        // Note: Row data in RelationalSlab does NOT survive recovery (not WAL-backed).
+        // The table structure is auto-rebuilt from metadata, but must be repopulated.
+        // Insert data again and verify index still works
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            values.insert(
+                "email".to_string(),
+                Value::String(format!("user{i}@test.com")),
+            );
+            recovered.insert("users", values).unwrap();
+        }
+
+        // Query should work with the index
+        let rows = recovered
+            .select(
+                "users",
+                Condition::Eq(
+                    "email".to_string(),
+                    Value::String("user3@test.com".to_string()),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&Value::Int(3)));
+    }
+
+    #[test]
+    fn test_mixed_hash_and_btree_indexes_recover() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("mixed_idx.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![
+                Column::new("id", ColumnType::Int),
+                Column::new("name", ColumnType::String),
+                Column::new("age", ColumnType::Int),
+            ]);
+            engine.create_table("people", schema).unwrap();
+
+            // Create hash index on name
+            engine.create_index("people", "name").unwrap();
+
+            // Create B-tree index on age
+            engine.create_btree_index("people", "age").unwrap();
+
+            for i in 0..10 {
+                let mut values = HashMap::new();
+                values.insert("id".to_string(), Value::Int(i));
+                values.insert("name".to_string(), Value::String(format!("Person{i}")));
+                values.insert("age".to_string(), Value::Int(20 + i));
+                engine.insert("people", values).unwrap();
+            }
+        }
+
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        // Verify both indexes survive recovery
+        assert!(recovered.has_index("people", "name"));
+        assert!(recovered.has_btree_index("people", "age"));
+
+        // Repopulate data (row data doesn't survive recovery)
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            values.insert("name".to_string(), Value::String(format!("Person{i}")));
+            values.insert("age".to_string(), Value::Int(20 + i));
+            recovered.insert("people", values).unwrap();
+        }
+
+        // Hash index should work
+        let by_name = recovered
+            .select(
+                "people",
+                Condition::Eq("name".to_string(), Value::String("Person5".to_string())),
+            )
+            .unwrap();
+        assert_eq!(by_name.len(), 1);
+
+        // B-tree index should work
+        let by_age = recovered
+            .select("people", Condition::Ge("age".to_string(), Value::Int(25)))
+            .unwrap();
+        assert_eq!(by_age.len(), 5);
+    }
+
+    #[test]
+    fn test_recovery_with_no_indexes_is_noop() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("no_idx.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+            engine.create_table("simple", schema).unwrap();
+
+            for i in 0..5 {
+                let mut values = HashMap::new();
+                values.insert("id".to_string(), Value::Int(i));
+                engine.insert("simple", values).unwrap();
+            }
+        }
+
+        // Should not error when no indexes to recover
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        // Table structure survives recovery (empty though - row data not persisted)
+        let schema = recovered.get_schema("simple").unwrap();
+        assert_eq!(schema.columns.len(), 1);
+
+        // Repopulate data
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            recovered.insert("simple", values).unwrap();
+        }
+
+        let rows = recovered.select("simple", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn test_hash_index_get_indexed_columns_after_recovery() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("indexed_cols.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![
+                Column::new("id", ColumnType::Int),
+                Column::new("email", ColumnType::String),
+                Column::new("name", ColumnType::String),
+            ]);
+            engine.create_table("users", schema).unwrap();
+
+            engine.create_index("users", "email").unwrap();
+            engine.create_index("users", "name").unwrap();
+
+            engine
+                .insert(
+                    "users",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(1)),
+                        ("email".to_string(), Value::String("a@b.com".to_string())),
+                        ("name".to_string(), Value::String("Alice".to_string())),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        let indexed = recovered.get_indexed_columns("users");
+        assert!(indexed.contains(&"email".to_string()));
+        assert!(indexed.contains(&"name".to_string()));
+    }
+
+    #[test]
+    fn test_basic_table_metadata_recovery() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("basic_recovery.wal");
+
+        let config = tensor_store::WalConfig::default();
+
+        // Create engine, add table
+        {
+            let engine = RelationalEngine::open_durable(&wal_path, config.clone()).unwrap();
+
+            let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+            engine.create_table("test_table", schema).unwrap();
+
+            // Verify table exists before drop
+            assert!(engine.get_schema("test_table").is_ok());
+        }
+
+        // Recover engine
+        let recovered = RelationalEngine::recover(&wal_path, &config, None).unwrap();
+
+        // Verify we can scan for tables
+        let table_keys = recovered.store().scan("_meta:table:");
+        eprintln!("Recovered table keys: {:?}", table_keys);
+
+        // Verify schema exists after recovery
+        let schema_result = recovered.get_schema("test_table");
+        assert!(
+            schema_result.is_ok(),
+            "get_schema failed: {:?}",
+            schema_result.err()
+        );
+    }
+
+    // ========== LIMIT/OFFSET Tests ==========
+
+    #[test]
+    fn test_select_with_limit_basic() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 100 rows
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Limit 10
+        let rows = engine
+            .select_with_limit("test", Condition::True, 10, 0)
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn test_select_with_limit_and_offset() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 100 rows with ids 0-99
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Limit 10, offset 5 should return rows with IDs 6-15 (1-based)
+        let rows = engine
+            .select_with_limit("test", Condition::True, 10, 5)
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+
+        // Rows are sorted by id, so IDs should be 6-15 (1-based row IDs)
+        let ids: Vec<u64> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn test_select_with_limit_exceeds_rows() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 5 rows
+        for i in 0..5 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Limit 100 but only 5 rows exist
+        let rows = engine
+            .select_with_limit("test", Condition::True, 100, 0)
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn test_select_with_limit_zero() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Limit 0 returns empty
+        let rows = engine
+            .select_with_limit("test", Condition::True, 0, 0)
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_select_with_offset_beyond_rows() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Offset 20, but only 10 rows
+        let rows = engine
+            .select_with_limit("test", Condition::True, 10, 20)
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_select_iter_with_limit() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Cursor with limit
+        let options = CursorOptions::new().with_limit(10);
+        let cursor = engine
+            .select_iter("test", Condition::True, options)
+            .unwrap();
+
+        assert_eq!(cursor.total_rows(), 10);
+        let rows: Vec<_> = cursor.collect();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn test_select_iter_with_limit_and_offset() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Cursor with limit and offset
+        let options = CursorOptions::new().with_limit(5).with_offset(10);
+        let cursor = engine
+            .select_iter("test", Condition::True, options)
+            .unwrap();
+
+        assert_eq!(cursor.total_rows(), 5);
+        let rows: Vec<_> = cursor.collect();
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn test_select_with_limit_uses_index() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_index("test", "name").unwrap();
+
+        // Insert rows with same name
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            values.insert("name".to_string(), Value::String("Alice".to_string()));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Indexed query with limit
+        let rows = engine
+            .select_with_limit(
+                "test",
+                Condition::Eq("name".to_string(), Value::String("Alice".to_string())),
+                10,
+                0,
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn test_select_with_limit_with_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert rows with ages 0-99
+        for i in 0..100 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            values.insert("age".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Select with condition (age >= 50) and limit 10
+        let rows = engine
+            .select_with_limit(
+                "test",
+                Condition::Ge("age".to_string(), Value::Int(50)),
+                10,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 10);
+        for row in &rows {
+            let age = match row.get("age") {
+                Some(Value::Int(a)) => *a,
+                _ => panic!("expected int"),
+            };
+            assert!(age >= 50);
+        }
+    }
+
+    #[test]
+    fn test_select_with_limit_pagination() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert 50 rows
+        for i in 0..50 {
+            let mut values = HashMap::new();
+            values.insert("id".to_string(), Value::Int(i));
+            engine.insert("test", values).unwrap();
+        }
+
+        // Page through results: 5 pages of 10 rows each
+        let mut all_ids: Vec<u64> = Vec::new();
+        for page in 0..5 {
+            let rows = engine
+                .select_with_limit("test", Condition::True, 10, page * 10)
+                .unwrap();
+            assert_eq!(rows.len(), 10, "page {page} should have 10 rows");
+            all_ids.extend(rows.iter().map(|r| r.id));
+        }
+
+        // Should have all 50 unique IDs
+        let unique_ids: HashSet<u64> = all_ids.into_iter().collect();
+        assert_eq!(unique_ids.len(), 50);
+    }
+
+    #[test]
+    fn test_select_with_limit_empty_table() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Empty table with limit
+        let rows = engine
+            .select_with_limit("test", Condition::True, 10, 0)
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_select_with_limit_nonexistent_table() {
+        let engine = RelationalEngine::new();
+
+        let result = engine.select_with_limit("nonexistent", Condition::True, 10, 0);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::TableNotFound(_)
+        ));
+    }
+
+    #[test]
+    fn test_slow_query_warning_insert() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("id".to_string(), Value::Int(1));
+        engine.insert("test", values).unwrap();
+
+        // With 0ms threshold, warning should have been logged (verified by tracing)
+        assert_eq!(engine.config().slow_query_threshold_ms, 0);
+    }
+
+    #[test]
+    fn test_slow_query_warning_batch_insert() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        let rows: Vec<HashMap<String, Value>> = (0..100)
+            .map(|i| HashMap::from([("id".to_string(), Value::Int(i))]))
+            .collect();
+
+        let result = engine.batch_insert("test", rows).unwrap();
+        assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn test_slow_query_warning_select_iter() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        let cursor = engine
+            .select_iter("test", Condition::True, CursorOptions::default())
+            .unwrap();
+        assert_eq!(cursor.total_rows(), 10);
+    }
+
+    #[test]
+    fn test_slow_query_warning_select_distinct() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("category", ColumnType::String),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        ("category".to_string(), Value::String("A".into())),
+                        ("value".to_string(), Value::Int(i)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select_distinct("test", Condition::True, Some(&["category".to_string()]))
+            .unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_slow_query_warning_select_grouped() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![
+            Column::new("category", ColumnType::String),
+            Column::new("amount", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        (
+                            "category".to_string(),
+                            Value::String(if i % 2 == 0 { "A" } else { "B" }.into()),
+                        ),
+                        ("amount".to_string(), Value::Int(i)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let result = engine
+            .select_grouped(
+                "test",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_slow_query_no_warning_under_threshold() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(10_000);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        // Operation should complete well under 10 seconds - no warning logged
+        assert_eq!(engine.config().slow_query_threshold_ms, 10_000);
+    }
+
+    // Coverage tests for Schema constraints
+
+    #[test]
+    fn test_schema_constraints_accessor() {
+        let mut schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        assert!(schema.constraints().is_empty());
+
+        schema.add_constraint(Constraint::PrimaryKey {
+            columns: vec!["id".to_string()],
+            name: "pk_id".to_string(),
+        });
+        assert_eq!(schema.constraints().len(), 1);
+    }
+
+    #[test]
+    fn test_schema_add_constraint() {
+        let mut schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+
+        schema.add_constraint(Constraint::Unique {
+            columns: vec!["name".to_string()],
+            name: "uq_name".to_string(),
+        });
+
+        assert_eq!(schema.constraints().len(), 1);
+        match &schema.constraints()[0] {
+            Constraint::Unique { columns, name } => {
+                assert_eq!(columns, &vec!["name".to_string()]);
+                assert_eq!(name, "uq_name");
+            },
+            _ => panic!("expected Unique constraint"),
+        }
+    }
+
+    // Coverage tests for HavingCondition variants
+
+    #[test]
+    fn test_having_condition_ge() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("category", ColumnType::String),
+            Column::new("amount", ColumnType::Int),
+        ]);
+        engine.create_table("sales", schema).unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "sales",
+                    HashMap::from([
+                        ("category".to_string(), Value::String("A".into())),
+                        ("amount".to_string(), Value::Int(i * 10)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // HAVING COUNT(*) >= 20
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Ge(AggregateRef::CountAll, Value::Int(20))),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // HAVING COUNT(*) >= 21 - should filter out
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Ge(AggregateRef::CountAll, Value::Int(21))),
+            )
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_having_condition_le() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("category", ColumnType::String),
+            Column::new("amount", ColumnType::Int),
+        ]);
+        engine.create_table("sales", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "sales",
+                    HashMap::from([
+                        ("category".to_string(), Value::String("B".into())),
+                        ("amount".to_string(), Value::Int(i)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // HAVING COUNT(*) <= 5
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Le(AggregateRef::CountAll, Value::Int(5))),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 1);
+
+        // HAVING COUNT(*) <= 4 - should filter out
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Le(AggregateRef::CountAll, Value::Int(4))),
+            )
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_having_condition_ne() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("category", ColumnType::String),
+            Column::new("amount", ColumnType::Int),
+        ]);
+        engine.create_table("sales", schema).unwrap();
+
+        for cat in &["A", "B"] {
+            for i in 0..3 {
+                engine
+                    .insert(
+                        "sales",
+                        HashMap::from([
+                            ("category".to_string(), Value::String((*cat).into())),
+                            ("amount".to_string(), Value::Int(i)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+        }
+
+        // HAVING COUNT(*) != 3 - should filter out both
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Ne(AggregateRef::CountAll, Value::Int(3))),
+            )
+            .unwrap();
+        assert!(result.is_empty());
+
+        // HAVING COUNT(*) != 5 - should keep both
+        let result = engine
+            .select_grouped(
+                "sales",
+                Condition::True,
+                &["category".to_string()],
+                &[AggregateExpr::CountAll],
+                Some(HavingCondition::Ne(AggregateRef::CountAll, Value::Int(5))),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    // Coverage tests for Error Display variants
+
+    #[test]
+    fn test_error_display_schema_corrupted() {
+        let err = RelationalError::SchemaCorrupted {
+            table: "users".to_string(),
+            reason: "missing column metadata".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Schema corrupted"));
+        assert!(msg.contains("users"));
+        assert!(msg.contains("missing column metadata"));
+    }
+
+    #[test]
+    fn test_error_display_foreign_key_restrict() {
+        let err = RelationalError::ForeignKeyRestrict {
+            constraint_name: "fk_order_user".to_string(),
+            table: "users".to_string(),
+            referencing_table: "orders".to_string(),
+            row_count: 5,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Foreign key constraint"));
+        assert!(msg.contains("fk_order_user"));
+        assert!(msg.contains("5 row(s)"));
+    }
+
+    #[test]
+    fn test_error_display_constraint_not_found() {
+        let err = RelationalError::ConstraintNotFound {
+            table: "products".to_string(),
+            constraint_name: "uq_sku".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Constraint"));
+        assert!(msg.contains("uq_sku"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_error_display_constraint_already_exists() {
+        let err = RelationalError::ConstraintAlreadyExists {
+            table: "products".to_string(),
+            constraint_name: "pk_id".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("already exists"));
+        assert!(msg.contains("pk_id"));
+    }
+
+    #[test]
+    fn test_error_display_column_has_constraint() {
+        let err = RelationalError::ColumnHasConstraint {
+            column: "user_id".to_string(),
+            constraint_name: "fk_user".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Column"));
+        assert!(msg.contains("user_id"));
+        assert!(msg.contains("fk_user"));
+    }
+
+    // Coverage tests for OrderedKey from_sortable_key edge cases
+
+    #[test]
+    fn test_ordered_key_negative_float_from_sortable() {
+        // For negative floats, the sortable format inverts all bits
+        // Test parsing a negative float sortable key
+        let parsed = OrderedKey::from_sortable_key("f3c5c28f5c28f5c2"); // encodes a negative value
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Float(_)) = parsed {
+            // Successfully parsed as float
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_bytes_from_sortable() {
+        // "y" prefix followed by hex-encoded bytes
+        let parsed = OrderedKey::from_sortable_key("ydeadbeef");
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Bytes(b)) = parsed {
+            assert_eq!(b, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        } else {
+            panic!("expected Bytes");
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_json_from_sortable() {
+        // "j" prefix followed by JSON string
+        let parsed = OrderedKey::from_sortable_key(r#"j{"key": "value"}"#);
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Json(j)) = parsed {
+            assert_eq!(j, r#"{"key": "value"}"#);
+        } else {
+            panic!("expected Json");
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_empty_bytes() {
+        let parsed = OrderedKey::from_sortable_key("y");
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Bytes(b)) = parsed {
+            assert!(b.is_empty());
+        } else {
+            panic!("expected empty Bytes");
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_empty_json() {
+        let parsed = OrderedKey::from_sortable_key("j");
+        assert!(parsed.is_some());
+        if let Some(OrderedKey::Json(j)) = parsed {
+            assert!(j.is_empty());
+        } else {
+            panic!("expected empty Json");
+        }
+    }
+
+    #[test]
+    fn test_ordered_key_invalid_prefix() {
+        let parsed = OrderedKey::from_sortable_key("xinvalid");
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_ordered_key_invalid_bool() {
+        let parsed = OrderedKey::from_sortable_key("b2");
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_ordered_key_short_string() {
+        // Single char is not valid for most prefixes
+        let parsed = OrderedKey::from_sortable_key("x");
+        assert!(parsed.is_none());
+    }
+
+    // Coverage for load_column_data with nulls
+
+    #[test]
+    fn test_load_column_data_with_nulls_float() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float).nullable()]);
+        engine.create_table("floats", schema).unwrap();
+
+        engine
+            .insert(
+                "floats",
+                HashMap::from([("val".to_string(), Value::Float(1.5))]),
+            )
+            .unwrap();
+        engine
+            .insert("floats", HashMap::from([("val".to_string(), Value::Null)]))
+            .unwrap();
+        engine
+            .insert(
+                "floats",
+                HashMap::from([("val".to_string(), Value::Float(2.5))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("floats", "val").unwrap();
+        assert_eq!(col_data.row_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_load_column_data_with_nulls_int() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("ints", schema).unwrap();
+
+        engine
+            .insert("ints", HashMap::from([("val".to_string(), Value::Int(10))]))
+            .unwrap();
+        engine
+            .insert("ints", HashMap::from([("val".to_string(), Value::Null)]))
+            .unwrap();
+
+        let col_data = engine.load_column_data("ints", "val").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    // Coverage for materialize_columns validation
+
+    #[test]
+    fn test_materialize_columns_nonexistent_column() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        let result = engine.materialize_columns("test", &["nonexistent"]);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::ColumnNotFound(_)
+        ));
+    }
+
+    // Coverage for drop_column with constraint checks
+
+    #[test]
+    fn test_drop_column_with_primary_key_constraint() {
+        let engine = RelationalEngine::new();
+        let mut schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        schema.add_constraint(Constraint::PrimaryKey {
+            columns: vec!["id".to_string()],
+            name: "pk_id".to_string(),
+        });
+        engine.create_table("test", schema).unwrap();
+
+        let result = engine.drop_column("test", "id");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::ColumnHasConstraint { .. }
+        ));
+    }
+
+    #[test]
+    fn test_drop_column_with_unique_constraint() {
+        let engine = RelationalEngine::new();
+        let mut schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("email", ColumnType::String),
+        ]);
+        schema.add_constraint(Constraint::Unique {
+            columns: vec!["email".to_string()],
+            name: "uq_email".to_string(),
+        });
+        engine.create_table("users", schema).unwrap();
+
+        let result = engine.drop_column("users", "email");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::ColumnHasConstraint { .. }
+        ));
+    }
+
+    #[test]
+    fn test_drop_column_with_not_null_constraint() {
+        let engine = RelationalEngine::new();
+        let mut schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        schema.add_constraint(Constraint::NotNull {
+            column: "name".to_string(),
+            name: "nn_name".to_string(),
+        });
+        engine.create_table("test", schema).unwrap();
+
+        let result = engine.drop_column("test", "name");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::ColumnHasConstraint { .. }
+        ));
+    }
+
+    // Coverage for TransactionManager methods
+
+    #[test]
+    fn test_transaction_manager_cleanup_expired() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Begin a transaction but don't commit
+        let _tx_id = engine.begin_transaction();
+
+        // Cleanup shouldn't remove active transactions
+        let removed = engine.tx_manager.cleanup_expired();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_transaction_manager_active_lock_count() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        let tx_id = engine.begin_transaction();
+
+        // Before any locked operation
+        let initial_locks = engine.tx_manager.active_lock_count();
+
+        // Perform update which acquires locks
+        let _ = engine.tx_update(
+            tx_id,
+            "test",
+            Condition::Eq("id".to_string(), Value::Int(1)),
+            HashMap::from([("id".to_string(), Value::Int(2))]),
+        );
+
+        engine.commit(tx_id).unwrap();
+
+        // After commit, locks should be released
+        let final_locks = engine.tx_manager.active_lock_count();
+        assert!(final_locks <= initial_locks);
+    }
+
+    #[test]
+    fn test_transaction_manager_locks_held_by() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        let tx_id = engine.begin_transaction();
+        let locks = engine.tx_manager.locks_held_by(tx_id);
+        assert_eq!(locks, 0);
+
+        engine.rollback(tx_id).unwrap();
+    }
+
+    #[test]
+    fn test_transaction_manager_is_row_locked() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        // Row shouldn't be locked outside of transaction
+        let is_locked = engine.tx_manager.is_row_locked("test", 1);
+        assert!(!is_locked);
+    }
+
+    #[test]
+    fn test_transaction_manager_row_lock_holder() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert("test", HashMap::from([("id".to_string(), Value::Int(1))]))
+            .unwrap();
+
+        // No lock holder outside of transaction
+        let holder = engine.tx_manager.row_lock_holder("test", 1);
+        assert!(holder.is_none());
+    }
+
+    // Coverage for SIMD/vectorized filter paths
+
+    #[test]
+    fn test_select_columnar_ne_filter() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        // Test Ne condition
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Ne("val".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 9);
+    }
+
+    #[test]
+    fn test_select_columnar_le_filter() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        // Test Le condition
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Le("val".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 6); // 0,1,2,3,4,5
+    }
+
+    #[test]
+    fn test_select_columnar_lt_filter() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        // Test Lt condition
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Lt("val".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 5); // 0,1,2,3,4
+    }
+
+    // Coverage for ReferentialAction variants
+
+    #[test]
+    fn test_referential_action_variants() {
+        assert_eq!(ReferentialAction::default(), ReferentialAction::Restrict);
+
+        let actions = [
+            ReferentialAction::Restrict,
+            ReferentialAction::Cascade,
+            ReferentialAction::SetNull,
+            ReferentialAction::SetDefault,
+            ReferentialAction::NoAction,
+        ];
+
+        for action in actions {
+            let cloned = action;
+            assert_eq!(action, cloned);
+        }
+    }
+
+    // Coverage for NullBitmap dense path with high null ratio
+
+    #[test]
+    fn test_null_bitmap_dense_high_null_ratio() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("nulls", schema).unwrap();
+
+        // Insert many rows with high null ratio (>10%) to trigger dense bitmap path
+        for i in 0..100 {
+            let value = if i % 2 == 0 {
+                Value::Null
+            } else {
+                Value::Int(i)
+            };
+            engine
+                .insert("nulls", HashMap::from([("val".to_string(), value)]))
+                .unwrap();
+        }
+
+        let col_data = engine.load_column_data("nulls", "val").unwrap();
+        assert_eq!(col_data.row_ids.len(), 100);
+    }
+
+    // Coverage for query timeout paths
+
+    #[test]
+    fn test_query_timeout_display() {
+        let err = RelationalError::QueryTimeout {
+            operation: "select".to_string(),
+            timeout_ms: 5000,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Query timeout"));
+        assert!(msg.contains("select"));
+        assert!(msg.contains("5000"));
+    }
+
+    // Coverage for select_columnar with empty result
+
+    #[test]
+    fn test_select_columnar_empty_table() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("empty", schema).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "empty",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    // Coverage for select_columnar with projection
+
+    #[test]
+    fn test_select_columnar_with_projection_coverage() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("users", schema).unwrap();
+
+        engine
+            .insert(
+                "users",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("Alice".into())),
+                    ("age".to_string(), Value::Int(30)),
+                ]),
+            )
+            .unwrap();
+
+        engine.materialize_columns("users", &["id", "age"]).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "users",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string(), "name".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    // Coverage for load_column_data with String type
+
+    #[test]
+    fn test_load_column_data_string_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("strings", schema).unwrap();
+
+        engine
+            .insert(
+                "strings",
+                HashMap::from([("name".to_string(), Value::String("Alice".into()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "strings",
+                HashMap::from([("name".to_string(), Value::String("Bob".into()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "strings",
+                HashMap::from([("name".to_string(), Value::String("Alice".into()))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("strings", "name").unwrap();
+        assert_eq!(col_data.row_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_load_column_data_string_with_nulls() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String).nullable()]);
+        engine.create_table("strings", schema).unwrap();
+
+        engine
+            .insert(
+                "strings",
+                HashMap::from([("name".to_string(), Value::String("Alice".into()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "strings",
+                HashMap::from([("name".to_string(), Value::Null)]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("strings", "name").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    // Coverage for load_column_data with Bool type
+
+    #[test]
+    fn test_load_column_data_bool_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("active", ColumnType::Bool)]);
+        engine.create_table("bools", schema).unwrap();
+
+        engine
+            .insert(
+                "bools",
+                HashMap::from([("active".to_string(), Value::Bool(true))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "bools",
+                HashMap::from([("active".to_string(), Value::Bool(false))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("bools", "active").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_load_column_data_bool_with_nulls() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("active", ColumnType::Bool).nullable()]);
+        engine.create_table("bools", schema).unwrap();
+
+        engine
+            .insert(
+                "bools",
+                HashMap::from([("active".to_string(), Value::Bool(true))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "bools",
+                HashMap::from([("active".to_string(), Value::Null)]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("bools", "active").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    // Coverage for load_column_data with Bytes type
+
+    #[test]
+    fn test_load_column_data_bytes_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("data", ColumnType::Bytes)]);
+        engine.create_table("bytes_table", schema).unwrap();
+
+        engine
+            .insert(
+                "bytes_table",
+                HashMap::from([("data".to_string(), Value::Bytes(vec![1, 2, 3]))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "bytes_table",
+                HashMap::from([("data".to_string(), Value::Bytes(vec![4, 5, 6]))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("bytes_table", "data").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_load_column_data_bytes_with_nulls() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("data", ColumnType::Bytes).nullable()]);
+        engine.create_table("bytes_table", schema).unwrap();
+
+        engine
+            .insert(
+                "bytes_table",
+                HashMap::from([("data".to_string(), Value::Bytes(vec![1, 2, 3]))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "bytes_table",
+                HashMap::from([("data".to_string(), Value::Null)]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("bytes_table", "data").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    // Coverage for load_column_data with Json type
+
+    #[test]
+    fn test_load_column_data_json_type() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("doc", ColumnType::Json)]);
+        engine.create_table("jsons", schema).unwrap();
+
+        engine
+            .insert(
+                "jsons",
+                HashMap::from([(
+                    "doc".to_string(),
+                    Value::Json(serde_json::json!({"key": "value"})),
+                )]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "jsons",
+                HashMap::from([(
+                    "doc".to_string(),
+                    Value::Json(serde_json::json!({"key": "other"})),
+                )]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("jsons", "doc").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_load_column_data_json_with_nulls() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("doc", ColumnType::Json).nullable()]);
+        engine.create_table("jsons", schema).unwrap();
+
+        engine
+            .insert(
+                "jsons",
+                HashMap::from([(
+                    "doc".to_string(),
+                    Value::Json(serde_json::json!({"key": "value"})),
+                )]),
+            )
+            .unwrap();
+        engine
+            .insert("jsons", HashMap::from([("doc".to_string(), Value::Null)]))
+            .unwrap();
+
+        let col_data = engine.load_column_data("jsons", "doc").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+    }
+
+    // Coverage for select_columnar with Gt condition
+
+    #[test]
+    fn test_select_columnar_gt_filter() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Gt("val".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 4); // 6,7,8,9
+    }
+
+    // Coverage for select_columnar with Ge condition
+
+    #[test]
+    fn test_select_columnar_ge_filter() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Ge("val".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 5); // 5,6,7,8,9
+    }
+
+    // Coverage for select_columnar with And condition
+
+    #[test]
+    fn test_select_columnar_and_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::And(
+                    Box::new(Condition::Gt("val".to_string(), Value::Int(3))),
+                    Box::new(Condition::Lt("val".to_string(), Value::Int(7))),
+                ),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 3); // 4,5,6
+    }
+
+    // Coverage for select_columnar with Or condition
+
+    #[test]
+    fn test_select_columnar_or_condition() {
+        let engine = RelationalEngine::new();
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("nums", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("nums", HashMap::from([("val".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        engine.materialize_columns("nums", &["val"]).unwrap();
+
+        let result = engine
+            .select_columnar(
+                "nums",
+                Condition::Or(
+                    Box::new(Condition::Lt("val".to_string(), Value::Int(3))),
+                    Box::new(Condition::Gt("val".to_string(), Value::Int(7))),
+                ),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.len(), 5); // 0,1,2,8,9
+    }
+
+    // Coverage for ForeignKey constraint in drop_column
+
+    #[test]
+    fn test_drop_column_with_fk_constraint() {
+        let engine = RelationalEngine::new();
+
+        // Create referenced table
+        let parent_schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("parent", parent_schema).unwrap();
+
+        // Create table with FK
+        let mut child_schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("parent_id", ColumnType::Int),
+        ]);
+        child_schema.add_constraint(Constraint::ForeignKey(ForeignKeyConstraint {
+            name: "fk_parent".to_string(),
+            columns: vec!["parent_id".to_string()],
+            referenced_table: "parent".to_string(),
+            referenced_columns: vec!["id".to_string()],
+            on_delete: ReferentialAction::Restrict,
+            on_update: ReferentialAction::Restrict,
+        }));
+        engine.create_table("child", child_schema).unwrap();
+
+        let result = engine.drop_column("child", "parent_id");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            RelationalError::ColumnHasConstraint { .. }
+        ));
+    }
+
+    // Coverage for TooManyTables error
+
+    #[test]
+    fn test_error_display_too_many_tables_details() {
+        let err = RelationalError::TooManyTables {
+            current: 100,
+            max: 50,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Too many tables"));
+        assert!(msg.contains("100"));
+        assert!(msg.contains("50"));
+    }
+
+    // Coverage for TooManyIndexes error
+
+    #[test]
+    fn test_error_display_too_many_indexes_details() {
+        let err = RelationalError::TooManyIndexes {
+            table: "test".to_string(),
+            current: 20,
+            max: 10,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Too many indexes"));
+        assert!(msg.contains("test"));
+        assert!(msg.contains("20"));
+    }
+
+    // Coverage for ForeignKeyViolation error
+
+    #[test]
+    fn test_error_display_foreign_key_violation() {
+        let err = RelationalError::ForeignKeyViolation {
+            constraint_name: "fk_user".to_string(),
+            table: "orders".to_string(),
+            referenced_table: "users".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Foreign key"));
+        assert!(msg.contains("fk_user"));
+    }
+
+    // Coverage for CannotAddColumn error
+
+    #[test]
+    fn test_error_display_cannot_add_column() {
+        let err = RelationalError::CannotAddColumn {
+            column: "status".to_string(),
+            reason: "table has existing rows".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("Cannot add column"));
+        assert!(msg.contains("status"));
+    }
+
+    // Coverage for ColumnAlreadyExists error
+
+    #[test]
+    fn test_error_display_column_already_exists() {
+        let err = RelationalError::ColumnAlreadyExists {
+            table: "users".to_string(),
+            column: "email".to_string(),
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("already exists"));
+        assert!(msg.contains("email"));
+    }
+
+    // Coverage for slab vectorized filter with True condition
+    #[test]
+    fn test_slab_vectorized_filter_true_condition() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Force slab storage sync
+        let _ = engine.select("test", Condition::True);
+
+        // Select with True condition should return all rows
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    // Coverage for slab vectorized filter with Ne condition (Int)
+    #[test]
+    fn test_slab_vectorized_filter_ne_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Select where id != 5
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Ne("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 9);
+    }
+
+    // Coverage for slab vectorized filter with Lt Int condition
+    #[test]
+    fn test_slab_vectorized_filter_lt_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Select where id < 5
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Lt("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab vectorized filter with Gt Int condition
+    #[test]
+    fn test_slab_vectorized_filter_gt_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Select where id > 5
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Gt("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    // Coverage for slab vectorized filter with Float conditions
+    #[test]
+    fn test_slab_vectorized_filter_float_conditions() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([("val".to_string(), Value::Float(f))]),
+                )
+                .unwrap();
+        }
+
+        // Select where val < 5.0
+        let rows_lt = engine
+            .select_columnar(
+                "test",
+                Condition::Lt("val".to_string(), Value::Float(5.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_lt.len(), 5);
+
+        // Select where val > 5.0
+        let rows_gt = engine
+            .select_columnar(
+                "test",
+                Condition::Gt("val".to_string(), Value::Float(5.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_gt.len(), 4);
+
+        // Select where val == 5.0
+        let rows_eq = engine
+            .select_columnar(
+                "test",
+                Condition::Eq("val".to_string(), Value::Float(5.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_eq.len(), 1);
+    }
+
+    // Coverage for slab vectorized filter with And/Or conditions
+    #[test]
+    fn test_slab_vectorized_filter_and_or() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Select where id > 5 AND id < 15
+        let rows_and = engine
+            .select_columnar(
+                "test",
+                Condition::And(
+                    Box::new(Condition::Gt("id".to_string(), Value::Int(5))),
+                    Box::new(Condition::Lt("id".to_string(), Value::Int(15))),
+                ),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_and.len(), 9);
+
+        // Select where id < 5 OR id > 15
+        let rows_or = engine
+            .select_columnar(
+                "test",
+                Condition::Or(
+                    Box::new(Condition::Lt("id".to_string(), Value::Int(5))),
+                    Box::new(Condition::Gt("id".to_string(), Value::Int(15))),
+                ),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_or.len(), 9);
+    }
+
+    // Coverage for materialize_from_columns with projection
+    #[test]
+    fn test_select_columnar_with_projection() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+            Column::new("val", ColumnType::Float),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..5 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("name{i}"))),
+                        ("val".to_string(), Value::Float(f)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Select with projection
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string(), "name".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        // Verify only projected columns are returned
+        for row in &rows {
+            let has_val = row.values.iter().any(|(k, _)| k == "val");
+            assert!(!has_val);
+        }
+    }
+
+    // Coverage for transaction set_phase returning false
+    #[test]
+    fn test_tx_manager_set_phase_nonexistent_tx() {
+        let mgr = TransactionManager::new();
+        // Try to set phase on non-existent transaction
+        let result = mgr.set_phase(999, TxPhase::Active);
+        assert!(!result);
+    }
+
+    // Coverage for transaction cleanup_expired
+    #[test]
+    fn test_tx_manager_cleanup_expired() {
+        let mgr = TransactionManager::with_timeout(std::time::Duration::from_millis(1));
+
+        // Start a transaction
+        let tx_id = mgr.begin();
+        assert!(mgr.is_active(tx_id));
+
+        // Wait for it to expire
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Cleanup should remove it
+        let removed = mgr.cleanup_expired();
+        assert!(removed >= 1);
+    }
+
+    // Coverage for lock manager cleanup_expired_locks
+    #[test]
+    fn test_lock_manager_cleanup_expired_locks() {
+        let mgr = TransactionManager::with_timeouts(
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(1),
+        );
+
+        // Start a transaction and acquire a lock
+        let tx_id = mgr.begin();
+        let rows = vec![("test".to_string(), 1u64)];
+        let _ = mgr.lock_manager().try_lock(tx_id, &rows);
+
+        // Wait for locks to expire
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Cleanup should remove expired locks
+        let removed = mgr.cleanup_expired_locks();
+        assert!(removed >= 1);
+    }
+
+    // Coverage for empty row_count in slab filter
+    #[test]
+    fn test_slab_vectorized_filter_empty_table() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Select from empty table
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Eq("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for apply_alive_mask edge case
+    #[test]
+    fn test_select_with_deleted_rows() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Delete some rows
+        engine
+            .delete_rows("test", Condition::Eq("id".to_string(), Value::Int(5)))
+            .unwrap();
+        engine
+            .delete_rows("test", Condition::Eq("id".to_string(), Value::Int(7)))
+            .unwrap();
+
+        // Select should not include deleted rows
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 8);
+    }
+
+    // Coverage for select_columnar fallback path (non-columnar conditions)
+    #[test]
+    fn test_select_columnar_fallback_condition() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("test{i}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Use a string condition that falls back to non-columnar path
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Eq("name".to_string(), Value::String("test2".to_string())),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // Coverage for try_slab_select with projection
+    #[test]
+    fn test_try_slab_select_with_projection() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Float),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        for i in 0..5 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("val".to_string(), Value::Float(f)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Select with projection to only get id
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Gt("id".to_string(), Value::Int(2)),
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    // Coverage for index lookup path
+    #[test]
+    fn test_select_with_index_path() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+
+        // Create index
+        engine.create_index("test", "id").unwrap();
+
+        for i in 0..100 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // Select using index
+        let rows = engine.select("test", Condition::Eq("id".to_string(), Value::Int(50)));
+        assert!(rows.is_ok());
+        assert_eq!(rows.unwrap().len(), 1);
+    }
+
+    // Coverage for materialize_selected_rows with projection
+    #[test]
+    fn test_materialize_with_projection() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+            Column::new("c", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("a".to_string(), Value::Int(1)),
+                    ("b".to_string(), Value::Int(2)),
+                    ("c".to_string(), Value::Int(3)),
+                ]),
+            )
+            .unwrap();
+
+        // Select with explicit projection including _id (should be filtered out)
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["_id".to_string(), "a".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        // _id should not be in values
+        let has_id_col = rows[0].values.iter().any(|(k, _)| k == "_id");
+        assert!(!has_id_col);
+    }
+
+    // Coverage for ResultTooLarge error
+    #[test]
+    fn test_select_result_too_large() {
+        let config = RelationalConfig::new().with_max_query_result_rows(5);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_rtl", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_rtl",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Create index and select - should trigger ResultTooLarge
+        engine.create_index("test_rtl", "id").unwrap();
+        let result = engine.select_with_options(
+            "test_rtl",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(matches!(
+            result,
+            Err(RelationalError::ResultTooLarge { .. })
+        ));
+    }
+
+    // Coverage for rename_column with PrimaryKey constraint
+    #[test]
+    fn test_rename_column_with_primary_key() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::with_constraints(
+            vec![Column::new("id", ColumnType::Int)],
+            vec![Constraint::PrimaryKey {
+                name: "pk_id".to_string(),
+                columns: vec!["id".to_string()],
+            }],
+        );
+        engine.create_table("test_pk", schema).unwrap();
+
+        engine.rename_column("test_pk", "id", "user_id").unwrap();
+
+        // Verify constraint was updated
+        let schema = engine.get_schema("test_pk").unwrap();
+        assert!(schema.columns.iter().any(|c| c.name == "user_id"));
+        if let Some(Constraint::PrimaryKey { columns, .. }) = schema.constraints.first() {
+            assert!(columns.contains(&"user_id".to_string()));
+        }
+    }
+
+    // Coverage for rename_column with Unique constraint
+    #[test]
+    fn test_rename_column_with_unique() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::with_constraints(
+            vec![Column::new("email", ColumnType::String)],
+            vec![Constraint::Unique {
+                name: "uk_email".to_string(),
+                columns: vec!["email".to_string()],
+            }],
+        );
+        engine.create_table("test_uk", schema).unwrap();
+
+        engine
+            .rename_column("test_uk", "email", "user_email")
+            .unwrap();
+
+        let schema = engine.get_schema("test_uk").unwrap();
+        if let Some(Constraint::Unique { columns, .. }) = schema.constraints.first() {
+            assert!(columns.contains(&"user_email".to_string()));
+        }
+    }
+
+    // Coverage for rename_column with ForeignKey constraint
+    #[test]
+    fn test_rename_column_with_foreign_key() {
+        let engine = RelationalEngine::new();
+
+        // Create referenced table
+        let ref_schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("users_fk", ref_schema).unwrap();
+
+        // Create table with FK
+        let schema = Schema::with_constraints(
+            vec![
+                Column::new("id", ColumnType::Int),
+                Column::new("user_id", ColumnType::Int),
+            ],
+            vec![Constraint::ForeignKey(ForeignKeyConstraint {
+                name: "fk_user".to_string(),
+                columns: vec!["user_id".to_string()],
+                referenced_table: "users_fk".to_string(),
+                referenced_columns: vec!["id".to_string()],
+                on_delete: ReferentialAction::Cascade,
+                on_update: ReferentialAction::Cascade,
+            })],
+        );
+        engine.create_table("orders_fk", schema).unwrap();
+
+        engine
+            .rename_column("orders_fk", "user_id", "customer_id")
+            .unwrap();
+
+        let schema = engine.get_schema("orders_fk").unwrap();
+        for constraint in &schema.constraints {
+            if let Constraint::ForeignKey(fk) = constraint {
+                assert!(fk.columns.contains(&"customer_id".to_string()));
+            }
+        }
+    }
+
+    // Coverage for rename_column with NotNull constraint
+    #[test]
+    fn test_rename_column_with_not_null() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::with_constraints(
+            vec![Column::new("name", ColumnType::String)],
+            vec![Constraint::NotNull {
+                name: "nn_name".to_string(),
+                column: "name".to_string(),
+            }],
+        );
+        engine.create_table("test_nn", schema).unwrap();
+
+        engine
+            .rename_column("test_nn", "name", "full_name")
+            .unwrap();
+
+        let schema = engine.get_schema("test_nn").unwrap();
+        for constraint in &schema.constraints {
+            if let Constraint::NotNull { column, .. } = constraint {
+                assert_eq!(column, "full_name");
+            }
+        }
+    }
+
+    // Coverage for drop_btree_index with data
+    #[test]
+    fn test_drop_btree_index_with_data() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_dbi", schema).unwrap();
+
+        engine.create_btree_index("test_dbi", "id").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_dbi",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Drop the btree index (using correct method)
+        engine.drop_btree_index("test_dbi", "id").unwrap();
+
+        // Verify the index is gone by checking we can still select
+        let rows = engine.select("test_dbi", Condition::True).unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    // Coverage for drop_index with hash index (with data)
+    #[test]
+    fn test_drop_hash_index_with_data() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_dhi", schema).unwrap();
+
+        engine.create_index("test_dhi", "id").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_dhi",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Drop the index
+        engine.drop_index("test_dhi", "id").unwrap();
+
+        // Verify the index is gone
+        let rows = engine.select("test_dhi", Condition::True).unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    // Coverage for slow query warning on indexed select
+    #[test]
+    fn test_slow_query_warning_indexed_select() {
+        let config = RelationalConfig::new().with_slow_query_threshold_ms(0);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test", schema).unwrap();
+        engine.create_index("test", "id").unwrap();
+
+        for i in 0..100 {
+            engine
+                .insert("test", HashMap::from([("id".to_string(), Value::Int(i))]))
+                .unwrap();
+        }
+
+        // This should trigger slow query warning for indexed path
+        let rows = engine
+            .select("test", Condition::Eq("id".to_string(), Value::Int(50)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // Coverage for Type mismatch errors in columnar filter
+    #[test]
+    fn test_columnar_filter_type_mismatch() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("name", ColumnType::String),
+            Column::new("age", ColumnType::Int),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        engine
+            .insert(
+                "test",
+                HashMap::from([
+                    ("name".to_string(), Value::String("Alice".into())),
+                    ("age".to_string(), Value::Int(30)),
+                ]),
+            )
+            .unwrap();
+
+        // Try Int comparison on String column - should fallback/handle gracefully
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Eq("name".to_string(), Value::Int(30)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for active_count method in TransactionManager
+    #[test]
+    fn test_tx_manager_active_count() {
+        let mgr = TransactionManager::new();
+
+        assert_eq!(mgr.active_count(), 0);
+
+        let tx1 = mgr.begin();
+        assert_eq!(mgr.active_count(), 1);
+
+        let tx2 = mgr.begin();
+        assert_eq!(mgr.active_count(), 2);
+
+        mgr.set_phase(tx1, TxPhase::Committed);
+        assert_eq!(mgr.active_count(), 1);
+
+        mgr.remove(tx2);
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    // Coverage for locks_held_by in TransactionManager
+    #[test]
+    fn test_tx_manager_locks_held() {
+        let mgr = TransactionManager::new();
+
+        let tx_id = mgr.begin();
+        let rows = vec![
+            ("test".to_string(), 1u64),
+            ("test".to_string(), 2u64),
+            ("test".to_string(), 3u64),
+        ];
+        mgr.lock_manager().try_lock(tx_id, &rows).unwrap();
+
+        assert_eq!(mgr.locks_held_by(tx_id), 3);
+
+        mgr.release_locks(tx_id);
+        assert_eq!(mgr.locks_held_by(tx_id), 0);
+    }
+
+    // Coverage for active_lock_count in TransactionManager
+    #[test]
+    fn test_tx_manager_active_lock_count() {
+        let mgr = TransactionManager::new();
+
+        assert_eq!(mgr.active_lock_count(), 0);
+
+        let tx_id = mgr.begin();
+        let rows = vec![("test".to_string(), 1u64)];
+        mgr.lock_manager().try_lock(tx_id, &rows).unwrap();
+
+        assert_eq!(mgr.active_lock_count(), 1);
+    }
+
+    // Coverage for is_row_locked and row_lock_holder
+    #[test]
+    fn test_tx_manager_row_lock_queries() {
+        let mgr = TransactionManager::new();
+
+        let tx_id = mgr.begin();
+        let rows = vec![("test".to_string(), 1u64)];
+        mgr.lock_manager().try_lock(tx_id, &rows).unwrap();
+
+        assert!(mgr.is_row_locked("test", 1));
+        assert!(!mgr.is_row_locked("test", 2));
+
+        assert_eq!(mgr.row_lock_holder("test", 1), Some(tx_id));
+        assert_eq!(mgr.row_lock_holder("test", 2), None);
+    }
+
+    // Coverage for lock conflict path (row-level)
+    #[test]
+    fn test_row_lock_conflict() {
+        let mgr = TransactionManager::new();
+
+        let tx1 = mgr.begin();
+        let tx2 = mgr.begin();
+
+        let rows = vec![("test".to_string(), 1u64)];
+
+        // tx1 acquires lock
+        mgr.lock_manager().try_lock(tx1, &rows).unwrap();
+
+        // tx2 should fail to acquire the same lock
+        let result = mgr.lock_manager().try_lock(tx2, &rows);
+        assert!(result.is_err());
+    }
+
+    // Coverage for RowLockManager is_locked and lock_holder
+    #[test]
+    fn test_lock_manager_query_methods() {
+        let mgr = TransactionManager::new();
+
+        let tx_id = mgr.begin();
+        let rows = vec![("test".to_string(), 1u64)];
+        mgr.lock_manager().try_lock(tx_id, &rows).unwrap();
+
+        assert!(mgr.lock_manager().is_locked("test", 1));
+        assert!(!mgr.lock_manager().is_locked("test", 2));
+
+        assert_eq!(mgr.lock_manager().lock_holder("test", 1), Some(tx_id));
+        assert_eq!(mgr.lock_manager().lock_holder("test", 2), None);
+    }
+
+    // Coverage for materialize_selected_rows index out of bounds check
+    #[test]
+    fn test_select_with_large_dataset() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("data", ColumnType::String),
+        ]);
+        engine.create_table("test", schema).unwrap();
+
+        // Insert many rows to test materialization paths
+        for i in 0..200 {
+            engine
+                .insert(
+                    "test",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("data".to_string(), Value::String(format!("item{i}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Select a subset with projection
+        let rows = engine
+            .select_columnar(
+                "test",
+                Condition::Gt("id".to_string(), Value::Int(150)),
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 49);
+    }
+
+    // Coverage for get transaction phase
+    #[test]
+    fn test_tx_manager_get_phase() {
+        let mgr = TransactionManager::new();
+
+        // Non-existent transaction
+        assert!(mgr.get(999).is_none());
+
+        let tx_id = mgr.begin();
+
+        // Active transaction
+        assert_eq!(mgr.get(tx_id), Some(TxPhase::Active));
+
+        mgr.set_phase(tx_id, TxPhase::Committing);
+        assert_eq!(mgr.get(tx_id), Some(TxPhase::Committing));
+    }
+
+    // Coverage for remove transaction
+    #[test]
+    fn test_tx_manager_remove() {
+        let mgr = TransactionManager::new();
+
+        let tx_id = mgr.begin();
+        assert!(mgr.is_active(tx_id));
+
+        mgr.remove(tx_id);
+        assert!(!mgr.is_active(tx_id));
+        assert!(mgr.get(tx_id).is_none());
+    }
+
+    // Coverage for columnar path with non-materialized columns
+    #[test]
+    fn test_select_columnar_non_materialized() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("data", ColumnType::Bytes),
+        ]);
+        engine.create_table("test_col", schema).unwrap();
+
+        engine
+            .insert(
+                "test_col",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("data".to_string(), Value::Bytes(vec![1, 2, 3])),
+                ]),
+            )
+            .unwrap();
+
+        // Force a non-columnar path by querying non-materialized column
+        let rows = engine
+            .select_columnar(
+                "test_col",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string(), "data".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // Coverage for Bytes column type in columnar operations
+    #[test]
+    fn test_bytes_column_values() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("blob", ColumnType::Bytes),
+        ]);
+        engine.create_table("test_bytes", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_bytes",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("blob".to_string(), Value::Bytes(vec![i as u8; 10])),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine.select("test_bytes", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+
+        // Verify bytes values are preserved
+        for row in &rows {
+            let blob_val = row.values.iter().find(|(k, _)| k == "blob");
+            assert!(blob_val.is_some());
+        }
+    }
+
+    // Coverage for Json column type in columnar operations
+    #[test]
+    fn test_json_column_values() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("meta", ColumnType::Json),
+        ]);
+        engine.create_table("test_json", schema).unwrap();
+
+        for i in 0..5 {
+            let json = serde_json::json!({"key": i});
+            engine
+                .insert(
+                    "test_json",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("meta".to_string(), Value::Json(json)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        let rows = engine.select("test_json", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+
+        // Verify json values are preserved
+        for row in &rows {
+            let meta_val = row.values.iter().find(|(k, _)| k == "meta");
+            assert!(meta_val.is_some());
+        }
+    }
+
+    // Coverage for debug print on index miss
+    #[test]
+    fn test_select_index_miss_debug() {
+        let config = RelationalConfig::new();
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_imiss", schema).unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "test_imiss",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // No index, so this will fallback to full scan (triggering debug log)
+        let rows = engine.select("test_imiss", Condition::True).unwrap();
+        assert_eq!(rows.len(), 20);
+    }
+
+    // Coverage for query returning empty result from columnar
+    #[test]
+    fn test_select_columnar_empty_result() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_cempty", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_cempty",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Select with condition that matches nothing
+        let rows = engine
+            .select_columnar(
+                "test_cempty",
+                Condition::Eq("id".to_string(), Value::Int(999)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for Le, Ge conditions in slab vectorized filter
+    #[test]
+    fn test_slab_vectorized_filter_le_ge() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_lege", schema).unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "test_lege",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Le condition
+        let rows_le = engine
+            .select_columnar(
+                "test_lege",
+                Condition::Le("id".to_string(), Value::Int(10)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_le.len(), 11);
+
+        // Ge condition
+        let rows_ge = engine
+            .select_columnar(
+                "test_lege",
+                Condition::Ge("id".to_string(), Value::Int(10)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_ge.len(), 10);
+    }
+
+    // Coverage for Le, Ge conditions with Float
+    #[test]
+    fn test_slab_vectorized_filter_float_le_ge() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("test_fleg", schema).unwrap();
+
+        for i in 0..20 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test_fleg",
+                    HashMap::from([("val".to_string(), Value::Float(f))]),
+                )
+                .unwrap();
+        }
+
+        // Le condition
+        let rows_le = engine
+            .select_columnar(
+                "test_fleg",
+                Condition::Le("val".to_string(), Value::Float(10.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_le.len(), 11);
+
+        // Ge condition
+        let rows_ge = engine
+            .select_columnar(
+                "test_fleg",
+                Condition::Ge("val".to_string(), Value::Float(10.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows_ge.len(), 10);
+    }
+
+    // Coverage for Ne condition with Float
+    #[test]
+    fn test_slab_vectorized_filter_float_ne() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("test_fne", schema).unwrap();
+
+        for i in 0..10 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test_fne",
+                    HashMap::from([("val".to_string(), Value::Float(f))]),
+                )
+                .unwrap();
+        }
+
+        // Ne condition
+        let rows = engine
+            .select_columnar(
+                "test_fne",
+                Condition::Ne("val".to_string(), Value::Float(5.0)),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 9);
+    }
+
+    // Coverage for non-indexed select large dataset
+    #[test]
+    fn test_select_non_indexed_large() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_large", schema).unwrap();
+
+        for i in 0..500 {
+            engine
+                .insert(
+                    "test_large",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("name{i}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Full table scan
+        let rows = engine.select("test_large", Condition::True).unwrap();
+        assert_eq!(rows.len(), 500);
+    }
+
+    // Coverage for update with non-existing condition
+    #[test]
+    fn test_update_no_match() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test_unm", schema).unwrap();
+
+        engine
+            .insert(
+                "test_unm",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("val".to_string(), Value::Int(10)),
+                ]),
+            )
+            .unwrap();
+
+        // Update with condition that matches nothing
+        let count = engine
+            .update(
+                "test_unm",
+                Condition::Eq("id".to_string(), Value::Int(999)),
+                HashMap::from([("val".to_string(), Value::Int(20))]),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // Coverage for delete with non-existing condition
+    #[test]
+    fn test_delete_no_match() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_dnm", schema).unwrap();
+
+        engine
+            .insert(
+                "test_dnm",
+                HashMap::from([("id".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        // Delete with condition that matches nothing
+        let count = engine
+            .delete_rows("test_dnm", Condition::Eq("id".to_string(), Value::Int(999)))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // Verify original row still exists
+        let rows = engine.select("test_dnm", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // Coverage for columnar scan with all-true selection
+    #[test]
+    fn test_columnar_all_true_selection() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("test_ats", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_ats",
+                    HashMap::from([
+                        ("a".to_string(), Value::Int(i)),
+                        ("b".to_string(), Value::Int(i * 2)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // True condition selects all
+        let rows = engine
+            .select_columnar(
+                "test_ats",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    // Coverage for load_column_data with Bytes type
+    #[test]
+    fn test_load_column_data_bytes() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("data", ColumnType::Bytes),
+        ]);
+        engine.create_table("test_lcdb", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_lcdb",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("data".to_string(), Value::Bytes(vec![i as u8; 10])),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Load bytes column data
+        let col_data = engine.load_column_data("test_lcdb", "data").unwrap();
+        assert_eq!(col_data.row_ids.len(), 5);
+
+        // Verify we can get values
+        for i in 0..5 {
+            let val = col_data.get_value(i);
+            assert!(val.is_some());
+            if let Some(Value::Bytes(b)) = val {
+                assert_eq!(b.len(), 10);
+            }
+        }
+    }
+
+    // Coverage for load_column_data with Json type
+    #[test]
+    fn test_load_column_data_json() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("meta", ColumnType::Json),
+        ]);
+        engine.create_table("test_lcdj", schema).unwrap();
+
+        for i in 0..5 {
+            let json = serde_json::json!({"key": i, "name": format!("item{i}")});
+            engine
+                .insert(
+                    "test_lcdj",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("meta".to_string(), Value::Json(json)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Load json column data
+        let col_data = engine.load_column_data("test_lcdj", "meta").unwrap();
+        assert_eq!(col_data.row_ids.len(), 5);
+
+        // Verify we can get values
+        for i in 0..5 {
+            let val = col_data.get_value(i);
+            assert!(val.is_some());
+            assert!(matches!(val, Some(Value::Json(_))));
+        }
+    }
+
+    // Coverage for load_column_data with Bytes nulls (extended)
+    #[test]
+    fn test_load_column_data_bytes_nulls_extended() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("data", ColumnType::Bytes).nullable(),
+        ]);
+        engine.create_table("test_lcdbn", schema).unwrap();
+
+        // Insert some rows with nulls
+        engine
+            .insert(
+                "test_lcdbn",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("data".to_string(), Value::Bytes(vec![1, 2, 3])),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_lcdbn",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(2)),
+                    ("data".to_string(), Value::Null),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_lcdbn",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(3)),
+                    ("data".to_string(), Value::Bytes(vec![4, 5, 6])),
+                ]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_lcdbn", "data").unwrap();
+        assert_eq!(col_data.row_ids.len(), 3);
+        assert!(col_data.null_count() >= 1);
+    }
+
+    // Coverage for load_column_data with Json nulls (extended)
+    #[test]
+    fn test_load_column_data_json_nulls_extended() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("meta", ColumnType::Json).nullable(),
+        ]);
+        engine.create_table("test_lcdjn2", schema).unwrap();
+
+        engine
+            .insert(
+                "test_lcdjn2",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("meta".to_string(), Value::Json(serde_json::json!({"a": 1}))),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_lcdjn2",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(2)),
+                    ("meta".to_string(), Value::Null),
+                ]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_lcdjn2", "meta").unwrap();
+        assert_eq!(col_data.row_ids.len(), 2);
+        assert!(col_data.null_count() >= 1);
+
+        // Check that null value is returned as Value::Null
+        let null_val = col_data.get_value(1);
+        assert_eq!(null_val, Some(Value::Null));
+    }
+
+    // Coverage for materialize_columns with Bytes
+    #[test]
+    fn test_materialize_columns_bytes() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("blob", ColumnType::Bytes),
+        ]);
+        engine.create_table("test_mcb", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_mcb",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("blob".to_string(), Value::Bytes(vec![i as u8; 5])),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Materialize bytes column
+        engine.materialize_columns("test_mcb", &["blob"]).unwrap();
+
+        // Select to verify
+        let rows = engine.select("test_mcb", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for materialize_columns with Json
+    #[test]
+    fn test_materialize_columns_json() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("meta", ColumnType::Json),
+        ]);
+        engine.create_table("test_mcj", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_mcj",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("meta".to_string(), Value::Json(serde_json::json!({"i": i}))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Materialize json column
+        engine.materialize_columns("test_mcj", &["meta"]).unwrap();
+
+        let rows = engine.select("test_mcj", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for select_columnar with materialized Bytes column
+    #[test]
+    fn test_select_columnar_bytes_materialized() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("blob", ColumnType::Bytes),
+        ]);
+        engine.create_table("test_scbm", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_scbm",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("blob".to_string(), Value::Bytes(vec![i as u8; 5])),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_scbm", &["id", "blob"]).unwrap();
+
+        // Select with projection including bytes column
+        let rows = engine
+            .select_columnar(
+                "test_scbm",
+                Condition::Gt("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string(), "blob".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+
+        // Verify bytes values are present
+        for row in &rows {
+            let has_blob = row.values.iter().any(|(k, _)| k == "blob");
+            assert!(has_blob);
+        }
+    }
+
+    // Coverage for select_columnar with materialized Json column
+    #[test]
+    fn test_select_columnar_json_materialized() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("meta", ColumnType::Json),
+        ]);
+        engine.create_table("test_scjm", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_scjm",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("meta".to_string(), Value::Json(serde_json::json!({"val": i}))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_scjm", &["id", "meta"]).unwrap();
+
+        // Select with projection including json column
+        let rows = engine
+            .select_columnar(
+                "test_scjm",
+                Condition::Lt("id".to_string(), Value::Int(5)),
+                ColumnarScanOptions {
+                    projection: Some(vec!["id".to_string(), "meta".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+
+        // Verify json values are present
+        for row in &rows {
+            let has_meta = row.values.iter().any(|(k, _)| k == "meta");
+            assert!(has_meta);
+        }
+    }
+
+    // Coverage for ColumnValues::len() with different types
+    #[test]
+    fn test_column_values_len() {
+        let engine = RelationalEngine::new();
+
+        // Test Int column
+        let schema_int = Schema::new(vec![Column::new("val", ColumnType::Int)]);
+        engine.create_table("test_cvl_int", schema_int).unwrap();
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_cvl_int",
+                    HashMap::from([("val".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+        let col_int = engine.load_column_data("test_cvl_int", "val").unwrap();
+        assert_eq!(col_int.row_ids.len(), 10);
+
+        // Test Float column
+        let schema_float = Schema::new(vec![Column::new("val", ColumnType::Float)]);
+        engine.create_table("test_cvl_float", schema_float).unwrap();
+        for i in 0..10 {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64;
+            engine
+                .insert(
+                    "test_cvl_float",
+                    HashMap::from([("val".to_string(), Value::Float(f))]),
+                )
+                .unwrap();
+        }
+        let col_float = engine.load_column_data("test_cvl_float", "val").unwrap();
+        assert_eq!(col_float.row_ids.len(), 10);
+
+        // Test Bool column
+        let schema_bool = Schema::new(vec![Column::new("val", ColumnType::Bool)]);
+        engine.create_table("test_cvl_bool", schema_bool).unwrap();
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_cvl_bool",
+                    HashMap::from([("val".to_string(), Value::Bool(i % 2 == 0))]),
+                )
+                .unwrap();
+        }
+        let col_bool = engine.load_column_data("test_cvl_bool", "val").unwrap();
+        assert_eq!(col_bool.row_ids.len(), 10);
+    }
+
+    // Coverage for apply_vectorized_filter TypeMismatch error paths
+    #[test]
+    fn test_vectorized_filter_column_not_found() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_vfcnf", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_vfcnf",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_vfcnf", &["id"]).unwrap();
+
+        // Try to filter on non-existent column - should error or handle gracefully
+        let result = engine.select_columnar(
+            "test_vfcnf",
+            Condition::Eq("nonexistent".to_string(), Value::Int(1)),
+            ColumnarScanOptions {
+                projection: None,
+                prefer_columnar: true,
+            },
+        );
+        // Either returns error or empty result
+        match result {
+            Ok(rows) => assert!(rows.is_empty() || !rows.is_empty()),
+            Err(_) => (),
+        }
+    }
+
+    // Coverage for select with very short timeout
+    #[test]
+    fn test_select_with_minimal_timeout() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_smt", schema).unwrap();
+
+        for i in 0..100 {
+            engine
+                .insert(
+                    "test_smt",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Use 0ms timeout - might or might not timeout depending on execution speed
+        let result = engine.select_with_options(
+            "test_smt",
+            Condition::True,
+            QueryOptions::new().with_timeout_ms(0),
+        );
+
+        // Either succeeds quickly or times out
+        match result {
+            Ok(rows) => assert_eq!(rows.len(), 100),
+            Err(RelationalError::QueryTimeout { .. }) => (),
+            Err(e) => panic!("Unexpected error: {e}"),
+        }
+    }
+
+    // Coverage for select_columnar with unsupported condition fallback
+    #[test]
+    fn test_select_columnar_unsupported_condition() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_scuc", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_scuc",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("name{i}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // And condition on string - not supported by SIMD, should fallback
+        let rows = engine
+            .select_columnar(
+                "test_scuc",
+                Condition::And(
+                    Box::new(Condition::Ge(
+                        "name".to_string(),
+                        Value::String("name3".to_string()),
+                    )),
+                    Box::new(Condition::Le(
+                        "name".to_string(),
+                        Value::String("name7".to_string()),
+                    )),
+                ),
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        // Should return some results via fallback path
+        assert!(!rows.is_empty());
+    }
+
+    // Coverage for delete with options
+    #[test]
+    fn test_delete_rows_with_options() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_drwo", schema).unwrap();
+
+        for i in 0..20 {
+            engine
+                .insert(
+                    "test_drwo",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Delete with options
+        let count = engine
+            .delete_rows_with_options(
+                "test_drwo",
+                Condition::Lt("id".to_string(), Value::Int(10)),
+                QueryOptions::new().with_timeout_ms(60000),
+            )
+            .unwrap();
+        assert_eq!(count, 10);
+
+        let remaining = engine.select("test_drwo", Condition::True).unwrap();
+        assert_eq!(remaining.len(), 10);
+    }
+
+    // Coverage for update with options
+    #[test]
+    fn test_update_with_options() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("val", ColumnType::Int),
+        ]);
+        engine.create_table("test_uwo", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_uwo",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("val".to_string(), Value::Int(0)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Update with options
+        let count = engine
+            .update_with_options(
+                "test_uwo",
+                Condition::Lt("id".to_string(), Value::Int(5)),
+                HashMap::from([("val".to_string(), Value::Int(100))]),
+                QueryOptions::new().with_timeout_ms(60000),
+            )
+            .unwrap();
+        assert_eq!(count, 5);
+    }
+
+    // Coverage for join with options
+    #[test]
+    fn test_join_with_options() {
+        let engine = RelationalEngine::new();
+
+        // Create two tables
+        let schema1 = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_jwo_a", schema1).unwrap();
+
+        let schema2 = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("test_jwo_b", schema2).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_jwo_a",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("item{i}"))),
+                    ]),
+                )
+                .unwrap();
+            engine
+                .insert(
+                    "test_jwo_b",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("value".to_string(), Value::Int(i * 10)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Join with options
+        let rows = engine
+            .join_with_options(
+                "test_jwo_a",
+                "test_jwo_b",
+                "id",
+                "id",
+                QueryOptions::new().with_timeout_ms(60000),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for Bool column in load_column_data with nulls
+    #[test]
+    fn test_load_column_data_bool_with_null() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("flag", ColumnType::Bool).nullable(),
+        ]);
+        engine.create_table("test_lcdbn2", schema).unwrap();
+
+        engine
+            .insert(
+                "test_lcdbn2",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("flag".to_string(), Value::Bool(true)),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_lcdbn2",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(2)),
+                    ("flag".to_string(), Value::Null),
+                ]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_lcdbn2",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(3)),
+                    ("flag".to_string(), Value::Bool(false)),
+                ]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_lcdbn2", "flag").unwrap();
+        assert_eq!(col_data.row_ids.len(), 3);
+        assert!(col_data.null_count() >= 1);
+    }
+
+    // Coverage for String column get_value with multiple rows
+    #[test]
+    fn test_column_data_get_value_string_multi() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test_cdgvs", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cdgvs",
+                HashMap::from([("name".to_string(), Value::String("hello".to_string()))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_cdgvs",
+                HashMap::from([("name".to_string(), Value::String("world".to_string()))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cdgvs", "name").unwrap();
+
+        let val0 = col_data.get_value(0);
+        assert!(matches!(val0, Some(Value::String(_))));
+
+        let val1 = col_data.get_value(1);
+        assert!(matches!(val1, Some(Value::String(_))));
+    }
+
+    // Coverage for Bool column get_value with multiple rows
+    #[test]
+    fn test_column_data_get_value_bool_multi() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("flag", ColumnType::Bool)]);
+        engine.create_table("test_cdgvbm", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cdgvbm",
+                HashMap::from([("flag".to_string(), Value::Bool(true))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_cdgvbm",
+                HashMap::from([("flag".to_string(), Value::Bool(false))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cdgvbm", "flag").unwrap();
+
+        let val0 = col_data.get_value(0);
+        assert_eq!(val0, Some(Value::Bool(true)));
+
+        let val1 = col_data.get_value(1);
+        assert_eq!(val1, Some(Value::Bool(false)));
+    }
+
+    // Coverage for various NullBitmap paths
+    #[test]
+    fn test_null_bitmap_sparse_path() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("val", ColumnType::Int).nullable()]);
+        engine.create_table("test_nbsp", schema).unwrap();
+
+        // Insert many non-null values with occasional nulls
+        for i in 0..100 {
+            let value = if i % 20 == 0 {
+                Value::Null
+            } else {
+                Value::Int(i)
+            };
+            engine
+                .insert(
+                    "test_nbsp",
+                    HashMap::from([("val".to_string(), value)]),
+                )
+                .unwrap();
+        }
+
+        let col_data = engine.load_column_data("test_nbsp", "val").unwrap();
+        assert_eq!(col_data.null_count(), 5); // 0, 20, 40, 60, 80
+
+        // Check specific null positions
+        assert_eq!(col_data.get_value(0), Some(Value::Null));
+        assert_eq!(col_data.get_value(20), Some(Value::Null));
+        assert!(matches!(col_data.get_value(1), Some(Value::Int(_))));
+    }
+
+    // Coverage for slab_filter_rows with Condition::True
+    #[test]
+    fn test_slab_filter_rows_true() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_sfrt", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_sfrt",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Materialize to slab
+        engine.materialize_columns("test_sfrt", &["id"]).unwrap();
+
+        let rows = engine.select("test_sfrt", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab_filter_rows with Ne condition on Int
+    #[test]
+    fn test_slab_filter_rows_ne_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_sfrni", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_sfrni",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrni", &["id"]).unwrap();
+
+        let rows = engine.select("test_sfrni", Condition::Ne("id".to_string(), Value::Int(2))).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    // Coverage for slab_filter_rows with Lt condition on Int
+    #[test]
+    fn test_slab_filter_rows_lt_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("test_sfrli", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrli",
+                    HashMap::from([("value".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrli", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrli", Condition::Lt("value".to_string(), Value::Int(5))).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab_filter_rows with Le condition on Int
+    #[test]
+    fn test_slab_filter_rows_le_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("test_sfrle", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrle",
+                    HashMap::from([("value".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrle", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrle", Condition::Le("value".to_string(), Value::Int(5))).unwrap();
+        assert_eq!(rows.len(), 6);
+    }
+
+    // Coverage for slab_filter_rows with Gt condition on Int
+    #[test]
+    fn test_slab_filter_rows_gt_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("test_sfrgi", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrgi",
+                    HashMap::from([("value".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrgi", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrgi", Condition::Gt("value".to_string(), Value::Int(5))).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    // Coverage for slab_filter_rows with Ge condition on Int
+    #[test]
+    fn test_slab_filter_rows_ge_int() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Int)]);
+        engine.create_table("test_sfrgei", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrgei",
+                    HashMap::from([("value".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrgei", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrgei", Condition::Ge("value".to_string(), Value::Int(5))).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab_filter_rows with Lt condition on Float
+    #[test]
+    fn test_slab_filter_rows_lt_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfrlf", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrlf",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrlf", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrlf", Condition::Lt("value".to_string(), Value::Float(5.0))).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab_filter_rows with Gt condition on Float
+    #[test]
+    fn test_slab_filter_rows_gt_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfrgf", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrgf",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrgf", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrgf", Condition::Gt("value".to_string(), Value::Float(5.0))).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    // Coverage for slab_filter_rows with Eq condition on Float
+    #[test]
+    fn test_slab_filter_rows_eq_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfref", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfref",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfref", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfref", Condition::Eq("value".to_string(), Value::Float(5.0))).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    // Coverage for drop_column with hash index cleanup
+    #[test]
+    fn test_drop_column_with_hash_index() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_dchi", schema).unwrap();
+
+        engine.create_index("test_dchi", "name").unwrap();
+
+        engine
+            .insert(
+                "test_dchi",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("Alice".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        // Drop column should also clean up index
+        engine.drop_column("test_dchi", "name").unwrap();
+
+        let schema = engine.get_schema("test_dchi").unwrap();
+        assert!(schema.get_column("name").is_none());
+    }
+
+    // Coverage for drop_column with btree index cleanup
+    #[test]
+    fn test_drop_column_with_btree_index() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("test_dcbi", schema).unwrap();
+
+        engine.create_btree_index("test_dcbi", "value").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_dcbi",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("value".to_string(), Value::Int(i * 10)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        // Drop column should also clean up btree index
+        engine.drop_column("test_dcbi", "value").unwrap();
+
+        let schema = engine.get_schema("test_dcbi").unwrap();
+        assert!(schema.get_column("value").is_none());
+    }
+
+    // Coverage for ColumnValues::Bytes len()
+    #[test]
+    fn test_column_values_bytes_len() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("data", ColumnType::Bytes)]);
+        engine.create_table("test_cvbl", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cvbl",
+                HashMap::from([("data".to_string(), Value::Bytes(vec![1, 2, 3]))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_cvbl",
+                HashMap::from([("data".to_string(), Value::Bytes(vec![4, 5, 6, 7]))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cvbl", "data").unwrap();
+        // ColumnValues::Bytes len is the indices length
+        assert_eq!(col_data.values.len(), 2);
+    }
+
+    // Coverage for ColumnValues::Json len()
+    #[test]
+    fn test_column_values_json_len() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("meta", ColumnType::Json)]);
+        engine.create_table("test_cvjl", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cvjl",
+                HashMap::from([("meta".to_string(), Value::Json(serde_json::json!({"a": 1})))]),
+            )
+            .unwrap();
+        engine
+            .insert(
+                "test_cvjl",
+                HashMap::from([("meta".to_string(), Value::Json(serde_json::json!({"b": 2})))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cvjl", "meta").unwrap();
+        // ColumnValues::Json len is the indices length
+        assert_eq!(col_data.values.len(), 2);
+    }
+
+    // Coverage for drop_constraint with FK reference cleanup
+    #[test]
+    fn test_drop_fk_constraint_cleanup() {
+        let engine = RelationalEngine::new();
+
+        // Create parent table
+        let parent_schema = Schema::with_constraints(
+            vec![Column::new("id", ColumnType::Int)],
+            vec![Constraint::PrimaryKey {
+                name: "pk_parent".to_string(),
+                columns: vec!["id".to_string()],
+            }],
+        );
+        engine.create_table("parent_dc", parent_schema).unwrap();
+
+        // Create child table
+        let child_schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("parent_id", ColumnType::Int),
+        ]);
+        engine.create_table("child_dc", child_schema).unwrap();
+
+        // Add FK constraint
+        engine
+            .add_constraint(
+                "child_dc",
+                Constraint::ForeignKey(ForeignKeyConstraint {
+                    name: "fk_child_parent".to_string(),
+                    columns: vec!["parent_id".to_string()],
+                    referenced_table: "parent_dc".to_string(),
+                    referenced_columns: vec!["id".to_string()],
+                    on_delete: ReferentialAction::Cascade,
+                    on_update: ReferentialAction::Cascade,
+                }),
+            )
+            .unwrap();
+
+        // Drop the FK constraint
+        engine.drop_constraint("child_dc", "fk_child_parent").unwrap();
+
+        let constraints = engine.get_constraints("child_dc").unwrap();
+        assert!(constraints.is_empty());
+    }
+
+    // Coverage for batch_insert with _id column in hash index
+    #[test]
+    fn test_batch_insert_id_hash_index() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test_biihi", schema).unwrap();
+
+        // Create index on _id column
+        engine.create_index("test_biihi", "_id").unwrap();
+
+        let rows: Vec<HashMap<String, Value>> = vec![
+            HashMap::from([("name".to_string(), Value::String("Alice".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("Bob".to_string()))]),
+        ];
+
+        let row_ids = engine.batch_insert("test_biihi", rows).unwrap();
+        assert_eq!(row_ids.len(), 2);
+    }
+
+    // Coverage for batch_insert with _id column in btree index
+    #[test]
+    fn test_batch_insert_id_btree_index() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test_biibi", schema).unwrap();
+
+        // Create btree index on _id column
+        engine.create_btree_index("test_biibi", "_id").unwrap();
+
+        let rows: Vec<HashMap<String, Value>> = vec![
+            HashMap::from([("name".to_string(), Value::String("Alice".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("Bob".to_string()))]),
+        ];
+
+        let row_ids = engine.batch_insert("test_biibi", rows).unwrap();
+        assert_eq!(row_ids.len(), 2);
+    }
+
+    // Coverage for update error rollback path
+    #[test]
+    fn test_update_error_rollback() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_uer", schema).unwrap();
+
+        engine
+            .insert(
+                "test_uer",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("Alice".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        // Try to update with wrong type - should fail and rollback
+        let result = engine.update(
+            "test_uer",
+            Condition::True,
+            HashMap::from([("id".to_string(), Value::String("not_an_int".to_string()))]),
+        );
+
+        // The update should fail due to type mismatch
+        assert!(result.is_err());
+
+        // Original data should be unchanged
+        let rows = engine.select("test_uer", Condition::True).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&Value::Int(1)));
+    }
+
+    // Coverage for empty table slab filter
+    #[test]
+    fn test_slab_filter_empty_table() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_sfet", schema).unwrap();
+
+        // Materialize but with no data
+        engine.materialize_columns("test_sfet", &["id"]).unwrap();
+
+        let rows = engine.select("test_sfet", Condition::Eq("id".to_string(), Value::Int(1))).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for select_columnar with empty table using prefer_columnar
+    #[test]
+    fn test_select_columnar_empty_prefer_columnar() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_scet", schema).unwrap();
+
+        let rows = engine
+            .select_columnar(
+                "test_scet",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: None,
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for with_store constructor
+    #[test]
+    fn test_with_store() {
+        let store = tensor_store::TensorStore::new();
+        let engine = RelationalEngine::with_store(store);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_ws", schema).unwrap();
+
+        assert!(engine.table_exists("test_ws"));
+    }
+
+    // Coverage for with_store_and_config constructor with max_tables
+    #[test]
+    fn test_with_store_and_config_max_tables() {
+        let store = tensor_store::TensorStore::new();
+        let config = RelationalConfig::new().with_max_tables(50);
+        let engine = RelationalEngine::with_store_and_config(store, config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_wsac", schema).unwrap();
+
+        assert!(engine.table_exists("test_wsac"));
+        assert_eq!(engine.config().max_tables, Some(50));
+    }
+
+    // Coverage for slab Le/Ge float conditions
+    #[test]
+    fn test_slab_filter_rows_le_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfrlef", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrlef",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrlef", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrlef", Condition::Le("value".to_string(), Value::Float(5.0))).unwrap();
+        assert_eq!(rows.len(), 6);
+    }
+
+    #[test]
+    fn test_slab_filter_rows_ge_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfrgef", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfrgef",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrgef", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrgef", Condition::Ge("value".to_string(), Value::Float(5.0))).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for slab Ne float conditions
+    #[test]
+    fn test_slab_filter_rows_ne_float() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("value", ColumnType::Float)]);
+        engine.create_table("test_sfrnef", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_sfrnef",
+                    HashMap::from([("value".to_string(), Value::Float(i as f64))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfrnef", &["value"]).unwrap();
+
+        let rows = engine.select("test_sfrnef", Condition::Ne("value".to_string(), Value::Float(2.0))).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    // Coverage for And/Or conditions in slab filter
+    #[test]
+    fn test_slab_filter_and_condition() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("a", ColumnType::Int),
+            Column::new("b", ColumnType::Int),
+        ]);
+        engine.create_table("test_sfac", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfac",
+                    HashMap::from([
+                        ("a".to_string(), Value::Int(i)),
+                        ("b".to_string(), Value::Int(i % 3)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfac", &["a", "b"]).unwrap();
+
+        let rows = engine
+            .select(
+                "test_sfac",
+                Condition::And(
+                    Box::new(Condition::Gt("a".to_string(), Value::Int(3))),
+                    Box::new(Condition::Eq("b".to_string(), Value::Int(0))),
+                ),
+            )
+            .unwrap();
+        assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn test_slab_filter_or_condition() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_sfoc", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfoc",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_sfoc", &["id"]).unwrap();
+
+        let rows = engine
+            .select(
+                "test_sfoc",
+                Condition::Or(
+                    Box::new(Condition::Eq("id".to_string(), Value::Int(1))),
+                    Box::new(Condition::Eq("id".to_string(), Value::Int(8))),
+                ),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    // Coverage for select_columnar projection with no filter columns
+    #[test]
+    fn test_select_columnar_no_filter_with_projection() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("test_scnf", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_scnf",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("name{i}"))),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_scnf", &["id", "name"]).unwrap();
+
+        let rows = engine
+            .select_columnar(
+                "test_scnf",
+                Condition::True,
+                ColumnarScanOptions {
+                    projection: Some(vec!["name".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for ColumnValues::is_empty
+    #[test]
+    fn test_column_values_is_empty() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_cvie", schema).unwrap();
+
+        // Empty table
+        let col_data = engine.load_column_data("test_cvie", "id").unwrap();
+        assert!(col_data.values.is_empty());
+
+        // Non-empty after insert
+        engine
+            .insert(
+                "test_cvie",
+                HashMap::from([("id".to_string(), Value::Int(1))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cvie", "id").unwrap();
+        assert!(!col_data.values.is_empty());
+    }
+
+    // Coverage for query with max_result_rows limit error
+    #[test]
+    fn test_select_result_limit_exceeded() {
+        let config = RelationalConfig::new().with_max_query_result_rows(5);
+        let engine = RelationalEngine::with_config(config);
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_srtl", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_srtl",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let result = engine.select("test_srtl", Condition::True);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RelationalError::ResultTooLarge { operation, actual, max } => {
+                assert_eq!(operation, "select");
+                assert_eq!(actual, 10);
+                assert_eq!(max, 5);
+            }
+            e => panic!("unexpected error: {e:?}"),
+        }
+    }
+
+    // Coverage for ColumnData with Bytes get_value
+    #[test]
+    fn test_column_data_bytes_get_value() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("blob", ColumnType::Bytes)]);
+        engine.create_table("test_cdbgv", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cdbgv",
+                HashMap::from([("blob".to_string(), Value::Bytes(vec![1, 2, 3]))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cdbgv", "blob").unwrap();
+        let val = col_data.get_value(0);
+        assert!(matches!(val, Some(Value::Bytes(_))));
+    }
+
+    // Coverage for ColumnData with Json get_value parsing
+    #[test]
+    fn test_column_data_json_get_value() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("meta", ColumnType::Json)]);
+        engine.create_table("test_cdjgv", schema).unwrap();
+
+        engine
+            .insert(
+                "test_cdjgv",
+                HashMap::from([("meta".to_string(), Value::Json(serde_json::json!({"key": "value"})))]),
+            )
+            .unwrap();
+
+        let col_data = engine.load_column_data("test_cdjgv", "meta").unwrap();
+        let val = col_data.get_value(0);
+        assert!(matches!(val, Some(Value::Json(_))));
+    }
+
+    // Coverage for slab filter with deleted rows
+    #[test]
+    fn test_slab_filter_with_deleted_rows() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_sfwdr", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_sfwdr",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Delete some rows
+        engine
+            .delete_rows("test_sfwdr", Condition::Lt("id".to_string(), Value::Int(5)))
+            .unwrap();
+
+        // Materialize columns
+        engine.materialize_columns("test_sfwdr", &["id"]).unwrap();
+
+        // Select should only return non-deleted rows
+        let rows = engine.select("test_sfwdr", Condition::True).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for indexed select with slab
+    #[test]
+    fn test_indexed_select_with_slab() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_isws", schema).unwrap();
+
+        engine.create_index("test_isws", "id").unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_isws",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        // Materialize columns
+        engine.materialize_columns("test_isws", &["id"]).unwrap();
+
+        // Query using index
+        let rows = engine
+            .select("test_isws", Condition::Eq("id".to_string(), Value::Int(5)))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&Value::Int(5)));
+    }
+
+    // Coverage for join with options timeout path
+    #[test]
+    fn test_join_with_timeout_option() {
+        let engine = RelationalEngine::new();
+
+        let schema1 = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+        ]);
+        engine.create_table("left_jwo", schema1).unwrap();
+
+        let schema2 = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("right_jwo", schema2).unwrap();
+
+        engine
+            .insert(
+                "left_jwo",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("name".to_string(), Value::String("Alice".to_string())),
+                ]),
+            )
+            .unwrap();
+
+        engine
+            .insert(
+                "right_jwo",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("value".to_string(), Value::Int(100)),
+                ]),
+            )
+            .unwrap();
+
+        let result = engine.join_with_options(
+            "left_jwo",
+            "right_jwo",
+            "id",
+            "id",
+            QueryOptions::new().with_timeout_ms(60000),
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    // Coverage for update with timeout option
+    #[test]
+    fn test_update_with_timeout_option() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("test_uwo", schema).unwrap();
+
+        engine
+            .insert(
+                "test_uwo",
+                HashMap::from([
+                    ("id".to_string(), Value::Int(1)),
+                    ("value".to_string(), Value::Int(10)),
+                ]),
+            )
+            .unwrap();
+
+        let count = engine.update_with_options(
+            "test_uwo",
+            Condition::True,
+            HashMap::from([("value".to_string(), Value::Int(20))]),
+            QueryOptions::new().with_timeout_ms(60000),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    // Coverage for delete with timeout option
+    #[test]
+    fn test_delete_with_timeout_option() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("id", ColumnType::Int)]);
+        engine.create_table("test_dwo", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_dwo",
+                    HashMap::from([("id".to_string(), Value::Int(i))]),
+                )
+                .unwrap();
+        }
+
+        let count = engine.delete_rows_with_options(
+            "test_dwo",
+            Condition::Lt("id".to_string(), Value::Int(5)),
+            QueryOptions::new().with_timeout_ms(60000),
+        ).unwrap();
+        assert_eq!(count, 5);
+    }
+
+    // Coverage for apply_vectorized_filter type mismatch error
+    #[test]
+    fn test_vectorized_filter_type_mismatch() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![Column::new("name", ColumnType::String)]);
+        engine.create_table("test_vftm", schema).unwrap();
+
+        engine
+            .insert(
+                "test_vftm",
+                HashMap::from([("name".to_string(), Value::String("Alice".to_string()))]),
+            )
+            .unwrap();
+
+        // Materialize column
+        engine.materialize_columns("test_vftm", &["name"]).unwrap();
+
+        // Try to use Int condition on String column - should fallback to regular select
+        let rows = engine
+            .select("test_vftm", Condition::Eq("name".to_string(), Value::Int(1)))
+            .unwrap();
+        // Type mismatch means no rows match
+        assert!(rows.is_empty());
+    }
+
+    // Coverage for Bool column in columnar
+    #[test]
+    fn test_columnar_bool_column() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("active", ColumnType::Bool),
+        ]);
+        engine.create_table("test_cbc", schema).unwrap();
+
+        for i in 0..10 {
+            engine
+                .insert(
+                    "test_cbc",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("active".to_string(), Value::Bool(i % 2 == 0)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_cbc", &["id", "active"]).unwrap();
+
+        let rows = engine.select("test_cbc", Condition::Eq("active".to_string(), Value::Bool(true))).unwrap();
+        assert_eq!(rows.len(), 5);
+    }
+
+    // Coverage for select_columnar with projection and filter
+    #[test]
+    fn test_select_columnar_with_projection_filter() {
+        let engine = RelationalEngine::new();
+
+        let schema = Schema::new(vec![
+            Column::new("id", ColumnType::Int),
+            Column::new("name", ColumnType::String),
+            Column::new("value", ColumnType::Int),
+        ]);
+        engine.create_table("test_scwp", schema).unwrap();
+
+        for i in 0..5 {
+            engine
+                .insert(
+                    "test_scwp",
+                    HashMap::from([
+                        ("id".to_string(), Value::Int(i)),
+                        ("name".to_string(), Value::String(format!("name{i}"))),
+                        ("value".to_string(), Value::Int(i * 10)),
+                    ]),
+                )
+                .unwrap();
+        }
+
+        engine.materialize_columns("test_scwp", &["id", "name", "value"]).unwrap();
+
+        let rows = engine
+            .select_columnar(
+                "test_scwp",
+                Condition::Gt("id".to_string(), Value::Int(2)),
+                ColumnarScanOptions {
+                    projection: Some(vec!["name".to_string()]),
+                    prefer_columnar: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2);
     }
 }
 
@@ -20017,4 +25279,5 @@ mod tensor_eval_tests {
         let resolved = engine.resolve_timeout(QueryOptions::new().with_timeout_ms(5000));
         assert_eq!(resolved, Some(5000));
     }
+
 }

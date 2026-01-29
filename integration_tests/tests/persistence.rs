@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Persistence and recovery integration tests.
 //!
 //! Tests snapshot/restore functionality across all engines sharing a TensorStore.

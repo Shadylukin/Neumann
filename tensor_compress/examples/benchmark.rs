@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Quick TT benchmark
 use std::time::Instant;
 

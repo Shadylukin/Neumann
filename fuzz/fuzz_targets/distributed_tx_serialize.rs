@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz target for distributed transaction serialization.
 //!
 //! Tests that 2PC messages can be serialized and deserialized without panicking.

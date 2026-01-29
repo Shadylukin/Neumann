@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Master key derivation using Argon2id with HKDF-based subkey separation.
 
 use argon2::{Algorithm, Argon2, Params, Version};

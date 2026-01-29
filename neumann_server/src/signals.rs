@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Unix signal handlers for the server.
 //!
 //! This module provides signal handling for graceful shutdown and

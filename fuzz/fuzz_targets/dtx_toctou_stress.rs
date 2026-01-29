@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 #![no_main]
 
 //! Fuzz test for TOCTOU (Time-of-Check-Time-of-Use) safety in 2PC.

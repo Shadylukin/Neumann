@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Distributed query execution with semantic routing and scatter-gather.
 //!
 //! Routes queries to appropriate shards based on key or embedding similarity.

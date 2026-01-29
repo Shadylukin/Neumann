@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! SWIM gossip protocol for scalable cluster membership and failure detection.
 //!
 //! # Overview
@@ -834,6 +835,7 @@ impl GossipMembershipManager {
     }
 
     /// Run a single gossip round.
+    #[allow(clippy::unused_async)] // Async for API consistency; spawns async tasks internally
     pub async fn gossip_round(&self) -> Result<()> {
         let round = self.round_counter.fetch_add(1, Ordering::Relaxed) + 1;
 

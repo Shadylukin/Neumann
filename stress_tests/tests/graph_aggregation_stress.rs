@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graph engine aggregation stress tests.
 //!
 //! Tests degree queries and aggregation operations under concurrent mutations

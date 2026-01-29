@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for Raft message serialization and handling.
 //!
 //! Tests that:

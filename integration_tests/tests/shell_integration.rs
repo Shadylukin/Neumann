@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shell integration tests.
 //!
 //! Tests shell command processing, help text, and interactive features.

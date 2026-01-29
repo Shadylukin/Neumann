@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! TCP transport implementation.
 //!
 //! Implements the `Transport` trait for TCP-based node communication.

@@ -53,6 +53,7 @@ Repository = "https://github.com/neumann-db/neumann"
 Documentation = "https://neumann-db.github.io/neumann"
 
 [tool.maturin]
+manifest-path = "neumann-native/Cargo.toml"
 features = ["pyo3/extension-module"]
 python-source = "src"
 module-name = "neumann._native"
@@ -90,13 +91,15 @@ testpaths = ["tests"]
 [tool.coverage.run]
 source = ["neumann"]
 omit = [
-    "*/proto/neumann_pb2.py",
-    "*/proto/neumann_pb2_grpc.py",
+    "*/proto/*",
 ]
 
 [tool.coverage.report]
+fail_under = 95
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+    "except ImportError:",
+    "raise RuntimeError",
 ]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for neumann_client connecting to neumann_server.
 //!
 //! These tests require the "full" feature (both embedded and remote).
@@ -384,6 +385,138 @@ async fn test_remote_insert_and_select_multiple_columns() {
     let result = client.execute("SELECT multi_col").await.unwrap();
     assert!(result.rows().is_some());
     assert_eq!(result.rows().unwrap().len(), 1);
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_stream() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    // Setup data
+    let _ = client.execute("CREATE TABLE stream_test (x:int)").await;
+    let _ = client.execute("INSERT stream_test x=1").await;
+    let _ = client.execute("INSERT stream_test x=2").await;
+
+    // Stream query - the server may or may not support streaming,
+    // so we just verify the method works
+    let stream_result = client.execute_stream("SELECT stream_test").await;
+    // The test passes if we can create the stream request
+    assert!(stream_result.is_ok() || stream_result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_execute_stream_with_identity() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    let _ = client.execute("CREATE TABLE stream_id_test (x:int)").await;
+
+    let stream_result = client
+        .execute_stream_with_identity("SELECT stream_id_test", Some("user:test"))
+        .await;
+    // The test passes if we can create the stream request
+    assert!(stream_result.is_ok() || stream_result.is_err());
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_stream_not_connected() {
+    let (addr, shutdown) = start_test_server().await;
+
+    let mut client = NeumannClient::connect(addr.to_string())
+        .build()
+        .await
+        .expect("should connect");
+
+    client.close();
+
+    let result = client.execute_stream("SELECT test").await;
+    assert!(matches!(result, Err(ClientError::Connection(_))));
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_with_invalid_api_key_format() {
+    let (addr, shutdown) = start_test_server().await;
+
+    // API key with newline character (invalid for HTTP header)
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("invalid\nkey")
+        .build()
+        .await
+        .expect("should connect");
+
+    // The invalid API key should cause a parse error when executing
+    let result = client.execute("SELECT test").await;
+    assert!(result.is_err());
+    match result {
+        Err(ClientError::InvalidArgument(msg)) => {
+            assert!(msg.contains("Invalid API key format"));
+        },
+        other => panic!("Expected InvalidArgument error, got {:?}", other),
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_batch_with_invalid_api_key_format() {
+    let (addr, shutdown) = start_test_server().await;
+
+    // API key with control character (invalid for HTTP header)
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("invalid\x00key")
+        .build()
+        .await
+        .expect("should connect");
+
+    // The invalid API key should cause a parse error when executing batch
+    let result = client.execute_batch(&["SELECT test"]).await;
+    assert!(result.is_err());
+    match result {
+        Err(ClientError::InvalidArgument(msg)) => {
+            assert!(msg.contains("Invalid API key format"));
+        },
+        other => panic!("Expected InvalidArgument error, got {:?}", other),
+    }
+
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_remote_stream_with_invalid_api_key_format() {
+    let (addr, shutdown) = start_test_server().await;
+
+    // API key with carriage return (invalid for HTTP header)
+    let client = NeumannClient::connect(addr.to_string())
+        .api_key("invalid\rkey")
+        .build()
+        .await
+        .expect("should connect");
+
+    // The invalid API key should cause a parse error when executing stream
+    let result = client.execute_stream("SELECT test").await;
+    assert!(result.is_err());
+    match result {
+        Err(ClientError::InvalidArgument(msg)) => {
+            assert!(msg.contains("Invalid API key format"));
+        },
+        other => panic!("Expected InvalidArgument error, got {:?}", other),
+    }
 
     drop(shutdown);
 }

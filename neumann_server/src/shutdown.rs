@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graceful shutdown manager with drain timeout.
 //!
 //! This module provides a shutdown manager that tracks active streams and

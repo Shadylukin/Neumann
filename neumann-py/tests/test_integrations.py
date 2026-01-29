@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for integration modules (pandas and numpy)."""
 
 from __future__ import annotations

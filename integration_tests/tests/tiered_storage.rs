@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tiered storage integration tests.
 //!
 //! Tests hot/cold data migration and access pattern optimization.

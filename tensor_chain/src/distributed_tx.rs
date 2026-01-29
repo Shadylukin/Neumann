@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Cross-shard distributed transactions with 2PC and delta-based conflict detection.
 //!
 //! Coordinates transactions spanning multiple shards using two-phase commit:

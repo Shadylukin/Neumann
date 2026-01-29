@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Neumann database client with dual-mode support (embedded and remote)."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for TLS error handling.
 //!
 //! Tests that TLS key parsing handles malformed input gracefully

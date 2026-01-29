@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Markdown parsing utilities for extracting document metadata and links.
 
 use regex::Regex;

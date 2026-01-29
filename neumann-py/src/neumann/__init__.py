@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Neumann database Python SDK.
 
 This package provides a Python client for the Neumann database with support

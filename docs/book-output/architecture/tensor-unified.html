@@ -242,6 +242,9 @@ without data duplication.</p>
 <tr><td><code>DistanceMetric</code></td><td>Similarity metric (Cosine, Euclidean, DotProduct)</td></tr>
 <tr><td><code>EntityInput</code></td><td>Tuple type for batch operations: (key, fields, embedding)</td></tr>
 <tr><td><code>Unified</code></td><td>Trait for converting engine types to UnifiedItem</td></tr>
+<tr><td><code>FilterCondition</code></td><td>Re-exported from vector_engine for filtered search</td></tr>
+<tr><td><code>FilterValue</code></td><td>Re-exported from vector_engine for filter values</td></tr>
+<tr><td><code>VectorCollectionConfig</code></td><td>Re-exported from vector_engine for collection config</td></tr>
 </tbody></table>
 </div>
 <h3 id="unifieditem"><a class="header" href="#unifieditem">UnifiedItem</a></h3>
@@ -455,6 +458,37 @@ let results = engine.find_similar_connected(
 <li>Returns top-k results with source <code>"vector+graph"</code></li>
 </ol>
 <p><strong>Edge case:</strong> If <code>query_key</code> has no embedding, returns <code>VectorError::NotFound</code>.</p>
+<h3 id="find-similar-connected-with-filter"><a class="header" href="#find-similar-connected-with-filter">Find Similar Connected with Filter</a></h3>
+<p>Enhanced version that combines vector similarity, graph connectivity, and
+metadata filtering:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::{FilterCondition, FilterValue};
+
+// Build a filter for metadata
+let filter = FilterCondition::Eq(
+    "category".to_string(),
+    FilterValue::String("article".to_string())
+);
+
+// Find entities similar to query, connected to hub, matching filter
+let results = engine.find_similar_connected_filtered(
+    "user:1",      // Query entity (uses its embedding)
+    "hub:main",    // Find entities connected to this
+    Some(&amp;filter), // Optional metadata filter
+    10             // Top-k results
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<p><strong>Algorithm:</strong></p>
+<ol>
+<li>Gets query embedding from <code>query_key</code></li>
+<li>Gets connected neighbor keys from graph</li>
+<li>Builds combined filter: <code>key IN neighbors AND user_filter</code></li>
+<li>Uses pre-filter strategy for high selectivity</li>
+<li>Returns filtered results with source <code>"vector+graph"</code></li>
+</ol>
+<p>The filtered version eliminates post-processing by pushing filters into the
+vector search, improving performance for selective queries.</p>
 <h3 id="find-neighbors-by-similarity"><a class="header" href="#find-neighbors-by-similarity">Find Neighbors by Similarity</a></h3>
 <p>Find graph neighbors sorted by similarity to a query vector:</p>
 <pre class="mermaid">flowchart LR
@@ -492,6 +526,108 @@ let results = engine.find_neighbors_by_similarity(
 <li>Returns results with source <code>"graph+vector"</code></li>
 </ol>
 <p><strong>Gotcha:</strong> Neighbors without embeddings are silently skipped.</p>
+<h2 id="unified-entity-storage"><a class="header" href="#unified-entity-storage">Unified Entity Storage</a></h2>
+<p>The unified entity storage methods provide a streamlined API for storing entity
+fields as vector metadata, eliminating double-storage overhead.</p>
+<h3 id="creating-unified-entities"><a class="header" href="#creating-unified-entities">Creating Unified Entities</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::collections::HashMap;
+
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "Introduction to Rust".to_string());
+fields.insert("author".to_string(), "Alice".to_string());
+
+// Store entity with fields as vector metadata
+engine.create_entity_unified(
+    "doc:1",
+    fields,
+    Some(vec![0.1, 0.2, 0.3, 0.4])
+).await?;
+
+// Without embedding, stores to TensorStore only
+engine.create_entity_unified("doc:2", fields, None).await?;
+<span class="boring">}</span></code></pre></pre>
+<p>When an embedding is provided, fields are stored as vector metadata alongside
+the embedding. This enables filtered search without requiring a separate storage
+lookup.</p>
+<h3 id="retrieving-unified-entities"><a class="header" href="#retrieving-unified-entities">Retrieving Unified Entities</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Get entity with fields from vector metadata
+let item = engine.get_entity_unified("doc:1").await?;
+
+println!("Title: {:?}", item.data.get("title"));
+println!("Embedding: {:?}", item.embedding);
+<span class="boring">}</span></code></pre></pre>
+<p>The retrieval first attempts to load from vector metadata. If not found, it
+falls back to the standard TensorStore lookup.</p>
+<h2 id="collection-based-entity-organization"><a class="header" href="#collection-based-entity-organization">Collection-Based Entity Organization</a></h2>
+<p>Collections provide type-based organization for entities, enabling scoped
+searches and dimension enforcement.</p>
+<h3 id="creating-entities-in-collections"><a class="header" href="#creating-entities-in-collections">Creating Entities in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::VectorCollectionConfig;
+use std::collections::HashMap;
+
+// Create a collection for documents
+let config = VectorCollectionConfig::default()
+    .with_dimension(768)
+    .with_metric(DistanceMetric::Cosine);
+
+engine.create_entity_collection("documents", config)?;
+
+// Store entity in collection
+let mut fields = HashMap::new();
+fields.insert("title".to_string(), "ML Paper".to_string());
+
+engine.create_entity_in_collection(
+    "documents",
+    "paper:1",
+    fields,
+    vec![0.1; 768]
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="searching-in-collections"><a class="header" href="#searching-in-collections">Searching in Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use vector_engine::FilterCondition;
+
+// Basic search in collection
+let results = engine.find_similar_in_collection(
+    "documents",
+    &amp;query_embedding,
+    None,  // No filter
+    10
+).await?;
+
+// Filtered search in collection
+let filter = FilterCondition::Eq("author".to_string(), "Alice".into());
+let results = engine.find_similar_in_collection(
+    "documents",
+    &amp;query_embedding,
+    Some(&amp;filter),
+    10
+).await?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="managing-collections"><a class="header" href="#managing-collections">Managing Collections</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// List all entity collections
+let collections = engine.list_entity_collections();
+
+// Delete a collection
+engine.delete_entity_collection("documents")?;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="collection-isolation"><a class="header" href="#collection-isolation">Collection Isolation</a></h3>
+<p>Collections ensure entity isolation:</p>
+<ul>
+<li>Each collection has its own key namespace</li>
+<li>Dimension mismatches are rejected per-collection config</li>
+<li>Searches only see entities within the specified collection</li>
+<li>Deleting a collection removes all entities in it</li>
+</ul>
 <h3 id="find-nodes-and-edges"><a class="header" href="#find-nodes-and-edges">Find Nodes and Edges</a></h3>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -698,6 +834,11 @@ let similar = if let Some((ref index, ref keys)) = self.hnsw_index {
 <tr><td><code>get_entity</code></td><td>O(1)</td><td>Single store get + optional embedding lookup</td></tr>
 <tr><td><code>find_similar_connected</code></td><td>O(k log n)</td><td>HNSW search + graph intersection</td></tr>
 <tr><td><code>find_similar_connected</code> (brute)</td><td>O(n)</td><td>Linear scan when no HNSW index</td></tr>
+<tr><td><code>find_similar_connected_filtered</code></td><td>O(m)</td><td>Pre-filter search, m = matching keys</td></tr>
+<tr><td><code>create_entity_unified</code></td><td>O(1)</td><td>Single store with metadata</td></tr>
+<tr><td><code>get_entity_unified</code></td><td>O(1)</td><td>Metadata lookup with fallback</td></tr>
+<tr><td><code>create_entity_in_collection</code></td><td>O(1)</td><td>Collection-scoped store</td></tr>
+<tr><td><code>find_similar_in_collection</code></td><td>O(c)</td><td>c = collection size</td></tr>
 <tr><td><code>find_neighbors_by_similarity</code></td><td>O(d * k)</td><td>Neighbor fetch + k similarity computations</td></tr>
 <tr><td><code>find_nodes</code></td><td>O(n)</td><td>Full scan with prefix filter</td></tr>
 <tr><td><code>find_edges</code></td><td>O(e)</td><td>Full scan with prefix filter</td></tr>
@@ -801,8 +942,8 @@ computations)</li>
 <tr><td><code>tensor_store</code></td><td>Shared storage backend, provides <code>TensorData</code> and <code>fields</code> constants</td></tr>
 <tr><td><code>relational_engine</code></td><td>Relational data, conditions for filtering</td></tr>
 <tr><td><code>graph_engine</code></td><td>Graph connectivity, entity edges, neighbor queries</td></tr>
-<tr><td><code>vector_engine</code></td><td>Embeddings, similarity search, HNSW index</td></tr>
-<tr><td><code>query_router</code></td><td>Query execution, language integration, HNSW optimization</td></tr>
+<tr><td><code>vector_engine</code></td><td>Embeddings, similarity search, HNSW index, <code>FilterCondition</code>, <code>FilterValue</code>, <code>VectorCollectionConfig</code></td></tr>
+<tr><td><code>query_router</code></td><td>Query execution, language integration, HNSW optimization, re-exports filter types</td></tr>
 </tbody></table>
 </div>
 <h2 id="dependencies"><a class="header" href="#dependencies">Dependencies</a></h2>

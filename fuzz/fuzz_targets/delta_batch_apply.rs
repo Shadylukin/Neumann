@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz test for delta replication batch creation and application.
 //!
 //! Tests that:

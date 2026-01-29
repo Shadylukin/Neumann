@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Vault versioning integration tests.
 //!
 //! Tests secret versioning, rollback, and version management.

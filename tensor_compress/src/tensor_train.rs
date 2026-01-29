@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor Train (TT) decomposition for high-dimensional embedding compression.
 //!
 //! Implements the TT-SVD algorithm from Oseledets (2011) for decomposing vectors

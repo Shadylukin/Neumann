@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! PostgreSQL Scaling Comparison Stress Tests
 //!
 //! Response to: "Scaling PostgreSQL to power 800 million ChatGPT users"

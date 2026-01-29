@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for geometric routing in tensor_chain.
 //!
 //! Tests the geometric membership manager and geometric routing features.

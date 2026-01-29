@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Chain structure linking blocks via graph edges.
 //!
 //! Blocks are linked as a directed graph where each block points to its predecessor.

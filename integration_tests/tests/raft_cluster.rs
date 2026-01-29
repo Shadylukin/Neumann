@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for Raft consensus in tensor_chain.
 //!
 //! Tests multi-node Raft cluster operations including:

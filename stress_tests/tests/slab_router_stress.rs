@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Stress tests for SlabRouter throughput stability.
 //!
 //! The goal is CV (coefficient of variation) < 20% with sustained 2M+ ops/sec.

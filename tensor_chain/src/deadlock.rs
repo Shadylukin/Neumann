@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Wait-for graph tracking with DFS-based cycle detection for distributed transactions.
 //!
 //! # Overview

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, vi } from 'vitest';
 import {
   NeumannClient,
@@ -46,17 +47,55 @@ import {
   edgeToObject,
 } from './types/query-result.js';
 
-// Mock gRPC modules
+// Mock execute callback response
+const mockExecuteResponse = { empty: {} };
+const mockExecuteStreamResponses = [
+  { row: { row: { columns: [{ name: 'x', value: { intValue: 1 } }] } } },
+  { isFinal: true },
+];
+const mockBatchResponse = { results: [{ empty: {} }, { empty: {} }, { empty: {} }] };
+
+// Mock gRPC client
+const mockGrpcClient = {
+  Execute: vi.fn((request: unknown, metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+    callback(null, mockExecuteResponse);
+  }),
+  ExecuteStream: vi.fn(() => {
+    let index = 0;
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < mockExecuteStreamResponses.length) {
+            return Promise.resolve({ value: mockExecuteStreamResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    };
+  }),
+  ExecuteBatch: vi.fn((request: unknown, metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+    callback(null, mockBatchResponse);
+  }),
+};
+
+// Mock grpc.ts module
+vi.mock('./grpc.js', () => ({
+  loadProto: vi.fn().mockResolvedValue({}),
+  getQueryServiceClient: vi.fn(() => mockGrpcClient),
+}));
+
+// Mock @grpc/grpc-js
 vi.mock('@grpc/grpc-js', () => ({
   credentials: {
     createSsl: vi.fn(() => ({})),
     createInsecure: vi.fn(() => ({})),
   },
-  Channel: vi.fn().mockImplementation(() => ({
-    getTarget: () => 'localhost:50051',
+  Metadata: vi.fn().mockImplementation(() => ({
+    set: vi.fn(),
   })),
 }));
 
+// Mock grpc-web
 vi.mock('grpc-web', () => ({
   GrpcWebClientBase: vi.fn().mockImplementation(() => ({})),
 }));
@@ -93,17 +132,17 @@ describe('NeumannClient', () => {
     });
 
     it('should throw ConnectionError when gRPC fails', async () => {
-      // Temporarily make the Channel constructor throw
-      const grpc = await import('@grpc/grpc-js');
-      const originalChannel = grpc.Channel;
-      (grpc as any).Channel = vi.fn().mockImplementation(() => {
-        throw new Error('Connection refused');
-      });
+      // Temporarily make loadProto throw
+      const grpcModule = await import('./grpc.js');
+      const originalLoadProto = grpcModule.loadProto;
+      (grpcModule as { loadProto: typeof originalLoadProto }).loadProto = vi.fn().mockRejectedValue(
+        new Error('Connection refused')
+      );
 
       await expect(NeumannClient.connect('localhost:50051')).rejects.toThrow(ConnectionError);
 
       // Restore
-      (grpc as any).Channel = originalChannel;
+      (grpcModule as { loadProto: typeof originalLoadProto }).loadProto = originalLoadProto;
     });
   });
 
@@ -127,14 +166,16 @@ describe('NeumannClient', () => {
       // Temporarily make the GrpcWebClientBase constructor throw
       const grpcWeb = await import('grpc-web');
       const originalBase = grpcWeb.GrpcWebClientBase;
-      (grpcWeb as any).GrpcWebClientBase = vi.fn().mockImplementation(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+      (grpcWeb as Record<string, unknown>).GrpcWebClientBase = vi.fn().mockImplementation(() => {
         throw new Error('gRPC-Web initialization failed');
       });
 
       await expect(NeumannClient.connectWeb('http://localhost:8080')).rejects.toThrow(ConnectionError);
 
       // Restore
-      (grpcWeb as any).GrpcWebClientBase = originalBase;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+      (grpcWeb as Record<string, unknown>).GrpcWebClientBase = originalBase;
     });
   });
 
@@ -796,5 +837,221 @@ describe('Conversion Utilities', () => {
       expect(obj['target']).toBe('n2');
       expect((obj['properties'] as Record<string, unknown>)['weight']).toBe(0.5);
     });
+  });
+});
+
+describe('Stream Chunk Types', () => {
+  it('should handle node chunks', async () => {
+    const nodeResponses = [
+      { node: { node: { id: 'n1', label: 'Person', properties: [] } } },
+      { isFinal: true },
+    ];
+    let index = 0;
+    mockGrpcClient.ExecuteStream.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < nodeResponses.length) {
+            return Promise.resolve({ value: nodeResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    }));
+
+    const client = await NeumannClient.connect('localhost:50051');
+    const results: unknown[] = [];
+    for await (const result of client.executeStream('MATCH (n)')) {
+      results.push(result);
+    }
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]).toHaveProperty('type', 'nodes');
+    client.close();
+  });
+
+  it('should handle edge chunks', async () => {
+    const edgeResponses = [
+      { edge: { edge: { id: 'e1', type: 'KNOWS', from: 'n1', to: 'n2' } } },
+      { isFinal: true },
+    ];
+    let index = 0;
+    mockGrpcClient.ExecuteStream.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < edgeResponses.length) {
+            return Promise.resolve({ value: edgeResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    }));
+
+    const client = await NeumannClient.connect('localhost:50051');
+    const results: unknown[] = [];
+    for await (const result of client.executeStream('MATCH ()-[e]->()')) {
+      results.push(result);
+    }
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]).toHaveProperty('type', 'edges');
+    client.close();
+  });
+
+  it('should handle similarItem chunks', async () => {
+    const similarItemResponses = [
+      { similarItem: { item: { key: 'k1', score: 0.95 } } },
+      { isFinal: true },
+    ];
+    let index = 0;
+    mockGrpcClient.ExecuteStream.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < similarItemResponses.length) {
+            return Promise.resolve({ value: similarItemResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    }));
+
+    const client = await NeumannClient.connect('localhost:50051');
+    const results: unknown[] = [];
+    for await (const result of client.executeStream('SIMILAR vec')) {
+      results.push(result);
+    }
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]).toHaveProperty('type', 'similar');
+    client.close();
+  });
+
+  it('should handle blobData chunks', async () => {
+    const blobResponses = [
+      { blobData: new Uint8Array([1, 2, 3, 4]) },
+      { isFinal: true },
+    ];
+    let index = 0;
+    mockGrpcClient.ExecuteStream.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < blobResponses.length) {
+            return Promise.resolve({ value: blobResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    }));
+
+    const client = await NeumannClient.connect('localhost:50051');
+    const results: unknown[] = [];
+    for await (const result of client.executeStream('GET BLOB')) {
+      results.push(result);
+    }
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]).toHaveProperty('type', 'blob');
+    client.close();
+  });
+
+  it('should handle empty chunks as fallback', async () => {
+    const emptyResponses = [
+      { unknownField: true }, // No recognized field - should return empty
+      { isFinal: true },
+    ];
+    let index = 0;
+    mockGrpcClient.ExecuteStream.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next(): Promise<{ value: unknown; done: boolean }> {
+          if (index < emptyResponses.length) {
+            return Promise.resolve({ value: emptyResponses[index++], done: false });
+          }
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      }),
+    }));
+
+    const client = await NeumannClient.connect('localhost:50051');
+    const results: unknown[] = [];
+    for await (const result of client.executeStream('UNKNOWN')) {
+      results.push(result);
+    }
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]).toHaveProperty('type', 'empty');
+    client.close();
+  });
+});
+
+describe('gRPC Error Handling', () => {
+  it('should convert UNAUTHENTICATED to AuthenticationError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 16, details: 'Auth failed' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(AuthenticationError);
+    client.close();
+  });
+
+  it('should convert PERMISSION_DENIED to PermissionDeniedError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 7, details: 'Permission denied' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(PermissionDeniedError);
+    client.close();
+  });
+
+  it('should convert NOT_FOUND to NotFoundError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 5, details: 'Not found' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(NotFoundError);
+    client.close();
+  });
+
+  it('should convert INVALID_ARGUMENT to InvalidArgumentError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 3, details: 'Invalid argument' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(InvalidArgumentError);
+    client.close();
+  });
+
+  it('should convert UNAVAILABLE to ConnectionError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 14, details: 'Service unavailable' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(ConnectionError);
+    client.close();
+  });
+
+  it('should convert unknown error codes to InternalError', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 99, details: 'Unknown error' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow(InternalError);
+    client.close();
+  });
+
+  it('should use default message when details is empty', async () => {
+    mockGrpcClient.Execute.mockImplementationOnce(
+      (_request: unknown, _metadata: unknown, callback: (err: unknown, response: unknown) => void) => {
+        callback({ code: 16, message: 'fallback' }, null);
+      }
+    );
+    const client = await NeumannClient.connect('localhost:50051');
+    await expect(client.execute('SELECT 1')).rejects.toThrow('Authentication failed');
+    client.close();
   });
 });

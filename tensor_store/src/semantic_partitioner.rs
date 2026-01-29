@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Semantic partitioner for embedding-based data distribution.
 //!
 //! Routes keys to shards based on embedding similarity using archetype centroids.

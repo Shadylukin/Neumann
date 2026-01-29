@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for retry logic."""
 
 import asyncio

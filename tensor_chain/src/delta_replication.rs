@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Delta-compressed replication for bandwidth-efficient state transfer.
 //!
 //! This module implements archetype-based delta encoding to reduce replication

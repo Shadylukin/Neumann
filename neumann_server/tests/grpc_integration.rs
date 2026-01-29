@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! gRPC integration tests for neumann_server.
 //!
 //! These tests verify actual gRPC behavior by starting a server and

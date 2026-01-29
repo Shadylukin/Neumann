@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Distance metrics integration tests.
 //!
 //! Tests SIMILAR queries with different distance metrics:

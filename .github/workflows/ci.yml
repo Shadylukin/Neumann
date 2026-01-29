@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -142,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell]
+        crate: [tensor_store, relational_engine, graph_engine, vector_engine, tensor_compress, tensor_vault, tensor_cache, tensor_blob, tensor_chain, tensor_unified, tensor_checkpoint, query_router, neumann_parser, neumann_shell, neumann_client]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -224,10 +224,32 @@ jobs:
           name: bench-${{ matrix.crate }}
           path: target/criterion
 
+  # Cross-platform tests
+  cross-platform:
+    name: Cross-Platform
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build workspace
+        run: cargo build --workspace --exclude fuzz --exclude neumann-py-native
+      - name: Test core crates
+        run: |
+          cargo test -p tensor_store
+          cargo test -p relational_engine
+          cargo test -p graph_engine
+          cargo test -p vector_engine
+          cargo test -p neumann_parser
+          cargo test -p query_router
+
   # Summary job that depends on all checks
   ci-success:
     name: CI Success
-    needs: [check, fmt, clippy, test, coverage, doc, security-audit, miri]
+    needs: [check, fmt, clippy, test, coverage, doc, security-audit, miri, cross-platform]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -239,7 +261,8 @@ jobs:
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.coverage.result }}" != "success" ]] || \
              [[ "${{ needs.doc.result }}" != "success" ]] || \
-             [[ "${{ needs.miri.result }}" != "success" ]]; then
+             [[ "${{ needs.miri.result }}" != "success" ]] || \
+             [[ "${{ needs.cross-platform.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

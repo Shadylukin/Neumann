@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Defense-in-depth validation layer for all cluster messages.
 //!
 //! # Overview

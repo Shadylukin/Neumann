@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * Type declarations for grpc-web module.
  * Used for browser-based gRPC connections.

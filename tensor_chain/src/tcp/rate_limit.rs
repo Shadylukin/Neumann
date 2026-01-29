@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-peer rate limiting using token bucket algorithm.
 
 use std::time::Instant;

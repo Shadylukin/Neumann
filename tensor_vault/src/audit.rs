@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Audit logging for vault operations.
 //!
 //! Records all vault operations for compliance and forensics.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Distance metrics for geometric vector operations.
 //!
 //! Provides configurable distance/similarity metrics beyond cosine,

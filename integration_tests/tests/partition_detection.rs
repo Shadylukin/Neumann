@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration tests for partition detection and metrics observability.
 //!
 //! Tests the new partition detection features:

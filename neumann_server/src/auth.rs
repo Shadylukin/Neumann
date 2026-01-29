@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Authentication middleware for API key validation.
 
 use tonic::{Request, Status};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Integration test helpers for Neumann.
 //!
 //! Provides utilities for setting up multi-engine test scenarios.

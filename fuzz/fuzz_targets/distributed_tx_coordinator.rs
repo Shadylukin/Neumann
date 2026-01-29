@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fuzz target for DistributedTxCoordinator state machine.
 //!
 //! Tests 2PC protocol state transitions and conflict detection.

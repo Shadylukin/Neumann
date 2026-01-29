@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pratt expression parser for the Neumann query language.
 //!
 //! Implements a Pratt parser (top-down operator precedence parser) for
@@ -43,6 +44,7 @@ pub struct ExprParser<'a> {
 
 impl<'a> ExprParser<'a> {
     /// Creates a new expression parser.
+    #[must_use]
     pub fn new(source: &'a str) -> Self {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
@@ -55,6 +57,7 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Creates a parser from an existing lexer and current token.
+    #[must_use]
     pub fn from_lexer(lexer: Lexer<'a>, current: Token) -> Self {
         Self {
             lexer,
@@ -65,16 +68,22 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Returns the source text.
+    #[must_use]
     pub fn source(&self) -> &'a str {
         self.lexer.source()
     }
 
     /// Returns the current token.
+    #[must_use]
     pub fn current(&self) -> &Token {
         &self.current
     }
 
     /// Peeks at the next token.
+    ///
+    /// # Panics
+    ///
+    /// This method will not panic under normal operation.
     pub fn peek(&mut self) -> &Token {
         if self.peeked.is_none() {
             self.peeked = Some(self.lexer.next_token());
@@ -93,11 +102,13 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Returns true if the current token matches the given kind.
+    #[must_use]
     pub fn check(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(&self.current.kind) == std::mem::discriminant(kind)
     }
 
     /// Returns true if the current token is one of the given kinds.
+    #[must_use]
     pub fn check_any(&self, kinds: &[TokenKind]) -> bool {
         kinds.iter().any(|k| self.check(k))
     }
@@ -113,6 +124,10 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Expects the current token to match, or returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current token doesn't match the expected kind.
     pub fn expect(&mut self, kind: &TokenKind) -> ParseResult<Token> {
         if self.check(kind) {
             Ok(self.advance())
@@ -128,6 +143,10 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Parses an expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not a valid expression.
     pub fn parse_expr(&mut self) -> ParseResult<Expr> {
         self.parse_expr_bp(0)
     }
@@ -654,6 +673,10 @@ fn prefix_binding_power() -> u8 {
 }
 
 /// Parses an expression from source text.
+///
+/// # Errors
+///
+/// Returns an error if the input is not a valid expression.
 pub fn parse_expr(source: &str) -> ParseResult<Expr> {
     let mut parser = ExprParser::new(source);
     let expr = parser.parse_expr()?;

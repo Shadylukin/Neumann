@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Error handling integration tests.
 //!
 //! Tests that all engines return proper errors for invalid operations.

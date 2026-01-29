@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Token types for the Neumann query language.
 //!
 //! Defines all tokens produced by the lexer, including:
@@ -24,18 +25,21 @@ pub struct Token {
 impl Token {
     /// Creates a new token.
     #[inline]
+    #[must_use]
     pub const fn new(kind: TokenKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Returns true if this is an EOF token.
     #[inline]
+    #[must_use]
     pub fn is_eof(&self) -> bool {
         self.kind == TokenKind::Eof
     }
 
     /// Returns true if this token is a keyword.
     #[inline]
+    #[must_use]
     pub fn is_keyword(&self) -> bool {
         self.kind.is_keyword()
     }
@@ -199,6 +203,7 @@ pub enum TokenKind {
     Match,
     Entity,
     Connected,
+    Rows,
 
     // === Vault Keywords ===
     Vault,
@@ -379,6 +384,8 @@ pub enum TokenKind {
 
 impl TokenKind {
     /// Returns true if this is a keyword token.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Exhaustive keyword list
     pub fn is_keyword(&self) -> bool {
         use TokenKind::*;
         matches!(
@@ -514,6 +521,7 @@ impl TokenKind {
                 | Match
                 | Entity
                 | Connected
+                | Rows
                 | Vault
                 | Grant
                 | Revoke
@@ -594,24 +602,28 @@ impl TokenKind {
     }
 
     /// Returns true if this is a comparison operator.
+    #[must_use]
     pub fn is_comparison(&self) -> bool {
         use TokenKind::*;
         matches!(self, Eq | Ne | Lt | Le | Gt | Ge)
     }
 
     /// Returns true if this is an arithmetic operator.
+    #[must_use]
     pub fn is_arithmetic(&self) -> bool {
         use TokenKind::*;
         matches!(self, Plus | Minus | Star | Slash | Percent)
     }
 
     /// Returns true if this is a logical operator.
+    #[must_use]
     pub fn is_logical(&self) -> bool {
         use TokenKind::*;
         matches!(self, And | Or | Not)
     }
 
     /// Returns true if this is a literal.
+    #[must_use]
     pub fn is_literal(&self) -> bool {
         use TokenKind::*;
         matches!(
@@ -622,6 +634,7 @@ impl TokenKind {
 
     /// Returns true if this keyword can be used as an identifier in expression contexts.
     /// These are domain-specific keywords that don't conflict with SQL syntax.
+    #[must_use]
     pub fn is_contextual_keyword(&self) -> bool {
         use TokenKind::*;
         matches!(
@@ -645,6 +658,8 @@ impl TokenKind {
     }
 
     /// Returns the keyword for a string, if it matches.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Exhaustive keyword mapping
     pub fn keyword_from_str(s: &str) -> Option<TokenKind> {
         let upper = s.to_uppercase();
         Some(match upper.as_str() {
@@ -790,6 +805,7 @@ impl TokenKind {
             "MATCH" => TokenKind::Match,
             "ENTITY" => TokenKind::Entity,
             "CONNECTED" => TokenKind::Connected,
+            "ROWS" => TokenKind::Rows,
 
             // Vault keywords
             "VAULT" => TokenKind::Vault,
@@ -886,6 +902,8 @@ impl TokenKind {
     }
 
     /// Returns a string representation of the token kind.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Exhaustive token mapping
     pub fn as_str(&self) -> &'static str {
         use TokenKind::*;
         match self {
@@ -1024,6 +1042,7 @@ impl TokenKind {
             Match => "MATCH",
             Entity => "ENTITY",
             Connected => "CONNECTED",
+            Rows => "ROWS",
             Vault => "VAULT",
             Grant => "GRANT",
             Revoke => "REVOKE",
