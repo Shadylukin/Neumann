@@ -20,7 +20,6 @@ members = [
     "tensor_chain",
     "stress_tests",
     "experiments",
-    "seed_model",
     "neumann_docs",
     "examples",
 ]
