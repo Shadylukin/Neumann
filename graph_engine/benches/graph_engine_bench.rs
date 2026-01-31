@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+#![allow(missing_docs)]
 use std::collections::HashMap;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};

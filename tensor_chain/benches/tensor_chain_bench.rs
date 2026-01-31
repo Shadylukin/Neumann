@@ -15,6 +15,7 @@
 //! - Snapshot operations
 //! - Membership management
 //! - Deadlock detection
+#![allow(missing_docs)]
 
 use std::{collections::HashSet, sync::Arc};
 

@@ -3,6 +3,8 @@
 //!
 //! Measures embedding storage, similarity search, and HNSW index operations.
 
+#![allow(missing_docs)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};

@@ -2,6 +2,7 @@
 //! HNSW concurrent operation benchmarks.
 //!
 //! Measures throughput and latency of concurrent insert and search operations.
+#![allow(missing_docs)]
 
 use std::sync::{Arc, Barrier};
 use std::thread;
