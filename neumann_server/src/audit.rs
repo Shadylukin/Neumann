@@ -26,6 +26,8 @@ pub struct AuditConfig {
     pub log_queries: bool,
     /// Log blob operations.
     pub log_blob_ops: bool,
+    /// Log vector operations.
+    pub log_vector_ops: bool,
     /// Maximum entries to retain (0 = unlimited).
     pub max_entries: usize,
 }
@@ -38,6 +40,7 @@ impl Default for AuditConfig {
             log_failure: true,
             log_queries: false,
             log_blob_ops: true,
+            log_vector_ops: true,
             max_entries: 100_000,
         }
     }
@@ -54,6 +57,20 @@ impl AuditConfig {
     #[must_use]
     pub const fn with_query_logging(mut self) -> Self {
         self.log_queries = true;
+        self
+    }
+
+    /// Enable vector operations logging.
+    #[must_use]
+    pub const fn with_vector_logging(mut self) -> Self {
+        self.log_vector_ops = true;
+        self
+    }
+
+    /// Disable vector operations logging.
+    #[must_use]
+    pub const fn without_vector_logging(mut self) -> Self {
+        self.log_vector_ops = false;
         self
     }
 
@@ -122,6 +139,47 @@ pub enum AuditEvent {
         /// The operation that was limited.
         operation: String,
     },
+    /// Vector upsert operation.
+    VectorUpsert {
+        /// Identity that performed the upsert (if authenticated).
+        identity: Option<String>,
+        /// The collection name.
+        collection: String,
+        /// Number of points upserted.
+        count: usize,
+    },
+    /// Vector query operation.
+    VectorQuery {
+        /// Identity that performed the query (if authenticated).
+        identity: Option<String>,
+        /// The collection name.
+        collection: String,
+        /// Number of results requested.
+        limit: usize,
+    },
+    /// Vector delete operation.
+    VectorDelete {
+        /// Identity that performed the delete (if authenticated).
+        identity: Option<String>,
+        /// The collection name.
+        collection: String,
+        /// Number of points deleted.
+        count: usize,
+    },
+    /// Collection created.
+    CollectionCreated {
+        /// Identity that created the collection (if authenticated).
+        identity: Option<String>,
+        /// The collection name.
+        collection: String,
+    },
+    /// Collection deleted.
+    CollectionDeleted {
+        /// Identity that deleted the collection (if authenticated).
+        identity: Option<String>,
+        /// The collection name.
+        collection: String,
+    },
 }
 
 /// Audit entry with timestamp and metadata.
@@ -175,6 +233,11 @@ impl AuditLogger {
             AuditEvent::BlobUpload { .. }
             | AuditEvent::BlobDownload { .. }
             | AuditEvent::BlobDelete { .. } => self.config.log_blob_ops,
+            AuditEvent::VectorUpsert { .. }
+            | AuditEvent::VectorQuery { .. }
+            | AuditEvent::VectorDelete { .. }
+            | AuditEvent::CollectionCreated { .. }
+            | AuditEvent::CollectionDeleted { .. } => self.config.log_vector_ops,
             AuditEvent::RateLimited { .. } => true,
         }
     }
@@ -241,6 +304,21 @@ impl AuditLogger {
                 identity: Some(id), ..
             }
             | AuditEvent::BlobDelete {
+                identity: Some(id), ..
+            }
+            | AuditEvent::VectorUpsert {
+                identity: Some(id), ..
+            }
+            | AuditEvent::VectorQuery {
+                identity: Some(id), ..
+            }
+            | AuditEvent::VectorDelete {
+                identity: Some(id), ..
+            }
+            | AuditEvent::CollectionCreated {
+                identity: Some(id), ..
+            }
+            | AuditEvent::CollectionDeleted {
                 identity: Some(id), ..
             } => id == identity,
             _ => false,
@@ -537,7 +615,116 @@ mod tests {
         assert!(config.log_failure);
         assert!(!config.log_queries);
         assert!(config.log_blob_ops);
+        assert!(config.log_vector_ops);
         assert_eq!(config.max_entries, 100_000);
+    }
+
+    #[test]
+    fn test_vector_upsert_event() {
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        logger.record(
+            AuditEvent::VectorUpsert {
+                identity: Some("user:alice".to_string()),
+                collection: "embeddings".to_string(),
+                count: 10,
+            },
+            None,
+        );
+
+        assert_eq!(logger.count(), 1);
+        let entries = logger.by_identity("user:alice");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0].event, AuditEvent::VectorUpsert { .. }));
+    }
+
+    #[test]
+    fn test_vector_query_event() {
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        logger.record(
+            AuditEvent::VectorQuery {
+                identity: Some("user:alice".to_string()),
+                collection: "embeddings".to_string(),
+                limit: 10,
+            },
+            None,
+        );
+
+        assert_eq!(logger.count(), 1);
+        let entries = logger.by_identity("user:alice");
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_vector_delete_event() {
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        logger.record(
+            AuditEvent::VectorDelete {
+                identity: Some("user:alice".to_string()),
+                collection: "embeddings".to_string(),
+                count: 5,
+            },
+            None,
+        );
+
+        assert_eq!(logger.count(), 1);
+    }
+
+    #[test]
+    fn test_collection_created_event() {
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        logger.record(
+            AuditEvent::CollectionCreated {
+                identity: Some("user:alice".to_string()),
+                collection: "new_collection".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(logger.count(), 1);
+    }
+
+    #[test]
+    fn test_collection_deleted_event() {
+        let logger = AuditLogger::new(AuditConfig::default());
+
+        logger.record(
+            AuditEvent::CollectionDeleted {
+                identity: Some("user:alice".to_string()),
+                collection: "old_collection".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(logger.count(), 1);
+    }
+
+    #[test]
+    fn test_log_vector_ops_disabled() {
+        let logger = AuditLogger::new(AuditConfig::default().without_vector_logging());
+
+        logger.record(
+            AuditEvent::VectorUpsert {
+                identity: Some("user:alice".to_string()),
+                collection: "embeddings".to_string(),
+                count: 10,
+            },
+            None,
+        );
+
+        logger.record(
+            AuditEvent::CollectionCreated {
+                identity: Some("user:alice".to_string()),
+                collection: "new_collection".to_string(),
+            },
+            None,
+        );
+
+        // Vector events should not be logged when log_vector_ops is false
+        assert_eq!(logger.count(), 0);
     }
 
     #[test]

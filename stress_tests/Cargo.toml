@@ -1,7 +1,10 @@
 [package]
 name = "stress_tests"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Performance and concurrency stress tests for Neumann"
 publish = false
 
 [dependencies]

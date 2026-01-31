@@ -97,6 +97,7 @@ jobs:
             tensor_blob) MIN_COV=91 ;;  # Async blob storage with complex I/O paths
             query_router) MIN_COV=94 ;;  # Large module with cross-engine integration
             tensor_chain) MIN_COV=95 ;;  # Distributed consensus with async/networking code
+            neumann_client) MIN_COV=91 ;;  # TLS and async streaming require runtime setup
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 

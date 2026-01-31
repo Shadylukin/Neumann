@@ -687,7 +687,7 @@ pub struct CoverageStats {
 }
 
 /// Configuration for k-means clustering.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KMeansConfig {
     /// Maximum number of iterations.
     pub max_iterations: usize,
@@ -711,7 +711,7 @@ impl Default for KMeansConfig {
 }
 
 /// Initialization method for k-means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KMeansInit {
     /// Random selection of k points.
     Random,

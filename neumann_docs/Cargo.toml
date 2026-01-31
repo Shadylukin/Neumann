@@ -9,6 +9,7 @@ homepage.workspace = true
 description = "Documentation storage and search for Neumann using all three engines"
 keywords = ["neumann", "documentation", "search", "tfidf"]
 categories = ["command-line-utilities"]
+readme = "../README.md"
 
 [[bin]]
 name = "neumann-docs"

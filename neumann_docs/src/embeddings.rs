@@ -8,12 +8,11 @@ pub const DEFAULT_DIMENSION: usize = 128;
 
 /// Common English stopwords to filter out.
 const STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-    "has", "he", "in", "is", "it", "its", "of", "on", "that", "the",
-    "to", "was", "were", "will", "with", "you", "your", "this", "but",
-    "have", "had", "been", "not", "they", "we", "their", "or", "which",
-    "if", "can", "do", "into", "no", "so", "than", "when", "what", "all",
-    "more", "some", "other", "most", "also", "about", "such", "only", "see",
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in", "is", "it",
+    "its", "of", "on", "that", "the", "to", "was", "were", "will", "with", "you", "your", "this",
+    "but", "have", "had", "been", "not", "they", "we", "their", "or", "which", "if", "can", "do",
+    "into", "no", "so", "than", "when", "what", "all", "more", "some", "other", "most", "also",
+    "about", "such", "only", "see",
 ];
 
 /// TF-IDF based embedding generator.

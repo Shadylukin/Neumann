@@ -24,7 +24,9 @@ fn stress_graph_mixed_batch_100_threads() {
     let ops_per_thread = 20;
 
     println!("\n=== Graph Mixed Batch 100 Threads ===");
-    println!("Threads: {thread_count} (25 each: create_nodes, create_edges, delete_nodes, delete_edges)");
+    println!(
+        "Threads: {thread_count} (25 each: create_nodes, create_edges, delete_nodes, delete_edges)"
+    );
     println!("Operations per thread: {ops_per_thread}");
 
     let engine = Arc::new(GraphEngine::new());
@@ -143,13 +145,11 @@ fn stress_graph_mixed_batch_100_threads() {
             for batch_idx in 0..ops_per_thread {
                 // Delete from indices 3000-4999 (dedicated deletion range)
                 let start_idx = 3000 + (t * 80 + batch_idx * 4) % 2000;
-                let batch: Vec<u64> = (0..10)
-                    .map(|i| nodes[(start_idx + i) % 5000])
-                    .collect();
+                let batch: Vec<u64> = (0..10).map(|i| nodes[(start_idx + i) % 5000]).collect();
 
                 let op_start = Instant::now();
-                if let Ok(count) = eng.batch_delete_nodes(batch) {
-                    cnt.fetch_add(count, Ordering::Relaxed);
+                if let Ok(result) = eng.batch_delete_nodes(batch) {
+                    cnt.fetch_add(result.count, Ordering::Relaxed);
                 }
                 latencies.record(op_start.elapsed());
             }
@@ -170,13 +170,11 @@ fn stress_graph_mixed_batch_100_threads() {
 
             for batch_idx in 0..ops_per_thread {
                 let start_idx = (t * 80 + batch_idx * 4) % 2000;
-                let batch: Vec<u64> = (0..10)
-                    .map(|i| edges[(start_idx + i) % 2000])
-                    .collect();
+                let batch: Vec<u64> = (0..10).map(|i| edges[(start_idx + i) % 2000]).collect();
 
                 let op_start = Instant::now();
-                if let Ok(count) = eng.batch_delete_edges(batch) {
-                    cnt.fetch_add(count, Ordering::Relaxed);
+                if let Ok(result) = eng.batch_delete_edges(batch) {
+                    cnt.fetch_add(result.count, Ordering::Relaxed);
                 }
                 latencies.record(op_start.elapsed());
             }
@@ -205,8 +203,14 @@ fn stress_graph_mixed_batch_100_threads() {
     }
 
     // Verify no deadlocks occurred (all threads completed)
-    assert!(total_nodes_created > 0, "no nodes created - possible deadlock");
-    assert!(total_edges_created > 0, "no edges created - possible deadlock");
+    assert!(
+        total_nodes_created > 0,
+        "no nodes created - possible deadlock"
+    );
+    assert!(
+        total_edges_created > 0,
+        "no edges created - possible deadlock"
+    );
 
     // Engine should still be responsive
     let test_node = engine.create_node("ResponsivenessTest", HashMap::new());

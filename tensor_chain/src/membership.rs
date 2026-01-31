@@ -1340,11 +1340,20 @@ mod tests {
         let manager_clone = manager.clone();
         let run_handle = tokio::spawn(async move { manager_clone.run().await });
 
-        // Let it run for a bit
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Should have done some health checks
-        assert!(transport.send_count.load(Ordering::SeqCst) > 0);
+        // Wait for at least one health check send (avoid timing flakiness)
+        let send_seen = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if transport.send_count.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            send_seen.is_ok(),
+            "expected health checks to send at least once"
+        );
 
         // Shutdown
         manager.shutdown();

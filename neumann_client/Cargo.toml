@@ -36,6 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 neumann_server = { path = "../neumann_server" }
 query_router = { path = "../query_router" }
 parking_lot = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -45,7 +46,8 @@ missing_docs = "warn"
 all = "warn"
 pedantic = "warn"
 nursery = "warn"
-cargo = "warn"
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

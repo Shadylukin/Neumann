@@ -8,7 +8,7 @@
 //!
 //! Run with: `cargo run --example graph_traversal`
 
-use graph_engine::{GraphEngine, PropertyValue};
+use graph_engine::{Direction, GraphEngine, PropertyValue};
 use std::collections::HashMap;
 
 fn main() {
@@ -19,8 +19,14 @@ fn main() {
 
     // Create nodes representing people
     let mut alice_props = HashMap::new();
-    alice_props.insert("name".to_string(), PropertyValue::String("Alice".to_string()));
-    alice_props.insert("role".to_string(), PropertyValue::String("engineer".to_string()));
+    alice_props.insert(
+        "name".to_string(),
+        PropertyValue::String("Alice".to_string()),
+    );
+    alice_props.insert(
+        "role".to_string(),
+        PropertyValue::String("engineer".to_string()),
+    );
     let alice = engine
         .create_node("Person", alice_props)
         .expect("Failed to create Alice");
@@ -28,23 +34,38 @@ fn main() {
 
     let mut bob_props = HashMap::new();
     bob_props.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
-    bob_props.insert("role".to_string(), PropertyValue::String("manager".to_string()));
+    bob_props.insert(
+        "role".to_string(),
+        PropertyValue::String("manager".to_string()),
+    );
     let bob = engine
         .create_node("Person", bob_props)
         .expect("Failed to create Bob");
     println!("Created Bob (node {})", bob);
 
     let mut charlie_props = HashMap::new();
-    charlie_props.insert("name".to_string(), PropertyValue::String("Charlie".to_string()));
-    charlie_props.insert("role".to_string(), PropertyValue::String("engineer".to_string()));
+    charlie_props.insert(
+        "name".to_string(),
+        PropertyValue::String("Charlie".to_string()),
+    );
+    charlie_props.insert(
+        "role".to_string(),
+        PropertyValue::String("engineer".to_string()),
+    );
     let charlie = engine
         .create_node("Person", charlie_props)
         .expect("Failed to create Charlie");
     println!("Created Charlie (node {})", charlie);
 
     let mut diana_props = HashMap::new();
-    diana_props.insert("name".to_string(), PropertyValue::String("Diana".to_string()));
-    diana_props.insert("role".to_string(), PropertyValue::String("designer".to_string()));
+    diana_props.insert(
+        "name".to_string(),
+        PropertyValue::String("Diana".to_string()),
+    );
+    diana_props.insert(
+        "role".to_string(),
+        PropertyValue::String("designer".to_string()),
+    );
     let diana = engine
         .create_node("Person", diana_props)
         .expect("Failed to create Diana");
@@ -52,8 +73,14 @@ fn main() {
 
     // Create a project node
     let mut project_props = HashMap::new();
-    project_props.insert("name".to_string(), PropertyValue::String("Neumann".to_string()));
-    project_props.insert("status".to_string(), PropertyValue::String("active".to_string()));
+    project_props.insert(
+        "name".to_string(),
+        PropertyValue::String("Neumann".to_string()),
+    );
+    project_props.insert(
+        "status".to_string(),
+        PropertyValue::String("active".to_string()),
+    );
     let project = engine
         .create_node("Project", project_props)
         .expect("Failed to create Project");
@@ -61,29 +88,29 @@ fn main() {
 
     // Create edges
     engine
-        .create_edge(alice, bob, "KNOWS", HashMap::new())
+        .create_edge(alice, bob, "KNOWS", HashMap::new(), true)
         .expect("Failed to create edge");
     engine
-        .create_edge(alice, charlie, "KNOWS", HashMap::new())
+        .create_edge(alice, charlie, "KNOWS", HashMap::new(), true)
         .expect("Failed to create edge");
     engine
-        .create_edge(bob, diana, "MANAGES", HashMap::new())
+        .create_edge(bob, diana, "MANAGES", HashMap::new(), true)
         .expect("Failed to create edge");
     engine
-        .create_edge(charlie, diana, "KNOWS", HashMap::new())
+        .create_edge(charlie, diana, "KNOWS", HashMap::new(), true)
         .expect("Failed to create edge");
     engine
-        .create_edge(alice, project, "WORKS_ON", HashMap::new())
+        .create_edge(alice, project, "WORKS_ON", HashMap::new(), true)
         .expect("Failed to create edge");
     engine
-        .create_edge(charlie, project, "WORKS_ON", HashMap::new())
+        .create_edge(charlie, project, "WORKS_ON", HashMap::new(), true)
         .expect("Failed to create edge");
     println!("Created relationship edges\n");
 
     // Get Alice's outgoing connections
     println!("Alice's outgoing connections:");
     let alice_edges = engine
-        .get_edges(alice, Direction::Outgoing)
+        .edges_of(alice, Direction::Outgoing)
         .expect("Failed to get edges");
     for edge in &alice_edges {
         let target = engine.get_node(edge.to).expect("Failed to get node");
@@ -120,7 +147,7 @@ fn main() {
             }
             println!();
             println!("  Path length: {} hops", path.nodes.len() - 1);
-        }
+        },
         Err(e) => println!("  No path found: {}", e),
     }
     println!();

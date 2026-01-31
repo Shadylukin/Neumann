@@ -123,6 +123,16 @@ pub enum StatementKind {
     /// GRAPH BATCH command
     GraphBatch(GraphBatchStmt),
 
+    // === Cypher Graph Statements ===
+    /// Cypher MATCH statement
+    CypherMatch(crate::cypher::CypherMatchStmt),
+    /// Cypher CREATE statement
+    CypherCreate(crate::cypher::CypherCreateStmt),
+    /// Cypher DELETE statement
+    CypherDelete(crate::cypher::CypherDeleteStmt),
+    /// Cypher MERGE statement
+    CypherMerge(crate::cypher::CypherMergeStmt),
+
     /// Empty statement (just semicolons)
     Empty,
 }
@@ -294,7 +304,7 @@ pub struct ColumnDef {
 }
 
 /// Data types.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataType {
     Int,
     Integer,
@@ -330,7 +340,7 @@ pub enum ColumnConstraint {
 }
 
 /// Foreign key reference.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForeignKeyRef {
     pub table: Ident,
     pub column: Option<Ident>,
@@ -361,7 +371,7 @@ pub enum TableConstraint {
 }
 
 /// DROP TABLE statement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DropTableStmt {
     pub if_exists: bool,
     pub table: Ident,
@@ -369,7 +379,7 @@ pub struct DropTableStmt {
 }
 
 /// CREATE INDEX statement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreateIndexStmt {
     pub unique: bool,
     pub if_not_exists: bool,
@@ -380,7 +390,7 @@ pub struct CreateIndexStmt {
 
 /// DROP INDEX statement.
 /// Supports both `DROP INDEX name` and `DROP INDEX ON table(column)` syntax.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DropIndexStmt {
     pub if_exists: bool,
     /// Index name (for named indexes)
@@ -392,13 +402,13 @@ pub struct DropIndexStmt {
 }
 
 /// DESCRIBE statement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DescribeStmt {
     pub target: DescribeTarget,
 }
 
 /// Target of DESCRIBE.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DescribeTarget {
     /// DESCRIBE TABLE name
     Table(Ident),
@@ -589,7 +599,7 @@ pub struct FindStmt {
 }
 
 /// FIND pattern.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FindPattern {
     /// Match nodes by label
     Nodes { label: Option<Ident> },
@@ -951,13 +961,13 @@ pub enum GraphAlgorithmOp {
 }
 
 /// GRAPH CONSTRAINT command.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphConstraintStmt {
     pub operation: GraphConstraintOp,
 }
 
 /// Graph constraint operations.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphConstraintOp {
     Create {
         name: Ident,
@@ -975,7 +985,7 @@ pub enum GraphConstraintOp {
 }
 
 /// Constraint target (NODE or EDGE).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstraintTarget {
     Node { label: Option<Ident> },
     Edge { edge_type: Option<Ident> },
@@ -990,13 +1000,13 @@ pub enum ConstraintType {
 }
 
 /// GRAPH INDEX command.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphIndexStmt {
     pub operation: GraphIndexOp,
 }
 
 /// Graph index operations.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphIndexOp {
     CreateNodeProperty { property: Ident },
     CreateEdgeProperty { property: Ident },
@@ -1397,38 +1407,38 @@ pub enum InList {
 impl fmt::Display for DataType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DataType::Int => write!(f, "INT"),
-            DataType::Integer => write!(f, "INTEGER"),
-            DataType::Bigint => write!(f, "BIGINT"),
-            DataType::Smallint => write!(f, "SMALLINT"),
-            DataType::Float => write!(f, "FLOAT"),
-            DataType::Double => write!(f, "DOUBLE"),
-            DataType::Real => write!(f, "REAL"),
-            DataType::Decimal(p, s) => match (p, s) {
+            Self::Int => write!(f, "INT"),
+            Self::Integer => write!(f, "INTEGER"),
+            Self::Bigint => write!(f, "BIGINT"),
+            Self::Smallint => write!(f, "SMALLINT"),
+            Self::Float => write!(f, "FLOAT"),
+            Self::Double => write!(f, "DOUBLE"),
+            Self::Real => write!(f, "REAL"),
+            Self::Decimal(p, s) => match (p, s) {
                 (Some(p), Some(s)) => write!(f, "DECIMAL({p}, {s})"),
                 (Some(p), None) => write!(f, "DECIMAL({p})"),
                 _ => write!(f, "DECIMAL"),
             },
-            DataType::Numeric(p, s) => match (p, s) {
+            Self::Numeric(p, s) => match (p, s) {
                 (Some(p), Some(s)) => write!(f, "NUMERIC({p}, {s})"),
                 (Some(p), None) => write!(f, "NUMERIC({p})"),
                 _ => write!(f, "NUMERIC"),
             },
-            DataType::Varchar(n) => match n {
+            Self::Varchar(n) => match n {
                 Some(n) => write!(f, "VARCHAR({n})"),
                 None => write!(f, "VARCHAR"),
             },
-            DataType::Char(n) => match n {
+            Self::Char(n) => match n {
                 Some(n) => write!(f, "CHAR({n})"),
                 None => write!(f, "CHAR"),
             },
-            DataType::Text => write!(f, "TEXT"),
-            DataType::Boolean => write!(f, "BOOLEAN"),
-            DataType::Date => write!(f, "DATE"),
-            DataType::Time => write!(f, "TIME"),
-            DataType::Timestamp => write!(f, "TIMESTAMP"),
-            DataType::Blob => write!(f, "BLOB"),
-            DataType::Custom(name) => write!(f, "{name}"),
+            Self::Text => write!(f, "TEXT"),
+            Self::Boolean => write!(f, "BOOLEAN"),
+            Self::Date => write!(f, "DATE"),
+            Self::Time => write!(f, "TIME"),
+            Self::Timestamp => write!(f, "TIMESTAMP"),
+            Self::Blob => write!(f, "BLOB"),
+            Self::Custom(name) => write!(f, "{name}"),
         }
     }
 }
@@ -1450,8 +1460,8 @@ impl fmt::Display for JoinKind {
 impl fmt::Display for SortDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SortDirection::Asc => write!(f, "ASC"),
-            SortDirection::Desc => write!(f, "DESC"),
+            Self::Asc => write!(f, "ASC"),
+            Self::Desc => write!(f, "DESC"),
         }
     }
 }
@@ -1459,9 +1469,9 @@ impl fmt::Display for SortDirection {
 impl fmt::Display for Direction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Direction::Outgoing => write!(f, "OUTGOING"),
-            Direction::Incoming => write!(f, "INCOMING"),
-            Direction::Both => write!(f, "BOTH"),
+            Self::Outgoing => write!(f, "OUTGOING"),
+            Self::Incoming => write!(f, "INCOMING"),
+            Self::Both => write!(f, "BOTH"),
         }
     }
 }
@@ -1469,9 +1479,9 @@ impl fmt::Display for Direction {
 impl fmt::Display for DistanceMetric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DistanceMetric::Cosine => write!(f, "COSINE"),
-            DistanceMetric::Euclidean => write!(f, "EUCLIDEAN"),
-            DistanceMetric::DotProduct => write!(f, "DOT_PRODUCT"),
+            Self::Cosine => write!(f, "COSINE"),
+            Self::Euclidean => write!(f, "EUCLIDEAN"),
+            Self::DotProduct => write!(f, "DOT_PRODUCT"),
         }
     }
 }
@@ -1713,5 +1723,25 @@ mod tests {
     fn test_literal_display_all() {
         assert_eq!(format!("{}", Literal::Float(3.14)), "3.14");
         assert_eq!(format!("{}", Literal::Boolean(false)), "FALSE");
+    }
+
+    #[test]
+    fn test_sort_direction_display() {
+        assert_eq!(format!("{}", SortDirection::Asc), "ASC");
+        assert_eq!(format!("{}", SortDirection::Desc), "DESC");
+    }
+
+    #[test]
+    fn test_binary_op_precedence_bitwise() {
+        // Bitwise operators have specific precedence
+        assert_eq!(BinaryOp::BitOr.precedence(), 4);
+        assert_eq!(BinaryOp::BitXor.precedence(), 5);
+        assert_eq!(BinaryOp::BitAnd.precedence(), 6);
+        assert_eq!(BinaryOp::Shl.precedence(), 7);
+        assert_eq!(BinaryOp::Shr.precedence(), 7);
+        // Bitwise ops come between comparison and arithmetic
+        assert!(BinaryOp::Eq.precedence() < BinaryOp::BitOr.precedence());
+        assert!(BinaryOp::BitAnd.precedence() < BinaryOp::Shl.precedence());
+        assert!(BinaryOp::Shr.precedence() < BinaryOp::Add.precedence());
     }
 }

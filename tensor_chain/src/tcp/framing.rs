@@ -622,12 +622,101 @@ impl Handshake {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
     use tensor_store::SparseVector;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use super::*;
-    use crate::network::{Message, RequestVote};
+    use crate::network::{Message, QueryResponse, RequestVote};
+
+    struct ErrorReader;
+
+    impl AsyncRead for ErrorReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "boom")))
+        }
+    }
+
+    struct PendingReader {
+        data: Vec<u8>,
+        pos: usize,
+        stall_after: usize,
+    }
+
+    impl PendingReader {
+        fn new(data: Vec<u8>, stall_after: usize) -> Self {
+            Self {
+                data,
+                pos: 0,
+                stall_after,
+            }
+        }
+    }
+
+    impl AsyncRead for PendingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let me = self.get_mut();
+            if me.pos >= me.stall_after {
+                return Poll::Pending;
+            }
+
+            let available = &me.data[me.pos..];
+            let to_copy = available.len().min(buf.remaining());
+            buf.put_slice(&available[..to_copy]);
+            me.pos += to_copy;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    enum PendingMode {
+        Write,
+        Flush,
+    }
+
+    struct PendingWriter {
+        mode: PendingMode,
+    }
+
+    impl PendingWriter {
+        fn new(mode: PendingMode) -> Self {
+            Self { mode }
+        }
+    }
+
+    impl AsyncWrite for PendingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            match self.mode {
+                PendingMode::Write => Poll::Pending,
+                PendingMode::Flush => Poll::Ready(Ok(buf.len())),
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            match self.mode {
+                PendingMode::Write => Poll::Ready(Ok(())),
+                PendingMode::Flush => Poll::Pending,
+            }
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[test]
     fn test_encode_decode() {
@@ -756,6 +845,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_encode_v2_uncompressed_when_not_beneficial() {
+        let config = CompressionConfig::default()
+            .with_method(CompressionMethod::None)
+            .with_min_size(1);
+        let mut codec = LengthDelimitedCodec::with_compression(1024, config);
+        codec.set_compression_enabled(true);
+
+        let msg = Message::Ping { term: 1 };
+        let frame = codec.encode_v2(&msg).unwrap();
+        assert_eq!(frame[4], compression::flags::NONE);
+    }
+
+    #[test]
+    fn test_encode_v2_message_too_large() {
+        let codec = LengthDelimitedCodec::new(8);
+        let msg = Message::QueryResponse(QueryResponse {
+            query_id: 1,
+            shard_id: 0,
+            result: vec![1u8; 32],
+            execution_time_us: 0,
+            success: true,
+            error: None,
+        });
+
+        let result = codec.encode_v2(&msg);
+        assert!(matches!(result, Err(TcpError::MessageTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_decode_v2_decompressed_too_large() {
+        let codec = LengthDelimitedCodec::new(10);
+        let original = vec![42u8; 64];
+        let compressed = compression::compress(&original, CompressionMethod::Lz4);
+
+        let mut payload = Vec::with_capacity(1 + compressed.len());
+        payload.push(compression::flags::LZ4);
+        payload.extend_from_slice(&compressed);
+
+        let result = codec.decode_payload_v2(&payload);
+        assert!(matches!(
+            result,
+            Err(TcpError::MessageTooLarge {
+                size: 64,
+                max_size: 10
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn test_read_frame_zero_length() {
         let codec = LengthDelimitedCodec::new(1024);
@@ -795,6 +933,15 @@ mod tests {
 
         let result = codec.read_frame(&mut cursor).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_error_non_eof() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = ErrorReader;
+
+        let result = codec.read_frame(&mut reader).await;
+        assert!(matches!(result, Err(TcpError::Io(_))));
     }
 
     #[tokio::test]
@@ -891,6 +1038,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_frame_with_timeout_error_non_eof() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = ErrorReader;
+
+        let result = codec
+            .read_frame_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+        assert!(matches!(result, Err(TcpError::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_with_timeout_payload_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let length: [u8; 4] = 16u32.to_be_bytes();
+        let mut reader = PendingReader::new(length.to_vec(), 4);
+
+        let result = codec
+            .read_frame_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "read payload",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
     async fn test_read_frame_with_timeout_zero_length() {
         let codec = LengthDelimitedCodec::new(1024);
 
@@ -920,6 +1097,44 @@ mod tests {
             Err(TcpError::MessageTooLarge {
                 size: 1000,
                 max_size: 100
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_with_timeout_write_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let msg = Message::Ping { term: 7 };
+        let mut writer = PendingWriter::new(PendingMode::Write);
+
+        let result = codec
+            .write_frame_with_timeout(&mut writer, &msg, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "write frame",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_with_timeout_flush_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let msg = Message::Ping { term: 8 };
+        let mut writer = PendingWriter::new(PendingMode::Flush);
+
+        let result = codec
+            .write_frame_with_timeout(&mut writer, &msg, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "flush",
+                ..
             })
         ));
     }
@@ -1185,6 +1400,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_v2_read_frame_connection_closed() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut cursor = Cursor::new(Vec::new());
+
+        let result = codec.read_frame_v2(&mut cursor).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_frame_error_non_eof() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = ErrorReader;
+
+        let result = codec.read_frame_v2(&mut reader).await;
+        assert!(matches!(result, Err(TcpError::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_frame_zero_length() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let zero_length: [u8; 4] = 0u32.to_be_bytes();
+        let mut cursor = Cursor::new(zero_length.to_vec());
+
+        let result = codec.read_frame_v2(&mut cursor).await;
+        assert!(matches!(result, Err(TcpError::InvalidFrame(_))));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_frame_too_large() {
+        let codec = LengthDelimitedCodec::new(8);
+        let large_length: [u8; 4] = 128u32.to_be_bytes();
+        let mut cursor = Cursor::new(large_length.to_vec());
+
+        let result = codec.read_frame_v2(&mut cursor).await;
+        assert!(matches!(
+            result,
+            Err(TcpError::MessageTooLarge {
+                size: 128,
+                max_size: 8
+            })
+        ));
+    }
+
+    #[tokio::test]
     async fn test_v2_read_write_with_timeout() {
         let codec = LengthDelimitedCodec::new(1024 * 1024);
         let msg = Message::Ping { term: 77 };
@@ -1209,6 +1468,148 @@ mod tests {
         } else {
             panic!("wrong message type");
         }
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_connection_closed() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut cursor = Cursor::new(Vec::new());
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut cursor, Duration::from_millis(10))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_error_non_eof() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = ErrorReader;
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+        assert!(matches!(result, Err(TcpError::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_actual_timeout() {
+        struct NeverReader;
+
+        impl AsyncRead for NeverReader {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        let codec = LengthDelimitedCodec::new(1024);
+        let mut reader = NeverReader;
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "read length",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_zero_length() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let zero_length: [u8; 4] = 0u32.to_be_bytes();
+        let mut cursor = Cursor::new(zero_length.to_vec());
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut cursor, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(result, Err(TcpError::InvalidFrame(_))));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_too_large() {
+        let codec = LengthDelimitedCodec::new(8);
+        let large_length: [u8; 4] = 128u32.to_be_bytes();
+        let mut cursor = Cursor::new(large_length.to_vec());
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut cursor, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::MessageTooLarge {
+                size: 128,
+                max_size: 8
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_v2_read_with_timeout_payload_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let length: [u8; 4] = 16u32.to_be_bytes();
+        let mut reader = PendingReader::new(length.to_vec(), 4);
+
+        let result = codec
+            .read_frame_v2_with_timeout(&mut reader, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "read payload",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_v2_with_timeout_write_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let msg = Message::Ping { term: 11 };
+        let mut writer = PendingWriter::new(PendingMode::Write);
+
+        let result = codec
+            .write_frame_v2_with_timeout(&mut writer, &msg, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "write frame",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_v2_with_timeout_flush_timeout() {
+        let codec = LengthDelimitedCodec::new(1024);
+        let msg = Message::Ping { term: 12 };
+        let mut writer = PendingWriter::new(PendingMode::Flush);
+
+        let result = codec
+            .write_frame_v2_with_timeout(&mut writer, &msg, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(TcpError::Timeout {
+                operation: "flush",
+                ..
+            })
+        ));
     }
 
     #[test]

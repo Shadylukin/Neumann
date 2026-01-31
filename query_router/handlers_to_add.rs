@@ -334,10 +334,10 @@
                     .iter()
                     .filter_map(|e| self.expr_to_u64(e).ok())
                     .collect();
-                let deleted = self.graph.batch_delete_nodes(node_ids)?;
+                let result = self.graph.batch_delete_nodes(node_ids)?;
                 Ok(QueryResult::GraphBatch(GraphBatchResult {
                     operation: "delete_nodes".to_string(),
-                    affected_count: deleted,
+                    affected_count: result.count,
                     created_ids: None,
                 }))
             }
@@ -346,10 +346,10 @@
                     .iter()
                     .filter_map(|e| self.expr_to_u64(e).ok())
                     .collect();
-                let deleted = self.graph.batch_delete_edges(edge_ids)?;
+                let result = self.graph.batch_delete_edges(edge_ids)?;
                 Ok(QueryResult::GraphBatch(GraphBatchResult {
                     operation: "delete_edges".to_string(),
-                    affected_count: deleted,
+                    affected_count: result.count,
                     created_ids: None,
                 }))
             }

@@ -58,19 +58,27 @@ pub mod config;
 pub mod convert;
 pub mod correlation;
 pub mod error;
+pub mod gamification;
 pub mod memory;
 pub mod metrics;
 pub mod rate_limit;
+pub mod rest;
 pub mod service;
 pub mod shutdown;
 pub mod signals;
 pub mod tls_loader;
+pub mod web;
 
 /// Generated protobuf types.
 #[allow(missing_docs)]
 #[allow(clippy::all, clippy::pedantic, clippy::nursery)]
 pub mod proto {
     tonic::include_proto!("neumann.v1");
+
+    /// Vector service protobuf types.
+    pub mod vector {
+        tonic::include_proto!("neumann.vector.v1");
+    }
 
     /// File descriptor set for reflection service.
     pub const FILE_DESCRIPTOR_SET: &[u8] =
@@ -80,11 +88,14 @@ pub mod proto {
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
+use graph_engine::GraphEngine;
 use query_router::QueryRouter;
+use relational_engine::RelationalEngine;
 use tensor_blob::{BlobConfig, BlobStore};
 use tensor_store::TensorStore;
 
@@ -95,18 +106,30 @@ pub use error::{sanitize_error, sanitize_internal_error, Result, ServerError};
 pub use memory::{MemoryBudgetConfig, MemoryTracker};
 pub use metrics::{init_metrics, MetricsConfig, MetricsHandle, ServerMetrics};
 pub use rate_limit::{Operation, RateLimitConfig, RateLimiter};
-pub use service::{BlobServiceImpl, HealthServiceImpl, HealthState, QueryServiceImpl};
+pub use rest::{RestConfig, VectorApiContext};
+pub use service::{
+    BlobServiceImpl, CollectionsServiceImpl, HealthServiceImpl, HealthState, PointsServiceImpl,
+    QueryServiceImpl,
+};
 pub use shutdown::{ShutdownConfig, ShutdownManager};
 pub use tls_loader::TlsLoader;
+pub use web::{AdminContext, NavItem};
 
 use proto::blob_service_server::BlobServiceServer;
 use proto::health_server::HealthServer;
 use proto::query_service_server::QueryServiceServer;
+use proto::vector::collections_service_server::CollectionsServiceServer;
+use proto::vector::points_service_server::PointsServiceServer;
+
+use vector_engine::VectorEngine;
 
 /// The main Neumann gRPC server.
 pub struct NeumannServer {
     router: Arc<RwLock<QueryRouter>>,
     blob_store: Option<Arc<Mutex<BlobStore>>>,
+    relational_engine: Option<Arc<RelationalEngine>>,
+    vector_engine: Option<Arc<VectorEngine>>,
+    graph_engine: Option<Arc<GraphEngine>>,
     config: ServerConfig,
     rate_limiter: Option<Arc<RateLimiter>>,
     audit_logger: Option<Arc<AuditLogger>>,
@@ -130,6 +153,9 @@ impl NeumannServer {
         Self {
             router,
             blob_store: None,
+            relational_engine: None,
+            vector_engine: None,
+            graph_engine: None,
             config,
             rate_limiter,
             audit_logger,
@@ -166,11 +192,35 @@ impl NeumannServer {
         Ok(Self {
             router,
             blob_store: Some(Arc::new(Mutex::new(blob_store))),
+            relational_engine: None,
+            vector_engine: None,
+            graph_engine: None,
             config,
             rate_limiter,
             audit_logger,
             metrics: None,
         })
+    }
+
+    /// Set the relational engine for web admin UI.
+    #[must_use]
+    pub fn with_relational_engine(mut self, relational_engine: Arc<RelationalEngine>) -> Self {
+        self.relational_engine = Some(relational_engine);
+        self
+    }
+
+    /// Set the vector engine for vector services.
+    #[must_use]
+    pub fn with_vector_engine(mut self, vector_engine: Arc<VectorEngine>) -> Self {
+        self.vector_engine = Some(vector_engine);
+        self
+    }
+
+    /// Set the graph engine for web admin UI.
+    #[must_use]
+    pub fn with_graph_engine(mut self, graph_engine: Arc<GraphEngine>) -> Self {
+        self.graph_engine = Some(graph_engine);
+        self
     }
 
     /// Set the blob store for blob service support.
@@ -336,33 +386,155 @@ impl NeumannServer {
             BlobServiceServer::new(blob_service)
         });
 
-        // Add services and start server
-        if self.config.enable_grpc_web {
-            let layer = GrpcWebLayer::new();
-            let mut router = builder
-                .layer(layer)
-                .add_service(query_svc)
-                .add_service(health_svc);
-
-            if let Some(blob) = blob_svc {
-                router = router.add_service(blob);
-            }
-            if let Some(refl) = reflection_svc {
-                router = router.add_service(refl);
-            }
-
-            router.serve(addr).await?;
+        // Build vector services if engine is available
+        let (points_svc, collections_svc) = if let Some(ref engine) = self.vector_engine {
+            let points_service = PointsServiceImpl::with_full_config(
+                Arc::clone(engine),
+                self.config.auth.clone(),
+                Some(Arc::clone(&health_state)),
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+                self.metrics.clone(),
+            );
+            let collections_service = CollectionsServiceImpl::with_full_config(
+                Arc::clone(engine),
+                self.config.auth.clone(),
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+                self.metrics.clone(),
+            );
+            tracing::info!("Vector services enabled");
+            (
+                Some(PointsServiceServer::new(points_service)),
+                Some(CollectionsServiceServer::new(collections_service)),
+            )
         } else {
-            let mut router = builder.add_service(query_svc).add_service(health_svc);
+            (None, None)
+        };
 
-            if let Some(blob) = blob_svc {
-                router = router.add_service(blob);
-            }
-            if let Some(refl) = reflection_svc {
-                router = router.add_service(refl);
-            }
+        // Build REST server if configured
+        let rest_handle = if let (Some(rest_addr), Some(ref engine)) =
+            (self.config.rest_addr, &self.vector_engine)
+        {
+            let rest_ctx = Arc::new(
+                VectorApiContext::new(Arc::clone(engine))
+                    .with_auth(self.config.auth.clone())
+                    .with_rate_limiter(self.rate_limiter.clone())
+                    .with_audit_logger(self.audit_logger.clone())
+                    .with_metrics(self.metrics.clone()),
+            );
+            let rest_router = rest::router(rest_ctx);
+            let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
+                ServerError::Internal(format!("failed to bind REST server to {rest_addr}: {e}"))
+            })?;
+            tracing::info!("REST API enabled on {}", rest_addr);
+            Some(tokio::spawn(async move {
+                axum::serve(listener, rest_router)
+                    .await
+                    .map_err(|e| ServerError::Internal(format!("REST server error: {e}")))
+            }))
+        } else {
+            None
+        };
 
-            router.serve(addr).await?;
+        // Build Web admin server if configured and all engines are available
+        let web_handle =
+            if let (Some(web_addr), Some(ref relational), Some(ref vector), Some(ref graph)) = (
+                self.config.web_addr,
+                &self.relational_engine,
+                &self.vector_engine,
+                &self.graph_engine,
+            ) {
+                let web_ctx = Arc::new(
+                    web::AdminContext::new(
+                        Arc::clone(relational),
+                        Arc::clone(vector),
+                        Arc::clone(graph),
+                    )
+                    .with_auth(self.config.auth.clone())
+                    .with_metrics(self.metrics.clone()),
+                );
+                let web_router = web::router(web_ctx);
+                let listener = TcpListener::bind(web_addr).await.map_err(|e| {
+                    ServerError::Internal(format!("failed to bind Web server to {web_addr}: {e}"))
+                })?;
+                tracing::info!("Web admin UI enabled on {}", web_addr);
+                Some(tokio::spawn(async move {
+                    axum::serve(listener, web_router)
+                        .await
+                        .map_err(|e| ServerError::Internal(format!("Web server error: {e}")))
+                }))
+            } else {
+                None
+            };
+
+        // Add services and start server
+        let grpc_future = async {
+            if self.config.enable_grpc_web {
+                let layer = GrpcWebLayer::new();
+                let mut router = builder
+                    .layer(layer)
+                    .add_service(query_svc)
+                    .add_service(health_svc);
+
+                if let Some(blob) = blob_svc {
+                    router = router.add_service(blob);
+                }
+                if let Some(points) = points_svc {
+                    router = router.add_service(points);
+                }
+                if let Some(collections) = collections_svc {
+                    router = router.add_service(collections);
+                }
+                if let Some(refl) = reflection_svc {
+                    router = router.add_service(refl);
+                }
+
+                router.serve(addr).await
+            } else {
+                let mut router = builder.add_service(query_svc).add_service(health_svc);
+
+                if let Some(blob) = blob_svc {
+                    router = router.add_service(blob);
+                }
+                if let Some(points) = points_svc {
+                    router = router.add_service(points);
+                }
+                if let Some(collections) = collections_svc {
+                    router = router.add_service(collections);
+                }
+                if let Some(refl) = reflection_svc {
+                    router = router.add_service(refl);
+                }
+
+                router.serve(addr).await
+            }
+        };
+
+        // Run gRPC server, REST server, and Web server if configured
+        match (rest_handle, web_handle) {
+            (Some(rest), Some(web)) => {
+                tokio::select! {
+                    result = grpc_future => result?,
+                    result = rest => result.map_err(|e| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    result = web => result.map_err(|e| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                }
+            },
+            (Some(rest), None) => {
+                tokio::select! {
+                    result = grpc_future => result?,
+                    result = rest => result.map_err(|e| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                }
+            },
+            (None, Some(web)) => {
+                tokio::select! {
+                    result = grpc_future => result?,
+                    result = web => result.map_err(|e| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                }
+            },
+            (None, None) => {
+                grpc_future.await?;
+            },
         }
 
         Ok(())
@@ -487,6 +659,80 @@ impl NeumannServer {
             BlobServiceServer::new(blob_service)
         });
 
+        // Build vector services if engine is available
+        let (points_svc, collections_svc) = if let Some(ref engine) = self.vector_engine {
+            let points_service = PointsServiceImpl::with_full_config(
+                Arc::clone(engine),
+                self.config.auth.clone(),
+                Some(Arc::clone(&health_state)),
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+                self.metrics.clone(),
+            );
+            let collections_service = CollectionsServiceImpl::with_full_config(
+                Arc::clone(engine),
+                self.config.auth.clone(),
+                self.rate_limiter.clone(),
+                self.audit_logger.clone(),
+                self.metrics.clone(),
+            );
+            tracing::info!("Vector services enabled");
+            (
+                Some(PointsServiceServer::new(points_service)),
+                Some(CollectionsServiceServer::new(collections_service)),
+            )
+        } else {
+            (None, None)
+        };
+
+        // Build REST server if configured
+        let rest_handle = if let (Some(rest_addr), Some(ref engine)) =
+            (self.config.rest_addr, &self.vector_engine)
+        {
+            let rest_ctx = Arc::new(
+                VectorApiContext::new(Arc::clone(engine))
+                    .with_auth(self.config.auth.clone())
+                    .with_rate_limiter(self.rate_limiter.clone())
+                    .with_audit_logger(self.audit_logger.clone())
+                    .with_metrics(self.metrics.clone()),
+            );
+            let rest_router = rest::router(rest_ctx);
+            let listener = TcpListener::bind(rest_addr).await.map_err(|e| {
+                ServerError::Internal(format!("failed to bind REST server to {rest_addr}: {e}"))
+            })?;
+            tracing::info!("REST API enabled on {}", rest_addr);
+            Some((listener, rest_router))
+        } else {
+            None
+        };
+
+        // Build Web admin server if configured and all engines are available
+        let web_handle =
+            if let (Some(web_addr), Some(ref relational), Some(ref vector), Some(ref graph)) = (
+                self.config.web_addr,
+                &self.relational_engine,
+                &self.vector_engine,
+                &self.graph_engine,
+            ) {
+                let web_ctx = Arc::new(
+                    web::AdminContext::new(
+                        Arc::clone(relational),
+                        Arc::clone(vector),
+                        Arc::clone(graph),
+                    )
+                    .with_auth(self.config.auth.clone())
+                    .with_metrics(self.metrics.clone()),
+                );
+                let web_router = web::router(web_ctx);
+                let listener = TcpListener::bind(web_addr).await.map_err(|e| {
+                    ServerError::Internal(format!("failed to bind Web server to {web_addr}: {e}"))
+                })?;
+                tracing::info!("Web admin UI enabled on {}", web_addr);
+                Some((listener, web_router))
+            } else {
+                None
+            };
+
         // Create drain-aware shutdown future
         let shutdown_manager_clone = shutdown_manager.clone();
         let health_state_clone = Arc::clone(&health_state);
@@ -513,7 +759,25 @@ impl NeumannServer {
             }
         };
 
-        // Add services and start server
+        // Start REST server task if configured
+        let rest_task = rest_handle.map(|(listener, rest_router)| {
+            tokio::spawn(async move {
+                axum::serve(listener, rest_router)
+                    .await
+                    .map_err(|e| ServerError::Internal(format!("REST server error: {e}")))
+            })
+        });
+
+        // Start Web server task if configured
+        let web_task = web_handle.map(|(listener, web_router)| {
+            tokio::spawn(async move {
+                axum::serve(listener, web_router)
+                    .await
+                    .map_err(|e| ServerError::Internal(format!("Web server error: {e}")))
+            })
+        });
+
+        // Add services and start gRPC server
         if self.config.enable_grpc_web {
             let layer = GrpcWebLayer::new();
             let mut router = builder
@@ -524,22 +788,82 @@ impl NeumannServer {
             if let Some(blob) = blob_svc {
                 router = router.add_service(blob);
             }
+            if let Some(points) = points_svc {
+                router = router.add_service(points);
+            }
+            if let Some(collections) = collections_svc {
+                router = router.add_service(collections);
+            }
             if let Some(refl) = reflection_svc {
                 router = router.add_service(refl);
             }
 
-            router.serve_with_shutdown(addr, drain_future).await?;
+            // Run gRPC server with optional REST and Web servers
+            match (rest_task, web_task) {
+                (Some(rest), Some(web)) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = rest => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                        result = web => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (Some(rest), None) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = rest => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (None, Some(web)) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = web => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (None, None) => {
+                    router.serve_with_shutdown(addr, drain_future).await?;
+                },
+            }
         } else {
             let mut router = builder.add_service(query_svc).add_service(health_svc);
 
             if let Some(blob) = blob_svc {
                 router = router.add_service(blob);
             }
+            if let Some(points) = points_svc {
+                router = router.add_service(points);
+            }
+            if let Some(collections) = collections_svc {
+                router = router.add_service(collections);
+            }
             if let Some(refl) = reflection_svc {
                 router = router.add_service(refl);
             }
 
-            router.serve_with_shutdown(addr, drain_future).await?;
+            // Run gRPC server with optional REST and Web servers
+            match (rest_task, web_task) {
+                (Some(rest), Some(web)) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = rest => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                        result = web => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (Some(rest), None) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = rest => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("REST task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (None, Some(web)) => {
+                    tokio::select! {
+                        result = router.serve_with_shutdown(addr, drain_future) => result?,
+                        result = web => result.map_err(|e: tokio::task::JoinError| ServerError::Internal(format!("Web task panic: {e}")))?.map_err(|e| ServerError::Internal(e.to_string()))?,
+                    }
+                },
+                (None, None) => {
+                    router.serve_with_shutdown(addr, drain_future).await?;
+                },
+            }
         }
 
         Ok(())

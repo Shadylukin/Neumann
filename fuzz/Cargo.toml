@@ -259,6 +259,48 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "relational_simd_filter"
+path = "fuzz_targets/relational_simd_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relational_transaction"
+path = "fuzz_targets/relational_transaction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relational_join"
+path = "fuzz_targets/relational_join.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relational_aggregate"
+path = "fuzz_targets/relational_aggregate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relational_value_cmp"
+path = "fuzz_targets/relational_value_cmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "relational_constraint"
+path = "fuzz_targets/relational_constraint.rs"
+test = false
+doc = false
+bench = false
+
 # Tier 8: Cache targets
 
 [[bin]]

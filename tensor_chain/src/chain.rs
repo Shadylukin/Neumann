@@ -23,7 +23,7 @@ use tensor_store::SparseVector;
 use crate::{
     block::{Block, BlockHash, BlockHeader, NodeId, Transaction},
     error::{ChainError, Result},
-    signing::Identity,
+    signing::{Identity, ValidatorRegistry},
 };
 
 /// Edge type for chain links.
@@ -51,6 +51,9 @@ pub struct Chain {
 
     /// Serialize block appends to prevent TOCTOU race conditions.
     append_lock: Mutex<()>,
+
+    /// Optional validator registry for signature verification.
+    validator_registry: Option<Arc<ValidatorRegistry>>,
 }
 
 impl Chain {
@@ -61,13 +64,33 @@ impl Chain {
             tip_hash: RwLock::new([0u8; 32]),
             node_id,
             append_lock: Mutex::new(()),
+            validator_registry: None,
+        }
+    }
+
+    /// Create a new chain that verifies block signatures with the provided registry.
+    pub fn with_registry(
+        graph: Arc<GraphEngine>,
+        node_id: NodeId,
+        registry: Arc<ValidatorRegistry>,
+    ) -> Self {
+        Self {
+            graph,
+            height: AtomicU64::new(0),
+            tip_hash: RwLock::new([0u8; 32]),
+            node_id,
+            append_lock: Mutex::new(()),
+            validator_registry: Some(registry),
         }
     }
 
     /// Helper to add a chain edge between two block keys.
     fn add_chain_edge(&self, from_key: &str, to_key: &str, edge_type: &str) -> Result<u64> {
         let get_or_create = |key: &str| -> u64 {
-            if let Ok(nodes) = self.graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+            if let Ok(nodes) = self
+                .graph
+                .find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+            {
                 if let Some(node) = nodes.first() {
                     return node.id;
                 }
@@ -93,13 +116,31 @@ impl Chain {
     /// loads existing height and tip from storage without creating a new genesis.
     pub fn initialize(&self) -> Result<()> {
         // Check if chain already exists
-        if let Some(height) = self.load_height() {
+        if let Some(mut height) = self.load_height() {
+            // If metadata is ahead of stored blocks, walk back to last existing
+            while height > 0 && self.get_block_at(height)?.is_none() {
+                height = height.saturating_sub(1);
+            }
+
+            // If metadata is behind stored blocks, walk forward to last existing
+            loop {
+                let next = height + 1;
+                if self.get_block_at(next)?.is_some() {
+                    height = next;
+                } else {
+                    break;
+                }
+            }
+
             self.height.store(height, Ordering::SeqCst);
 
             // Load tip hash
             if let Some(tip) = self.get_block_at(height)? {
                 *self.tip_hash.write() = tip.hash();
             }
+
+            // Persist corrected height if needed
+            self.save_height(height)?;
 
             return Ok(());
         }
@@ -165,10 +206,16 @@ impl Chain {
         }
 
         // Reject unsigned blocks (except genesis)
-        if expected_height > 1 && block.header.signature.is_empty() {
-            return Err(ChainError::ValidationFailed(
-                "block must be signed by proposer".to_string(),
-            ));
+        if expected_height > 1 {
+            if block.header.signature.is_empty() {
+                return Err(ChainError::ValidationFailed(
+                    "block must be signed by proposer".to_string(),
+                ));
+            }
+
+            if let Some(ref registry) = self.validator_registry {
+                block.header.verify_signature(registry)?;
+            }
         }
 
         // Store the block
@@ -229,6 +276,9 @@ impl Chain {
             let block = self.get_block_at(h)?.ok_or(ChainError::BlockNotFound(h))?;
 
             block.verify_chain(&prev_block)?;
+            if let Some(ref registry) = self.validator_registry {
+                block.header.verify_signature(registry)?;
+            }
             prev_block = block;
         }
 
@@ -280,6 +330,7 @@ impl Chain {
             transactions: Vec::new(),
             delta_embedding: SparseVector::new(0),
             quantized_codes: Vec::new(),
+            state_root: [0u8; 32],
             signature: Vec::new(),
         }
     }
@@ -386,6 +437,7 @@ pub struct BlockBuilder {
     transactions: Vec<Transaction>,
     delta_embedding: SparseVector,
     quantized_codes: Vec<u16>,
+    state_root: BlockHash,
     signature: Vec<u8>,
 }
 
@@ -415,6 +467,11 @@ impl BlockBuilder {
         self
     }
 
+    pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
+        self.state_root = state_root;
+        self
+    }
+
     pub fn with_signature(mut self, signature: Vec<u8>) -> Self {
         self.signature = signature;
         self
@@ -425,7 +482,7 @@ impl BlockBuilder {
             self.height,
             self.prev_hash,
             [0u8; 32], // Will be computed
-            [0u8; 32], // State root
+            self.state_root,
             self.proposer,
         )
         .with_embedding(self.delta_embedding)
@@ -450,7 +507,7 @@ impl BlockBuilder {
             self.height,
             self.prev_hash,
             [0u8; 32], // Will be computed
-            [0u8; 32], // State root
+            self.state_root,
             self.proposer,
         )
         .with_embedding(self.delta_embedding)

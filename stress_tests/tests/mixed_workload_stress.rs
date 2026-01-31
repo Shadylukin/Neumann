@@ -21,7 +21,7 @@ use vector_engine::VectorEngine;
 #[test]
 #[ignore]
 fn stress_all_engines_concurrent() {
-    let config = full_config();
+    let _config = full_config();
     let threads_per_engine = 4;
     let ops_per_thread = 25_000;
 
@@ -166,7 +166,7 @@ fn stress_all_engines_concurrent() {
 #[test]
 #[ignore]
 fn stress_realistic_workload() {
-    let config = full_config();
+    let _config = full_config();
     let duration_secs = 30;
     let reader_threads = 4;
     let writer_threads = 2;

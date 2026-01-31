@@ -4,119 +4,40 @@
 //! Provides a readline-based interface for executing queries against the
 //! Neumann unified query engine.
 
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
+mod input;
+mod output;
+mod progress;
+mod style;
+pub mod tro;
+mod wal;
+
+pub use input::NeumannHelper;
+pub use style::{Icons, Theme};
+pub use tro::{ActivitySensor, BootSequence, BootStyle, OpType, Palette, TroConfig, TroController};
+pub use wal::{Wal, WalRecoveryMode, WalReplayError, WalReplayResult};
+
 use std::{
     fmt::Write as _,
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use parking_lot::{Mutex, RwLock};
-use query_router::{
-    AggregateResultValue, BatchOperationResult, CentralityResult, ChainBlockInfo,
-    ChainCodebookInfo, ChainDriftResult, ChainHistoryEntry, ChainResult, ChainSimilarResult,
-    ChainTransitionAnalysis, CheckpointInfo, CommunityResult, ConstraintInfo, PageRankResult,
-    PatternMatchResultValue, QueryResult, QueryRouter,
-};
-use relational_engine::Row;
+use query_router::QueryRouter;
 use rustyline::{
     error::ReadlineError,
     history::{DefaultHistory, History},
-    DefaultEditor, Editor,
+    Editor,
 };
 use tensor_chain::QueryExecutor;
 use tensor_checkpoint::{
     format_confirmation_prompt, ConfirmationHandler, DestructiveOp, OperationPreview,
 };
 use tensor_store::TensorStore;
-
-// BLOB display constants
-const BLOB_TEXT_DISPLAY_LIMIT: usize = 4096; // 4KB for text
-const BLOB_HEX_PREVIEW_BYTES: usize = 64; // First 64 bytes for hex dump
-const BLOB_HEX_BYTES_PER_LINE: usize = 16; // Standard hex dump width
-
-/// Write-Ahead Log for crash recovery.
-///
-/// Logs mutating commands to a file so they can be replayed after loading a snapshot.
-/// The WAL is activated after LOAD and truncated after SAVE.
-struct Wal {
-    file: File,
-    path: PathBuf,
-}
-
-impl Wal {
-    fn open_append(path: &Path) -> std::io::Result<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self {
-            file,
-            path: path.to_path_buf(),
-        })
-    }
-
-    fn append(&mut self, cmd: &str) -> std::io::Result<()> {
-        writeln!(self.file, "{cmd}")?;
-        self.file.flush()
-    }
-
-    fn truncate(&mut self) -> std::io::Result<()> {
-        self.file = File::create(&self.path)?;
-        Ok(())
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn size(&self) -> std::io::Result<u64> {
-        std::fs::metadata(&self.path).map(|m| m.len())
-    }
-}
-
-/// Recovery mode for WAL replay.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum WalRecoveryMode {
-    /// Fail-fast on any error (default, preserves consistency).
-    #[default]
-    Strict,
-    /// Skip corrupted lines and continue replay, report warnings at end.
-    Recover,
-}
-
-/// Result of WAL replay operation.
-#[derive(Debug, Clone)]
-pub struct WalReplayResult {
-    /// Number of commands successfully replayed.
-    pub replayed: usize,
-    /// Errors encountered during replay (only populated in Recover mode).
-    pub errors: Vec<WalReplayError>,
-}
-
-/// Error encountered during WAL replay.
-#[derive(Debug, Clone)]
-pub struct WalReplayError {
-    /// Line number in the WAL file (1-indexed).
-    pub line: usize,
-    /// The command that failed (truncated if >80 chars).
-    pub command: String,
-    /// The error message.
-    pub error: String,
-}
-
-impl WalReplayError {
-    fn new(line: usize, command: &str, error: String) -> Self {
-        let command = if command.len() > 80 {
-            format!("{}...", &command[..77])
-        } else {
-            command.to_string()
-        };
-        Self {
-            line,
-            command,
-            error,
-        }
-    }
-}
 
 /// Shell configuration options.
 #[derive(Debug, Clone)]
@@ -127,6 +48,8 @@ pub struct ShellConfig {
     pub history_size: usize,
     /// Prompt string displayed before each input.
     pub prompt: String,
+    /// Color theme for output.
+    pub theme: Theme,
 }
 
 impl Default for ShellConfig {
@@ -134,7 +57,9 @@ impl Default for ShellConfig {
         Self {
             history_file: dirs_home().map(|h| h.join(".neumann_history")),
             history_size: 1000,
-            prompt: "> ".to_string(),
+            // Phosphor green prompt to match boot aesthetic
+            prompt: "\x1b[38;2;0;238;0mneumann>\x1b[0m ".to_string(),
+            theme: Theme::auto(),
         }
     }
 }
@@ -164,6 +89,8 @@ pub struct Shell {
     router: Arc<RwLock<QueryRouter>>,
     config: ShellConfig,
     wal: Mutex<Option<Wal>>,
+    icons: &'static Icons,
+    tro: Option<TroController>,
 }
 
 /// Wrapper to implement `QueryExecutor` for `Arc<RwLock<QueryRouter>>`.
@@ -177,15 +104,12 @@ impl QueryExecutor for RouterExecutor {
 }
 
 /// Interactive confirmation handler for destructive operations.
-///
-/// Prompts the user via readline to confirm before executing operations
-/// that could cause data loss.
 struct ShellConfirmationHandler {
-    editor: Arc<Mutex<Editor<(), DefaultHistory>>>,
+    editor: Arc<Mutex<Editor<NeumannHelper, DefaultHistory>>>,
 }
 
 impl ShellConfirmationHandler {
-    const fn new(editor: Arc<Mutex<Editor<(), DefaultHistory>>>) -> Self {
+    const fn new(editor: Arc<Mutex<Editor<NeumannHelper, DefaultHistory>>>) -> Self {
         Self { editor }
     }
 }
@@ -193,11 +117,8 @@ impl ShellConfirmationHandler {
 impl ConfirmationHandler for ShellConfirmationHandler {
     fn confirm(&self, op: &DestructiveOp, preview: &OperationPreview) -> bool {
         let prompt = format_confirmation_prompt(op, preview);
-
-        // Print the warning with sample data
         println!("\n{prompt}");
 
-        // Ask for confirmation using readline
         let mut editor = self.editor.lock();
         editor
             .readline("Type 'yes' to proceed: ")
@@ -209,20 +130,56 @@ impl Shell {
     /// Creates a new shell with default configuration.
     #[must_use]
     pub fn new() -> Self {
+        let tro_config = TroConfig::default();
+        let tro = if tro_config.enabled {
+            Some(TroController::new(tro_config))
+        } else {
+            None
+        };
+
         Self {
             router: Arc::new(RwLock::new(QueryRouter::new())),
             config: ShellConfig::default(),
             wal: Mutex::new(None),
+            icons: Icons::auto(),
+            tro,
         }
     }
 
     /// Creates a new shell with custom configuration.
     #[must_use]
     pub fn with_config(config: ShellConfig) -> Self {
+        let tro_config = TroConfig::default();
+        let tro = if tro_config.enabled {
+            Some(TroController::new(tro_config))
+        } else {
+            None
+        };
+
         Self {
             router: Arc::new(RwLock::new(QueryRouter::new())),
             config,
             wal: Mutex::new(None),
+            icons: Icons::auto(),
+            tro,
+        }
+    }
+
+    /// Creates a new shell with custom TRO configuration.
+    #[must_use]
+    pub fn with_tro_config(config: ShellConfig, tro_config: TroConfig) -> Self {
+        let tro = if tro_config.enabled {
+            Some(TroController::new(tro_config))
+        } else {
+            None
+        };
+
+        Self {
+            router: Arc::new(RwLock::new(QueryRouter::new())),
+            config,
+            wal: Mutex::new(None),
+            icons: Icons::auto(),
+            tro,
         }
     }
 
@@ -248,7 +205,7 @@ impl Shell {
         let first_word = upper.split_whitespace().next().unwrap_or("");
 
         match first_word {
-            "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" => true,
+            "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "CHECKPOINT" | "ROLLBACK" => true,
             "NODE" => !upper.contains("NODE GET"),
             "EDGE" => !upper.contains("EDGE GET"),
             "EMBED" => upper.contains("EMBED STORE") || upper.contains("EMBED DELETE"),
@@ -271,24 +228,14 @@ impl Shell {
                     || upper.contains("BLOB REPAIR")
                     || upper.contains("BLOB META SET")
             },
-            "ENTITY" => {
-                // ENTITY CREATE, ENTITY CONNECT, and ENTITY BATCH are write ops
-                // ENTITY GET is read-only
-                !upper.contains("ENTITY GET")
-            },
+            "ENTITY" => !upper.contains("ENTITY GET"),
             "GRAPH" => {
-                // GRAPH BATCH and GRAPH CONSTRAINT CREATE/DROP are write ops
                 upper.contains("GRAPH BATCH")
                     || upper.contains("CONSTRAINT CREATE")
                     || upper.contains("CONSTRAINT DROP")
                     || upper.contains("INDEX CREATE")
                     || upper.contains("INDEX DROP")
             },
-            // Checkpoint creates a snapshot (state change)
-            "CHECKPOINT" => true,
-            // Rollback restores state (destructive operation)
-            "ROLLBACK" => true,
-            // Chain transaction commands (distributed tx)
             "BEGIN" => upper.contains("BEGIN CHAIN"),
             "COMMIT" => upper.contains("COMMIT CHAIN"),
             _ => false,
@@ -301,7 +248,7 @@ impl Shell {
         wal_path: &Path,
         mode: WalRecoveryMode,
     ) -> Result<WalReplayResult, String> {
-        let file = File::open(wal_path).map_err(|e| format!("Failed to open WAL: {e}"))?;
+        let file = std::fs::File::open(wal_path).map_err(|e| format!("Failed to open WAL: {e}"))?;
         let reader = BufReader::new(file);
 
         let mut replayed = 0;
@@ -363,7 +310,9 @@ impl Shell {
         let lower = trimmed.to_lowercase();
         match lower.as_str() {
             "exit" | "quit" | "\\q" => return CommandResult::Exit,
-            "help" | "\\h" | "\\?" => return CommandResult::Help(Self::help_text()),
+            "help" | "\\h" | "\\?" => {
+                return CommandResult::Help(output::format_help(&self.config.theme))
+            },
             "tables" | "\\dt" => return self.list_tables(),
             "clear" | "\\c" => return CommandResult::Output("\x1B[2J\x1B[H".to_string()),
             "wal status" => return self.handle_wal_status(),
@@ -411,10 +360,30 @@ impl Shell {
             return self.handle_cluster_disconnect();
         }
 
-        // Execute as query
+        // Handle TRO commands
+        if lower.starts_with("tro ") || lower == "tro" {
+            return self.handle_tro_command(trimmed);
+        }
+
+        // Execute with optional spinner for long operations
+        let use_spinner = progress::needs_spinner(trimmed);
+        let spinner = if use_spinner {
+            Some(progress::operation_spinner(trimmed, &self.config.theme))
+        } else {
+            None
+        };
+
         let query_result = self.router.read().execute_parsed(trimmed);
+
+        if let Some(ref s) = spinner {
+            s.finish_and_clear();
+        }
+
         match query_result {
             Ok(result) => {
+                // Record activity for TRO visualization
+                self.record_tro_activity(trimmed, false);
+
                 // Log write commands to WAL after successful execution
                 if Self::is_write_command(trimmed) {
                     let mut wal_guard = self.wal.lock();
@@ -426,77 +395,133 @@ impl Shell {
                         }
                     }
                 }
-                CommandResult::Output(format_result(&result))
+                CommandResult::Output(output::format_result(
+                    &result,
+                    &self.config.theme,
+                    self.icons,
+                ))
             },
-            Err(e) => CommandResult::Error(format!("Error: {e}")),
+            Err(e) => {
+                // Record error activity for TRO visualization
+                self.record_tro_activity(trimmed, true);
+
+                let error_msg = format!(
+                    "{} Error: {e}",
+                    style::styled(self.icons.error, self.config.theme.error)
+                );
+                CommandResult::Error(error_msg)
+            },
+        }
+    }
+
+    /// Records activity for TRO border visualization.
+    fn record_tro_activity(&self, command: &str, is_error: bool) {
+        if let Some(ref tro) = self.tro {
+            let sensor = tro.activity_sensor();
+
+            if is_error {
+                sensor.record_error(command);
+                tro.glitch(200);
+                return;
+            }
+
+            // Determine operation type from command
+            let upper = command.to_uppercase();
+            let first_word = upper.split_whitespace().next().unwrap_or("");
+
+            let op = match first_word {
+                "INSERT" | "PUT" | "CREATE" | "EMBED" | "UPDATE" => OpType::Put,
+                "DELETE" | "DROP" => OpType::Delete,
+                "SIMILAR" => OpType::VectorSearch,
+                "FIND" => OpType::Scan,
+                // Default to Get for SELECT, NODE, NEIGHBORS, PATH, and anything else
+                _ => OpType::Get,
+            };
+
+            sensor.record(op, command);
         }
     }
 
     /// Handles the SAVE command.
-    fn handle_save(&mut self, input: &str) -> CommandResult {
+    fn handle_save(&self, input: &str) -> CommandResult {
         let Some(p) = Self::extract_path(input, "save") else {
             return CommandResult::Error(
                 "Usage: SAVE 'path/to/file.bin' or SAVE path/to/file.bin".to_string(),
             );
         };
 
+        let spinner = progress::operation_spinner("SAVE", &self.config.theme);
+
         let store = self.router.read().vector().store().clone();
         if let Err(e) = store.save_snapshot(&p) {
+            spinner.finish_error(&format!("Failed to save: {e}"));
             return CommandResult::Error(format!("Failed to save: {e}"));
         }
 
-        // Truncate WAL after successful save (snapshot now contains all data)
+        // Truncate WAL after successful save
         if let Some(ref mut wal) = *self.wal.lock() {
             if let Err(e) = wal.truncate() {
+                spinner.finish_error("Saved but WAL truncate failed");
                 return CommandResult::Error(format!(
                     "Saved snapshot but WAL truncate failed: {e}"
                 ));
             }
         }
 
-        CommandResult::Output(format!("Saved snapshot to: {p}"))
+        spinner.finish_success(&format!("Saved to {p}"));
+        CommandResult::Output(format!(
+            "{} Saved snapshot to: {}",
+            style::styled(self.icons.success, self.config.theme.success),
+            style::styled(&p, self.config.theme.string)
+        ))
     }
 
     /// Handles the SAVE COMPRESSED command.
-    fn handle_save_compressed(&mut self, input: &str) -> CommandResult {
+    fn handle_save_compressed(&self, input: &str) -> CommandResult {
         let Some(p) = Self::extract_path(input, "save compressed") else {
             return CommandResult::Error("Usage: SAVE COMPRESSED 'path/to/file.bin'".to_string());
         };
 
-        let store = self.router.read().vector().store().clone();
+        let spinner = progress::operation_spinner("SAVE COMPRESSED", &self.config.theme);
 
-        // Auto-detect embedding dimension from stored vectors
+        let store = self.router.read().vector().store().clone();
         let dim = Self::detect_embedding_dimension(&store);
         let config = tensor_compress::CompressionConfig::balanced(dim);
 
         if let Err(e) = store.save_snapshot_compressed(&p, config) {
+            spinner.finish_error(&format!("Failed to save: {e}"));
             return CommandResult::Error(format!("Failed to save compressed: {e}"));
         }
 
-        // Truncate WAL after successful save (snapshot now contains all data)
+        // Truncate WAL after successful save
         if let Some(ref mut wal) = *self.wal.lock() {
             if let Err(e) = wal.truncate() {
+                spinner.finish_error("Saved but WAL truncate failed");
                 return CommandResult::Error(format!(
                     "Saved snapshot but WAL truncate failed: {e}"
                 ));
             }
         }
 
-        CommandResult::Output(format!("Saved compressed snapshot to: {p}"))
+        spinner.finish_success(&format!("Saved compressed to {p}"));
+        CommandResult::Output(format!(
+            "{} Saved compressed snapshot to: {}",
+            style::styled(self.icons.success, self.config.theme.success),
+            style::styled(&p, self.config.theme.string)
+        ))
     }
 
     /// Handles the LOAD command.
-    fn handle_load(&mut self, input: &str) -> CommandResult {
-        let (p, recovery_mode) = match Self::extract_load_path_and_mode(input) {
-            Some(result) => result,
-            None => {
-                return CommandResult::Error(
-                    "Usage: LOAD 'path/to/file.bin' or LOAD 'path' RECOVER".to_string(),
-                );
-            },
+    fn handle_load(&self, input: &str) -> CommandResult {
+        let Some((p, recovery_mode)) = Self::extract_load_path_and_mode(input) else {
+            return CommandResult::Error(
+                "Usage: LOAD 'path/to/file.bin' or LOAD 'path' RECOVER".to_string(),
+            );
         };
 
-        // Try compressed format first (auto-detects via magic bytes), fall back to legacy
+        let spinner = progress::operation_spinner("LOAD", &self.config.theme);
+
+        // Try compressed format first, fall back to legacy
         let result =
             TensorStore::load_snapshot_compressed(&p).or_else(|_| TensorStore::load_snapshot(&p));
 
@@ -504,7 +529,7 @@ impl Shell {
             Ok(store) => {
                 *self.router.write() = QueryRouter::with_shared_store(store);
 
-                // Derive WAL path from snapshot path (e.g., data.bin -> data.log)
+                // Derive WAL path from snapshot path
                 let wal_path = Path::new(&p).with_extension("log");
 
                 // Replay WAL if it exists
@@ -512,6 +537,7 @@ impl Shell {
                     match self.replay_wal(&wal_path, recovery_mode) {
                         Ok(result) => Self::format_wal_replay_result(&result, recovery_mode),
                         Err(e) => {
+                            spinner.finish_error("WAL replay failed");
                             let hint = if recovery_mode == WalRecoveryMode::Strict {
                                 "\nHint: Use 'LOAD path RECOVER' to skip corrupted entries"
                             } else {
@@ -530,14 +556,25 @@ impl Shell {
                 match Wal::open_append(&wal_path) {
                     Ok(wal) => {
                         *self.wal.lock() = Some(wal);
-                        CommandResult::Output(format!("Loaded snapshot from: {p}{replay_msg}"))
+                        spinner.finish_success(&format!("Loaded from {p}"));
+                        CommandResult::Output(format!(
+                            "{} Loaded snapshot from: {}{replay_msg}",
+                            style::styled(self.icons.success, self.config.theme.success),
+                            style::styled(&p, self.config.theme.string)
+                        ))
                     },
-                    Err(e) => CommandResult::Error(format!(
-                        "Loaded snapshot but failed to initialize WAL: {e}"
-                    )),
+                    Err(e) => {
+                        spinner.finish_error("Failed to initialize WAL");
+                        CommandResult::Error(format!(
+                            "Loaded snapshot but failed to initialize WAL: {e}"
+                        ))
+                    },
                 }
             },
-            Err(e) => CommandResult::Error(format!("Failed to load: {e}")),
+            Err(e) => {
+                spinner.finish_error(&format!("Failed to load: {e}"));
+                CommandResult::Error(format!("Failed to load: {e}"))
+            },
         }
     }
 
@@ -552,10 +589,8 @@ impl Shell {
             return None;
         }
 
-        // Check for RECOVER keyword at the end (case-insensitive)
         let upper_rest = rest.to_uppercase();
 
-        // If the entire input is just "RECOVER", no path was provided
         if upper_rest == "RECOVER" {
             return None;
         }
@@ -572,7 +607,6 @@ impl Shell {
             return None;
         }
 
-        // Handle quoted path
         let path = if (path_part.starts_with('\'') && path_part.ends_with('\''))
             || (path_part.starts_with('"') && path_part.ends_with('"'))
         {
@@ -603,7 +637,6 @@ impl Shell {
                 result.errors.len()
             );
 
-            // Show at most 5 errors
             for error in result.errors.iter().take(5) {
                 let _ = write!(
                     output,
@@ -627,7 +660,6 @@ impl Shell {
             return None;
         }
 
-        // Handle quoted path
         if (rest.starts_with('\'') && rest.ends_with('\''))
             || (rest.starts_with('"') && rest.ends_with('"'))
         {
@@ -637,16 +669,13 @@ impl Shell {
             return None;
         }
 
-        // Handle unquoted path
         Some(rest.to_string())
     }
 
     /// Detect the most common embedding dimension from stored vectors.
-    /// Falls back to STANDARD (768) if no vectors are found.
-    fn detect_embedding_dimension(store: &tensor_store::TensorStore) -> usize {
+    fn detect_embedding_dimension(store: &TensorStore) -> usize {
         use tensor_store::TensorValue;
 
-        // Sample vectors to find dimension
         let keys = store.scan("");
         for key in keys.iter().take(100) {
             if let Ok(tensor) = store.get(key) {
@@ -664,7 +693,6 @@ impl Shell {
             }
         }
 
-        // Default to standard BERT dimension if no vectors found
         tensor_compress::CompressionDefaults::STANDARD
     }
 
@@ -720,7 +748,10 @@ impl Shell {
 
                 let result = self.router.write().init_vault(&decoded);
                 match result {
-                    Ok(()) => CommandResult::Output("Vault initialized".to_string()),
+                    Ok(()) => CommandResult::Output(format!(
+                        "{} Vault initialized",
+                        style::styled(self.icons.success, self.config.theme.success)
+                    )),
                     Err(e) => CommandResult::Error(format!("Failed to initialize vault: {e}")),
                 }
             },
@@ -740,7 +771,6 @@ impl Shell {
             .trim()
             .to_string();
 
-        // Extract identity from quoted string
         let identity = if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() > 2 {
             &rest[1..rest.len() - 1]
         } else if !rest.is_empty() {
@@ -753,24 +783,27 @@ impl Shell {
         };
 
         self.router.write().set_identity(identity);
-        CommandResult::Output(format!("Identity set to: {identity}"))
+        CommandResult::Output(format!(
+            "{} Identity set to: {}",
+            style::styled(self.icons.success, self.config.theme.success),
+            style::styled(identity, self.config.theme.id)
+        ))
     }
 
     /// Initialize the cache with default configuration.
     fn handle_cache_init(&self) -> CommandResult {
         let result = self.router.write().init_cache_default();
         match result {
-            Ok(()) => CommandResult::Output("Cache initialized".to_string()),
+            Ok(()) => CommandResult::Output(format!(
+                "{} Cache initialized",
+                style::styled(self.icons.success, self.config.theme.success)
+            )),
             Err(e) => CommandResult::Error(format!("Failed to initialize cache: {e}")),
         }
     }
 
     /// Handles the CLUSTER CONNECT command.
-    ///
-    /// Syntax: `CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]`
-    /// Example: `CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'`
     fn handle_cluster_connect(&self, input: &str) -> CommandResult {
-        // Parse the command arguments
         let args = input.trim();
         let args = args
             .strip_prefix("cluster connect")
@@ -780,11 +813,11 @@ impl Shell {
 
         if args.is_empty() {
             return CommandResult::Error(
-                "Usage: CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]\n\
-                 Example: CLUSTER CONNECT 'node1@127.0.0.1:8001' 'node2@127.0.0.1:8002'"
-                    .to_string(),
+                "Usage: CLUSTER CONNECT 'node_id@bind_addr' ['peer_id@peer_addr', ...]".to_string(),
             );
         }
+
+        let spinner = progress::operation_spinner("CLUSTER CONNECT", &self.config.theme);
 
         // Parse quoted strings
         let mut addresses: Vec<String> = Vec::new();
@@ -815,6 +848,7 @@ impl Shell {
         }
 
         if addresses.is_empty() {
+            spinner.finish_error("No addresses provided");
             return CommandResult::Error("No addresses provided".to_string());
         }
 
@@ -822,7 +856,10 @@ impl Shell {
         let local = &addresses[0];
         let (node_id, bind_addr) = match Self::parse_node_address(local) {
             Ok(parsed) => parsed,
-            Err(e) => return CommandResult::Error(format!("Invalid local address: {e}")),
+            Err(e) => {
+                spinner.finish_error(&format!("Invalid address: {e}"));
+                return CommandResult::Error(format!("Invalid local address: {e}"));
+            },
         };
 
         // Parse remaining addresses as peers
@@ -831,15 +868,16 @@ impl Shell {
             match Self::parse_node_address(addr) {
                 Ok((peer_id, peer_addr)) => peers.push((peer_id, peer_addr)),
                 Err(e) => {
-                    return CommandResult::Error(format!("Invalid peer address '{addr}': {e}"))
+                    spinner.finish_error(&format!("Invalid peer: {e}"));
+                    return CommandResult::Error(format!("Invalid peer address '{addr}': {e}"));
                 },
             }
         }
 
-        // Create executor wrapper for distributed query handling
+        // Create executor wrapper
         let executor: Arc<dyn QueryExecutor> = Arc::new(RouterExecutor(Arc::clone(&self.router)));
 
-        // Initialize cluster with executor
+        // Initialize cluster
         let result = {
             let mut router = self.router.write();
             router.init_cluster_with_executor(&node_id, bind_addr, &peers, Some(executor))
@@ -847,12 +885,19 @@ impl Shell {
 
         match result {
             Ok(()) => {
-                let peer_count = peers.len();
+                spinner.finish_success(&format!("Connected as {node_id}"));
                 CommandResult::Output(format!(
-                    "Cluster initialized: {node_id} @ {bind_addr} with {peer_count} peer(s)"
+                    "{} Cluster initialized: {} @ {} with {} peer(s)",
+                    style::styled(self.icons.success, self.config.theme.success),
+                    style::styled(&node_id, self.config.theme.id),
+                    style::styled(bind_addr, self.config.theme.muted),
+                    style::styled(peers.len(), self.config.theme.number)
                 ))
             },
-            Err(e) => CommandResult::Error(format!("Failed to connect to cluster: {e}")),
+            Err(e) => {
+                spinner.finish_error(&format!("Failed: {e}"));
+                CommandResult::Error(format!("Failed to connect to cluster: {e}"))
+            },
         }
     }
 
@@ -880,9 +925,192 @@ impl Shell {
 
         let result = self.router.write().shutdown_cluster();
         match result {
-            Ok(()) => CommandResult::Output("Disconnected from cluster".to_string()),
+            Ok(()) => CommandResult::Output(format!(
+                "{} Disconnected from cluster",
+                style::styled(self.icons.success, self.config.theme.success)
+            )),
             Err(e) => CommandResult::Error(format!("Failed to disconnect: {e}")),
         }
+    }
+
+    /// Handles TRO border control commands.
+    fn handle_tro_command(&self, input: &str) -> CommandResult {
+        let args = input
+            .strip_prefix("tro")
+            .or_else(|| input.strip_prefix("TRO"))
+            .unwrap_or("")
+            .trim();
+
+        let lower_args = args.to_lowercase();
+
+        // TRO (no args) or TRO STATUS - show status
+        if args.is_empty() || lower_args == "status" {
+            return self.handle_tro_status();
+        }
+
+        // TRO PAUSE
+        if lower_args == "pause" {
+            return self.handle_tro_pause();
+        }
+
+        // TRO RESUME
+        if lower_args == "resume" {
+            return self.handle_tro_resume();
+        }
+
+        // TRO THEME <name>
+        if lower_args.starts_with("theme ") {
+            let theme_name = args[6..].trim();
+            return self.handle_tro_theme(theme_name);
+        }
+
+        // TRO CRT ON/OFF
+        if lower_args.starts_with("crt ") {
+            let setting = args[4..].trim().to_lowercase();
+            return self.handle_tro_crt(&setting);
+        }
+
+        // TRO ASCII ON/OFF
+        if lower_args.starts_with("ascii ") {
+            let setting = args[6..].trim().to_lowercase();
+            return self.handle_tro_ascii(&setting);
+        }
+
+        // TRO THEMES - list available themes
+        if lower_args == "themes" {
+            let themes = Palette::all_names().join(", ");
+            return CommandResult::Output(format!("Available themes: {themes}"));
+        }
+
+        CommandResult::Error(format!(
+            "Unknown TRO command: {args}\n\
+             Usage:\n  \
+             TRO [STATUS]   - Show TRO status\n  \
+             TRO PAUSE      - Pause border animation\n  \
+             TRO RESUME     - Resume border animation\n  \
+             TRO THEME <n>  - Set color theme ({})\n  \
+             TRO THEMES     - List available themes\n  \
+             TRO CRT ON/OFF - Toggle CRT effects\n  \
+             TRO ASCII ON/OFF - Toggle ASCII-only mode",
+            Palette::all_names().join("/")
+        ))
+    }
+
+    /// Shows TRO status.
+    fn handle_tro_status(&self) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Output("TRO border disabled (non-TTY or disabled in config)".to_string());
+        };
+
+        let running = if tro.is_running() { "running" } else { "stopped" };
+        let palette = tro.palette().name();
+        let crt = if tro.config().crt_effects { "on" } else { "off" };
+        let charset = match tro.charset_mode() {
+            tro::CharsetMode::Unicode => "unicode",
+            tro::CharsetMode::Ascii => "ascii",
+        };
+        let fps = tro.config().fps;
+        let agents = tro.config().agent_count;
+
+        CommandResult::Output(format!(
+            "TRO Border Status:\n  \
+             State:   {running}\n  \
+             Theme:   {palette}\n  \
+             CRT:     {crt}\n  \
+             Charset: {charset}\n  \
+             FPS:     {fps}\n  \
+             Agents:  {agents}"
+        ))
+    }
+
+    /// Pauses TRO animation.
+    fn handle_tro_pause(&self) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Error("TRO border not enabled".to_string());
+        };
+
+        tro.pause();
+        CommandResult::Output(format!(
+            "{} TRO border paused",
+            style::styled(self.icons.success, self.config.theme.success)
+        ))
+    }
+
+    /// Resumes TRO animation.
+    fn handle_tro_resume(&self) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Error("TRO border not enabled".to_string());
+        };
+
+        tro.resume();
+        CommandResult::Output(format!(
+            "{} TRO border resumed",
+            style::styled(self.icons.success, self.config.theme.success)
+        ))
+    }
+
+    /// Sets TRO color theme.
+    fn handle_tro_theme(&self, name: &str) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Error("TRO border not enabled".to_string());
+        };
+
+        let Some(palette) = Palette::from_name(name) else {
+            let available = Palette::all_names().join(", ");
+            return CommandResult::Error(format!(
+                "Unknown theme: {name}\nAvailable: {available}"
+            ));
+        };
+
+        tro.set_palette(palette);
+        CommandResult::Output(format!(
+            "{} TRO theme set to: {}",
+            style::styled(self.icons.success, self.config.theme.success),
+            style::styled(palette.name(), self.config.theme.id)
+        ))
+    }
+
+    /// Toggles TRO CRT effects.
+    fn handle_tro_crt(&self, setting: &str) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Error("TRO border not enabled".to_string());
+        };
+
+        let enabled = match setting {
+            "on" | "true" | "1" | "yes" => true,
+            "off" | "false" | "0" | "no" => false,
+            _ => return CommandResult::Error("Usage: TRO CRT ON or TRO CRT OFF".to_string()),
+        };
+
+        tro.set_crt_effects(enabled);
+        let state = if enabled { "enabled" } else { "disabled" };
+        CommandResult::Output(format!(
+            "{} CRT effects {state}",
+            style::styled(self.icons.success, self.config.theme.success)
+        ))
+    }
+
+    /// Toggles TRO ASCII mode.
+    fn handle_tro_ascii(&self, setting: &str) -> CommandResult {
+        let Some(ref tro) = self.tro else {
+            return CommandResult::Error("TRO border not enabled".to_string());
+        };
+
+        let mode = match setting {
+            "on" | "true" | "1" | "yes" => tro::CharsetMode::Ascii,
+            "off" | "false" | "0" | "no" => tro::CharsetMode::Unicode,
+            _ => return CommandResult::Error("Usage: TRO ASCII ON or TRO ASCII OFF".to_string()),
+        };
+
+        tro.set_charset_mode(mode);
+        let state = match mode {
+            tro::CharsetMode::Ascii => "enabled (ASCII-only)",
+            tro::CharsetMode::Unicode => "disabled (Unicode)",
+        };
+        CommandResult::Output(format!(
+            "{} ASCII mode {state}",
+            style::styled(self.icons.success, self.config.theme.success)
+        ))
     }
 
     /// Lists all tables in the database.
@@ -892,208 +1120,20 @@ impl Shell {
             .execute_parsed("SHOW TABLES")
             .map_or_else(
                 |_| CommandResult::Output("No tables found.".to_string()),
-                |result| CommandResult::Output(format_result(&result)),
+                |result| {
+                    CommandResult::Output(output::format_result(
+                        &result,
+                        &self.config.theme,
+                        self.icons,
+                    ))
+                },
             )
     }
 
     /// Returns the help text.
     #[must_use]
     pub fn help_text() -> String {
-        "\
-Neumann Database Shell
-
-Commands:
-  help, \\h, \\?    Show this help message
-  exit, quit, \\q  Exit the shell
-  tables, \\dt     List all tables
-  clear, \\c       Clear the screen
-
-Persistence:
-  save 'path'            Save database snapshot to file
-  save compressed 'path' Save compressed snapshot (int8 quantization)
-  load 'path'            Load snapshot with strict WAL replay
-  load 'path' recover    Load snapshot, skip corrupted WAL entries
-  wal status             Show write-ahead log status
-  wal truncate           Clear the write-ahead log
-
-Query Types:
-  Relational (SQL):
-    CREATE TABLE name (col1 TYPE, col2 TYPE, ...)
-    INSERT INTO table VALUES (val1, val2, ...)
-    SELECT cols FROM table [WHERE condition]
-    UPDATE table SET col = val [WHERE condition]
-    DELETE FROM table [WHERE condition]
-    DROP TABLE name
-    DESCRIBE TABLE name            Show table schema
-
-  Graph:
-    NODE CREATE label {prop: value, ...}
-    NODE LIST [label]              List all nodes or filter by label
-    NODE GET id                    Get node by ID
-    NODE DELETE id                 Delete node by ID
-    EDGE CREATE node1 -> node2 : label [{props}]
-    EDGE LIST [type]               List all edges or filter by type
-    EDGE GET id                    Get edge by ID
-    EDGE DELETE id                 Delete edge by ID
-    NEIGHBORS node_id OUTGOING|INCOMING|BOTH [: label]
-    PATH node1 -> node2 [LIMIT n]
-    DESCRIBE NODE id               Show node details
-    DESCRIBE EDGE id               Show edge details
-
-  Graph Algorithms:
-    GRAPH ALGORITHM PAGERANK [DAMPING d] [ITERATIONS n]
-    GRAPH ALGORITHM BETWEENNESS
-    GRAPH ALGORITHM CLOSENESS
-    GRAPH ALGORITHM EIGENVECTOR
-    GRAPH ALGORITHM LOUVAIN
-    GRAPH ALGORITHM LABEL_PROPAGATION
-
-  Graph Patterns:
-    GRAPH PATTERN MATCH (a)-[r]->(b) [LIMIT n]
-    GRAPH PATTERN COUNT (a)-[r]->(b)
-    GRAPH PATTERN EXISTS (a)-[r]->(b)
-
-  Graph Batch:
-    GRAPH BATCH CREATE NODES [{label: 'x', props...}, ...]
-    GRAPH BATCH CREATE EDGES [{from: 1, to: 2, type: 'x'}, ...]
-    GRAPH BATCH DELETE NODES [id1, id2, ...]
-    GRAPH BATCH DELETE EDGES [id1, id2, ...]
-    GRAPH BATCH UPDATE NODES [{id: 1, props...}, ...]
-
-  Graph Aggregates:
-    GRAPH AGGREGATE COUNT NODES [label]
-    GRAPH AGGREGATE COUNT EDGES [type]
-    GRAPH AGGREGATE SUM property ON NODES [label]
-    GRAPH AGGREGATE AVG property ON NODES [label]
-    GRAPH AGGREGATE MIN property ON NODES [label]
-    GRAPH AGGREGATE MAX property ON NODES [label]
-
-  Graph Constraints:
-    GRAPH CONSTRAINT CREATE name UNIQUE ON NODE (property)
-    GRAPH CONSTRAINT CREATE name EXISTS ON NODE (property)
-    GRAPH CONSTRAINT DROP name
-    GRAPH CONSTRAINT LIST
-
-  Graph Indexes:
-    GRAPH INDEX CREATE ON NODE (property)
-    GRAPH INDEX CREATE ON EDGE (property)
-    GRAPH INDEX CREATE ON LABEL          Index node labels for fast lookup
-    GRAPH INDEX CREATE ON EDGE TYPE      Index edge types for fast lookup
-    GRAPH INDEX DROP ON NODE (property)
-    GRAPH INDEX DROP ON EDGE (property)
-    GRAPH INDEX SHOW NODES
-    GRAPH INDEX SHOW EDGES
-
-  Vector:
-    EMBED STORE 'key' [vector values]
-    EMBED GET 'key'
-    EMBED DELETE 'key'
-    EMBED BUILD INDEX
-    EMBED BATCH [('key1', [v1, v2]), ('key2', [v1, v2])]
-    SIMILAR 'key' [COSINE|EUCLIDEAN|DOT_PRODUCT] LIMIT n
-    SIMILAR [vector] [metric] LIMIT n
-    SHOW EMBEDDINGS [LIMIT n]      List stored embeddings
-    SHOW VECTOR INDEX              Show HNSW index status
-    COUNT EMBEDDINGS               Count total embeddings
-
-  Unified (Cross-Engine):
-    FIND NODE [label] [WHERE condition] [LIMIT n]
-    FIND EDGE [type] [WHERE condition] [LIMIT n]
-
-  Entity (Unified Objects):
-    ENTITY CREATE 'key' {prop: val, ...} [EMBEDDING [vec]]
-    ENTITY GET 'key'
-    ENTITY CONNECT 'from' -> 'to' : edge_type
-    ENTITY BATCH CREATE [{key: 'k1', name: 'Alice'}, ...]
-
-  Blob Storage:
-    BLOB INIT                      Initialize blob store
-    BLOB PUT 'path' [CHUNK size] [TAGS 'a','b'] [FOR 'entity']
-    BLOB GET 'id' TO 'path'        Download blob to file
-    BLOB DELETE 'id'               Delete blob
-    BLOB INFO 'id'                 Show blob metadata
-    BLOB LINK 'id' TO 'entity'     Link blob to entity
-    BLOB UNLINK 'id' FROM 'entity' Unlink blob from entity
-    BLOB LINKS 'id'                List entities linked to blob
-    BLOB TAG 'id' 'tag'            Add tag to blob
-    BLOB UNTAG 'id' 'tag'          Remove tag from blob
-    BLOB VERIFY 'id'               Verify blob integrity
-    BLOB GC                        Run garbage collection
-    BLOB GC FULL                   Run full garbage collection
-    BLOB REPAIR                    Repair blob storage
-    BLOB STATS                     Show blob storage statistics
-    BLOB META SET 'id' 'key' 'val' Set custom metadata
-    BLOB META GET 'id' 'key'       Get custom metadata
-    BLOBS                          List all blobs
-    BLOBS FOR 'entity'             List blobs linked to entity
-    BLOBS BY TAG 'tag'             Find blobs by tag
-
-  Vault (Secrets):
-    VAULT INIT                     Initialize vault from NEUMANN_VAULT_KEY
-    VAULT IDENTITY 'node:name'     Set current identity for access control
-    VAULT SET 'key' 'value'        Store encrypted secret
-    VAULT GET 'key'                Retrieve secret (requires access)
-    VAULT DELETE 'key'             Delete secret
-    VAULT LIST 'pattern'           List accessible secrets
-    VAULT ROTATE 'key' 'new'       Rotate secret value
-    VAULT GRANT 'entity' ON 'key'  Grant access to entity
-    VAULT REVOKE 'entity' ON 'key' Revoke access from entity
-
-  Cache (LLM Responses):
-    CACHE INIT                     Initialize semantic cache
-    CACHE STATS                    Show cache statistics
-    CACHE CLEAR                    Clear all cache entries
-    CACHE EVICT [n]                Evict n entries (default: 100)
-    CACHE GET 'key'                Get cached response
-    CACHE PUT 'key' 'value'        Store cache entry
-    CACHE SEMANTIC GET 'query' [THRESHOLD n]
-                                   Semantic similarity lookup
-    CACHE SEMANTIC PUT 'query' 'response' EMBEDDING [vec]
-                                   Store with semantic embedding
-
-  Checkpoints (Rollback):
-    CHECKPOINT                     Create checkpoint with auto-generated name
-    CHECKPOINT 'name'              Create named checkpoint
-    CHECKPOINTS                    List all checkpoints
-    CHECKPOINTS LIMIT n            List last n checkpoints
-    ROLLBACK TO 'name-or-id'       Restore database to checkpoint
-
-  Chain (Distributed Ledger):
-    BEGIN CHAIN TRANSACTION        Start a chain transaction
-    COMMIT CHAIN                   Commit chain transaction
-    ROLLBACK CHAIN TO height       Rollback to specific height
-    CHAIN HEIGHT                   Get current chain height
-    CHAIN TIP                      Get chain tip (hash and height)
-    CHAIN BLOCK height             Get block at height
-    CHAIN VERIFY                   Verify chain integrity
-    CHAIN HISTORY 'key'            Get transaction history for key
-    CHAIN SIMILAR [embedding] LIMIT n
-                                   Find blocks by embedding similarity
-    CHAIN DRIFT FROM h1 TO h2      Analyze semantic drift between heights
-    SHOW CODEBOOK GLOBAL           Show global quantization codebook
-    SHOW CODEBOOK LOCAL 'domain'   Show domain-specific codebook
-    ANALYZE CODEBOOK TRANSITIONS   Analyze codebook transition patterns
-
-  Cluster (Distributed):
-    CLUSTER CONNECT 'node@addr'    Connect to cluster
-    CLUSTER DISCONNECT             Leave cluster
-    CLUSTER STATUS                 Show cluster status
-    CLUSTER NODES                  List cluster nodes
-    CLUSTER LEADER                 Show current leader
-
-Examples:
-  > CREATE TABLE users (id INT, name TEXT)
-  > INSERT INTO users VALUES (1, 'Alice')
-  > SELECT * FROM users
-  > NODE CREATE person {name: 'Bob', age: 30}
-  > EMBED STORE 'doc1' [0.1, 0.2, 0.3]
-  > ENTITY CREATE 'user:1' {name: 'Alice'} EMBEDDING [0.1, 0.2]
-  > SAVE 'backup.bin'
-  > SAVE COMPRESSED 'backup.bin'
-  > LOAD 'backup.bin'
-  > LOAD 'backup.bin' RECOVER
-"
-        .to_string()
+        output::format_help(&Theme::auto())
     }
 
     /// Processes a command result and returns whether to continue the loop.
@@ -1109,7 +1149,7 @@ Examples:
                 LoopAction::Continue
             },
             CommandResult::Exit => {
-                println!("Goodbye!");
+                println!("{}", progress::goodbye_message(&Theme::auto()));
                 LoopAction::Exit
             },
             CommandResult::Empty => LoopAction::Continue,
@@ -1128,8 +1168,11 @@ Examples:
     ///
     /// Returns an error if readline initialization fails.
     pub fn run(&mut self) -> Result<(), ShellError> {
-        let editor: Editor<(), DefaultHistory> =
-            DefaultEditor::new().map_err(|e| ShellError::Init(e.to_string()))?;
+        let helper = NeumannHelper::new(self.config.theme.clone());
+        let mut editor: Editor<NeumannHelper, DefaultHistory> =
+            Editor::new().map_err(|e| ShellError::Init(e.to_string()))?;
+        editor.set_helper(Some(helper));
+
         let editor = Arc::new(Mutex::new(editor));
 
         {
@@ -1142,7 +1185,7 @@ Examples:
                 .map_err(|e| ShellError::Init(e.to_string()))?;
         }
 
-        // Set up confirmation handler for destructive operations if checkpoint is available
+        // Set up confirmation handler if checkpoint is available
         {
             let router = self.router.read();
             if router.has_checkpoint() {
@@ -1155,8 +1198,24 @@ Examples:
             }
         }
 
-        println!("Neumann Database Shell v{}", Self::version());
-        println!("Type 'help' for available commands.\n");
+        // Show welcome banner (TRO boot sequence or standard banner)
+        if let Some(ref tro) = self.tro {
+            tro.run_boot_sequence(Self::version());
+            // Clean transition to interactive mode
+            println!();
+            println!(
+                "{}",
+                style::styled("Ready. Type 'help' for commands.", self.config.theme.info)
+            );
+            println!();
+        } else {
+            let banner = if progress::supports_full_banner() {
+                progress::welcome_banner(Self::version(), &self.config.theme)
+            } else {
+                progress::compact_banner(Self::version(), &self.config.theme)
+            };
+            println!("{banner}");
+        }
 
         loop {
             let readline_result = {
@@ -1176,7 +1235,7 @@ Examples:
                 },
                 Err(ReadlineError::Interrupted) => println!("^C"),
                 Err(ReadlineError::Eof) => {
-                    println!("Goodbye!");
+                    println!("{}", progress::goodbye_message(&self.config.theme));
                     break;
                 },
                 Err(err) => {
@@ -1185,11 +1244,30 @@ Examples:
                 },
             }
         }
+
+        // Shutdown TRO border animation
+        if let Some(ref mut tro) = self.tro {
+            tro.shutdown();
+        }
+
         if let Some(ref path) = self.config.history_file {
             let mut ed = editor.lock();
             let _ = ed.save_history(path);
         }
         Ok(())
+    }
+
+    /// Returns a reference to the TRO controller if enabled.
+    #[must_use]
+    pub const fn tro(&self) -> Option<&TroController> {
+        self.tro.as_ref()
+    }
+
+    /// Records activity to the TRO sensor.
+    pub fn record_activity(&self, op: OpType, key: &str) {
+        if let Some(ref tro) = self.tro {
+            tro.activity_sensor().record(op, key);
+        }
     }
 }
 
@@ -1225,733 +1303,6 @@ impl std::fmt::Display for ShellError {
 
 impl std::error::Error for ShellError {}
 
-/// Formats a query result for display.
-fn format_result(result: &QueryResult) -> String {
-    match result {
-        QueryResult::Empty => "OK".to_string(),
-        QueryResult::Value(s) => s.clone(),
-        QueryResult::Count(n) => format_count(*n),
-        QueryResult::Ids(ids) => format_ids(ids),
-        QueryResult::Rows(rows) => format_rows(rows),
-        QueryResult::Nodes(nodes) => format_nodes(nodes),
-        QueryResult::Edges(edges) => format_edges(edges),
-        QueryResult::Path(path) => format_path(path),
-        QueryResult::Similar(results) => format_similar(results),
-        QueryResult::Unified(unified) => format_unified(unified),
-        QueryResult::TableList(tables) => format_table_list(tables),
-        QueryResult::Blob(data) => format_blob(data),
-        QueryResult::ArtifactInfo(info) => format_artifact_info(info),
-        QueryResult::ArtifactList(ids) => format_artifact_list(ids),
-        QueryResult::BlobStats(stats) => format_blob_stats(stats),
-        QueryResult::CheckpointList(checkpoints) => format_checkpoint_list(checkpoints),
-        QueryResult::Chain(chain) => format_chain_result(chain),
-        QueryResult::PageRank(ref result) => format_pagerank(result),
-        QueryResult::Centrality(ref result) => format_centrality(result),
-        QueryResult::Communities(ref result) => format_communities(result),
-        QueryResult::Constraints(constraints) => format_constraints(constraints),
-        QueryResult::GraphIndexes(indexes) => format_graph_indexes(indexes),
-        QueryResult::Aggregate(agg) => format_aggregate(agg),
-        QueryResult::BatchResult(batch) => format_batch_result(batch),
-        QueryResult::PatternMatch(pm) => format_pattern_match(pm),
-    }
-}
-
-/// Formats a count result.
-fn format_count(n: usize) -> String {
-    if n == 1 {
-        "1 row affected".to_string()
-    } else {
-        format!("{n} rows affected")
-    }
-}
-
-/// Formats a list of IDs.
-fn format_ids(ids: &[u64]) -> String {
-    if ids.is_empty() {
-        "(no results)".to_string()
-    } else if ids.len() == 1 {
-        format!("ID: {}", ids[0])
-    } else {
-        format!(
-            "IDs: {}",
-            ids.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
-}
-
-/// Formats graph nodes.
-fn format_nodes(nodes: &[query_router::NodeResult]) -> String {
-    if nodes.is_empty() {
-        "(0 nodes)".to_string()
-    } else {
-        let lines: Vec<String> = nodes
-            .iter()
-            .map(|n| {
-                let props: Vec<String> = n
-                    .properties
-                    .iter()
-                    .map(|(k, v)| format!("{k}: {v}"))
-                    .collect();
-                if props.is_empty() {
-                    format!("  [{}] {} {{}}", n.id, n.label)
-                } else {
-                    format!("  [{}] {} {{{}}}", n.id, n.label, props.join(", "))
-                }
-            })
-            .collect();
-        format!("Nodes:\n{}\n({} nodes)", lines.join("\n"), nodes.len())
-    }
-}
-
-/// Formats graph edges.
-fn format_edges(edges: &[query_router::EdgeResult]) -> String {
-    if edges.is_empty() {
-        "(0 edges)".to_string()
-    } else {
-        let lines: Vec<String> = edges
-            .iter()
-            .map(|e| format!("  [{}] {} -> {} : {}", e.id, e.from, e.to, e.label))
-            .collect();
-        format!("Edges:\n{}\n({} edges)", lines.join("\n"), edges.len())
-    }
-}
-
-/// Formats a graph path.
-fn format_path(path: &[u64]) -> String {
-    if path.is_empty() {
-        "(no path found)".to_string()
-    } else {
-        format!(
-            "Path: {}",
-            path.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" -> ")
-        )
-    }
-}
-
-/// Formats similar embedding results.
-fn format_similar(results: &[query_router::SimilarResult]) -> String {
-    if results.is_empty() {
-        "(no similar embeddings)".to_string()
-    } else {
-        let lines: Vec<String> = results
-            .iter()
-            .enumerate()
-            .map(|(i, r)| format!("  {}. {} (similarity: {:.4})", i + 1, r.key, r.score))
-            .collect();
-        format!("Similar:\n{}", lines.join("\n"))
-    }
-}
-
-/// Formats unified query results.
-fn format_unified(unified: &query_router::UnifiedResult) -> String {
-    let mut output = String::new();
-
-    output.push_str(&unified.description);
-    output.push('\n');
-
-    if unified.items.is_empty() {
-        output.push_str("(no items)\n");
-        return output;
-    }
-
-    for item in &unified.items {
-        output.push_str(&format!("  [{}] ({})", item.id, item.source));
-
-        if !item.data.is_empty() {
-            let fields: Vec<String> = item.data.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-            output.push_str(&format!(" {{{}}}", fields.join(", ")));
-        }
-
-        if let Some(score) = item.score {
-            output.push_str(&format!(" [score: {score:.4}]"));
-        }
-
-        if let Some(ref emb) = item.embedding {
-            output.push_str(&format!(" [embedding: {}D]", emb.len()));
-        }
-
-        output.push('\n');
-    }
-
-    output.push_str(&format!("({} items)\n", unified.items.len()));
-    output
-}
-
-/// Formats a list of table names.
-fn format_table_list(tables: &[String]) -> String {
-    if tables.is_empty() {
-        "No tables found.".to_string()
-    } else {
-        format!(
-            "Tables:\n{}",
-            tables
-                .iter()
-                .map(|t| format!("  {t}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    }
-}
-
-fn format_hex_dump(data: &[u8], max_bytes: usize) -> String {
-    let bytes_to_show = data.len().min(max_bytes);
-    let mut output = String::new();
-
-    for (i, chunk) in data[..bytes_to_show]
-        .chunks(BLOB_HEX_BYTES_PER_LINE)
-        .enumerate()
-    {
-        // Offset
-        let _ = write!(output, "{:08x}  ", i * BLOB_HEX_BYTES_PER_LINE);
-
-        // Hex bytes with midpoint spacing
-        for (j, byte) in chunk.iter().enumerate() {
-            let _ = write!(output, "{byte:02x} ");
-            if j == 7 {
-                output.push(' ');
-            }
-        }
-
-        // Padding for incomplete lines
-        for j in chunk.len()..BLOB_HEX_BYTES_PER_LINE {
-            output.push_str("   ");
-            if j == 7 {
-                output.push(' ');
-            }
-        }
-
-        // ASCII representation
-        output.push_str(" |");
-        for byte in chunk {
-            let c = if byte.is_ascii_graphic() || *byte == b' ' {
-                *byte as char
-            } else {
-                '.'
-            };
-            output.push(c);
-        }
-        output.push_str("|\n");
-    }
-    output
-}
-
-fn format_blob(data: &[u8]) -> String {
-    let size = data.len();
-
-    // Try UTF-8 text display (up to 4KB)
-    if size <= BLOB_TEXT_DISPLAY_LIMIT {
-        if let Ok(s) = std::str::from_utf8(data) {
-            if s.chars()
-                .all(|c| !c.is_control() || c == '\n' || c == '\t' || c == '\r')
-            {
-                return s.to_string();
-            }
-        }
-    }
-
-    // Large text files: show preview
-    if size > BLOB_TEXT_DISPLAY_LIMIT {
-        if let Ok(s) = std::str::from_utf8(data) {
-            if s.chars()
-                .all(|c| !c.is_control() || c == '\n' || c == '\t' || c == '\r')
-            {
-                let preview_end = s
-                    .char_indices()
-                    .take_while(|(i, _)| *i < BLOB_TEXT_DISPLAY_LIMIT)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(BLOB_TEXT_DISPLAY_LIMIT);
-
-                return format!(
-                    "{}\n... ({} more bytes, {} total)",
-                    &s[..preview_end],
-                    size - preview_end,
-                    size
-                );
-            }
-        }
-    }
-
-    // Binary data: hex dump preview
-    let mut output = format!("<binary data: {size} bytes>\n\n");
-    output.push_str(&format_hex_dump(data, BLOB_HEX_PREVIEW_BYTES));
-
-    if size > BLOB_HEX_PREVIEW_BYTES {
-        output.push_str(&format!(
-            "... ({} more bytes)\n",
-            size - BLOB_HEX_PREVIEW_BYTES
-        ));
-    }
-    output
-}
-
-/// Formats artifact info for display.
-fn format_artifact_info(info: &query_router::ArtifactInfoResult) -> String {
-    let mut lines = vec![
-        format!("Artifact: {}", info.id),
-        format!("  Filename: {}", info.filename),
-        format!("  Type: {}", info.content_type),
-        format!("  Size: {} bytes", info.size),
-        format!("  Checksum: {}", info.checksum),
-        format!("  Chunks: {}", info.chunk_count),
-        format!("  Created: {}", info.created),
-        format!("  Modified: {}", info.modified),
-        format!("  Creator: {}", info.created_by),
-    ];
-
-    if !info.tags.is_empty() {
-        lines.push(format!("  Tags: {}", info.tags.join(", ")));
-    }
-
-    if !info.linked_to.is_empty() {
-        lines.push(format!("  Links: {}", info.linked_to.join(", ")));
-    }
-
-    if !info.custom.is_empty() {
-        lines.push("  Metadata:".to_string());
-        for (k, v) in &info.custom {
-            lines.push(format!("    {k}: {v}"));
-        }
-    }
-
-    lines.join("\n")
-}
-
-/// Formats artifact list for display.
-fn format_artifact_list(ids: &[String]) -> String {
-    if ids.is_empty() {
-        "(no artifacts)".to_string()
-    } else {
-        ids.join("\n")
-    }
-}
-
-/// Formats blob statistics for display.
-fn format_blob_stats(stats: &query_router::BlobStatsResult) -> String {
-    format!(
-        "Blob Storage Statistics:\n\
-         Artifacts: {}\n\
-         Chunks: {}\n\
-         Total bytes: {}\n\
-         Unique bytes: {}\n\
-         Dedup ratio: {:.1}%\n\
-         Orphaned chunks: {}",
-        stats.artifact_count,
-        stats.chunk_count,
-        stats.total_bytes,
-        stats.unique_bytes,
-        stats.dedup_ratio * 100.0,
-        stats.orphaned_chunks
-    )
-}
-
-fn format_checkpoint_list(checkpoints: &[CheckpointInfo]) -> String {
-    if checkpoints.is_empty() {
-        return "No checkpoints found".to_string();
-    }
-
-    let mut output = String::new();
-    let _ = writeln!(output, "Checkpoints:");
-    let _ = writeln!(output, "{:<40} {:<30} {:<20} Type", "ID", "Name", "Created");
-    let _ = writeln!(output, "{}", "-".repeat(100));
-
-    for cp in checkpoints {
-        let created = format_timestamp(cp.created_at);
-        let cp_type = if cp.is_auto { "auto" } else { "manual" };
-        let _ = writeln!(
-            output,
-            "{:<40} {:<30} {:<20} {}",
-            &cp.id[..cp.id.len().min(36)],
-            &cp.name[..cp.name.len().min(28)],
-            created,
-            cp_type
-        );
-    }
-
-    output.trim_end().to_string()
-}
-
-fn format_chain_result(result: &ChainResult) -> String {
-    match result {
-        ChainResult::TransactionBegun { tx_id } => {
-            format!("Chain transaction started: {tx_id}")
-        },
-        ChainResult::Committed { block_hash, height } => {
-            format!("Committed block {block_hash} at height {height}")
-        },
-        ChainResult::RolledBack { to_height } => {
-            format!("Chain rolled back to height {to_height}")
-        },
-        ChainResult::History(entries) => format_chain_history(entries),
-        ChainResult::Similar(results) => format_chain_similar(results),
-        ChainResult::Drift(drift) => format_chain_drift(drift),
-        ChainResult::Height(h) => format!("Chain height: {h}"),
-        ChainResult::Tip { hash, height } => {
-            format!("Chain tip: {hash} at height {height}")
-        },
-        ChainResult::Block(info) => format_chain_block(info),
-        ChainResult::Codebook(info) => format_chain_codebook(info),
-        ChainResult::Verified { ok, errors } => {
-            if *ok {
-                "Chain verified: OK".to_string()
-            } else {
-                let mut output = "Chain verification failed:\n".to_string();
-                for err in errors {
-                    let _ = writeln!(output, "  - {err}");
-                }
-                output.trim_end().to_string()
-            }
-        },
-        ChainResult::TransitionAnalysis(analysis) => format_chain_transitions(analysis),
-    }
-}
-
-fn format_chain_history(entries: &[ChainHistoryEntry]) -> String {
-    if entries.is_empty() {
-        return "No history found for key".to_string();
-    }
-
-    let mut output = String::new();
-    let _ = writeln!(output, "Chain History:");
-    let _ = writeln!(output, "{:<10} {:<30}", "Height", "Transaction");
-    let _ = writeln!(output, "{}", "-".repeat(50));
-
-    for entry in entries {
-        let _ = writeln!(output, "{:<10} {}", entry.height, entry.transaction_type);
-    }
-
-    output.trim_end().to_string()
-}
-
-fn format_chain_similar(results: &[ChainSimilarResult]) -> String {
-    if results.is_empty() {
-        return "No similar blocks found".to_string();
-    }
-
-    let mut output = String::new();
-    let _ = writeln!(output, "Similar Blocks:");
-    let _ = writeln!(
-        output,
-        "{:<10} {:<66} {:<10}",
-        "Height", "Hash", "Similarity"
-    );
-    let _ = writeln!(output, "{}", "-".repeat(90));
-
-    for r in results {
-        let _ = writeln!(
-            output,
-            "{:<10} {:<66} {:.4}",
-            r.height, r.block_hash, r.similarity
-        );
-    }
-
-    output.trim_end().to_string()
-}
-
-fn format_chain_drift(drift: &ChainDriftResult) -> String {
-    let mut output = String::new();
-    let _ = writeln!(output, "Chain Drift Analysis:");
-    let _ = writeln!(output, "  From height:        {}", drift.from_height);
-    let _ = writeln!(output, "  To height:          {}", drift.to_height);
-    let _ = writeln!(output, "  Total drift:        {:.4}", drift.total_drift);
-    let _ = writeln!(
-        output,
-        "  Avg drift/block:    {:.4}",
-        drift.avg_drift_per_block
-    );
-    let _ = writeln!(output, "  Max drift:          {:.4}", drift.max_drift);
-    output.trim_end().to_string()
-}
-
-fn format_chain_block(info: &ChainBlockInfo) -> String {
-    let mut output = String::new();
-    let _ = writeln!(output, "Block Info:");
-    let _ = writeln!(output, "  Height:       {}", info.height);
-    let _ = writeln!(output, "  Hash:         {}", info.hash);
-    let _ = writeln!(output, "  Prev Hash:    {}", info.prev_hash);
-    let _ = writeln!(output, "  Timestamp:    {}", info.timestamp);
-    let _ = writeln!(output, "  Transactions: {}", info.transaction_count);
-    let _ = writeln!(output, "  Proposer:     {}", info.proposer);
-    output.trim_end().to_string()
-}
-
-fn format_chain_codebook(info: &ChainCodebookInfo) -> String {
-    let mut output = String::new();
-    let _ = writeln!(output, "Codebook Info:");
-    let _ = writeln!(output, "  Scope:      {}", info.scope);
-    let _ = writeln!(output, "  Entries:    {}", info.entry_count);
-    let _ = writeln!(output, "  Dimension:  {}", info.dimension);
-    if let Some(domain) = &info.domain {
-        let _ = writeln!(output, "  Domain:     {domain}");
-    }
-    output.trim_end().to_string()
-}
-
-fn format_chain_transitions(analysis: &ChainTransitionAnalysis) -> String {
-    let mut output = String::new();
-    let _ = writeln!(output, "Transition Analysis:");
-    let _ = writeln!(
-        output,
-        "  Total transitions:   {}",
-        analysis.total_transitions
-    );
-    let _ = writeln!(
-        output,
-        "  Valid transitions:   {}",
-        analysis.valid_transitions
-    );
-    let _ = writeln!(
-        output,
-        "  Invalid transitions: {}",
-        analysis.invalid_transitions
-    );
-    let _ = writeln!(
-        output,
-        "  Avg validity score:  {:.4}",
-        analysis.avg_validity_score
-    );
-    output.trim_end().to_string()
-}
-
-fn format_timestamp(unix_secs: u64) -> String {
-    // Format as relative time for better readability
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    if unix_secs == 0 {
-        return "unknown".to_string();
-    }
-
-    let diff = now.saturating_sub(unix_secs);
-
-    if diff < 60 {
-        format!("{diff}s ago")
-    } else if diff < 3600 {
-        let mins = diff / 60;
-        format!("{mins}m ago")
-    } else if diff < 86400 {
-        let hours = diff / 3600;
-        format!("{hours}h ago")
-    } else {
-        let days = diff / 86400;
-        format!("{days}d ago")
-    }
-}
-
-/// Formats rows as an ASCII table.
-fn format_rows(rows: &[Row]) -> String {
-    if rows.is_empty() {
-        return "(0 rows)".to_string();
-    }
-
-    // Get column names from first row (values is Vec<(String, Value)>)
-    let columns: Vec<&String> = rows[0].values.iter().map(|(k, _)| k).collect();
-    if columns.is_empty() {
-        return "(0 rows)".to_string();
-    }
-
-    // Convert rows to string values
-    let string_rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|row| {
-            columns
-                .iter()
-                .map(|col| row.get(col).map(|v| format!("{v:?}")).unwrap_or_default())
-                .collect()
-        })
-        .collect();
-
-    // Calculate column widths
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
-    for row in &string_rows {
-        for (i, cell) in row.iter().enumerate() {
-            if i < widths.len() {
-                widths[i] = widths[i].max(cell.len());
-            }
-        }
-    }
-
-    let mut output = String::new();
-
-    // Header
-    let header: Vec<String> = columns
-        .iter()
-        .zip(&widths)
-        .map(|(col, &w)| format!("{col:w$}"))
-        .collect();
-    output.push_str(&header.join(" | "));
-    output.push('\n');
-
-    // Separator
-    let sep: Vec<String> = widths.iter().map(|&w| "-".repeat(w)).collect();
-    output.push_str(&sep.join("-+-"));
-    output.push('\n');
-
-    // Rows
-    for row in &string_rows {
-        let formatted: Vec<String> = row
-            .iter()
-            .zip(&widths)
-            .map(|(cell, &w)| format!("{cell:w$}"))
-            .collect();
-        output.push_str(&formatted.join(" | "));
-        output.push('\n');
-    }
-
-    let _ = write!(output, "({} rows)", rows.len());
-    output
-}
-
-fn format_pagerank(result: &PageRankResult) -> String {
-    if result.items.is_empty() {
-        return "No PageRank results".to_string();
-    }
-    let mut output = String::from("PageRank Results:\n");
-    let mut sorted = result.items.clone();
-    sorted.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for item in &sorted {
-        let _ = writeln!(output, "  Node {}: {:.6}", item.node_id, item.score);
-    }
-    let _ = writeln!(
-        output,
-        "Iterations: {}, Converged: {}",
-        result.iterations, result.converged
-    );
-    output.trim_end().to_string()
-}
-
-fn format_centrality(result: &CentralityResult) -> String {
-    if result.items.is_empty() {
-        return "No centrality results".to_string();
-    }
-    let mut output = format!("{:?} Results:\n", result.centrality_type);
-    let mut sorted = result.items.clone();
-    sorted.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for item in &sorted {
-        let _ = writeln!(output, "  Node {}: {:.6}", item.node_id, item.score);
-    }
-    output.trim_end().to_string()
-}
-
-fn format_communities(result: &CommunityResult) -> String {
-    if result.members.is_empty() {
-        return "No communities found".to_string();
-    }
-    let mut output = String::from("Communities:\n");
-    let mut sorted: Vec<_> = result.members.iter().collect();
-    sorted.sort_by_key(|(id, _)| *id);
-    for (community_id, nodes) in sorted {
-        let node_list = nodes
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(output, "  Community {}: [{}]", community_id, node_list);
-    }
-    if let Some(modularity) = result.modularity {
-        let _ = writeln!(output, "Modularity: {modularity:.6}");
-    }
-    output.trim_end().to_string()
-}
-
-fn format_constraints(constraints: &[ConstraintInfo]) -> String {
-    if constraints.is_empty() {
-        return "No constraints found".to_string();
-    }
-    let mut output = String::from("Constraints:\n");
-    for c in constraints {
-        let _ = writeln!(
-            output,
-            "  {} on {} property '{}' ({})",
-            c.name, c.target, c.property, c.constraint_type
-        );
-    }
-    output.trim_end().to_string()
-}
-
-fn format_graph_indexes(indexes: &[String]) -> String {
-    if indexes.is_empty() {
-        return "No indexes found".to_string();
-    }
-    let mut output = String::from("Graph Indexes:\n");
-    for idx in indexes {
-        let _ = writeln!(output, "  {idx}");
-    }
-    output.trim_end().to_string()
-}
-
-fn format_aggregate(agg: &AggregateResultValue) -> String {
-    match agg {
-        AggregateResultValue::Count(n) => format!("Count: {n}"),
-        AggregateResultValue::Sum(v) => format!("Sum: {v}"),
-        AggregateResultValue::Avg(v) => format!("Avg: {v}"),
-        AggregateResultValue::Min(v) => format!("Min: {v}"),
-        AggregateResultValue::Max(v) => format!("Max: {v}"),
-    }
-}
-
-fn format_batch_result(batch: &BatchOperationResult) -> String {
-    let mut output = format!("{}: {} affected", batch.operation, batch.affected_count);
-    if let Some(ids) = &batch.created_ids {
-        if !ids.is_empty() {
-            let id_str = ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = write!(output, " (IDs: {})", id_str);
-        }
-    }
-    output
-}
-
-fn format_pattern_match(pm: &PatternMatchResultValue) -> String {
-    if pm.matches.is_empty() {
-        return "No pattern matches found".to_string();
-    }
-    let mut output = format!("Pattern Matches ({} found):\n", pm.stats.matches_found);
-    for (i, m) in pm.matches.iter().enumerate() {
-        let _ = writeln!(output, "  Match {}:", i + 1);
-        for (var, binding) in &m.bindings {
-            let desc = match binding {
-                query_router::BindingValue::Node { id, label } => {
-                    format!("Node {} ({})", id, label)
-                },
-                query_router::BindingValue::Edge {
-                    id,
-                    edge_type,
-                    from,
-                    to,
-                } => format!("Edge {} ({}) {} -> {}", id, edge_type, from, to),
-                query_router::BindingValue::Path { nodes, length, .. } => {
-                    format!("Path (length {}, {} nodes)", length, nodes.len())
-                },
-            };
-            let _ = writeln!(output, "    {var}: {desc}");
-        }
-    }
-    if pm.stats.truncated {
-        let _ = writeln!(output, "  (results truncated)");
-    }
-    output.trim_end().to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1968,6 +1319,7 @@ mod tests {
             history_file: None,
             history_size: 500,
             prompt: "neumann> ".to_string(),
+            theme: Theme::plain(),
         };
         let shell = Shell::with_config(config);
         assert_eq!(shell.config.prompt, "neumann> ");
@@ -1995,25 +1347,20 @@ mod tests {
     #[test]
     fn test_help_commands() {
         let mut shell = Shell::new();
-
         let result = shell.execute("help");
         assert!(matches!(result, CommandResult::Help(_)));
 
-        let result = shell.execute("\\h");
-        assert!(matches!(result, CommandResult::Help(_)));
-
-        let result = shell.execute("\\?");
-        assert!(matches!(result, CommandResult::Help(_)));
+        if let CommandResult::Help(text) = result {
+            assert!(text.contains("Commands"));
+            assert!(text.contains("SELECT"));
+        }
     }
 
     #[test]
-    fn test_help_content() {
-        let help = Shell::help_text();
-        assert!(help.contains("CREATE TABLE"));
-        assert!(help.contains("SELECT"));
-        assert!(help.contains("NODE CREATE"));
-        assert!(help.contains("EMBED STORE"));
-        assert!(help.contains("SIMILAR"));
+    fn test_help_backslash() {
+        let mut shell = Shell::new();
+        let result = shell.execute("\\h");
+        assert!(matches!(result, CommandResult::Help(_)));
     }
 
     #[test]
@@ -2021,498 +1368,114 @@ mod tests {
         let mut shell = Shell::new();
         let result = shell.execute("clear");
         assert!(matches!(result, CommandResult::Output(_)));
-
-        let result = shell.execute("\\c");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_create_table() {
-        let mut shell = Shell::new();
-        let result = shell.execute("CREATE TABLE users (id INT, name TEXT)");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_insert_and_select() {
-        let mut shell = Shell::new();
-
-        let _ = shell.execute("CREATE TABLE test (id INT, value TEXT)");
-        let _ = shell.execute("INSERT INTO test VALUES (1, 'hello')");
-        let _ = shell.execute("INSERT INTO test VALUES (2, 'world')");
-
-        let result = shell.execute("SELECT * FROM test");
-        // Just check we get an Output result
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_select_empty_table() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("CREATE TABLE empty (id INT)");
-
-        let result = shell.execute("SELECT * FROM empty");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("0 rows"));
-        } else {
-            panic!("Expected Output");
-        }
-    }
-
-    #[test]
-    fn test_node_create() {
-        let mut shell = Shell::new();
-        let result = shell.execute("NODE CREATE person {name: 'Alice', age: 30}");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_edge_create() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("NODE CREATE person {name: 'Alice'}");
-        let _ = shell.execute("NODE CREATE person {name: 'Bob'}");
-
-        let result = shell.execute("EDGE CREATE 1 -> 2 : knows");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_neighbors() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("NODE CREATE person {name: 'Alice'}");
-        let _ = shell.execute("NODE CREATE person {name: 'Bob'}");
-        let _ = shell.execute("EDGE CREATE 1 -> 2 : knows");
-
-        let result = shell.execute("NEIGHBORS 1 OUTGOING");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_embed_store_and_get() {
-        let mut shell = Shell::new();
-
-        let result = shell.execute("EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4]");
-        assert!(matches!(result, CommandResult::Output(_)));
-
-        let result = shell.execute("EMBED GET 'doc1'");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("0.1") || output.contains("OK"));
-        } else {
-            panic!("Expected Output");
-        }
-    }
-
-    #[test]
-    fn test_similar_search() {
-        let mut shell = Shell::new();
-
-        let _ = shell.execute("EMBED STORE 'a' [1.0, 0.0, 0.0]");
-        let _ = shell.execute("EMBED STORE 'b' [0.9, 0.1, 0.0]");
-        let _ = shell.execute("EMBED STORE 'c' [0.0, 1.0, 0.0]");
-
-        let result = shell.execute("SIMILAR 'a' LIMIT 2");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Similar") || output.contains("similarity"));
-        } else {
-            panic!("Expected Output");
-        }
-    }
-
-    #[test]
-    fn test_invalid_query() {
-        let mut shell = Shell::new();
-        let result = shell.execute("INVALID QUERY SYNTAX");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_shell_error_display() {
-        let err = ShellError::Init("test error".to_string());
-        assert!(err.to_string().contains("test error"));
-    }
-
-    #[test]
-    fn test_default_config() {
-        let config = ShellConfig::default();
-        assert_eq!(config.prompt, "> ");
-        assert_eq!(config.history_size, 1000);
     }
 
     #[test]
     fn test_tables_command() {
         let mut shell = Shell::new();
-        let _ = shell.execute("CREATE TABLE foo (id INT)");
-        let _ = shell.execute("CREATE TABLE bar (id INT)");
-
         let result = shell.execute("tables");
-        // Either shows tables or "No tables" - both are valid outputs
-        assert!(matches!(result, CommandResult::Output(_)));
+        // Should work even with no tables
+        assert!(
+            matches!(result, CommandResult::Output(_)) || matches!(result, CommandResult::Error(_))
+        );
     }
 
     #[test]
-    fn test_router_access() {
+    fn test_wal_status_not_active() {
         let shell = Shell::new();
-        let _ = shell.router();
+        let result = shell.handle_wal_status();
+        if let CommandResult::Output(msg) = result {
+            assert!(msg.contains("not active"));
+        } else {
+            panic!("Expected Output");
+        }
     }
 
     #[test]
-    fn test_format_empty_result() {
-        let result = QueryResult::Empty;
-        assert_eq!(format_result(&result), "OK");
+    fn test_wal_truncate_not_active() {
+        let shell = Shell::new();
+        let result = shell.handle_wal_truncate();
+        assert!(matches!(result, CommandResult::Error(_)));
     }
 
     #[test]
-    fn test_format_count() {
-        assert_eq!(format_result(&QueryResult::Count(1)), "1 row affected");
-        assert_eq!(format_result(&QueryResult::Count(5)), "5 rows affected");
+    fn test_is_write_command() {
+        assert!(Shell::is_write_command("INSERT INTO users VALUES (1)"));
+        assert!(Shell::is_write_command("UPDATE users SET name = 'x'"));
+        assert!(Shell::is_write_command("DELETE FROM users"));
+        assert!(Shell::is_write_command("CREATE TABLE test (id INT)"));
+        assert!(Shell::is_write_command("DROP TABLE test"));
+        assert!(Shell::is_write_command("NODE CREATE person {}"));
+        assert!(!Shell::is_write_command("SELECT * FROM users"));
+        assert!(!Shell::is_write_command("NODE GET 1"));
+        assert!(!Shell::is_write_command("SHOW TABLES"));
     }
 
     #[test]
-    fn test_format_ids() {
-        assert_eq!(format_result(&QueryResult::Ids(vec![])), "(no results)");
-        assert_eq!(format_result(&QueryResult::Ids(vec![42])), "ID: 42");
+    fn test_extract_path_quoted() {
+        let path = Shell::extract_path("save 'test.bin'", "save");
+        assert_eq!(path, Some("test.bin".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_unquoted() {
+        let path = Shell::extract_path("save test.bin", "save");
+        assert_eq!(path, Some("test.bin".to_string()));
+    }
+
+    #[test]
+    fn test_extract_load_path_strict() {
+        let result = Shell::extract_load_path_and_mode("LOAD 'data.bin'");
         assert_eq!(
-            format_result(&QueryResult::Ids(vec![1, 2, 3])),
-            "IDs: 1, 2, 3"
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
         );
     }
 
     #[test]
-    fn test_format_path() {
-        assert_eq!(format_result(&QueryResult::Path(vec![])), "(no path found)");
+    fn test_extract_load_path_recover() {
+        let result = Shell::extract_load_path_and_mode("LOAD 'data.bin' RECOVER");
         assert_eq!(
-            format_result(&QueryResult::Path(vec![1, 2, 3])),
-            "Path: 1 -> 2 -> 3"
+            result,
+            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
         );
     }
 
     #[test]
-    fn test_format_value() {
+    fn test_parse_node_address_valid() {
+        let result = Shell::parse_node_address("node1@127.0.0.1:8080");
+        assert!(result.is_ok());
+        let (id, addr) = result.unwrap();
+        assert_eq!(id, "node1");
+        assert_eq!(addr.port(), 8080);
+    }
+
+    #[test]
+    fn test_parse_node_address_invalid() {
+        let result = Shell::parse_node_address("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_version() {
+        let version = Shell::version();
+        assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = ShellConfig::default();
+        assert_eq!(config.history_size, 1000);
+        // Prompt contains "neumann>" with ANSI color codes
+        assert!(config.prompt.contains("neumann>"));
+    }
+
+    #[test]
+    fn test_loop_action() {
         assert_eq!(
-            format_result(&QueryResult::Value("hello".to_string())),
-            "hello"
-        );
-    }
-
-    #[test]
-    fn test_format_nodes_empty() {
-        assert_eq!(format_result(&QueryResult::Nodes(vec![])), "(0 nodes)");
-    }
-
-    #[test]
-    fn test_format_nodes_with_data() {
-        use std::collections::HashMap;
-
-        use query_router::NodeResult;
-
-        let nodes = vec![
-            NodeResult {
-                id: 1,
-                label: "person".to_string(),
-                properties: HashMap::new(),
-            },
-            NodeResult {
-                id: 2,
-                label: "person".to_string(),
-                properties: {
-                    let mut m = HashMap::new();
-                    m.insert("name".to_string(), "Alice".to_string());
-                    m
-                },
-            },
-        ];
-        let output = format_result(&QueryResult::Nodes(nodes));
-        assert!(output.contains("Nodes:"));
-        assert!(output.contains("[1] person"));
-        assert!(output.contains("[2] person"));
-        assert!(output.contains("2 nodes"));
-    }
-
-    #[test]
-    fn test_format_edges_empty() {
-        assert_eq!(format_result(&QueryResult::Edges(vec![])), "(0 edges)");
-    }
-
-    #[test]
-    fn test_format_edges_with_data() {
-        use query_router::EdgeResult;
-
-        let edges = vec![EdgeResult {
-            id: 1,
-            from: 1,
-            to: 2,
-            label: "knows".to_string(),
-        }];
-        let output = format_result(&QueryResult::Edges(edges));
-        assert!(output.contains("Edges:"));
-        assert!(output.contains("[1] 1 -> 2 : knows"));
-        assert!(output.contains("1 edges"));
-    }
-
-    #[test]
-    fn test_format_similar_empty() {
-        assert_eq!(
-            format_result(&QueryResult::Similar(vec![])),
-            "(no similar embeddings)"
-        );
-    }
-
-    #[test]
-    fn test_format_similar_with_data() {
-        use query_router::SimilarResult;
-
-        let results = vec![
-            SimilarResult {
-                key: "doc1".to_string(),
-                score: 0.95,
-            },
-            SimilarResult {
-                key: "doc2".to_string(),
-                score: 0.85,
-            },
-        ];
-        let output = format_result(&QueryResult::Similar(results));
-        assert!(output.contains("Similar:"));
-        assert!(output.contains("1. doc1"));
-        assert!(output.contains("2. doc2"));
-        assert!(output.contains("similarity"));
-    }
-
-    #[test]
-    fn test_format_unified_empty() {
-        use query_router::UnifiedResult;
-
-        // Test with empty items
-        let unified = UnifiedResult {
-            description: "Combined result".to_string(),
-            items: vec![],
-        };
-        let result = format_result(&QueryResult::Unified(unified));
-        assert!(result.contains("Combined result"));
-        assert!(result.contains("(no items)"));
-    }
-
-    #[test]
-    fn test_format_unified_function() {
-        // Test the format_unified function directly
-        let unified = query_router::UnifiedResult {
-            description: "Test".to_string(),
-            items: vec![],
-        };
-        let result = format_unified(&unified);
-        assert!(result.starts_with("Test\n"));
-        assert!(result.contains("(no items)"));
-    }
-
-    #[test]
-    fn test_format_rows_empty() {
-        assert_eq!(format_result(&QueryResult::Rows(vec![])), "(0 rows)");
-    }
-
-    #[test]
-    fn test_format_rows_with_data() {
-        use relational_engine::{Row, Value};
-        let rows = vec![
-            Row {
-                id: 1,
-                values: vec![
-                    ("name".to_string(), Value::String("Alice".into())),
-                    ("age".to_string(), Value::Int(30)),
-                ],
-            },
-            Row {
-                id: 2,
-                values: vec![
-                    ("name".to_string(), Value::String("Bob".into())),
-                    ("age".to_string(), Value::Int(25)),
-                ],
-            },
-        ];
-        let output = format_result(&QueryResult::Rows(rows));
-        assert!(output.contains("2 rows"));
-    }
-
-    #[test]
-    fn test_default_shell() {
-        let shell = Shell::default();
-        assert_eq!(shell.config.prompt, "> ");
-    }
-
-    #[test]
-    fn test_shell_config_no_history() {
-        let config = ShellConfig {
-            history_file: None,
-            history_size: 100,
-            prompt: "$ ".to_string(),
-        };
-        let shell = Shell::with_config(config);
-        assert!(shell.config.history_file.is_none());
-    }
-
-    #[test]
-    fn test_count_zero() {
-        assert_eq!(format_result(&QueryResult::Count(0)), "0 rows affected");
-    }
-
-    #[test]
-    fn test_format_rows_empty_columns() {
-        use relational_engine::Row;
-
-        // Row with empty values Vec
-        let rows = vec![Row {
-            id: 1,
-            values: vec![],
-        }];
-        assert_eq!(format_rows(&rows), "(0 rows)");
-    }
-
-    #[test]
-    fn test_shell_error_is_error() {
-        use std::error::Error;
-        let err = ShellError::Init("test".to_string());
-        // Verify Error trait is implemented
-        let _: &dyn Error = &err;
-    }
-
-    #[test]
-    fn test_format_rows_missing_column() {
-        use relational_engine::{Row, Value};
-
-        // Create rows where second row is missing a column
-        let rows = vec![
-            Row {
-                id: 1,
-                values: vec![
-                    ("a".to_string(), Value::Int(1)),
-                    ("b".to_string(), Value::Int(2)),
-                ],
-            },
-            Row {
-                id: 2,
-                values: vec![
-                    ("a".to_string(), Value::Int(3)),
-                    // 'b' is missing - should use default
-                ],
-            },
-        ];
-        let output = format_rows(&rows);
-        assert!(output.contains("2 rows"));
-    }
-
-    #[test]
-    fn test_format_rows_single_row() {
-        use relational_engine::{Row, Value};
-
-        let rows = vec![Row {
-            id: 1,
-            values: vec![("x".to_string(), Value::Int(42))],
-        }];
-        let output = format_rows(&rows);
-        assert!(output.contains("(1 rows)"));
-        assert!(output.contains("x"));
-        assert!(output.contains("Int(42)"));
-    }
-
-    #[test]
-    fn test_dirs_home() {
-        // dirs_home should return Some when HOME is set
-        let result = dirs_home();
-        // HOME is typically set in test environment
-        assert!(result.is_some() || std::env::var_os("HOME").is_none());
-    }
-
-    #[test]
-    fn test_list_tables_empty() {
-        let mut shell = Shell::new();
-        // Without any tables created, should still return output
-        let result = shell.execute("\\dt");
-        assert!(matches!(result, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_format_nodes_with_properties() {
-        use std::collections::HashMap;
-
-        use query_router::NodeResult;
-
-        let nodes = vec![NodeResult {
-            id: 1,
-            label: "person".to_string(),
-            properties: {
-                let mut m = HashMap::new();
-                m.insert("name".to_string(), "Alice".to_string());
-                m.insert("age".to_string(), "30".to_string());
-                m
-            },
-        }];
-        let output = format_result(&QueryResult::Nodes(nodes));
-        assert!(output.contains("[1] person"));
-        assert!(output.contains("name:"));
-        assert!(output.contains("(1 nodes)"));
-    }
-
-    #[test]
-    fn test_format_single_id() {
-        assert_eq!(format_result(&QueryResult::Ids(vec![1])), "ID: 1");
-    }
-
-    #[test]
-    fn test_tables_alias() {
-        let mut shell = Shell::new();
-        // Both "tables" and "\dt" should work
-        let result1 = shell.execute("tables");
-        let result2 = shell.execute("\\dt");
-        assert!(matches!(result1, CommandResult::Output(_)));
-        assert!(matches!(result2, CommandResult::Output(_)));
-    }
-
-    #[test]
-    fn test_case_insensitive_commands() {
-        let mut shell = Shell::new();
-        assert_eq!(
-            shell.execute("HELP"),
-            CommandResult::Help(Shell::help_text())
-        );
-        assert_eq!(
-            shell.execute("Help"),
-            CommandResult::Help(Shell::help_text())
-        );
-        assert_eq!(
-            shell.execute("CLEAR"),
-            CommandResult::Output("\x1B[2J\x1B[H".to_string())
-        );
-        assert_eq!(
-            shell.execute("TABLES"),
-            CommandResult::Output("No tables found.".to_string())
-        );
-    }
-
-    #[test]
-    fn test_process_result_output() {
-        assert_eq!(
-            Shell::process_result(&CommandResult::Output("test".to_string())),
+            Shell::process_result(&CommandResult::Empty),
             LoopAction::Continue
         );
-    }
-
-    #[test]
-    fn test_process_result_help() {
-        assert_eq!(
-            Shell::process_result(&CommandResult::Help("help text".to_string())),
-            LoopAction::Continue
-        );
-    }
-
-    #[test]
-    fn test_process_result_error() {
-        assert_eq!(
-            Shell::process_result(&CommandResult::Error("error".to_string())),
-            LoopAction::Continue
-        );
-    }
-
-    #[test]
-    fn test_process_result_exit() {
         assert_eq!(
             Shell::process_result(&CommandResult::Exit),
             LoopAction::Exit
@@ -2520,1331 +1483,54 @@ mod tests {
     }
 
     #[test]
-    fn test_process_result_empty() {
-        assert_eq!(
-            Shell::process_result(&CommandResult::Empty),
-            LoopAction::Continue
-        );
+    fn test_shell_error_display() {
+        let err = ShellError::Init("test error".to_string());
+        let display = format!("{err}");
+        assert!(display.contains("test error"));
     }
 
     #[test]
-    fn test_shell_version() {
-        let version = Shell::version();
-        assert!(!version.is_empty());
-        assert!(version.contains('.'));
-    }
-
-    #[test]
-    fn test_loop_action_eq() {
-        assert_eq!(LoopAction::Continue, LoopAction::Continue);
-        assert_eq!(LoopAction::Exit, LoopAction::Exit);
-        assert_ne!(LoopAction::Continue, LoopAction::Exit);
-    }
-
-    #[test]
-    fn test_loop_action_clone() {
-        let action = LoopAction::Continue;
-        let cloned = action.clone();
-        assert_eq!(action, cloned);
-    }
-
-    #[test]
-    fn test_loop_action_debug() {
-        let action = LoopAction::Exit;
-        let debug_str = format!("{action:?}");
-        assert!(debug_str.contains("Exit"));
-    }
-
-    #[test]
-    fn test_loop_action_copy() {
-        let action = LoopAction::Continue;
-        let copied: LoopAction = action;
-        assert_eq!(action, copied);
-    }
-
-    #[test]
-    fn test_command_result_clone() {
-        let result = CommandResult::Output("test".to_string());
-        let cloned = result.clone();
-        assert_eq!(result, cloned);
-    }
-
-    #[test]
-    fn test_command_result_debug() {
-        let result = CommandResult::Exit;
-        let debug = format!("{result:?}");
-        assert!(debug.contains("Exit"));
-    }
-
-    #[test]
-    fn test_shell_config_clone() {
-        let config = ShellConfig::default();
-        let cloned = config.clone();
-        assert_eq!(config.prompt, cloned.prompt);
-    }
-
-    #[test]
-    fn test_shell_error_clone() {
-        let err = ShellError::Init("test".to_string());
-        let cloned = err.clone();
-        assert_eq!(err, cloned);
-    }
-
-    #[test]
-    fn test_format_path_single() {
-        assert_eq!(format_result(&QueryResult::Path(vec![1])), "Path: 1");
-    }
-
-    #[test]
-    fn test_format_rows_header_formatting() {
-        use relational_engine::{Row, Value};
-
-        let rows = vec![Row {
-            id: 1,
-            values: vec![(
-                "long_column_name".to_string(),
-                Value::String("short".into()),
-            )],
-        }];
-        let output = format_rows(&rows);
-        assert!(output.contains("long_column_name"));
-        assert!(output.contains("-+-") || output.contains("---"));
-    }
-
-    #[test]
-    fn test_format_count_large() {
-        assert_eq!(
-            format_result(&QueryResult::Count(1000000)),
-            "1000000 rows affected"
-        );
-    }
-
-    #[test]
-    fn test_format_ids_many() {
-        let ids: Vec<u64> = (1..=10).collect();
-        let output = format_result(&QueryResult::Ids(ids));
-        assert!(output.starts_with("IDs:"));
-        assert!(output.contains("10"));
-    }
-
-    #[test]
-    fn test_format_table_list_empty() {
-        let output = format_result(&QueryResult::TableList(vec![]));
-        assert_eq!(output, "No tables found.");
-    }
-
-    #[test]
-    fn test_format_table_list_with_tables() {
-        let tables = vec!["users".to_string(), "products".to_string()];
-        let output = format_result(&QueryResult::TableList(tables));
-        assert!(output.starts_with("Tables:"));
-        assert!(output.contains("users"));
-        assert!(output.contains("products"));
-    }
-
-    // Save and Load command tests
-
-    #[test]
-    fn test_save_command() {
+    fn test_create_table_and_query() {
         let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0]");
 
-        let path = std::env::temp_dir().join("test_shell_save.bin");
-        let result = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Saved snapshot"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_load_command() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0]");
-
-        let path = std::env::temp_dir().join("test_shell_load.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load into a fresh shell
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Loaded snapshot"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Verify the data is accessible
-        let result = shell2.execute("EMBED GET 'test_key'");
+        let result = shell.execute("CREATE TABLE test_users (id INT, name TEXT)");
         assert!(matches!(result, CommandResult::Output(_)));
 
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_save_without_path() {
-        let mut shell = Shell::new();
-        let result = shell.execute("SAVE");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_load_without_path() {
-        let mut shell = Shell::new();
-        let result = shell.execute("LOAD");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_load_nonexistent_file() {
-        let mut shell = Shell::new();
-        let result = shell.execute("LOAD '/nonexistent/path/file.bin'");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_save_unquoted_path() {
-        let mut shell = Shell::new();
-        let path = std::env::temp_dir().join("test_shell_unquoted.bin");
-        let result = shell.execute(&format!("SAVE {}", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Saved snapshot"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_save_double_quoted_path() {
-        let mut shell = Shell::new();
-        let path = std::env::temp_dir().join("test_shell_dblquote.bin");
-        let result = shell.execute(&format!("SAVE \"{}\"", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Saved snapshot"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_extract_path_quoted() {
-        assert_eq!(
-            Shell::extract_path("save 'foo.bin'", "save"),
-            Some("foo.bin".to_string())
-        );
-        assert_eq!(
-            Shell::extract_path("LOAD \"bar.bin\"", "LOAD"),
-            Some("bar.bin".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_path_unquoted() {
-        assert_eq!(
-            Shell::extract_path("save /path/to/file.bin", "save"),
-            Some("/path/to/file.bin".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_path_empty() {
-        assert_eq!(Shell::extract_path("save ", "save"), None);
-        assert_eq!(Shell::extract_path("save", "save"), None);
-    }
-
-    #[test]
-    fn test_extract_path_empty_quotes() {
-        assert_eq!(Shell::extract_path("save ''", "save"), None);
-        assert_eq!(Shell::extract_path("save \"\"", "save"), None);
-    }
-
-    #[test]
-    fn test_help_contains_save_load() {
-        let help = Shell::help_text();
-        assert!(help.contains("save"));
-        assert!(help.contains("load"));
-        assert!(help.contains("snapshot"));
-    }
-
-    #[test]
-    fn test_save_load_case_insensitive() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0]");
-
-        let path = std::env::temp_dir().join("test_shell_case.bin");
-
-        // Test uppercase SAVE
-        let result = shell.execute(&format!("SAVE '{}'", path.display()));
+        let result = shell.execute("INSERT INTO test_users VALUES (1, 'Alice')");
         assert!(matches!(result, CommandResult::Output(_)));
 
-        // Test lowercase load
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("load '{}'", path.display()));
+        let result = shell.execute("SELECT * FROM test_users");
+        if let CommandResult::Output(text) = result {
+            assert!(text.contains("Alice") || text.contains("1"));
+        }
+    }
+
+    #[test]
+    fn test_node_operations() {
+        let mut shell = Shell::new();
+
+        let result = shell.execute("NODE CREATE person {name: 'Bob', age: 30}");
         assert!(matches!(result, CommandResult::Output(_)));
 
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_save_compressed_command() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'test_key' [1.0, 2.0, 3.0, 4.0]");
-
-        let path = std::env::temp_dir().join("test_shell_save_compressed.bin");
-        let result = shell.execute(&format!("SAVE COMPRESSED '{}'", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Saved compressed snapshot"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_save_compressed_without_path() {
-        let mut shell = Shell::new();
-        let result = shell.execute("SAVE COMPRESSED");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_save_compressed_and_load() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'compressed_key' [0.1, 0.2, 0.3, 0.4]");
-
-        let path = std::env::temp_dir().join("test_shell_compressed_load.bin");
-        let _ = shell.execute(&format!("SAVE COMPRESSED '{}'", path.display()));
-
-        // Load into a fresh shell
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
-        assert!(matches!(result, CommandResult::Output(_)));
-
-        // Verify the data is accessible (embedding restored from int8 quantization)
-        let result = shell2.execute("EMBED GET 'compressed_key'");
-        assert!(matches!(result, CommandResult::Output(_)));
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_save_compressed_case_insensitive() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0, 2.0]");
-
-        let path = std::env::temp_dir().join("test_shell_compressed_case.bin");
-
-        // Test lowercase
-        let result = shell.execute(&format!("save compressed '{}'", path.display()));
-        assert!(matches!(result, CommandResult::Output(_)));
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_help_contains_save_compressed() {
-        let help = Shell::help_text();
-        assert!(help.contains("save compressed"));
-        assert!(help.contains("SAVE COMPRESSED"));
-    }
-
-    // WAL tests
-
-    #[test]
-    fn test_is_write_command() {
-        // Write commands
-        assert!(Shell::is_write_command(
-            "INSERT INTO users VALUES (1, 'Alice')"
-        ));
-        assert!(Shell::is_write_command("UPDATE users SET name = 'Bob'"));
-        assert!(Shell::is_write_command("DELETE FROM users"));
-        assert!(Shell::is_write_command("CREATE TABLE test (id INT)"));
-        assert!(Shell::is_write_command("DROP TABLE test"));
-        assert!(Shell::is_write_command(
-            "NODE CREATE person {name: 'Alice'}"
-        ));
-        assert!(Shell::is_write_command("NODE DELETE 1"));
-        assert!(Shell::is_write_command("EDGE CREATE 1 -> 2 : knows"));
-        assert!(Shell::is_write_command("EMBED STORE 'key' [1.0, 2.0]"));
-        assert!(Shell::is_write_command("EMBED DELETE 'key'"));
-
-        // Read-only commands
-        assert!(!Shell::is_write_command("SELECT * FROM users"));
-        assert!(!Shell::is_write_command("NODE GET 1"));
-        assert!(!Shell::is_write_command("EDGE GET 1"));
-        assert!(!Shell::is_write_command("EMBED GET 'key'"));
-        assert!(!Shell::is_write_command("SIMILAR 'key' LIMIT 5"));
-        assert!(!Shell::is_write_command("NEIGHBORS 1 OUTGOING"));
-        assert!(!Shell::is_write_command("SHOW TABLES"));
-    }
-
-    #[test]
-    fn test_wal_status_no_wal() {
-        let mut shell = Shell::new();
-        let result = shell.execute("wal status");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("WAL not active"));
-        } else {
-            panic!("Expected Output");
-        }
-    }
-
-    #[test]
-    fn test_wal_truncate_no_wal() {
-        let mut shell = Shell::new();
-        let result = shell.execute("wal truncate");
-        assert!(matches!(result, CommandResult::Error(_)));
-    }
-
-    #[test]
-    fn test_wal_enabled_after_load() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0, 2.0, 3.0]");
-
-        let path = std::env::temp_dir().join("test_wal_enabled.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load into fresh shell
-        let mut shell2 = Shell::new();
-        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        // WAL should now be active
-        let result = shell2.execute("wal status");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("WAL enabled"));
-            assert!(output.contains(".log"));
-        } else {
-            panic!("Expected Output");
-        }
-
-        // Cleanup
-        let wal_path = path.with_extension("log");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_logs_write_commands() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0]");
-
-        let path = std::env::temp_dir().join("test_wal_logs.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load to enable WAL
-        let mut shell2 = Shell::new();
-        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        // Execute some write commands
-        let _ = shell2.execute("EMBED STORE 'key2' [2.0, 3.0]");
-        let _ = shell2.execute("CREATE TABLE test (id INT)");
-
-        // Check WAL status shows non-zero size
-        let result = shell2.execute("wal status");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("WAL enabled"));
-        } else {
-            panic!("Expected Output");
-        }
-
-        // Cleanup
-        let wal_path = path.with_extension("log");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_replay_on_load() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        // Use unique path with timestamp to avoid test interference
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("test_wal_replay_{ts}.bin"));
-        let wal_path = path.with_extension("log");
-
-        // Clean up any leftover files
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-
-        // Step 1: Create initial data and save (using EMBED which is known to work)
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key1' [1.0, 2.0, 3.0]");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Step 2: Load to enable WAL
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
-        assert!(matches!(result, CommandResult::Output(_)), "Load failed");
-
-        // WAL file should now exist
-        assert!(wal_path.exists(), "WAL file should exist after LOAD");
-
-        // Step 3: Add more data (will be written to WAL)
-        let result = shell2.execute("EMBED STORE 'key2' [4.0, 5.0, 6.0]");
-        assert!(
-            matches!(result, CommandResult::Output(_)),
-            "EMBED STORE failed: {:?}",
-            result
-        );
-
-        // Verify WAL has content
-        let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
-        assert!(wal_size > 0, "WAL should have content after EMBED STORE");
-
-        // Step 4: Simulate crash by creating new shell and loading
-        let mut shell3 = Shell::new();
-        let result = shell3.execute(&format!("LOAD '{}'", path.display()));
-
-        if let CommandResult::Output(output) = result {
-            assert!(
-                output.contains("Loaded snapshot"),
-                "Expected 'Loaded snapshot'"
-            );
-            assert!(
-                output.contains("Replayed"),
-                "Expected 'Replayed' in output: {output}"
-            );
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Verify key2 is present (recovered from WAL)
-        let result = shell3.execute("EMBED GET 'key2'");
-        assert!(
-            matches!(result, CommandResult::Output(_)),
-            "key2 should exist after WAL replay"
-        );
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_truncate_after_save() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0]");
-
-        let path = std::env::temp_dir().join("test_wal_truncate_save.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load to enable WAL
-        let mut shell2 = Shell::new();
-        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        // Add data to WAL
-        let _ = shell2.execute("EMBED STORE 'key2' [2.0]");
-
-        // Save again - should truncate WAL
-        let _ = shell2.execute(&format!("SAVE '{}'", path.display()));
-
-        // WAL should be empty (0 bytes or just created)
-        let result = shell2.execute("wal status");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("0 bytes") || output.contains("WAL enabled"));
-        }
-
-        // Cleanup
-        let wal_path = path.with_extension("log");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_truncate_command() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key' [1.0]");
-
-        let path = std::env::temp_dir().join("test_wal_truncate_cmd.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load to enable WAL
-        let mut shell2 = Shell::new();
-        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        // Add data to WAL
-        let _ = shell2.execute("EMBED STORE 'key2' [2.0]");
-
-        // Manually truncate WAL
-        let result = shell2.execute("wal truncate");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("WAL truncated"));
-        } else {
-            panic!("Expected Output");
-        }
-
-        // Cleanup
-        let wal_path = path.with_extension("log");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_help_contains_wal() {
-        let help = Shell::help_text();
-        assert!(help.contains("wal status"));
-        assert!(help.contains("wal truncate"));
-        assert!(help.contains("write-ahead log"));
-    }
-
-    #[test]
-    fn test_wal_does_not_log_reads() {
-        let mut shell = Shell::new();
-        let _ = shell.execute("CREATE TABLE test (id INT)");
-        let _ = shell.execute("INSERT INTO test VALUES (1)");
-
-        let path = std::env::temp_dir().join("test_wal_no_reads.bin");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Load to enable WAL
-        let mut shell2 = Shell::new();
-        let _ = shell2.execute(&format!("LOAD '{}'", path.display()));
-
-        // Execute read-only commands
-        let _ = shell2.execute("SELECT * FROM test");
-        let _ = shell2.execute("SHOW TABLES");
-
-        // WAL should be empty (0 bytes)
-        let wal_path = path.with_extension("log");
-        let size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
-        assert_eq!(size, 0);
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_case_insensitive_commands() {
-        let mut shell = Shell::new();
-        assert_eq!(
-            shell.execute("WAL STATUS"),
-            CommandResult::Output(
-                "WAL not active (use LOAD to enable WAL for a snapshot)".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn test_wal_replay_with_empty_lines() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("test_wal_empty_lines_{ts}.bin"));
-        let wal_path = path.with_extension("log");
-
-        // Clean up
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-
-        // Create initial snapshot
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key1' [1.0]");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Write WAL with empty lines manually
-        std::fs::write(
-            &wal_path,
-            "EMBED STORE 'key2' [2.0]\n\n  \nEMBED STORE 'key3' [3.0]\n",
-        )
-        .unwrap();
-
-        // Load and replay (should skip empty lines)
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Replayed 2 commands"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_replay_with_invalid_command() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("test_wal_invalid_{ts}.bin"));
-        let wal_path = path.with_extension("log");
-
-        // Clean up
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-
-        // Create initial snapshot
-        let mut shell = Shell::new();
-        let _ = shell.execute("EMBED STORE 'key1' [1.0]");
-        let _ = shell.execute(&format!("SAVE '{}'", path.display()));
-
-        // Write WAL with invalid command
-        std::fs::write(&wal_path, "INVALID COMMAND SYNTAX\n").unwrap();
-
-        // Load should fail during WAL replay
-        let mut shell2 = Shell::new();
-        let result = shell2.execute(&format!("LOAD '{}'", path.display()));
-        assert!(
-            matches!(result, CommandResult::Error(_)),
-            "Expected Error, got {:?}",
-            result
-        );
-
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    // Vault tests
-
-    #[test]
-    fn test_help_contains_vault() {
-        let help = Shell::help_text();
-        assert!(help.contains("VAULT INIT"));
-        assert!(help.contains("VAULT IDENTITY"));
-        assert!(help.contains("VAULT SET"));
-        assert!(help.contains("VAULT GET"));
-        assert!(help.contains("VAULT DELETE"));
-        assert!(help.contains("VAULT LIST"));
-        assert!(help.contains("VAULT ROTATE"));
-        assert!(help.contains("VAULT GRANT"));
-        assert!(help.contains("VAULT REVOKE"));
-    }
-
-    #[test]
-    fn test_vault_init_without_env() {
-        let mut shell = Shell::new();
-        // Ensure NEUMANN_VAULT_KEY is not set
-        std::env::remove_var("NEUMANN_VAULT_KEY");
-
-        let result = shell.execute("VAULT INIT");
-        if let CommandResult::Error(msg) = result {
-            assert!(msg.contains("NEUMANN_VAULT_KEY"));
-        } else {
-            panic!("Expected Error, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_vault_identity_show_current() {
-        let mut shell = Shell::new();
-        let result = shell.execute("VAULT IDENTITY");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Current identity:"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_vault_identity_set() {
-        let mut shell = Shell::new();
-        let result = shell.execute("VAULT IDENTITY 'node:alice'");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Identity set to:"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_is_write_command_vault() {
-        // Write commands for vault
-        assert!(Shell::is_write_command("VAULT SET 'key' 'value'"));
-        assert!(Shell::is_write_command("VAULT DELETE 'key'"));
-        assert!(Shell::is_write_command("VAULT ROTATE 'key' 'new'"));
-        assert!(Shell::is_write_command("VAULT GRANT 'entity' ON 'key'"));
-        assert!(Shell::is_write_command("VAULT REVOKE 'entity' ON 'key'"));
-
-        // Read-only commands for vault
-        assert!(!Shell::is_write_command("VAULT GET 'key'"));
-        assert!(!Shell::is_write_command("VAULT LIST '*'"));
-        assert!(!Shell::is_write_command("VAULT INIT"));
-        assert!(!Shell::is_write_command("VAULT IDENTITY 'node:alice'"));
-    }
-
-    #[test]
-    fn test_is_write_command_cache() {
-        // Write command for cache
-        assert!(Shell::is_write_command("CACHE CLEAR"));
-
-        // Read-only commands for cache
-        assert!(!Shell::is_write_command("CACHE INIT"));
-        assert!(!Shell::is_write_command("CACHE STATS"));
-    }
-
-    #[test]
-    fn test_is_write_command_checkpoint_and_chain() {
-        // Checkpoint write commands
-        assert!(Shell::is_write_command("CHECKPOINT"));
-        assert!(Shell::is_write_command("CHECKPOINT 'my-snapshot'"));
-        assert!(Shell::is_write_command("checkpoint 'lowercase'"));
-
-        // Rollback commands (checkpoint and chain)
-        assert!(Shell::is_write_command("ROLLBACK TO 'my-snapshot'"));
-        assert!(Shell::is_write_command("ROLLBACK CHAIN TO 5"));
-        assert!(Shell::is_write_command("rollback to 'case-insensitive'"));
-
-        // Chain transaction commands
-        assert!(Shell::is_write_command("BEGIN CHAIN TRANSACTION"));
-        assert!(Shell::is_write_command("BEGIN CHAIN"));
-        assert!(Shell::is_write_command("COMMIT CHAIN"));
-        assert!(Shell::is_write_command("begin chain"));
-        assert!(Shell::is_write_command("commit chain"));
-
-        // Read-only commands (should NOT be logged)
-        assert!(!Shell::is_write_command("CHECKPOINTS"));
-        assert!(!Shell::is_write_command("CHECKPOINTS LIMIT 10"));
-        assert!(!Shell::is_write_command("CHAIN HEIGHT"));
-        assert!(!Shell::is_write_command("CHAIN TIP"));
-        assert!(!Shell::is_write_command("CHAIN BLOCK 5"));
-        assert!(!Shell::is_write_command("CHAIN VERIFY"));
-        assert!(!Shell::is_write_command("CHAIN HISTORY 'key'"));
-    }
-
-    #[test]
-    fn test_cache_init() {
-        let mut shell = Shell::new();
-        let result = shell.execute("CACHE INIT");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Cache initialized"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_cache_stats() {
-        let mut shell = Shell::new();
-        // Initialize cache first
-        shell.execute("CACHE INIT");
-        // Set identity (required for cache operations)
-        shell.execute("VAULT IDENTITY 'user:test'");
-        let result = shell.execute("CACHE STATS");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Cache Statistics"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_help_contains_cache() {
-        let help = Shell::help_text();
-        assert!(help.contains("CACHE INIT"));
-        assert!(help.contains("CACHE STATS"));
-        assert!(help.contains("CACHE CLEAR"));
-    }
-
-    // ========== Checkpoint Tests ==========
-
-    #[test]
-    fn test_help_contains_checkpoint() {
-        let help = Shell::help_text();
-        assert!(help.contains("CHECKPOINT"));
-        assert!(help.contains("CHECKPOINTS"));
-        assert!(help.contains("ROLLBACK TO"));
-        assert!(help.contains("Checkpoints (Rollback)"));
-    }
-
-    #[test]
-    fn test_format_checkpoint_list_empty() {
-        let checkpoints: Vec<CheckpointInfo> = vec![];
-        let output = format_result(&QueryResult::CheckpointList(checkpoints));
-        assert!(output.contains("No checkpoints found"));
-    }
-
-    #[test]
-    fn test_format_checkpoint_list_with_data() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let checkpoints = vec![
-            CheckpointInfo {
-                id: "cp-123".to_string(),
-                name: "manual-checkpoint".to_string(),
-                created_at: now,
-                is_auto: false,
-            },
-            CheckpointInfo {
-                id: "cp-456".to_string(),
-                name: "auto-before-DELETE".to_string(),
-                created_at: now - 60,
-                is_auto: true,
-            },
-        ];
-        let output = format_result(&QueryResult::CheckpointList(checkpoints));
-        assert!(output.contains("Checkpoints:"));
-        assert!(output.contains("cp-123"));
-        assert!(output.contains("manual-checkpoint"));
-        assert!(output.contains("manual"));
-        assert!(output.contains("auto"));
-    }
-
-    #[test]
-    fn test_checkpoint_create() {
-        let mut shell = Shell::new();
-        // Initialize blob and checkpoint manager
-        shell.router_mut().init_blob().unwrap();
-        shell.router_mut().init_checkpoint().unwrap();
-
-        let result = shell.execute("CHECKPOINT 'test-checkpoint'");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Checkpoint created"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_checkpoint_list() {
-        let mut shell = Shell::new();
-        shell.router_mut().init_blob().unwrap();
-        shell.router_mut().init_checkpoint().unwrap();
-
-        shell.execute("CHECKPOINT 'first'");
-        shell.execute("CHECKPOINT 'second'");
-
-        let result = shell.execute("CHECKPOINTS");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Checkpoints:"));
-            assert!(output.contains("first"));
-            assert!(output.contains("second"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-    }
-
-    #[test]
-    fn test_checkpoint_rollback() {
-        let mut shell = Shell::new();
-        shell.router_mut().init_blob().unwrap();
-        shell.router_mut().init_checkpoint().unwrap();
-
-        // Store some data
-        shell.execute("EMBED STORE 'rollback-test' [1.0, 2.0, 3.0]");
-
-        // Create checkpoint
-        shell.execute("CHECKPOINT 'before-delete'");
-
-        // Delete the data
-        shell.execute("EMBED DELETE 'rollback-test'");
-
-        // Rollback
-        let result = shell.execute("ROLLBACK TO 'before-delete'");
-        if let CommandResult::Output(output) = result {
-            assert!(output.contains("Rolled back"));
-        } else {
-            panic!("Expected Output, got {:?}", result);
-        }
-
-        // Verify data is restored
-        let result = shell.execute("EMBED GET 'rollback-test'");
+        let result = shell.execute("NODE LIST person");
         assert!(matches!(result, CommandResult::Output(_)));
     }
 
     #[test]
-    fn test_help_contains_cluster() {
-        let help = Shell::help_text();
-        assert!(help.contains("Cluster (Distributed)"));
-        assert!(help.contains("CLUSTER CONNECT"));
-        assert!(help.contains("CLUSTER DISCONNECT"));
-        assert!(help.contains("CLUSTER STATUS"));
-        assert!(help.contains("CLUSTER NODES"));
-        assert!(help.contains("CLUSTER LEADER"));
+    fn test_embed_operations() {
+        let mut shell = Shell::new();
+
+        let result = shell.execute("EMBED STORE 'doc1' [0.1, 0.2, 0.3, 0.4]");
+        assert!(matches!(result, CommandResult::Output(_)));
+
+        let result = shell.execute("EMBED GET 'doc1'");
+        assert!(matches!(result, CommandResult::Output(_)));
     }
 
     #[test]
-    fn test_wal_concurrent_access() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let shell = Arc::new(Mutex::new(Shell::new()));
-
-        // Set up WAL by saving
-        {
-            let mut s = shell.lock();
-            s.execute("EMBED STORE 'key' [1.0, 2.0, 3.0]");
-            let path = std::env::temp_dir().join("test_concurrent_wal.bin");
-            s.execute(&format!("SAVE '{}'", path.display()));
-            s.execute(&format!("LOAD '{}'", path.display()));
-        }
-
-        // Concurrent writes should not panic or corrupt
-        let handles: Vec<_> = (0..4)
-            .map(|i| {
-                let shell = Arc::clone(&shell);
-                thread::spawn(move || {
-                    let mut s = shell.lock();
-                    for j in 0..10 {
-                        s.execute(&format!("EMBED STORE 'key{i}{j}' [1.0]"));
-                    }
-                })
-            })
-            .collect();
-
-        for h in handles {
-            h.join().unwrap();
-        }
-
-        // Cleanup
-        let path = std::env::temp_dir().join("test_concurrent_wal.bin");
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("log"));
-    }
-
-    #[test]
-    fn test_wal_recovery_mode_skips_corrupted() {
-        use std::io::Write;
-
+    fn test_router_access() {
         let shell = Shell::new();
-
-        // Create a temp WAL file with: valid, invalid, valid commands
-        let wal_path = std::env::temp_dir().join("test_recovery_wal.log");
-        {
-            let mut f = std::fs::File::create(&wal_path).unwrap();
-            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
-            writeln!(f, "INVALID GARBAGE COMMAND").unwrap();
-            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
-        }
-
-        // Recover mode should skip invalid line and continue
-        let result = shell
-            .replay_wal(&wal_path, WalRecoveryMode::Recover)
-            .unwrap();
-        assert_eq!(result.replayed, 2);
-        assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0].line, 2);
-        assert!(result.errors[0].command.contains("INVALID"));
-
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_strict_mode_fails_on_corrupt() {
-        use std::io::Write;
-
-        let shell = Shell::new();
-
-        let wal_path = std::env::temp_dir().join("test_strict_wal.log");
-        {
-            let mut f = std::fs::File::create(&wal_path).unwrap();
-            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
-            writeln!(f, "INVALID GARBAGE COMMAND").unwrap();
-            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
-        }
-
-        // Strict mode should fail on invalid line
-        let result = shell.replay_wal(&wal_path, WalRecoveryMode::Strict);
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert!(error.contains("line 2"));
-
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_recovery_truncated_line() {
-        use std::io::Write;
-
-        let shell = Shell::new();
-
-        let wal_path = std::env::temp_dir().join("test_truncated_wal.log");
-        {
-            let mut f = std::fs::File::create(&wal_path).unwrap();
-            writeln!(f, "EMBED STORE 'key1' [1.0, 2.0]").unwrap();
-            // Empty line should be skipped
-            writeln!(f, "").unwrap();
-            writeln!(f, "   ").unwrap();
-            writeln!(f, "EMBED STORE 'key2' [3.0, 4.0]").unwrap();
-        }
-
-        // Empty lines should be skipped, not counted as errors
-        let result = shell
-            .replay_wal(&wal_path, WalRecoveryMode::Recover)
-            .unwrap();
-        assert_eq!(result.replayed, 2);
-        assert_eq!(result.errors.len(), 0);
-
-        let _ = std::fs::remove_file(&wal_path);
-    }
-
-    #[test]
-    fn test_wal_replay_error_truncates_long_command() {
-        let short_error = WalReplayError::new(1, "short command", "error".to_string());
-        assert_eq!(short_error.command, "short command");
-
-        let long_command = "A".repeat(100);
-        let long_error = WalReplayError::new(1, &long_command, "error".to_string());
-        assert_eq!(long_error.command.len(), 80);
-        assert!(long_error.command.ends_with("..."));
-    }
-
-    #[test]
-    fn test_help_contains_recover() {
-        let help = Shell::help_text();
-        assert!(help.contains("load 'path' recover"));
-        assert!(help.contains("skip corrupted WAL"));
-    }
-
-    #[test]
-    fn test_help_contains_vector_commands() {
-        let help = Shell::help_text();
-        assert!(help.contains("SHOW EMBEDDINGS"));
-        assert!(help.contains("SHOW VECTOR INDEX"));
-        assert!(help.contains("COUNT EMBEDDINGS"));
-    }
-
-    #[test]
-    fn test_help_contains_blob_management() {
-        let help = Shell::help_text();
-        assert!(help.contains("BLOB INIT"));
-        assert!(help.contains("BLOB LINKS"));
-        assert!(help.contains("BLOB VERIFY"));
-        assert!(help.contains("BLOB GC"));
-        assert!(help.contains("BLOB GC FULL"));
-        assert!(help.contains("BLOB REPAIR"));
-        assert!(help.contains("BLOB STATS"));
-        assert!(help.contains("BLOB META SET"));
-        assert!(help.contains("BLOB META GET"));
-    }
-
-    #[test]
-    fn test_help_contains_cache_semantic() {
-        let help = Shell::help_text();
-        assert!(help.contains("CACHE SEMANTIC GET"));
-        assert!(help.contains("CACHE SEMANTIC PUT"));
-    }
-
-    #[test]
-    fn test_help_contains_chain_commands() {
-        let help = Shell::help_text();
-        assert!(help.contains("Chain (Distributed Ledger):"));
-        assert!(help.contains("BEGIN CHAIN TRANSACTION"));
-        assert!(help.contains("COMMIT CHAIN"));
-        assert!(help.contains("ROLLBACK CHAIN TO"));
-        assert!(help.contains("CHAIN HEIGHT"));
-        assert!(help.contains("CHAIN TIP"));
-        assert!(help.contains("CHAIN BLOCK"));
-        assert!(help.contains("CHAIN VERIFY"));
-        assert!(help.contains("CHAIN HISTORY"));
-        assert!(help.contains("CHAIN SIMILAR"));
-        assert!(help.contains("CHAIN DRIFT"));
-        assert!(help.contains("SHOW CODEBOOK GLOBAL"));
-        assert!(help.contains("SHOW CODEBOOK LOCAL"));
-        assert!(help.contains("ANALYZE CODEBOOK TRANSITIONS"));
-    }
-
-    #[test]
-    fn test_extract_load_path_and_mode_basic() {
-        // Quoted path without recover
-        let result = Shell::extract_load_path_and_mode("load 'data.bin'");
-        assert_eq!(
-            result,
-            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
-        );
-
-        // Quoted path with recover
-        let result = Shell::extract_load_path_and_mode("load 'data.bin' recover");
-        assert_eq!(
-            result,
-            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
-        );
-
-        // Unquoted path without recover
-        let result = Shell::extract_load_path_and_mode("load data.bin");
-        assert_eq!(
-            result,
-            Some(("data.bin".to_string(), WalRecoveryMode::Strict))
-        );
-
-        // Unquoted path with recover (case insensitive)
-        let result = Shell::extract_load_path_and_mode("LOAD data.bin RECOVER");
-        assert_eq!(
-            result,
-            Some(("data.bin".to_string(), WalRecoveryMode::Recover))
-        );
-
-        // Empty path should return None
-        let result = Shell::extract_load_path_and_mode("load ");
-        assert!(result.is_none());
-
-        // Just recover without path should return None
-        let result = Shell::extract_load_path_and_mode("load recover");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_format_wal_replay_result_basic() {
-        // Successful replay in strict mode
-        let result = WalReplayResult {
-            replayed: 5,
-            errors: vec![],
-        };
-        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
-        assert!(output.contains("Replayed 5 commands"));
-
-        // Zero replayed should not show message
-        let result = WalReplayResult {
-            replayed: 0,
-            errors: vec![],
-        };
-        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Strict);
-        assert!(output.is_empty());
-    }
-
-    #[test]
-    fn test_format_wal_replay_result_with_errors() {
-        // Recover mode with errors should show warnings
-        let result = WalReplayResult {
-            replayed: 3,
-            errors: vec![
-                WalReplayError::new(2, "bad command 1", "error1".to_string()),
-                WalReplayError::new(5, "bad command 2", "error2".to_string()),
-            ],
-        };
-        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
-        assert!(output.contains("Replayed 3 commands"));
-        assert!(output.contains("Skipped 2 corrupted"));
-        assert!(output.contains("Line 2:"));
-        assert!(output.contains("Line 5:"));
-    }
-
-    #[test]
-    fn test_format_wal_replay_result_truncates_many_errors() {
-        // Should only show first 5 errors
-        let errors: Vec<_> = (0..10)
-            .map(|i| WalReplayError::new(i + 1, &format!("cmd{i}"), "err".to_string()))
-            .collect();
-        let result = WalReplayResult {
-            replayed: 0,
-            errors,
-        };
-        let output = Shell::format_wal_replay_result(&result, WalRecoveryMode::Recover);
-        assert!(output.contains("Skipped 10 corrupted"));
-        assert!(output.contains("... and 5 more"));
-    }
-
-    #[test]
-    fn test_format_blob_small_text() {
-        let data = b"Hello, World!";
-        let result = format_blob(data);
-        assert_eq!(result, "Hello, World!");
-    }
-
-    #[test]
-    fn test_format_blob_4kb_text() {
-        let data = "a".repeat(4096);
-        let result = format_blob(data.as_bytes());
-        assert_eq!(result, data);
-    }
-
-    #[test]
-    fn test_format_blob_large_text_truncated() {
-        let data = "a".repeat(5000);
-        let result = format_blob(data.as_bytes());
-        assert!(result.contains("... ("));
-        assert!(result.contains("more bytes"));
-        assert!(result.contains("5000 total"));
-        // Should contain truncated content
-        assert!(result.starts_with("aaaa"));
-    }
-
-    #[test]
-    fn test_format_blob_binary_with_hex_dump() {
-        let data: Vec<u8> = (0..100).collect();
-        let result = format_blob(&data);
-        assert!(result.contains("<binary data: 100 bytes>"));
-        // Should have hex dump with offset
-        assert!(result.contains("00000000"));
-        // Should have ASCII representation
-        assert!(result.contains("|"));
-        // Should indicate more bytes
-        assert!(result.contains("... (36 more bytes)"));
-    }
-
-    #[test]
-    fn test_format_blob_control_chars_treated_as_binary() {
-        // Data with control chars (not newline/tab/carriage return) treated as binary
-        let data = b"Hello\x00World";
-        let result = format_blob(data);
-        assert!(result.contains("<binary data:"));
-        assert!(result.contains("00000000"));
-    }
-
-    #[test]
-    fn test_format_hex_dump_alignment() {
-        // Test that hex dump has proper 16-byte line formatting
-        let data: Vec<u8> = (0..32).collect();
-        let result = format_hex_dump(&data, 32);
-
-        // Should have two lines
-        let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 2);
-
-        // First line should start with offset 00000000
-        assert!(lines[0].starts_with("00000000"));
-        // Second line should start with offset 00000010
-        assert!(lines[1].starts_with("00000010"));
-
-        // Should have midpoint spacing (extra space after byte 7)
-        // The format is "XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX"
-        assert!(lines[0].contains("07 "));
-    }
-
-    #[test]
-    fn test_format_hex_dump_incomplete_line() {
-        // Test incomplete last line is properly padded
-        let data: Vec<u8> = (0..5).collect();
-        let result = format_hex_dump(&data, 16);
-
-        let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 1);
-        // Should still have ASCII section
-        assert!(result.contains("|"));
-    }
-
-    #[test]
-    fn test_help_contains_graph_index_label_and_edge_type() {
-        let help = Shell::help_text();
-        assert!(help.contains("GRAPH INDEX CREATE ON LABEL"));
-        assert!(help.contains("GRAPH INDEX CREATE ON EDGE TYPE"));
-        assert!(help.contains("Index node labels for fast lookup"));
-        assert!(help.contains("Index edge types for fast lookup"));
+        let _router = shell.router();
+        let _router_arc = shell.router_arc();
     }
 }

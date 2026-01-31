@@ -164,6 +164,10 @@ pub struct ServerConfig {
     pub request_timeout: Option<Duration>,
     /// Memory budget configuration (optional).
     pub memory_budget: Option<MemoryBudgetConfig>,
+    /// REST API bind address (optional, None disables REST API).
+    pub rest_addr: Option<SocketAddr>,
+    /// Web admin UI bind address (optional, None disables Web UI).
+    pub web_addr: Option<SocketAddr>,
 }
 
 impl Default for ServerConfig {
@@ -191,6 +195,8 @@ impl Default for ServerConfig {
             initial_connection_window_size: None,
             request_timeout: None,
             memory_budget: None,
+            rest_addr: None,
+            web_addr: None,
         }
     }
 }
@@ -472,6 +478,20 @@ impl ServerConfig {
     #[must_use]
     pub fn with_memory_budget(mut self, config: MemoryBudgetConfig) -> Self {
         self.memory_budget = Some(config);
+        self
+    }
+
+    /// Set REST API bind address.
+    #[must_use]
+    pub fn with_rest_addr(mut self, addr: SocketAddr) -> Self {
+        self.rest_addr = Some(addr);
+        self
+    }
+
+    /// Set Web admin UI bind address.
+    #[must_use]
+    pub fn with_web_addr(mut self, addr: SocketAddr) -> Self {
+        self.web_addr = Some(addr);
         self
     }
 

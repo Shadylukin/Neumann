@@ -128,6 +128,11 @@ impl BlockHeader {
         self
     }
 
+    pub fn with_state_root(mut self, state_root: BlockHash) -> Self {
+        self.state_root = state_root;
+        self
+    }
+
     pub fn with_dense_embedding(mut self, embedding: &[f32]) -> Self {
         self.delta_embedding = SparseVector::from_dense(embedding);
         self
@@ -382,6 +387,13 @@ impl Block {
                 expected: hex::encode(expected_prev_hash),
                 actual: hex::encode(self.header.prev_hash),
             });
+        }
+
+        // Verify tx_root matches transactions
+        if !self.verify_tx_root() {
+            return Err(ChainError::ValidationFailed(
+                "tx_root does not match transactions".to_string(),
+            ));
         }
 
         // Check timestamp is not before previous block

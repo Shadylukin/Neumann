@@ -23,6 +23,8 @@ pub struct RateLimitConfig {
     pub max_queries: u32,
     /// Maximum blob operations per window.
     pub max_blob_ops: u32,
+    /// Maximum vector operations per window.
+    pub max_vector_ops: u32,
     /// Time window for rate limiting.
     pub window: Duration,
     /// Enable/disable rate limiting.
@@ -35,6 +37,7 @@ impl Default for RateLimitConfig {
             max_requests: 1000,
             max_queries: 500,
             max_blob_ops: 100,
+            max_vector_ops: 500,
             window: Duration::from_secs(60),
             enabled: true,
         }
@@ -69,6 +72,13 @@ impl RateLimitConfig {
         self
     }
 
+    /// Set maximum vector operations per window.
+    #[must_use]
+    pub const fn with_max_vector_ops(mut self, max: u32) -> Self {
+        self.max_vector_ops = max;
+        self
+    }
+
     /// Set the time window.
     #[must_use]
     pub const fn with_window(mut self, window: Duration) -> Self {
@@ -90,6 +100,7 @@ impl RateLimitConfig {
             max_requests: 10,
             max_queries: 5,
             max_blob_ops: 3,
+            max_vector_ops: 5,
             window: Duration::from_secs(60),
             enabled: true,
         }
@@ -102,6 +113,7 @@ impl RateLimitConfig {
             max_requests: 10_000,
             max_queries: 5_000,
             max_blob_ops: 1_000,
+            max_vector_ops: 5_000,
             window: Duration::from_secs(60),
             enabled: true,
         }
@@ -117,6 +129,8 @@ pub enum Operation {
     Query,
     /// Blob upload/download/delete.
     BlobOp,
+    /// Vector operations (upsert, query, delete).
+    VectorOp,
 }
 
 impl Operation {
@@ -125,6 +139,7 @@ impl Operation {
             Self::Request => "request",
             Self::Query => "query",
             Self::BlobOp => "blob_op",
+            Self::VectorOp => "vector_op",
         }
     }
 
@@ -133,6 +148,7 @@ impl Operation {
             Self::Request => config.max_requests,
             Self::Query => config.max_queries,
             Self::BlobOp => config.max_blob_ops,
+            Self::VectorOp => config.max_vector_ops,
         }
     }
 }
@@ -440,6 +456,51 @@ mod tests {
         assert_eq!(Operation::Request.as_str(), "request");
         assert_eq!(Operation::Query.as_str(), "query");
         assert_eq!(Operation::BlobOp.as_str(), "blob_op");
+        assert_eq!(Operation::VectorOp.as_str(), "vector_op");
+    }
+
+    #[test]
+    fn test_vector_op_rate_limit() {
+        let limiter = RateLimiter::new(RateLimitConfig::new().with_max_vector_ops(3));
+
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
+
+        let result = limiter.check_and_record("user:alice", Operation::VectorOp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_vector_op_window_expiry() {
+        let limiter = RateLimiter::new(
+            RateLimitConfig::new()
+                .with_max_vector_ops(2)
+                .with_window(Duration::from_millis(50)),
+        );
+
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_err());
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        assert!(limiter
+            .check_and_record("user:alice", Operation::VectorOp)
+            .is_ok());
     }
 
     #[test]

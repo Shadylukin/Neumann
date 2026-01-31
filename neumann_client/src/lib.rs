@@ -152,26 +152,22 @@ impl StreamingQueryResult {
         use proto::query_response_chunk::Chunk;
 
         match chunk.chunk {
-            Some(Chunk::Row(r)) => {
-                r.row
-                    .map(QueryChunk::Row)
-                    .ok_or_else(|| ClientError::Internal("Empty row chunk".to_string()))
-            },
-            Some(Chunk::Node(n)) => {
-                n.node
-                    .map(QueryChunk::Node)
-                    .ok_or_else(|| ClientError::Internal("Empty node chunk".to_string()))
-            },
-            Some(Chunk::Edge(e)) => {
-                e.edge
-                    .map(QueryChunk::Edge)
-                    .ok_or_else(|| ClientError::Internal("Empty edge chunk".to_string()))
-            },
-            Some(Chunk::SimilarItem(s)) => {
-                s.item
-                    .map(QueryChunk::SimilarItem)
-                    .ok_or_else(|| ClientError::Internal("Empty similar chunk".to_string()))
-            },
+            Some(Chunk::Row(r)) => r
+                .row
+                .map(QueryChunk::Row)
+                .ok_or_else(|| ClientError::Internal("Empty row chunk".to_string())),
+            Some(Chunk::Node(n)) => n
+                .node
+                .map(QueryChunk::Node)
+                .ok_or_else(|| ClientError::Internal("Empty node chunk".to_string())),
+            Some(Chunk::Edge(e)) => e
+                .edge
+                .map(QueryChunk::Edge)
+                .ok_or_else(|| ClientError::Internal("Empty edge chunk".to_string())),
+            Some(Chunk::SimilarItem(s)) => s
+                .item
+                .map(QueryChunk::SimilarItem)
+                .ok_or_else(|| ClientError::Internal("Empty similar chunk".to_string())),
             Some(Chunk::BlobData(b)) => Ok(QueryChunk::BlobData(b)),
             Some(Chunk::Error(e)) => Err(ClientError::Query(e.message)),
             None => Err(ClientError::Internal("Empty chunk received".to_string())),
@@ -1241,7 +1237,10 @@ mod tests {
     #[test]
     fn test_query_chunk_variants() {
         // Test Row variant
-        let row = proto::Row { id: 1, values: vec![] };
+        let row = proto::Row {
+            id: 1,
+            values: vec![],
+        };
         let chunk = QueryChunk::Row(row);
         assert!(format!("{:?}", chunk).contains("Row"));
 
@@ -1304,8 +1303,10 @@ mod tests {
 
     #[cfg(feature = "remote")]
     #[test]
-    #[ignore = "Requires TLS crypto provider to be installed"]
     fn test_build_blocking_with_tls() {
+        // Install the crypto provider for TLS
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // Test build_blocking with TLS enabled
         let result = NeumannClient::connect("localhost:1")
             .with_tls()
@@ -1324,7 +1325,10 @@ mod tests {
         // Test Row chunk with valid row
         let chunk = proto::QueryResponseChunk {
             chunk: Some(Chunk::Row(proto::RowChunk {
-                row: Some(proto::Row { id: 1, values: vec![] }),
+                row: Some(proto::Row {
+                    id: 1,
+                    values: vec![],
+                }),
             })),
             is_final: false,
         };
@@ -1592,8 +1596,10 @@ mod tests {
 
     #[cfg(feature = "remote")]
     #[tokio::test]
-    #[ignore = "Requires TLS crypto provider to be installed"]
     async fn test_remote_connection_with_tls_refused() {
+        // Install the crypto provider for TLS
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // Test connecting with TLS to a port that refuses connection
         let result = NeumannClient::connect("127.0.0.1:1")
             .with_tls()
@@ -1620,7 +1626,9 @@ mod tests {
         let client = NeumannClient::embedded().expect("should create embedded client");
 
         // Calling async execute_with_identity() on embedded mode should fail
-        let result = client.execute_with_identity("SELECT test", Some("user")).await;
+        let result = client
+            .execute_with_identity("SELECT test", Some("user"))
+            .await;
         assert!(result.is_err());
     }
 
@@ -1630,7 +1638,9 @@ mod tests {
         let client = NeumannClient::embedded().expect("should create embedded client");
 
         // Calling execute_batch_with_identity() on embedded mode should fail
-        let result = client.execute_batch_with_identity(&["SELECT test"], Some("user")).await;
+        let result = client
+            .execute_batch_with_identity(&["SELECT test"], Some("user"))
+            .await;
         assert!(result.is_err());
     }
 
@@ -1640,7 +1650,9 @@ mod tests {
         let client = NeumannClient::embedded().expect("should create embedded client");
 
         // Calling execute_stream_with_identity() on embedded mode should fail
-        let result = client.execute_stream_with_identity("SELECT test", Some("user")).await;
+        let result = client
+            .execute_stream_with_identity("SELECT test", Some("user"))
+            .await;
         assert!(result.is_err());
     }
 }

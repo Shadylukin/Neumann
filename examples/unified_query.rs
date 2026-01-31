@@ -20,7 +20,8 @@ fn main() {
     println!("=== Relational Operations ===\n");
 
     // Create a table
-    let result = router.execute("CREATE TABLE products (id INT, name TEXT, category TEXT, price FLOAT)");
+    let result =
+        router.execute("CREATE TABLE products (id INT, name TEXT, category TEXT, price FLOAT)");
     println!("Create table: {:?}\n", result);
 
     // Insert products
@@ -52,15 +53,27 @@ fn main() {
     println!("\n=== Graph Operations ===\n");
 
     // Create nodes
-    router.execute("NODE CREATE Person name='Alice', role='developer'").expect("Failed to create node");
-    router.execute("NODE CREATE Person name='Bob', role='manager'").expect("Failed to create node");
-    router.execute("NODE CREATE Project name='Neumann', status='active'").expect("Failed to create node");
+    router
+        .execute("NODE CREATE Person name='Alice', role='developer'")
+        .expect("Failed to create node");
+    router
+        .execute("NODE CREATE Person name='Bob', role='manager'")
+        .expect("Failed to create node");
+    router
+        .execute("NODE CREATE Project name='Neumann', status='active'")
+        .expect("Failed to create node");
     println!("Created Person and Project nodes");
 
     // Create edges
-    router.execute("EDGE CREATE node:1 -> node:2 REPORTS_TO").expect("Failed to create edge");
-    router.execute("EDGE CREATE node:1 -> node:3 WORKS_ON").expect("Failed to create edge");
-    router.execute("EDGE CREATE node:2 -> node:3 MANAGES").expect("Failed to create edge");
+    router
+        .execute("EDGE CREATE node:1 -> node:2 REPORTS_TO")
+        .expect("Failed to create edge");
+    router
+        .execute("EDGE CREATE node:1 -> node:3 WORKS_ON")
+        .expect("Failed to create edge");
+    router
+        .execute("EDGE CREATE node:2 -> node:3 MANAGES")
+        .expect("Failed to create edge");
     println!("Created relationship edges");
 
     // Query nodes
@@ -79,9 +92,15 @@ fn main() {
     println!("\n=== Vector Operations ===\n");
 
     // Store embeddings
-    router.execute("EMBED 'doc:intro' [0.1, 0.2, 0.3, 0.4, 0.5]").expect("Failed to embed");
-    router.execute("EMBED 'doc:advanced' [0.15, 0.25, 0.35, 0.45, 0.55]").expect("Failed to embed");
-    router.execute("EMBED 'doc:reference' [0.9, 0.8, 0.7, 0.6, 0.5]").expect("Failed to embed");
+    router
+        .execute("EMBED 'doc:intro' [0.1, 0.2, 0.3, 0.4, 0.5]")
+        .expect("Failed to embed");
+    router
+        .execute("EMBED 'doc:advanced' [0.15, 0.25, 0.35, 0.45, 0.55]")
+        .expect("Failed to embed");
+    router
+        .execute("EMBED 'doc:reference' [0.9, 0.8, 0.7, 0.6, 0.5]")
+        .expect("Failed to embed");
     println!("Stored 3 document embeddings");
 
     // Similarity search

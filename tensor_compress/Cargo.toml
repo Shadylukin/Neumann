@@ -1,9 +1,13 @@
 [package]
 name = "tensor_compress"
-version = "0.1.0"
-edition = "2021"
-description = "Bespoke compression for tensor data: vector quantization, delta encoding, RLE"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
+description = "Tensor Train decomposition, delta encoding, and RLE compression for tensor data"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

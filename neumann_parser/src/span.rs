@@ -128,7 +128,7 @@ impl Span {
     /// Combines two spans into one that covers both.
     #[inline]
     #[must_use]
-    pub const fn merge(self, other: Span) -> Span {
+    pub const fn merge(self, other: Self) -> Self {
         let start = if self.start.0 < other.start.0 {
             self.start
         } else {
@@ -139,7 +139,7 @@ impl Span {
         } else {
             other.end
         };
-        Span { start, end }
+        Self { start, end }
     }
 
     /// Returns true if this span contains the given position.
@@ -152,7 +152,7 @@ impl Span {
     /// Returns true if this span overlaps with another.
     #[inline]
     #[must_use]
-    pub const fn overlaps(&self, other: Span) -> bool {
+    pub const fn overlaps(&self, other: Self) -> bool {
         self.start.0 < other.end.0 && other.start.0 < self.end.0
     }
 

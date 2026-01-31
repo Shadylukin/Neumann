@@ -43,6 +43,8 @@
 //! assert_eq!(chain.height(), 1);
 //! ```
 
+#![allow(clippy::pedantic, clippy::nursery)]
+
 pub mod atomic_io;
 pub mod block;
 pub mod chain;
@@ -68,6 +70,7 @@ pub mod signing;
 pub mod snapshot_buffer;
 pub mod snapshot_streaming;
 pub mod state_machine;
+pub(crate) mod state_root;
 pub mod tcp;
 pub mod transaction;
 pub mod tx_id;
@@ -600,29 +603,50 @@ pub struct TensorChain {
 
     /// Ed25519 identity for signing blocks.
     identity: signing::Identity,
+
+    /// Validator registry for signature verification.
+    validator_registry: Arc<ValidatorRegistry>,
+
+    /// Optional geometric membership manager for routing decisions.
+    geometric_membership: Option<Arc<GeometricMembershipManager>>,
 }
 
 impl TensorChain {
     /// Create a new TensorChain with the given store.
     ///
     /// Generates a new Ed25519 identity for signing blocks. The node_id parameter
-    /// is used for chain configuration but the actual cryptographic identity is
-    /// derived from the generated key pair.
+    /// is treated as a requested ID; the actual node_id is derived from the
+    /// generated identity to ensure signatures can be verified.
     pub fn new(store: TensorStore, node_id: impl Into<NodeId>) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
+        let requested_node_id: NodeId = node_id.into();
+        let identity = signing::Identity::generate();
+        let derived_node_id = identity.node_id();
+
+        if requested_node_id != derived_node_id {
+            tracing::warn!(
+                requested = %requested_node_id,
+                derived = %derived_node_id,
+                "NodeId overridden to match generated identity"
+            );
+        }
+
         let graph = Arc::new(GraphEngine::with_store(store));
-        let config = ChainConfig::new(node_id);
-        let chain = Chain::new(graph.clone(), config.node_id.clone());
+        let config = ChainConfig::new(derived_node_id);
+        let validator_registry = Arc::new(ValidatorRegistry::new());
+        validator_registry.register(&identity);
+        let chain = Chain::with_registry(
+            graph.clone(),
+            config.node_id.clone(),
+            Arc::clone(&validator_registry),
+        );
 
         // Initialize codebook with default dimension (matches delta embedding size)
         let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
 
-        // Generate a new Ed25519 identity for signing blocks
-        let identity = signing::Identity::generate();
-
         Self {
             chain,
             tx_manager: TransactionManager::new(),
@@ -631,22 +655,39 @@ impl TensorChain {
             codebook_manager,
             transition_validator,
             identity,
+            validator_registry,
+            geometric_membership: None,
         }
     }
 
-    pub fn with_config(store: TensorStore, config: ChainConfig) -> Self {
+    pub fn with_config(store: TensorStore, mut config: ChainConfig) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
+        let identity = signing::Identity::generate();
+        let derived_node_id = identity.node_id();
+
+        if config.node_id != derived_node_id {
+            tracing::warn!(
+                requested = %config.node_id,
+                derived = %derived_node_id,
+                "NodeId overridden to match generated identity"
+            );
+        }
+        config.node_id = derived_node_id;
+
         let graph = Arc::new(GraphEngine::with_store(store));
-        let chain = Chain::new(graph.clone(), config.node_id.clone());
 
         // Initialize codebook with default dimension
         let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
-
-        // Generate a new Ed25519 identity for signing blocks
-        let identity = signing::Identity::generate();
+        let validator_registry = Arc::new(ValidatorRegistry::new());
+        validator_registry.register(&identity);
+        let chain = Chain::with_registry(
+            graph.clone(),
+            config.node_id.clone(),
+            Arc::clone(&validator_registry),
+        );
 
         Self {
             chain,
@@ -656,18 +697,36 @@ impl TensorChain {
             codebook_manager,
             transition_validator,
             identity,
+            validator_registry,
+            geometric_membership: None,
         }
     }
 
     pub fn with_identity(
         store: TensorStore,
-        config: ChainConfig,
+        mut config: ChainConfig,
         identity: signing::Identity,
     ) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
+        let derived_node_id = identity.node_id();
+        if config.node_id != derived_node_id {
+            tracing::warn!(
+                requested = %config.node_id,
+                derived = %derived_node_id,
+                "NodeId overridden to match provided identity"
+            );
+        }
+        config.node_id = derived_node_id;
+
         let graph = Arc::new(GraphEngine::with_store(store));
-        let chain = Chain::new(graph.clone(), config.node_id.clone());
+        let validator_registry = Arc::new(ValidatorRegistry::new());
+        validator_registry.register(&identity);
+        let chain = Chain::with_registry(
+            graph.clone(),
+            config.node_id.clone(),
+            Arc::clone(&validator_registry),
+        );
 
         // Initialize codebook with default dimension
         let global_codebook = GlobalCodebook::new(DEFAULT_EMBEDDING_DIM);
@@ -682,25 +741,42 @@ impl TensorChain {
             codebook_manager,
             transition_validator,
             identity,
+            validator_registry,
+            geometric_membership: None,
         }
     }
 
     pub fn with_codebook(
         store: TensorStore,
-        config: ChainConfig,
+        mut config: ChainConfig,
         global_codebook: GlobalCodebook,
         codebook_config: CodebookConfig,
         validation_config: ValidationConfig,
     ) -> Self {
+        let identity = signing::Identity::generate();
+        let derived_node_id = identity.node_id();
+
+        if config.node_id != derived_node_id {
+            tracing::warn!(
+                requested = %config.node_id,
+                derived = %derived_node_id,
+                "NodeId overridden to match generated identity"
+            );
+        }
+        config.node_id = derived_node_id;
+
         let graph = Arc::new(GraphEngine::with_store(store));
-        let chain = Chain::new(graph.clone(), config.node_id.clone());
+        let validator_registry = Arc::new(ValidatorRegistry::new());
+        validator_registry.register(&identity);
+        let chain = Chain::with_registry(
+            graph.clone(),
+            config.node_id.clone(),
+            Arc::clone(&validator_registry),
+        );
 
         let codebook_manager = CodebookManager::new(global_codebook.clone(), codebook_config);
         let transition_validator =
             TransitionValidator::new(Arc::new(global_codebook), validation_config);
-
-        // Generate a new Ed25519 identity for signing blocks
-        let identity = signing::Identity::generate();
 
         Self {
             chain,
@@ -710,6 +786,8 @@ impl TensorChain {
             codebook_manager,
             transition_validator,
             identity,
+            validator_registry,
+            geometric_membership: None,
         }
     }
 
@@ -741,8 +819,28 @@ impl TensorChain {
         &self.identity
     }
 
+    /// Return the validator registry used for block signature verification.
+    pub fn validator_registry(&self) -> &ValidatorRegistry {
+        &self.validator_registry
+    }
+
+    /// Register a validator identity for signature verification.
+    pub fn register_validator(&self, identity: &signing::Identity) {
+        self.validator_registry.register(identity);
+    }
+
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.identity.public_key_bytes()
+    }
+
+    /// Set the geometric membership manager used for routing decisions.
+    pub fn set_geometric_membership(&mut self, manager: Arc<GeometricMembershipManager>) {
+        self.geometric_membership = Some(manager);
+    }
+
+    /// Clear the geometric membership manager and fall back to hash routing.
+    pub fn clear_geometric_membership(&mut self) {
+        self.geometric_membership = None;
     }
 
     pub fn geometric_routing_config(&self) -> &GeometricRoutingConfig {
@@ -763,9 +861,57 @@ impl TensorChain {
             return self.config.node_id.clone();
         }
 
-        // For now, return local node - actual distributed routing requires
-        // integration with SemanticPartitioner or VoronoiPartitioner
+        if let Some(manager) = &self.geometric_membership {
+            let ranked = manager.ranked_peers(embedding);
+            if let Some(peer) = ranked.iter().find(|p| {
+                p.is_healthy && p.similarity >= self.config.geometric_routing.min_similarity
+            }) {
+                return peer.node_id.clone();
+            }
+
+            if self.config.geometric_routing.fallback_to_hash {
+                if let Some(peer_id) = self.route_by_hash(embedding, manager) {
+                    return peer_id;
+                }
+            }
+        }
+
         self.config.node_id.clone()
+    }
+
+    fn route_by_hash(
+        &self,
+        embedding: &tensor_store::SparseVector,
+        manager: &GeometricMembershipManager,
+    ) -> Option<NodeId> {
+        use crate::membership::NodeHealth;
+        use sha2::{Digest, Sha256};
+
+        let view = manager.view();
+        let mut candidates: Vec<NodeId> = view
+            .nodes
+            .iter()
+            .filter(|status| status.health == NodeHealth::Healthy)
+            .map(|status| status.node_id.clone())
+            .collect();
+
+        if candidates.is_empty() {
+            candidates = view.nodes.iter().map(|s| s.node_id.clone()).collect();
+        }
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        candidates.sort();
+        let bytes = bitcode::serialize(embedding).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let hash = hasher.finalize();
+        let mut prefix = [0u8; 8];
+        prefix.copy_from_slice(&hash[0..8]);
+        let idx = u64::from_le_bytes(prefix) as usize % candidates.len();
+        Some(candidates[idx].clone())
     }
 
     pub fn begin(&self) -> Result<Arc<TransactionWorkspace>> {
@@ -790,6 +936,23 @@ impl TensorChain {
             return Ok(self.chain.tip_hash());
         }
 
+        if operations.len() > self.config.max_txs_per_block {
+            workspace.mark_failed();
+            self.tx_manager.remove(workspace.id());
+            return Err(ChainError::TransactionFailed(format!(
+                "transaction exceeds max_txs_per_block ({} > {})",
+                operations.len(),
+                self.config.max_txs_per_block
+            )));
+        }
+
+        // Detect semantic conflicts with other active transactions
+        if let Err(e) = self.detect_conflicts(&workspace) {
+            workspace.mark_failed();
+            self.tx_manager.remove(workspace.id());
+            return Err(e);
+        }
+
         // Compute delta embedding for the workspace
         let delta = workspace.to_delta_vector();
 
@@ -799,6 +962,52 @@ impl TensorChain {
             self.find_and_merge_orthogonal(&workspace, delta)?
         } else {
             (operations, workspace.delta_embedding(), vec![])
+        };
+
+        if merged_operations.len() > self.config.max_txs_per_block {
+            workspace.mark_failed();
+            self.tx_manager.remove(workspace.id());
+            for merged_ws in &merged_workspaces {
+                merged_ws.mark_failed();
+                self.tx_manager.remove(merged_ws.id());
+            }
+            return Err(ChainError::TransactionFailed(format!(
+                "merged block exceeds max_txs_per_block ({} > {})",
+                merged_operations.len(),
+                self.config.max_txs_per_block
+            )));
+        }
+
+        // Snapshot store state before applying operations (for rollback on failure)
+        let pre_commit_snapshot = self
+            .graph
+            .store()
+            .snapshot_bytes()
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
+        if let Err(e) = self.apply_operations_to_store(&merged_operations) {
+            let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
+            workspace.mark_failed();
+            self.tx_manager.remove(workspace.id());
+            for merged_ws in &merged_workspaces {
+                merged_ws.mark_failed();
+                self.tx_manager.remove(merged_ws.id());
+            }
+            return Err(e);
+        }
+
+        let state_root = match state_root::compute_state_root(self.graph.store()) {
+            Ok(root) => root,
+            Err(e) => {
+                let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
+                workspace.mark_failed();
+                self.tx_manager.remove(workspace.id());
+                for merged_ws in &merged_workspaces {
+                    merged_ws.mark_failed();
+                    self.tx_manager.remove(merged_ws.id());
+                }
+                return Err(e);
+            },
         };
 
         // Quantize delta embedding using codebook
@@ -821,6 +1030,7 @@ impl TensorChain {
             .add_transactions(merged_operations)
             .with_dense_embedding(&merged_delta)
             .with_codes(quantized_codes)
+            .with_state_root(state_root)
             .sign_and_build(&self.identity);
 
         // Append to chain
@@ -838,7 +1048,13 @@ impl TensorChain {
                 Ok(hash)
             },
             Err(e) => {
+                let _ = self.graph.store().restore_from_bytes(&pre_commit_snapshot);
                 workspace.mark_failed();
+                self.tx_manager.remove(workspace.id());
+                for merged_ws in &merged_workspaces {
+                    merged_ws.mark_failed();
+                    self.tx_manager.remove(merged_ws.id());
+                }
                 Err(e)
             },
         }
@@ -907,6 +1123,47 @@ impl TensorChain {
         // Convert sparse delta to dense for return (Phase 4 will make this sparse)
         let final_dim = delta.dimension();
         Ok((all_operations, delta.to_dense(final_dim), merged_workspaces))
+    }
+
+    fn detect_conflicts(&self, workspace: &TransactionWorkspace) -> Result<()> {
+        let target = workspace.to_delta_vector();
+
+        if target.magnitude() == 0.0 {
+            return Ok(());
+        }
+
+        let consensus = ConsensusManager::new(ConsensusConfig {
+            orthogonal_threshold: self.config.auto_merge.orthogonal_threshold,
+            conflict_threshold: self.config.conflict_threshold,
+            ..ConsensusConfig::default()
+        });
+
+        for other in self.tx_manager.active_transactions() {
+            if other.id() == workspace.id() || !other.is_active() {
+                continue;
+            }
+
+            let other_delta = other.to_delta_vector();
+            if other_delta.magnitude() == 0.0 {
+                continue;
+            }
+
+            let conflict = consensus.detect_conflict(&target, &other_delta);
+            if conflict.class.should_reject() {
+                return Err(ChainError::ConflictDetected {
+                    similarity: conflict.similarity,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_operations_to_store(&self, operations: &[Transaction]) -> Result<()> {
+        for op in operations {
+            crate::transaction::apply_transaction_to_store(self.graph.store(), op)?;
+        }
+        Ok(())
     }
 
     pub fn rollback(&self, workspace: Arc<TransactionWorkspace>) -> Result<()> {
@@ -1069,11 +1326,28 @@ impl TensorChain {
     ///
     /// This is the recommended constructor for production use, as it preserves
     /// learned codebooks across restarts.
-    pub fn load_or_create(store: TensorStore, config: ChainConfig) -> Self {
+    pub fn load_or_create(store: TensorStore, mut config: ChainConfig) -> Self {
         use crate::transaction::DEFAULT_EMBEDDING_DIM;
 
+        let identity = signing::Identity::generate();
+        let derived_node_id = identity.node_id();
+        if config.node_id != derived_node_id {
+            tracing::warn!(
+                requested = %config.node_id,
+                derived = %derived_node_id,
+                "NodeId overridden to match generated identity"
+            );
+        }
+        config.node_id = derived_node_id;
+
         let graph = Arc::new(GraphEngine::with_store(store));
-        let chain = Chain::new(graph.clone(), config.node_id.clone());
+        let validator_registry = Arc::new(ValidatorRegistry::new());
+        validator_registry.register(&identity);
+        let chain = Chain::with_registry(
+            graph.clone(),
+            config.node_id.clone(),
+            Arc::clone(&validator_registry),
+        );
 
         // Try to load existing codebook from store
         let global_codebook = Self::try_load_codebook_from_store(graph.store())
@@ -1081,9 +1355,6 @@ impl TensorChain {
 
         let codebook_manager = CodebookManager::with_global(global_codebook.clone());
         let transition_validator = TransitionValidator::with_global(Arc::new(global_codebook));
-
-        // Generate a new Ed25519 identity for signing blocks
-        let identity = signing::Identity::generate();
 
         Self {
             chain,
@@ -1093,6 +1364,8 @@ impl TensorChain {
             codebook_manager,
             transition_validator,
             identity,
+            validator_registry,
+            geometric_membership: None,
         }
     }
 
@@ -1145,6 +1418,37 @@ mod tests {
 
         assert_eq!(chain.height(), 0);
         assert!(chain.get_genesis().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_raft_handle_shutdown_and_join() {
+        use std::sync::Arc;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "node1".to_string(),
+            Vec::new(),
+            transport,
+            RaftConfig::default(),
+        ));
+
+        let handle = RaftHandle::spawn(Arc::clone(&node));
+        assert_eq!(handle.node_id(), "node1");
+        assert!(!handle.is_finished());
+        handle.shutdown();
+        let result = handle.join().await;
+        assert!(result.is_ok());
+
+        let transport = Arc::new(MemoryTransport::new("node2".to_string()));
+        let node = Arc::new(RaftNode::new(
+            "node2".to_string(),
+            Vec::new(),
+            transport,
+            RaftConfig::default(),
+        ));
+        let handle = RaftHandle::spawn(node);
+        let result = handle.shutdown_and_wait().await;
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1332,6 +1636,104 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_merge_validation_rejects_candidate() {
+        let centroids = vec![vec![1.0, 0.0]];
+        let global_codebook = GlobalCodebook::from_centroids(centroids);
+        let auto_merge = AutoMergeConfig::default()
+            .with_threshold(0.2)
+            .with_window(10_000);
+        let config = ChainConfig::new("node1").with_auto_merge_config(auto_merge);
+        let store = TensorStore::new();
+        let chain = TensorChain::with_codebook(
+            store,
+            config,
+            global_codebook,
+            CodebookConfig::default(),
+            ValidationConfig::default(),
+        );
+        chain.initialize().unwrap();
+
+        let tx1 = chain.begin().unwrap();
+        tx1.add_operation(Transaction::Put {
+            key: "merge_a".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        tx1.set_before_embedding(vec![0.0, 0.0]);
+        tx1.compute_delta(vec![1.0, 0.0]);
+
+        let tx2 = chain.begin().unwrap();
+        tx2.add_operation(Transaction::Put {
+            key: "merge_b".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        tx2.set_before_embedding(vec![0.0, 0.0]);
+        tx2.compute_delta(vec![0.0, 1.0]);
+
+        let result = chain.commit(tx1);
+        assert!(result.is_ok());
+        assert_eq!(tx2.state(), TransactionState::Failed);
+    }
+
+    #[test]
+    fn test_detect_conflicts_skips_zero_delta() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+        chain.initialize().unwrap();
+
+        let tx1 = chain.begin().unwrap();
+        tx1.add_operation(Transaction::Put {
+            key: "conflict_a".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        tx1.set_before_embedding(vec![0.0, 0.0]);
+        tx1.compute_delta(vec![1.0, 0.0]);
+
+        let tx2 = chain.begin().unwrap();
+        tx2.add_operation(Transaction::Put {
+            key: "conflict_b".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        tx2.set_before_embedding(vec![0.0, 0.0]);
+        tx2.compute_delta(vec![0.0, 0.0]);
+
+        let result = chain.commit(tx1);
+        assert!(result.is_ok());
+        assert!(tx2.is_active());
+    }
+
+    #[test]
+    fn test_detect_conflicts_rejects_similar_delta() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+        chain.initialize().unwrap();
+
+        let tx1 = chain.begin().unwrap();
+        tx1.add_operation(Transaction::Put {
+            key: "conflict_x".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        tx1.set_before_embedding(vec![0.0, 0.0]);
+        tx1.compute_delta(vec![1.0, 0.0]);
+
+        let tx2 = chain.begin().unwrap();
+        tx2.add_operation(Transaction::Put {
+            key: "conflict_y".to_string(),
+            data: vec![2],
+        })
+        .unwrap();
+        tx2.set_before_embedding(vec![0.0, 0.0]);
+        tx2.compute_delta(vec![0.9, 0.1]);
+
+        let result = chain.commit(tx1);
+        assert!(matches!(result, Err(ChainError::ConflictDetected { .. })));
+    }
+
+    #[test]
     fn test_commit_preserves_block_embedding() {
         let store = TensorStore::new();
         let chain = TensorChain::new(store, "node1");
@@ -1360,9 +1762,12 @@ mod tests {
     #[test]
     fn test_tensor_chain_node_id() {
         let store = TensorStore::new();
-        let chain = TensorChain::new(store, "my_node_id");
+        let identity = signing::Identity::generate();
+        let expected_node_id = identity.node_id();
+        let config = ChainConfig::new("ignored");
+        let chain = TensorChain::with_identity(store, config, identity);
 
-        assert_eq!(chain.node_id(), "my_node_id");
+        assert_eq!(chain.node_id(), expected_node_id.as_str());
     }
 
     #[test]
@@ -1620,6 +2025,22 @@ mod tests {
     }
 
     #[test]
+    fn test_validator_registry_and_public_key_bytes() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let registry = chain.validator_registry();
+        assert!(registry.contains(chain.node_id()));
+
+        let other = signing::Identity::generate();
+        chain.register_validator(&other);
+        assert!(registry.contains(&other.node_id()));
+
+        let key_bytes = chain.public_key_bytes();
+        assert_eq!(key_bytes, chain.identity().public_key_bytes());
+    }
+
+    #[test]
     fn test_save_and_load_global_codebook() {
         let store = TensorStore::new();
 
@@ -1651,6 +2072,72 @@ mod tests {
     }
 
     #[test]
+    fn test_save_global_codebook_with_label() {
+        use tensor_store::{ScalarValue, TensorValue};
+
+        let store = TensorStore::new();
+        let centroids = vec![vec![1.0, 0.0]];
+        let labels = vec!["alpha".to_string()];
+        let global_codebook = GlobalCodebook::from_centroids_with_labels(centroids, labels);
+        let config = ChainConfig::new("node1");
+
+        let chain = TensorChain::with_codebook(
+            store,
+            config,
+            global_codebook,
+            CodebookConfig::default(),
+            ValidationConfig::default(),
+        );
+
+        let count = chain.save_global_codebook().unwrap();
+        assert_eq!(count, 1);
+
+        let data = chain.store().get("_codebook:global:0").unwrap();
+        match data.get("label") {
+            Some(TensorValue::Scalar(ScalarValue::String(label))) => {
+                assert_eq!(label, "alpha");
+            },
+            other => panic!("expected label entry, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_load_global_codebook_meta_edge_cases() {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+
+        let mut meta = TensorData::new();
+        meta.set(
+            "entry_count",
+            TensorValue::Scalar(ScalarValue::String("bad".to_string())),
+        );
+        chain.store().put("_codebook:global:_meta", meta).unwrap();
+        assert!(chain.load_global_codebook().unwrap().is_none());
+
+        let mut meta = TensorData::new();
+        meta.set("entry_count", TensorValue::Scalar(ScalarValue::Int(0)));
+        chain.store().put("_codebook:global:_meta", meta).unwrap();
+        assert!(chain.load_global_codebook().unwrap().is_none());
+
+        let mut meta = TensorData::new();
+        meta.set("entry_count", TensorValue::Scalar(ScalarValue::Int(1)));
+        chain.store().put("_codebook:global:_meta", meta).unwrap();
+        let mut data = TensorData::new();
+        data.set("id", TensorValue::Scalar(ScalarValue::Int(0)));
+        chain.store().put("_codebook:global:0", data).unwrap();
+        assert!(chain.load_global_codebook().unwrap().is_none());
+
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(vec![1.0, 0.0]));
+        chain.store().put("_codebook:global:0", data).unwrap();
+        let loaded = chain.load_global_codebook().unwrap().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.dimension(), 2);
+    }
+
+    #[test]
     fn test_load_global_codebook_empty_store() {
         let store = TensorStore::new();
         let chain = TensorChain::new(store, "node1");
@@ -1675,6 +2162,41 @@ mod tests {
             DEFAULT_EMBEDDING_DIM
         );
         assert_eq!(chain.codebook_manager().global().len(), 0);
+    }
+
+    #[test]
+    fn test_try_load_codebook_from_store_variants() {
+        use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+        let store = TensorStore::new();
+
+        let mut meta = TensorData::new();
+        meta.set(
+            "entry_count",
+            TensorValue::Scalar(ScalarValue::String("bad".to_string())),
+        );
+        store.put("_codebook:global:_meta", meta).unwrap();
+        assert!(TensorChain::try_load_codebook_from_store(&store).is_none());
+
+        let mut meta = TensorData::new();
+        meta.set("entry_count", TensorValue::Scalar(ScalarValue::Int(0)));
+        store.put("_codebook:global:_meta", meta).unwrap();
+        assert!(TensorChain::try_load_codebook_from_store(&store).is_none());
+
+        let mut meta = TensorData::new();
+        meta.set("entry_count", TensorValue::Scalar(ScalarValue::Int(1)));
+        store.put("_codebook:global:_meta", meta).unwrap();
+        let mut data = TensorData::new();
+        data.set("id", TensorValue::Scalar(ScalarValue::Int(0)));
+        store.put("_codebook:global:0", data).unwrap();
+        assert!(TensorChain::try_load_codebook_from_store(&store).is_none());
+
+        let mut data = TensorData::new();
+        data.set("_embedding", TensorValue::Vector(vec![0.0, 1.0]));
+        store.put("_codebook:global:0", data).unwrap();
+        let loaded = TensorChain::try_load_codebook_from_store(&store).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.dimension(), 2);
     }
 
     #[test]
@@ -1743,11 +2265,44 @@ mod tests {
     }
 
     #[test]
+    fn test_commit_with_empty_embedding_produces_no_codes() {
+        let store = TensorStore::new();
+        let chain = TensorChain::new(store, "node1");
+        chain.initialize().unwrap();
+
+        let tx = chain.begin().unwrap();
+        tx.add_operation(Transaction::Put {
+            key: "empty_delta".to_string(),
+            data: vec![1],
+        })
+        .unwrap();
+        tx.set_before_embedding(Vec::new());
+        tx.compute_delta(Vec::new());
+
+        chain.commit(tx).unwrap();
+
+        let block = chain.get_tip().unwrap().unwrap();
+        assert!(block.header.quantized_codes.is_empty());
+    }
+
+    #[test]
     fn test_geometric_routing_config_disabled() {
         let config = GeometricRoutingConfig::disabled();
         assert!(!config.enabled);
         assert!((config.min_similarity - 0.5).abs() < 0.001);
         assert!(config.fallback_to_hash);
+    }
+
+    #[test]
+    fn test_geometric_routing_config_builder() {
+        let config = GeometricRoutingConfig::default()
+            .with_min_similarity(1.5)
+            .without_fallback();
+        assert!((config.min_similarity - 1.0).abs() < f32::EPSILON);
+        assert!(!config.fallback_to_hash);
+
+        let config = GeometricRoutingConfig::default().with_min_similarity(-0.5);
+        assert!((config.min_similarity - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1775,6 +2330,59 @@ mod tests {
     }
 
     #[test]
+    fn test_chain_config_without_geometric_routing() {
+        let config = ChainConfig::new("node1").without_geometric_routing();
+        assert!(!config.geometric_routing.enabled);
+    }
+
+    #[test]
+    fn test_route_by_embedding_with_geometric_membership_and_fallback() {
+        use std::net::{Ipv4Addr, SocketAddr};
+        use std::sync::Arc;
+
+        let store = TensorStore::new();
+        let mut chain = TensorChain::new(store, "node1");
+
+        let local = LocalNodeConfig {
+            node_id: "node1".to_string(),
+            bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        };
+        let cluster_config = ClusterConfig::new("cluster", local)
+            .with_peer("node2", SocketAddr::from((Ipv4Addr::LOCALHOST, 1)))
+            .with_peer("node3", SocketAddr::from((Ipv4Addr::LOCALHOST, 2)));
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let membership = Arc::new(MembershipManager::new(cluster_config, transport));
+        membership.mark_healthy(&"node2".to_string());
+        membership.mark_healthy(&"node3".to_string());
+
+        let geometric = Arc::new(GeometricMembershipManager::with_defaults(Arc::clone(
+            &membership,
+        )));
+        geometric
+            .record_peer_embedding(&"node2".to_string(), SparseVector::from_dense(&[1.0, 0.0]));
+        geometric
+            .record_peer_embedding(&"node3".to_string(), SparseVector::from_dense(&[0.0, 1.0]));
+
+        chain.set_geometric_membership(Arc::clone(&geometric));
+
+        let embedding = SparseVector::from_dense(&[1.0, 0.0]);
+        let routed = chain.route_by_embedding(&embedding);
+        assert_eq!(routed, "node2".to_string());
+
+        // Force fallback to hash by using an embedding dissimilar to known peers.
+        geometric
+            .record_peer_embedding(&"node2".to_string(), SparseVector::from_dense(&[1.0, 0.0]));
+        geometric
+            .record_peer_embedding(&"node3".to_string(), SparseVector::from_dense(&[1.0, 0.0]));
+        let embedding = SparseVector::from_dense(&[0.0, 1.0]);
+        let routed = chain.route_by_embedding(&embedding);
+        let view = geometric.view();
+        assert!(view.nodes.iter().any(|status| status.node_id == routed));
+
+        chain.clear_geometric_membership();
+    }
+
+    #[test]
     fn test_route_by_embedding_disabled() {
         let config =
             ChainConfig::new("node1").with_geometric_routing(GeometricRoutingConfig::disabled());
@@ -1785,7 +2393,7 @@ mod tests {
         let routed = chain.route_by_embedding(&embedding);
 
         // When disabled, should return local node
-        assert_eq!(routed, "node1");
+        assert_eq!(routed, chain.node_id().clone());
     }
 
     #[test]
@@ -1797,7 +2405,7 @@ mod tests {
         let routed = chain.route_by_embedding(&embedding);
 
         // Empty embedding returns local node
-        assert_eq!(routed, "node1");
+        assert_eq!(routed, chain.node_id().clone());
     }
 
     #[test]
@@ -1809,7 +2417,7 @@ mod tests {
         let routed = chain.route_by_embedding(&embedding);
 
         // Without peers, routes to local node
-        assert_eq!(routed, "node1");
+        assert_eq!(routed, chain.node_id().clone());
     }
 
     // ChainMetrics tests

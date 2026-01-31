@@ -1,7 +1,13 @@
 [package]
 name = "tensor_blob"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
+description = "Content-addressable blob storage with streaming and garbage collection"
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }

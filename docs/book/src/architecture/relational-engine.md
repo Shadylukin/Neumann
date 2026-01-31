@@ -70,16 +70,24 @@ flowchart TD
 | Type | Description |
 | --- | --- |
 | `RelationalEngine` | Main engine struct with TensorStore backend |
-| `Schema` | Table schema with column definitions |
+| `RelationalConfig` | Configuration for limits, timeouts, thresholds |
+| `Schema` | Table schema with column definitions and constraints |
 | `Column` | Column name, type, and nullability |
-| `ColumnType` | `Int`, `Float`, `String`, `Bool` |
-| `Value` | Typed value: `Null`, `Int(i64)`, `Float(f64)`, `String(String)`, `Bool(bool)` |
+| `ColumnType` | `Int`, `Float`, `String`, `Bool`, `Bytes`, `Json` |
+| `Value` | Typed value: `Null`, `Int(i64)`, `Float(f64)`, `String(String)`, `Bool(bool)`, `Bytes(Vec<u8>)`, `Json(Value)` |
 | `Row` | Row with ID and ordered column values |
 | `Condition` | Composable filter predicate tree |
-| `RelationalError` | Error variants for table/column/index operations |
+| `Constraint` | Table constraint: `PrimaryKey`, `Unique`, `ForeignKey`, `NotNull` |
+| `ForeignKeyConstraint` | Foreign key definition with referential actions |
+| `ReferentialAction` | `Restrict`, `Cascade`, `SetNull`, `SetDefault`, `NoAction` |
+| `RelationalError` | Error variants for table/column/index/constraint operations |
 | `ColumnData` | Columnar storage for a single column with null bitmap |
 | `SelectionVector` | Bitmap-based row selection for SIMD operations |
 | `OrderedKey` | B-tree index key with total ordering semantics |
+| `StreamingCursor` | Iterator for batch-based query result streaming |
+| `CursorBuilder` | Builder for customizing streaming cursor options |
+| `QueryMetrics` | Query execution metrics for observability |
+| `IndexTracker` | Tracks index hits/misses to detect missing indexes |
 
 ### Column Types
 
@@ -89,6 +97,8 @@ flowchart TD
 | `Float` | `f64` | 8-byte IEEE 754 | 64-bit floating point |
 | `String` | `String` | Dictionary-encoded | UTF-8 string with deduplication |
 | `Bool` | `bool` | Packed bitmap (64 values per u64) | Boolean |
+| `Bytes` | `Vec<u8>` | Raw bytes | Binary data |
+| `Json` | `serde_json::Value` | JSON string | JSON value |
 
 ### Conditions
 
@@ -125,11 +135,32 @@ The special column `_id` filters by row ID and can be indexed.
 | `TableNotFound` | Table does not exist |
 | `TableAlreadyExists` | Creating duplicate table |
 | `ColumnNotFound` | Update references unknown column |
+| `ColumnAlreadyExists` | Column already exists in table |
 | `TypeMismatch` | Value type does not match column type |
 | `NullNotAllowed` | NULL in non-nullable column |
 | `IndexAlreadyExists` | Creating duplicate index |
 | `IndexNotFound` | Dropping non-existent index |
+| `IndexCorrupted` | Index data is corrupted |
 | `StorageError` | Underlying Tensor Store error |
+| `InvalidName` | Invalid table or column name |
+| `SchemaCorrupted` | Schema metadata is corrupted |
+| `TransactionNotFound` | Transaction ID not found |
+| `TransactionInactive` | Transaction already committed/aborted |
+| `LockConflict` | Lock conflict with another transaction |
+| `LockTimeout` | Lock acquisition timed out |
+| `RollbackFailed` | Rollback operation failed |
+| `ResultTooLarge` | Result set exceeds maximum size |
+| `TooManyTables` | Maximum table count exceeded |
+| `TooManyIndexes` | Maximum index count exceeded |
+| `QueryTimeout` | Query execution timed out |
+| `PrimaryKeyViolation` | Primary key constraint violated |
+| `UniqueViolation` | Unique constraint violated |
+| `ForeignKeyViolation` | Foreign key constraint violated on insert/update |
+| `ForeignKeyRestrict` | Foreign key prevents delete/update |
+| `ConstraintNotFound` | Constraint does not exist |
+| `ConstraintAlreadyExists` | Constraint already exists |
+| `ColumnHasConstraint` | Column has constraint preventing operation |
+| `CannotAddColumn` | Cannot add column due to constraint |
 
 ## Storage Model
 
@@ -232,6 +263,80 @@ let count = engine.update(
 
 // DELETE
 let count = engine.delete_rows("users", Condition::Lt("age".into(), Value::Int(18)))?;
+```
+
+### Constraints
+
+The engine supports four constraint types for data integrity:
+
+| Constraint | Description |
+| --- | --- |
+| `PrimaryKey` | Unique + not null, identifies rows uniquely |
+| `Unique` | Values must be unique (NULLs allowed) |
+| `ForeignKey` | References rows in another table |
+| `NotNull` | Column cannot contain NULL values |
+
+```rust
+use relational_engine::{Constraint, ForeignKeyConstraint, ReferentialAction};
+
+// Create table with constraints
+let schema = Schema::with_constraints(
+    vec![
+        Column::new("id", ColumnType::Int),
+        Column::new("email", ColumnType::String),
+        Column::new("dept_id", ColumnType::Int).nullable(),
+    ],
+    vec![
+        Constraint::primary_key("pk_users", vec!["id".to_string()]),
+        Constraint::unique("uq_email", vec!["email".to_string()]),
+    ],
+);
+engine.create_table("users", schema)?;
+
+// Add constraint after table creation
+engine.add_constraint("users", Constraint::not_null("nn_email", "email"))?;
+
+// Add foreign key with referential actions
+let fk = ForeignKeyConstraint::new(
+    "fk_users_dept",
+    vec!["dept_id".to_string()],
+    "departments",
+    vec!["id".to_string()],
+)
+.on_delete(ReferentialAction::SetNull)
+.on_update(ReferentialAction::Cascade);
+engine.add_constraint("users", Constraint::foreign_key(fk))?;
+
+// Get constraints
+let constraints = engine.get_constraints("users")?;
+
+// Drop constraint
+engine.drop_constraint("users", "uq_email")?;
+```
+
+#### Referential Actions
+
+Foreign keys support these actions on delete/update of referenced rows:
+
+| Action | Description |
+| --- | --- |
+| `Restrict` (default) | Prevent the operation |
+| `Cascade` | Cascade to referencing rows |
+| `SetNull` | Set referencing columns to NULL |
+| `SetDefault` | Set referencing columns to default |
+| `NoAction` | Same as Restrict, checked at commit |
+
+### ALTER TABLE Operations
+
+```rust
+// Add a new column (nullable or with default)
+engine.add_column("users", Column::new("phone", ColumnType::String).nullable())?;
+
+// Drop a column (fails if column has constraints)
+engine.drop_column("users", "phone")?;
+
+// Rename a column (updates constraints automatically)
+engine.rename_column("users", "email", "email_address")?;
 ```
 
 ### Joins
@@ -794,14 +899,160 @@ impl RelationalEngine {
 
 ## Configuration
 
-The Relational Engine uses the underlying TensorStore configuration. Key
-internal constants:
+### RelationalConfig
+
+The engine can be configured with `RelationalConfig`:
+
+```rust
+let config = RelationalConfig {
+    max_tables: Some(1000),              // Maximum tables allowed
+    max_indexes_per_table: Some(10),     // Maximum indexes per table
+    max_btree_entries: 10_000_000,       // Maximum B-tree index entries
+    default_query_timeout_ms: Some(5000),// Default query timeout
+    max_query_timeout_ms: Some(300_000), // Maximum allowed timeout (5 min)
+    slow_query_threshold_ms: 100,        // Slow query warning threshold
+    max_query_result_rows: Some(10_000), // Maximum rows per query
+    transaction_timeout_secs: 60,        // Transaction timeout
+    lock_timeout_secs: 30,               // Lock acquisition timeout
+};
+let engine = RelationalEngine::with_config(config);
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `max_tables` | None (unlimited) | Maximum number of tables |
+| `max_indexes_per_table` | None (unlimited) | Maximum indexes per table |
+| `max_btree_entries` | 10,000,000 | Maximum B-tree index entries total |
+| `default_query_timeout_ms` | None | Default timeout for queries |
+| `max_query_timeout_ms` | 300,000 (5 min) | Maximum allowed query timeout |
+| `slow_query_threshold_ms` | 100 | Threshold for slow query warnings |
+| `max_query_result_rows` | None (unlimited) | Maximum rows returned per query |
+| `transaction_timeout_secs` | 60 | Transaction timeout |
+| `lock_timeout_secs` | 30 | Lock acquisition timeout |
+
+### Internal Constants
 
 | Constant | Value | Description |
 | --- | --- | --- |
 | `PARALLEL_THRESHOLD` | 1000 | Minimum rows for parallel operations |
 | Null bitmap sparse threshold | 10% | Use sparse bitmap when nulls < 10% |
 | SIMD vector width | 4 | i64x4/f64x4 operations |
+
+## Observability
+
+The `observability` module provides query metrics, slow query detection, and
+index usage tracking.
+
+### Query Metrics
+
+```rust
+use relational_engine::observability::{QueryMetrics, check_slow_query};
+use std::time::Duration;
+
+let metrics = QueryMetrics::new("users", "select")
+    .with_rows_scanned(10000)
+    .with_rows_returned(50)
+    .with_index("idx_user_id")
+    .with_duration(Duration::from_millis(25));
+
+// Log warning if query exceeds threshold
+check_slow_query(&metrics, 100); // threshold in ms
+```
+
+### Index Tracking
+
+Track index usage to identify missing indexes:
+
+```rust
+use relational_engine::observability::IndexTracker;
+
+let tracker = IndexTracker::new();
+
+// Record when index is used
+tracker.record_hit("users", "id");
+
+// Record when index could have been used but wasn't
+tracker.record_miss("users", "email");
+
+// Get reports of columns needing indexes
+let reports = tracker.report_misses();
+for report in reports {
+    println!(
+        "Table {}, column {}: {} misses, {} hits",
+        report.table, report.column, report.miss_count, report.hit_count
+    );
+}
+
+// Aggregate statistics
+let total_hits = tracker.total_hits();
+let total_misses = tracker.total_misses();
+```
+
+### Slow Query Warnings
+
+The `check_slow_query` function logs a `tracing::warn!` when queries exceed
+the threshold:
+
+```rust
+use relational_engine::observability::{check_slow_query, warn_full_table_scan};
+
+// Warn if query took > 100ms
+check_slow_query(&metrics, 100);
+
+// Warn about full table scans on large tables (> 1000 rows)
+warn_full_table_scan("users", "select", 5000);
+```
+
+## Streaming Cursor API
+
+For large result sets, use streaming cursors to avoid loading all rows into
+memory at once. The cursor fetches rows in configurable batches.
+
+### Basic Usage
+
+```rust
+use relational_engine::{StreamingCursor, Condition};
+
+// Create streaming cursor with default batch size (1000)
+let cursor = engine.select_streaming("users", Condition::True);
+
+// Iterate over results
+for row_result in cursor {
+    let row = row_result?;
+    println!("User: {:?}", row);
+}
+```
+
+### Custom Options
+
+```rust
+// With custom batch size
+let cursor = engine.select_streaming("users", Condition::True)
+    .with_batch_size(100)
+    .with_max_rows(5000);
+
+// Using the builder
+let cursor = engine.select_streaming_builder("users", Condition::True)
+    .batch_size(100)
+    .max_rows(5000)
+    .build();
+
+// Check cursor state
+let mut cursor = engine.select_streaming("users", Condition::True);
+while let Some(row) = cursor.next() {
+    println!("Yielded so far: {}", cursor.rows_yielded());
+}
+println!("Exhausted: {}", cursor.is_exhausted());
+```
+
+### Cursor Methods
+
+| Method | Description |
+| --- | --- |
+| `with_batch_size(n)` | Set rows fetched per batch (default: 1000) |
+| `with_max_rows(n)` | Limit total rows returned |
+| `rows_yielded()` | Number of rows returned so far |
+| `is_exhausted()` | Whether cursor has no more rows |
 
 ## Edge Cases and Gotchas
 
@@ -960,14 +1211,18 @@ HAVING SUM(quantity) > 100;
 | Batch operations | 59x faster bulk inserts |
 | Parallel operations | Rayon-based parallelism for large tables |
 | Dictionary encoding | String column compression |
+| Transactions | Row-level ACID with undo log - see [Transactions](relational-transactions.md) |
+| Constraints | PRIMARY KEY, UNIQUE, FOREIGN KEY, NOT NULL |
+| Foreign Keys | Full referential integrity with CASCADE/SET NULL/RESTRICT |
+| ALTER TABLE | add_column, drop_column, rename_column |
+| Streaming cursors | Memory-efficient iteration over large result sets |
+| Observability | Query metrics, slow query detection, index tracking |
 
 ### Future Considerations
 
 | Feature | Status |
 | --- | --- |
 | Query Optimization | Not implemented |
-| Transactions | Row-level ACID with undo log - see [Transactions](relational-transactions.md) |
-| Foreign Keys | Not implemented |
 | Subqueries | Not implemented |
 | Window Functions | Not implemented |
 | Composite Indexes | Not implemented |

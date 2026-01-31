@@ -23,10 +23,8 @@ cargo doc --no-deps                            # Documentation builds
 
 - Default: 95% minimum line coverage
 - neumann_shell: 88%
-- neumann_parser: 91%
 - tensor_blob: 91%
 - query_router: 92%
-- tensor_chain: 95%
 
 **Code expectations:**
 

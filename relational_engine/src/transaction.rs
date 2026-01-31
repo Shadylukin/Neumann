@@ -220,7 +220,7 @@ impl Deadline {
 
     /// Returns the remaining time in milliseconds, or `None` if no deadline is set.
     #[must_use]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by tests for deadline verification
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn remaining_ms(&self) -> Option<u64> {
@@ -566,22 +566,35 @@ impl TransactionManager {
     }
 
     /// Clean up expired transactions.
+    ///
+    /// Uses a three-phase approach to avoid holding locks during lock release:
+    /// 1. Collect expired transaction IDs
+    /// 2. Release locks (no `DashMap` lock held)
+    /// 3. Remove transactions from the map
     #[instrument(skip(self))]
     pub fn cleanup_expired(&self) -> usize {
-        let before = self.transactions.len();
-        self.transactions.retain(|_, tx| {
-            if tx.is_expired() {
-                self.lock_manager.release(tx.tx_id);
-                false
-            } else {
-                true
-            }
-        });
-        let removed = before - self.transactions.len();
-        if removed > 0 {
-            debug!(count = removed, "cleaned up expired transactions");
+        // Phase 1: Collect expired tx_ids without holding lock during release
+        let expired_ids: Vec<u64> = self
+            .transactions
+            .iter()
+            .filter(|entry| entry.value().is_expired())
+            .map(|entry| *entry.key())
+            .collect();
+
+        // Phase 2: Release locks (no DashMap lock held)
+        for tx_id in &expired_ids {
+            self.lock_manager.release(*tx_id);
         }
-        removed
+
+        // Phase 3: Remove from transactions map
+        for tx_id in &expired_ids {
+            self.transactions.remove(tx_id);
+        }
+
+        if !expired_ids.is_empty() {
+            debug!(count = expired_ids.len(), "cleaned up expired transactions");
+        }
+        expired_ids.len()
     }
 
     /// Clean up expired row locks.
@@ -629,7 +642,8 @@ impl TransactionManager {
 fn now_epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is before UNIX epoch (1970-01-01)")
+        // System clock before UNIX epoch is extremely rare but handled gracefully
+        .unwrap_or(std::time::Duration::ZERO)
         .as_millis() as u64
 }
 

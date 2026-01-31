@@ -150,10 +150,7 @@ fn stress_graph_batch_operations_100_threads() {
                                 labels: vec!["Batch".to_string()],
                                 properties: {
                                     let mut p = HashMap::new();
-                                    p.insert(
-                                        "thread".to_string(),
-                                        PropertyValue::Int(t as i64),
-                                    );
+                                    p.insert("thread".to_string(), PropertyValue::Int(t as i64));
                                     p.insert(
                                         "batch".to_string(),
                                         PropertyValue::Int(batch_idx as i64),
@@ -286,11 +283,7 @@ fn stress_graph_striped_locks_saturation() {
     println!("Target: >100,000 ops/sec, Actual: {throughput:.0}");
 
     // Calculate latency statistics
-    let p99_max = results
-        .iter()
-        .map(|s| s.p99.as_millis())
-        .max()
-        .unwrap_or(0);
+    let p99_max = results.iter().map(|s| s.p99.as_millis()).max().unwrap_or(0);
     println!("Max p99 across threads: {p99_max}ms");
 
     assert_eq!(total, expected, "some operations failed");

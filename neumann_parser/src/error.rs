@@ -30,7 +30,7 @@ pub struct ParseError {
 impl ParseError {
     /// Creates a new parse error.
     #[must_use]
-    pub fn new(kind: ParseErrorKind, span: Span) -> Self {
+    pub const fn new(kind: ParseErrorKind, span: Span) -> Self {
         Self {
             kind,
             span,
@@ -166,7 +166,7 @@ pub struct Errors {
 impl Errors {
     /// Creates an empty error collection.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { errors: Vec::new() }
     }
 
@@ -177,13 +177,13 @@ impl Errors {
 
     /// Returns true if there are no errors.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Returns the number of errors.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.errors.len()
     }
 
@@ -410,5 +410,30 @@ mod tests {
         let formatted = err.format_with_source(source);
         // Should still show at least one caret
         assert!(formatted.contains("^"));
+    }
+
+    #[test]
+    fn test_errors_iter() {
+        let mut errors = Errors::new();
+        errors.push(ParseError::invalid("error 1", Span::from_offsets(0, 5)));
+        errors.push(ParseError::invalid("error 2", Span::from_offsets(10, 15)));
+
+        // Explicitly test iter() method
+        let mut count = 0;
+        for err in errors.iter() {
+            assert!(matches!(err.kind, ParseErrorKind::InvalidSyntax(_)));
+            count += 1;
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_unexpected_eof_display() {
+        let kind = ParseErrorKind::UnexpectedEof {
+            expected: "identifier".to_string(),
+        };
+        let displayed = format!("{}", kind);
+        assert!(displayed.contains("unexpected end of input"));
+        assert!(displayed.contains("identifier"));
     }
 }

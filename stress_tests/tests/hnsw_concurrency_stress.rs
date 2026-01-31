@@ -412,5 +412,8 @@ fn stress_hnsw_recall_under_concurrent_load() {
         avg_recall * 100.0
     );
 
-    println!("PASSED: recall under concurrent load = {:.2}%", avg_recall * 100.0);
+    println!(
+        "PASSED: recall under concurrent load = {:.2}%",
+        avg_recall * 100.0
+    );
 }

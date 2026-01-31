@@ -213,11 +213,7 @@ fn stress_graph_algorithms_40_threads() {
     println!("Write operations: {total_writes}");
 
     // Calculate p99
-    let p99_max = results
-        .iter()
-        .map(|s| s.p99.as_millis())
-        .max()
-        .unwrap_or(0);
+    let p99_max = results.iter().map(|s| s.p99.as_millis()).max().unwrap_or(0);
     println!("Max p99 latency: {p99_max}ms");
 
     // Sample latencies
@@ -228,7 +224,10 @@ fn stress_graph_algorithms_40_threads() {
     // Verify algorithms completed
     assert!(total_pagerank > 0, "no pagerank completions");
     assert!(total_components > 0, "no connected_components completions");
-    assert!(total_betweenness > 0, "no betweenness_centrality completions");
+    assert!(
+        total_betweenness > 0,
+        "no betweenness_centrality completions"
+    );
     assert!(total_writes > 0, "no write operations");
 
     // Verify engine consistency

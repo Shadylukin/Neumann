@@ -26,7 +26,9 @@ fn create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
 
 /// Helper to get or create a node for an entity key.
 fn get_or_create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
-    if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+    if let Ok(nodes) =
+        graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+    {
         if let Some(node) = nodes.first() {
             return node.id;
         }

@@ -36,6 +36,7 @@ pub mod curvature_byzantine;
 pub mod detection_benchmark;
 pub mod hyperbolic;
 pub mod hyperbolic_consensus;
+pub mod hyperbolic_hash;
 pub mod hyperbolic_hnsw;
 pub mod network;
 pub mod proofs;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Graph-based access control using topological path verification.
 
-use std::collections::{HashSet, VecDeque};
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 
 use graph_engine::{Direction, GraphEngine, PropertyValue};
 
@@ -26,7 +26,9 @@ fn ensure_entity_key_index(graph: &GraphEngine) {
 fn get_or_create_entity_node(graph: &GraphEngine, entity_key: &str) -> u64 {
     ensure_entity_key_index(graph);
 
-    if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+    if let Ok(nodes) =
+        graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+    {
         if let Some(node) = nodes.first() {
             return node.id;
         }
@@ -391,7 +393,12 @@ mod tests {
 
         // Create a long chain: node:0 -> node:1 -> ... -> node:10 using allowed MEMBER edges
         for i in 0..10 {
-            add_edge(&graph, &format!("node:{i}"), &format!("node:{}", i + 1), "MEMBER");
+            add_edge(
+                &graph,
+                &format!("node:{i}"),
+                &format!("node:{}", i + 1),
+                "MEMBER",
+            );
         }
 
         // Forward direction works

@@ -10,6 +10,7 @@ documentation.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+readme = "../README.md"
 description = "Checkpoint and rollback system for Neumann database"
 
 [dependencies]

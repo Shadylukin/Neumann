@@ -58,7 +58,7 @@ impl<'a> ExprParser<'a> {
 
     /// Creates a parser from an existing lexer and current token.
     #[must_use]
-    pub fn from_lexer(lexer: Lexer<'a>, current: Token) -> Self {
+    pub const fn from_lexer(lexer: Lexer<'a>, current: Token) -> Self {
         Self {
             lexer,
             current,
@@ -69,13 +69,13 @@ impl<'a> ExprParser<'a> {
 
     /// Returns the source text.
     #[must_use]
-    pub fn source(&self) -> &'a str {
+    pub const fn source(&self) -> &'a str {
         self.lexer.source()
     }
 
     /// Returns the current token.
     #[must_use]
-    pub fn current(&self) -> &Token {
+    pub const fn current(&self) -> &Token {
         &self.current
     }
 
@@ -397,7 +397,7 @@ impl<'a> ExprParser<'a> {
             TokenKind::Ident(s) => s,
             _ => unreachable!(),
         };
-        let ident = Ident::new(name.clone(), token.span);
+        let ident = Ident::new(name, token.span);
 
         // Check for function call
         if self.check(&TokenKind::LParen) {
@@ -625,7 +625,7 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Returns the binary operator for the current token, if any.
-    fn current_binary_op(&self) -> Option<BinaryOp> {
+    const fn current_binary_op(&self) -> Option<BinaryOp> {
         match &self.current.kind {
             TokenKind::Plus => Some(BinaryOp::Add),
             TokenKind::Minus => Some(BinaryOp::Sub),
@@ -652,7 +652,7 @@ impl<'a> ExprParser<'a> {
 }
 
 /// Returns the binding power for infix operators (left and right).
-fn infix_binding_power(op: BinaryOp) -> (u8, u8) {
+const fn infix_binding_power(op: BinaryOp) -> (u8, u8) {
     use BinaryOp::*;
     match op {
         Or => (1, 2),
@@ -668,7 +668,7 @@ fn infix_binding_power(op: BinaryOp) -> (u8, u8) {
 }
 
 /// Returns the binding power for prefix operators.
-fn prefix_binding_power() -> u8 {
+const fn prefix_binding_power() -> u8 {
     19
 }
 
@@ -788,35 +788,26 @@ mod tests {
     fn test_operator_precedence() {
         // 1 + 2 * 3 should parse as 1 + (2 * 3)
         let expr = parse("1 + 2 * 3");
-        if let ExprKind::Binary(lhs, BinaryOp::Add, rhs) = expr.kind {
-            assert!(matches!(lhs.kind, ExprKind::Literal(Literal::Integer(1))));
-            assert!(matches!(rhs.kind, ExprKind::Binary(_, BinaryOp::Mul, _)));
-        } else {
-            panic!("expected binary add");
-        }
+        let ExprKind::Binary(lhs, BinaryOp::Add, rhs) = expr.kind else { panic!("expected binary add") };
+        assert!(matches!(lhs.kind, ExprKind::Literal(Literal::Integer(1))));
+    assert!(matches!(rhs.kind, ExprKind::Binary(_, BinaryOp::Mul, _)));
     }
 
     #[test]
     fn test_left_associativity() {
         // 1 - 2 - 3 should parse as (1 - 2) - 3
         let expr = parse("1 - 2 - 3");
-        if let ExprKind::Binary(lhs, BinaryOp::Sub, rhs) = expr.kind {
-            assert!(matches!(lhs.kind, ExprKind::Binary(_, BinaryOp::Sub, _)));
-            assert!(matches!(rhs.kind, ExprKind::Literal(Literal::Integer(3))));
-        } else {
-            panic!("expected binary sub");
-        }
+        let ExprKind::Binary(lhs, BinaryOp::Sub, rhs) = expr.kind else { panic!("expected binary sub") };
+        assert!(matches!(lhs.kind, ExprKind::Binary(_, BinaryOp::Sub, _)));
+    assert!(matches!(rhs.kind, ExprKind::Literal(Literal::Integer(3))));
     }
 
     #[test]
     fn test_parentheses() {
         // (1 + 2) * 3
         let expr = parse("(1 + 2) * 3");
-        if let ExprKind::Binary(lhs, BinaryOp::Mul, _) = expr.kind {
-            assert!(matches!(lhs.kind, ExprKind::Binary(_, BinaryOp::Add, _)));
-        } else {
-            panic!("expected binary mul");
-        }
+        let ExprKind::Binary(lhs, BinaryOp::Mul, _) = expr.kind else { panic!("expected binary mul") };
+        assert!(matches!(lhs.kind, ExprKind::Binary(_, BinaryOp::Add, _)));
     }
 
     #[test]
@@ -874,46 +865,34 @@ mod tests {
     #[test]
     fn test_function_call() {
         let expr = parse("foo(1, 2, 3)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "foo");
-            assert_eq!(call.args.len(), 3);
-            assert!(!call.distinct);
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "foo");
+    assert_eq!(call.args.len(), 3);
+    assert!(!call.distinct);
     }
 
     #[test]
     fn test_function_no_args() {
         let expr = parse("now()");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "now");
-            assert!(call.args.is_empty());
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "now");
+    assert!(call.args.is_empty());
     }
 
     #[test]
     fn test_aggregate_count() {
         let expr = parse("COUNT(*)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "COUNT");
-            assert_eq!(call.args.len(), 1);
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "COUNT");
+    assert_eq!(call.args.len(), 1);
     }
 
     #[test]
     fn test_aggregate_distinct() {
         let expr = parse("COUNT(DISTINCT id)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "COUNT");
-            assert!(call.distinct);
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "COUNT");
+    assert!(call.distinct);
     }
 
     #[test]
@@ -974,54 +953,39 @@ mod tests {
     #[test]
     fn test_case_simple() {
         let expr = parse("CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END");
-        if let ExprKind::Case(case) = expr.kind {
-            assert!(case.operand.is_some());
-            assert_eq!(case.when_clauses.len(), 2);
-            assert!(case.else_clause.is_some());
-        } else {
-            panic!("expected CASE expression");
-        }
+        let ExprKind::Case(case) = expr.kind else { panic!("expected CASE expression") };
+        assert!(case.operand.is_some());
+    assert_eq!(case.when_clauses.len(), 2);
+    assert!(case.else_clause.is_some());
     }
 
     #[test]
     fn test_case_searched() {
         let expr = parse("CASE WHEN x > 0 THEN 'positive' ELSE 'non-positive' END");
-        if let ExprKind::Case(case) = expr.kind {
-            assert!(case.operand.is_none());
-            assert_eq!(case.when_clauses.len(), 1);
-        } else {
-            panic!("expected CASE expression");
-        }
+        let ExprKind::Case(case) = expr.kind else { panic!("expected CASE expression") };
+        assert!(case.operand.is_none());
+    assert_eq!(case.when_clauses.len(), 1);
     }
 
     #[test]
     fn test_array_literal() {
         let expr = parse("[1, 2, 3]");
-        if let ExprKind::Array(items) = expr.kind {
-            assert_eq!(items.len(), 3);
-        } else {
-            panic!("expected array");
-        }
+        let ExprKind::Array(items) = expr.kind else { panic!("expected array") };
+        assert_eq!(items.len(), 3);
     }
 
     #[test]
     fn test_empty_array() {
         let expr = parse("[]");
-        if let ExprKind::Array(items) = expr.kind {
-            assert!(items.is_empty());
-        } else {
-            panic!("expected array");
-        }
+        let ExprKind::Array(items) = expr.kind else { panic!("expected array") };
+        assert!(items.is_empty());
     }
 
     #[test]
     fn test_tuple() {
         let expr = parse("(1, 2, 3)");
-        if let ExprKind::Tuple(items) = expr.kind {
-            assert_eq!(items.len(), 3);
-        } else {
-            panic!("expected tuple");
-        }
+        let ExprKind::Tuple(items) = expr.kind else { panic!("expected tuple") };
+        assert_eq!(items.len(), 3);
     }
 
     #[test]
@@ -1092,12 +1056,9 @@ mod tests {
     #[test]
     fn test_nested_function_calls() {
         let expr = parse("foo(bar(1), baz(2, 3))");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "foo");
-            assert_eq!(call.args.len(), 2);
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "foo");
+    assert_eq!(call.args.len(), 2);
     }
 
     #[test]
@@ -1238,11 +1199,8 @@ mod tests {
     #[test]
     fn test_empty_tuple() {
         let expr = parse("()");
-        if let ExprKind::Tuple(items) = expr.kind {
-            assert!(items.is_empty());
-        } else {
-            panic!("expected tuple");
-        }
+        let ExprKind::Tuple(items) = expr.kind else { panic!("expected tuple") };
+        assert!(items.is_empty());
     }
 
     // Division and modulo
@@ -1262,41 +1220,29 @@ mod tests {
     #[test]
     fn test_expr_sum() {
         let expr = parse("SUM(x)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "SUM");
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "SUM");
     }
 
     #[test]
     fn test_expr_avg() {
         let expr = parse("AVG(x)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "AVG");
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "AVG");
     }
 
     #[test]
     fn test_expr_min() {
         let expr = parse("MIN(x)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "MIN");
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "MIN");
     }
 
     #[test]
     fn test_expr_max() {
         let expr = parse("MAX(x)");
-        if let ExprKind::Call(call) = expr.kind {
-            assert_eq!(call.name.name, "MAX");
-        } else {
-            panic!("expected function call");
-        }
+        let ExprKind::Call(call) = expr.kind else { panic!("expected function call") };
+        assert_eq!(call.name.name, "MAX");
     }
 
     // Error: CASE with missing parts
@@ -1323,5 +1269,104 @@ mod tests {
         }
         let result = ExprParser::new(&expr).parse_expr();
         assert!(result.is_err());
+    }
+
+    // Coverage: contextual keyword as identifier in expression context
+    #[test]
+    fn test_contextual_keyword_as_identifier() {
+        // "status" is a contextual keyword that can be used as an identifier
+        let expr = parse("status + 1");
+        let ExprKind::Binary(left, BinaryOp::Add, _) = expr.kind else { panic!("expected identifier") };
+        if let ExprKind::Ident(ident) = left.kind {
+        assert_eq!(ident.name, "status");
+        } else {
+            panic!("expected binary");
+        }
+    }
+
+    // Coverage: expression that doesn't consume all input
+    #[test]
+    fn test_expression_extra_input_error() {
+        let err = parse_err("1 + 2 extra_garbage");
+        assert!(err.to_string().contains("end of expression"));
+    }
+
+    // Coverage: CASE without ELSE
+    #[test]
+    fn test_case_without_else() {
+        let expr = parse("CASE WHEN x > 0 THEN 'positive' END");
+        let ExprKind::Case(case) = expr.kind else { panic!("expected CASE") };
+        assert!(case.else_clause.is_none());
+    assert_eq!(case.when_clauses.len(), 1);
+    }
+
+    // Coverage: error - CASE without proper structure
+    #[test]
+    fn test_case_bad_structure_error() {
+        let err = parse_err("CASE END");
+        // Error will be about expecting an expression or WHEN
+        assert!(err.to_string().len() > 0);
+    }
+
+    // Coverage: simple CASE (with operand)
+    #[test]
+    fn test_simple_case_expression() {
+        let expr = parse("CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END");
+        let ExprKind::Case(case) = expr.kind else { panic!("expected CASE") };
+        assert!(case.operand.is_some());
+    assert_eq!(case.when_clauses.len(), 2);
+    assert!(case.else_clause.is_some());
+    }
+
+    // Coverage: multiple NOT precedence
+    #[test]
+    fn test_multiple_not() {
+        let expr = parse("NOT NOT TRUE");
+        let ExprKind::Unary(UnaryOp::Not, inner) = expr.kind else { panic!("expected inner NOT") };
+        if let ExprKind::Unary(UnaryOp::Not, _) = inner.kind {
+        // Double NOT parsed correctly
+        } else {
+            panic!("expected NOT");
+        }
+    }
+
+    // Coverage: XOR operator
+    #[test]
+    fn test_xor_expression() {
+        let expr = parse("a ^ b");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::BitXor, _)));
+    }
+
+    // Coverage: shift operators
+    #[test]
+    fn test_shift_left() {
+        let expr = parse("a << 2");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Shl, _)));
+    }
+
+    #[test]
+    fn test_shift_right() {
+        let expr = parse("a >> 2");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::Shr, _)));
+    }
+
+    // Coverage: bitwise operations
+    #[test]
+    fn test_bitwise_and() {
+        let expr = parse("a & b");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::BitAnd, _)));
+    }
+
+    #[test]
+    fn test_bitwise_or() {
+        let expr = parse("a | b");
+        assert!(matches!(expr.kind, ExprKind::Binary(_, BinaryOp::BitOr, _)));
+    }
+
+    // Coverage: CASE without WHEN clause error
+    #[test]
+    fn test_case_without_when_error() {
+        let err = parse_err("CASE 1 END");
+        assert!(err.to_string().contains("CASE requires at least one WHEN clause"));
     }
 }

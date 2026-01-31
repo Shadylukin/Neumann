@@ -35,6 +35,11 @@ use crate::{
     network::{Message, PeerConfig, Transport},
 };
 
+#[cfg(feature = "tls")]
+type PeerIdentity = super::tls::VerifiedPeerIdentity;
+#[cfg(not(feature = "tls"))]
+type PeerIdentity = ();
+
 /// TCP-based transport implementation.
 pub struct TcpTransport {
     /// Local node ID.
@@ -99,6 +104,8 @@ impl TcpTransport {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(()); // Already running
         }
+
+        self.config.validate_security()?;
 
         // Bind listener
         let listener = TcpListener::bind(self.config.bind_address).await?;
@@ -175,20 +182,30 @@ impl TcpTransport {
 
         // Upgrade to TLS if configured (server-side)
         #[cfg(feature = "tls")]
-        let stream: DynStream = {
+        let (stream, peer_identity): (DynStream, Option<PeerIdentity>) = {
             if let Some(tls_config) = &config.tls {
-                box_stream(super::tls::wrap_server(stream, tls_config).await?)
+                let (tls_stream, peer_identity) =
+                    super::tls::wrap_server_with_identity(stream, tls_config).await?;
+                (box_stream(tls_stream), peer_identity)
             } else {
-                box_stream(stream)
+                (box_stream(stream), None)
             }
         };
 
         #[cfg(not(feature = "tls"))]
-        let stream: DynStream = box_stream(stream);
+        let (stream, peer_identity): (DynStream, Option<PeerIdentity>) = (box_stream(stream), None);
 
         // Use a helper to work with the boxed stream
-        Self::complete_incoming_handshake(stream, addr, connections, incoming_tx, config, local_id)
-            .await
+        Self::complete_incoming_handshake(
+            stream,
+            addr,
+            connections,
+            incoming_tx,
+            config,
+            local_id,
+            peer_identity,
+        )
+        .await
     }
 
     /// Complete incoming connection handshake with an already-wrapped stream.
@@ -199,6 +216,7 @@ impl TcpTransport {
         incoming_tx: mpsc::Sender<(NodeId, Message)>,
         config: TcpTransportConfig,
         local_id: NodeId,
+        peer_identity: Option<PeerIdentity>,
     ) -> TcpResult<()> {
         // Read peer's handshake
         let peer_handshake = timeout(
@@ -212,6 +230,22 @@ impl TcpTransport {
         })??;
 
         let peer_id = peer_handshake.node_id.clone();
+
+        if config.security.mode.requires_node_id_verification() && peer_identity.is_none() {
+            return Err(TcpError::HandshakeFailed(
+                "NodeId verification required but peer identity missing".to_string(),
+            ));
+        }
+
+        #[cfg(feature = "tls")]
+        if let Some(identity) = peer_identity {
+            if identity.node_id != peer_id {
+                return Err(TcpError::HandshakeFailed(format!(
+                    "NodeId mismatch: handshake={}, cert={}",
+                    peer_id, identity.node_id
+                )));
+            }
+        }
 
         // Send our handshake with timeout, including compression capability if enabled
         let our_handshake = if config.compression.enabled {
@@ -652,6 +686,13 @@ mod tests {
     use tokio::time::sleep;
 
     use super::*;
+    use crate::tcp::SecurityMode;
+
+    fn dev_config(node_id: &str, addr: SocketAddr) -> TcpTransportConfig {
+        TcpTransportConfig::new(node_id, addr)
+            .with_security_mode(SecurityMode::Development)
+            .with_require_tls(false)
+    }
 
     #[test]
     fn test_transport_stats_default() {
@@ -690,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_creation() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         assert_eq!(transport.local_id(), "node1");
@@ -700,7 +741,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_start_stop() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Start
@@ -722,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_to_unknown_peer() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         let result = transport
@@ -735,7 +776,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_disconnect_unknown_peer() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Disconnecting unknown peer should succeed (no-op)
@@ -745,7 +786,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_stats() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         let stats = transport.stats();
@@ -755,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_invalid_address() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         let result = transport
@@ -773,10 +814,10 @@ mod tests {
     #[tokio::test]
     async fn test_two_node_communication() {
         // Create two transports
-        let config1 = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config1 = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport1 = Arc::new(TcpTransport::new(config1));
 
-        let config2 = TcpTransportConfig::new("node2", "127.0.0.1:0".parse().unwrap());
+        let config2 = dev_config("node2", "127.0.0.1:0".parse().unwrap());
         let transport2 = Arc::new(TcpTransport::new(config2));
 
         // Start both
@@ -798,7 +839,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_no_peers() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Broadcasting with no peers should succeed (no-op)
@@ -808,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_connection_refused() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap())
             .with_connect_timeout(Duration::from_millis(100)); // Short timeout
         let transport = TcpTransport::new(config);
 
@@ -838,7 +879,7 @@ mod tests {
         let stream = stream.unwrap();
 
         // Test configuration
-        let config = TcpTransportConfig::new("test", addr);
+        let config = dev_config("test", addr);
         let result = TcpTransport::configure_socket(&stream, &config);
         assert!(result.is_ok());
     }
@@ -857,7 +898,7 @@ mod tests {
         let stream = stream.unwrap();
 
         // Test configuration with keepalive
-        let config = TcpTransportConfig::new("test", addr)
+        let config = dev_config("test", addr)
             .with_keepalive(true)
             .with_keepalive_interval_secs(30);
         let result = TcpTransport::configure_socket(&stream, &config);
@@ -987,7 +1028,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_transport_drop() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         transport.start().await.unwrap();
@@ -1000,7 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recv_channel_closed() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
 
         // Create transport and immediately drop to close internal channel
         let (incoming_tx, incoming_rx) = mpsc::channel::<(NodeId, Message)>(1);
@@ -1029,7 +1070,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_direct_no_connection() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Create a pool without any connections
@@ -1046,7 +1087,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_with_failing_peer() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Create a pool without connections (will fail to send)
@@ -1061,7 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_peers_after_pool_creation() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         assert!(transport.peers().is_empty());
@@ -1082,7 +1123,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_disconnect_removes_pool() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Create a pool
@@ -1098,7 +1139,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stats_with_pools() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Create pools (without connections)
@@ -1117,7 +1158,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_incoming_connection() {
         // Create a transport that will accept connections
-        let config = TcpTransportConfig::new("server", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("server", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config.clone());
         transport.start().await.unwrap();
 
@@ -1181,7 +1222,7 @@ mod tests {
         });
 
         // Client: create transport and try to connect
-        let config = TcpTransportConfig::new("client", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("client", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Create pool expecting "expected_peer"
@@ -1209,7 +1250,7 @@ mod tests {
     #[tokio::test]
     async fn test_connect_to_peer_timeout() {
         // Use a non-routable IP to trigger timeout
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap())
             .with_connect_timeout(Duration::from_millis(50)); // Very short timeout
         let transport = TcpTransport::new(config);
 
@@ -1228,7 +1269,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_connection_flow() {
         // Start server transport
-        let server_config = TcpTransportConfig::new("server", "127.0.0.1:0".parse().unwrap());
+        let server_config = dev_config("server", "127.0.0.1:0".parse().unwrap());
         let server = Arc::new(TcpTransport::new(server_config));
 
         // We need to manually set up a listening server for this test
@@ -1238,7 +1279,7 @@ mod tests {
         // Spawn server accept task
         let server_connections = server.connections.clone();
         let server_incoming_tx = server.incoming_tx.clone();
-        let server_config_clone = TcpTransportConfig::new("server", server_addr);
+        let server_config_clone = dev_config("server", server_addr);
 
         tokio::spawn(async move {
             while let Ok((stream, addr)) = listener.accept().await {
@@ -1261,7 +1302,7 @@ mod tests {
         });
 
         // Create client transport
-        let client_config = TcpTransportConfig::new("client", "127.0.0.1:0".parse().unwrap());
+        let client_config = dev_config("client", "127.0.0.1:0".parse().unwrap());
         let client = TcpTransport::new(client_config);
 
         // Connect client to server
@@ -1329,7 +1370,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bound_addr() {
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap());
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap());
         let transport = TcpTransport::new(config);
 
         // Before start, bound_addr is None
@@ -1351,7 +1392,7 @@ mod tests {
     #[tokio::test]
     async fn test_accept_loop_with_real_connection() {
         // Start server transport
-        let server_config = TcpTransportConfig::new("server", "127.0.0.1:0".parse().unwrap());
+        let server_config = dev_config("server", "127.0.0.1:0".parse().unwrap());
         let server = Arc::new(TcpTransport::new(server_config));
         server.start().await.unwrap();
 
@@ -1385,7 +1426,7 @@ mod tests {
     #[tokio::test]
     async fn test_accept_loop_message_flow() {
         // Start server transport
-        let server_config = TcpTransportConfig::new("server", "127.0.0.1:0".parse().unwrap());
+        let server_config = dev_config("server", "127.0.0.1:0".parse().unwrap());
         let server = Arc::new(TcpTransport::new(server_config));
         server.start().await.unwrap();
 
@@ -1527,12 +1568,11 @@ mod tests {
         use crate::tcp::rate_limit::RateLimitConfig;
 
         // Create transport with very aggressive rate limiting
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
-            .with_rate_limit(
-                RateLimitConfig::default()
-                    .with_bucket_size(3)
-                    .with_refill_rate(0.0),
-            );
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap()).with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(3)
+                .with_refill_rate(0.0),
+        );
         let transport = TcpTransport::new(config);
 
         // Create a pool without connections (will fail to send)
@@ -1563,7 +1603,7 @@ mod tests {
         use crate::tcp::rate_limit::RateLimitConfig;
 
         // Create transport with rate limiting disabled
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap())
             .with_rate_limit(RateLimitConfig::disabled());
         let transport = TcpTransport::new(config);
 
@@ -1587,12 +1627,11 @@ mod tests {
     async fn test_disconnect_clears_rate_limit() {
         use crate::tcp::rate_limit::RateLimitConfig;
 
-        let config = TcpTransportConfig::new("node1", "127.0.0.1:0".parse().unwrap())
-            .with_rate_limit(
-                RateLimitConfig::default()
-                    .with_bucket_size(2)
-                    .with_refill_rate(0.0),
-            );
+        let config = dev_config("node1", "127.0.0.1:0".parse().unwrap()).with_rate_limit(
+            RateLimitConfig::default()
+                .with_bucket_size(2)
+                .with_refill_rate(0.0),
+        );
         let transport = TcpTransport::new(config);
 
         // Create a pool

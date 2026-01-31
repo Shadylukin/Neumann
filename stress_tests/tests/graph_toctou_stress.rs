@@ -86,10 +86,8 @@ fn stress_concurrent_check_then_modify() {
                             {
                                 // Step 3: Increment and update (TOCTOU use)
                                 let mut new_props = HashMap::new();
-                                new_props.insert(
-                                    "counter".to_string(),
-                                    PropertyValue::Int(current + 1),
-                                );
+                                new_props
+                                    .insert("counter".to_string(), PropertyValue::Int(current + 1));
                                 new_props.insert(
                                     "last_thread".to_string(),
                                     PropertyValue::Int(t as i64),
@@ -150,9 +148,7 @@ fn stress_concurrent_check_then_modify() {
 
         // Due to TOCTOU, final_counter may be less than tracked_increments
         // because multiple threads may read same value then write same incremented value
-        println!(
-            "  Node {idx}: counter={final_counter}, tracked_increments={tracked_increments}"
-        );
+        println!("  Node {idx}: counter={final_counter}, tracked_increments={tracked_increments}");
 
         // Counter should be positive (some updates succeeded)
         assert!(

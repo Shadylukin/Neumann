@@ -552,9 +552,8 @@ fn bench_concurrent_neighbor_lookup(c: &mut Criterion) {
                         let hub = engine.create_node("Hub", HashMap::new()).unwrap();
 
                         for i in 0..1000 {
-                            let spoke = engine
-                                .create_node("Spoke", create_props(i as i64))
-                                .unwrap();
+                            let spoke =
+                                engine.create_node("Spoke", create_props(i as i64)).unwrap();
                             engine
                                 .create_edge(hub, spoke, "CONNECTED", HashMap::new(), true)
                                 .unwrap();
@@ -646,14 +645,8 @@ fn bench_concurrent_traversal(c: &mut Criterion) {
                                     bar.wait();
                                     for _ in 0..traversals_per_thread {
                                         black_box(
-                                            eng.traverse(
-                                                root,
-                                                Direction::Outgoing,
-                                                11,
-                                                None,
-                                                None,
-                                            )
-                                            .unwrap(),
+                                            eng.traverse(root, Direction::Outgoing, 11, None, None)
+                                                .unwrap(),
                                         );
                                     }
                                 })
@@ -850,8 +843,7 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
                             let from = node_ids[i % 10000];
                             let to = node_ids[(i * 7 + 13) % 10000];
                             if from != to {
-                                let _ =
-                                    engine.create_edge(from, to, "LINK", HashMap::new(), true);
+                                let _ = engine.create_edge(from, to, "LINK", HashMap::new(), true);
                             }
                         }
 
@@ -873,7 +865,7 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
                                                 // Get node
                                                 let idx = (t * 1000 + i * 10) % 10000;
                                                 black_box(eng.get_node(ids[idx]).unwrap());
-                                            }
+                                            },
                                             1 => {
                                                 // Get neighbors
                                                 let idx = (t * 1000 + i * 10) % 10000;
@@ -886,7 +878,7 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
                                                     )
                                                     .unwrap(),
                                                 );
-                                            }
+                                            },
                                             2 => {
                                                 // Update node
                                                 let idx = (t * 1000 + i * 10) % 10000;
@@ -896,7 +888,7 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
                                                     PropertyValue::Int(i as i64),
                                                 );
                                                 eng.update_node(ids[idx], None, props).unwrap();
-                                            }
+                                            },
                                             _ => {
                                                 // Create edge
                                                 let from = ids[(t * 1000 + i * 10) % 10000];
@@ -908,7 +900,7 @@ fn bench_concurrent_large_graph(c: &mut Criterion) {
                                                     HashMap::new(),
                                                     true,
                                                 );
-                                            }
+                                            },
                                         }
                                     }
                                 })

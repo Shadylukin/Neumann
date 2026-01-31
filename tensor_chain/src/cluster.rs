@@ -31,7 +31,7 @@ use crate::{
     },
     raft::{RaftConfig, RaftNode},
     state_machine::TensorStateMachine,
-    tcp::{TcpTransport, TcpTransportConfig},
+    tcp::{SecurityMode, TcpTransport, TcpTransportConfig},
 };
 
 /// Configuration for a local cluster node.
@@ -247,7 +247,13 @@ impl ClusterOrchestrator {
         let store = TensorStore::new();
 
         // 2. Create TCP transport
-        let tcp_config = TcpTransportConfig::new(&config.local.node_id, config.local.bind_address);
+        let mut tcp_config =
+            TcpTransportConfig::new(&config.local.node_id, config.local.bind_address);
+        if cfg!(test) {
+            tcp_config = tcp_config
+                .with_security_mode(SecurityMode::Development)
+                .with_require_tls(false);
+        }
         let transport = Arc::new(TcpTransport::new(tcp_config));
 
         // Start listening

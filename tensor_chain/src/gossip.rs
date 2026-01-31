@@ -2904,4 +2904,233 @@ mod tests {
         let gossip_states = state.states_for_gossip(2);
         assert_eq!(gossip_states.len(), 2);
     }
+
+    #[test]
+    fn test_gossip_signing_and_handle_signed() {
+        use crate::network::MemoryTransport;
+
+        let identity = Arc::new(Identity::generate());
+        let node_id = identity.node_id();
+        let transport = Arc::new(MemoryTransport::new(node_id.clone()));
+        let registry = Arc::new(ValidatorRegistry::new());
+        registry.register(&identity);
+        let tracker = Arc::new(SequenceTracker::new());
+
+        let mut config = GossipConfig::default();
+        config.require_signatures = true;
+
+        let manager = GossipMembershipManager::with_signing(
+            node_id.clone(),
+            config,
+            transport,
+            Arc::clone(&identity),
+            Arc::clone(&registry),
+            Arc::clone(&tracker),
+        );
+
+        assert!(manager.require_signatures());
+
+        let msg = GossipMessage::Alive {
+            node_id: node_id.clone(),
+            incarnation: 1,
+        };
+        let signed = SignedGossipMessage::new(&identity, &msg, 1).unwrap();
+        manager.handle_signed_gossip(signed).unwrap();
+
+        let wrapped = manager.create_gossip_message(GossipMessage::PingReq {
+            origin: node_id.clone(),
+            target: "peer".to_string(),
+            sequence: 42,
+        });
+        assert!(matches!(wrapped, Message::SignedGossip(_)));
+    }
+
+    #[test]
+    fn test_handle_signed_gossip_without_signing_configured() {
+        use crate::network::MemoryTransport;
+
+        let identity = Identity::generate();
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+
+        let msg = GossipMessage::Alive {
+            node_id: "node1".to_string(),
+            incarnation: 1,
+        };
+        let signed = SignedGossipMessage::new(&identity, &msg, 1).unwrap();
+        let result = manager.handle_signed_gossip(signed);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_gossip_run_shutdown() {
+        use crate::network::MemoryTransport;
+
+        let mut config = GossipConfig::default();
+        config.gossip_interval_ms = 10;
+        let manager = Arc::new(GossipMembershipManager::new(
+            "node1".to_string(),
+            config,
+            Arc::new(MemoryTransport::new("node1".to_string())),
+        ));
+
+        let runner = Arc::clone(&manager);
+        let handle = tokio::spawn(async move { runner.run().await });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        manager.shutdown();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("gossip shutdown timed out");
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[test]
+    fn test_gossip_heal_progress_tracking() {
+        use crate::network::MemoryTransport;
+
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            GossipConfig::default(),
+            Arc::new(MemoryTransport::new("node1".to_string())),
+        );
+
+        {
+            let mut state = manager.state.write();
+            state.update_local("node2".to_string(), NodeHealth::Failed, 0);
+        }
+
+        manager.record_heal_progress(&"node2".to_string(), None);
+        manager.record_heal_progress(&"node2".to_string(), None);
+
+        let confirmed = manager.is_heal_confirmed(&"node2".to_string(), 2);
+        assert!(confirmed.is_some());
+
+        manager.reset_heal_progress(&"node2".to_string());
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 1).is_none());
+
+        let healing = manager.healing_nodes();
+        assert!(healing.iter().any(|(id, _)| id == "node2"));
+
+        manager.clear_heal_progress(&"node2".to_string());
+        assert!(manager.is_heal_confirmed(&"node2".to_string(), 1).is_none());
+
+        manager.record_heal_progress(&"node2".to_string(), Some(Instant::now()));
+        manager.clear_heal_progress_batch(&["node2".to_string()]);
+        assert!(manager.healing_nodes().is_empty());
+    }
+
+    #[test]
+    fn test_select_gossip_targets_geometric() {
+        use crate::network::MemoryTransport;
+        use crate::{ClusterConfig, LocalNodeConfig, MembershipManager};
+        use std::net::{Ipv4Addr, SocketAddr};
+        use tensor_store::SparseVector;
+
+        let local = LocalNodeConfig {
+            node_id: "node1".to_string(),
+            bind_address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        };
+        let cluster_config = ClusterConfig::new("cluster", local)
+            .with_peer("node2", SocketAddr::from((Ipv4Addr::LOCALHOST, 1)));
+        let transport: Arc<dyn Transport> = Arc::new(MemoryTransport::new("node1".to_string()));
+        let membership = Arc::new(MembershipManager::new(
+            cluster_config,
+            Arc::clone(&transport),
+        ));
+        membership.mark_healthy(&"node2".to_string());
+
+        let geo = Arc::new(GeometricMembershipManager::with_defaults(Arc::clone(
+            &membership,
+        )));
+        geo.update_local_embedding(SparseVector::from_dense(&[1.0, 0.0]));
+        geo.record_peer_embedding(&"node2".to_string(), SparseVector::from_dense(&[1.0, 0.0]));
+
+        let mut config = GossipConfig::default();
+        config.geometric_routing = true;
+        let manager =
+            GossipMembershipManager::with_geometric("node1".to_string(), config, transport, geo);
+
+        let targets = manager.select_gossip_targets(1);
+        assert_eq!(targets, vec!["node2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_gossip_round_sends_sync() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let peer_transport = MemoryTransport::new("node2".to_string());
+        transport.connect_to("node2".to_string(), peer_transport.sender());
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+        manager.add_peer("node2".to_string());
+
+        manager.gossip_round().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_ping_req_and_ack_flow() {
+        use crate::network::MemoryTransport;
+
+        let transport = Arc::new(MemoryTransport::new("node1".to_string()));
+        let origin_transport = MemoryTransport::new("origin".to_string());
+        let target_transport = MemoryTransport::new("target".to_string());
+
+        transport.connect_to("origin".to_string(), origin_transport.sender());
+        transport.connect_to("target".to_string(), target_transport.sender());
+
+        let manager =
+            GossipMembershipManager::new("node1".to_string(), GossipConfig::default(), transport);
+        manager.add_peer("origin".to_string());
+        manager.add_peer("target".to_string());
+
+        manager.handle_gossip(GossipMessage::PingReq {
+            origin: "origin".to_string(),
+            target: "target".to_string(),
+            sequence: 7,
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        manager.handle_gossip(GossipMessage::PingAck {
+            origin: "origin".to_string(),
+            target: "target".to_string(),
+            sequence: 7,
+            success: true,
+        });
+    }
+
+    #[test]
+    fn test_expire_suspicions_marks_failed() {
+        use crate::network::MemoryTransport;
+
+        let mut config = GossipConfig::default();
+        config.suspicion_timeout_ms = 0;
+
+        let manager = GossipMembershipManager::new(
+            "node1".to_string(),
+            config,
+            Arc::new(MemoryTransport::new("node1".to_string())),
+        );
+        manager.add_peer("node2".to_string());
+
+        manager.suspicions.write().insert(
+            "node2".to_string(),
+            PendingSuspicion {
+                started_at: Instant::now(),
+                incarnation: 0,
+            },
+        );
+
+        manager.expire_suspicions();
+        assert!(matches!(
+            manager.node_state(&"node2".to_string()).map(|s| s.health),
+            Some(NodeHealth::Failed | NodeHealth::Degraded)
+        ));
+    }
 }

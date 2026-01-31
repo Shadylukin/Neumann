@@ -96,13 +96,7 @@ fn stress_concurrent_aggregation_during_writes() {
                     let mut props = HashMap::new();
                     props.insert("writer".to_string(), PropertyValue::Int(t as i64));
                     if eng
-                        .create_edge(
-                            spokes[from_idx],
-                            spokes[to_idx],
-                            "DYNAMIC",
-                            props,
-                            true,
-                        )
+                        .create_edge(spokes[from_idx], spokes[to_idx], "DYNAMIC", props, true)
                         .is_ok()
                     {
                         creates.fetch_add(1, Ordering::Relaxed);

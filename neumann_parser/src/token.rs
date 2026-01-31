@@ -40,7 +40,7 @@ impl Token {
     /// Returns true if this token is a keyword.
     #[inline]
     #[must_use]
-    pub fn is_keyword(&self) -> bool {
+    pub const fn is_keyword(&self) -> bool {
         self.kind.is_keyword()
     }
 }
@@ -386,7 +386,7 @@ impl TokenKind {
     /// Returns true if this is a keyword token.
     #[must_use]
     #[allow(clippy::too_many_lines)] // Exhaustive keyword list
-    pub fn is_keyword(&self) -> bool {
+    pub const fn is_keyword(&self) -> bool {
         use TokenKind::*;
         matches!(
             self,
@@ -603,28 +603,28 @@ impl TokenKind {
 
     /// Returns true if this is a comparison operator.
     #[must_use]
-    pub fn is_comparison(&self) -> bool {
+    pub const fn is_comparison(&self) -> bool {
         use TokenKind::*;
         matches!(self, Eq | Ne | Lt | Le | Gt | Ge)
     }
 
     /// Returns true if this is an arithmetic operator.
     #[must_use]
-    pub fn is_arithmetic(&self) -> bool {
+    pub const fn is_arithmetic(&self) -> bool {
         use TokenKind::*;
         matches!(self, Plus | Minus | Star | Slash | Percent)
     }
 
     /// Returns true if this is a logical operator.
     #[must_use]
-    pub fn is_logical(&self) -> bool {
+    pub const fn is_logical(&self) -> bool {
         use TokenKind::*;
         matches!(self, And | Or | Not)
     }
 
     /// Returns true if this is a literal.
     #[must_use]
-    pub fn is_literal(&self) -> bool {
+    pub const fn is_literal(&self) -> bool {
         use TokenKind::*;
         matches!(
             self,
@@ -635,7 +635,7 @@ impl TokenKind {
     /// Returns true if this keyword can be used as an identifier in expression contexts.
     /// These are domain-specific keywords that don't conflict with SQL syntax.
     #[must_use]
-    pub fn is_contextual_keyword(&self) -> bool {
+    pub const fn is_contextual_keyword(&self) -> bool {
         use TokenKind::*;
         matches!(
             self,
@@ -660,242 +660,242 @@ impl TokenKind {
     /// Returns the keyword for a string, if it matches.
     #[must_use]
     #[allow(clippy::too_many_lines)] // Exhaustive keyword mapping
-    pub fn keyword_from_str(s: &str) -> Option<TokenKind> {
+    pub fn keyword_from_str(s: &str) -> Option<Self> {
         let upper = s.to_uppercase();
         Some(match upper.as_str() {
             // SQL keywords
-            "SELECT" => TokenKind::Select,
-            "FROM" => TokenKind::From,
-            "WHERE" => TokenKind::Where,
-            "AND" => TokenKind::And,
-            "OR" => TokenKind::Or,
-            "NOT" => TokenKind::Not,
-            "IN" => TokenKind::In,
-            "IS" => TokenKind::Is,
-            "LIKE" => TokenKind::Like,
-            "BETWEEN" => TokenKind::Between,
-            "CASE" => TokenKind::Case,
-            "WHEN" => TokenKind::When,
-            "THEN" => TokenKind::Then,
-            "ELSE" => TokenKind::Else,
-            "END" => TokenKind::End,
-            "AS" => TokenKind::As,
-            "ON" => TokenKind::On,
-            "JOIN" => TokenKind::Join,
-            "LEFT" => TokenKind::Left,
-            "RIGHT" => TokenKind::Right,
-            "INNER" => TokenKind::Inner,
-            "OUTER" => TokenKind::Outer,
-            "FULL" => TokenKind::Full,
-            "CROSS" => TokenKind::Cross,
-            "NATURAL" => TokenKind::Natural,
-            "USING" => TokenKind::Using,
-            "GROUP" => TokenKind::Group,
-            "BY" => TokenKind::By,
-            "HAVING" => TokenKind::Having,
-            "ORDER" => TokenKind::Order,
-            "ASC" => TokenKind::Asc,
-            "DESC" => TokenKind::Desc,
-            "NULLS" => TokenKind::Nulls,
-            "FIRST" => TokenKind::First,
-            "LAST" => TokenKind::Last,
-            "LIMIT" => TokenKind::Limit,
-            "OFFSET" => TokenKind::Offset,
-            "DISTINCT" => TokenKind::Distinct,
-            "ALL" => TokenKind::All,
-            "UNION" => TokenKind::Union,
-            "INTERSECT" => TokenKind::Intersect,
-            "EXCEPT" => TokenKind::Except,
-            "EXISTS" => TokenKind::Exists,
-            "CAST" => TokenKind::Cast,
-            "ANY" => TokenKind::Any,
-            "INSERT" => TokenKind::Insert,
-            "INTO" => TokenKind::Into,
-            "VALUES" => TokenKind::Values,
-            "UPDATE" => TokenKind::Update,
-            "SET" => TokenKind::Set,
-            "DELETE" => TokenKind::Delete,
-            "CREATE" => TokenKind::Create,
-            "TABLE" => TokenKind::Table,
-            "INDEX" => TokenKind::Index,
-            "DROP" => TokenKind::Drop,
-            "ALTER" => TokenKind::Alter,
-            "ADD" => TokenKind::Add,
-            "COLUMN" => TokenKind::Column,
-            "PRIMARY" => TokenKind::Primary,
-            "KEY" => TokenKind::Key,
-            "FOREIGN" => TokenKind::Foreign,
-            "REFERENCES" => TokenKind::References,
-            "UNIQUE" => TokenKind::Unique,
-            "CHECK" => TokenKind::Check,
-            "DEFAULT" => TokenKind::Default,
-            "CONSTRAINT" => TokenKind::Constraint,
-            "CASCADE" => TokenKind::Cascade,
-            "RESTRICT" => TokenKind::Restrict,
-            "IF" => TokenKind::If,
-            "SHOW" => TokenKind::Show,
-            "TABLES" => TokenKind::Tables,
-            "DESCRIBE" => TokenKind::Describe,
-            "EMBEDDINGS" => TokenKind::Embeddings,
-            "TRUE" => TokenKind::True,
-            "FALSE" => TokenKind::False,
-            "NULL" => TokenKind::Null,
+            "SELECT" => Self::Select,
+            "FROM" => Self::From,
+            "WHERE" => Self::Where,
+            "AND" => Self::And,
+            "OR" => Self::Or,
+            "NOT" => Self::Not,
+            "IN" => Self::In,
+            "IS" => Self::Is,
+            "LIKE" => Self::Like,
+            "BETWEEN" => Self::Between,
+            "CASE" => Self::Case,
+            "WHEN" => Self::When,
+            "THEN" => Self::Then,
+            "ELSE" => Self::Else,
+            "END" => Self::End,
+            "AS" => Self::As,
+            "ON" => Self::On,
+            "JOIN" => Self::Join,
+            "LEFT" => Self::Left,
+            "RIGHT" => Self::Right,
+            "INNER" => Self::Inner,
+            "OUTER" => Self::Outer,
+            "FULL" => Self::Full,
+            "CROSS" => Self::Cross,
+            "NATURAL" => Self::Natural,
+            "USING" => Self::Using,
+            "GROUP" => Self::Group,
+            "BY" => Self::By,
+            "HAVING" => Self::Having,
+            "ORDER" => Self::Order,
+            "ASC" => Self::Asc,
+            "DESC" => Self::Desc,
+            "NULLS" => Self::Nulls,
+            "FIRST" => Self::First,
+            "LAST" => Self::Last,
+            "LIMIT" => Self::Limit,
+            "OFFSET" => Self::Offset,
+            "DISTINCT" => Self::Distinct,
+            "ALL" => Self::All,
+            "UNION" => Self::Union,
+            "INTERSECT" => Self::Intersect,
+            "EXCEPT" => Self::Except,
+            "EXISTS" => Self::Exists,
+            "CAST" => Self::Cast,
+            "ANY" => Self::Any,
+            "INSERT" => Self::Insert,
+            "INTO" => Self::Into,
+            "VALUES" => Self::Values,
+            "UPDATE" => Self::Update,
+            "SET" => Self::Set,
+            "DELETE" => Self::Delete,
+            "CREATE" => Self::Create,
+            "TABLE" => Self::Table,
+            "INDEX" => Self::Index,
+            "DROP" => Self::Drop,
+            "ALTER" => Self::Alter,
+            "ADD" => Self::Add,
+            "COLUMN" => Self::Column,
+            "PRIMARY" => Self::Primary,
+            "KEY" => Self::Key,
+            "FOREIGN" => Self::Foreign,
+            "REFERENCES" => Self::References,
+            "UNIQUE" => Self::Unique,
+            "CHECK" => Self::Check,
+            "DEFAULT" => Self::Default,
+            "CONSTRAINT" => Self::Constraint,
+            "CASCADE" => Self::Cascade,
+            "RESTRICT" => Self::Restrict,
+            "IF" => Self::If,
+            "SHOW" => Self::Show,
+            "TABLES" => Self::Tables,
+            "DESCRIBE" => Self::Describe,
+            "EMBEDDINGS" => Self::Embeddings,
+            "TRUE" => Self::True,
+            "FALSE" => Self::False,
+            "NULL" => Self::Null,
 
             // Type keywords
-            "INT" => TokenKind::Int,
-            "INTEGER" => TokenKind::Integer_,
-            "BIGINT" => TokenKind::Bigint,
-            "SMALLINT" => TokenKind::Smallint,
-            "FLOAT" => TokenKind::Float_,
-            "DOUBLE" => TokenKind::Double,
-            "REAL" => TokenKind::Real,
-            "DECIMAL" => TokenKind::Decimal,
-            "NUMERIC" => TokenKind::Numeric,
-            "VARCHAR" => TokenKind::Varchar,
-            "CHAR" => TokenKind::Char,
-            "TEXT" => TokenKind::Text,
-            "BOOLEAN" => TokenKind::Boolean,
-            "DATE" => TokenKind::Date,
-            "TIME" => TokenKind::Time,
-            "TIMESTAMP" => TokenKind::Timestamp,
-            "BLOB" => TokenKind::Blob,
+            "INT" => Self::Int,
+            "INTEGER" => Self::Integer_,
+            "BIGINT" => Self::Bigint,
+            "SMALLINT" => Self::Smallint,
+            "FLOAT" => Self::Float_,
+            "DOUBLE" => Self::Double,
+            "REAL" => Self::Real,
+            "DECIMAL" => Self::Decimal,
+            "NUMERIC" => Self::Numeric,
+            "VARCHAR" => Self::Varchar,
+            "CHAR" => Self::Char,
+            "TEXT" => Self::Text,
+            "BOOLEAN" => Self::Boolean,
+            "DATE" => Self::Date,
+            "TIME" => Self::Time,
+            "TIMESTAMP" => Self::Timestamp,
+            "BLOB" => Self::Blob,
 
             // Aggregates
-            "COUNT" => TokenKind::Count,
-            "SUM" => TokenKind::Sum,
-            "AVG" => TokenKind::Avg,
-            "MIN" => TokenKind::Min,
-            "MAX" => TokenKind::Max,
+            "COUNT" => Self::Count,
+            "SUM" => Self::Sum,
+            "AVG" => Self::Avg,
+            "MIN" => Self::Min,
+            "MAX" => Self::Max,
 
             // Graph keywords
-            "NODE" => TokenKind::Node,
-            "EDGE" => TokenKind::Edge,
-            "NEIGHBORS" => TokenKind::Neighbors,
-            "PATH" => TokenKind::Path,
-            "GET" => TokenKind::Get,
-            "LIST" => TokenKind::List,
-            "STORE" => TokenKind::Store,
-            "OUTGOING" => TokenKind::Outgoing,
-            "INCOMING" => TokenKind::Incoming,
-            "BOTH" => TokenKind::Both,
-            "SHORTEST" => TokenKind::Shortest,
-            "PROPERTIES" => TokenKind::Properties,
-            "LABEL" => TokenKind::Label,
-            "VERTEX" => TokenKind::Vertex,
-            "VERTICES" => TokenKind::Vertices,
-            "EDGES" => TokenKind::Edges,
+            "NODE" => Self::Node,
+            "EDGE" => Self::Edge,
+            "NEIGHBORS" => Self::Neighbors,
+            "PATH" => Self::Path,
+            "GET" => Self::Get,
+            "LIST" => Self::List,
+            "STORE" => Self::Store,
+            "OUTGOING" => Self::Outgoing,
+            "INCOMING" => Self::Incoming,
+            "BOTH" => Self::Both,
+            "SHORTEST" => Self::Shortest,
+            "PROPERTIES" => Self::Properties,
+            "LABEL" => Self::Label,
+            "VERTEX" => Self::Vertex,
+            "VERTICES" => Self::Vertices,
+            "EDGES" => Self::Edges,
 
             // Vector keywords
-            "EMBED" => TokenKind::Embed,
-            "SIMILAR" => TokenKind::Similar,
-            "VECTOR" => TokenKind::Vector,
-            "EMBEDDING" => TokenKind::Embedding,
-            "DIMENSION" => TokenKind::Dimension,
-            "DISTANCE" => TokenKind::Distance,
-            "COSINE" => TokenKind::Cosine,
-            "EUCLIDEAN" => TokenKind::Euclidean,
-            "DOT_PRODUCT" | "DOTPRODUCT" => TokenKind::DotProduct,
-            "BUILD" => TokenKind::Build,
-            "BATCH" => TokenKind::Batch,
+            "EMBED" => Self::Embed,
+            "SIMILAR" => Self::Similar,
+            "VECTOR" => Self::Vector,
+            "EMBEDDING" => Self::Embedding,
+            "DIMENSION" => Self::Dimension,
+            "DISTANCE" => Self::Distance,
+            "COSINE" => Self::Cosine,
+            "EUCLIDEAN" => Self::Euclidean,
+            "DOT_PRODUCT" | "DOTPRODUCT" => Self::DotProduct,
+            "BUILD" => Self::Build,
+            "BATCH" => Self::Batch,
 
             // Unified keywords
-            "FIND" => TokenKind::Find,
-            "WITH" => TokenKind::With,
-            "RETURN" => TokenKind::Return,
-            "MATCH" => TokenKind::Match,
-            "ENTITY" => TokenKind::Entity,
-            "CONNECTED" => TokenKind::Connected,
-            "ROWS" => TokenKind::Rows,
+            "FIND" => Self::Find,
+            "WITH" => Self::With,
+            "RETURN" => Self::Return,
+            "MATCH" => Self::Match,
+            "ENTITY" => Self::Entity,
+            "CONNECTED" => Self::Connected,
+            "ROWS" => Self::Rows,
 
             // Vault keywords
-            "VAULT" => TokenKind::Vault,
-            "GRANT" => TokenKind::Grant,
-            "REVOKE" => TokenKind::Revoke,
-            "ROTATE" => TokenKind::Rotate,
+            "VAULT" => Self::Vault,
+            "GRANT" => Self::Grant,
+            "REVOKE" => Self::Revoke,
+            "ROTATE" => Self::Rotate,
 
             // Cache keywords
-            "CACHE" => TokenKind::Cache,
-            "INIT" => TokenKind::Init,
-            "STATS" => TokenKind::Stats,
-            "CLEAR" => TokenKind::Clear,
-            "EVICT" => TokenKind::Evict,
-            "PUT" => TokenKind::Put,
-            "SEMANTIC" => TokenKind::Semantic,
-            "THRESHOLD" => TokenKind::Threshold,
+            "CACHE" => Self::Cache,
+            "INIT" => Self::Init,
+            "STATS" => Self::Stats,
+            "CLEAR" => Self::Clear,
+            "EVICT" => Self::Evict,
+            "PUT" => Self::Put,
+            "SEMANTIC" => Self::Semantic,
+            "THRESHOLD" => Self::Threshold,
 
             // Checkpoint keywords
-            "CHECKPOINT" => TokenKind::Checkpoint,
-            "CHECKPOINTS" => TokenKind::Checkpoints,
-            "ROLLBACK" => TokenKind::Rollback,
+            "CHECKPOINT" => Self::Checkpoint,
+            "CHECKPOINTS" => Self::Checkpoints,
+            "ROLLBACK" => Self::Rollback,
 
             // Chain keywords
-            "CHAIN" => TokenKind::Chain,
-            "BEGIN" => TokenKind::Begin,
-            "COMMIT" => TokenKind::Commit,
-            "TRANSACTION" => TokenKind::Transaction,
-            "HISTORY" => TokenKind::History,
-            "DRIFT" => TokenKind::Drift,
-            "CODEBOOK" => TokenKind::Codebook,
-            "GLOBAL" => TokenKind::Global,
-            "LOCAL" => TokenKind::Local,
-            "ANALYZE" => TokenKind::Analyze,
-            "HEIGHT" => TokenKind::Height,
-            "TRANSITIONS" => TokenKind::Transitions,
-            "TIP" => TokenKind::Tip,
-            "BLOCK" => TokenKind::Block,
+            "CHAIN" => Self::Chain,
+            "BEGIN" => Self::Begin,
+            "COMMIT" => Self::Commit,
+            "TRANSACTION" => Self::Transaction,
+            "HISTORY" => Self::History,
+            "DRIFT" => Self::Drift,
+            "CODEBOOK" => Self::Codebook,
+            "GLOBAL" => Self::Global,
+            "LOCAL" => Self::Local,
+            "ANALYZE" => Self::Analyze,
+            "HEIGHT" => Self::Height,
+            "TRANSITIONS" => Self::Transitions,
+            "TIP" => Self::Tip,
+            "BLOCK" => Self::Block,
 
             // Cluster keywords
-            "CLUSTER" => TokenKind::Cluster,
-            "CONNECT" => TokenKind::Connect,
-            "DISCONNECT" => TokenKind::Disconnect,
-            "STATUS" => TokenKind::Status,
-            "NODES" => TokenKind::Nodes,
-            "LEADER" => TokenKind::Leader,
+            "CLUSTER" => Self::Cluster,
+            "CONNECT" => Self::Connect,
+            "DISCONNECT" => Self::Disconnect,
+            "STATUS" => Self::Status,
+            "NODES" => Self::Nodes,
+            "LEADER" => Self::Leader,
 
             // Blob storage keywords
-            "BLOBS" => TokenKind::Blobs,
-            "INFO" => TokenKind::Info,
-            "LINK" => TokenKind::Link,
-            "UNLINK" => TokenKind::Unlink,
-            "LINKS" => TokenKind::Links,
-            "TAG" => TokenKind::Tag,
-            "UNTAG" => TokenKind::Untag,
-            "VERIFY" => TokenKind::Verify,
-            "GC" => TokenKind::Gc,
-            "REPAIR" => TokenKind::Repair,
-            "TO" => TokenKind::To,
-            "FOR" => TokenKind::For,
-            "META" => TokenKind::Meta,
-            "ARTIFACTS" => TokenKind::Artifacts,
+            "BLOBS" => Self::Blobs,
+            "INFO" => Self::Info,
+            "LINK" => Self::Link,
+            "UNLINK" => Self::Unlink,
+            "LINKS" => Self::Links,
+            "TAG" => Self::Tag,
+            "UNTAG" => Self::Untag,
+            "VERIFY" => Self::Verify,
+            "GC" => Self::Gc,
+            "REPAIR" => Self::Repair,
+            "TO" => Self::To,
+            "FOR" => Self::For,
+            "META" => Self::Meta,
+            "ARTIFACTS" => Self::Artifacts,
 
             // Graph algorithm keywords
-            "PAGERANK" => TokenKind::PageRank,
-            "BETWEENNESS" => TokenKind::Betweenness,
-            "CLOSENESS" => TokenKind::Closeness,
-            "EIGENVECTOR" => TokenKind::Eigenvector,
-            "CENTRALITY" => TokenKind::Centrality,
-            "LOUVAIN" => TokenKind::Louvain,
-            "COMMUNITIES" => TokenKind::Communities,
-            "PROPAGATION" => TokenKind::Propagation,
-            "DAMPING" => TokenKind::Damping,
-            "TOLERANCE" => TokenKind::Tolerance,
-            "ITERATIONS" => TokenKind::Iterations,
-            "SAMPLING" => TokenKind::Sampling,
-            "RESOLUTION" => TokenKind::Resolution,
-            "PASSES" => TokenKind::Passes,
+            "PAGERANK" => Self::PageRank,
+            "BETWEENNESS" => Self::Betweenness,
+            "CLOSENESS" => Self::Closeness,
+            "EIGENVECTOR" => Self::Eigenvector,
+            "CENTRALITY" => Self::Centrality,
+            "LOUVAIN" => Self::Louvain,
+            "COMMUNITIES" => Self::Communities,
+            "PROPAGATION" => Self::Propagation,
+            "DAMPING" => Self::Damping,
+            "TOLERANCE" => Self::Tolerance,
+            "ITERATIONS" => Self::Iterations,
+            "SAMPLING" => Self::Sampling,
+            "RESOLUTION" => Self::Resolution,
+            "PASSES" => Self::Passes,
 
             // Graph extended keywords
-            "WEIGHTED" => TokenKind::Weighted,
-            "VARIABLE" => TokenKind::Variable,
-            "HOPS" => TokenKind::Hops,
-            "DEPTH" => TokenKind::Depth,
-            "SKIP" => TokenKind::Skip,
-            "TOTAL" => TokenKind::Total,
-            "PATTERN" => TokenKind::Pattern,
-            "AGGREGATE" => TokenKind::Aggregate,
-            "PROPERTY" => TokenKind::Property,
-            "TYPE" => TokenKind::Type,
-            "GRAPH" => TokenKind::Graph,
+            "WEIGHTED" => Self::Weighted,
+            "VARIABLE" => Self::Variable,
+            "HOPS" => Self::Hops,
+            "DEPTH" => Self::Depth,
+            "SKIP" => Self::Skip,
+            "TOTAL" => Self::Total,
+            "PATTERN" => Self::Pattern,
+            "AGGREGATE" => Self::Aggregate,
+            "PROPERTY" => Self::Property,
+            "TYPE" => Self::Type,
+            "GRAPH" => Self::Graph,
 
             _ => return None,
         })
@@ -904,7 +904,7 @@ impl TokenKind {
     /// Returns a string representation of the token kind.
     #[must_use]
     #[allow(clippy::too_many_lines)] // Exhaustive token mapping
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         use TokenKind::*;
         match self {
             Ident(_) => "identifier",
@@ -1166,11 +1166,11 @@ impl TokenKind {
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TokenKind::Ident(s) => write!(f, "{}", s),
-            TokenKind::Integer(n) => write!(f, "{}", n),
-            TokenKind::Float(n) => write!(f, "{}", n),
-            TokenKind::String(s) => write!(f, "'{}'", s),
-            TokenKind::Error(e) => write!(f, "error: {}", e),
+            Self::Ident(s) => write!(f, "{}", s),
+            Self::Integer(n) => write!(f, "{}", n),
+            Self::Float(n) => write!(f, "{}", n),
+            Self::String(s) => write!(f, "'{}'", s),
+            Self::Error(e) => write!(f, "error: {}", e),
             _ => write!(f, "{}", self.as_str()),
         }
     }
@@ -1477,6 +1477,93 @@ mod tests {
 
         // Special
         assert_eq!(TokenKind::Error("x".into()).as_str(), "error");
+
+        // Additional keywords not covered above
+        assert_eq!(TokenKind::Cast.as_str(), "CAST");
+        assert_eq!(TokenKind::Show.as_str(), "SHOW");
+        assert_eq!(TokenKind::Tables.as_str(), "TABLES");
+        assert_eq!(TokenKind::Describe.as_str(), "DESCRIBE");
+        assert_eq!(TokenKind::Embeddings.as_str(), "EMBEDDINGS");
+        assert_eq!(TokenKind::Build.as_str(), "BUILD");
+        assert_eq!(TokenKind::Batch.as_str(), "BATCH");
+        assert_eq!(TokenKind::Entity.as_str(), "ENTITY");
+        assert_eq!(TokenKind::Connected.as_str(), "CONNECTED");
+        assert_eq!(TokenKind::Rows.as_str(), "ROWS");
+        assert_eq!(TokenKind::Vault.as_str(), "VAULT");
+        assert_eq!(TokenKind::Grant.as_str(), "GRANT");
+        assert_eq!(TokenKind::Revoke.as_str(), "REVOKE");
+        assert_eq!(TokenKind::Rotate.as_str(), "ROTATE");
+        assert_eq!(TokenKind::Semantic.as_str(), "SEMANTIC");
+        assert_eq!(TokenKind::Threshold.as_str(), "THRESHOLD");
+        assert_eq!(TokenKind::Checkpoint.as_str(), "CHECKPOINT");
+        assert_eq!(TokenKind::Checkpoints.as_str(), "CHECKPOINTS");
+        assert_eq!(TokenKind::Rollback.as_str(), "ROLLBACK");
+        assert_eq!(TokenKind::Chain.as_str(), "CHAIN");
+        assert_eq!(TokenKind::Begin.as_str(), "BEGIN");
+        assert_eq!(TokenKind::Commit.as_str(), "COMMIT");
+        assert_eq!(TokenKind::Transaction.as_str(), "TRANSACTION");
+        assert_eq!(TokenKind::History.as_str(), "HISTORY");
+        assert_eq!(TokenKind::Drift.as_str(), "DRIFT");
+        assert_eq!(TokenKind::Codebook.as_str(), "CODEBOOK");
+        assert_eq!(TokenKind::Global.as_str(), "GLOBAL");
+        assert_eq!(TokenKind::Local.as_str(), "LOCAL");
+        assert_eq!(TokenKind::Analyze.as_str(), "ANALYZE");
+        assert_eq!(TokenKind::Height.as_str(), "HEIGHT");
+        assert_eq!(TokenKind::Transitions.as_str(), "TRANSITIONS");
+        assert_eq!(TokenKind::Tip.as_str(), "TIP");
+        assert_eq!(TokenKind::Block.as_str(), "BLOCK");
+        assert_eq!(TokenKind::Cluster.as_str(), "CLUSTER");
+        assert_eq!(TokenKind::Connect.as_str(), "CONNECT");
+        assert_eq!(TokenKind::Disconnect.as_str(), "DISCONNECT");
+        assert_eq!(TokenKind::Status.as_str(), "STATUS");
+        assert_eq!(TokenKind::Nodes.as_str(), "NODES");
+        assert_eq!(TokenKind::Leader.as_str(), "LEADER");
+        assert_eq!(TokenKind::Blobs.as_str(), "BLOBS");
+        assert_eq!(TokenKind::Info.as_str(), "INFO");
+        assert_eq!(TokenKind::Link.as_str(), "LINK");
+        assert_eq!(TokenKind::Unlink.as_str(), "UNLINK");
+        assert_eq!(TokenKind::Links.as_str(), "LINKS");
+        assert_eq!(TokenKind::Tag.as_str(), "TAG");
+        assert_eq!(TokenKind::Untag.as_str(), "UNTAG");
+        assert_eq!(TokenKind::Verify.as_str(), "VERIFY");
+        assert_eq!(TokenKind::Gc.as_str(), "GC");
+        assert_eq!(TokenKind::Repair.as_str(), "REPAIR");
+        assert_eq!(TokenKind::To.as_str(), "TO");
+        assert_eq!(TokenKind::For.as_str(), "FOR");
+        assert_eq!(TokenKind::Meta.as_str(), "META");
+        assert_eq!(TokenKind::Artifacts.as_str(), "ARTIFACTS");
+
+        // Graph algorithm keywords
+        assert_eq!(TokenKind::PageRank.as_str(), "PAGERANK");
+        assert_eq!(TokenKind::Betweenness.as_str(), "BETWEENNESS");
+        assert_eq!(TokenKind::Closeness.as_str(), "CLOSENESS");
+        assert_eq!(TokenKind::Eigenvector.as_str(), "EIGENVECTOR");
+        assert_eq!(TokenKind::Centrality.as_str(), "CENTRALITY");
+        assert_eq!(TokenKind::Louvain.as_str(), "LOUVAIN");
+        assert_eq!(TokenKind::Communities.as_str(), "COMMUNITIES");
+        assert_eq!(TokenKind::Propagation.as_str(), "PROPAGATION");
+        assert_eq!(TokenKind::Damping.as_str(), "DAMPING");
+        assert_eq!(TokenKind::Tolerance.as_str(), "TOLERANCE");
+        assert_eq!(TokenKind::Iterations.as_str(), "ITERATIONS");
+        assert_eq!(TokenKind::Sampling.as_str(), "SAMPLING");
+        assert_eq!(TokenKind::Resolution.as_str(), "RESOLUTION");
+        assert_eq!(TokenKind::Passes.as_str(), "PASSES");
+        assert_eq!(TokenKind::Property.as_str(), "PROPERTY");
+        assert_eq!(TokenKind::Type.as_str(), "TYPE");
+        assert_eq!(TokenKind::Aggregate.as_str(), "AGGREGATE");
+        assert_eq!(TokenKind::Graph.as_str(), "GRAPH");
+
+        // Additional tokens for full coverage
+        assert_eq!(TokenKind::Get.as_str(), "GET");
+        assert_eq!(TokenKind::List.as_str(), "LIST");
+        assert_eq!(TokenKind::Store.as_str(), "STORE");
+        assert_eq!(TokenKind::Weighted.as_str(), "WEIGHTED");
+        assert_eq!(TokenKind::Variable.as_str(), "VARIABLE");
+        assert_eq!(TokenKind::Hops.as_str(), "HOPS");
+        assert_eq!(TokenKind::Depth.as_str(), "DEPTH");
+        assert_eq!(TokenKind::Skip.as_str(), "SKIP");
+        assert_eq!(TokenKind::Total.as_str(), "TOTAL");
+        assert_eq!(TokenKind::Pattern.as_str(), "PATTERN");
     }
 
     #[test]
@@ -1564,5 +1651,200 @@ mod tests {
             TokenKind::keyword_from_str("DOTPRODUCT"),
             Some(TokenKind::DotProduct)
         );
+    }
+
+    #[test]
+    fn test_keyword_from_str_comprehensive() {
+        // SQL Keywords
+        assert!(TokenKind::keyword_from_str("FROM").is_some());
+        assert!(TokenKind::keyword_from_str("WHERE").is_some());
+        assert!(TokenKind::keyword_from_str("AND").is_some());
+        assert!(TokenKind::keyword_from_str("OR").is_some());
+        assert!(TokenKind::keyword_from_str("NOT").is_some());
+        assert!(TokenKind::keyword_from_str("IN").is_some());
+        assert!(TokenKind::keyword_from_str("IS").is_some());
+        assert!(TokenKind::keyword_from_str("LIKE").is_some());
+        assert!(TokenKind::keyword_from_str("BETWEEN").is_some());
+        assert!(TokenKind::keyword_from_str("CASE").is_some());
+        assert!(TokenKind::keyword_from_str("WHEN").is_some());
+        assert!(TokenKind::keyword_from_str("THEN").is_some());
+        assert!(TokenKind::keyword_from_str("ELSE").is_some());
+        assert!(TokenKind::keyword_from_str("END").is_some());
+        assert!(TokenKind::keyword_from_str("AS").is_some());
+        assert!(TokenKind::keyword_from_str("ON").is_some());
+        assert!(TokenKind::keyword_from_str("LEFT").is_some());
+        assert!(TokenKind::keyword_from_str("RIGHT").is_some());
+        assert!(TokenKind::keyword_from_str("INNER").is_some());
+        assert!(TokenKind::keyword_from_str("OUTER").is_some());
+        assert!(TokenKind::keyword_from_str("FULL").is_some());
+        assert!(TokenKind::keyword_from_str("CROSS").is_some());
+        assert!(TokenKind::keyword_from_str("NATURAL").is_some());
+        assert!(TokenKind::keyword_from_str("USING").is_some());
+        assert!(TokenKind::keyword_from_str("GROUP").is_some());
+        assert!(TokenKind::keyword_from_str("BY").is_some());
+        assert!(TokenKind::keyword_from_str("HAVING").is_some());
+        assert!(TokenKind::keyword_from_str("ORDER").is_some());
+        assert!(TokenKind::keyword_from_str("ASC").is_some());
+        assert!(TokenKind::keyword_from_str("DESC").is_some());
+        assert!(TokenKind::keyword_from_str("NULLS").is_some());
+        assert!(TokenKind::keyword_from_str("FIRST").is_some());
+        assert!(TokenKind::keyword_from_str("LAST").is_some());
+        assert!(TokenKind::keyword_from_str("LIMIT").is_some());
+        assert!(TokenKind::keyword_from_str("OFFSET").is_some());
+        assert!(TokenKind::keyword_from_str("DISTINCT").is_some());
+        assert!(TokenKind::keyword_from_str("ALL").is_some());
+        assert!(TokenKind::keyword_from_str("INTERSECT").is_some());
+        assert!(TokenKind::keyword_from_str("EXCEPT").is_some());
+        assert!(TokenKind::keyword_from_str("EXISTS").is_some());
+        assert!(TokenKind::keyword_from_str("CAST").is_some());
+        assert!(TokenKind::keyword_from_str("ANY").is_some());
+        assert!(TokenKind::keyword_from_str("INTO").is_some());
+        assert!(TokenKind::keyword_from_str("VALUES").is_some());
+        assert!(TokenKind::keyword_from_str("SET").is_some());
+        assert!(TokenKind::keyword_from_str("TABLE").is_some());
+        assert!(TokenKind::keyword_from_str("INDEX").is_some());
+        assert!(TokenKind::keyword_from_str("ALTER").is_some());
+        assert!(TokenKind::keyword_from_str("ADD").is_some());
+        assert!(TokenKind::keyword_from_str("COLUMN").is_some());
+        assert!(TokenKind::keyword_from_str("PRIMARY").is_some());
+        assert!(TokenKind::keyword_from_str("KEY").is_some());
+        assert!(TokenKind::keyword_from_str("FOREIGN").is_some());
+        assert!(TokenKind::keyword_from_str("REFERENCES").is_some());
+        assert!(TokenKind::keyword_from_str("UNIQUE").is_some());
+        assert!(TokenKind::keyword_from_str("CHECK").is_some());
+        assert!(TokenKind::keyword_from_str("DEFAULT").is_some());
+        assert!(TokenKind::keyword_from_str("CONSTRAINT").is_some());
+        assert!(TokenKind::keyword_from_str("CASCADE").is_some());
+        assert!(TokenKind::keyword_from_str("RESTRICT").is_some());
+        assert!(TokenKind::keyword_from_str("IF").is_some());
+        assert!(TokenKind::keyword_from_str("SHOW").is_some());
+        assert!(TokenKind::keyword_from_str("TABLES").is_some());
+        assert!(TokenKind::keyword_from_str("DESCRIBE").is_some());
+        assert!(TokenKind::keyword_from_str("EMBEDDINGS").is_some());
+        assert!(TokenKind::keyword_from_str("TRUE").is_some());
+        assert!(TokenKind::keyword_from_str("FALSE").is_some());
+        assert!(TokenKind::keyword_from_str("NULL").is_some());
+        // Type keywords
+        assert!(TokenKind::keyword_from_str("INTEGER").is_some());
+        assert!(TokenKind::keyword_from_str("BIGINT").is_some());
+        assert!(TokenKind::keyword_from_str("SMALLINT").is_some());
+        assert!(TokenKind::keyword_from_str("FLOAT").is_some());
+        assert!(TokenKind::keyword_from_str("DOUBLE").is_some());
+        assert!(TokenKind::keyword_from_str("REAL").is_some());
+        assert!(TokenKind::keyword_from_str("DECIMAL").is_some());
+        assert!(TokenKind::keyword_from_str("NUMERIC").is_some());
+        assert!(TokenKind::keyword_from_str("CHAR").is_some());
+        assert!(TokenKind::keyword_from_str("TEXT").is_some());
+        assert!(TokenKind::keyword_from_str("DATE").is_some());
+        assert!(TokenKind::keyword_from_str("TIME").is_some());
+        assert!(TokenKind::keyword_from_str("TIMESTAMP").is_some());
+        assert!(TokenKind::keyword_from_str("BLOB").is_some());
+        // Graph keywords
+        assert!(TokenKind::keyword_from_str("GET").is_some());
+        assert!(TokenKind::keyword_from_str("LIST").is_some());
+        assert!(TokenKind::keyword_from_str("STORE").is_some());
+        assert!(TokenKind::keyword_from_str("OUTGOING").is_some());
+        assert!(TokenKind::keyword_from_str("INCOMING").is_some());
+        assert!(TokenKind::keyword_from_str("BOTH").is_some());
+        assert!(TokenKind::keyword_from_str("SHORTEST").is_some());
+        assert!(TokenKind::keyword_from_str("PROPERTIES").is_some());
+        assert!(TokenKind::keyword_from_str("LABEL").is_some());
+        assert!(TokenKind::keyword_from_str("VERTEX").is_some());
+        assert!(TokenKind::keyword_from_str("VERTICES").is_some());
+        assert!(TokenKind::keyword_from_str("EDGES").is_some());
+        // Vector keywords
+        assert!(TokenKind::keyword_from_str("VECTOR").is_some());
+        assert!(TokenKind::keyword_from_str("EMBEDDING").is_some());
+        assert!(TokenKind::keyword_from_str("DIMENSION").is_some());
+        assert!(TokenKind::keyword_from_str("DISTANCE").is_some());
+        assert!(TokenKind::keyword_from_str("EUCLIDEAN").is_some());
+        assert!(TokenKind::keyword_from_str("BUILD").is_some());
+        assert!(TokenKind::keyword_from_str("BATCH").is_some());
+        // Aggregates
+        assert!(TokenKind::keyword_from_str("MIN").is_some());
+        assert!(TokenKind::keyword_from_str("MAX").is_some());
+        // Unified keywords
+        assert!(TokenKind::keyword_from_str("WITH").is_some());
+        // Chain keywords
+        assert!(TokenKind::keyword_from_str("BEGIN").is_some());
+        assert!(TokenKind::keyword_from_str("COMMIT").is_some());
+        assert!(TokenKind::keyword_from_str("ROLLBACK").is_some());
+        assert!(TokenKind::keyword_from_str("CHAIN").is_some());
+        assert!(TokenKind::keyword_from_str("TRANSACTION").is_some());
+        assert!(TokenKind::keyword_from_str("HISTORY").is_some());
+        assert!(TokenKind::keyword_from_str("DRIFT").is_some());
+        assert!(TokenKind::keyword_from_str("HEIGHT").is_some());
+        assert!(TokenKind::keyword_from_str("TIP").is_some());
+        assert!(TokenKind::keyword_from_str("BLOCK").is_some());
+        assert!(TokenKind::keyword_from_str("VERIFY").is_some());
+        assert!(TokenKind::keyword_from_str("CODEBOOK").is_some());
+        assert!(TokenKind::keyword_from_str("GLOBAL").is_some());
+        assert!(TokenKind::keyword_from_str("LOCAL").is_some());
+        assert!(TokenKind::keyword_from_str("TRANSITIONS").is_some());
+        assert!(TokenKind::keyword_from_str("ANALYZE").is_some());
+        // Entity keywords
+        assert!(TokenKind::keyword_from_str("ENTITY").is_some());
+        assert!(TokenKind::keyword_from_str("CONNECT").is_some());
+        assert!(TokenKind::keyword_from_str("CONNECTED").is_some());
+        assert!(TokenKind::keyword_from_str("TO").is_some());
+        // Blob keywords
+        assert!(TokenKind::keyword_from_str("BLOBS").is_some());
+        assert!(TokenKind::keyword_from_str("LINK").is_some());
+        assert!(TokenKind::keyword_from_str("UNLINK").is_some());
+        assert!(TokenKind::keyword_from_str("LINKS").is_some());
+        assert!(TokenKind::keyword_from_str("TAG").is_some());
+        assert!(TokenKind::keyword_from_str("UNTAG").is_some());
+        assert!(TokenKind::keyword_from_str("INFO").is_some());
+        assert!(TokenKind::keyword_from_str("GC").is_some());
+        assert!(TokenKind::keyword_from_str("REPAIR").is_some());
+        assert!(TokenKind::keyword_from_str("META").is_some());
+        assert!(TokenKind::keyword_from_str("ARTIFACTS").is_some());
+        // Checkpoint keywords
+        assert!(TokenKind::keyword_from_str("CHECKPOINT").is_some());
+        assert!(TokenKind::keyword_from_str("CHECKPOINTS").is_some());
+        // Vault keywords
+        assert!(TokenKind::keyword_from_str("VAULT").is_some());
+        assert!(TokenKind::keyword_from_str("GRANT").is_some());
+        assert!(TokenKind::keyword_from_str("REVOKE").is_some());
+        assert!(TokenKind::keyword_from_str("ROTATE").is_some());
+        // Cluster keywords
+        assert!(TokenKind::keyword_from_str("CLUSTER").is_some());
+        assert!(TokenKind::keyword_from_str("DISCONNECT").is_some());
+        assert!(TokenKind::keyword_from_str("STATUS").is_some());
+        assert!(TokenKind::keyword_from_str("NODES").is_some());
+        assert!(TokenKind::keyword_from_str("LEADER").is_some());
+        // Graph algorithm keywords
+        assert!(TokenKind::keyword_from_str("PAGERANK").is_some());
+        assert!(TokenKind::keyword_from_str("LOUVAIN").is_some());
+        assert!(TokenKind::keyword_from_str("COMMUNITIES").is_some());
+        assert!(TokenKind::keyword_from_str("PROPAGATION").is_some());
+        assert!(TokenKind::keyword_from_str("CENTRALITY").is_some());
+        assert!(TokenKind::keyword_from_str("BETWEENNESS").is_some());
+        assert!(TokenKind::keyword_from_str("CLOSENESS").is_some());
+        assert!(TokenKind::keyword_from_str("EIGENVECTOR").is_some());
+        assert!(TokenKind::keyword_from_str("DAMPING").is_some());
+        assert!(TokenKind::keyword_from_str("ITERATIONS").is_some());
+        assert!(TokenKind::keyword_from_str("TOLERANCE").is_some());
+        assert!(TokenKind::keyword_from_str("SAMPLING").is_some());
+        assert!(TokenKind::keyword_from_str("RESOLUTION").is_some());
+        assert!(TokenKind::keyword_from_str("PASSES").is_some());
+        assert!(TokenKind::keyword_from_str("WEIGHTED").is_some());
+        // Graph extended keywords
+        assert!(TokenKind::keyword_from_str("VARIABLE").is_some());
+        assert!(TokenKind::keyword_from_str("HOPS").is_some());
+        assert!(TokenKind::keyword_from_str("DEPTH").is_some());
+        assert!(TokenKind::keyword_from_str("SKIP").is_some());
+        assert!(TokenKind::keyword_from_str("TOTAL").is_some());
+        assert!(TokenKind::keyword_from_str("PATTERN").is_some());
+        assert!(TokenKind::keyword_from_str("AGGREGATE").is_some());
+        assert!(TokenKind::keyword_from_str("PROPERTY").is_some());
+        assert!(TokenKind::keyword_from_str("TYPE").is_some());
+        assert!(TokenKind::keyword_from_str("GRAPH").is_some());
+        assert!(TokenKind::keyword_from_str("FOR").is_some());
+        // Cache keywords
+        assert!(TokenKind::keyword_from_str("SEMANTIC").is_some());
+        assert!(TokenKind::keyword_from_str("THRESHOLD").is_some());
+        // Other keywords
+        assert!(TokenKind::keyword_from_str("ROWS").is_some());
     }
 }

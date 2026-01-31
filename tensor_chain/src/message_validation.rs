@@ -1567,9 +1567,13 @@ mod tests {
         );
 
         // Position 10 is out of bounds for dimension 5
-        let embedding = SparseVector::from_parts(5, vec![10], vec![1.0]);
+        let embedding = SparseVector::try_from_parts(5, vec![10], vec![1.0]);
+        assert!(embedding.is_err());
+
+        // Validator should still reject if an invalid vector slips through
+        let embedding = SparseVector::try_from_parts(5, vec![3], vec![1.0]).expect("valid vector");
         let result = validator.validate(&embedding, "test_field");
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

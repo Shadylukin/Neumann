@@ -46,13 +46,13 @@ impl<'a> Lexer<'a> {
 
     /// Returns the source text.
     #[must_use]
-    pub fn source(&self) -> &'a str {
+    pub const fn source(&self) -> &'a str {
         self.source
     }
 
     /// Returns the current byte position.
     #[must_use]
-    pub fn pos(&self) -> BytePos {
+    pub const fn pos(&self) -> BytePos {
         BytePos(self.pos)
     }
 
@@ -67,12 +67,10 @@ impl<'a> Lexer<'a> {
     /// Peeks at the character after the next one.
     fn peek2(&self) -> Option<char> {
         let mut chars = self.chars.clone();
-        if self.peeked.is_some() {
-            chars.next()
-        } else {
+        if self.peeked.is_none() {
             chars.next();
-            chars.next()
         }
+        chars.next()
     }
 
     /// Advances to the next character.
@@ -936,5 +934,46 @@ mod tests {
         assert!(toks.contains(&TokenKind::Limit));
         assert!(toks.contains(&TokenKind::True));
         assert!(toks.contains(&TokenKind::Count));
+    }
+
+    #[test]
+    fn test_string_escape_single_quote() {
+        let toks = tokens(r"'it\'s'");
+        assert_eq!(toks[0], TokenKind::String("it's".to_string()));
+    }
+
+    #[test]
+    fn test_string_escape_null() {
+        let toks = tokens(r"'null\0char'");
+        assert_eq!(toks[0], TokenKind::String("null\0char".to_string()));
+    }
+
+    #[test]
+    fn test_string_trailing_backslash() {
+        // String with trailing backslash at end (unterminated)
+        let toks = tokens("'trailing\\");
+        // Should be an error or unterminated string
+        assert!(matches!(toks[0], TokenKind::Error(_)));
+    }
+
+    #[test]
+    fn test_integer_overflow() {
+        // Number too large for i64
+        let toks = tokens("99999999999999999999999999999999");
+        assert!(matches!(toks[0], TokenKind::Error(_)));
+    }
+
+    #[test]
+    fn test_float_overflow() {
+        // Float too large for f64
+        let toks = tokens("1e99999");
+        // This might parse as Inf or Error depending on implementation
+        if let TokenKind::Float(f) = toks[0] {
+            assert!(f.is_infinite());
+        } else if let TokenKind::Error(_) = toks[0] {
+            // Also acceptable
+        } else {
+            panic!("expected Float or Error for overflow");
+        }
     }
 }

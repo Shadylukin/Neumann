@@ -1,18 +1,82 @@
 # Installation
 
-## Requirements
+Multiple installation methods are available depending on your needs.
+
+## Quick Install (Recommended)
+
+The easiest way to install Neumann is using the install script:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+```
+
+This script will:
+- Detect your platform (Linux x86_64, macOS x86_64, macOS ARM64)
+- Download a pre-built binary if available
+- Fall back to building from source if needed
+- Install to `/usr/local/bin` or `~/.local/bin`
+
+### Environment Variables
+
+| Variable | Description |
+| --- | --- |
+| `NEUMANN_INSTALL_DIR` | Custom installation directory |
+| `NEUMANN_VERSION` | Install a specific version (e.g., `v0.1.0`) |
+| `NEUMANN_NO_MODIFY_PATH` | Set to `1` to skip PATH modification |
+
+## Homebrew (macOS/Linux)
+
+```bash
+brew tap Shadylukin/tap
+brew install neumann
+```
+
+## Cargo (crates.io)
+
+If you have Rust installed:
+
+```bash
+cargo install neumann_shell
+```
+
+## Docker
+
+### Interactive CLI
+
+```bash
+docker run -it shadylukin/neumann:latest
+```
+
+### Server Mode
+
+```bash
+docker run -d -p 9200:9200 -v neumann-data:/var/lib/neumann shadylukin/neumann:server
+```
+
+### Docker Compose
+
+```bash
+# Clone the repository
+git clone https://github.com/Shadylukin/Neumann.git
+cd Neumann
+
+# Start the server
+docker compose up -d neumann-server
+
+# Run the CLI
+docker compose run --rm neumann-cli
+```
+
+## From Source
+
+### Requirements
 
 - Rust 1.75 or later
 - Cargo (included with Rust)
 - Git
+- protobuf compiler (for gRPC)
 
-## From crates.io (Coming Soon)
-
-```bash
-cargo install neumann
-```
-
-## From Source
+### Build Steps
 
 ```bash
 # Clone the repository
@@ -20,13 +84,16 @@ git clone https://github.com/Shadylukin/Neumann.git
 cd Neumann
 
 # Build in release mode
-cargo build --release
-
-# Run tests to verify
-cargo test
+cargo build --release --package neumann_shell
 
 # Install locally
 cargo install --path neumann_shell
+```
+
+### Run Tests
+
+```bash
+cargo test
 ```
 
 ## Verify Installation
@@ -35,21 +102,94 @@ cargo install --path neumann_shell
 neumann --version
 ```
 
-## Docker (Coming Soon)
-
-```bash
-docker pull neumann/neumann:latest
-docker run -it neumann/neumann
-```
-
 ## Platform Support
 
-| Platform | Status |
-| --- | --- |
-| Linux x86_64 | Supported |
-| macOS x86_64 | Supported |
-| macOS ARM64 | Supported |
-| Windows x86_64 | Experimental |
+| Platform | Binary | Homebrew | Docker | Source |
+| --- | --- | --- | --- | --- |
+| Linux x86_64 | Yes | Yes | Yes | Yes |
+| macOS x86_64 | Yes | Yes | Yes | Yes |
+| macOS ARM64 (Apple Silicon) | Yes | Yes | Yes | Yes |
+| Windows x86_64 | No | No | Yes | Experimental |
+
+## Troubleshooting
+
+### "command not found: neumann"
+
+The binary may not be in your PATH. Try:
+
+```bash
+# Check where it was installed
+which neumann || ls ~/.local/bin/neumann
+
+# Add to PATH if needed
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Build fails with protobuf errors
+
+Install the protobuf compiler:
+
+```bash
+# macOS
+brew install protobuf
+
+# Ubuntu/Debian
+sudo apt-get install protobuf-compiler
+
+# Fedora
+sudo dnf install protobuf-compiler
+```
+
+### Permission denied during install
+
+The installer tries `/usr/local/bin` first (requires sudo) then falls back to `~/.local/bin`. You can specify a custom directory:
+
+```bash
+NEUMANN_INSTALL_DIR=~/bin curl -sSfL .../install.sh | bash
+```
+
+## Updating
+
+### Quick Install
+
+Re-run the install script to get the latest version:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/Shadylukin/Neumann/main/install.sh | bash
+```
+
+### Homebrew
+
+```bash
+brew upgrade neumann
+```
+
+### Cargo
+
+```bash
+cargo install neumann_shell --force
+```
+
+## Uninstalling
+
+### Quick Install / Cargo
+
+```bash
+rm $(which neumann)
+```
+
+### Homebrew
+
+```bash
+brew uninstall neumann
+```
+
+### Docker
+
+```bash
+docker rmi shadylukin/neumann:latest shadylukin/neumann:server
+docker volume rm neumann-data
+```
 
 ## Next Steps
 

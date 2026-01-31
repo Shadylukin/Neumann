@@ -25,4 +25,4 @@ pub mod markdown;
 pub use commands::{execute_command, Command};
 pub use embeddings::TfIdfEmbedder;
 pub use indexer::{DocIndexer, IndexStats};
-pub use markdown::{ParsedDoc, extract_links, parse_markdown};
+pub use markdown::{extract_links, parse_markdown, ParsedDoc};

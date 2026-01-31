@@ -46,10 +46,7 @@ fn extract_category(path: &str) -> String {
 
 /// Count words in text content.
 fn count_words(content: &str) -> usize {
-    content
-        .split_whitespace()
-        .filter(|w| !w.is_empty())
-        .count()
+    content.split_whitespace().filter(|w| !w.is_empty()).count()
 }
 
 /// Extract links to other markdown files from content.
@@ -66,9 +63,7 @@ pub fn extract_links(content: &str) -> Vec<String> {
                 return None;
             }
             // Normalize relative paths
-            let normalized = link
-                .trim_start_matches("./")
-                .trim_start_matches("../");
+            let normalized = link.trim_start_matches("./").trim_start_matches("../");
             Some(normalized.to_string())
         })
         .collect()

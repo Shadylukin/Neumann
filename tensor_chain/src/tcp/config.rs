@@ -324,6 +324,7 @@ impl TcpTransportConfig {
         use super::error::TcpError;
 
         let mode = self.security.mode;
+        let requires_tls = self.effective_require_tls();
 
         // Log warnings for non-strict modes
         if self.security.warn_on_insecure && mode.should_warn() {
@@ -333,8 +334,8 @@ impl TcpTransportConfig {
             );
         }
 
-        // Check TLS requirements
-        if mode.requires_tls() && self.tls.is_none() {
+        // Check TLS requirements (explicit or via security mode)
+        if requires_tls && self.tls.is_none() {
             return Err(TcpError::TlsRequired {
                 mode,
                 reason: "TLS configuration is required but not provided".to_string(),
@@ -1104,7 +1105,8 @@ mod tests {
     fn test_validate_security_development_mode() {
         // Development mode doesn't require TLS
         let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
-            .with_security(SecurityConfig::development().without_warnings());
+            .with_security(SecurityConfig::development().without_warnings())
+            .with_require_tls(false);
 
         let result = config.validate_security();
         assert!(result.is_ok());
@@ -1114,7 +1116,8 @@ mod tests {
     fn test_validate_security_legacy_mode_backward_compatible() {
         // Legacy mode should allow no TLS for backward compatibility
         let config = TcpTransportConfig::new("node1", "127.0.0.1:9100".parse().unwrap())
-            .with_security(SecurityConfig::legacy().without_warnings());
+            .with_security(SecurityConfig::legacy().without_warnings())
+            .with_require_tls(false);
 
         let result = config.validate_security();
         assert!(result.is_ok());

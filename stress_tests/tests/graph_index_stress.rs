@@ -146,11 +146,7 @@ fn stress_graph_index_50_threads() {
     println!("Query operations: {total_query_ops}");
 
     // Calculate p99
-    let p99_max = results
-        .iter()
-        .map(|s| s.p99.as_millis())
-        .max()
-        .unwrap_or(0);
+    let p99_max = results.iter().map(|s| s.p99.as_millis()).max().unwrap_or(0);
     println!("Max p99 latency: {p99_max}ms");
 
     // Sample latencies

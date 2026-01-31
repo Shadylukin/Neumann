@@ -26,6 +26,7 @@ impl std::fmt::Debug for LoadedTls {
         f.debug_struct("LoadedTls")
             .field("identity", &"<redacted>")
             .field("client_ca", &self.client_ca.is_some())
+            .field("require_client_cert", &self.require_client_cert)
             .finish()
     }
 }
@@ -120,19 +121,16 @@ impl TlsLoader {
 
         // Parse X.509 certificate
         let (_, cert) = X509Certificate::from_der(&pem.contents).map_err(|e| {
-            ServerError::Config(format!(
-                "invalid X.509 certificate in {cert_name}: {e}"
-            ))
+            ServerError::Config(format!("invalid X.509 certificate in {cert_name}: {e}"))
         })?;
 
         // Check validity period using std::time
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);
-        let now_asn1 = ASN1Time::from_timestamp(now_secs).map_err(|e| {
-            ServerError::Internal(format!("failed to get current time: {e}"))
-        })?;
+        let now_asn1 = ASN1Time::from_timestamp(now_secs)
+            .map_err(|e| ServerError::Internal(format!("failed to get current time: {e}")))?;
 
         let validity = cert.validity();
 

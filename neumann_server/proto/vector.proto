@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+syntax = "proto3";
+package neumann.vector.v1;
+
+// Points service for vector point operations.
+service PointsService {
+  // Upsert points into a collection.
+  rpc Upsert(UpsertPointsRequest) returns (UpsertPointsResponse);
+  // Get points by IDs.
+  rpc Get(GetPointsRequest) returns (GetPointsResponse);
+  // Delete points by IDs.
+  rpc Delete(DeletePointsRequest) returns (DeletePointsResponse);
+  // Query similar points.
+  rpc Query(QueryPointsRequest) returns (QueryPointsResponse);
+  // Scroll through points in a collection.
+  rpc Scroll(ScrollPointsRequest) returns (ScrollPointsResponse);
+}
+
+// Collections service for collection management.
+service CollectionsService {
+  // Create a new collection.
+  rpc Create(CreateCollectionRequest) returns (CreateCollectionResponse);
+  // Get collection information.
+  rpc Get(GetCollectionRequest) returns (GetCollectionResponse);
+  // Delete a collection.
+  rpc Delete(DeleteCollectionRequest) returns (DeleteCollectionResponse);
+  // List all collections.
+  rpc List(ListCollectionsRequest) returns (ListCollectionsResponse);
+}
+
+// A point with vector and optional payload.
+message Point {
+  // Unique point identifier.
+  string id = 1;
+  // Dense vector embedding.
+  repeated float vector = 2;
+  // Optional payload as JSON-encoded values.
+  map<string, bytes> payload = 3;
+}
+
+// A point with similarity score.
+message ScoredPoint {
+  // Unique point identifier.
+  string id = 1;
+  // Similarity score.
+  float score = 2;
+  // Optional payload.
+  map<string, bytes> payload = 3;
+  // Optional vector (if requested).
+  repeated float vector = 4;
+}
+
+// Request to upsert points.
+message UpsertPointsRequest {
+  // Target collection name.
+  string collection = 1;
+  // Points to upsert.
+  repeated Point points = 2;
+}
+
+// Response from upsert operation.
+message UpsertPointsResponse {
+  // Number of points upserted.
+  uint64 upserted = 1;
+}
+
+// Request to get points by IDs.
+message GetPointsRequest {
+  // Target collection name.
+  string collection = 1;
+  // Point IDs to retrieve.
+  repeated string ids = 2;
+  // Include payload in response.
+  bool with_payload = 3;
+  // Include vector in response.
+  bool with_vector = 4;
+}
+
+// Response with retrieved points.
+message GetPointsResponse {
+  // Retrieved points.
+  repeated Point points = 1;
+}
+
+// Request to delete points.
+message DeletePointsRequest {
+  // Target collection name.
+  string collection = 1;
+  // Point IDs to delete.
+  repeated string ids = 2;
+}
+
+// Response from delete operation.
+message DeletePointsResponse {
+  // Number of points deleted.
+  uint64 deleted = 1;
+}
+
+// Request to query similar points.
+message QueryPointsRequest {
+  // Target collection name.
+  string collection = 1;
+  // Query vector.
+  repeated float vector = 2;
+  // Maximum number of results.
+  uint32 limit = 3;
+  // Number of results to skip.
+  uint32 offset = 4;
+  // Minimum similarity score threshold.
+  optional float score_threshold = 5;
+  // Include payload in response.
+  bool with_payload = 6;
+  // Include vector in response.
+  bool with_vector = 7;
+}
+
+// Response with similar points.
+message QueryPointsResponse {
+  // Similar points with scores.
+  repeated ScoredPoint results = 1;
+}
+
+// Request to scroll through points.
+message ScrollPointsRequest {
+  // Target collection name.
+  string collection = 1;
+  // Offset point ID for pagination.
+  optional string offset_id = 2;
+  // Maximum number of points to return.
+  uint32 limit = 3;
+  // Include payload in response.
+  bool with_payload = 4;
+  // Include vector in response.
+  bool with_vector = 5;
+}
+
+// Response with scrolled points.
+message ScrollPointsResponse {
+  // Points in this page.
+  repeated Point points = 1;
+  // Next offset ID for pagination.
+  optional string next_offset = 2;
+}
+
+// Request to create a collection.
+message CreateCollectionRequest {
+  // Collection name.
+  string name = 1;
+  // Vector dimension (required).
+  uint32 dimension = 2;
+  // Distance metric: "cosine", "euclidean", "dot".
+  string distance = 3;
+}
+
+// Response from create collection.
+message CreateCollectionResponse {
+  // Whether the collection was created.
+  bool created = 1;
+}
+
+// Request to get collection information.
+message GetCollectionRequest {
+  // Collection name.
+  string name = 1;
+}
+
+// Response with collection information.
+message GetCollectionResponse {
+  // Collection name.
+  string name = 1;
+  // Number of points in collection.
+  uint64 points_count = 2;
+  // Vector dimension.
+  uint32 dimension = 3;
+  // Distance metric.
+  string distance = 4;
+}
+
+// Request to delete a collection.
+message DeleteCollectionRequest {
+  // Collection name.
+  string name = 1;
+}
+
+// Response from delete collection.
+message DeleteCollectionResponse {
+  // Whether the collection was deleted.
+  bool deleted = 1;
+}
+
+// Request to list collections.
+message ListCollectionsRequest {}
+
+// Response with collection list.
+message ListCollectionsResponse {
+  // Collection names.
+  repeated string collections = 1;
+}

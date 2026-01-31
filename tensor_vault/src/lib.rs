@@ -359,7 +359,10 @@ impl Vault {
     /// Uses the "entity_key" property to look up existing nodes.
     fn get_or_create_entity_node(&self, entity_key: &str) -> u64 {
         // Try to find existing node by property
-        if let Ok(nodes) = self.graph.find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string())) {
+        if let Ok(nodes) = self
+            .graph
+            .find_nodes_by_property("entity_key", &PropertyValue::String(entity_key.to_string()))
+        {
             if let Some(node) = nodes.first() {
                 return node.id;
             }
@@ -367,7 +370,10 @@ impl Vault {
 
         // Create new node with entity key property
         let mut props = HashMap::new();
-        props.insert("entity_key".to_string(), graph_engine::PropertyValue::String(entity_key.to_string()));
+        props.insert(
+            "entity_key".to_string(),
+            graph_engine::PropertyValue::String(entity_key.to_string()),
+        );
 
         self.graph.create_node("VaultEntity", props).unwrap_or(0)
     }
@@ -390,9 +396,15 @@ impl Vault {
         if let Ok(edges) = self.graph.edges_of(node_id, Direction::Outgoing) {
             for edge in edges {
                 // Get the target node's entity key
-                let target_id = if edge.from == node_id { edge.to } else { edge.from };
+                let target_id = if edge.from == node_id {
+                    edge.to
+                } else {
+                    edge.from
+                };
                 if let Ok(target_node) = self.graph.get_node(target_id) {
-                    if let Some(graph_engine::PropertyValue::String(key)) = target_node.properties.get("entity_key") {
+                    if let Some(graph_engine::PropertyValue::String(key)) =
+                        target_node.properties.get("entity_key")
+                    {
                         result.push((edge.id, key.clone(), edge.edge_type.clone()));
                     }
                 }
@@ -1266,7 +1278,9 @@ mod tests {
     /// Helper to add edges between entity keys using the node-based API.
     fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
         let get_or_create = |key: &str| -> u64 {
-            if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+            if let Ok(nodes) =
+                graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+            {
                 if let Some(node) = nodes.first() {
                     return node.id;
                 }

@@ -46,7 +46,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/neumann-db/neumann.git",
+    "url": "https://github.com/Shadylukin/Neumann.git",
     "directory": "neumann-ts"
   },
   "engines": {

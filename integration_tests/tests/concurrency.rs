@@ -592,10 +592,7 @@ fn test_graph_concurrent_batch_nodes_and_edges() {
                     labels: vec!["Batch".to_string()],
                     properties: {
                         let mut p = HashMap::new();
-                        p.insert(
-                            "thread".to_string(),
-                            PropertyValue::Int(t as i64),
-                        );
+                        p.insert("thread".to_string(), PropertyValue::Int(t as i64));
                         p.insert("idx".to_string(), PropertyValue::Int(i as i64));
                         p
                     },
@@ -682,10 +679,7 @@ fn test_graph_striped_lock_saturation_100_threads() {
     // Key format: "{:02x}_thread{t}_op{i}" where prefix = (t + i) % 256
     // For t=0, i=0: prefix = 0 = 0x00, key = "00_thread0_op0"
     let results = graph
-        .find_nodes_by_property(
-            "key",
-            &PropertyValue::String("00_thread0_op0".into()),
-        )
+        .find_nodes_by_property("key", &PropertyValue::String("00_thread0_op0".into()))
         .unwrap();
     assert_eq!(results.len(), 1);
 }
@@ -699,7 +693,9 @@ fn test_hnsw_concurrent_insert_search() {
     // Pre-populate with initial embeddings
     let initial = sample_embeddings(500, 128);
     for (i, emb) in initial.iter().enumerate() {
-        vector.store_embedding(&format!("init_{i}"), emb.clone()).unwrap();
+        vector
+            .store_embedding(&format!("init_{i}"), emb.clone())
+            .unwrap();
     }
 
     let thread_count = 20;
@@ -808,7 +804,7 @@ fn test_graph_batch_edges_node_deletion_race() {
     assert!(deleted <= 25);
     match edge_result {
         Ok(result) => assert!(result.count <= 49),
-        Err(_) => { /* Clean error is fine */ }
+        Err(_) => { /* Clean error is fine */ },
     }
 
     // Verify engine is still usable

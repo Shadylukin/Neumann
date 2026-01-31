@@ -15,11 +15,11 @@ fn main() {
 
     // Create a vector engine with 8 dimensions
     let config = VectorEngineConfig {
-        dimension: 8,
-        metric: DistanceMetric::Cosine,
+        default_dimension: Some(8),
+        default_metric: DistanceMetric::Cosine,
         ..Default::default()
     };
-    let engine = VectorEngine::with_config(config);
+    let engine = VectorEngine::with_config(config).expect("Failed to create engine");
 
     // Sample embeddings representing different document categories
     // In practice, these would come from an embedding model
@@ -70,7 +70,7 @@ fn main() {
     println!("Storing document embeddings:");
     for (key, title, embedding) in &documents {
         engine
-            .put(key, embedding.clone())
+            .store_embedding(key, embedding.clone())
             .expect("Failed to store embedding");
         println!("  {} - {}", key, title);
     }
@@ -79,9 +79,7 @@ fn main() {
     // Search for documents similar to a machine learning query
     let ml_query = vec![0.85, 0.75, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
     println!("Searching for documents similar to 'machine learning' query:");
-    let ml_results = engine
-        .search(&ml_query, 3)
-        .expect("Failed to search");
+    let ml_results = engine.search_similar(&ml_query, 3).expect("Failed to search");
     for result in &ml_results {
         let title = documents
             .iter()
@@ -95,9 +93,7 @@ fn main() {
     // Search for database-related documents
     let db_query = vec![0.1, 0.1, 0.8, 0.75, 0.2, 0.1, 0.1, 0.1];
     println!("Searching for documents similar to 'database' query:");
-    let db_results = engine
-        .search(&db_query, 3)
-        .expect("Failed to search");
+    let db_results = engine.search_similar(&db_query, 3).expect("Failed to search");
     for result in &db_results {
         let title = documents
             .iter()
@@ -111,9 +107,7 @@ fn main() {
     // Search for systems programming documents
     let systems_query = vec![0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0.8, 0.8];
     println!("Searching for documents similar to 'systems programming' query:");
-    let systems_results = engine
-        .search(&systems_query, 3)
-        .expect("Failed to search");
+    let systems_results = engine.search_similar(&systems_query, 3).expect("Failed to search");
     for result in &systems_results {
         let title = documents
             .iter()
@@ -126,7 +120,7 @@ fn main() {
 
     // Retrieve a specific embedding
     println!("Retrieving embedding for 'doc:rust_lang':");
-    if let Ok(Some(embedding)) = engine.get("doc:rust_lang") {
+    if let Ok(embedding) = engine.get_embedding("doc:rust_lang") {
         print!("  [");
         for (i, val) in embedding.iter().enumerate() {
             if i > 0 {
@@ -141,5 +135,7 @@ fn main() {
     // Statistics
     println!("Vector store statistics:");
     println!("  Total embeddings: {}", engine.len());
-    println!("  Dimension: {}", engine.dimension());
+    if let Some(dim) = engine.dimension() {
+        println!("  Dimension: {}", dim);
+    }
 }

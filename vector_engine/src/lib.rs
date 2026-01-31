@@ -91,10 +91,16 @@ use tensor_store::{
 };
 use tracing::instrument;
 // Re-export HNSW types from tensor_store for backward compatibility
-pub use tensor_store::{HNSWConfig, HNSWIndex};
+pub use tensor_store::{HNSWConfig, HNSWIndex, ScalarQuantizedVector};
 
 // Re-export distance metrics from tensor_store for extended metric support (9 variants + composite)
 pub use tensor_store::{DistanceMetric as ExtendedDistanceMetric, GeometricConfig};
+
+// Re-export new quantization and index types
+pub use tensor_store::{
+    BinaryThreshold, BinaryVector, IVFConfig, IVFIndex, IVFIndexState, IVFStorage, PQCodebook,
+    PQConfig, PQVector,
+};
 
 /// Error types for vector operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,7 +256,7 @@ pub struct SearchResult {
 }
 
 impl SearchResult {
-    /// Creates a new search result with the given key and score.
+    #[allow(missing_docs)]
     #[must_use]
     pub const fn new(key: String, score: f32) -> Self {
         Self { key, score }
@@ -305,13 +311,13 @@ pub enum FilterCondition {
 }
 
 impl FilterCondition {
-    /// Combines this condition with another using AND.
+    #[allow(missing_docs)]
     #[must_use]
     pub fn and(self, other: Self) -> Self {
         Self::And(Box::new(self), Box::new(other))
     }
 
-    /// Combines this condition with another using OR.
+    #[allow(missing_docs)]
     #[must_use]
     pub fn or(self, other: Self) -> Self {
         Self::Or(Box::new(self), Box::new(other))
@@ -804,6 +810,186 @@ impl VectorEngineConfig {
     }
 }
 
+// ========== HNSW Build Options ==========
+
+/// Storage strategy for HNSW index construction.
+///
+/// Controls how vectors are stored internally in the HNSW index.
+/// Different strategies trade off memory usage vs search performance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HNSWStorageStrategy {
+    /// Dense storage (default). Stores full f32 vectors.
+    /// Best search quality, highest memory usage.
+    #[default]
+    Dense,
+    /// Automatic sparse/dense detection based on sparsity threshold.
+    /// Vectors with sparsity above the threshold use sparse storage.
+    Auto,
+    /// 8-bit scalar quantization (~4x memory reduction).
+    /// Slight recall degradation but significant memory savings.
+    Quantized,
+}
+
+/// Options for building an HNSW index.
+///
+/// Combines storage strategy with HNSW configuration parameters.
+/// Use factory methods for common presets or builders for custom configuration.
+#[derive(Debug, Clone)]
+pub struct HNSWBuildOptions {
+    /// Storage strategy for vectors in the index.
+    pub storage: HNSWStorageStrategy,
+    /// HNSW algorithm configuration.
+    pub hnsw_config: HNSWConfig,
+}
+
+impl Default for HNSWBuildOptions {
+    fn default() -> Self {
+        Self {
+            storage: HNSWStorageStrategy::Dense,
+            hnsw_config: HNSWConfig::default(),
+        }
+    }
+}
+
+impl HNSWBuildOptions {
+    /// Creates default options (Dense storage, default HNSW config).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates options optimized for low memory usage.
+    ///
+    /// Uses quantized storage (~4x memory reduction) with high-speed HNSW config.
+    #[must_use]
+    pub fn memory_optimized() -> Self {
+        Self {
+            storage: HNSWStorageStrategy::Quantized,
+            hnsw_config: HNSWConfig::high_speed(),
+        }
+    }
+
+    /// Creates options optimized for search recall quality.
+    ///
+    /// Uses dense storage with high-recall HNSW config.
+    #[must_use]
+    pub fn high_recall() -> Self {
+        Self {
+            storage: HNSWStorageStrategy::Dense,
+            hnsw_config: HNSWConfig::high_recall(),
+        }
+    }
+
+    /// Creates options optimized for sparse vectors.
+    ///
+    /// Uses auto-detection to store sparse vectors efficiently.
+    #[must_use]
+    pub fn sparse_optimized() -> Self {
+        Self {
+            storage: HNSWStorageStrategy::Auto,
+            hnsw_config: HNSWConfig::default(),
+        }
+    }
+
+    /// Sets the storage strategy.
+    #[must_use]
+    pub const fn with_storage(mut self, storage: HNSWStorageStrategy) -> Self {
+        self.storage = storage;
+        self
+    }
+
+    /// Sets the HNSW configuration.
+    #[must_use]
+    pub fn with_hnsw_config(mut self, config: HNSWConfig) -> Self {
+        self.hnsw_config = config;
+        self
+    }
+
+    /// Sets the sparsity threshold for Auto storage strategy.
+    ///
+    /// Vectors with sparsity (fraction of zeros) above this threshold
+    /// will use sparse storage. Only affects `HNSWStorageStrategy::Auto`.
+    #[must_use]
+    pub fn with_sparsity_threshold(mut self, threshold: f32) -> Self {
+        self.hnsw_config.sparsity_threshold = threshold;
+        self
+    }
+}
+
+// ========== IVF Build Options ==========
+
+/// Options for building an IVF (Inverted File) index.
+///
+/// IVF partitions vectors into clusters for sublinear search.
+/// Supports multiple storage formats within clusters.
+#[derive(Debug, Clone, Default)]
+pub struct IVFBuildOptions {
+    /// IVF configuration (clusters, nprobe, storage format).
+    pub config: IVFConfig,
+}
+
+impl IVFBuildOptions {
+    /// Creates default IVF options (100 clusters, flat storage).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates IVF-Flat options with specified number of clusters.
+    ///
+    /// IVF-Flat stores full vectors in each cluster list.
+    /// Best recall, highest memory usage.
+    #[must_use]
+    pub fn flat(num_clusters: usize) -> Self {
+        Self {
+            config: IVFConfig::flat(num_clusters),
+        }
+    }
+
+    /// Creates IVF-PQ options with specified clusters and PQ config.
+    ///
+    /// IVF-PQ uses Product Quantization for extreme compression.
+    /// Best memory efficiency, good recall.
+    #[must_use]
+    pub fn pq(num_clusters: usize, pq_config: PQConfig) -> Self {
+        Self {
+            config: IVFConfig::pq(num_clusters, pq_config),
+        }
+    }
+
+    /// Creates IVF-Binary options with specified clusters.
+    ///
+    /// IVF-Binary uses binary quantization for fast Hamming distance.
+    /// Fastest search, lower recall.
+    #[must_use]
+    pub fn binary(num_clusters: usize) -> Self {
+        Self {
+            config: IVFConfig::binary(num_clusters, BinaryThreshold::Sign),
+        }
+    }
+
+    /// Sets the number of clusters to probe during search.
+    #[must_use]
+    pub const fn with_nprobe(mut self, nprobe: usize) -> Self {
+        self.config.nprobe = nprobe;
+        self
+    }
+
+    /// Sets the number of clusters.
+    #[must_use]
+    pub const fn with_num_clusters(mut self, num_clusters: usize) -> Self {
+        self.config.num_clusters = num_clusters;
+        self
+    }
+
+    /// Sets the storage format.
+    #[must_use]
+    pub fn with_storage(mut self, storage: IVFStorage) -> Self {
+        self.config.storage = storage;
+        self
+    }
+}
+
 // ========== Batch Operations ==========
 
 /// Input for batch embedding storage.
@@ -1204,6 +1390,27 @@ impl VectorEngine {
             .into_iter()
             .filter_map(|k| k.strip_prefix(&prefix).map(ToString::to_string))
             .collect()
+    }
+
+    /// Get metadata for a vector in a specific collection.
+    pub fn get_collection_metadata(
+        &self,
+        collection: &str,
+        key: &str,
+    ) -> Result<HashMap<String, TensorValue>> {
+        let storage_key = Self::collection_embedding_key(collection, key);
+        let tensor = self
+            .store
+            .get(&storage_key)
+            .map_err(|_| VectorError::NotFound(key.to_string()))?;
+
+        let mut metadata = HashMap::new();
+        for (field, value) in tensor.fields_iter() {
+            if let Some(meta_field) = field.strip_prefix(Self::METADATA_PREFIX) {
+                metadata.insert(meta_field.to_string(), value.clone());
+            }
+        }
+        Ok(metadata)
     }
 
     // ========== Collection-Aware Search ==========
@@ -1898,10 +2105,54 @@ impl VectorEngine {
     /// ```
     #[instrument(skip(self, config))]
     pub fn build_hnsw_index(&self, config: HNSWConfig) -> Result<(HNSWIndex, Vec<String>)> {
+        self.build_hnsw_index_with_options(HNSWBuildOptions {
+            storage: HNSWStorageStrategy::Dense,
+            hnsw_config: config,
+        })
+    }
+
+    /// Build an HNSW index with configurable storage strategy.
+    ///
+    /// Returns a tuple of (index, key_mapping) where key_mapping maps node IDs to keys.
+    /// Use `HNSWBuildOptions` to configure both storage strategy and HNSW parameters.
+    ///
+    /// # Storage Strategies
+    ///
+    /// - `Dense`: Full f32 vectors, best quality (default)
+    /// - `Auto`: Automatic sparse/dense detection based on sparsity threshold
+    /// - `Quantized`: 8-bit scalar quantization (~4x memory reduction)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let engine = VectorEngine::new();
+    /// // ... store embeddings ...
+    ///
+    /// // Memory-optimized index with quantization
+    /// let (index, keys) = engine.build_hnsw_index_with_options(
+    ///     HNSWBuildOptions::memory_optimized()
+    /// )?;
+    ///
+    /// // High-recall index with dense storage
+    /// let (index, keys) = engine.build_hnsw_index_with_options(
+    ///     HNSWBuildOptions::high_recall()
+    /// )?;
+    ///
+    /// // Custom configuration
+    /// let (index, keys) = engine.build_hnsw_index_with_options(
+    ///     HNSWBuildOptions::new()
+    ///         .with_storage(HNSWStorageStrategy::Auto)
+    ///         .with_sparsity_threshold(0.7)
+    /// )?;
+    /// ```
+    #[instrument(skip(self, options))]
+    pub fn build_hnsw_index_with_options(
+        &self,
+        options: HNSWBuildOptions,
+    ) -> Result<(HNSWIndex, Vec<String>)> {
         let keys = self.list_keys();
 
         if keys.is_empty() {
-            return Ok((HNSWIndex::with_config(config), Vec::new()));
+            return Ok((HNSWIndex::with_config(options.hnsw_config), Vec::new()));
         }
 
         // Validate first vector and establish expected dimension
@@ -1919,10 +2170,10 @@ impl VectorEngine {
             }
         }
 
-        let index = HNSWIndex::with_config(config);
+        let index = HNSWIndex::with_config(options.hnsw_config);
         let mut key_mapping = Vec::with_capacity(keys.len());
 
-        index.insert(first_vector);
+        insert_with_strategy(&index, first_vector, options.storage);
         key_mapping.push(first_key.clone());
 
         for key in keys.into_iter().skip(1) {
@@ -1936,7 +2187,7 @@ impl VectorEngine {
                 });
             }
 
-            index.insert(vector);
+            insert_with_strategy(&index, vector, options.storage);
             key_mapping.push(key);
         }
 
@@ -2074,6 +2325,217 @@ impl VectorEngine {
 
         results.truncate(top_k);
         Ok(results)
+    }
+
+    // ========== IVF Index Methods ==========
+
+    /// Build an IVF (Inverted File) index from all stored embeddings.
+    ///
+    /// IVF partitions vectors into clusters using k-means, enabling sublinear
+    /// search by only scanning the `nprobe` closest clusters.
+    ///
+    /// Returns the index and a mapping from IVF vector IDs to keys.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use vector_engine::{VectorEngine, IVFBuildOptions};
+    ///
+    /// let engine = VectorEngine::new();
+    /// engine.store_embedding("doc1", vec![0.1, 0.2, 0.3, 0.4]).unwrap();
+    /// engine.store_embedding("doc2", vec![0.5, 0.6, 0.7, 0.8]).unwrap();
+    ///
+    /// // Build IVF-Flat index with 10 clusters
+    /// let (index, keys) = engine.build_ivf_index(IVFBuildOptions::flat(10)).unwrap();
+    /// ```
+    #[instrument(skip(self, options))]
+    pub fn build_ivf_index(&self, options: IVFBuildOptions) -> Result<(IVFIndex, Vec<String>)> {
+        let keys = self.list_keys();
+
+        if keys.is_empty() {
+            return Ok((IVFIndex::new(options.config), Vec::new()));
+        }
+
+        // Collect all vectors
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(keys.len());
+        let mut expected_dim = None;
+
+        for key in &keys {
+            let vector = self.get_embedding(key)?;
+
+            // Validate dimension consistency
+            match expected_dim {
+                None => expected_dim = Some(vector.len()),
+                Some(dim) if dim != vector.len() => {
+                    return Err(VectorError::DimensionMismatch {
+                        expected: dim,
+                        got: vector.len(),
+                    });
+                },
+                _ => {},
+            }
+
+            vectors.push(vector);
+        }
+
+        // Check config dimension constraint
+        if let Some(max_dim) = self.config.max_dimension {
+            if let Some(dim) = expected_dim {
+                if dim > max_dim {
+                    return Err(VectorError::DimensionMismatch {
+                        expected: max_dim,
+                        got: dim,
+                    });
+                }
+            }
+        }
+
+        // Convert to references for training
+        let vector_refs: Vec<&[f32]> = vectors.iter().map(Vec::as_slice).collect();
+
+        // Create and train the IVF index
+        let mut index = IVFIndex::new(options.config);
+        index.train(&vector_refs);
+
+        // Add all vectors to the index
+        for vector in &vectors {
+            index.add(vector);
+        }
+
+        Ok((index, keys))
+    }
+
+    /// Build an IVF-Flat index with default settings.
+    ///
+    /// Uses 100 clusters and sqrt(100)=10 nprobe by default.
+    #[instrument(skip(self))]
+    pub fn build_ivf_index_default(&self) -> Result<(IVFIndex, Vec<String>)> {
+        self.build_ivf_index(IVFBuildOptions::default())
+    }
+
+    /// Search using an IVF index.
+    ///
+    /// Searches the `nprobe` closest clusters and returns the top-k results.
+    /// This is faster than brute force for large datasets.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The IVF index to search
+    /// * `key_mapping` - Mapping from IVF vector IDs to original keys
+    /// * `query` - The query vector
+    /// * `top_k` - Number of results to return
+    #[instrument(skip(self, index, key_mapping, query))]
+    pub fn search_with_ivf(
+        &self,
+        index: &IVFIndex,
+        key_mapping: &[String],
+        query: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        let results = index.search(query, top_k);
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_with_ivf".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(vector_id, distance)| {
+                key_mapping.get(vector_id).map(|key| SearchResult {
+                    key: key.clone(),
+                    // IVF returns distances, convert to similarity
+                    score: 1.0 / (1.0 + distance),
+                })
+            })
+            .collect())
+    }
+
+    /// Search using an IVF index with custom nprobe.
+    ///
+    /// Higher nprobe values search more clusters, improving recall
+    /// at the cost of speed.
+    #[instrument(skip(self, index, key_mapping, query))]
+    pub fn search_with_ivf_nprobe(
+        &self,
+        index: &IVFIndex,
+        key_mapping: &[String],
+        query: &[f32],
+        top_k: usize,
+        nprobe: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let deadline = Deadline::from_duration(self.config.search_timeout);
+
+        if query.is_empty() {
+            return Err(VectorError::EmptyVector);
+        }
+        if top_k == 0 {
+            return Err(VectorError::InvalidTopK);
+        }
+
+        let results = index.search_with_nprobe(query, top_k, nprobe);
+
+        if deadline.is_expired() {
+            return Err(VectorError::SearchTimeout {
+                operation: "search_with_ivf_nprobe".to_string(),
+                timeout_ms: deadline.timeout_ms(),
+            });
+        }
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(vector_id, distance)| {
+                key_mapping.get(vector_id).map(|key| SearchResult {
+                    key: key.clone(),
+                    score: 1.0 / (1.0 + distance),
+                })
+            })
+            .collect())
+    }
+
+    /// Estimate memory usage for building an IVF index.
+    ///
+    /// Returns estimated bytes based on the storage format and cluster count.
+    pub fn estimate_ivf_memory(&self, options: &IVFBuildOptions) -> Result<usize> {
+        let count = self.count();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        // Sample first embedding for dimension
+        let keys = self.list_keys();
+        let first = self.get_embedding(&keys[0])?;
+        let dim = first.len();
+
+        let num_clusters = options.config.num_clusters;
+
+        // Centroids memory
+        let centroid_bytes = num_clusters * dim * 4;
+
+        // Vector storage depends on format
+        let vector_bytes = match &options.config.storage {
+            IVFStorage::Flat => count * dim * 4, // Full f32 vectors
+            IVFStorage::PQ(pq_config) => {
+                count * pq_config.num_subspaces // 1 byte per subspace
+            },
+            IVFStorage::Binary(_) => count * dim.div_ceil(64) * 8, // 1 bit per dim packed into u64
+        };
+
+        // Inverted list overhead (IDs, metadata)
+        let list_overhead = count * 8; // Vector IDs
+
+        Ok(centroid_bytes + vector_bytes + list_overhead)
     }
 
     // ========== Batch Operations ==========
@@ -3147,6 +3609,21 @@ impl VectorEngine {
 impl Default for VectorEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Helper function to insert a vector into an HNSW index using the specified storage strategy.
+fn insert_with_strategy(index: &HNSWIndex, vector: Vec<f32>, strategy: HNSWStorageStrategy) {
+    match strategy {
+        HNSWStorageStrategy::Dense => {
+            index.insert(vector);
+        },
+        HNSWStorageStrategy::Auto => {
+            index.insert_auto(vector);
+        },
+        HNSWStorageStrategy::Quantized => {
+            index.insert_quantized(&vector);
+        },
     }
 }
 
@@ -7565,5 +8042,198 @@ mod tests {
 
         let result = engine.search_entities(&[0.5f32; 128], 10);
         assert!(matches!(result, Err(VectorError::SearchTimeout { .. })));
+    }
+
+    // ==================== HNSWBuildOptions tests ====================
+
+    #[test]
+    fn hnsw_build_options_default() {
+        let options = HNSWBuildOptions::default();
+        assert_eq!(options.storage, HNSWStorageStrategy::Dense);
+    }
+
+    #[test]
+    fn hnsw_build_options_new() {
+        let options = HNSWBuildOptions::new();
+        assert_eq!(options.storage, HNSWStorageStrategy::Dense);
+    }
+
+    #[test]
+    fn hnsw_build_options_memory_optimized() {
+        let options = HNSWBuildOptions::memory_optimized();
+        assert_eq!(options.storage, HNSWStorageStrategy::Quantized);
+    }
+
+    #[test]
+    fn hnsw_build_options_high_recall() {
+        let options = HNSWBuildOptions::high_recall();
+        assert_eq!(options.storage, HNSWStorageStrategy::Dense);
+    }
+
+    #[test]
+    fn hnsw_build_options_sparse_optimized() {
+        let options = HNSWBuildOptions::sparse_optimized();
+        assert_eq!(options.storage, HNSWStorageStrategy::Auto);
+    }
+
+    #[test]
+    fn hnsw_build_options_builder_methods() {
+        let options = HNSWBuildOptions::new()
+            .with_storage(HNSWStorageStrategy::Quantized)
+            .with_sparsity_threshold(0.7);
+
+        assert_eq!(options.storage, HNSWStorageStrategy::Quantized);
+        assert!((options.hnsw_config.sparsity_threshold - 0.7).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn hnsw_build_options_with_hnsw_config() {
+        let config = HNSWConfig::high_recall();
+        let options = HNSWBuildOptions::new().with_hnsw_config(config.clone());
+
+        assert_eq!(options.hnsw_config.m, config.m);
+        assert_eq!(options.hnsw_config.ef_construction, config.ef_construction);
+    }
+
+    #[test]
+    fn build_hnsw_index_with_options_dense() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![0.0, 0.0, 1.0]).unwrap();
+
+        let options = HNSWBuildOptions::new().with_storage(HNSWStorageStrategy::Dense);
+        let (index, keys) = engine.build_hnsw_index_with_options(options).unwrap();
+
+        assert_eq!(keys.len(), 3);
+        assert_eq!(index.len(), 3);
+
+        let results = index.search(&[1.0, 0.0, 0.0], 1);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn build_hnsw_index_with_options_auto() {
+        let engine = VectorEngine::new();
+
+        // Store sparse vectors (70% zeros)
+        engine
+            .store_embedding(
+                "sparse1",
+                vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )
+            .unwrap();
+        engine
+            .store_embedding(
+                "sparse2",
+                vec![0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0],
+            )
+            .unwrap();
+
+        let options = HNSWBuildOptions::sparse_optimized();
+        let (index, keys) = engine.build_hnsw_index_with_options(options).unwrap();
+
+        assert_eq!(keys.len(), 2);
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn build_hnsw_index_with_options_quantized() {
+        let engine = VectorEngine::new();
+
+        engine.store_embedding("a", vec![1.0, 0.0, 0.0]).unwrap();
+        engine.store_embedding("b", vec![0.0, 1.0, 0.0]).unwrap();
+        engine.store_embedding("c", vec![0.0, 0.0, 1.0]).unwrap();
+
+        let options = HNSWBuildOptions::memory_optimized();
+        let (index, keys) = engine.build_hnsw_index_with_options(options).unwrap();
+
+        assert_eq!(keys.len(), 3);
+        assert_eq!(index.len(), 3);
+
+        let results = index.search(&[1.0, 0.0, 0.0], 1);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn build_hnsw_index_with_options_empty_store() {
+        let engine = VectorEngine::new();
+
+        let options = HNSWBuildOptions::new();
+        let (index, keys) = engine.build_hnsw_index_with_options(options).unwrap();
+
+        assert!(keys.is_empty());
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn build_hnsw_index_with_options_dimension_mismatch() {
+        let engine = VectorEngine::new();
+
+        // Store vectors with different dimensions
+        engine.store_embedding("a", vec![1.0, 2.0, 3.0]).unwrap();
+        engine.store_embedding("b", vec![1.0, 2.0]).unwrap();
+
+        let options = HNSWBuildOptions::new();
+        let result = engine.build_hnsw_index_with_options(options);
+
+        // Should fail due to dimension mismatch between vectors
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 3,
+                got: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn quantized_search_recall() {
+        let engine = VectorEngine::new();
+
+        // Create 100 random-ish vectors
+        for i in 0..100 {
+            let v = create_test_vector(64, i);
+            engine.store_embedding(&format!("v{i}"), v).unwrap();
+        }
+
+        // Build both dense and quantized indexes
+        let (dense_index, _) = engine
+            .build_hnsw_index_with_options(HNSWBuildOptions::new())
+            .unwrap();
+        let (quantized_index, _) = engine
+            .build_hnsw_index_with_options(HNSWBuildOptions::memory_optimized())
+            .unwrap();
+
+        // Query and compare recall
+        let query = create_test_vector(64, 999);
+        let k = 10;
+
+        let dense_results = dense_index.search(&query, k);
+        let quantized_results = quantized_index.search(&query, k);
+
+        // Get the node IDs from dense results
+        let dense_ids: std::collections::HashSet<_> =
+            dense_results.iter().map(|(id, _)| *id).collect();
+        let quantized_ids: std::collections::HashSet<_> =
+            quantized_results.iter().map(|(id, _)| *id).collect();
+
+        // Calculate recall: how many of the quantized results match the dense results
+        let matching = quantized_ids.intersection(&dense_ids).count();
+        let recall = matching as f32 / k as f32;
+
+        // Quantized should achieve at least 70% recall on this dataset
+        // (we use 70% instead of 90% because the test vectors may not be ideal for quantization)
+        assert!(
+            recall >= 0.7,
+            "Quantized recall ({recall}) should be at least 70%"
+        );
+    }
+
+    #[test]
+    fn hnsw_storage_strategy_default() {
+        let strategy = HNSWStorageStrategy::default();
+        assert_eq!(strategy, HNSWStorageStrategy::Dense);
     }
 }

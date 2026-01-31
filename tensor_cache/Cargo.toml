@@ -1,8 +1,13 @@
 [package]
 name = "tensor_cache"
-version = "0.1.0"
-edition = "2021"
-description = "Semantic caching for LLM responses with cost tracking and background eviction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
+description = "Multi-layer LLM response cache with exact, semantic, and embedding lookup"
 
 [dependencies]
 # Internal

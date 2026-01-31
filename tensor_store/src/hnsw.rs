@@ -55,8 +55,10 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use crate::{
+    binary_quantization::BinaryVector,
     delta_vector::{ArchetypeRegistry, DeltaVector},
     instrumentation::HNSWAccessStats,
+    pq::PQVector,
     SparseVector,
 };
 
@@ -557,7 +559,7 @@ impl ScalarQuantizedVector {
     }
 }
 
-/// Storage format for embeddings - supports dense, sparse, delta, quantized, or TT-compressed.
+/// Storage format for embeddings - supports dense, sparse, delta, quantized, PQ, binary, or TT-compressed.
 #[derive(Debug, Clone)]
 pub enum EmbeddingStorage {
     /// Dense vector storage (traditional)
@@ -570,6 +572,11 @@ pub enum EmbeddingStorage {
     TensorTrain(TTVectorCached),
     /// 8-bit scalar quantized storage (~4x memory reduction)
     Quantized(ScalarQuantizedVector),
+    /// Product quantized storage (~100-400x memory reduction).
+    /// Tuple contains (`pq_vector`, `original_dimension`).
+    ProductQuantized(PQVector, usize),
+    /// Binary quantized storage (~32x memory reduction, fast Hamming distance)
+    Binary(BinaryVector),
 }
 
 impl EmbeddingStorage {
@@ -582,6 +589,8 @@ impl EmbeddingStorage {
             Self::Delta(d) => d.dimension(),
             Self::TensorTrain(cached) => cached.tt.original_dim,
             Self::Quantized(q) => q.dimension(),
+            Self::ProductQuantized(_, dim) => *dim,
+            Self::Binary(b) => b.dimension(),
         }
     }
 
@@ -602,7 +611,7 @@ impl EmbeddingStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error if Delta storage is used (requires registry).
+    /// Returns an error if Delta or `ProductQuantized` storage is used (requires registry/codebook).
     pub fn try_to_dense(&self) -> Result<Vec<f32>, EmbeddingStorageError> {
         match self {
             Self::Dense(v) => Ok(v.clone()),
@@ -610,6 +619,10 @@ impl EmbeddingStorage {
             Self::Delta(_) => Err(EmbeddingStorageError::DeltaRequiresRegistry),
             Self::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
             Self::Quantized(q) => Ok(q.dequantize()),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for reconstruction".to_string(),
+            )),
+            Self::Binary(b) => Ok(b.to_dense()),
         }
     }
 
@@ -629,7 +642,8 @@ impl EmbeddingStorage {
     /// # Errors
     ///
     /// Returns an error if Delta storage is used without a registry,
-    /// or if the archetype is not found in the registry.
+    /// if the archetype is not found in the registry,
+    /// or if `ProductQuantized` is used (requires separate codebook).
     pub fn try_to_dense_with_registry(
         &self,
         registry: Option<&ArchetypeRegistry>,
@@ -645,6 +659,10 @@ impl EmbeddingStorage {
             },
             Self::TensorTrain(cached) => Ok(tt_reconstruct(&cached.tt)),
             Self::Quantized(q) => Ok(q.dequantize()),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for reconstruction".to_string(),
+            )),
+            Self::Binary(b) => Ok(b.to_dense()),
         }
     }
 
@@ -717,6 +735,36 @@ impl EmbeddingStorage {
         matches!(self, Self::Quantized(_))
     }
 
+    /// Returns the underlying PQ vector if stored as product quantized.
+    #[must_use]
+    pub const fn as_pq(&self) -> Option<&PQVector> {
+        match self {
+            Self::ProductQuantized(pq, _) => Some(pq),
+            _ => None,
+        }
+    }
+
+    /// Returns true if stored in product quantized format.
+    #[must_use]
+    pub const fn is_pq(&self) -> bool {
+        matches!(self, Self::ProductQuantized(_, _))
+    }
+
+    /// Returns the underlying binary vector if stored as binary quantized.
+    #[must_use]
+    pub const fn as_binary(&self) -> Option<&BinaryVector> {
+        match self {
+            Self::Binary(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Returns true if stored in binary quantized format.
+    #[must_use]
+    pub const fn is_binary(&self) -> bool {
+        matches!(self, Self::Binary(_))
+    }
+
     /// Compute dot product with a dense query vector.
     ///
     /// For Delta storage, requires archetype registry.
@@ -735,7 +783,7 @@ impl EmbeddingStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error if Delta storage is used (requires registry).
+    /// Returns an error if Delta or `ProductQuantized` storage is used (requires registry/codebook).
     #[inline]
     pub fn try_dot_with_dense(&self, query: &[f32]) -> Result<f32, EmbeddingStorageError> {
         match self {
@@ -747,6 +795,14 @@ impl EmbeddingStorage {
                 Ok(simd::dot_product(&dense, query))
             },
             Self::Quantized(q) => Ok(q.dot_dense(query)),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for dot product".to_string(),
+            )),
+            Self::Binary(b) => {
+                // For binary vectors, compute dot product via dense reconstruction
+                let dense = b.to_dense();
+                Ok(simd::dot_product(&dense, query))
+            },
         }
     }
 
@@ -771,7 +827,8 @@ impl EmbeddingStorage {
     /// # Errors
     ///
     /// Returns an error if Delta storage is used without a registry,
-    /// or if the archetype is not found in the registry.
+    /// if the archetype is not found in the registry,
+    /// or if `ProductQuantized` is used (requires separate codebook).
     #[inline]
     pub fn try_dot_with_dense_and_registry(
         &self,
@@ -792,6 +849,13 @@ impl EmbeddingStorage {
                 Ok(simd::dot_product(&dense, query))
             },
             Self::Quantized(q) => Ok(q.dot_dense(query)),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for dot product".to_string(),
+            )),
+            Self::Binary(b) => {
+                let dense = b.to_dense();
+                Ok(simd::dot_product(&dense, query))
+            },
         }
     }
 
@@ -810,7 +874,7 @@ impl EmbeddingStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error if Delta storage is used (requires registry).
+    /// Returns an error if Delta or `ProductQuantized` storage is used (requires registry/codebook).
     #[inline]
     pub fn try_dot_with_sparse(&self, query: &SparseVector) -> Result<f32, EmbeddingStorageError> {
         match self {
@@ -824,6 +888,13 @@ impl EmbeddingStorage {
             Self::Quantized(q) => {
                 let query_dense = query.to_dense();
                 Ok(q.dot_dense(&query_dense))
+            },
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for dot product".to_string(),
+            )),
+            Self::Binary(b) => {
+                let dense = b.to_dense();
+                Ok(query.dot_dense(&dense))
             },
         }
     }
@@ -843,7 +914,7 @@ impl EmbeddingStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error if Delta storage is used (requires registry).
+    /// Returns an error if Delta or `ProductQuantized` storage is used (requires registry/codebook).
     #[inline]
     pub fn try_dot_with_tt(&self, query_tt: &TTVector) -> Result<f32, EmbeddingStorageError> {
         match self {
@@ -864,6 +935,14 @@ impl EmbeddingStorage {
             Self::Quantized(q) => {
                 let query_dense = tt_reconstruct(query_tt);
                 Ok(q.dot_dense(&query_dense))
+            },
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for dot product".to_string(),
+            )),
+            Self::Binary(b) => {
+                let query_dense = tt_reconstruct(query_tt);
+                let dense = b.to_dense();
+                Ok(simd::dot_product(&dense, &query_dense))
             },
         }
     }
@@ -886,8 +965,9 @@ impl EmbeddingStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error if Delta storage is used (requires registry).
+    /// Returns an error if Delta or `ProductQuantized` storage is used (requires registry/codebook).
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     pub fn try_magnitude(&self) -> Result<f32, EmbeddingStorageError> {
         match self {
             Self::Dense(v) => Ok(simd::magnitude(v)),
@@ -895,6 +975,13 @@ impl EmbeddingStorage {
             Self::Delta(_) => Err(EmbeddingStorageError::DeltaRequiresRegistry),
             Self::TensorTrain(cached) => Ok(cached.norm),
             Self::Quantized(q) => Ok(q.magnitude_immutable()),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for magnitude".to_string(),
+            )),
+            Self::Binary(b) => {
+                // For binary vectors, magnitude is sqrt(popcount) since values are -1 or 1
+                Ok((b.dimension() as f32).sqrt())
+            },
         }
     }
 
@@ -915,8 +1002,10 @@ impl EmbeddingStorage {
     /// # Errors
     ///
     /// Returns an error if Delta storage is used without a registry,
-    /// or if the archetype is not found in the registry.
+    /// if the archetype is not found in the registry,
+    /// or if `ProductQuantized` is used (requires separate codebook).
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     pub fn try_magnitude_with_registry(
         &self,
         registry: Option<&ArchetypeRegistry>,
@@ -933,6 +1022,10 @@ impl EmbeddingStorage {
             },
             Self::TensorTrain(cached) => Ok(cached.norm),
             Self::Quantized(q) => Ok(q.magnitude_immutable()),
+            Self::ProductQuantized(_, _) => Err(EmbeddingStorageError::ReconstructionFailed(
+                "ProductQuantized requires codebook for magnitude".to_string(),
+            )),
+            Self::Binary(b) => Ok((b.dimension() as f32).sqrt()),
         }
     }
 
@@ -996,12 +1089,16 @@ impl EmbeddingStorage {
                 let sparse_as_dense = s.to_dense();
                 simd::euclidean_distance(&sparse_as_dense, query)
             },
-            Self::Delta(_) => f32::MAX, // Unsupported without registry
+            Self::Delta(_) | Self::ProductQuantized(_, _) => f32::MAX, // Unsupported without registry/codebook
             Self::TensorTrain(cached) => {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 simd::euclidean_distance(&reconstructed, query)
             },
             Self::Quantized(q) => q.euclidean_distance_dense(query),
+            Self::Binary(b) => {
+                let dense = b.to_dense();
+                simd::euclidean_distance(&dense, query)
+            },
         }
     }
 
@@ -1015,7 +1112,7 @@ impl EmbeddingStorage {
                 simd::euclidean_distance(v, &query_dense)
             },
             Self::Sparse(s) => s.euclidean_distance(query),
-            Self::Delta(_) => f32::MAX, // Unsupported without registry
+            Self::Delta(_) | Self::ProductQuantized(_, _) => f32::MAX, // Unsupported without registry/codebook
             Self::TensorTrain(cached) => {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 let query_dense = query.to_dense();
@@ -1024,6 +1121,11 @@ impl EmbeddingStorage {
             Self::Quantized(q) => {
                 let query_dense = query.to_dense();
                 q.euclidean_distance_dense(&query_dense)
+            },
+            Self::Binary(b) => {
+                let dense = b.to_dense();
+                let query_dense = query.to_dense();
+                simd::euclidean_distance(&dense, &query_dense)
             },
         }
     }
@@ -1127,6 +1229,8 @@ impl EmbeddingStorage {
             Self::Delta(d) => d.memory_bytes(),
             Self::TensorTrain(cached) => cached.tt.storage_size() * 4,
             Self::Quantized(q) => q.memory_bytes(),
+            Self::ProductQuantized(pq, _) => pq.memory_bytes(),
+            Self::Binary(b) => b.memory_bytes(),
         }
     }
 }
@@ -1160,6 +1264,15 @@ impl From<ScalarQuantizedVector> for EmbeddingStorage {
         Self::Quantized(q)
     }
 }
+
+impl From<BinaryVector> for EmbeddingStorage {
+    fn from(b: BinaryVector) -> Self {
+        Self::Binary(b)
+    }
+}
+
+// Note: PQVector requires dimension to be stored alongside, so From is not implemented.
+// Use EmbeddingStorage::ProductQuantized(pq, dimension) directly.
 
 /// Compressed neighbor storage using delta-varint encoding.
 ///
@@ -1381,6 +1494,10 @@ pub struct HNSWMemoryStats {
     pub tt_count: usize,
     /// Number of nodes using scalar quantized storage
     pub quantized_count: usize,
+    /// Number of nodes using product quantized storage
+    pub pq_count: usize,
+    /// Number of nodes using binary quantized storage
+    pub binary_count: usize,
     /// Total bytes used for embeddings
     pub embedding_bytes: usize,
 }
@@ -2395,6 +2512,34 @@ impl HNSWIndex {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 Ok(q.cosine_distance_dense(&reconstructed))
             },
+            // Binary vectors: use Hamming-based similarity approximation
+            (EmbeddingStorage::Binary(ba), EmbeddingStorage::Binary(bb)) => {
+                Ok(1.0 - ba.similarity(bb))
+            },
+            (EmbeddingStorage::Binary(b), other) | (other, EmbeddingStorage::Binary(b)) => {
+                // Reconstruct to dense and compute
+                match other.try_to_dense() {
+                    Ok(dense) => {
+                        let b_dense = b.to_dense();
+                        let dot = simd::dot_product(&b_dense, &dense);
+                        let mag_a = simd::magnitude(&b_dense);
+                        let mag_b = simd::magnitude(&dense);
+                        if mag_a == 0.0 || mag_b == 0.0 {
+                            Ok(1.0)
+                        } else {
+                            Ok(1.0 - (dot / (mag_a * mag_b)))
+                        }
+                    },
+                    Err(e) => Err(e),
+                }
+            },
+            // ProductQuantized requires codebook - not supported without context
+            (EmbeddingStorage::ProductQuantized(_, _), _)
+            | (_, EmbeddingStorage::ProductQuantized(_, _)) => {
+                Err(EmbeddingStorageError::ReconstructionFailed(
+                    "ProductQuantized requires codebook for distance computation".to_string(),
+                ))
+            },
         }
     }
 
@@ -2456,6 +2601,28 @@ impl HNSWIndex {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 Ok(q.euclidean_distance_dense(&reconstructed))
             },
+            // Binary vectors: use reconstructed dense for Euclidean distance
+            (EmbeddingStorage::Binary(ba), EmbeddingStorage::Binary(bb)) => {
+                let da = ba.to_dense();
+                let db = bb.to_dense();
+                Ok(simd::euclidean_distance(&da, &db))
+            },
+            (EmbeddingStorage::Binary(b), other) | (other, EmbeddingStorage::Binary(b)) => {
+                match other.try_to_dense() {
+                    Ok(dense) => {
+                        let b_dense = b.to_dense();
+                        Ok(simd::euclidean_distance(&b_dense, &dense))
+                    },
+                    Err(e) => Err(e),
+                }
+            },
+            // ProductQuantized requires codebook - not supported without context
+            (EmbeddingStorage::ProductQuantized(_, _), _)
+            | (_, EmbeddingStorage::ProductQuantized(_, _)) => {
+                Err(EmbeddingStorageError::ReconstructionFailed(
+                    "ProductQuantized requires codebook for distance computation".to_string(),
+                ))
+            },
         }
     }
 
@@ -2509,6 +2676,28 @@ impl HNSWIndex {
                 let reconstructed = tt_reconstruct(&cached.tt);
                 Ok(-q.dot_dense(&reconstructed))
             },
+            // Binary vectors: use reconstructed dense for dot product
+            (EmbeddingStorage::Binary(ba), EmbeddingStorage::Binary(bb)) => {
+                let da = ba.to_dense();
+                let db = bb.to_dense();
+                Ok(-simd::dot_product(&da, &db))
+            },
+            (EmbeddingStorage::Binary(b), other) | (other, EmbeddingStorage::Binary(b)) => {
+                match other.try_to_dense() {
+                    Ok(dense) => {
+                        let b_dense = b.to_dense();
+                        Ok(-simd::dot_product(&b_dense, &dense))
+                    },
+                    Err(e) => Err(e),
+                }
+            },
+            // ProductQuantized requires codebook - not supported without context
+            (EmbeddingStorage::ProductQuantized(_, _), _)
+            | (_, EmbeddingStorage::ProductQuantized(_, _)) => {
+                Err(EmbeddingStorageError::ReconstructionFailed(
+                    "ProductQuantized requires codebook for distance computation".to_string(),
+                ))
+            },
         }
     }
 
@@ -2548,6 +2737,8 @@ impl HNSWIndex {
         let mut delta_count = 0usize;
         let mut tt_count = 0usize;
         let mut quantized_count = 0usize;
+        let mut pq_count = 0usize;
+        let mut binary_count = 0usize;
         let mut total_bytes = 0usize;
 
         for node in nodes.iter() {
@@ -2557,6 +2748,8 @@ impl HNSWIndex {
                 EmbeddingStorage::Delta(_) => delta_count += 1,
                 EmbeddingStorage::TensorTrain(_) => tt_count += 1,
                 EmbeddingStorage::Quantized(_) => quantized_count += 1,
+                EmbeddingStorage::ProductQuantized(_, _) => pq_count += 1,
+                EmbeddingStorage::Binary(_) => binary_count += 1,
             }
             total_bytes += node.embedding.memory_bytes();
         }
@@ -2568,6 +2761,8 @@ impl HNSWIndex {
             delta_count,
             tt_count,
             quantized_count,
+            pq_count,
+            binary_count,
             embedding_bytes: total_bytes,
         }
     }

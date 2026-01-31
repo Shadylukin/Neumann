@@ -1,8 +1,13 @@
 [package]
 name = "tensor_vault"
-version = "0.1.0"
-edition = "2021"
-description = "Secure secret storage with graph-based access control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
+description = "AES-256-GCM encrypted secret storage with graph-based access control"
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }

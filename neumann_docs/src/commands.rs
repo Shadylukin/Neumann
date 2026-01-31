@@ -108,10 +108,7 @@ fn cmd_list(category: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<50} {:<15} {:>8}",
-        "PATH", "CATEGORY", "WORDS"
-    );
+    println!("{:<50} {:<15} {:>8}", "PATH", "CATEGORY", "WORDS");
     println!("{}", "-".repeat(75));
 
     for doc in docs {
@@ -128,9 +125,7 @@ fn cmd_list(category: Option<&str>) -> Result<()> {
 
 fn cmd_search(query: &str, top_k: usize) -> Result<()> {
     let indexer = DocIndexer::new().context("Failed to create indexer")?;
-    let results = indexer
-        .search(query, top_k)
-        .context("Failed to search")?;
+    let results = indexer.search(query, top_k).context("Failed to search")?;
 
     if results.is_empty() {
         println!("No results found. Run 'neumann-docs index' first.");
@@ -142,11 +137,7 @@ fn cmd_search(query: &str, top_k: usize) -> Result<()> {
     println!("{}", "-".repeat(70));
 
     for result in results {
-        println!(
-            "{:<60} {:>8.4}",
-            truncate(&result.path, 58),
-            result.score
-        );
+        println!("{:<60} {:>8.4}", truncate(&result.path, 58), result.score);
     }
 
     Ok(())
@@ -183,9 +174,7 @@ fn cmd_show(path: &str) -> Result<()> {
 
 fn cmd_path(from: &str, to: &str) -> Result<()> {
     let indexer = DocIndexer::new().context("Failed to create indexer")?;
-    let path = indexer
-        .find_path(from, to)
-        .context("Failed to find path")?;
+    let path = indexer.find_path(from, to).context("Failed to find path")?;
 
     match path {
         Some(nodes) if !nodes.is_empty() => {
@@ -197,10 +186,10 @@ fn cmd_path(from: &str, to: &str) -> Result<()> {
                 }
                 println!("  [{i}] {node}");
             }
-        }
+        },
         _ => {
             println!("No path found between {from} and {to}");
-        }
+        },
     }
 
     Ok(())
@@ -299,7 +288,7 @@ mod tests {
         match cli.command {
             Command::Index { path } => {
                 assert_eq!(path, PathBuf::from("/tmp/docs"));
-            }
+            },
             _ => panic!("Expected Index command"),
         }
     }
@@ -310,7 +299,7 @@ mod tests {
         match cli.command {
             Command::List { category } => {
                 assert_eq!(category, Some("architecture".to_string()));
-            }
+            },
             _ => panic!("Expected List command"),
         }
     }
@@ -322,7 +311,7 @@ mod tests {
             Command::Search { query, top } => {
                 assert_eq!(query, "raft consensus");
                 assert_eq!(top, 10);
-            }
+            },
             _ => panic!("Expected Search command"),
         }
     }
@@ -333,24 +322,19 @@ mod tests {
         match cli.command {
             Command::Show { path } => {
                 assert_eq!(path, "architecture/overview.md");
-            }
+            },
             _ => panic!("Expected Show command"),
         }
     }
 
     #[test]
     fn test_cli_path_parsing() {
-        let cli = Cli::parse_from([
-            "neumann-docs",
-            "path",
-            "introduction.md",
-            "tensor-chain.md",
-        ]);
+        let cli = Cli::parse_from(["neumann-docs", "path", "introduction.md", "tensor-chain.md"]);
         match cli.command {
             Command::Path { from, to } => {
                 assert_eq!(from, "introduction.md");
                 assert_eq!(to, "tensor-chain.md");
-            }
+            },
             _ => panic!("Expected Path command"),
         }
     }

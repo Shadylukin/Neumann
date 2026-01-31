@@ -79,6 +79,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod binary_quantization;
 pub mod blob_log;
 pub mod cache_ring;
 pub mod consistent_hash;
@@ -89,10 +90,12 @@ pub mod entity_index;
 pub mod graph_tensor;
 pub mod hnsw;
 pub mod instrumentation;
+pub mod ivf;
 pub mod metadata_slab;
 pub mod mmap;
 pub mod partitioned;
 pub mod partitioner;
+pub mod pq;
 pub mod relational_slab;
 pub mod semantic_partitioner;
 pub mod slab_router;
@@ -102,6 +105,7 @@ pub mod tiered;
 pub mod voronoi;
 pub mod wal;
 
+pub use binary_quantization::{BinaryThreshold, BinaryVector};
 pub use blob_log::{BlobLog, BlobLogSnapshot, ChunkHash};
 pub use cache_ring::{CacheRing, CacheRingSnapshot, CacheStats, EvictionScorer, EvictionStrategy};
 pub use consistent_hash::{ConsistentHashConfig, ConsistentHashPartitioner, ConsistentHashStats};
@@ -125,12 +129,14 @@ pub use hnsw::{
 pub use instrumentation::{
     HNSWAccessStats, HNSWStatsSnapshot, ShardAccessSnapshot, ShardAccessTracker, ShardStatsSnapshot,
 };
+pub use ivf::{IVFConfig, IVFIndex, IVFIndexState, IVFStorage};
 pub use metadata_slab::{MetadataSlab, MetadataSlabSnapshot};
 pub use mmap::{MmapError, MmapStore, MmapStoreBuilder, MmapStoreMut};
 pub use partitioned::{
     PartitionedError, PartitionedGet, PartitionedPut, PartitionedResult, PartitionedStore,
 };
 pub use partitioner::{PartitionId, PartitionResult, Partitioner, PhysicalNodeId};
+pub use pq::{ADCTable, PQCodebook, PQConfig, PQVector};
 pub use relational_slab::{
     ColumnDef, ColumnType, ColumnValue, RangeOp, RelationalError, RelationalSlab,
     RelationalSlabSnapshot, Row, RowId, TableSchema,

@@ -15,7 +15,7 @@ use std::{
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tensor_compress::{
     format::{CompressedEntry, CompressedScalar, CompressedSnapshot, CompressedValue, Header},
-    incremental::{apply_delta, DeltaBuilder, DeltaChain},
+    incremental::{DeltaBuilder, DeltaChain},
     streaming::{StreamingReader, StreamingWriter},
     tt_decompose, tt_decompose_batch, tt_reconstruct, CompressionConfig, StreamingTTReader,
     StreamingTTWriter, TTConfig,

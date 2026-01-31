@@ -13,6 +13,7 @@ use crate::proto::{health_server::Health, HealthCheckRequest, HealthCheckRespons
 pub struct HealthState {
     query_service_healthy: AtomicBool,
     blob_service_healthy: AtomicBool,
+    vector_service_healthy: AtomicBool,
     is_draining: AtomicBool,
 }
 
@@ -21,6 +22,7 @@ impl Default for HealthState {
         Self {
             query_service_healthy: AtomicBool::new(true),
             blob_service_healthy: AtomicBool::new(true),
+            vector_service_healthy: AtomicBool::new(true),
             is_draining: AtomicBool::new(false),
         }
     }
@@ -55,10 +57,24 @@ impl HealthState {
         self.blob_service_healthy.load(Ordering::SeqCst)
     }
 
+    /// Set the vector service health status.
+    pub fn set_vector_service_healthy(&self, healthy: bool) {
+        self.vector_service_healthy.store(healthy, Ordering::SeqCst);
+    }
+
+    /// Check if the vector service is healthy.
+    #[must_use]
+    pub fn is_vector_service_healthy(&self) -> bool {
+        self.vector_service_healthy.load(Ordering::SeqCst)
+    }
+
     /// Check if all services are healthy.
     #[must_use]
     pub fn is_all_healthy(&self) -> bool {
-        self.is_query_service_healthy() && self.is_blob_service_healthy() && !self.is_draining()
+        self.is_query_service_healthy()
+            && self.is_blob_service_healthy()
+            && self.is_vector_service_healthy()
+            && !self.is_draining()
     }
 
     /// Set the draining state for graceful shutdown.
@@ -132,6 +148,14 @@ impl Health for HealthServiceImpl {
             },
             Some("neumann.v1.BlobService") => {
                 if self.state.is_blob_service_healthy() {
+                    ServingStatus::Serving
+                } else {
+                    ServingStatus::NotServing
+                }
+            },
+            Some("neumann.vector.v1.PointsService")
+            | Some("neumann.vector.v1.CollectionsService") => {
+                if self.state.is_vector_service_healthy() {
                     ServingStatus::Serving
                 } else {
                     ServingStatus::NotServing
@@ -284,20 +308,30 @@ mod tests {
 
         assert!(state.is_query_service_healthy());
         assert!(state.is_blob_service_healthy());
+        assert!(state.is_vector_service_healthy());
         assert!(state.is_all_healthy());
 
         state.set_query_service_healthy(false);
         assert!(!state.is_query_service_healthy());
         assert!(state.is_blob_service_healthy());
+        assert!(state.is_vector_service_healthy());
         assert!(!state.is_all_healthy());
 
         state.set_query_service_healthy(true);
         state.set_blob_service_healthy(false);
         assert!(state.is_query_service_healthy());
         assert!(!state.is_blob_service_healthy());
+        assert!(state.is_vector_service_healthy());
         assert!(!state.is_all_healthy());
 
         state.set_blob_service_healthy(true);
+        state.set_vector_service_healthy(false);
+        assert!(state.is_query_service_healthy());
+        assert!(state.is_blob_service_healthy());
+        assert!(!state.is_vector_service_healthy());
+        assert!(!state.is_all_healthy());
+
+        state.set_vector_service_healthy(true);
         assert!(state.is_all_healthy());
     }
 
@@ -316,6 +350,55 @@ mod tests {
         state.set_draining(false);
         assert!(!state.is_draining());
         assert!(state.is_all_healthy());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_vector_service() {
+        let service = HealthServiceImpl::new();
+        let request = Request::new(HealthCheckRequest {
+            service: Some("neumann.vector.v1.PointsService".to_string()),
+        });
+
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::Serving)
+        );
+
+        let request = Request::new(HealthCheckRequest {
+            service: Some("neumann.vector.v1.CollectionsService".to_string()),
+        });
+
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::Serving)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_vector_service_unhealthy() {
+        let state = Arc::new(HealthState::new());
+        let service = HealthServiceImpl::with_state(Arc::clone(&state));
+
+        state.set_vector_service_healthy(false);
+
+        let request = Request::new(HealthCheckRequest {
+            service: Some("neumann.vector.v1.PointsService".to_string()),
+        });
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::NotServing)
+        );
+
+        // Overall health should also be not serving
+        let request = Request::new(HealthCheckRequest { service: None });
+        let response = service.check(request).await.unwrap();
+        assert_eq!(
+            response.into_inner().status,
+            i32::from(ServingStatus::NotServing)
+        );
     }
 
     #[tokio::test]

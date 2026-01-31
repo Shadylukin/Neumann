@@ -1,9 +1,16 @@
 [package]
 name = "neumann_shell"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
 description = "Interactive CLI shell for Neumann database"
-license = "MIT"
+readme = "README.md"
+keywords = ["database", "cli", "tensor", "shell", "repl"]
+categories = ["database", "command-line-utilities"]
+exclude = ["benches/*", "*.profraw"]
 
 [dependencies]
 query_router = { path = "../query_router" }
@@ -15,6 +22,17 @@ tensor_checkpoint = { path = "../tensor_checkpoint" }
 rustyline = "15"
 base64 = "0.22"
 parking_lot = "0.12"
+
+# Terminal UX
+owo-colors = "4"
+indicatif = "0.17"
+tabled = { version = "0.17", default-features = false, features = ["std", "derive"] }
+console = "0.15"
+
+# TRO (Tensor Rust Organism) border animation
+crossbeam-channel = "0.5"
+smallvec = "1.11"
+rand = "0.8"
 
 [[bin]]
 name = "neumann"

@@ -51,8 +51,8 @@ pub struct DocIndexer {
 impl DocIndexer {
     /// Create a new indexer with an embedded Neumann client.
     pub fn new() -> Result<Self> {
-        let client = NeumannClient::embedded()
-            .context("Failed to create embedded Neumann client")?;
+        let client =
+            NeumannClient::embedded().context("Failed to create embedded Neumann client")?;
         Ok(Self { client })
     }
 
@@ -133,7 +133,7 @@ impl DocIndexer {
                     Ok(doc) => docs.push(doc),
                     Err(e) => {
                         eprintln!("Warning: Failed to parse {}: {e}", entry_path.display());
-                    }
+                    },
                 }
             }
         }
@@ -184,9 +184,7 @@ impl DocIndexer {
 
         // Extract the node ID from the result
         match result {
-            QueryResult::Ids(ids) => {
-                ids.first().copied().context("No node ID returned")
-            }
+            QueryResult::Ids(ids) => ids.first().copied().context("No node ID returned"),
             QueryResult::Count(n) => Ok(n as u64),
             _ => anyhow::bail!("Unexpected result from NODE CREATE: {result:?}"),
         }
@@ -219,8 +217,10 @@ impl DocIndexer {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
         }
-        // Mask to ensure it fits in i64 positive range
-        (hash & 0x7FFF_FFFF_FFFF_FFFF) as i64
+        // Mask clears top bit, ensuring positive value that fits in i64
+        #[allow(clippy::cast_possible_wrap)]
+        let id = (hash & 0x7FFF_FFFF_FFFF_FFFF) as i64;
+        id
     }
 
     /// List all indexed documents.
@@ -249,7 +249,7 @@ impl DocIndexer {
                     });
                 }
                 Ok(docs)
-            }
+            },
             _ => Ok(Vec::new()),
         }
     }
@@ -293,7 +293,7 @@ impl DocIndexer {
                     })
                     .collect();
                 Ok(results)
-            }
+            },
             _ => Ok(Vec::new()),
         }
     }
@@ -315,7 +315,7 @@ impl DocIndexer {
                     size: get_int(row, "size") as usize,
                     word_count: get_int(row, "word_count") as usize,
                 }
-            }
+            },
             _ => return Ok(None),
         };
 
@@ -341,10 +341,7 @@ impl DocIndexer {
             }
         }
 
-        Ok(Some(DocumentDetail {
-            info,
-            linked_docs,
-        }))
+        Ok(Some(DocumentDetail { info, linked_docs }))
     }
 
     /// Find path between two documents.
@@ -357,16 +354,12 @@ impl DocIndexer {
         let to_result = self.client.execute_sync(&to_query)?;
 
         let from_id = match from_result {
-            QueryResult::Nodes(nodes) => {
-                nodes.first().map(|n| n.id)
-            }
+            QueryResult::Nodes(nodes) => nodes.first().map(|n| n.id),
             _ => None,
         };
 
         let to_id = match to_result {
-            QueryResult::Nodes(nodes) => {
-                nodes.first().map(|n| n.id)
-            }
+            QueryResult::Nodes(nodes) => nodes.first().map(|n| n.id),
             _ => None,
         };
 
@@ -379,8 +372,7 @@ impl DocIndexer {
                     let mut paths = Vec::new();
                     for id in node_ids {
                         let get_query = format!("NODE GET {id}");
-                        if let Ok(QueryResult::Nodes(nodes)) =
-                            self.client.execute_sync(&get_query)
+                        if let Ok(QueryResult::Nodes(nodes)) = self.client.execute_sync(&get_query)
                         {
                             if let Some(node) = nodes.first() {
                                 if let Some(path) = node.properties.get("path") {
@@ -390,7 +382,7 @@ impl DocIndexer {
                         }
                     }
                     Ok(Some(paths))
-                }
+                },
                 _ => Ok(None),
             }
         } else {

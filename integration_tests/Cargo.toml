@@ -1,7 +1,11 @@
 [package]
 name = "integration_tests"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-crate integration tests for Neumann"
+publish = false
 
 [dependencies]
 tensor_store = { path = "../tensor_store" }

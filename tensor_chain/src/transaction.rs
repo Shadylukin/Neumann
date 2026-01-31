@@ -30,6 +30,122 @@ use crate::{
 /// Default embedding dimension for state snapshots.
 pub(crate) const DEFAULT_EMBEDDING_DIM: usize = 128;
 
+/// Apply a single transaction to the given TensorStore.
+///
+/// This is shared between the state machine (Raft log application) and
+/// local commit paths to ensure identical storage semantics.
+pub(crate) fn apply_transaction_to_store(store: &TensorStore, tx: &ChainTransaction) -> Result<()> {
+    use tensor_store::{ScalarValue, TensorData, TensorValue};
+
+    match tx {
+        // Key-value operations → TensorStore directly
+        ChainTransaction::Put { key, data } => {
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "data",
+                TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
+            );
+            store
+                .put(key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+        ChainTransaction::Delete { key } => {
+            // Delete is idempotent - missing key means desired state achieved
+            store.delete(key).ok();
+        },
+
+        // Embedding operations → emb: prefix (VectorEngine pattern)
+        ChainTransaction::Embed { key, vector } => {
+            let storage_key = format!("emb:{key}");
+            let mut tensor = TensorData::new();
+            tensor.set("vector", TensorValue::Vector(vector.clone()));
+            store
+                .put(storage_key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+
+        // Graph node operations → node: prefix (GraphEngine pattern)
+        ChainTransaction::NodeCreate { key, label } => {
+            let storage_key = format!("node:{key}");
+            let mut tensor = TensorData::new();
+            tensor.set("_id", TensorValue::Scalar(ScalarValue::String(key.clone())));
+            tensor.set(
+                "_type",
+                TensorValue::Scalar(ScalarValue::String("node".into())),
+            );
+            tensor.set(
+                "_label",
+                TensorValue::Scalar(ScalarValue::String(label.clone())),
+            );
+            store
+                .put(storage_key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+        ChainTransaction::NodeDelete { key } => {
+            let storage_key = format!("node:{key}");
+            // Delete is idempotent - missing key means desired state achieved
+            store.delete(&storage_key).ok();
+        },
+
+        // Graph edge operations → edge: prefix
+        ChainTransaction::EdgeCreate {
+            from,
+            to,
+            edge_type,
+        } => {
+            let storage_key = format!("edge:{from}:{to}:{edge_type}");
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "_from",
+                TensorValue::Scalar(ScalarValue::String(from.clone())),
+            );
+            tensor.set("_to", TensorValue::Scalar(ScalarValue::String(to.clone())));
+            tensor.set(
+                "_edge_type",
+                TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
+            );
+            store
+                .put(storage_key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+
+        // Table operations → table: prefix
+        ChainTransaction::TableInsert { table, values } => {
+            let row_hash = tx.hash();
+            let row_key = format!("table:{table}:row:{}", hex::encode(row_hash));
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "data",
+                TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+            );
+            store
+                .put(row_key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+        ChainTransaction::TableUpdate {
+            table,
+            row_id,
+            values,
+        } => {
+            let row_key = format!("table:{table}:row:{row_id}");
+            let mut tensor = TensorData::new();
+            tensor.set(
+                "data",
+                TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
+            );
+            store
+                .put(row_key, tensor)
+                .map_err(|e| ChainError::StorageError(e.to_string()))?;
+        },
+        ChainTransaction::TableDelete { table, row_id } => {
+            let storage_key = format!("table:{table}:row:{row_id}");
+            store.delete(&storage_key).ok();
+        },
+    }
+
+    Ok(())
+}
+
 /// Embedding state for a transaction workspace.
 ///
 /// Wraps EmbeddingState to provide a mutable API for transaction lifecycle.

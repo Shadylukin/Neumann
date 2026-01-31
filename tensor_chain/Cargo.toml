@@ -10,6 +10,7 @@ documentation.workspace = true
 keywords = ["blockchain", "tensor", "consensus", "distributed"]
 categories = ["database", "cryptography"]
 rust-version.workspace = true
+readme = "../README.md"
 description = "Tensor-native blockchain with semantic conflict detection and auto-merge"
 
 [dependencies]

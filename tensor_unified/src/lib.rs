@@ -47,8 +47,11 @@ impl std::fmt::Display for UnifiedError {
             UnifiedError::NotFound(key) => write!(f, "Entity not found: {key}"),
             UnifiedError::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
             UnifiedError::BatchOperationFailed { index, key, cause } => {
-                write!(f, "Batch operation failed at index {index} (key: {key}): {cause}")
-            }
+                write!(
+                    f,
+                    "Batch operation failed at index {index} (key: {key}): {cause}"
+                )
+            },
         }
     }
 }
@@ -78,6 +81,17 @@ pub type Result<T> = std::result::Result<T, UnifiedError>;
 /// Entity input type for batch operations: (key, fields, optional embedding).
 pub type EntityInput = (String, HashMap<String, String>, Option<Vec<f32>>);
 
+/// Error detail for a single failed item in a batch operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchItemError {
+    /// Index of the failed item in the original batch.
+    pub index: usize,
+    /// Key of the failed item (if available).
+    pub key: Option<String>,
+    /// Description of the failure cause.
+    pub cause: String,
+}
+
 /// Result of a batch operation with details about successful items.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BatchResult {
@@ -85,14 +99,43 @@ pub struct BatchResult {
     pub succeeded: Vec<String>,
     /// Total count of successful operations.
     pub count: usize,
+    /// Errors for failed items (empty if all succeeded).
+    pub failed: Vec<BatchItemError>,
 }
 
 impl BatchResult {
-    /// Creates a new `BatchResult` from a list of succeeded keys.
+    /// Creates a new `BatchResult` from a list of succeeded keys (backwards compatible).
     #[must_use]
     pub fn new(succeeded: Vec<String>) -> Self {
         let count = succeeded.len();
-        Self { succeeded, count }
+        Self {
+            succeeded,
+            count,
+            failed: Vec::new(),
+        }
+    }
+
+    /// Creates a batch result with both successes and failures.
+    #[must_use]
+    pub fn with_failures(succeeded: Vec<String>, failed: Vec<BatchItemError>) -> Self {
+        let count = succeeded.len();
+        Self {
+            succeeded,
+            count,
+            failed,
+        }
+    }
+
+    /// Returns true if any items failed.
+    #[must_use]
+    pub fn has_failures(&self) -> bool {
+        !self.failed.is_empty()
+    }
+
+    /// Total items attempted (succeeded + failed).
+    #[must_use]
+    pub fn total_attempted(&self) -> usize {
+        self.count + self.failed.len()
     }
 }
 
@@ -332,6 +375,7 @@ fn value_to_string(val: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Bytes(b) => format!("<{} bytes>", b.len()),
         Value::Json(j) => j.to_string(),
+        _ => "<unknown>".to_string(),
     }
 }
 
@@ -1320,13 +1364,13 @@ impl UnifiedEngine {
         // Phase 2: Store all (fail-fast on error)
         let mut succeeded = Vec::with_capacity(items.len());
         for (idx, (key, vec)) in items.into_iter().enumerate() {
-            self.vector
-                .store_embedding(&key, vec)
-                .map_err(|e| UnifiedError::BatchOperationFailed {
+            self.vector.store_embedding(&key, vec).map_err(|e| {
+                UnifiedError::BatchOperationFailed {
                     index: idx,
                     key: key.clone(),
                     cause: e.to_string(),
-                })?;
+                }
+            })?;
             succeeded.push(key);
         }
 
@@ -1372,6 +1416,82 @@ impl UnifiedEngine {
         }
 
         Ok(BatchResult::new(succeeded))
+    }
+
+    /// Stores multiple embeddings, collecting all errors instead of failing fast.
+    ///
+    /// Unlike `embed_batch`, this method continues processing after errors,
+    /// returning a `BatchResult` with both successes and failures.
+    pub fn embed_batch_collect(&self, items: Vec<(String, Vec<f32>)>) -> BatchResult {
+        let mut succeeded = Vec::with_capacity(items.len());
+        let mut failed = Vec::new();
+
+        for (idx, (key, vec)) in items.into_iter().enumerate() {
+            if vec.is_empty() {
+                failed.push(BatchItemError {
+                    index: idx,
+                    key: Some(key),
+                    cause: "empty vector".to_string(),
+                });
+                continue;
+            }
+
+            match self.vector.store_embedding(&key, vec) {
+                Ok(()) => succeeded.push(key),
+                Err(e) => {
+                    failed.push(BatchItemError {
+                        index: idx,
+                        key: Some(key),
+                        cause: e.to_string(),
+                    });
+                },
+            }
+        }
+
+        BatchResult::with_failures(succeeded, failed)
+    }
+
+    /// Creates multiple entities, collecting all errors instead of failing fast.
+    ///
+    /// Unlike `create_entities_batch`, this method continues processing after errors,
+    /// returning a `BatchResult` with both successes and failures.
+    pub async fn create_entities_batch_collect(&self, entities: Vec<EntityInput>) -> BatchResult {
+        let mut succeeded = Vec::with_capacity(entities.len());
+        let mut failed = Vec::new();
+
+        for (idx, (key, fields, embedding)) in entities.into_iter().enumerate() {
+            if key.is_empty() {
+                failed.push(BatchItemError {
+                    index: idx,
+                    key: Some(key),
+                    cause: "empty key".to_string(),
+                });
+                continue;
+            }
+            if let Some(ref emb) = embedding {
+                if emb.is_empty() {
+                    failed.push(BatchItemError {
+                        index: idx,
+                        key: Some(key),
+                        cause: "empty embedding vector".to_string(),
+                    });
+                    continue;
+                }
+            }
+
+            match self.create_entity(&key, fields, embedding).await {
+                Ok(_) => succeeded.push(key),
+                Err(e) => {
+                    failed.push(BatchItemError {
+                        index: idx,
+                        key: Some(key),
+                        cause: e.to_string(),
+                    });
+                },
+            }
+        }
+
+        BatchResult::with_failures(succeeded, failed)
     }
 
     // ========== Helper Methods ==========
@@ -1492,6 +1612,7 @@ impl UnifiedEngine {
                 Self::node_matches_condition(node, a) || Self::node_matches_condition(node, b)
             },
             Condition::True => true,
+            _ => false,
         }
     }
 
@@ -1566,6 +1687,7 @@ impl UnifiedEngine {
                 Self::edge_matches_condition(edge, a) || Self::edge_matches_condition(edge, b)
             },
             Condition::True => true,
+            _ => false,
         }
     }
 
@@ -1632,6 +1754,20 @@ impl UnifiedEngine {
             graph_engine::PropertyValue::String(s) => s.clone(),
             graph_engine::PropertyValue::Bool(b) => b.to_string(),
             graph_engine::PropertyValue::Null => "null".to_string(),
+            graph_engine::PropertyValue::DateTime(ts) => ts.to_string(),
+            graph_engine::PropertyValue::List(items) => {
+                let strs: Vec<_> = items.iter().map(Self::property_to_string).collect();
+                format!("[{}]", strs.join(", "))
+            },
+            graph_engine::PropertyValue::Map(map) => {
+                let pairs: Vec<_> = map
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, Self::property_to_string(v)))
+                    .collect();
+                format!("{{{}}}", pairs.join(", "))
+            },
+            graph_engine::PropertyValue::Bytes(b) => format!("<bytes:{}>", b.len()),
+            graph_engine::PropertyValue::Point { lat, lon } => format!("({}, {})", lat, lon),
         }
     }
 }
@@ -1963,7 +2099,7 @@ mod tests {
                 assert_eq!(index, 1);
                 assert_eq!(key, "doc2");
                 assert!(cause.contains("empty vector"));
-            }
+            },
             e => panic!("unexpected error: {e}"),
         }
     }
@@ -2024,7 +2160,7 @@ mod tests {
                 assert_eq!(index, 1);
                 assert!(key.is_empty());
                 assert!(cause.contains("empty key"));
-            }
+            },
             e => panic!("unexpected error: {e}"),
         }
     }
@@ -2046,7 +2182,7 @@ mod tests {
                 assert_eq!(index, 0);
                 assert_eq!(key, "entity");
                 assert!(cause.contains("empty embedding"));
-            }
+            },
             e => panic!("unexpected error: {e}"),
         }
     }
@@ -3858,5 +3994,103 @@ mod tests {
         // Find by edge type only (falls back to find_edges)
         let result = engine.find_paths(None, Some("test_edge"), None, None).await;
         assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Batch Error Handling Tests
+    // =========================================================================
+
+    #[test]
+    fn test_batch_result_backwards_compat() {
+        let result = BatchResult::new(vec!["a".to_string()]);
+        assert_eq!(result.count, 1);
+        assert!(result.failed.is_empty());
+        assert!(!result.has_failures());
+        assert_eq!(result.total_attempted(), 1);
+    }
+
+    #[test]
+    fn test_batch_result_with_failures() {
+        let failed = vec![BatchItemError {
+            index: 1,
+            key: Some("bad".to_string()),
+            cause: "test error".to_string(),
+        }];
+        let result = BatchResult::with_failures(vec!["good".to_string()], failed);
+        assert_eq!(result.count, 1);
+        assert_eq!(result.succeeded, vec!["good"]);
+        assert!(result.has_failures());
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.total_attempted(), 2);
+    }
+
+    #[test]
+    fn test_embed_batch_collect_mixed_results() {
+        let engine = create_engine();
+        let items = vec![
+            ("doc1".to_string(), vec![1.0, 2.0]),
+            ("doc2".to_string(), vec![]), // Invalid
+            ("doc3".to_string(), vec![3.0, 4.0]),
+        ];
+
+        let result = engine.embed_batch_collect(items);
+
+        assert_eq!(result.count, 2);
+        assert_eq!(result.succeeded, vec!["doc1", "doc3"]);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].index, 1);
+        assert_eq!(result.failed[0].key, Some("doc2".to_string()));
+        assert!(result.failed[0].cause.contains("empty vector"));
+        assert!(result.has_failures());
+        assert_eq!(result.total_attempted(), 3);
+    }
+
+    #[test]
+    fn test_embed_batch_collect_all_succeed() {
+        let engine = create_engine();
+        let items = vec![
+            ("doc1".to_string(), vec![1.0, 2.0]),
+            ("doc2".to_string(), vec![3.0, 4.0]),
+        ];
+
+        let result = engine.embed_batch_collect(items);
+
+        assert_eq!(result.count, 2);
+        assert!(!result.has_failures());
+        assert!(result.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_collect_mixed() {
+        let engine = create_engine();
+        let entities = vec![
+            ("e1".to_string(), HashMap::new(), None),
+            (String::new(), HashMap::new(), None), // Invalid empty key
+            ("e2".to_string(), HashMap::new(), None),
+        ];
+
+        let result = engine.create_entities_batch_collect(entities).await;
+
+        assert_eq!(result.count, 2);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].index, 1);
+        assert!(result.failed[0].cause.contains("empty key"));
+    }
+
+    #[tokio::test]
+    async fn test_create_entities_batch_collect_empty_embedding() {
+        let engine = create_engine();
+        let entities = vec![
+            ("e1".to_string(), HashMap::new(), Some(vec![1.0, 2.0])),
+            ("e2".to_string(), HashMap::new(), Some(vec![])), // Invalid empty embedding
+            ("e3".to_string(), HashMap::new(), None),
+        ];
+
+        let result = engine.create_entities_batch_collect(entities).await;
+
+        assert_eq!(result.count, 2);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].index, 1);
+        assert!(result.failed[0].cause.contains("empty embedding"));
     }
 }

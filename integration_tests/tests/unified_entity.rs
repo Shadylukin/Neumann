@@ -13,7 +13,9 @@ use query_router::QueryResult;
 /// Helper to add edges between entity keys using the node-based API.
 fn add_test_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
     let get_or_create = |key: &str| -> u64 {
-        if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+        if let Ok(nodes) =
+            graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+        {
             if let Some(node) = nodes.first() {
                 return node.id;
             }

@@ -163,6 +163,7 @@ pub fn value_to_proto(value: RelationalValue) -> proto::Value {
             proto::value::Kind::StringValue(hex)
         },
         RelationalValue::Json(j) => proto::value::Kind::StringValue(j.to_string()),
+        _ => proto::value::Kind::Null(true),
     };
     proto::Value { kind: Some(kind) }
 }
@@ -215,7 +216,7 @@ pub fn pagerank_result_to_proto(result: PageRankResult) -> proto::PageRankResult
             .into_iter()
             .map(pagerank_item_to_proto)
             .collect(),
-        iterations: Some(result.iterations as u32),
+        iterations: Some(u32::try_from(result.iterations).unwrap_or(u32::MAX)),
         convergence: Some(result.convergence),
         converged: Some(result.converged),
     }
@@ -250,9 +251,13 @@ pub fn centrality_result_to_proto(result: CentralityResult) -> proto::Centrality
             .map(centrality_item_to_proto)
             .collect(),
         centrality_type: Some(centrality_type_to_proto(result.centrality_type)),
-        iterations: result.iterations.map(|i| i as u32),
+        iterations: result
+            .iterations
+            .map(|i| u32::try_from(i).unwrap_or(u32::MAX)),
         converged: result.converged,
-        sample_count: result.sample_count.map(|s| s as u32),
+        sample_count: result
+            .sample_count
+            .map(|s| u32::try_from(s).unwrap_or(u32::MAX)),
     }
 }
 
@@ -285,10 +290,12 @@ pub fn communities_result_to_proto(result: CommunityResult) -> proto::Communitie
             .into_iter()
             .map(community_item_to_proto)
             .collect(),
-        community_count: Some(result.community_count as u32),
+        community_count: Some(u32::try_from(result.community_count).unwrap_or(u32::MAX)),
         modularity: result.modularity,
-        passes: result.passes.map(|p| p as u32),
-        iterations: result.iterations.map(|i| i as u32),
+        passes: result.passes.map(|p| u32::try_from(p).unwrap_or(u32::MAX)),
+        iterations: result
+            .iterations
+            .map(|i| u32::try_from(i).unwrap_or(u32::MAX)),
         communities,
     }
 }

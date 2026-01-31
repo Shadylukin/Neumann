@@ -91,6 +91,8 @@ pub struct ServerMetrics {
     pub query_latency: Histogram<f64>,
     /// Blob operation latency histogram in milliseconds.
     pub blob_latency: Histogram<f64>,
+    /// Vector operation latency histogram in milliseconds.
+    pub vector_latency: Histogram<f64>,
 }
 
 impl ServerMetrics {
@@ -132,6 +134,11 @@ impl ServerMetrics {
             .with_description("Blob operation latency in milliseconds")
             .init();
 
+        let vector_latency = meter
+            .f64_histogram("neumann.vector.latency_ms")
+            .with_description("Vector operation latency in milliseconds")
+            .init();
+
         Self {
             meter,
             requests_total,
@@ -141,6 +148,7 @@ impl ServerMetrics {
             rate_limited,
             query_latency,
             blob_latency,
+            vector_latency,
         }
     }
 
@@ -159,11 +167,13 @@ impl ServerMetrics {
             self.requests_error.add(1, &attrs);
         }
 
-        // Also record the latency if this was a query
+        // Also record the latency based on service type
         if service == "query" {
             self.query_latency.record(latency_ms, &attrs);
         } else if service == "blob" {
             self.blob_latency.record(latency_ms, &attrs);
+        } else if service == "vector" {
+            self.vector_latency.record(latency_ms, &attrs);
         }
     }
 
@@ -177,6 +187,12 @@ impl ServerMetrics {
     pub fn record_blob_latency(&self, operation: &str, latency_ms: f64) {
         let attrs = [KeyValue::new("operation", operation.to_string())];
         self.blob_latency.record(latency_ms, &attrs);
+    }
+
+    /// Record vector operation latency.
+    pub fn record_vector_latency(&self, operation: &str, latency_ms: f64) {
+        let attrs = [KeyValue::new("operation", operation.to_string())];
+        self.vector_latency.record(latency_ms, &attrs);
     }
 
     /// Record an authentication failure.
@@ -344,6 +360,43 @@ mod tests {
         metrics.record_query_latency("execute", 100.0);
         metrics.record_blob_latency("upload", 50.0);
         metrics.record_blob_latency("download", 25.0);
+    }
+
+    #[test]
+    fn test_record_vector_latency() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Record various vector operation latencies
+        metrics.record_vector_latency("upsert", 5.0);
+        metrics.record_vector_latency("query", 10.0);
+        metrics.record_vector_latency("delete", 2.0);
+    }
+
+    #[test]
+    fn test_vector_latency_histogram_attributes() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Test with different operations
+        metrics.record_vector_latency("upsert", 1.0);
+        metrics.record_vector_latency("query", 2.0);
+        metrics.record_vector_latency("delete", 3.0);
+        metrics.record_vector_latency("scroll", 4.0);
+    }
+
+    #[test]
+    fn test_record_request_vector_service() {
+        let provider = SdkMeterProvider::builder().build();
+        let meter = provider.meter("test");
+        let metrics = ServerMetrics::new(meter);
+
+        // Test recording vector service request
+        metrics.record_request("vector", "upsert", true, 5.0);
+        metrics.record_request("vector", "query", true, 10.0);
+        metrics.record_request("vector", "query", false, 15.0);
     }
 
     #[test]

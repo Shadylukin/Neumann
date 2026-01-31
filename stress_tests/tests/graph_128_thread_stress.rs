@@ -64,10 +64,7 @@ fn stress_graph_128_threads_batch_operations() {
                                 labels: vec!["Stress128".to_string()],
                                 properties: {
                                     let mut p = HashMap::new();
-                                    p.insert(
-                                        "thread".to_string(),
-                                        PropertyValue::Int(t as i64),
-                                    );
+                                    p.insert("thread".to_string(), PropertyValue::Int(t as i64));
                                     p.insert(
                                         "batch".to_string(),
                                         PropertyValue::Int(batch_idx as i64),
@@ -120,11 +117,7 @@ fn stress_graph_128_threads_batch_operations() {
     println!("Throughput: {throughput:.0} ops/sec");
 
     // Calculate p99 across all threads
-    let p99_max = results
-        .iter()
-        .map(|s| s.p99.as_millis())
-        .max()
-        .unwrap_or(0);
+    let p99_max = results.iter().map(|s| s.p99.as_millis()).max().unwrap_or(0);
     println!("Max p99 latency: {p99_max}ms");
 
     // Sample latencies from a few threads

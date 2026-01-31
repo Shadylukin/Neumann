@@ -21,7 +21,9 @@ fn create_vault() -> Vault {
 /// Helper to add edges between entity keys using the node-based API.
 fn add_bench_edge(graph: &GraphEngine, from_key: &str, to_key: &str, edge_type: &str) {
     let get_or_create = |key: &str| -> u64 {
-        if let Ok(nodes) = graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string())) {
+        if let Ok(nodes) =
+            graph.find_nodes_by_property("entity_key", &PropertyValue::String(key.to_string()))
+        {
             if let Some(node) = nodes.first() {
                 return node.id;
             }
@@ -165,7 +167,12 @@ fn bench_access_control(c: &mut Criterion) {
             let to = format!("node:{i}");
             add_bench_edge(vault.graph(), &from, &to, "LINK");
         }
-        add_bench_edge(vault.graph(), "node:9", "vault_secret:secret", "VAULT_ACCESS");
+        add_bench_edge(
+            vault.graph(),
+            "node:9",
+            "vault_secret:secret",
+            "VAULT_ACCESS",
+        );
 
         b.iter(|| {
             let _ = vault.get(black_box("user:start"), black_box("secret"));

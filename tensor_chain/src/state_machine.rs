@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use tensor_store::{SparseVector, TensorData, TensorStore, TensorValue};
+use tensor_store::{SparseVector, TensorStore};
 
 use crate::{
     block::{Block, Transaction},
@@ -21,6 +21,8 @@ use crate::{
     error::{ChainError, Result},
     network::LogEntry,
     raft::RaftNode,
+    state_root::compute_state_root,
+    transaction::apply_transaction_to_store,
 };
 
 /// Tensor-native state machine that applies Raft log entries to TensorChain.
@@ -96,16 +98,33 @@ impl TensorStateMachine {
 
     /// Apply a block directly (for testing or manual application).
     pub fn apply_block(&self, block: &Block) -> Result<()> {
+        let pre_apply_snapshot = self
+            .store
+            .snapshot_bytes()
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
         // Apply each transaction to the appropriate storage layer
         for tx in &block.transactions {
             self.apply_transaction(tx)?;
         }
 
+        let computed_state_root = compute_state_root(&self.store)?;
+        if block.header.state_root != computed_state_root {
+            let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+            return Err(ChainError::ValidationFailed(
+                "state_root does not match applied state".to_string(),
+            ));
+        }
+
         // Use fast-path if block embedding is similar to recent blocks
         if self.can_fast_path(block) {
-            self.append_fast(block.clone())?;
-        } else {
-            self.append_full(block.clone())?;
+            if let Err(e) = self.append_fast(block.clone()) {
+                let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+                return Err(e);
+            }
+        } else if let Err(e) = self.append_full(block.clone()) {
+            let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+            return Err(e);
         }
 
         // Track this block's embedding for future fast-path decisions
@@ -127,16 +146,33 @@ impl TensorStateMachine {
 
         let block = &entry.block;
 
+        let pre_apply_snapshot = self
+            .store
+            .snapshot_bytes()
+            .map_err(|e| ChainError::StorageError(e.to_string()))?;
+
         // Apply each transaction to the appropriate storage layer
         for tx in &block.transactions {
             self.apply_transaction(tx)?;
         }
 
+        let computed_state_root = compute_state_root(&self.store)?;
+        if block.header.state_root != computed_state_root {
+            let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+            return Err(ChainError::ValidationFailed(
+                "state_root does not match applied state".to_string(),
+            ));
+        }
+
         // Use fast-path if block embedding is similar to recent blocks
         if self.can_fast_path(block) {
-            self.append_fast(block.clone())?;
-        } else {
-            self.append_full(block.clone())?;
+            if let Err(e) = self.append_fast(block.clone()) {
+                let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+                return Err(e);
+            }
+        } else if let Err(e) = self.append_full(block.clone()) {
+            let _ = self.store.restore_from_bytes(&pre_apply_snapshot);
+            return Err(e);
         }
 
         // Track this block's embedding for future fast-path decisions
@@ -206,122 +242,7 @@ impl TensorStateMachine {
     }
 
     fn apply_transaction(&self, tx: &Transaction) -> Result<()> {
-        use tensor_store::ScalarValue;
-
-        match tx {
-            // Key-value operations → TensorStore directly
-            Transaction::Put { key, data } => {
-                let mut tensor = TensorData::new();
-                tensor.set(
-                    "data",
-                    TensorValue::Scalar(ScalarValue::Bytes(data.clone())),
-                );
-                self.store
-                    .put(key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-            Transaction::Delete { key } => {
-                // Delete is idempotent - missing key means desired state achieved
-                self.store.delete(key).ok();
-            },
-
-            // Embedding operations → emb: prefix (VectorEngine pattern)
-            Transaction::Embed { key, vector } => {
-                let storage_key = format!("emb:{}", key);
-                let mut tensor = TensorData::new();
-                tensor.set("vector", TensorValue::Vector(vector.clone()));
-                self.store
-                    .put(storage_key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-
-            // Graph node operations → node: prefix (GraphEngine pattern)
-            Transaction::NodeCreate { key, label } => {
-                let storage_key = format!("node:{}", key);
-                let mut tensor = TensorData::new();
-                tensor.set("_id", TensorValue::Scalar(ScalarValue::String(key.clone())));
-                tensor.set(
-                    "_type",
-                    TensorValue::Scalar(ScalarValue::String("node".into())),
-                );
-                tensor.set(
-                    "_label",
-                    TensorValue::Scalar(ScalarValue::String(label.clone())),
-                );
-                self.store
-                    .put(storage_key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-            Transaction::NodeDelete { key } => {
-                let storage_key = format!("node:{}", key);
-                // Delete is idempotent - missing key means desired state achieved
-                self.store.delete(&storage_key).ok();
-            },
-
-            // Graph edge operations → edge: prefix
-            Transaction::EdgeCreate {
-                from,
-                to,
-                edge_type,
-            } => {
-                let storage_key = format!("edge:{}:{}:{}", from, to, edge_type);
-                let mut tensor = TensorData::new();
-                tensor.set(
-                    "_from",
-                    TensorValue::Scalar(ScalarValue::String(from.clone())),
-                );
-                tensor.set("_to", TensorValue::Scalar(ScalarValue::String(to.clone())));
-                tensor.set(
-                    "_edge_type",
-                    TensorValue::Scalar(ScalarValue::String(edge_type.clone())),
-                );
-                self.store
-                    .put(storage_key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-
-            // Table operations → table: prefix (RelationalEngine pattern)
-            Transaction::TableInsert { table, values } => {
-                // Generate a unique row key based on table and timestamp
-                let row_key = format!(
-                    "table:{}:row:{}",
-                    table,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                );
-                let mut tensor = TensorData::new();
-                tensor.set(
-                    "data",
-                    TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
-                );
-                self.store
-                    .put(row_key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-            Transaction::TableUpdate {
-                table,
-                row_id,
-                values,
-            } => {
-                let row_key = format!("table:{}:row:{}", table, row_id);
-                let mut tensor = TensorData::new();
-                tensor.set(
-                    "data",
-                    TensorValue::Scalar(ScalarValue::Bytes(values.clone())),
-                );
-                self.store
-                    .put(row_key, tensor)
-                    .map_err(|e| ChainError::StorageError(e.to_string()))?;
-            },
-            Transaction::TableDelete { table, row_id } => {
-                let row_key = format!("table:{}:row:{}", table, row_id);
-                // Delete is idempotent - missing key means desired state achieved
-                self.store.delete(&row_key).ok();
-            },
-        }
-        Ok(())
+        apply_transaction_to_store(&self.store, tx)
     }
 
     fn can_fast_path(&self, block: &Block) -> bool {
@@ -430,6 +351,9 @@ mod tests {
         block::{BlockHeader, Transaction},
         network::MemoryTransport,
         raft::RaftConfig,
+        state_root::compute_state_root,
+        transaction::apply_transaction_to_store,
+        BlockHash,
     };
 
     fn create_test_components() -> (Arc<Chain>, Arc<RaftNode>, TensorStore) {
@@ -446,8 +370,28 @@ mod tests {
         (chain, raft, store)
     }
 
-    fn create_block_with_embedding(height: u64, embedding: &[f32]) -> Block {
-        Block {
+    fn compute_block_state_root(store: &TensorStore, block: &Block) -> BlockHash {
+        let snapshot = store.snapshot_bytes().unwrap();
+        let temp = TensorStore::new();
+        temp.restore_from_bytes(&snapshot).unwrap();
+        for tx in &block.transactions {
+            apply_transaction_to_store(&temp, tx).unwrap();
+        }
+        compute_state_root(&temp).unwrap()
+    }
+
+    fn build_block_with_state_root(store: &TensorStore, builder: crate::BlockBuilder) -> Block {
+        let mut block = builder.build();
+        block.header.state_root = compute_block_state_root(store, &block);
+        block
+    }
+
+    fn create_block_with_embedding(
+        height: u64,
+        embedding: &[f32],
+        store: Option<&TensorStore>,
+    ) -> Block {
+        let mut block = Block {
             header: BlockHeader {
                 height,
                 prev_hash: [0u8; 32],
@@ -464,7 +408,11 @@ mod tests {
                 data: vec![height as u8],
             }],
             signatures: vec![],
+        };
+        if let Some(store) = store {
+            block.header.state_root = compute_block_state_root(store, &block);
         }
+        block
     }
 
     #[test]
@@ -506,7 +454,7 @@ mod tests {
         let sm = TensorStateMachine::new(chain, raft, store);
 
         // Block without embedding
-        let block = create_block_with_embedding(1, &[]);
+        let block = create_block_with_embedding(1, &[], None);
 
         assert!(!sm.can_fast_path(&block));
     }
@@ -517,7 +465,7 @@ mod tests {
         let sm = TensorStateMachine::new(chain, raft, store);
 
         // Block with embedding but no history
-        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
 
         assert!(!sm.can_fast_path(&block));
     }
@@ -528,11 +476,11 @@ mod tests {
         let sm = TensorStateMachine::with_threshold(chain, raft, store, 0.9);
 
         // Add a recent embedding
-        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
         sm.track_embedding(&block1);
 
         // Test with very similar embedding (should pass fast-path)
-        let block2 = create_block_with_embedding(2, &[0.99, 0.01, 0.0, 0.0]);
+        let block2 = create_block_with_embedding(2, &[0.99, 0.01, 0.0, 0.0], None);
         assert!(sm.can_fast_path(&block2));
     }
 
@@ -542,11 +490,11 @@ mod tests {
         let sm = TensorStateMachine::with_threshold(chain, raft, store, 0.9);
 
         // Add a recent embedding
-        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
         sm.track_embedding(&block1);
 
         // Test with orthogonal embedding (should fail fast-path)
-        let block2 = create_block_with_embedding(2, &[0.0, 1.0, 0.0, 0.0]);
+        let block2 = create_block_with_embedding(2, &[0.0, 1.0, 0.0, 0.0], None);
         assert!(!sm.can_fast_path(&block2));
     }
 
@@ -557,7 +505,7 @@ mod tests {
 
         // Add more than max_recent embeddings (use non-zero values to ensure non-empty)
         for i in 1..=15 {
-            let block = create_block_with_embedding(i as u64, &[i as f32, 0.1, 0.0, 0.0]);
+            let block = create_block_with_embedding(i as u64, &[i as f32, 0.1, 0.0, 0.0], None);
             sm.track_embedding(&block);
         }
 
@@ -572,7 +520,7 @@ mod tests {
 
         // Add some embeddings (use non-zero values to ensure non-empty)
         for i in 1..=5 {
-            let block = create_block_with_embedding(i as u64, &[i as f32, 0.1, 0.0, 0.0]);
+            let block = create_block_with_embedding(i as u64, &[i as f32, 0.1, 0.0, 0.0], None);
             sm.track_embedding(&block);
         }
         assert_eq!(sm.recent_embedding_count(), 5);
@@ -591,7 +539,7 @@ mod tests {
         assert!((sm.recent_embedding_similarity(&emb) - 0.0).abs() < 0.001);
 
         // Add history
-        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
         sm.track_embedding(&block);
 
         // Similar embedding
@@ -606,7 +554,7 @@ mod tests {
         let sm = TensorStateMachine::new(chain, raft, store);
 
         // Add history
-        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
         sm.track_embedding(&block);
 
         // Empty embedding = 0 similarity
@@ -614,8 +562,8 @@ mod tests {
         assert!((sm.recent_embedding_similarity(&empty) - 0.0).abs() < 0.001);
     }
 
-    fn create_valid_block(chain: &Chain, embedding: &[f32]) -> Block {
-        chain
+    fn create_valid_block(chain: &Chain, store: &TensorStore, embedding: &[f32]) -> Block {
+        let mut block = chain
             .new_block()
             .add_transaction(Transaction::Put {
                 key: "test_key".to_string(),
@@ -623,7 +571,9 @@ mod tests {
             })
             .with_dense_embedding(embedding)
             .with_signature(vec![0u8; 64])
-            .build()
+            .build();
+        block.header.state_root = compute_block_state_root(store, &block);
+        block
     }
 
     #[test]
@@ -631,10 +581,11 @@ mod tests {
         let (chain, raft, store) = create_test_components();
         chain.initialize().unwrap();
 
+        let store_for_blocks = store.clone();
         let sm = TensorStateMachine::new(chain.clone(), raft, store);
 
         // Create a log entry using chain's block builder for correct prev_hash
-        let block = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
+        let block = create_valid_block(&chain, &store_for_blocks, &[1.0, 0.0, 0.0, 0.0]);
         let entry = LogEntry::new(1, 1, block);
 
         // Apply entry
@@ -650,10 +601,11 @@ mod tests {
         let (chain, raft, store) = create_test_components();
         chain.initialize().unwrap();
 
+        let store_for_blocks = store.clone();
         let sm = TensorStateMachine::new(chain.clone(), raft, store);
 
         // Create a log entry without embedding
-        let block = create_valid_block(&chain, &[]);
+        let block = create_valid_block(&chain, &store_for_blocks, &[]);
         let entry = LogEntry::new(1, 1, block);
 
         // Apply entry (should use full validation path)
@@ -670,15 +622,16 @@ mod tests {
         let (chain, raft, store) = create_test_components();
         chain.initialize().unwrap();
 
+        let store_for_blocks = store.clone();
         let sm = TensorStateMachine::with_threshold(chain.clone(), raft, store, 0.9);
 
         // Apply first entry (full validation) using chain's block builder
-        let block1 = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
+        let block1 = create_valid_block(&chain, &store_for_blocks, &[1.0, 0.0, 0.0, 0.0]);
         let entry1 = LogEntry::new(1, 1, block1);
         sm.apply_entry(&entry1).unwrap();
 
         // Apply second entry (similar embedding - should use fast-path)
-        let block2 = create_valid_block(&chain, &[0.99, 0.01, 0.0, 0.0]);
+        let block2 = create_valid_block(&chain, &store_for_blocks, &[0.99, 0.01, 0.0, 0.0]);
         let entry2 = LogEntry::new(1, 2, block2);
         sm.apply_entry(&entry2).unwrap();
 
@@ -722,13 +675,13 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Create a block with a Put transaction
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::Put {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::Put {
                 key: "user:1".to_string(),
                 data: vec![1, 2, 3, 4],
-            })
-            .build();
+            }),
+        );
 
         let entry = LogEntry::new(1, 1, block);
 
@@ -748,13 +701,13 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Create a block with an Embed transaction
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::Embed {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::Embed {
                 key: "doc:1".to_string(),
                 vector: vec![1.0, 2.0, 3.0, 4.0],
-            })
-            .build();
+            }),
+        );
 
         let entry = LogEntry::new(1, 1, block);
 
@@ -774,13 +727,13 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Create a block with a NodeCreate transaction
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::NodeCreate {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::NodeCreate {
                 key: "person:alice".to_string(),
                 label: "Person".to_string(),
-            })
-            .build();
+            }),
+        );
 
         let entry = LogEntry::new(1, 1, block);
 
@@ -802,25 +755,29 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // First, put some data
-        let block1 = chain
-            .new_block()
-            .add_transaction(Transaction::Put {
-                key: "to_delete".to_string(),
-                data: vec![1, 2, 3],
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block1 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::Put {
+                    key: "to_delete".to_string(),
+                    data: vec![1, 2, 3],
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
         assert!(store.get("to_delete").is_ok());
 
         // Now delete it
-        let block2 = chain
-            .new_block()
-            .add_transaction(Transaction::Delete {
-                key: "to_delete".to_string(),
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block2 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::Delete {
+                    key: "to_delete".to_string(),
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
 
         // Verify it's deleted
@@ -835,12 +792,12 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Delete a key that doesn't exist - should not error
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::Delete {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::Delete {
                 key: "nonexistent".to_string(),
-            })
-            .build();
+            }),
+        );
 
         let result = sm.apply_entry(&LogEntry::new(1, 1, block));
         assert!(result.is_ok());
@@ -854,25 +811,29 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // First create a node
-        let block1 = chain
-            .new_block()
-            .add_transaction(Transaction::NodeCreate {
-                key: "node_to_delete".to_string(),
-                label: "TestNode".to_string(),
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block1 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::NodeCreate {
+                    key: "node_to_delete".to_string(),
+                    label: "TestNode".to_string(),
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
         assert!(store.get("node:node_to_delete").is_ok());
 
         // Now delete it
-        let block2 = chain
-            .new_block()
-            .add_transaction(Transaction::NodeDelete {
-                key: "node_to_delete".to_string(),
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block2 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::NodeDelete {
+                    key: "node_to_delete".to_string(),
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
 
         // Verify it's deleted
@@ -887,14 +848,14 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Create an edge
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::EdgeCreate {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::EdgeCreate {
                 from: "node1".to_string(),
                 to: "node2".to_string(),
                 edge_type: "KNOWS".to_string(),
-            })
-            .build();
+            }),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
 
         // Verify the edge was written (edge: prefix with format from:to:type)
@@ -910,13 +871,13 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Insert a row
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::TableInsert {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::TableInsert {
                 table: "users".to_string(),
                 values: vec![1, 2, 3, 4],
-            })
-            .build();
+            }),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
 
         // Verify something was written with table: prefix
@@ -932,14 +893,14 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Update a specific row
-        let block = chain
-            .new_block()
-            .add_transaction(Transaction::TableUpdate {
+        let block = build_block_with_state_root(
+            &store,
+            chain.new_block().add_transaction(Transaction::TableUpdate {
                 table: "users".to_string(),
                 row_id: 123,
                 values: vec![5, 6, 7, 8],
-            })
-            .build();
+            }),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block)).unwrap();
 
         // Verify the row was written
@@ -955,27 +916,31 @@ mod tests {
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // First insert a row with known key (via update)
-        let block1 = chain
-            .new_block()
-            .add_transaction(Transaction::TableUpdate {
-                table: "users".to_string(),
-                row_id: 999,
-                values: vec![1, 2, 3],
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block1 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::TableUpdate {
+                    table: "users".to_string(),
+                    row_id: 999,
+                    values: vec![1, 2, 3],
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 1, block1)).unwrap();
         assert!(store.get("table:users:row:999").is_ok());
 
         // Now delete it
-        let block2 = chain
-            .new_block()
-            .add_transaction(Transaction::TableDelete {
-                table: "users".to_string(),
-                row_id: 999,
-            })
-            .with_signature(vec![0u8; 64])
-            .build();
+        let block2 = build_block_with_state_root(
+            &store,
+            chain
+                .new_block()
+                .add_transaction(Transaction::TableDelete {
+                    table: "users".to_string(),
+                    row_id: 999,
+                })
+                .with_signature(vec![0u8; 64]),
+        );
         sm.apply_entry(&LogEntry::new(1, 2, block2)).unwrap();
 
         // Verify it's deleted
@@ -1189,10 +1154,11 @@ mod tests {
         let (chain, raft, store) = create_test_components();
         chain.initialize().unwrap();
 
+        let store_for_blocks = store.clone();
         let sm = TensorStateMachine::new(chain.clone(), raft, store.clone());
 
         // Create and apply a block directly
-        let block = create_valid_block(&chain, &[1.0, 0.0, 0.0, 0.0]);
+        let block = create_valid_block(&chain, &store_for_blocks, &[1.0, 0.0, 0.0, 0.0]);
         sm.apply_block(&block).unwrap();
 
         // Verify
@@ -1251,10 +1217,10 @@ mod tests {
         let sm = TensorStateMachine::new(chain, raft, store);
 
         // Track some embeddings
-        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0]);
+        let block1 = create_block_with_embedding(1, &[1.0, 0.0, 0.0, 0.0], None);
         sm.track_embedding(&block1);
 
-        let block2 = create_block_with_embedding(2, &[0.0, 1.0, 0.0, 0.0]);
+        let block2 = create_block_with_embedding(2, &[0.0, 1.0, 0.0, 0.0], None);
         sm.track_embedding(&block2);
 
         // Should return the last one
@@ -1271,7 +1237,7 @@ mod tests {
         let sm = TensorStateMachine::new(chain, raft, store);
 
         // Track an empty embedding - should be ignored
-        let block = create_block_with_embedding(1, &[]);
+        let block = create_block_with_embedding(1, &[], None);
         sm.track_embedding(&block);
 
         assert_eq!(sm.recent_embedding_count(), 0);

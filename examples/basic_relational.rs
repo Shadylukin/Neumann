@@ -27,7 +27,9 @@ fn main() {
     ]);
 
     // Create the table
-    engine.create_table("users", schema).expect("Failed to create table");
+    engine
+        .create_table("users", schema)
+        .expect("Failed to create table");
     println!("Created 'users' table");
 
     // Insert some rows
@@ -64,7 +66,9 @@ fn main() {
 
     // Query all users
     println!("All users:");
-    let all_users = engine.select("users", Condition::True).expect("Failed to select");
+    let all_users = engine
+        .select("users", Condition::True)
+        .expect("Failed to select");
     for row in &all_users {
         println!("  {:?}", row);
     }
@@ -83,7 +87,10 @@ fn main() {
     // Query active users
     println!("Active users:");
     let active_users = engine
-        .select("users", Condition::Eq("active".to_string(), Value::Bool(true)))
+        .select(
+            "users",
+            Condition::Eq("active".to_string(), Value::Bool(true)),
+        )
         .expect("Failed to select");
     for row in &active_users {
         println!("  {:?}", row);
@@ -104,21 +111,22 @@ fn main() {
 
     // Delete a user
     let deleted = engine
-        .delete_rows(
-            "users",
-            Condition::Eq("id".to_string(), Value::Int(2)),
-        )
+        .delete_rows("users", Condition::Eq("id".to_string(), Value::Int(2)))
         .expect("Failed to delete");
     println!("Deleted {} row(s) - Removed Bob\n", deleted);
 
     // Final state
     println!("Final users:");
-    let final_users = engine.select("users", Condition::True).expect("Failed to select");
+    let final_users = engine
+        .select("users", Condition::True)
+        .expect("Failed to select");
     for row in &final_users {
         println!("  {:?}", row);
     }
 
     // Show table count
-    let count = engine.count("users", Condition::True).expect("Failed to count");
+    let count = engine
+        .count("users", Condition::True)
+        .expect("Failed to count");
     println!("\nTotal users: {}", count);
 }
