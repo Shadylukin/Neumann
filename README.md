@@ -1,6 +1,5 @@
 # Neumann
 
-[![CI](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml/badge.svg)](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![Discord](https://img.shields.io/badge/Discord-Join-7289da.svg)](https://discord.gg/uN3KbAyKvw)
@@ -115,7 +114,7 @@ cd Neumann
 cargo build --release
 
 # Start the shell
-./target/release/neumann_shell
+./target/release/neumann
 ```
 
 ### Relational
@@ -152,7 +151,7 @@ cargo build --release
 
 ## Architecture
 
-19 crates organized in dependency tiers:
+20 crates organized in dependency tiers:
 
 ```text
                     +---------------------------------------------+
@@ -196,7 +195,7 @@ cargo build --release
 ### Core Storage (tensor_store)
 
 - **SlabRouter**: Routes keys to specialized slabs by prefix
-- **5 embedding formats**: Dense, Sparse, Delta, TensorTrain, Quantized
+- **7 embedding formats**: Dense, Sparse, Delta, TensorTrain, Quantized, ProductQuantized, Binary
 - **15+ distance metrics**: Cosine, Angular, Geodesic, Jaccard, Overlap,
   Euclidean, Manhattan, Composite
 - **Hot/cold tiering**: Automatic migration based on access patterns
@@ -204,11 +203,11 @@ cargo build --release
 
 ### Engines
 
-| Engine            | Lines  | Key Features                                  |
-| ----------------- | ------ | --------------------------------------------- |
-| relational_engine | 14,843 | SIMD filtering, B-tree indexes, transactions  |
-| graph_engine      | 17,805 | BFS traversal, shortest path, constraints     |
-| vector_engine     | 3,775  | HNSW O(log n) search, sparse detection, batch |
+| Engine            | Key Features                                  |
+| ----------------- | --------------------------------------------- |
+| relational_engine | SIMD filtering, B-tree indexes, transactions  |
+| graph_engine      | BFS traversal, shortest path, Dijkstra        |
+| vector_engine     | HNSW O(log n) search, sparse detection, batch |
 
 ### Specialized Storage
 
@@ -220,8 +219,6 @@ cargo build --release
 | tensor_checkpoint | Pre-destructive-op snapshots with confirmation       |
 
 ### Distributed (tensor_chain)
-
-51,977 lines implementing:
 
 - Tensor-Raft with similarity fast-path and geometric tie-breaking
 - 2PC coordinator with DFS deadlock detection
@@ -286,7 +283,7 @@ cargo clippy -- -D warnings -D clippy::pedantic
 cargo +nightly fuzz run parser_parse -- -max_total_time=60
 ```
 
-Coverage requirements enforced per-crate (91-95% minimum).
+Coverage requirements enforced per-crate (78-95% minimum depending on crate complexity).
 
 ## What This Is
 
