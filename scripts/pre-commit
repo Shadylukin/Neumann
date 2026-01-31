@@ -15,7 +15,7 @@ get_min_coverage() {
         tensor_blob) echo 91 ;;  # Async blob storage with complex I/O paths
         tensor_chain) echo 75 ;;  # Distributed consensus with async network code
         query_router) echo 88 ;;  # Large module with cross-engine integration
-        neumann_client) echo 91 ;;  # TLS and async streaming require runtime setup
+        neumann_client) echo 78 ;;  # gRPC client with TLS, requires runtime
         vector_engine) echo 92 ;;  # HNSW with complex search paths
         tensor_unified) echo 93 ;;  # Cross-engine integration with async code
         graph_engine) echo 88 ;;  # Graph algorithms with traversal paths

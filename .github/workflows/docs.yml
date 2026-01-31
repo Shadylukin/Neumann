@@ -31,6 +31,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Build rustdoc
         run: |
           RUSTDOCFLAGS="--cfg docsrs -Dwarnings" cargo +nightly doc \
@@ -56,7 +59,7 @@ jobs:
       - name: Install mdBook
         run: |
           mkdir -p ~/.local/bin
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
           cargo install mdbook-mermaid mdbook-toc mdbook-admonish mdbook-linkcheck
 
       - name: Build book
@@ -110,8 +113,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install jq
-        run: sudo apt-get install -y jq
+      - name: Install jq and protoc
+        run: sudo apt-get update && sudo apt-get install -y jq protobuf-compiler
 
       - name: Run benchmarks (quick mode)
         run: |
