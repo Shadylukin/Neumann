@@ -93,6 +93,22 @@ COPY integration_tests/src integration_tests/src
 COPY stress_tests/src stress_tests/src
 COPY examples/src examples/src
 
+# Copy bench files (required by Cargo.toml [[bench]] sections)
+COPY tensor_store/benches tensor_store/benches
+COPY tensor_compress/benches tensor_compress/benches
+COPY tensor_cache/benches tensor_cache/benches
+COPY tensor_vault/benches tensor_vault/benches
+COPY tensor_blob/benches tensor_blob/benches
+COPY tensor_chain/benches tensor_chain/benches
+COPY tensor_unified/benches tensor_unified/benches
+COPY relational_engine/benches relational_engine/benches
+COPY graph_engine/benches graph_engine/benches
+COPY vector_engine/benches vector_engine/benches
+COPY query_router/benches query_router/benches
+COPY neumann_parser/benches neumann_parser/benches
+COPY neumann_shell/benches neumann_shell/benches
+COPY neumann_server/benches neumann_server/benches
+
 # Touch files to ensure rebuild
 RUN find . -name "*.rs" -exec touch {} \;
 
