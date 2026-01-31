@@ -72,6 +72,12 @@ impl Icons {
         // In the future, could detect Unicode support via console crate
         &Self::ASCII
     }
+
+    /// Returns ASCII icons for plain/no-color mode.
+    #[must_use]
+    pub const fn plain() -> &'static Self {
+        &Self::ASCII
+    }
 }
 
 impl Default for &Icons {

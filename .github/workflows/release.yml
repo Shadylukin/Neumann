@@ -83,6 +83,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
 
     steps:
       - name: Checkout
@@ -104,17 +107,63 @@ jobs:
         run: |
           brew install protobuf
 
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: |
+          choco install protoc
+
       - name: Build
         run: |
           cargo build --release --package neumann_shell --target ${{ matrix.target }}
 
       - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/neumann dist/
           cp README.md LICENSE* dist/ 2>/dev/null || true
+
+          # Find and copy completions
+          COMPLETIONS_DIR=$(find target/${{ matrix.target }}/release/build -path "*neumann_shell*/out/completions" -type d | head -1)
+          if [ -d "$COMPLETIONS_DIR" ]; then
+            mkdir -p dist/completions
+            cp "$COMPLETIONS_DIR"/* dist/completions/
+          fi
+
+          # Find and copy man page
+          MAN_DIR=$(find target/${{ matrix.target }}/release/build -path "*neumann_shell*/out/man" -type d | head -1)
+          if [ -d "$MAN_DIR" ]; then
+            mkdir -p dist/man
+            cp "$MAN_DIR"/* dist/man/
+          fi
+
           cd dist
           tar -czvf ../neumann-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }} *
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item target/${{ matrix.target }}/release/neumann.exe dist/
+          Copy-Item README.md dist/ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE* dist/ -ErrorAction SilentlyContinue
+
+          # Find and copy completions
+          $completionsDir = Get-ChildItem -Path "target/${{ matrix.target }}/release/build" -Recurse -Directory -Filter "completions" | Where-Object { $_.FullName -like "*neumann_shell*out*" } | Select-Object -First 1
+          if ($completionsDir) {
+            New-Item -ItemType Directory -Force -Path dist/completions
+            Copy-Item "$($completionsDir.FullName)/*" dist/completions/
+          }
+
+          # Find and copy man page
+          $manDir = Get-ChildItem -Path "target/${{ matrix.target }}/release/build" -Recurse -Directory -Filter "man" | Where-Object { $_.FullName -like "*neumann_shell*out*" } | Select-Object -First 1
+          if ($manDir) {
+            New-Item -ItemType Directory -Force -Path dist/man
+            Copy-Item "$($manDir.FullName)/*" dist/man/
+          }
+
+          Compress-Archive -Path dist/* -DestinationPath neumann-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1

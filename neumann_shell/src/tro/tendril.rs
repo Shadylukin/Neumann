@@ -428,7 +428,10 @@ impl TendrilManager {
             Some(BorderCoord::new(index as u16, 0))
         } else if index < top_len + right_len {
             let offset = index - top_len;
-            Some(BorderCoord::new(self.terminal_width - 1, (offset + 1) as u16))
+            Some(BorderCoord::new(
+                self.terminal_width - 1,
+                (offset + 1) as u16,
+            ))
         } else if index < top_len + right_len + bottom_len {
             let offset = index - top_len - right_len;
             Some(BorderCoord::new(
@@ -611,18 +614,9 @@ mod tests {
     fn test_tendril_manager_linear_to_coord() {
         let manager = TendrilManager::new(TendrilConfig::default(), 80, 24);
 
-        assert_eq!(
-            manager.linear_to_coord(0),
-            Some(BorderCoord::new(0, 0))
-        );
-        assert_eq!(
-            manager.linear_to_coord(79),
-            Some(BorderCoord::new(79, 0))
-        );
-        assert_eq!(
-            manager.linear_to_coord(80),
-            Some(BorderCoord::new(79, 1))
-        );
+        assert_eq!(manager.linear_to_coord(0), Some(BorderCoord::new(0, 0)));
+        assert_eq!(manager.linear_to_coord(79), Some(BorderCoord::new(79, 0)));
+        assert_eq!(manager.linear_to_coord(80), Some(BorderCoord::new(79, 1)));
     }
 
     #[test]

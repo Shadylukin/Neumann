@@ -304,7 +304,9 @@ impl BorderRegion {
 
     /// Returns cells at a specific depth.
     pub fn cells_at_depth(&self, depth: u8) -> impl Iterator<Item = (&BorderCoord, &BorderCell)> {
-        self.cells.iter().filter(move |(_, cell)| cell.depth == depth)
+        self.cells
+            .iter()
+            .filter(move |(_, cell)| cell.depth == depth)
     }
 
     /// Decays all cell values.

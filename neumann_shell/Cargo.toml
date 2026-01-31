@@ -22,6 +22,7 @@ tensor_checkpoint = { path = "../tensor_checkpoint" }
 rustyline = "15"
 base64 = "0.22"
 parking_lot = "0.12"
+clap = { version = "4", features = ["derive", "env"] }
 
 # Terminal UX
 owo-colors = "4"
@@ -33,6 +34,11 @@ console = "0.15"
 crossbeam-channel = "0.5"
 smallvec = "1.11"
 rand = "0.8"
+
+[build-dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 
 [[bin]]
 name = "neumann"

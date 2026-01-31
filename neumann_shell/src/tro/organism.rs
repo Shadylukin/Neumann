@@ -122,7 +122,13 @@ impl TroState {
     #[must_use]
     #[allow(clippy::cast_possible_truncation)] // i % 8 always fits in u8
     pub fn new(width: u16, height: u16, agent_count: usize, palette: Palette) -> Self {
-        Self::with_config(width, height, agent_count, palette, TendrilConfig::default())
+        Self::with_config(
+            width,
+            height,
+            agent_count,
+            palette,
+            TendrilConfig::default(),
+        )
     }
 
     /// Creates a new TRO state with custom tendril configuration.
@@ -404,7 +410,8 @@ impl TroState {
         let heat_data: Vec<f32> = self.cells.iter().map(|c| c.heat).collect();
 
         // Update border region from physarum data
-        self.border_region.update_from_linear(&pheromone_data, &heat_data, self.width, self.height);
+        self.border_region
+            .update_from_linear(&pheromone_data, &heat_data, self.width, self.height);
 
         // Update tendrils based on pheromone and heat
         self.tendril_manager.update(&pheromone_data, &heat_data);

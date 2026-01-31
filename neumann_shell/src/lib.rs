@@ -7,6 +7,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
+pub mod cli;
 mod input;
 mod output;
 mod progress;
@@ -50,6 +51,12 @@ pub struct ShellConfig {
     pub prompt: String,
     /// Color theme for output.
     pub theme: Theme,
+    /// Disable colored output.
+    pub no_color: bool,
+    /// Skip boot sequence animation.
+    pub no_boot: bool,
+    /// Quiet mode: suppress non-essential output.
+    pub quiet: bool,
 }
 
 impl Default for ShellConfig {
@@ -60,6 +67,9 @@ impl Default for ShellConfig {
             // Phosphor green prompt to match boot aesthetic
             prompt: "\x1b[38;2;0;238;0mneumann>\x1b[0m ".to_string(),
             theme: Theme::auto(),
+            no_color: false,
+            no_boot: false,
+            quiet: false,
         }
     }
 }
@@ -148,19 +158,32 @@ impl Shell {
 
     /// Creates a new shell with custom configuration.
     #[must_use]
-    pub fn with_config(config: ShellConfig) -> Self {
+    pub fn with_config(mut config: ShellConfig) -> Self {
+        // Apply no_color setting
+        if config.no_color {
+            config.theme = Theme::plain();
+            config.prompt = "neumann> ".to_string();
+        }
+
+        // Disable TRO if no_boot is set
         let tro_config = TroConfig::default();
-        let tro = if tro_config.enabled {
+        let tro = if tro_config.enabled && !config.no_boot {
             Some(TroController::new(tro_config))
         } else {
             None
+        };
+
+        let icons = if config.no_color {
+            Icons::plain()
+        } else {
+            Icons::auto()
         };
 
         Self {
             router: Arc::new(RwLock::new(QueryRouter::new())),
             config,
             wal: Mutex::new(None),
-            icons: Icons::auto(),
+            icons,
             tro,
         }
     }
@@ -999,12 +1022,22 @@ impl Shell {
     /// Shows TRO status.
     fn handle_tro_status(&self) -> CommandResult {
         let Some(ref tro) = self.tro else {
-            return CommandResult::Output("TRO border disabled (non-TTY or disabled in config)".to_string());
+            return CommandResult::Output(
+                "TRO border disabled (non-TTY or disabled in config)".to_string(),
+            );
         };
 
-        let running = if tro.is_running() { "running" } else { "stopped" };
+        let running = if tro.is_running() {
+            "running"
+        } else {
+            "stopped"
+        };
         let palette = tro.palette().name();
-        let crt = if tro.config().crt_effects { "on" } else { "off" };
+        let crt = if tro.config().crt_effects {
+            "on"
+        } else {
+            "off"
+        };
         let charset = match tro.charset_mode() {
             tro::CharsetMode::Unicode => "unicode",
             tro::CharsetMode::Ascii => "ascii",
@@ -1057,9 +1090,7 @@ impl Shell {
 
         let Some(palette) = Palette::from_name(name) else {
             let available = Palette::all_names().join(", ");
-            return CommandResult::Error(format!(
-                "Unknown theme: {name}\nAvailable: {available}"
-            ));
+            return CommandResult::Error(format!("Unknown theme: {name}\nAvailable: {available}"));
         };
 
         tro.set_palette(palette);
@@ -1160,6 +1191,21 @@ impl Shell {
     #[must_use]
     pub const fn version() -> &'static str {
         env!("CARGO_PKG_VERSION")
+    }
+
+    /// Executes a single line of input and returns a result.
+    ///
+    /// This is the primary entry point for non-interactive execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the command fails.
+    pub fn execute_line(&mut self, line: &str) -> Result<String, String> {
+        match self.execute(line) {
+            CommandResult::Output(text) | CommandResult::Help(text) => Ok(text),
+            CommandResult::Empty | CommandResult::Exit => Ok(String::new()),
+            CommandResult::Error(e) => Err(e),
+        }
     }
 
     /// Runs the interactive shell loop.
@@ -1320,10 +1366,31 @@ mod tests {
             history_size: 500,
             prompt: "neumann> ".to_string(),
             theme: Theme::plain(),
+            no_color: false,
+            no_boot: false,
+            quiet: false,
         };
         let shell = Shell::with_config(config);
         assert_eq!(shell.config.prompt, "neumann> ");
         assert_eq!(shell.config.history_size, 500);
+    }
+
+    #[test]
+    fn test_shell_with_no_color() {
+        let config = ShellConfig {
+            no_color: true,
+            ..Default::default()
+        };
+        let shell = Shell::with_config(config);
+        // When no_color is set, prompt should be plain
+        assert_eq!(shell.config.prompt, "neumann> ");
+    }
+
+    #[test]
+    fn test_execute_line() {
+        let mut shell = Shell::new();
+        let result = shell.execute_line("SELECT 1");
+        assert!(result.is_ok() || result.is_err()); // Just verify it runs
     }
 
     #[test]

@@ -6,6 +6,7 @@
 #   NEUMANN_INSTALL_DIR - Installation directory (default: /usr/local/bin or ~/.local/bin)
 #   NEUMANN_VERSION     - Specific version to install (default: latest)
 #   NEUMANN_NO_MODIFY_PATH - Set to 1 to skip PATH modification
+#   NEUMANN_SKIP_EXTRAS - Set to 1 to skip completions and man page installation
 
 set -euo pipefail
 
@@ -50,6 +51,9 @@ detect_platform() {
             ;;
         darwin)
             os="darwin"
+            ;;
+        mingw*|msys*|cygwin*)
+            error "Windows detected. Please download from GitHub releases or use: winget install neumann"
             ;;
         *)
             error "Unsupported operating system: $os"
@@ -137,6 +141,22 @@ build_from_source() {
         error "Build failed"
 
     cp "target/release/${BINARY_NAME}" "${tmpdir}/${BINARY_NAME}"
+
+    # Copy completions if available
+    local completions_dir
+    completions_dir=$(find target/release/build -path "*neumann_shell*/out/completions" -type d 2>/dev/null | head -1)
+    if [ -n "$completions_dir" ] && [ -d "$completions_dir" ]; then
+        mkdir -p "${tmpdir}/completions"
+        cp "$completions_dir"/* "${tmpdir}/completions/" 2>/dev/null || true
+    fi
+
+    # Copy man page if available
+    local man_dir
+    man_dir=$(find target/release/build -path "*neumann_shell*/out/man" -type d 2>/dev/null | head -1)
+    if [ -n "$man_dir" ] && [ -d "$man_dir" ]; then
+        mkdir -p "${tmpdir}/man"
+        cp "$man_dir"/* "${tmpdir}/man/" 2>/dev/null || true
+    fi
 }
 
 get_install_dir() {
@@ -174,6 +194,53 @@ install_binary() {
     else
         info "Installing to ${install_dir}..."
         install -m 755 "$binary_path" "${install_dir}/${BINARY_NAME}"
+    fi
+}
+
+install_extras() {
+    local tmpdir="$1"
+
+    # Skip if disabled
+    if [ "${NEUMANN_SKIP_EXTRAS:-0}" = "1" ]; then
+        return
+    fi
+
+    # Install shell completions
+    if [ -d "${tmpdir}/completions" ]; then
+        # Bash completions
+        local bash_completions="/usr/local/share/bash-completion/completions"
+        if [ -d "$bash_completions" ] || sudo mkdir -p "$bash_completions" 2>/dev/null; then
+            if [ -f "${tmpdir}/completions/neumann.bash" ]; then
+                sudo cp "${tmpdir}/completions/neumann.bash" "$bash_completions/neumann" 2>/dev/null || true
+            fi
+        fi
+
+        # Zsh completions
+        local zsh_completions="/usr/local/share/zsh/site-functions"
+        if [ -d "$zsh_completions" ] || sudo mkdir -p "$zsh_completions" 2>/dev/null; then
+            if [ -f "${tmpdir}/completions/_neumann" ]; then
+                sudo cp "${tmpdir}/completions/_neumann" "$zsh_completions/_neumann" 2>/dev/null || true
+            fi
+        fi
+
+        # Fish completions
+        local fish_completions="/usr/local/share/fish/vendor_completions.d"
+        if [ -d "$fish_completions" ] || sudo mkdir -p "$fish_completions" 2>/dev/null; then
+            if [ -f "${tmpdir}/completions/neumann.fish" ]; then
+                sudo cp "${tmpdir}/completions/neumann.fish" "$fish_completions/neumann.fish" 2>/dev/null || true
+            fi
+        fi
+
+        info "Shell completions installed (restart shell to activate)"
+    fi
+
+    # Install man page
+    if [ -f "${tmpdir}/man/neumann.1" ]; then
+        local man_dir="/usr/local/share/man/man1"
+        if [ -d "$man_dir" ] || sudo mkdir -p "$man_dir" 2>/dev/null; then
+            sudo cp "${tmpdir}/man/neumann.1" "$man_dir/" 2>/dev/null && \
+                info "Man page installed (try: man neumann)" || true
+        fi
     fi
 }
 
@@ -236,6 +303,23 @@ main() {
     platform=$(detect_platform)
     info "Detected platform: ${platform}"
 
+    # Map platform to target triple
+    local target
+    case "$platform" in
+        linux-x86_64)
+            target="x86_64-unknown-linux-gnu"
+            ;;
+        darwin-x86_64)
+            target="x86_64-apple-darwin"
+            ;;
+        darwin-aarch64)
+            target="aarch64-apple-darwin"
+            ;;
+        *)
+            error "Unknown platform: ${platform}"
+            ;;
+    esac
+
     # Check for existing installation
     check_existing_installation
 
@@ -255,7 +339,7 @@ main() {
     local binary_available=false
     if [ -n "$version" ]; then
         info "Installing version: ${version}"
-        if download_binary "$version" "$platform" "$tmpdir"; then
+        if download_binary "$version" "$target" "$tmpdir"; then
             binary_available=true
         fi
     fi
@@ -269,6 +353,9 @@ main() {
     local install_dir
     install_dir=$(get_install_dir)
     install_binary "$tmpdir" "$install_dir"
+
+    # Install extras (completions, man page)
+    install_extras "$tmpdir"
 
     # Update PATH if needed
     add_to_path "$install_dir"
@@ -287,6 +374,7 @@ main() {
     echo "  Get started:"
     echo "    neumann              # Start interactive shell"
     echo "    neumann --help       # Show help"
+    echo "    neumann -c 'query'   # Execute single query"
     echo ""
     echo "  Documentation:"
     echo "    https://github.com/${REPO}"

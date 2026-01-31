@@ -443,8 +443,7 @@ impl TroRenderer {
 
         let intensity = intensity.clamp(0.0, 1.0);
         #[allow(clippy::cast_precision_loss)]
-        let base_idx =
-            ((intensity * (palette.len() - 1) as f32) as usize).min(palette.len() - 1);
+        let base_idx = ((intensity * (palette.len() - 1) as f32) as usize).min(palette.len() - 1);
         let base_color = palette[base_idx];
 
         if heat > 0.1 {

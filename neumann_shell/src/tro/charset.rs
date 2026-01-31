@@ -124,15 +124,15 @@ pub const BLOCK_CHARS: [char; 9] = [
 
 /// ASCII fallback for block characters.
 pub const BLOCK_CHARS_ASCII: [char; 9] = [
-    ' ',  // Empty
-    '.',  // Light
-    ':',  // Light-medium
-    '+',  // Medium
-    '#',  // Medium-dark
-    '%',  // Dark
-    '@',  // Very dark
-    '&',  // Near full
-    'M',  // Full
+    ' ', // Empty
+    '.', // Light
+    ':', // Light-medium
+    '+', // Medium
+    '#', // Medium-dark
+    '%', // Dark
+    '@', // Very dark
+    '&', // Near full
+    'M', // Full
 ];
 
 /// Braille patterns for fine-grained density (Unicode).
@@ -149,14 +149,14 @@ pub const BRAILLE_DENSITY: [char; 8] = [
 
 /// ASCII fallback for braille patterns.
 pub const BRAILLE_DENSITY_ASCII: [char; 8] = [
-    ' ',  // Empty
-    '.',  // 1 dot equivalent
-    ':',  // 2 dots
-    ';',  // 3 dots
-    '+',  // 4 dots
-    '*',  // 5 dots
-    '#',  // 6 dots
-    '@',  // Full
+    ' ', // Empty
+    '.', // 1 dot equivalent
+    ':', // 2 dots
+    ';', // 3 dots
+    '+', // 4 dots
+    '*', // 5 dots
+    '#', // 6 dots
+    '@', // Full
 ];
 
 /// Braille base character (U+2800).
