@@ -168,17 +168,21 @@ mod tests {
     #[test]
     fn test_similar_connected_to() {
         let stmt = parse("SIMILAR 'key' CONNECTED TO 'hub' LIMIT 10").unwrap();
-        let StatementKind::Similar(similar) = stmt.kind else { panic!("expected SIMILAR") };
+        let StatementKind::Similar(similar) = stmt.kind else {
+            panic!("expected SIMILAR")
+        };
         assert!(similar.connected_to.is_some());
-    assert!(similar.limit.is_some());
+        assert!(similar.limit.is_some());
     }
 
     #[test]
     fn test_neighbors_by_similarity() {
         let stmt = parse("NEIGHBORS 'entity' BY SIMILAR [1.0, 0.0] LIMIT 5").unwrap();
-        let StatementKind::Neighbors(neighbors) = stmt.kind else { panic!("expected NEIGHBORS") };
+        let StatementKind::Neighbors(neighbors) = stmt.kind else {
+            panic!("expected NEIGHBORS")
+        };
         assert!(neighbors.by_similarity.is_some());
-    assert_eq!(neighbors.by_similarity.unwrap().len(), 2);
+        assert_eq!(neighbors.by_similarity.unwrap().len(), 2);
     }
 
     #[test]
@@ -218,24 +222,28 @@ mod tests {
             LIMIT 10
         "#;
         let stmt = parse(sql).unwrap();
-        let StatementKind::Select(select) = stmt.kind else { panic!("expected SELECT") };
+        let StatementKind::Select(select) = stmt.kind else {
+            panic!("expected SELECT")
+        };
         assert!(select.distinct == false);
-    assert!(select.from.is_some());
-    assert!(select.where_clause.is_some());
-    assert!(!select.group_by.is_empty());
-    assert!(select.having.is_some());
-    assert!(!select.order_by.is_empty());
-    assert!(select.limit.is_some());
+        assert!(select.from.is_some());
+        assert!(select.where_clause.is_some());
+        assert!(!select.group_by.is_empty());
+        assert!(select.having.is_some());
+        assert!(!select.order_by.is_empty());
+        assert!(select.limit.is_some());
     }
 
     #[test]
     fn test_insert_values() {
         let stmt =
             parse("INSERT INTO users (name, age) VALUES ('Bob', 25), ('Carol', 30)").unwrap();
-        let StatementKind::Insert(insert) = stmt.kind else { panic!("expected VALUES") };
+        let StatementKind::Insert(insert) = stmt.kind else {
+            panic!("expected VALUES")
+        };
         assert_eq!(insert.table.name, "users");
-    if let InsertSource::Values(rows) = insert.source {
-        assert_eq!(rows.len(), 2);
+        if let InsertSource::Values(rows) = insert.source {
+            assert_eq!(rows.len(), 2);
         } else {
             panic!("expected INSERT");
         }
@@ -253,10 +261,12 @@ mod tests {
             )
         "#;
         let stmt = parse(sql).unwrap();
-        let StatementKind::CreateTable(create) = stmt.kind else { panic!("expected CREATE TABLE") };
+        let StatementKind::CreateTable(create) = stmt.kind else {
+            panic!("expected CREATE TABLE")
+        };
         assert!(create.if_not_exists);
-    assert_eq!(create.columns.len(), 4);
-    assert_eq!(create.constraints.len(), 1);
+        assert_eq!(create.columns.len(), 4);
+        assert_eq!(create.constraints.len(), 1);
     }
 
     #[test]
@@ -297,14 +307,18 @@ mod tests {
     #[test]
     fn test_chain_begin() {
         let stmt = parse("BEGIN CHAIN TRANSACTION").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected CHAIN BEGIN") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected CHAIN BEGIN")
+        };
         assert!(matches!(chain.operation, ChainOp::Begin));
     }
 
     #[test]
     fn test_chain_commit() {
         let stmt = parse("COMMIT CHAIN").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected CHAIN COMMIT") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected CHAIN COMMIT")
+        };
         assert!(matches!(chain.operation, ChainOp::Commit));
     }
 
@@ -385,14 +399,18 @@ mod tests {
     #[test]
     fn test_chain_height() {
         let stmt = parse("CHAIN HEIGHT").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected CHAIN HEIGHT") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected CHAIN HEIGHT")
+        };
         assert!(matches!(chain.operation, ChainOp::Height));
     }
 
     #[test]
     fn test_chain_tip() {
         let stmt = parse("CHAIN TIP").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected CHAIN TIP") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected CHAIN TIP")
+        };
         assert!(matches!(chain.operation, ChainOp::Tip));
     }
 
@@ -415,14 +433,18 @@ mod tests {
     #[test]
     fn test_chain_verify() {
         let stmt = parse("CHAIN VERIFY").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected CHAIN VERIFY") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected CHAIN VERIFY")
+        };
         assert!(matches!(chain.operation, ChainOp::Verify));
     }
 
     #[test]
     fn test_show_codebook_global() {
         let stmt = parse("SHOW CODEBOOK GLOBAL").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected SHOW CODEBOOK GLOBAL") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected SHOW CODEBOOK GLOBAL")
+        };
         assert!(matches!(chain.operation, ChainOp::ShowCodebookGlobal));
     }
 
@@ -445,7 +467,9 @@ mod tests {
     #[test]
     fn test_analyze_codebook_transitions() {
         let stmt = parse("ANALYZE CODEBOOK TRANSITIONS").unwrap();
-        let StatementKind::Chain(chain) = stmt.kind else { panic!("expected ANALYZE CODEBOOK TRANSITIONS") };
+        let StatementKind::Chain(chain) = stmt.kind else {
+            panic!("expected ANALYZE CODEBOOK TRANSITIONS")
+        };
         assert!(matches!(chain.operation, ChainOp::AnalyzeTransitions));
     }
 }
