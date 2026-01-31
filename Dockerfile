@@ -89,6 +89,9 @@ COPY neumann_server/proto neumann_server/proto
 COPY neumann_server/build.rs neumann_server/
 COPY neumann_client/src neumann_client/src
 COPY neumann_docs/src neumann_docs/src
+COPY integration_tests/src integration_tests/src
+COPY stress_tests/src stress_tests/src
+COPY examples/src examples/src
 
 # Touch files to ensure rebuild
 RUN find . -name "*.rs" -exec touch {} \;
