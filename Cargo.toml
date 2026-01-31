@@ -19,11 +19,10 @@ members = [
     "tensor_checkpoint",
     "tensor_chain",
     "stress_tests",
-    "experiments",
     "neumann_docs",
     "examples",
 ]
-exclude = ["fuzz", "neumann-py/neumann-native"]
+exclude = ["fuzz", "neumann-py/neumann-native", "experiments", "seed_model"]
 
 [workspace.package]
 version = "0.1.0"
