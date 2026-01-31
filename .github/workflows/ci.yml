@@ -98,6 +98,7 @@ jobs:
             query_router) MIN_COV=94 ;;  # Large module with cross-engine integration
             tensor_chain) MIN_COV=95 ;;  # Distributed consensus with async/networking code
             neumann_client) MIN_COV=91 ;;  # TLS and async streaming require runtime setup
+            vector_engine) MIN_COV=92 ;;  # HNSW with complex search paths
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 
