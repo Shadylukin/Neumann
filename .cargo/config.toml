@@ -14,10 +14,6 @@ jobs = 10
 # NOTE: sccache removed - it invalidates fingerprints causing recompilation
 # Use RUSTC_WRAPPER=sccache for clean builds only
 
-[target.aarch64-apple-darwin]
-# Use lld for faster linking (2-5x faster than default ld)
-rustflags = ["-D", "warnings", "-C", "link-arg=-fuse-ld=/opt/homebrew/bin/ld64.lld"]
-
 [registries.crates-io]
 # Sparse protocol for faster index fetching
 protocol = "sparse"
