@@ -1268,9 +1268,9 @@ pub const TRO_SCRIPT: &str = r"
 const TRO = {
     // Configuration
     config: {
-        enabled: true,
-        fps: 30,
-        agentCount: 500,
+        enabled: false,  // Disabled by default for performance - press 'T' to toggle
+        fps: 15,
+        agentCount: 100,
         palette: 'phosphor_green',
         crtEffects: true,
         trailLength: 10,

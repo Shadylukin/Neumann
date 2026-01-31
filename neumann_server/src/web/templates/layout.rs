@@ -360,6 +360,26 @@ const KEYBOARD_NAV_SCRIPT: &str = r#"
                             e.preventDefault();
                         }
                         break;
+
+                    case 't':
+                        // Toggle TRO living border
+                        if (window.TRO) {
+                            window.TRO.config.enabled = !window.TRO.config.enabled;
+                            if (window.TRO.config.enabled) {
+                                window.TRO.init();
+                            }
+                            e.preventDefault();
+                        }
+                        break;
+
+                    case 's':
+                        // Toggle sound
+                        if (window.NeumannAudio) {
+                            const enabled = !window.NeumannAudio.isEnabled();
+                            window.NeumannAudio.setEnabled(enabled);
+                            e.preventDefault();
+                        }
+                        break;
                 }
         }
     }, true);
@@ -470,6 +490,8 @@ fn keyboard_help() -> Markup {
                                 div { span class="kbd-hint mr-2" { "/" } span class="text-phosphor-dim" { "Focus search" } }
                                 div { span class="kbd-hint mr-2" { "?" } span class="text-phosphor-dim" { "This help" } }
                                 div { span class="kbd-hint mr-2" { "Esc" } span class="text-phosphor-dim" { "Close/unfocus" } }
+                                div { span class="kbd-hint mr-2" { "T" } span class="text-phosphor-dim" { "Toggle TRO border" } }
+                                div { span class="kbd-hint mr-2" { "S" } span class="text-phosphor-dim" { "Toggle sound" } }
                             }
                         }
                     }
