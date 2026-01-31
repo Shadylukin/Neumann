@@ -1,8 +1,9 @@
 # Neumann
 
-[![CI](https://github.com/Shadylukin/Neumann/workflows/CI/badge.svg)](https://github.com/Shadylukin/Neumann/actions)
+[![CI](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml/badge.svg)](https://github.com/Shadylukin/Neumann/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord)](https://discord.gg/uN3KbAyKvw)
+[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
+[![Discord](https://img.shields.io/badge/Discord-Join-7289da.svg)](https://discord.gg/uN3KbAyKvw)
 
 A distributed tensor runtime that unifies relational, graph, and vector
 storage with semantic consensus.
