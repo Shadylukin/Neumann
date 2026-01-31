@@ -1,0 +1,42 @@
+# Build artifacts
+target/
+**/target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation build output
+docs/book-output/
+
+# Node modules (SDKs)
+**/node_modules/
+
+# Python artifacts
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/venv/
+**/.venv/
+
+# Fuzz corpus and artifacts
+fuzz/corpus/
+fuzz/artifacts/
+
+# Local config
+.cargo/config.toml
+.env
+*.local
+
+# Test data
+**/test_data/
+**/fixtures/
+
+# Logs
+*.log

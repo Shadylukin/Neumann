@@ -38,8 +38,6 @@ COPY neumann_client/Cargo.toml neumann_client/
 COPY neumann_docs/Cargo.toml neumann_docs/
 COPY integration_tests/Cargo.toml integration_tests/
 COPY stress_tests/Cargo.toml stress_tests/
-COPY experiments/Cargo.toml experiments/
-COPY seed_model/Cargo.toml seed_model/
 COPY examples/Cargo.toml examples/
 
 # Create dummy lib.rs files for dependency caching
@@ -62,8 +60,6 @@ RUN mkdir -p tensor_store/src && echo "pub fn dummy() {}" > tensor_store/src/lib
     mkdir -p neumann_docs/src && echo "pub fn dummy() {}" > neumann_docs/src/lib.rs && \
     mkdir -p integration_tests/src && echo "pub fn dummy() {}" > integration_tests/src/lib.rs && \
     mkdir -p stress_tests/src && echo "pub fn dummy() {}" > stress_tests/src/lib.rs && \
-    mkdir -p experiments/src && echo "pub fn dummy() {}" > experiments/src/lib.rs && \
-    mkdir -p seed_model/src && echo "pub fn dummy() {}" > seed_model/src/lib.rs && \
     mkdir -p examples/src && echo "pub fn dummy() {}" > examples/src/lib.rs
 
 # Build dependencies only (this layer is cached)
