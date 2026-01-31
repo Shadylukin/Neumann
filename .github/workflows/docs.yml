@@ -60,7 +60,7 @@ jobs:
         run: |
           mkdir -p ~/.local/bin
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
-          cargo install mdbook-mermaid@0.12.6 mdbook-toc mdbook-admonish mdbook-linkcheck
+          cargo install mdbook-mermaid@0.12.6 mdbook-admonish mdbook-linkcheck
 
       - name: Build book
         working-directory: docs/book

@@ -12,10 +12,6 @@ create-missing = true
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
 
-[preprocessor.toc]
-command = "mdbook-toc"
-marker = "<!-- toc -->"
-
 [preprocessor.admonish]
 command = "mdbook-admonish"
 assets_version = "3.0.2"
