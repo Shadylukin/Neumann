@@ -204,8 +204,8 @@ jobs:
           target: server
           push: true
           tags: |
-            shadylukin/neumann:${{ steps.version.outputs.tag }}
-            shadylukin/neumann:latest
+            shadylukinack/neumann:${{ steps.version.outputs.tag }}
+            shadylukinack/neumann:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -216,8 +216,8 @@ jobs:
           target: cli
           push: true
           tags: |
-            shadylukin/neumann:${{ steps.version.outputs.tag }}-cli
-            shadylukin/neumann:cli
+            shadylukinack/neumann:${{ steps.version.outputs.tag }}-cli
+            shadylukinack/neumann:cli
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
