@@ -520,6 +520,8 @@ fn nix_statvfs(path: &Path) -> io::Result<StatVfsResult> {
     }
 
     Ok(StatVfsResult {
+        // Cast needed for cross-platform compatibility (types differ between Linux/macOS)
+        #[allow(clippy::unnecessary_cast)]
         available_bytes: stat.f_bavail as u64 * stat.f_frsize as u64,
     })
 }

@@ -201,6 +201,8 @@ impl TxWal {
                 return Err(io::Error::last_os_error());
             }
 
+            // Cast needed for cross-platform compatibility (types differ between Linux/macOS)
+            #[allow(clippy::unnecessary_cast)]
             Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
         }
         #[cfg(not(unix))]
