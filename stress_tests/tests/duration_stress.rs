@@ -13,18 +13,10 @@ use std::{
 
 use graph_engine::{GraphEngine, PropertyValue};
 use relational_engine::{Column, ColumnType, RelationalEngine, Schema, Value};
-use stress_tests::{
-    endurance_config, format_bytes, full_config, generate_embeddings, LatencyHistogram,
-};
+use stress_tests::{endurance_config, generate_embeddings, LatencyHistogram};
 use tensor_store::TensorStore;
 use vector_engine::VectorEngine;
 
-/// Get current process memory usage (approximate).
-fn get_memory_usage() -> usize {
-    // This is a simple approximation - in production you'd use a proper memory tracker
-    // For now, we'll estimate based on store sizes
-    0
-}
 
 /// Stress test: 1 hour sustained load.
 #[test]
@@ -249,7 +241,7 @@ fn stress_memory_leak_detection() {
         // Delete items (cleanup)
         for i in 0..items_per_cycle {
             let key = format!("cycle{}:item{}", cycle, i);
-            store.delete(&key);
+            let _ = store.delete(&key);
         }
 
         // Sample memory (store should be nearly empty after delete)
@@ -371,7 +363,7 @@ fn stress_throughput_stability() {
         handle.join().unwrap();
     }
 
-    let elapsed = start.elapsed();
+    let _elapsed = start.elapsed();
     let total = ops.load(Ordering::Relaxed);
 
     // Analyze stability

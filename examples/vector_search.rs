@@ -134,7 +134,7 @@ fn main() {
 
     // Statistics
     println!("Vector store statistics:");
-    println!("  Total embeddings: {}", engine.len());
+    println!("  Total embeddings: {}", engine.count());
     if let Some(dim) = engine.dimension() {
         println!("  Dimension: {}", dim);
     }

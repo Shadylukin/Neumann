@@ -6,7 +6,7 @@
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
-use crate::web::assets::{ADMIN_CSS, TAILWIND_CONFIG};
+use crate::web::assets::{ADMIN_CSS, AUDIO_SCRIPT, TAILWIND_CONFIG, TRO_CSS, TRO_SCRIPT};
 use crate::web::NavItem;
 
 /// ASCII art NEUMANN logo for the terminal header (Fallout block style).
@@ -43,6 +43,9 @@ pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
 
                 // Custom terminal styles
                 style { (PreEscaped(ADMIN_CSS)) }
+
+                // TRO Living Border styles
+                style { (PreEscaped(TRO_CSS)) }
             }
             body class="crt-scanlines crt-flicker" {
                 div class="min-h-screen flex flex-col" {
@@ -71,6 +74,12 @@ pub fn layout(title: &str, active: NavItem, content: Markup) -> Markup {
 
                 // Keyboard navigation script
                 script { (PreEscaped(KEYBOARD_NAV_SCRIPT)) }
+
+                // TRO Living Border script
+                script { (PreEscaped(TRO_SCRIPT)) }
+
+                // Audio feedback script
+                script { (PreEscaped(AUDIO_SCRIPT)) }
             }
         }
     }

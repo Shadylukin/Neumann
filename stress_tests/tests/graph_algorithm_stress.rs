@@ -13,7 +13,7 @@ use std::{
     time::Instant,
 };
 
-use graph_engine::{CommunityConfig, Direction, GraphEngine, PageRankConfig, PropertyValue};
+use graph_engine::{CentralityConfig, CommunityConfig, Direction, GraphEngine, PageRankConfig, PropertyValue};
 use stress_tests::{full_config, LatencyHistogram};
 
 #[test]
@@ -113,7 +113,7 @@ fn stress_graph_algorithms_40_threads() {
                 let op_start = Instant::now();
                 if let Ok(result) = eng.connected_components(Some(CommunityConfig {
                     max_iterations: 100,
-                    tolerance: 0.001,
+                    ..Default::default()
                 })) {
                     // Validate: should have at least one component
                     if !result.communities.is_empty() {
@@ -139,7 +139,10 @@ fn stress_graph_algorithms_40_threads() {
             for _ in 0..ops_per_thread {
                 let op_start = Instant::now();
                 // Use sampling for performance
-                if let Ok(result) = eng.betweenness_centrality(Some(50), true) {
+                if let Ok(result) = eng.betweenness_centrality(Some(CentralityConfig {
+                    sampling_ratio: 0.1,
+                    ..Default::default()
+                })) {
                     // Validate: all scores should be finite and non-negative
                     let mut valid = true;
                     for (_, score) in &result.scores {

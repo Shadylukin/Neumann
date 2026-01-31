@@ -1114,8 +1114,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 .weight_property
                 .as_ref()
                 .filter(|s| !s.is_empty())
-                .map(|s| s.as_str())
-                .unwrap_or("weight");
+                .map_or("weight", String::as_str);
 
             match (from, to) {
                 (Some(from_id), Some(to_id)) => {
@@ -1198,7 +1197,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                                     let path_str = p
                                         .nodes
                                         .iter()
-                                        .map(|n| n.to_string())
+                                        .map(ToString::to_string)
                                         .collect::<Vec<_>>()
                                         .join(" -> ");
                                     (format!("{} nodes", p.nodes.len()), path_str)
@@ -1324,8 +1323,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
                 .weight_property
                 .as_ref()
                 .filter(|s| !s.is_empty())
-                .map(|s| s.as_str())
-                .unwrap_or("weight");
+                .map_or("weight", String::as_str);
             let config = MstConfig::new(weight_prop);
 
             match ctx.graph.minimum_spanning_tree(&config) {
@@ -1412,6 +1410,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
             match ctx.graph.count_triangles(&config) {
                 Ok(result) => {
                     let top_k = params.top_k.unwrap_or(20);
+                    #[allow(clippy::cast_precision_loss)]
                     let mut scores: Vec<_> = result
                         .node_triangles
                         .iter()
@@ -1448,8 +1447,7 @@ fn execute_algorithm(ctx: &AdminContext, params: &ExecuteParams) -> AlgorithmRes
             let metric = params
                 .metric
                 .as_deref()
-                .map(parse_similarity_metric)
-                .unwrap_or(SimilarityMetric::Jaccard);
+                .map_or(SimilarityMetric::Jaccard, parse_similarity_metric);
 
             match (node_a, node_b) {
                 (Some(a), Some(b)) => {
@@ -1604,9 +1602,7 @@ fn render_result(result: &AlgorithmResult) -> Markup {
             div class="terminal-panel" {
                 div class="panel-header" { "PATH RESULT" }
                 div class="panel-content" {
-                    @if !data.found {
-                        (empty_state("NO PATH FOUND", "The nodes are not connected"))
-                    } @else {
+                    @if data.found {
                         div class="mb-4 font-terminal text-sm" {
                             span class="text-phosphor-dim" { "PATH LENGTH: " }
                             span class="text-phosphor" { (data.nodes.len()) " nodes" }
@@ -1640,6 +1636,8 @@ fn render_result(result: &AlgorithmResult) -> Markup {
                                 @if idx < data.nodes.len() - 1 { " -> " }
                             }
                         }
+                    } @else {
+                        (empty_state("NO PATH FOUND", "The nodes are not connected"))
                     }
                 }
             }

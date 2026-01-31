@@ -44,6 +44,7 @@ const LEVEL_XP: [u64; 20] = [
 pub fn level_from_xp(xp: u64) -> u32 {
     for (level, &required) in LEVEL_XP.iter().enumerate().rev() {
         if xp >= required {
+            #[allow(clippy::cast_possible_truncation)]
             return (level + 1) as u32;
         }
     }
@@ -62,6 +63,7 @@ pub fn level_progress(xp: u64) -> LevelProgress {
     let xp_in_level = xp.saturating_sub(current_level_xp);
     let xp_for_level = next_level_xp.saturating_sub(current_level_xp);
 
+    #[allow(clippy::cast_precision_loss)]
     let percentage = if xp_for_level > 0 {
         ((xp_in_level as f64 / xp_for_level as f64) * 100.0).min(100.0)
     } else {
@@ -74,6 +76,7 @@ pub fn level_progress(xp: u64) -> LevelProgress {
         xp_in_level,
         xp_for_level,
         percentage,
+        #[allow(clippy::cast_possible_truncation)]
         is_max_level: level >= LEVEL_XP.len() as u32,
     }
 }

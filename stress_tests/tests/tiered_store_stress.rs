@@ -12,7 +12,7 @@ use std::{
 
 use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tempfile::tempdir;
-use tensor_store::{ScalarValue, TensorData, TensorStore, TensorValue, TieredConfig, TieredStore};
+use tensor_store::{ScalarValue, TensorData, TensorValue, TieredConfig, TieredStore};
 
 fn create_tensor(id: i64, embedding: Vec<f32>) -> TensorData {
     let mut data = TensorData::new();

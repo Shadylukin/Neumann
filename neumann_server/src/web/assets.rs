@@ -1263,7 +1263,7 @@ pub const TRO_CSS: &str = r"
 /// - Pheromone trail visualization with glowing particles
 /// - Real-time activity pulses from database operations
 /// - Smooth 60fps animation with requestAnimationFrame
-pub const TRO_SCRIPT: &str = r#"
+pub const TRO_SCRIPT: &str = r"
 // TRO Living Border - Physarum Simulation
 const TRO = {
     // Configuration
@@ -1694,7 +1694,7 @@ if (document.readyState === 'loading') {
 
 // Expose to window for external control
 window.TRO = TRO;
-"#;
+";
 
 /// Audio feedback system using Web Audio API.
 ///

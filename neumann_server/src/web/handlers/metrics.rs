@@ -266,7 +266,7 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
         }
 
         // Live update script placeholder
-        script { (PreEscaped(r#"
+        script { (PreEscaped(r"
             // Metrics dashboard would connect to SSE endpoint for live updates
             console.log('[Metrics] Dashboard loaded');
 
@@ -276,7 +276,7 @@ pub async fn dashboard(State(ctx): State<Arc<AdminContext>>) -> Markup {
             //     const data = JSON.parse(event.data);
             //     updateDashboard(data);
             // };
-        "#)) }
+        ")) }
     };
 
     layout("Metrics", NavItem::Dashboard, content)

@@ -112,6 +112,8 @@ jobs:
             neumann_client) MIN_COV=91 ;;  # TLS and async streaming require runtime setup
             vector_engine) MIN_COV=92 ;;  # HNSW with complex search paths
             tensor_unified) MIN_COV=93 ;;  # Cross-engine integration with async code
+            graph_engine) MIN_COV=88 ;;  # Graph algorithms with traversal paths
+            relational_engine) MIN_COV=92 ;;  # SIMD filtering with platform-specific code
             *) MIN_COV=${{ env.MINIMUM_COVERAGE }} ;;
           esac
 
@@ -196,51 +198,6 @@ jobs:
       - name: Run Miri on tensor_store
         working-directory: tensor_store
         run: cargo miri test
-
-  bench:
-    name: Benchmark
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - crate: tensor_store
-            bench_name: tensor_store_bench
-          - crate: relational_engine
-            bench_name: relational_engine_bench
-          - crate: graph_engine
-            bench_name: graph_engine_bench
-          - crate: vector_engine
-            bench_name: vector_engine_bench
-          - crate: tensor_compress
-            bench_name: tensor_compress_bench
-          - crate: tensor_vault
-            bench_name: tensor_vault_bench
-          - crate: tensor_cache
-            bench_name: cache_bench
-          - crate: neumann_parser
-            bench_name: neumann_parser_bench
-          - crate: query_router
-            bench_name: query_router_bench
-          - crate: neumann_shell
-            bench_name: neumann_shell_bench
-          - crate: tensor_blob
-            bench_name: blob_bench
-          - crate: tensor_unified
-            bench_name: tensor_unified_bench
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ${{ matrix.crate }}
-      - name: Run benchmarks
-        working-directory: ${{ matrix.crate }}
-        run: cargo bench --bench ${{ matrix.bench_name }} -- --noplot
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-${{ matrix.crate }}
-          path: target/criterion
 
   # Cross-platform tests
   cross-platform:

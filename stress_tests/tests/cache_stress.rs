@@ -45,7 +45,7 @@ fn stress_cache_10k_exact_entries() {
         let cache = Arc::clone(&cache);
         handles.push(thread::spawn(move || {
             let mut latencies = LatencyHistogram::new();
-            let start_idx = t * per_thread;
+            let _start_idx = t * per_thread;
 
             for i in 0..per_thread {
                 let key = format!("key_{}_{}", t, i);

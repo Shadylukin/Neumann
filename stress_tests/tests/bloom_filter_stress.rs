@@ -17,7 +17,7 @@ use tensor_store::BloomFilter;
 #[test]
 #[ignore]
 fn stress_bloom_concurrent_add_query() {
-    let config = full_config();
+    let _config = full_config();
     let key_count = 100_000;
     let adder_threads = 8;
     let query_threads = 8;
@@ -61,10 +61,10 @@ fn stress_bloom_concurrent_add_query() {
 
     // Query threads (run concurrently with adds)
     let query_hits = Arc::new(AtomicUsize::new(0));
-    for t in 0..query_threads {
+    for _t in 0..query_threads {
         let bloom = Arc::clone(&bloom);
         let hits = Arc::clone(&query_hits);
-        let add_complete = Arc::clone(&add_complete);
+        let _add_complete = Arc::clone(&add_complete);
         handles.push(thread::spawn(move || {
             let mut latencies = LatencyHistogram::new();
             let mut local_hits = 0;
@@ -245,7 +245,7 @@ fn stress_bloom_bit_concurrency() {
     let mut handles = vec![];
     let start = Instant::now();
 
-    for t in 0..thread_count {
+    for _t in 0..thread_count {
         let bloom = Arc::clone(&bloom);
         let adds = Arc::clone(&total_adds);
         handles.push(thread::spawn(move || {

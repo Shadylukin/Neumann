@@ -10,9 +10,7 @@ use std::{
     time::Instant,
 };
 
-use stress_tests::{
-    format_bytes, full_config, generate_embeddings, LatencyHistogram, StressConfig,
-};
+use stress_tests::{full_config, generate_embeddings, LatencyHistogram};
 use tensor_store::{BloomFilter, ScalarValue, TensorData, TensorStore, TensorValue};
 
 fn create_tensor(id: i64, embedding: Vec<f32>) -> TensorData {
@@ -74,7 +72,6 @@ fn stress_tensor_store_1m_concurrent_writes() {
     );
 
     // Aggregate latencies
-    let mut total_hist = LatencyHistogram::new();
     for (i, snapshot) in results.iter().enumerate() {
         println!("  Thread {}: {}", i, snapshot);
     }

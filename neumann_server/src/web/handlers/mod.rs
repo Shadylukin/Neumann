@@ -341,7 +341,7 @@ pub async fn api_query(
             if !tables.contains(&table_name) {
                 return axum::Json(QueryResponse {
                     rows: None,
-                    error: Some(format!("Table '{}' not found. Available: {:?}", table_name, tables)),
+                    error: Some(format!("Table '{table_name}' not found. Available: {tables:?}")),
                     message: None,
                 });
             }
@@ -351,7 +351,7 @@ pub async fn api_query(
                 let after_limit = &query[limit_idx + 5..].trim_start();
                 after_limit
                     .chars()
-                    .take_while(|c| c.is_ascii_digit())
+                    .take_while(char::is_ascii_digit)
                     .collect::<String>()
                     .parse::<usize>()
                     .unwrap_or(100)
@@ -423,21 +423,21 @@ pub async fn api_query(
         axum::Json(QueryResponse {
             rows: None,
             error: None,
-            message: Some(format!("Graph contains {} nodes", count)),
+            message: Some(format!("Graph contains {count} nodes")),
         })
     } else if query_upper.starts_with("SHOW EDGES") {
         let count = ctx.graph.edge_count();
         axum::Json(QueryResponse {
             rows: None,
             error: None,
-            message: Some(format!("Graph contains {} edges", count)),
+            message: Some(format!("Graph contains {count} edges")),
         })
     } else {
         axum::Json(QueryResponse {
             rows: None,
-            error: Some(format!(
-                "Unsupported query. Try: SELECT * FROM <table> LIMIT n, SHOW TABLES, SHOW COLLECTIONS, SHOW NODES, SHOW EDGES"
-            )),
+            error: Some(
+                "Unsupported query. Try: SELECT * FROM <table> LIMIT n, SHOW TABLES, SHOW COLLECTIONS, SHOW NODES, SHOW EDGES".to_string()
+            ),
             message: None,
         })
     }
@@ -451,8 +451,7 @@ fn value_to_json(value: &relational_engine::Value) -> serde_json::Value {
         relational_engine::Value::Int(i) => serde_json::Value::Number((*i).into()),
         relational_engine::Value::Float(f) => {
             serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number)
         }
         relational_engine::Value::String(s) => serde_json::Value::String(s.clone()),
         relational_engine::Value::Bytes(b) => serde_json::Value::String(format!("<{} bytes>", b.len())),

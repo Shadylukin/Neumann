@@ -146,7 +146,9 @@ impl UserProgress {
         }
 
         let completed = self.daily_goals.iter().filter(|g| g.is_complete()).count();
-        (completed as f64 / self.daily_goals.len() as f64) * 100.0
+        #[allow(clippy::cast_precision_loss)]
+        let pct = (completed as f64 / self.daily_goals.len() as f64) * 100.0;
+        pct
     }
 
     /// Resets daily goals for a new day.
@@ -252,7 +254,7 @@ impl DailyGoal {
         if self.target == 0 {
             return 100.0;
         }
-        ((self.current as f64 / self.target as f64) * 100.0).min(100.0)
+        ((f64::from(self.current) / f64::from(self.target)) * 100.0).min(100.0)
     }
 
     /// Increments progress.
