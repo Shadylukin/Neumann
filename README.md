@@ -43,6 +43,18 @@ FIND NODE user
 
 One runtime. One query language. One consistency model.
 
+<p align="center">
+  <img src="images/dash.png" alt="Neumann Dashboard" width="800">
+  <br>
+  <em>Web dashboard with system status and query terminal</em>
+</p>
+
+<p align="center">
+  <img src="images/graph.png" alt="Graph Visualization" width="800">
+  <br>
+  <em>Interactive graph visualization with force-directed layout</em>
+</p>
+
 ## Performance
 
 Benchmarked on Apple M-series silicon:
