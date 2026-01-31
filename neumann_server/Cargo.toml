@@ -27,6 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macro
 tokio-stream = "0.1"
 parking_lot = "0.12"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 bytes = "1"
 dashmap = "6"
