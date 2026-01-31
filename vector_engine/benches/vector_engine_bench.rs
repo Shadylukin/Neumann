@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-#![allow(missing_docs)]
+//! Benchmarks for vector_engine performance testing.
+//!
+//! Measures embedding storage, similarity search, and HNSW index operations.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
