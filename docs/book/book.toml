@@ -27,6 +27,7 @@ site-url = "/neumann/"
 default-theme = "rust"
 preferred-dark-theme = "coal"
 smart-punctuation = true
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [output.html.fold]
 enable = true
