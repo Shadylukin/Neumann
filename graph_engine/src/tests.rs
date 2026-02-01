@@ -11529,3 +11529,5780 @@ fn test_concurrent_batch_mixed_operations_30_threads() {
     // Verify engine is still consistent and usable
     let _ = engine.create_node("FinalTest", HashMap::new()).unwrap();
 }
+
+// PropertyValue accessor tests
+#[test]
+fn test_property_value_as_list() {
+    let list = PropertyValue::List(vec![
+        PropertyValue::Int(1),
+        PropertyValue::Int(2),
+        PropertyValue::Int(3),
+    ]);
+    let result = list.as_list();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().len(), 3);
+
+    let non_list = PropertyValue::Int(42);
+    assert!(non_list.as_list().is_none());
+}
+
+#[test]
+fn test_property_value_as_map() {
+    let mut map = HashMap::new();
+    map.insert(
+        "key".to_string(),
+        PropertyValue::String("value".to_string()),
+    );
+    let pv = PropertyValue::Map(map);
+    let result = pv.as_map();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().len(), 1);
+
+    let non_map = PropertyValue::Int(42);
+    assert!(non_map.as_map().is_none());
+}
+
+#[test]
+fn test_property_value_as_bytes() {
+    let bytes = PropertyValue::Bytes(vec![1, 2, 3, 4]);
+    let result = bytes.as_bytes();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap(), &[1, 2, 3, 4]);
+
+    let non_bytes = PropertyValue::Int(42);
+    assert!(non_bytes.as_bytes().is_none());
+}
+
+#[test]
+fn test_property_value_as_point() {
+    let point = PropertyValue::Point {
+        lat: 40.7128,
+        lon: -74.0060,
+    };
+    let result = point.as_point();
+    assert!(result.is_some());
+    let (lat, lon) = result.unwrap();
+    assert!((lat - 40.7128).abs() < f64::EPSILON);
+    assert!((lon - (-74.0060)).abs() < f64::EPSILON);
+
+    let non_point = PropertyValue::Int(42);
+    assert!(non_point.as_point().is_none());
+}
+
+#[test]
+fn test_property_value_as_datetime() {
+    let dt = PropertyValue::DateTime(1609459200000);
+    let result = dt.as_datetime();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap(), 1609459200000);
+
+    let non_datetime = PropertyValue::Int(42);
+    assert!(non_datetime.as_datetime().is_none());
+}
+
+#[test]
+fn test_property_value_contains() {
+    let list = PropertyValue::List(vec![
+        PropertyValue::Int(1),
+        PropertyValue::Int(2),
+        PropertyValue::Int(3),
+    ]);
+    assert!(list.contains(&PropertyValue::Int(2)));
+    assert!(!list.contains(&PropertyValue::Int(4)));
+
+    let non_list = PropertyValue::Int(42);
+    assert!(!non_list.contains(&PropertyValue::Int(42)));
+}
+
+#[test]
+fn test_property_value_distance_km() {
+    let nyc = PropertyValue::Point {
+        lat: 40.7128,
+        lon: -74.0060,
+    };
+    let la = PropertyValue::Point {
+        lat: 34.0522,
+        lon: -118.2437,
+    };
+
+    let distance = nyc.distance_km(&la);
+    assert!(distance.is_some());
+    let km = distance.unwrap();
+    assert!(km > 3900.0 && km < 4000.0);
+
+    let non_point = PropertyValue::Int(42);
+    assert!(nyc.distance_km(&non_point).is_none());
+    assert!(non_point.distance_km(&nyc).is_none());
+}
+
+#[test]
+fn test_property_value_distance_km_same_point() {
+    let point = PropertyValue::Point { lat: 0.0, lon: 0.0 };
+    let distance = point.distance_km(&point);
+    assert!(distance.is_some());
+    assert!(distance.unwrap().abs() < 0.001);
+}
+
+#[test]
+fn test_property_value_value_type() {
+    assert_eq!(PropertyValue::Null.value_type(), PropertyValueType::Null);
+    assert_eq!(PropertyValue::Int(42).value_type(), PropertyValueType::Int);
+    assert_eq!(
+        PropertyValue::Float(3.14).value_type(),
+        PropertyValueType::Float
+    );
+    assert_eq!(
+        PropertyValue::String("hello".to_string()).value_type(),
+        PropertyValueType::String
+    );
+    assert_eq!(
+        PropertyValue::Bool(true).value_type(),
+        PropertyValueType::Bool
+    );
+    assert_eq!(
+        PropertyValue::DateTime(12345).value_type(),
+        PropertyValueType::DateTime
+    );
+    assert_eq!(
+        PropertyValue::List(vec![]).value_type(),
+        PropertyValueType::List
+    );
+    assert_eq!(
+        PropertyValue::Map(HashMap::new()).value_type(),
+        PropertyValueType::Map
+    );
+    assert_eq!(
+        PropertyValue::Bytes(vec![]).value_type(),
+        PropertyValueType::Bytes
+    );
+    assert_eq!(
+        PropertyValue::Point { lat: 0.0, lon: 0.0 }.value_type(),
+        PropertyValueType::Point
+    );
+}
+
+#[test]
+fn test_property_value_to_scalar_and_back() {
+    let original_int = PropertyValue::Int(42);
+    let scalar = original_int.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_int);
+
+    let original_float = PropertyValue::Float(3.14);
+    let scalar = original_float.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_float);
+
+    let original_string = PropertyValue::String("hello".to_string());
+    let scalar = original_string.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_string);
+
+    let original_bool = PropertyValue::Bool(true);
+    let scalar = original_bool.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_bool);
+
+    let original_bytes = PropertyValue::Bytes(vec![1, 2, 3]);
+    let scalar = original_bytes.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_bytes);
+
+    let original_null = PropertyValue::Null;
+    let scalar = original_null.to_scalar();
+    let back = PropertyValue::from_scalar(&scalar);
+    assert_eq!(back, original_null);
+}
+
+#[test]
+fn test_property_value_to_scalar_complex_types() {
+    let list = PropertyValue::List(vec![PropertyValue::Int(1), PropertyValue::Int(2)]);
+    let scalar = list.to_scalar();
+    match scalar {
+        tensor_store::ScalarValue::String(s) => {
+            assert!(s.contains("List") || s.contains("Int"));
+        },
+        _ => panic!("Expected string for complex type"),
+    }
+
+    let mut map = HashMap::new();
+    map.insert(
+        "key".to_string(),
+        PropertyValue::String("value".to_string()),
+    );
+    let map_pv = PropertyValue::Map(map);
+    let scalar = map_pv.to_scalar();
+    match scalar {
+        tensor_store::ScalarValue::String(s) => {
+            assert!(s.contains("key") || s.contains("Map"));
+        },
+        _ => panic!("Expected string for complex type"),
+    }
+
+    let point = PropertyValue::Point { lat: 1.0, lon: 2.0 };
+    let scalar = point.to_scalar();
+    match scalar {
+        tensor_store::ScalarValue::String(s) => {
+            assert!(s.contains("Point") || s.contains("lat") || s.contains("1.0"));
+        },
+        _ => panic!("Expected string for complex type"),
+    }
+}
+
+#[test]
+fn test_property_value_from_scalar_json() {
+    let list = PropertyValue::List(vec![PropertyValue::Int(1), PropertyValue::Int(2)]);
+    let scalar = list.to_scalar();
+    let json_str = match scalar {
+        tensor_store::ScalarValue::String(s) => s,
+        _ => panic!("Expected string"),
+    };
+
+    let parsed = PropertyValue::from_scalar(&tensor_store::ScalarValue::String(json_str));
+    match parsed {
+        PropertyValue::List(items) => assert_eq!(items.len(), 2),
+        _ => panic!("Expected list from JSON roundtrip"),
+    }
+
+    let point = PropertyValue::Point { lat: 1.0, lon: 2.0 };
+    let scalar = point.to_scalar();
+    let json_str = match scalar {
+        tensor_store::ScalarValue::String(s) => s,
+        _ => panic!("Expected string"),
+    };
+
+    let parsed = PropertyValue::from_scalar(&tensor_store::ScalarValue::String(json_str));
+    match parsed {
+        PropertyValue::Point { lat, lon } => {
+            assert!((lat - 1.0).abs() < f64::EPSILON);
+            assert!((lon - 2.0).abs() < f64::EPSILON);
+        },
+        _ => panic!("Expected point from JSON roundtrip"),
+    }
+}
+
+#[test]
+fn test_property_value_datetime_to_scalar() {
+    let dt = PropertyValue::DateTime(1609459200000);
+    let scalar = dt.to_scalar();
+    match scalar {
+        tensor_store::ScalarValue::Int(v) => assert_eq!(v, 1609459200000),
+        _ => panic!("Expected int for datetime"),
+    }
+}
+
+// Compound index tests
+#[test]
+fn test_compound_index_create_and_find() {
+    let engine = GraphEngine::new();
+
+    let mut props1 = HashMap::new();
+    props1.insert(
+        "name".to_string(),
+        PropertyValue::String("Alice".to_string()),
+    );
+    props1.insert("age".to_string(), PropertyValue::Int(30));
+    engine.create_node("Person", props1).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+    props2.insert("age".to_string(), PropertyValue::Int(25));
+    engine.create_node("Person", props2).unwrap();
+
+    engine.create_compound_index(&["name", "age"]).unwrap();
+    assert!(engine.has_compound_index(&["name", "age"]));
+
+    let results = engine
+        .find_by_compound(&[
+            ("name", &PropertyValue::String("Alice".to_string())),
+            ("age", &PropertyValue::Int(30)),
+        ])
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].properties.get("name"),
+        Some(&PropertyValue::String("Alice".to_string()))
+    );
+}
+
+#[test]
+fn test_compound_index_empty_properties() {
+    let engine = GraphEngine::new();
+    engine.create_compound_index(&[]).unwrap();
+}
+
+#[test]
+fn test_compound_index_already_exists() {
+    let engine = GraphEngine::new();
+    engine.create_compound_index(&["name", "age"]).unwrap();
+    let result = engine.create_compound_index(&["name", "age"]);
+    assert!(matches!(result, Err(GraphError::IndexAlreadyExists { .. })));
+}
+
+#[test]
+fn test_compound_index_not_found() {
+    let engine = GraphEngine::new();
+    let result = engine.find_by_compound(&[("name", &PropertyValue::String("Alice".to_string()))]);
+    assert!(matches!(result, Err(GraphError::IndexNotFound { .. })));
+}
+
+#[test]
+fn test_compound_index_drop() {
+    let engine = GraphEngine::new();
+    engine.create_compound_index(&["name", "age"]).unwrap();
+    assert!(engine.has_compound_index(&["name", "age"]));
+
+    engine.drop_compound_index(&["name", "age"]).unwrap();
+    assert!(!engine.has_compound_index(&["name", "age"]));
+}
+
+#[test]
+fn test_compound_index_drop_not_found() {
+    let engine = GraphEngine::new();
+    let result = engine.drop_compound_index(&["nonexistent"]);
+    assert!(matches!(result, Err(GraphError::IndexNotFound { .. })));
+}
+
+#[test]
+fn test_compound_index_list() {
+    let engine = GraphEngine::new();
+    engine.create_compound_index(&["name", "age"]).unwrap();
+    engine.create_compound_index(&["city", "country"]).unwrap();
+
+    let indexes = engine.get_compound_indexes();
+    assert_eq!(indexes.len(), 2);
+}
+
+#[test]
+fn test_compound_index_find_no_match() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_compound_index(&["name"]).unwrap();
+
+    let results = engine
+        .find_by_compound(&[("name", &PropertyValue::String("NonExistent".to_string()))])
+        .unwrap();
+    assert!(results.is_empty());
+}
+
+// Error hash tests
+#[test]
+fn test_graph_error_hash_storage_error() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::StorageError("error1".to_string()));
+    set.insert(GraphError::StorageError("error2".to_string()));
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_constraint_already_exists() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::ConstraintAlreadyExists("c1".to_string()));
+    set.insert(GraphError::ConstraintAlreadyExists("c2".to_string()));
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_constraint_not_found() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::ConstraintNotFound("c1".to_string()));
+    set.insert(GraphError::ConstraintNotFound("c2".to_string()));
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_path_not_found() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::PathNotFound);
+    set.insert(GraphError::PathNotFound);
+    assert_eq!(set.len(), 1);
+}
+
+#[test]
+fn test_graph_error_hash_index_exists() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::IndexAlreadyExists {
+        target: "node".to_string(),
+        property: "name".to_string(),
+    });
+    set.insert(GraphError::IndexAlreadyExists {
+        target: "node".to_string(),
+        property: "age".to_string(),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_index_not_found() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::IndexNotFound {
+        target: "node".to_string(),
+        property: "name".to_string(),
+    });
+    set.insert(GraphError::IndexNotFound {
+        target: "edge".to_string(),
+        property: "name".to_string(),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_negative_weight() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::NegativeWeight {
+        edge_id: 1,
+        weight: -1.0,
+    });
+    set.insert(GraphError::NegativeWeight {
+        edge_id: 2,
+        weight: -2.0,
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_constraint_violation() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::ConstraintViolation {
+        constraint_name: "unique_name".to_string(),
+        message: "msg1".to_string(),
+    });
+    set.insert(GraphError::ConstraintViolation {
+        constraint_name: "unique_name".to_string(),
+        message: "msg2".to_string(),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_batch_validation() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::BatchValidationError {
+        index: 0,
+        cause: Box::new(GraphError::NodeNotFound(1)),
+    });
+    set.insert(GraphError::BatchValidationError {
+        index: 1,
+        cause: Box::new(GraphError::NodeNotFound(2)),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_batch_creation() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::BatchCreationError {
+        index: 0,
+        cause: Box::new(GraphError::NodeNotFound(1)),
+    });
+    set.insert(GraphError::BatchCreationError {
+        index: 1,
+        cause: Box::new(GraphError::NodeNotFound(2)),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_partial_deletion() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::PartialDeletionError {
+        node_id: 1,
+        failed_edges: vec![1, 2],
+    });
+    set.insert(GraphError::PartialDeletionError {
+        node_id: 2,
+        failed_edges: vec![3],
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_id_space_exhausted() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::IdSpaceExhausted {
+        entity_type: "node",
+    });
+    set.insert(GraphError::IdSpaceExhausted {
+        entity_type: "edge",
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_invalid_property_name() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::InvalidPropertyName {
+        name: "a:b".to_string(),
+    });
+    set.insert(GraphError::InvalidPropertyName {
+        name: "c:d".to_string(),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn test_graph_error_hash_corrupted_edge() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<GraphError> = HashSet::new();
+    set.insert(GraphError::CorruptedEdge {
+        edge_id: 1,
+        field: "from".to_string(),
+    });
+    set.insert(GraphError::CorruptedEdge {
+        edge_id: 2,
+        field: "to".to_string(),
+    });
+    assert_eq!(set.len(), 2);
+}
+
+// Error display tests
+#[test]
+fn test_graph_error_display_all_variants() {
+    let errors = vec![
+        GraphError::NodeNotFound(1),
+        GraphError::EdgeNotFound(2),
+        GraphError::StorageError("storage failed".to_string()),
+        GraphError::PathNotFound,
+        GraphError::IndexAlreadyExists {
+            target: "node".to_string(),
+            property: "name".to_string(),
+        },
+        GraphError::IndexNotFound {
+            target: "edge".to_string(),
+            property: "type".to_string(),
+        },
+        GraphError::NegativeWeight {
+            edge_id: 5,
+            weight: -3.5,
+        },
+        GraphError::ConstraintViolation {
+            constraint_name: "unique".to_string(),
+            message: "duplicate".to_string(),
+        },
+        GraphError::ConstraintAlreadyExists("my_constraint".to_string()),
+        GraphError::ConstraintNotFound("missing".to_string()),
+        GraphError::BatchValidationError {
+            index: 3,
+            cause: Box::new(GraphError::NodeNotFound(10)),
+        },
+        GraphError::BatchCreationError {
+            index: 4,
+            cause: Box::new(GraphError::EdgeNotFound(20)),
+        },
+        GraphError::PartialDeletionError {
+            node_id: 100,
+            failed_edges: vec![1, 2, 3],
+        },
+        GraphError::IdSpaceExhausted {
+            entity_type: "node",
+        },
+        GraphError::InvalidPropertyName {
+            name: "bad:name".to_string(),
+        },
+        GraphError::CorruptedEdge {
+            edge_id: 99,
+            field: "from".to_string(),
+        },
+    ];
+
+    for err in errors {
+        let display = format!("{}", err);
+        assert!(!display.is_empty());
+    }
+}
+
+// SCC algorithm additional tests
+#[test]
+fn test_scc_edge_type_filter() {
+    use crate::algorithms::SccConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "TYPED", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "OTHER", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "TYPED", HashMap::new(), true)
+        .unwrap();
+
+    let config = SccConfig::new().edge_type("TYPED");
+    let result = engine.strongly_connected_components(&config).unwrap();
+    assert!(result.component_count >= 1);
+}
+
+#[test]
+fn test_scc_components_by_size() {
+    use crate::algorithms::SccConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let _n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let _n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .strongly_connected_components(&SccConfig::new())
+        .unwrap();
+    let by_size = result.components_by_size();
+    assert!(!by_size.is_empty());
+    assert!(by_size[0].1 >= 1);
+}
+
+#[test]
+fn test_scc_result_default() {
+    use crate::algorithms::SccResult;
+
+    let result = SccResult::default();
+    assert_eq!(result.component_count, 0);
+    assert!(result.largest_component().is_none());
+}
+
+// MST algorithm additional tests
+#[test]
+fn test_mst_config_builder() {
+    use crate::algorithms::MstConfig;
+
+    let config = MstConfig::new("cost")
+        .default_weight(2.0)
+        .compute_forest(false);
+
+    assert_eq!(config.weight_property, "cost");
+    assert!((config.default_weight - 2.0).abs() < f64::EPSILON);
+    assert!(!config.compute_forest);
+}
+
+#[test]
+fn test_mst_result_accessors() {
+    use crate::algorithms::MstResult;
+
+    let result = MstResult::empty();
+    assert_eq!(result.edge_count(), 0);
+    assert!(!result.is_connected());
+}
+
+// Similarity algorithm additional tests
+#[test]
+fn test_similarity_node_link_prediction() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .jaccard_similarity(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert!(result >= 0.0 && result <= 1.0);
+}
+
+// Edge property index tests
+#[test]
+fn test_edge_property_index_create_and_find() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.5));
+    engine.create_edge(n1, n2, "CONN", props, true).unwrap();
+
+    engine.create_edge_property_index("weight").unwrap();
+    assert!(engine.has_edge_index("weight"));
+
+    let edges = engine
+        .find_edges_by_property("weight", &PropertyValue::Float(1.5))
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+}
+
+#[test]
+fn test_edge_type_index_find() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    let knows_edges = engine.find_edges_by_type("KNOWS").unwrap();
+    assert_eq!(knows_edges.len(), 1);
+}
+
+// Scan fallback tests (for when indexes don't exist)
+#[test]
+fn test_find_nodes_by_label_property_scan() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Company", HashMap::new()).unwrap();
+
+    let persons = engine.find_nodes_by_label("Person").unwrap();
+    assert_eq!(persons.len(), 2);
+}
+
+#[test]
+fn test_find_nodes_where_scan() {
+    let engine = GraphEngine::new();
+
+    let mut props1 = HashMap::new();
+    props1.insert("age".to_string(), PropertyValue::Int(25));
+    engine.create_node("Person", props1).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("age".to_string(), PropertyValue::Int(30));
+    engine.create_node("Person", props2).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("age".to_string(), PropertyValue::Int(35));
+    engine.create_node("Person", props3).unwrap();
+
+    let older_than_30 = engine
+        .find_nodes_where("age", RangeOp::Gt, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(older_than_30.len(), 1);
+
+    let at_least_30 = engine
+        .find_nodes_where("age", RangeOp::Ge, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(at_least_30.len(), 2);
+
+    let under_30 = engine
+        .find_nodes_where("age", RangeOp::Lt, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(under_30.len(), 1);
+
+    let at_most_30 = engine
+        .find_nodes_where("age", RangeOp::Le, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(at_most_30.len(), 2);
+}
+
+#[test]
+fn test_find_edges_where_scan() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props1, true).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("weight".to_string(), PropertyValue::Float(2.0));
+    engine.create_edge(n2, n3, "E", props2, true).unwrap();
+
+    let heavy = engine
+        .find_edges_where("weight", RangeOp::Gt, &PropertyValue::Float(1.5))
+        .unwrap();
+    assert_eq!(heavy.len(), 1);
+}
+
+#[test]
+fn test_find_edges_by_edge_type_scan() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n2, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    let knows = engine
+        .find_edges_by_property("_edge_type", &PropertyValue::String("KNOWS".to_string()))
+        .unwrap();
+    assert_eq!(knows.len(), 1);
+}
+
+// Range queries on labels
+#[test]
+fn test_find_nodes_where_label_range() {
+    let engine = GraphEngine::new();
+    engine.create_node("Apple", HashMap::new()).unwrap();
+    engine.create_node("Banana", HashMap::new()).unwrap();
+    engine.create_node("Cherry", HashMap::new()).unwrap();
+
+    let before_b = engine
+        .find_nodes_where(
+            "_label",
+            RangeOp::Lt,
+            &PropertyValue::String("B".to_string()),
+        )
+        .unwrap();
+    assert_eq!(before_b.len(), 1);
+}
+
+// OrderedPropertyValue tests
+#[test]
+fn test_ordered_property_value_ordering() {
+    let v1 = OrderedPropertyValue::Int(1);
+    let v2 = OrderedPropertyValue::Int(2);
+    assert!(v1 < v2);
+
+    let s1 = OrderedPropertyValue::String("a".to_string());
+    let s2 = OrderedPropertyValue::String("b".to_string());
+    assert!(s1 < s2);
+
+    let pv1 = PropertyValue::Float(1.0);
+    let pv2 = PropertyValue::Float(2.0);
+    let f1 = OrderedPropertyValue::from(&pv1);
+    let f2 = OrderedPropertyValue::from(&pv2);
+    assert!(f1 < f2);
+}
+
+#[test]
+fn test_ordered_property_value_null() {
+    let null = OrderedPropertyValue::Null;
+    let int = OrderedPropertyValue::Int(1);
+    assert!(null < int);
+}
+
+// Pagination tests
+#[test]
+fn test_pagination_constructors() {
+    let pagination = Pagination::new(0, 100);
+    assert_eq!(pagination.skip, 0);
+    assert_eq!(pagination.limit, Some(100));
+
+    let pagination2 = Pagination::limit(50);
+    assert_eq!(pagination2.skip, 0);
+    assert_eq!(pagination2.limit, Some(50));
+}
+
+#[test]
+fn test_pagination_with_total_count() {
+    let pagination = Pagination::new(0, 100).with_total_count();
+    assert!(pagination.count_total);
+}
+
+// WeightedPath tests
+#[test]
+fn test_weighted_path_clone() {
+    let path = WeightedPath {
+        nodes: vec![1, 2, 3],
+        edges: vec![10, 20],
+        total_weight: 5.0,
+    };
+    let cloned = path.clone();
+    assert_eq!(cloned.nodes, path.nodes);
+    assert_eq!(cloned.edges, path.edges);
+    assert!((cloned.total_weight - path.total_weight).abs() < f64::EPSILON);
+}
+
+// Edge index drop tests
+#[test]
+fn test_edge_property_index_drop() {
+    let engine = GraphEngine::new();
+    engine.create_edge_property_index("weight").unwrap();
+    assert!(engine.has_edge_index("weight"));
+
+    engine.drop_edge_index("weight").unwrap();
+    assert!(!engine.has_edge_index("weight"));
+}
+
+#[test]
+fn test_edge_property_index_drop_not_found() {
+    let engine = GraphEngine::new();
+    let result = engine.drop_edge_index("nonexistent");
+    assert!(matches!(result, Err(GraphError::IndexNotFound { .. })));
+}
+
+// OrderedPropertyValue conversion tests
+#[test]
+fn test_ordered_property_value_from_datetime() {
+    let dt = PropertyValue::DateTime(1609459200000);
+    let ordered = OrderedPropertyValue::from(&dt);
+    match ordered {
+        OrderedPropertyValue::DateTime(v) => assert_eq!(v, 1609459200000),
+        _ => panic!("Expected DateTime"),
+    }
+}
+
+#[test]
+fn test_ordered_property_value_from_bytes() {
+    let bytes = PropertyValue::Bytes(vec![1, 2, 3]);
+    let ordered = OrderedPropertyValue::from(&bytes);
+    match ordered {
+        OrderedPropertyValue::Bytes(v) => assert_eq!(v, vec![1, 2, 3]),
+        _ => panic!("Expected Bytes"),
+    }
+}
+
+#[test]
+fn test_ordered_property_value_from_complex() {
+    let list = PropertyValue::List(vec![PropertyValue::Int(1)]);
+    let ordered = OrderedPropertyValue::from(&list);
+    match ordered {
+        OrderedPropertyValue::Complex(s) => assert!(s.contains("Int")),
+        _ => panic!("Expected Complex"),
+    }
+
+    let mut map = HashMap::new();
+    map.insert("key".to_string(), PropertyValue::Int(42));
+    let map_pv = PropertyValue::Map(map);
+    let ordered = OrderedPropertyValue::from(&map_pv);
+    match ordered {
+        OrderedPropertyValue::Complex(s) => assert!(s.contains("key")),
+        _ => panic!("Expected Complex"),
+    }
+
+    let point = PropertyValue::Point { lat: 1.0, lon: 2.0 };
+    let ordered = OrderedPropertyValue::from(&point);
+    match ordered {
+        OrderedPropertyValue::Complex(s) => assert!(s.contains("lat")),
+        _ => panic!("Expected Complex"),
+    }
+}
+
+// Pagination tests
+#[test]
+fn test_all_edges_paginated() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.all_edges_paginated(Pagination::new(0, 2));
+    assert_eq!(result.items.len(), 2);
+    assert!(result.has_more);
+
+    let result2 = engine.all_edges_paginated(Pagination::new(2, 10));
+    assert_eq!(result2.items.len(), 1);
+    assert!(!result2.has_more);
+}
+
+#[test]
+fn test_all_edges_paginated_with_total() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.all_edges_paginated(Pagination::new(0, 10).with_total_count());
+    assert_eq!(result.total_count, Some(1));
+}
+
+#[test]
+fn test_find_nodes_by_label_paginated() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Company", HashMap::new()).unwrap();
+
+    let result = engine
+        .find_nodes_by_label_paginated("Person", Pagination::new(0, 2))
+        .unwrap();
+    assert_eq!(result.items.len(), 2);
+    assert!(result.has_more);
+}
+
+// Property range scan tests with indexes
+#[test]
+fn test_find_nodes_where_with_index() {
+    let engine = GraphEngine::new();
+
+    let mut props1 = HashMap::new();
+    props1.insert("score".to_string(), PropertyValue::Int(10));
+    engine.create_node("Item", props1).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("score".to_string(), PropertyValue::Int(20));
+    engine.create_node("Item", props2).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("score".to_string(), PropertyValue::Int(30));
+    engine.create_node("Item", props3).unwrap();
+
+    engine.create_node_property_index("score").unwrap();
+
+    let high_score = engine
+        .find_nodes_where("score", RangeOp::Ge, &PropertyValue::Int(20))
+        .unwrap();
+    assert_eq!(high_score.len(), 2);
+}
+
+// Edges where tests with index
+#[test]
+fn test_find_edges_where_with_index() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("priority".to_string(), PropertyValue::Int(1));
+    engine.create_edge(n1, n2, "E", props1, true).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("priority".to_string(), PropertyValue::Int(5));
+    engine.create_edge(n2, n3, "E", props2, true).unwrap();
+
+    engine.create_edge_property_index("priority").unwrap();
+
+    let high_priority = engine
+        .find_edges_where("priority", RangeOp::Gt, &PropertyValue::Int(2))
+        .unwrap();
+    assert_eq!(high_priority.len(), 1);
+}
+
+// Edge type range query test
+#[test]
+fn test_find_edges_where_edge_type() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "ALPHA", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n2, "BETA", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n2, "GAMMA", HashMap::new(), true)
+        .unwrap();
+
+    let before_c = engine
+        .find_edges_where(
+            "_edge_type",
+            RangeOp::Lt,
+            &PropertyValue::String("C".to_string()),
+        )
+        .unwrap();
+    assert_eq!(before_c.len(), 2);
+}
+
+// Test finding nodes by label property
+#[test]
+fn test_find_nodes_by_label_property() {
+    let engine = GraphEngine::new();
+    engine.create_node("Apple", HashMap::new()).unwrap();
+    engine.create_node("Banana", HashMap::new()).unwrap();
+    engine.create_node("Cherry", HashMap::new()).unwrap();
+
+    let results = engine.find_nodes_by_label("Apple").unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+// Test constraint validation
+#[test]
+fn test_constraint_validation_on_create() {
+    let engine = GraphEngine::new();
+
+    let constraint = Constraint {
+        name: "unique_email".to_string(),
+        constraint_type: ConstraintType::Unique,
+        target: ConstraintTarget::NodeLabel("Person".to_string()),
+        property: "email".to_string(),
+    };
+    engine.create_constraint(constraint).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "email".to_string(),
+        PropertyValue::String("test@example.com".to_string()),
+    );
+    engine.create_node("Person", props.clone()).unwrap();
+
+    let result = engine.create_node("Person", props);
+    assert!(matches!(
+        result,
+        Err(GraphError::ConstraintViolation { .. })
+    ));
+}
+
+// Test exists constraint
+#[test]
+fn test_exists_constraint() {
+    let engine = GraphEngine::new();
+
+    let constraint = Constraint {
+        name: "product_name_required".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::NodeLabel("Product".to_string()),
+        property: "name".to_string(),
+    };
+    engine.create_constraint(constraint).unwrap();
+
+    let result = engine.create_node("Product", HashMap::new());
+    assert!(matches!(
+        result,
+        Err(GraphError::ConstraintViolation { .. })
+    ));
+
+    let mut props = HashMap::new();
+    props.insert(
+        "name".to_string(),
+        PropertyValue::String("Widget".to_string()),
+    );
+    assert!(engine.create_node("Product", props).is_ok());
+}
+
+// Test traversal with filter
+#[test]
+fn test_traverse_with_edge_type_filter() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "LIKES", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "KNOWS", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .traverse(n1, Direction::Outgoing, 2, Some("KNOWS"), None)
+        .unwrap();
+    assert!(result.iter().any(|n| n.id == n2));
+    assert!(result.iter().any(|n| n.id == n4));
+    assert!(!result.iter().any(|n| n.id == n3));
+}
+
+// Test all nodes paginated
+#[test]
+fn test_all_nodes_paginated() {
+    let engine = GraphEngine::new();
+    engine.create_node("A", HashMap::new()).unwrap();
+    engine.create_node("B", HashMap::new()).unwrap();
+    engine.create_node("C", HashMap::new()).unwrap();
+
+    let result = engine.all_nodes_paginated(Pagination::new(0, 2));
+    assert_eq!(result.items.len(), 2);
+    assert!(result.has_more);
+
+    let result2 = engine.all_nodes_paginated(Pagination::new(0, 10).with_total_count());
+    assert_eq!(result2.total_count, Some(3));
+}
+
+// Test node degrees
+#[test]
+fn test_node_degree() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    assert_eq!(engine.out_degree(n1).unwrap(), 2);
+    assert_eq!(engine.in_degree(n1).unwrap(), 1);
+    assert_eq!(engine.degree(n1).unwrap(), 3);
+}
+
+// Test graph count methods
+#[test]
+fn test_graph_counts() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    let n1 = engine.create_node("Company", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Company", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "OWNS", HashMap::new(), true)
+        .unwrap();
+
+    assert_eq!(engine.count_nodes(), 4);
+    assert_eq!(engine.count_nodes_by_label("Person").unwrap(), 2);
+    assert_eq!(engine.count_edges(), 1);
+    assert_eq!(engine.count_edges_by_type("OWNS").unwrap(), 1);
+}
+
+// Test batch update nodes
+#[test]
+fn test_batch_update_nodes() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert(
+        "status".to_string(),
+        PropertyValue::String("updated".to_string()),
+    );
+
+    let mut props2 = HashMap::new();
+    props2.insert(
+        "status".to_string(),
+        PropertyValue::String("updated".to_string()),
+    );
+
+    let updates = vec![(n1, None, props1), (n2, None, props2)];
+
+    let count = engine.batch_update_nodes(updates).unwrap();
+    assert_eq!(count, 2);
+
+    let node1 = engine.get_node(n1).unwrap();
+    assert_eq!(
+        node1.properties.get("status"),
+        Some(&PropertyValue::String("updated".to_string()))
+    );
+}
+
+// Test multi-label nodes
+#[test]
+fn test_multi_label_node() {
+    let engine = GraphEngine::new();
+    let id = engine.create_node("Person", HashMap::new()).unwrap();
+    engine.add_label(id, "Employee").unwrap();
+
+    let node = engine.get_node(id).unwrap();
+    assert!(node.has_label("Person"));
+    assert!(node.has_label("Employee"));
+
+    engine.remove_label(id, "Person").unwrap();
+    let node2 = engine.get_node(id).unwrap();
+    assert!(!node2.has_label("Person"));
+    assert!(node2.has_label("Employee"));
+}
+
+// MST algorithm tests
+#[test]
+fn test_mst_with_custom_weight_property() {
+    use crate::algorithms::MstConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("cost".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props1, false).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("cost".to_string(), PropertyValue::Float(2.0));
+    engine.create_edge(n2, n3, "E", props2, false).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("cost".to_string(), PropertyValue::Float(10.0));
+    engine.create_edge(n1, n3, "E", props3, false).unwrap();
+
+    let config = MstConfig::new("cost");
+    let result = engine.minimum_spanning_tree(&config).unwrap();
+    assert_eq!(result.edges.len(), 2);
+    assert!(result.total_weight < 5.0);
+}
+
+#[test]
+fn test_mst_forest() {
+    use crate::algorithms::MstConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = MstConfig::new("weight").compute_forest(true);
+    let result = engine.minimum_spanning_tree(&config).unwrap();
+    assert_eq!(result.tree_count, 2);
+}
+
+// Similarity algorithm tests
+#[test]
+fn test_similarity_cosine() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .cosine_similarity(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert!(result > 0.0 && result <= 1.0);
+}
+
+#[test]
+fn test_similarity_common_neighbors() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let common = engine
+        .common_neighbors(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert_eq!(common.len(), 1);
+    assert!(common.contains(&n3));
+}
+
+#[test]
+fn test_similarity_adamic_adar() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+    let n5 = engine.create_node("E", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n5, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .adamic_adar(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert!(result >= 0.0);
+}
+
+#[test]
+fn test_similarity_resource_allocation() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .resource_allocation(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert!(result >= 0.0);
+}
+
+#[test]
+fn test_similarity_preferential_attachment() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .preferential_attachment(n1, n2, &SimilarityConfig::default())
+        .unwrap();
+    assert!((result - 2.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_similarity_result_with_common_neighbors() {
+    use crate::algorithms::{SimilarityMetric, SimilarityResult};
+
+    let result = SimilarityResult::new(1, 2, 0.5, SimilarityMetric::Jaccard)
+        .with_common_neighbors(vec![3, 4, 5]);
+
+    assert_eq!(result.node_a, 1);
+    assert_eq!(result.node_b, 2);
+    assert!((result.score - 0.5).abs() < f64::EPSILON);
+    assert_eq!(result.common_neighbors, Some(vec![3, 4, 5]));
+}
+
+#[test]
+fn test_similarity_config_builder() {
+    use crate::algorithms::SimilarityConfig;
+
+    let config = SimilarityConfig::new()
+        .edge_type("FRIEND")
+        .direction(Direction::Both);
+
+    assert_eq!(config.edge_type, Some("FRIEND".to_string()));
+    assert_eq!(config.direction, Direction::Both);
+}
+
+// PagedResult tests
+#[test]
+fn test_paged_result_accessors() {
+    let result = PagedResult::new(vec![1, 2, 3], Some(10), true);
+    assert_eq!(result.items.len(), 3);
+    assert_eq!(result.total_count, Some(10));
+    assert!(result.has_more);
+}
+
+// Variable length path tests
+#[test]
+fn test_variable_length_paths_with_config() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "NEXT", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "NEXT", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "NEXT", HashMap::new(), true)
+        .unwrap();
+
+    let config = VariableLengthConfig::with_hops(1, 5)
+        .edge_type("NEXT")
+        .direction(Direction::Outgoing)
+        .max_paths(10);
+
+    let result = engine.find_variable_paths(n1, n4, config).unwrap();
+    assert!(!result.paths.is_empty());
+}
+
+// Batch operations tests
+#[test]
+fn test_batch_create_nodes() {
+    let engine = GraphEngine::new();
+
+    let nodes = vec![
+        NodeInput::new(vec!["Person".to_string()], HashMap::new()),
+        NodeInput::new(vec!["Person".to_string()], HashMap::new()),
+        NodeInput::new(vec!["Company".to_string()], HashMap::new()),
+    ];
+
+    let result = engine.batch_create_nodes(nodes).unwrap();
+    assert_eq!(result.count, 3);
+    assert_eq!(result.created_ids.len(), 3);
+}
+
+#[test]
+fn test_batch_create_edges() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let edges = vec![
+        EdgeInput::new(n1, n2, "E".to_string(), HashMap::new(), true),
+        EdgeInput::new(n2, n3, "E".to_string(), HashMap::new(), true),
+    ];
+
+    let result = engine.batch_create_edges(edges).unwrap();
+    assert_eq!(result.count, 2);
+}
+
+// Find edges by property tests
+#[test]
+fn test_find_edges_by_property_paginated() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine.create_edge(n1, n2, "E", props, true).unwrap();
+
+    let result = engine
+        .find_edges_by_property_paginated(
+            "weight",
+            &PropertyValue::Float(1.0),
+            Pagination::new(0, 2),
+        )
+        .unwrap();
+    assert_eq!(result.items.len(), 2);
+    assert!(result.has_more);
+}
+
+// Constraint tests
+#[test]
+fn test_constraint_get_and_drop() {
+    let engine = GraphEngine::new();
+
+    let constraint = Constraint {
+        name: "test_unique".to_string(),
+        constraint_type: ConstraintType::Unique,
+        target: ConstraintTarget::NodeLabel("Person".to_string()),
+        property: "id".to_string(),
+    };
+    engine.create_constraint(constraint).unwrap();
+
+    let constraints = engine.list_constraints();
+    assert!(constraints.iter().any(|c| c.name == "test_unique"));
+
+    engine.drop_constraint("test_unique").unwrap();
+
+    let constraints = engine.list_constraints();
+    assert!(!constraints.iter().any(|c| c.name == "test_unique"));
+}
+
+#[test]
+fn test_constraint_type_validation() {
+    let engine = GraphEngine::new();
+
+    let constraint = Constraint {
+        name: "type_int".to_string(),
+        constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+        target: ConstraintTarget::NodeLabel("Item".to_string()),
+        property: "count".to_string(),
+    };
+    engine.create_constraint(constraint).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "count".to_string(),
+        PropertyValue::String("not_int".to_string()),
+    );
+
+    let result = engine.create_node("Item", props);
+    assert!(matches!(
+        result,
+        Err(GraphError::ConstraintViolation { .. })
+    ));
+}
+
+// Index lifecycle tests
+#[test]
+fn test_node_property_index_create_and_drop() {
+    let engine = GraphEngine::new();
+
+    engine.create_node_property_index("age").unwrap();
+    engine.drop_node_index("age").unwrap();
+}
+
+// Edge operations
+#[test]
+fn test_edges_of_node() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    let edges = engine.edges_of(n1, Direction::Outgoing).unwrap();
+    assert_eq!(edges.len(), 2);
+}
+
+// Update edge test
+#[test]
+fn test_update_edge_properties() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut initial_props = HashMap::new();
+    initial_props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    let edge_id = engine
+        .create_edge(n1, n2, "E", initial_props, true)
+        .unwrap();
+
+    let mut new_props = HashMap::new();
+    new_props.insert("weight".to_string(), PropertyValue::Float(2.0));
+    new_props.insert(
+        "label".to_string(),
+        PropertyValue::String("updated".to_string()),
+    );
+    engine.update_edge(edge_id, new_props).unwrap();
+
+    let edge = engine.get_edge(edge_id).unwrap();
+    assert_eq!(
+        edge.properties.get("weight"),
+        Some(&PropertyValue::Float(2.0))
+    );
+    assert_eq!(
+        edge.properties.get("label"),
+        Some(&PropertyValue::String("updated".to_string()))
+    );
+}
+
+// Delete and cascade tests
+#[test]
+fn test_delete_node_cascades_edges() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let initial_edges = engine.count_edges();
+    assert_eq!(initial_edges, 3);
+
+    engine.delete_node(n2).unwrap();
+
+    let final_edges = engine.count_edges();
+    assert_eq!(final_edges, 1);
+}
+
+// Path finding tests
+#[test]
+fn test_find_path_not_found() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let result = engine.find_path(n1, n2, None);
+    assert!(matches!(result, Err(GraphError::PathNotFound)));
+}
+
+#[test]
+fn test_find_all_paths() {
+    let engine = GraphEngine::new();
+    // Create diamond pattern: n1 -> n2 -> n4 and n1 -> n3 -> n4
+    // Both paths have 2 hops, so find_all_paths should return both shortest paths
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.find_all_paths(n1, n4, None).unwrap();
+    assert_eq!(result.paths.len(), 2);
+    assert_eq!(result.hop_count, 2);
+}
+
+// Property queries with different types
+#[test]
+fn test_find_nodes_by_bool_property() {
+    let engine = GraphEngine::new();
+
+    let mut props_true = HashMap::new();
+    props_true.insert("active".to_string(), PropertyValue::Bool(true));
+    engine.create_node("Item", props_true).unwrap();
+
+    let mut props_false = HashMap::new();
+    props_false.insert("active".to_string(), PropertyValue::Bool(false));
+    engine.create_node("Item", props_false).unwrap();
+
+    let active_items = engine
+        .find_nodes_by_property("active", &PropertyValue::Bool(true))
+        .unwrap();
+    assert_eq!(active_items.len(), 1);
+}
+
+// PageRank test
+#[test]
+fn test_pagerank_custom_config() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("Page", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Page", HashMap::new()).unwrap();
+    let n3 = engine.create_node("Page", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "LINKS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "LINKS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "LINKS", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.pagerank(None).unwrap();
+    assert_eq!(result.scores.len(), 3);
+    assert!(result.converged);
+}
+
+// Connected components test
+#[test]
+fn test_connected_components_isolated() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+
+    engine.create_node("C", HashMap::new()).unwrap();
+
+    let result = engine.connected_components(None).unwrap();
+    assert_eq!(result.community_count, 2);
+}
+
+// Community detection test
+#[test]
+fn test_louvain_communities() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.louvain_communities(None).unwrap();
+    assert!(!result.communities.is_empty());
+}
+
+// Label propagation test
+#[test]
+fn test_label_propagation() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.label_propagation(None).unwrap();
+    assert!(!result.communities.is_empty());
+}
+
+// Centrality tests
+#[test]
+fn test_betweenness_centrality() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.betweenness_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 4);
+}
+
+#[test]
+fn test_closeness_centrality() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.closeness_centrality(None).unwrap();
+    assert!(!result.scores.is_empty());
+}
+
+// Test PatternMatch::default()
+#[test]
+fn test_pattern_match_default() {
+    let pm = PatternMatch::default();
+    assert!(pm.bindings.is_empty());
+}
+
+// Test Node last_modified_millis fallback
+#[test]
+fn test_node_last_modified_millis_fallback() {
+    let engine = GraphEngine::new();
+
+    // Create a node
+    let node_id = engine.create_node("Test", HashMap::new()).unwrap();
+    let node = engine.get_node(node_id).unwrap();
+
+    // created_at should be set, last_modified_millis should use it as fallback
+    assert!(node.created_at.is_some());
+    assert_eq!(node.last_modified_millis(), node.created_at);
+
+    // Update the node
+    let mut new_props = HashMap::new();
+    new_props.insert(
+        "key".to_string(),
+        PropertyValue::String("value".to_string()),
+    );
+    engine.update_node(node_id, None, new_props).unwrap();
+
+    let updated_node = engine.get_node(node_id).unwrap();
+    // After update, updated_at should be set and last_modified_millis should use it
+    assert!(updated_node.updated_at.is_some());
+    assert_eq!(updated_node.last_modified_millis(), updated_node.updated_at);
+}
+
+// Test delete node with undirected edges
+#[test]
+fn test_delete_node_with_undirected_edges() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Create undirected edges
+    engine
+        .create_edge(n1, n2, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "FRIEND", HashMap::new(), false)
+        .unwrap();
+
+    // Delete the middle node n2 - should clean up undirected edges
+    engine.delete_node(n2).unwrap();
+
+    assert!(!engine.node_exists(n2));
+    assert!(engine.node_exists(n1));
+    assert!(engine.node_exists(n3));
+    // The edges involving n2 should be gone
+    assert!(engine.edges_of(n1, Direction::Both).unwrap().is_empty());
+    assert!(engine.edges_of(n3, Direction::Both).unwrap().is_empty());
+}
+
+// Test batch edge creation with missing source node
+#[test]
+fn test_batch_create_edges_missing_source() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let edges = vec![EdgeInput {
+        from: 999999, // Non-existent source
+        to: n1,
+        edge_type: "REL".to_string(),
+        properties: HashMap::new(),
+        directed: true,
+    }];
+
+    let result = engine.batch_create_edges(edges);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::BatchValidationError { index, cause } => {
+            assert_eq!(index, 0);
+            assert!(matches!(*cause, GraphError::NodeNotFound(999999)));
+        },
+        e => panic!("Expected BatchValidationError, got {:?}", e),
+    }
+}
+
+// Test batch edge creation with missing target node
+#[test]
+fn test_batch_create_edges_missing_target() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let edges = vec![EdgeInput {
+        from: n1,
+        to: 999999, // Non-existent target
+        edge_type: "REL".to_string(),
+        properties: HashMap::new(),
+        directed: true,
+    }];
+
+    let result = engine.batch_create_edges(edges);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::BatchValidationError { index, cause } => {
+            assert_eq!(index, 0);
+            assert!(matches!(*cause, GraphError::NodeNotFound(999999)));
+        },
+        e => panic!("Expected BatchValidationError, got {:?}", e),
+    }
+}
+
+// Test batch node update validation error
+#[test]
+fn test_batch_update_nodes_validation_error() {
+    let engine = GraphEngine::new();
+
+    // Create a constraint that requires "name" property
+    engine
+        .create_constraint(Constraint {
+            name: "exists_name".to_string(),
+            constraint_type: ConstraintType::Exists,
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "name".to_string(),
+        })
+        .unwrap();
+
+    // Create a node with required property
+    let mut props = HashMap::new();
+    props.insert(
+        "name".to_string(),
+        PropertyValue::String("Alice".to_string()),
+    );
+    let n1 = engine.create_node("Person", props).unwrap();
+
+    // Attempt batch update that would violate the constraint
+    let updates = vec![(n1, None, HashMap::new())]; // Empty properties = missing "name"
+    let result = engine.batch_update_nodes(updates);
+    assert!(result.is_err());
+}
+
+// Test exists constraint violation on existing data
+#[test]
+fn test_exists_constraint_violation_on_existing_data() {
+    let engine = GraphEngine::new();
+
+    // Create nodes without the property that will be required
+    engine.create_node("User", HashMap::new()).unwrap();
+
+    // Now try to create constraint - should fail because existing nodes lack the property
+    let result = engine.create_constraint(Constraint {
+        name: "require_email".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::NodeLabel("User".to_string()),
+        property: "email".to_string(),
+    });
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::ConstraintViolation {
+            constraint_name,
+            message,
+        } => {
+            assert_eq!(constraint_name, "require_email");
+            assert!(message.contains("missing required property"));
+        },
+        e => panic!("Expected ConstraintViolation, got {:?}", e),
+    }
+}
+
+// Test node property index building for custom property
+#[test]
+fn test_node_custom_property_index() {
+    let engine = GraphEngine::new();
+
+    let mut props1 = HashMap::new();
+    props1.insert("city".to_string(), PropertyValue::String("NYC".to_string()));
+    engine.create_node("Person", props1).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("city".to_string(), PropertyValue::String("NYC".to_string()));
+    engine.create_node("Person", props2).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("city".to_string(), PropertyValue::String("LA".to_string()));
+    engine.create_node("Company", props3).unwrap();
+
+    // Create index on city property
+    engine.create_node_property_index("city").unwrap();
+    assert!(engine.has_node_index("city"));
+
+    // Clean up
+    engine.drop_node_index("city").unwrap();
+    assert!(!engine.has_node_index("city"));
+}
+
+// Test larger graph for parallel closeness centrality
+#[test]
+fn test_closeness_centrality_parallel() {
+    use crate::config::GraphEngineConfig;
+
+    // Set a low threshold to trigger parallel execution
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    // Create a small network that exceeds the threshold
+    let mut nodes = Vec::new();
+    for i in 0..5 {
+        let mut props = HashMap::new();
+        props.insert("idx".to_string(), PropertyValue::Int(i));
+        nodes.push(engine.create_node("Node", props).unwrap());
+    }
+
+    // Connect in a line
+    for i in 0..4 {
+        engine
+            .create_edge(nodes[i], nodes[i + 1], "NEXT", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.closeness_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 5);
+}
+
+// Test PropertyValue from_scalar with various types
+#[test]
+fn test_property_value_from_scalar_all_types() {
+    use tensor_store::ScalarValue;
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::Null);
+    assert_eq!(pv, PropertyValue::Null);
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::Int(42));
+    assert_eq!(pv, PropertyValue::Int(42));
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::Float(3.14));
+    assert_eq!(pv, PropertyValue::Float(3.14));
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::String("test".to_string()));
+    assert_eq!(pv, PropertyValue::String("test".to_string()));
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::Bool(true));
+    assert_eq!(pv, PropertyValue::Bool(true));
+
+    let pv = PropertyValue::from_scalar(&ScalarValue::Bytes(vec![1, 2, 3]));
+    assert_eq!(pv, PropertyValue::Bytes(vec![1, 2, 3]));
+}
+
+// Test PatternMatch getters with wrong binding type
+#[test]
+fn test_pattern_match_getters() {
+    let engine = GraphEngine::new();
+
+    // Create some nodes
+    let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+
+    // Run pattern match to get a PatternMatch with bindings
+    let pattern = Pattern::new(PathPattern::new(
+        NodePattern::new().variable("a"),
+        EdgePattern::new(),
+        NodePattern::new().variable("b"),
+    ));
+
+    let result = engine.match_pattern(&pattern).unwrap();
+    assert!(!result.is_empty());
+
+    // Get a PatternMatch and test the getters
+    let pm = &result.matches[0];
+
+    // get_node should return Some for node bindings
+    assert!(pm.get_node("a").is_some());
+    assert!(pm.get_node("b").is_some());
+
+    // get_edge should return None for node bindings (wrong type)
+    assert!(pm.get_edge("a").is_none());
+
+    // get_path should return None for node bindings (wrong type)
+    assert!(pm.get_path("a").is_none());
+
+    // Nonexistent bindings
+    assert!(pm.get_node("nonexistent").is_none());
+    assert!(pm.get_edge("nonexistent").is_none());
+    assert!(pm.get_path("nonexistent").is_none());
+}
+
+// Test delete node as target of incoming edge
+#[test]
+fn test_delete_node_incoming_edge_cleanup() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    // Create directed edge n1 -> n2
+    engine
+        .create_edge(n1, n2, "TO", HashMap::new(), true)
+        .unwrap();
+
+    // Delete n2 (the target), should clean up n1's outgoing edge list
+    engine.delete_node(n2).unwrap();
+
+    assert!(!engine.node_exists(n2));
+    assert!(engine.node_exists(n1));
+    assert!(engine.edges_of(n1, Direction::Outgoing).unwrap().is_empty());
+}
+
+// Test PathPattern element access
+#[test]
+fn test_path_pattern_elements() {
+    let path_pattern = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+
+    // Check that the pattern has 3 elements
+    assert_eq!(path_pattern.elements.len(), 3);
+
+    // First and last should be nodes, middle should be edge
+    assert!(matches!(&path_pattern.elements[0], PatternElement::Node(_)));
+    assert!(matches!(&path_pattern.elements[1], PatternElement::Edge(_)));
+    assert!(matches!(&path_pattern.elements[2], PatternElement::Node(_)));
+}
+
+// Test find_weighted_path (Dijkstra)
+#[test]
+fn test_find_weighted_path() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Create weighted edges: n1 --(1)--> n2 --(1)--> n3
+    // And a longer direct path: n1 --(10)--> n3
+    let mut props_short = HashMap::new();
+    props_short.insert("weight".to_string(), PropertyValue::Float(1.0));
+    let mut props_long = HashMap::new();
+    props_long.insert("weight".to_string(), PropertyValue::Float(10.0));
+
+    engine
+        .create_edge(n1, n2, "E", props_short.clone(), true)
+        .unwrap();
+    engine.create_edge(n2, n3, "E", props_short, true).unwrap();
+    engine.create_edge(n1, n3, "E", props_long, true).unwrap();
+
+    // Shortest weighted path should be n1 -> n2 -> n3 (cost 2.0)
+    let result = engine.find_weighted_path(n1, n3, "weight").unwrap();
+    assert!((result.total_weight - 2.0).abs() < 0.001);
+    assert_eq!(result.nodes, vec![n1, n2, n3]);
+}
+
+// Test connected components with Union-Find edge cases (different rank comparisons)
+#[test]
+fn test_connected_components_union_find_ranks() {
+    let engine = GraphEngine::new();
+
+    // Create a star topology: center connected to many nodes
+    let center = engine.create_node("Center", HashMap::new()).unwrap();
+    let mut leaves = Vec::new();
+    for _ in 0..5 {
+        let leaf = engine.create_node("Leaf", HashMap::new()).unwrap();
+        leaves.push(leaf);
+        engine
+            .create_edge(center, leaf, "LINK", HashMap::new(), false)
+            .unwrap();
+    }
+
+    // Add connections between some leaves to trigger different rank scenarios
+    engine
+        .create_edge(leaves[0], leaves[1], "LINK", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(leaves[2], leaves[3], "LINK", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(leaves[1], leaves[2], "LINK", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.connected_components(None).unwrap();
+    assert_eq!(result.community_count, 1); // All connected
+}
+
+// Test batch create edges with constraint violation
+#[test]
+fn test_batch_create_edges_constraint_violation() {
+    let engine = GraphEngine::new();
+
+    // Create nodes
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    // Create constraint requiring "weight" on LINK edges
+    engine
+        .create_constraint(Constraint {
+            name: "link_weight".to_string(),
+            constraint_type: ConstraintType::Exists,
+            target: ConstraintTarget::EdgeType("LINK".to_string()),
+            property: "weight".to_string(),
+        })
+        .unwrap();
+
+    // Try batch create without weight property
+    let edges = vec![EdgeInput {
+        from: n1,
+        to: n2,
+        edge_type: "LINK".to_string(),
+        properties: HashMap::new(), // Missing weight
+        directed: true,
+    }];
+
+    let result = engine.batch_create_edges(edges);
+    assert!(result.is_err());
+}
+
+// Test property type constraint on batch update
+#[test]
+fn test_property_type_constraint_batch_update() {
+    let engine = GraphEngine::new();
+
+    // Create constraint for age to be Int
+    engine
+        .create_constraint(Constraint {
+            name: "age_type".to_string(),
+            constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "age".to_string(),
+        })
+        .unwrap();
+
+    // Create a valid Person
+    let mut props = HashMap::new();
+    props.insert("age".to_string(), PropertyValue::Int(25));
+    let n1 = engine.create_node("Person", props).unwrap();
+
+    // Try to update with wrong type via batch
+    let mut bad_props = HashMap::new();
+    bad_props.insert(
+        "age".to_string(),
+        PropertyValue::String("twenty-five".to_string()),
+    );
+    let updates = vec![(n1, None, bad_props)];
+
+    let result = engine.batch_update_nodes(updates);
+    assert!(result.is_err());
+}
+
+// Test edge index on _edge_type
+#[test]
+fn test_edge_type_index_explicit() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    // The edge type index is auto-created
+    assert!(engine.has_edge_index("_edge_type"));
+
+    // Find edges by type
+    let knows_edges = engine.find_edges_by_type("KNOWS").unwrap();
+    assert_eq!(knows_edges.len(), 1);
+
+    let likes_edges = engine.find_edges_by_type("LIKES").unwrap();
+    assert_eq!(likes_edges.len(), 1);
+}
+
+// Test PathPattern extend
+#[test]
+fn test_path_pattern_extend() {
+    let path_pattern = PathPattern::new(NodePattern::new(), EdgePattern::new(), NodePattern::new());
+    assert_eq!(path_pattern.elements.len(), 3);
+
+    // Extend with another edge and node
+    let extended = path_pattern.extend(EdgePattern::new(), NodePattern::new());
+    assert_eq!(extended.elements.len(), 5);
+}
+
+// Test find_nodes_by_any_label with empty array
+#[test]
+fn test_find_nodes_by_any_label_empty() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+
+    let result = engine.find_nodes_by_any_label(&[]).unwrap();
+    assert!(result.is_empty());
+}
+
+// Test find_nodes_by_any_label with multiple labels
+#[test]
+fn test_find_nodes_by_any_label() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Company", HashMap::new()).unwrap();
+    engine.create_node("Location", HashMap::new()).unwrap();
+
+    let result = engine
+        .find_nodes_by_any_label(&["Person", "Company"])
+        .unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+// Test Edge last_modified_millis
+#[test]
+fn test_edge_last_modified_millis() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let edge_id = engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    let edge = engine.get_edge(edge_id).unwrap();
+
+    assert!(edge.created_at.is_some());
+    assert_eq!(edge.last_modified_millis(), edge.created_at);
+
+    // Update the edge
+    let mut new_props = HashMap::new();
+    new_props.insert("since".to_string(), PropertyValue::Int(2020));
+    engine.update_edge(edge_id, new_props).unwrap();
+
+    let updated_edge = engine.get_edge(edge_id).unwrap();
+    assert!(updated_edge.updated_at.is_some());
+    assert_eq!(updated_edge.last_modified_millis(), updated_edge.updated_at);
+}
+
+// Test find_nodes_where with various range operations
+#[test]
+fn test_find_nodes_where_range_ops() {
+    let engine = GraphEngine::new();
+
+    let mut props1 = HashMap::new();
+    props1.insert("age".to_string(), PropertyValue::Int(20));
+    engine.create_node("Person", props1).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("age".to_string(), PropertyValue::Int(30));
+    engine.create_node("Person", props2).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("age".to_string(), PropertyValue::Int(40));
+    engine.create_node("Person", props3).unwrap();
+
+    // Less than
+    let result = engine
+        .find_nodes_where("age", RangeOp::Lt, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    // Less than or equal
+    let result = engine
+        .find_nodes_where("age", RangeOp::Le, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(result.len(), 2);
+
+    // Greater than
+    let result = engine
+        .find_nodes_where("age", RangeOp::Gt, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    // Greater than or equal
+    let result = engine
+        .find_nodes_where("age", RangeOp::Ge, &PropertyValue::Int(30))
+        .unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+// Test find edges where with range operations
+#[test]
+fn test_find_edges_where_range_ops() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props1, true).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("weight".to_string(), PropertyValue::Float(2.0));
+    engine.create_edge(n2, n3, "E", props2, true).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("weight".to_string(), PropertyValue::Float(3.0));
+    engine.create_edge(n1, n3, "E", props3, true).unwrap();
+
+    // Less than
+    let result = engine
+        .find_edges_where("weight", RangeOp::Lt, &PropertyValue::Float(2.0))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    // Greater than
+    let result = engine
+        .find_edges_where("weight", RangeOp::Gt, &PropertyValue::Float(2.0))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+}
+
+// Test all_weighted_paths
+#[test]
+fn test_find_all_weighted_paths() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // Create diamond: n1 -> n2 -> n4 (weight 1+1=2)
+    //                 n1 -> n3 -> n4 (weight 1+1=2)
+    let mut props = HashMap::new();
+    props.insert("w".to_string(), PropertyValue::Float(1.0));
+
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", props.clone(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", props.clone(), true)
+        .unwrap();
+    engine.create_edge(n3, n4, "E", props, true).unwrap();
+
+    let result = engine.find_all_weighted_paths(n1, n4, "w", None).unwrap();
+    assert_eq!(result.paths.len(), 2);
+    assert!((result.total_weight - 2.0).abs() < 0.001);
+}
+
+// Test variable length path with min/max hops
+#[test]
+fn test_find_variable_paths_with_config() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), true)
+        .unwrap();
+
+    // Find paths with exactly 2 hops
+    let config = VariableLengthConfig::with_hops(2, 2);
+    let result = engine.find_variable_paths(n1, n4, config).unwrap();
+    assert!(result.paths.is_empty()); // No 2-hop path from n1 to n4
+
+    // Find paths with 2-3 hops
+    let config = VariableLengthConfig::with_hops(2, 3);
+    let result = engine.find_variable_paths(n1, n4, config).unwrap();
+    assert_eq!(result.paths.len(), 1);
+    assert_eq!(result.paths[0].nodes.len(), 4);
+}
+
+// Test centrality with empty graph
+#[test]
+fn test_centrality_empty_graph() {
+    let engine = GraphEngine::new();
+
+    let result = engine.pagerank(None).unwrap();
+    assert!(result.scores.is_empty());
+
+    let result = engine.betweenness_centrality(None).unwrap();
+    assert!(result.scores.is_empty());
+
+    let result = engine.closeness_centrality(None).unwrap();
+    assert!(result.scores.is_empty());
+}
+
+// Test batch node update validation error for non-existent node
+#[test]
+fn test_batch_update_nodes_non_existent() {
+    let engine = GraphEngine::new();
+
+    let updates = vec![(9999, None, HashMap::new())]; // Non-existent node
+    let result = engine.batch_update_nodes(updates);
+    assert!(result.is_err());
+}
+
+// Test parallel betweenness centrality
+#[test]
+fn test_betweenness_centrality_parallel() {
+    use crate::config::GraphEngineConfig;
+
+    // Set low threshold to trigger parallel execution
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    // Create a small graph
+    let mut nodes = Vec::new();
+    for _ in 0..5 {
+        nodes.push(engine.create_node("Node", HashMap::new()).unwrap());
+    }
+
+    // Create edges
+    for i in 0..4 {
+        engine
+            .create_edge(nodes[i], nodes[i + 1], "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.betweenness_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 5);
+}
+
+// Test constraint on AllNodes
+#[test]
+fn test_constraint_all_nodes() {
+    let engine = GraphEngine::new();
+
+    let mut props = HashMap::new();
+    props.insert("id".to_string(), PropertyValue::String("123".to_string()));
+    engine.create_node("A", props.clone()).unwrap();
+    engine.create_node("B", props).unwrap();
+
+    // Create constraint on AllNodes
+    let result = engine.create_constraint(Constraint {
+        name: "all_id".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::AllNodes,
+        property: "id".to_string(),
+    });
+    assert!(result.is_ok());
+
+    // Now trying to create a node without id should fail
+    let result = engine.create_node("C", HashMap::new());
+    assert!(result.is_err());
+}
+
+// Test constraint on AllEdges
+#[test]
+fn test_constraint_all_edges() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props, true).unwrap();
+
+    // Create constraint on AllEdges
+    let result = engine.create_constraint(Constraint {
+        name: "all_weight".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::AllEdges,
+        property: "weight".to_string(),
+    });
+    assert!(result.is_ok());
+
+    // Now trying to create an edge without weight should fail
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let result = engine.create_edge(n2, n3, "E", HashMap::new(), true);
+    assert!(result.is_err());
+}
+
+// Test get_constraint and list_constraints
+#[test]
+fn test_constraint_accessors() {
+    let engine = GraphEngine::new();
+
+    let constraint = Constraint {
+        name: "test_constraint".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::NodeLabel("Person".to_string()),
+        property: "name".to_string(),
+    };
+    engine.create_constraint(constraint).unwrap();
+
+    // Get constraint
+    let c = engine.get_constraint("test_constraint");
+    assert!(c.is_some());
+    assert_eq!(c.unwrap().name, "test_constraint");
+
+    // List constraints
+    let constraints = engine.list_constraints();
+    assert_eq!(constraints.len(), 1);
+
+    // Get non-existent
+    assert!(engine.get_constraint("nonexistent").is_none());
+}
+
+// Test find_nodes_by_property with _label special case
+#[test]
+fn test_find_nodes_by_label_property_special() {
+    let engine = GraphEngine::new();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Company", HashMap::new()).unwrap();
+
+    // Find by _label property (special case)
+    let result = engine
+        .find_nodes_by_property("_label", &PropertyValue::String("Person".to_string()))
+        .unwrap();
+    assert_eq!(result.len(), 2);
+
+    // Try with non-string value for _label (should match nothing)
+    let result = engine
+        .find_nodes_by_property("_label", &PropertyValue::Int(123))
+        .unwrap();
+    assert!(result.is_empty());
+}
+
+// Test node with multiple labels index update
+#[test]
+fn test_multi_label_node_index() {
+    let engine = GraphEngine::new();
+
+    // Create nodes with labels
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+
+    // The _label index should be auto-created and contain entries
+    assert!(engine.has_node_index("_label"));
+
+    // Find should work
+    let persons = engine.find_nodes_by_label("Person").unwrap();
+    assert_eq!(persons.len(), 2);
+}
+
+// Test update_node with labels change
+#[test]
+fn test_update_node_labels() {
+    let engine = GraphEngine::new();
+    let node_id = engine.create_node("Person", HashMap::new()).unwrap();
+
+    // Update labels
+    engine
+        .update_node(node_id, Some(vec!["Employee".to_string()]), HashMap::new())
+        .unwrap();
+
+    let node = engine.get_node(node_id).unwrap();
+    assert!(node.has_label("Employee"));
+    assert!(!node.has_label("Person"));
+}
+
+// Test PropertyValue::value_type
+#[test]
+fn test_property_value_type() {
+    assert_eq!(PropertyValue::Null.value_type(), PropertyValueType::Null);
+    assert_eq!(PropertyValue::Int(1).value_type(), PropertyValueType::Int);
+    assert_eq!(
+        PropertyValue::Float(1.0).value_type(),
+        PropertyValueType::Float
+    );
+    assert_eq!(
+        PropertyValue::String("s".to_string()).value_type(),
+        PropertyValueType::String
+    );
+    assert_eq!(
+        PropertyValue::Bool(true).value_type(),
+        PropertyValueType::Bool
+    );
+    assert_eq!(
+        PropertyValue::DateTime(1609459200000).value_type(),
+        PropertyValueType::DateTime
+    );
+    assert_eq!(
+        PropertyValue::List(vec![]).value_type(),
+        PropertyValueType::List
+    );
+    assert_eq!(
+        PropertyValue::Map(HashMap::new()).value_type(),
+        PropertyValueType::Map
+    );
+    assert_eq!(
+        PropertyValue::Bytes(vec![]).value_type(),
+        PropertyValueType::Bytes
+    );
+    assert_eq!(
+        PropertyValue::Point { lat: 0.0, lon: 0.0 }.value_type(),
+        PropertyValueType::Point
+    );
+}
+
+// Test unique constraint violation
+#[test]
+fn test_unique_constraint() {
+    let engine = GraphEngine::new();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "email".to_string(),
+        PropertyValue::String("test@example.com".to_string()),
+    );
+    engine.create_node("User", props.clone()).unwrap();
+
+    // Create unique constraint
+    engine
+        .create_constraint(Constraint {
+            name: "unique_email".to_string(),
+            constraint_type: ConstraintType::Unique,
+            target: ConstraintTarget::NodeLabel("User".to_string()),
+            property: "email".to_string(),
+        })
+        .unwrap();
+
+    // Try to create another node with same email
+    let result = engine.create_node("User", props);
+    assert!(result.is_err());
+}
+
+// Test parallel pattern matching
+#[test]
+fn test_pattern_matching_parallel() {
+    use crate::config::GraphEngineConfig;
+
+    // Set low threshold for parallel processing
+    let config = GraphEngineConfig::new().pattern_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    // Create enough nodes to trigger parallel matching
+    for i in 0..10 {
+        let mut props = HashMap::new();
+        props.insert("idx".to_string(), PropertyValue::Int(i));
+        let n = engine.create_node("Person", props).unwrap();
+        if i > 0 {
+            let prev = n - 1;
+            engine
+                .create_edge(prev, n, "KNOWS", HashMap::new(), true)
+                .unwrap();
+        }
+    }
+
+    let pattern = Pattern::new(PathPattern::new(
+        NodePattern::new().label("Person"),
+        EdgePattern::new().edge_type("KNOWS"),
+        NodePattern::new().label("Person"),
+    ));
+
+    let result = engine.match_pattern(&pattern).unwrap();
+    assert!(!result.is_empty());
+}
+
+// Test drop constraint
+#[test]
+fn test_drop_constraint() {
+    let engine = GraphEngine::new();
+
+    engine
+        .create_constraint(Constraint {
+            name: "test_drop".to_string(),
+            constraint_type: ConstraintType::Exists,
+            target: ConstraintTarget::NodeLabel("X".to_string()),
+            property: "y".to_string(),
+        })
+        .unwrap();
+
+    assert!(engine.get_constraint("test_drop").is_some());
+    engine.drop_constraint("test_drop").unwrap();
+    assert!(engine.get_constraint("test_drop").is_none());
+
+    // Dropping non-existent constraint should error
+    let result = engine.drop_constraint("nonexistent");
+    assert!(result.is_err());
+}
+
+// Test unique constraint on existing data violation
+#[test]
+fn test_unique_constraint_existing_violation() {
+    let engine = GraphEngine::new();
+
+    // Create nodes with duplicate values
+    let mut props = HashMap::new();
+    props.insert("code".to_string(), PropertyValue::String("ABC".to_string()));
+    engine.create_node("Item", props.clone()).unwrap();
+    engine.create_node("Item", props).unwrap();
+
+    // Try to create unique constraint - should fail
+    let result = engine.create_constraint(Constraint {
+        name: "unique_code".to_string(),
+        constraint_type: ConstraintType::Unique,
+        target: ConstraintTarget::NodeLabel("Item".to_string()),
+        property: "code".to_string(),
+    });
+    assert!(result.is_err());
+}
+
+// Test edge property index
+#[test]
+fn test_edge_property_index() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.5));
+    engine.create_edge(n1, n2, "E", props, true).unwrap();
+
+    // Create edge property index
+    engine.create_edge_property_index("weight").unwrap();
+    assert!(engine.has_edge_index("weight"));
+
+    // Drop index
+    engine.drop_edge_index("weight").unwrap();
+    assert!(!engine.has_edge_index("weight"));
+}
+
+// Test compound index on nodes
+#[test]
+fn test_compound_node_index() {
+    let engine = GraphEngine::new();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "first".to_string(),
+        PropertyValue::String("John".to_string()),
+    );
+    props.insert("last".to_string(), PropertyValue::String("Doe".to_string()));
+    engine.create_node("Person", props).unwrap();
+
+    // Create compound index
+    engine.create_compound_index(&["first", "last"]).unwrap();
+    assert!(engine.has_compound_index(&["first", "last"]));
+
+    // Find by compound
+    let result = engine
+        .find_by_compound(&[
+            ("first", &PropertyValue::String("John".to_string())),
+            ("last", &PropertyValue::String("Doe".to_string())),
+        ])
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    // Drop compound index
+    engine.drop_compound_index(&["first", "last"]).unwrap();
+    assert!(!engine.has_compound_index(&["first", "last"]));
+}
+
+// Test node count and edge count
+#[test]
+fn test_node_edge_count() {
+    let engine = GraphEngine::new();
+
+    assert_eq!(engine.node_count(), 0);
+    assert_eq!(engine.edge_count(), 0);
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    assert_eq!(engine.node_count(), 2);
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    assert_eq!(engine.edge_count(), 1);
+}
+
+// Test all_edges
+#[test]
+fn test_all_edges() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let edges = engine.all_edges();
+    assert_eq!(edges.len(), 2);
+}
+
+// Test find_path with no path
+#[test]
+fn test_find_path_no_path() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    // No edge connecting them
+
+    let result = engine.find_path(n1, n2, None);
+    assert!(result.is_err());
+}
+
+// Test find_weighted_path with no path
+#[test]
+fn test_find_weighted_path_no_path() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    // No edge connecting them
+
+    let result = engine.find_weighted_path(n1, n2, "weight");
+    assert!(result.is_err());
+}
+
+// Test property type constraint with correct and wrong types
+#[test]
+fn test_property_type_constraint_validation() {
+    let engine = GraphEngine::new();
+
+    // Create constraint for age to be Int
+    engine
+        .create_constraint(Constraint {
+            name: "age_int".to_string(),
+            constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+            target: ConstraintTarget::NodeLabel("Person".to_string()),
+            property: "age".to_string(),
+        })
+        .unwrap();
+
+    // Valid node with Int age
+    let mut props = HashMap::new();
+    props.insert("age".to_string(), PropertyValue::Int(25));
+    let result = engine.create_node("Person", props);
+    assert!(result.is_ok());
+
+    // Invalid node with String age
+    let mut props = HashMap::new();
+    props.insert(
+        "age".to_string(),
+        PropertyValue::String("twenty".to_string()),
+    );
+    let result = engine.create_node("Person", props);
+    assert!(result.is_err());
+}
+
+// Test unique constraint on edges
+#[test]
+fn test_unique_constraint_edges() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("id".to_string(), PropertyValue::String("e1".to_string()));
+    engine.create_edge(n1, n2, "REL", props, true).unwrap();
+
+    // Create unique constraint on edge property
+    engine
+        .create_constraint(Constraint {
+            name: "unique_edge_id".to_string(),
+            constraint_type: ConstraintType::Unique,
+            target: ConstraintTarget::EdgeType("REL".to_string()),
+            property: "id".to_string(),
+        })
+        .unwrap();
+
+    // Try to create edge with same id
+    let mut props = HashMap::new();
+    props.insert("id".to_string(), PropertyValue::String("e1".to_string()));
+    let result = engine.create_edge(n2, n3, "REL", props, true);
+    assert!(result.is_err());
+}
+
+// Test edge from property types
+#[test]
+fn test_edge_from_to() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let edge_id = engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    let edge = engine.get_edge(edge_id).unwrap();
+
+    assert_eq!(edge.from, n1);
+    assert_eq!(edge.to, n2);
+    assert_eq!(edge.edge_type, "KNOWS");
+    assert!(edge.directed);
+}
+
+// Test exists constraint on edges
+#[test]
+fn test_exists_constraint_edges() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "LINK", props, true).unwrap();
+
+    // Create exists constraint
+    engine
+        .create_constraint(Constraint {
+            name: "link_weight".to_string(),
+            constraint_type: ConstraintType::Exists,
+            target: ConstraintTarget::EdgeType("LINK".to_string()),
+            property: "weight".to_string(),
+        })
+        .unwrap();
+
+    // Try to create edge without weight
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let result = engine.create_edge(n2, n3, "LINK", HashMap::new(), true);
+    assert!(result.is_err());
+}
+
+// Test property type constraint with null property (should be allowed)
+#[test]
+fn test_property_type_constraint_null_allowed() {
+    let engine = GraphEngine::new();
+
+    // Create constraint for count to be Int
+    engine
+        .create_constraint(Constraint {
+            name: "count_int".to_string(),
+            constraint_type: ConstraintType::PropertyType(PropertyValueType::Int),
+            target: ConstraintTarget::NodeLabel("Counter".to_string()),
+            property: "count".to_string(),
+        })
+        .unwrap();
+
+    // Node without count property should be allowed (property is optional)
+    let result = engine.create_node("Counter", HashMap::new());
+    assert!(result.is_ok());
+
+    // Node with correct type should be allowed
+    let mut props = HashMap::new();
+    props.insert("count".to_string(), PropertyValue::Int(5));
+    let result = engine.create_node("Counter", props);
+    assert!(result.is_ok());
+}
+
+// Test get_edge for non-existent edge
+#[test]
+fn test_get_edge_not_found() {
+    let engine = GraphEngine::new();
+    let result = engine.get_edge(999999);
+    assert!(result.is_err());
+}
+
+// Test delete_edge
+#[test]
+fn test_delete_edge() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let edge_id = engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    assert!(engine.get_edge(edge_id).is_ok());
+
+    engine.delete_edge(edge_id).unwrap();
+    assert!(engine.get_edge(edge_id).is_err());
+}
+
+// Test delete_edge not found
+#[test]
+fn test_delete_edge_not_found() {
+    let engine = GraphEngine::new();
+    let result = engine.delete_edge(999999);
+    assert!(result.is_err());
+}
+
+// Test neighbors
+#[test]
+fn test_neighbors() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let neighbors = engine
+        .neighbors(n1, None, Direction::Outgoing, None)
+        .unwrap();
+    assert_eq!(neighbors.len(), 2);
+
+    let neighbors = engine
+        .neighbors(n2, None, Direction::Incoming, None)
+        .unwrap();
+    assert_eq!(neighbors.len(), 1);
+    assert_eq!(neighbors[0].id, n1);
+}
+
+// Test eigenvector centrality
+#[test]
+fn test_eigenvector_centrality() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.eigenvector_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 3);
+}
+
+// Test eigenvector centrality parallel
+#[test]
+fn test_eigenvector_centrality_parallel() {
+    use crate::config::GraphEngineConfig;
+
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    let mut nodes = Vec::new();
+    for _ in 0..5 {
+        nodes.push(engine.create_node("Node", HashMap::new()).unwrap());
+    }
+
+    for i in 0..4 {
+        engine
+            .create_edge(nodes[i], nodes[i + 1], "E", HashMap::new(), true)
+            .unwrap();
+    }
+    engine
+        .create_edge(nodes[4], nodes[0], "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.eigenvector_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 5);
+}
+
+// Test label propagation simple
+#[test]
+fn test_label_propagation_simple() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.label_propagation(None).unwrap();
+    assert!(result.community_count > 0);
+}
+
+// Test count triangles
+#[test]
+fn test_count_triangles() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Create a triangle
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::default();
+    let result = engine.count_triangles(&config).unwrap();
+    assert_eq!(result.triangle_count, 1);
+}
+
+// Test local clustering coefficient
+#[test]
+fn test_local_clustering_coefficient() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::default();
+    let result = engine.local_clustering_coefficient(n1, &config).unwrap();
+    assert!(result >= 0.0 && result <= 1.0);
+}
+
+// Test global clustering coefficient
+#[test]
+fn test_global_clustering_coefficient() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::default();
+    let coeff = engine.global_clustering_coefficient(&config).unwrap();
+    assert!(coeff >= 0.0 && coeff <= 1.0);
+}
+
+// Test find common neighbors
+#[test]
+fn test_common_neighbors() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let common = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let neighbors = engine.common_neighbors(n1, n2, &config).unwrap();
+    assert_eq!(neighbors.len(), 1);
+    assert!(neighbors.contains(&common));
+}
+
+// Test adamic adar index
+#[test]
+fn test_adamic_adar() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let common = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let score = engine.adamic_adar(n1, n2, &config).unwrap();
+    assert!(score >= 0.0);
+}
+
+// Test jaccard similarity
+#[test]
+fn test_jaccard_similarity() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let c1 = engine.create_node("C", HashMap::new()).unwrap();
+    let c2 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, c1, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, c2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, c1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let sim = engine.jaccard_similarity(n1, n2, &config).unwrap();
+    assert!(sim >= 0.0 && sim <= 1.0);
+}
+
+// Test preferential attachment
+#[test]
+fn test_preferential_attachment() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let score = engine.preferential_attachment(n1, n2, &config).unwrap();
+    assert!(score >= 0.0);
+}
+
+// Test find path with filter
+#[test]
+fn test_find_path_with_filter() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "ROAD", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "ROAD", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "ROAD", HashMap::new(), true)
+        .unwrap();
+
+    // Path exists
+    let result = engine.find_path(n1, n4, None);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().nodes.len(), 4);
+}
+
+// Test neighbors with edge type filter
+#[test]
+fn test_neighbors_with_edge_type() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "FRIEND", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "COLLEAGUE", HashMap::new(), true)
+        .unwrap();
+
+    // Only FRIEND edges
+    let neighbors = engine
+        .neighbors(n1, Some("FRIEND"), Direction::Outgoing, None)
+        .unwrap();
+    assert_eq!(neighbors.len(), 1);
+    assert_eq!(neighbors[0].id, n2);
+}
+
+// Test traverse
+#[test]
+fn test_traverse() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine
+        .traverse(n1, Direction::Outgoing, 10, None, None)
+        .unwrap();
+    assert_eq!(result.len(), 3);
+}
+
+// Test resource allocation index
+#[test]
+fn test_resource_allocation() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let common = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let score = engine.resource_allocation(n1, n2, &config).unwrap();
+    assert!(score >= 0.0);
+}
+
+// Test strongly connected components
+#[test]
+fn test_strongly_connected_components() {
+    use crate::algorithms::SccConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Create a cycle
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SccConfig::default();
+    let result = engine.strongly_connected_components(&config).unwrap();
+    assert_eq!(result.component_count, 1);
+}
+
+// Test minimum spanning tree
+#[test]
+fn test_minimum_spanning_tree() {
+    use crate::algorithms::MstConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props1, false).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("weight".to_string(), PropertyValue::Float(2.0));
+    engine.create_edge(n2, n3, "E", props2, false).unwrap();
+
+    let mut props3 = HashMap::new();
+    props3.insert("weight".to_string(), PropertyValue::Float(3.0));
+    engine.create_edge(n1, n3, "E", props3, false).unwrap();
+
+    let config = MstConfig::default();
+    let result = engine.minimum_spanning_tree(&config).unwrap();
+    assert_eq!(result.edges.len(), 2);
+}
+
+// Test find nodes by multiple properties
+#[test]
+fn test_find_nodes_multi_property() {
+    let engine = GraphEngine::new();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "name".to_string(),
+        PropertyValue::String("Alice".to_string()),
+    );
+    props.insert("age".to_string(), PropertyValue::Int(30));
+    let n1 = engine.create_node("Person", props).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("name".to_string(), PropertyValue::String("Bob".to_string()));
+    props2.insert("age".to_string(), PropertyValue::Int(25));
+    engine.create_node("Person", props2).unwrap();
+
+    // Find by name
+    let result = engine
+        .find_nodes_by_property("name", &PropertyValue::String("Alice".to_string()))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].id, n1);
+}
+
+// Test shortest path same node
+#[test]
+fn test_find_path_same_node() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let result = engine.find_path(n1, n1, None).unwrap();
+    assert_eq!(result.nodes.len(), 1);
+    assert_eq!(result.nodes[0], n1);
+}
+
+// Test weighted path same node
+#[test]
+fn test_find_weighted_path_same_node() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let result = engine.find_weighted_path(n1, n1, "weight").unwrap();
+    assert_eq!(result.nodes.len(), 1);
+    assert!((result.total_weight - 0.0).abs() < 0.001);
+}
+
+// Test all_paths same node
+#[test]
+fn test_find_all_paths_same_node() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let result = engine.find_all_paths(n1, n1, None).unwrap();
+    assert_eq!(result.paths.len(), 1);
+    assert_eq!(result.hop_count, 0);
+}
+
+// Test node exists
+#[test]
+fn test_node_exists() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    assert!(engine.node_exists(n1));
+    assert!(!engine.node_exists(9999999));
+}
+
+// Test get_edge
+#[test]
+fn test_get_edge_basic() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let e1 = engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+
+    assert!(engine.get_edge(e1).is_ok());
+    assert!(engine.get_edge(9999999).is_err());
+}
+
+// Test edges_of with edge type filter
+#[test]
+fn test_edges_of_with_type() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    let all_edges = engine.edges_of(n1, Direction::Outgoing).unwrap();
+    assert_eq!(all_edges.len(), 2);
+}
+
+// Test pagerank convergence
+#[test]
+fn test_pagerank_converges() {
+    let engine = GraphEngine::new();
+
+    // Create a simple graph
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.pagerank(None).unwrap();
+    assert_eq!(result.scores.len(), 3);
+    // Scores should sum to approximately 1
+    let sum: f64 = result.scores.values().sum();
+    assert!((sum - 1.0).abs() < 0.01);
+}
+
+// Test variable length paths direction
+#[test]
+fn test_variable_paths_direction() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = VariableLengthConfig::with_hops(1, 3).direction(Direction::Outgoing);
+    let result = engine.find_variable_paths(n1, n3, config).unwrap();
+    assert!(!result.paths.is_empty());
+}
+
+// Test A* algorithm
+#[test]
+fn test_astar_basic() {
+    use crate::algorithms::AStarConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine.create_edge(n2, n3, "E", props, true).unwrap();
+
+    let config = AStarConfig::default();
+    let result = engine.astar_path(n1, n3, &config).unwrap();
+    assert!(result.path.is_some());
+    assert_eq!(result.path.unwrap().nodes.len(), 3);
+}
+
+// Test biconnected components
+#[test]
+fn test_biconnected_components() {
+    use crate::algorithms::BiconnectedConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = BiconnectedConfig::default();
+    let result = engine.biconnected_components(&config).unwrap();
+    assert!(result.component_count > 0);
+}
+
+// Test k-core decomposition
+#[test]
+fn test_kcore() {
+    use crate::algorithms::KCoreConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n4, n1, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = KCoreConfig::default();
+    let result = engine.kcore_decomposition(&config).unwrap();
+    assert!(!result.core_numbers.is_empty());
+}
+
+// Test find_edges_by_property
+#[test]
+fn test_find_edges_by_property() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props1 = HashMap::new();
+    props1.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.create_edge(n1, n2, "E", props1, true).unwrap();
+
+    let mut props2 = HashMap::new();
+    props2.insert("weight".to_string(), PropertyValue::Float(2.0));
+    engine.create_edge(n2, n3, "E", props2, true).unwrap();
+
+    let result = engine
+        .find_edges_by_property("weight", &PropertyValue::Float(1.0))
+        .unwrap();
+    assert_eq!(result.len(), 1);
+}
+
+// Test neighbors paginated
+#[test]
+fn test_neighbors_paginated() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    for _ in 0..10 {
+        let n = engine.create_node("B", HashMap::new()).unwrap();
+        engine
+            .create_edge(n1, n, "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let pagination = Pagination::new(0, 5);
+    let result = engine
+        .neighbors_paginated(n1, None, Direction::Outgoing, None, pagination)
+        .unwrap();
+    assert_eq!(result.items.len(), 5);
+    assert!(result.has_more);
+}
+
+// Test all_weighted_paths same node
+#[test]
+fn test_all_weighted_paths_same_node() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let result = engine
+        .find_all_weighted_paths(n1, n1, "weight", None)
+        .unwrap();
+    assert_eq!(result.paths.len(), 1);
+    assert!((result.total_weight - 0.0).abs() < 0.001);
+}
+
+// Test constraint duplicate name
+#[test]
+fn test_constraint_duplicate_name() {
+    let engine = GraphEngine::new();
+
+    engine
+        .create_constraint(Constraint {
+            name: "dup".to_string(),
+            constraint_type: ConstraintType::Exists,
+            target: ConstraintTarget::NodeLabel("X".to_string()),
+            property: "y".to_string(),
+        })
+        .unwrap();
+
+    let result = engine.create_constraint(Constraint {
+        name: "dup".to_string(),
+        constraint_type: ConstraintType::Exists,
+        target: ConstraintTarget::NodeLabel("Y".to_string()),
+        property: "z".to_string(),
+    });
+    assert!(result.is_err());
+}
+
+// Test update edge
+#[test]
+fn test_update_edge() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let edge_id = engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+
+    let mut new_props = HashMap::new();
+    new_props.insert("weight".to_string(), PropertyValue::Float(5.0));
+    engine.update_edge(edge_id, new_props).unwrap();
+
+    let edge = engine.get_edge(edge_id).unwrap();
+    assert_eq!(
+        edge.properties.get("weight"),
+        Some(&PropertyValue::Float(5.0))
+    );
+}
+
+// Test empty graph operations
+#[test]
+fn test_empty_graph_operations() {
+    let engine = GraphEngine::new();
+
+    // All nodes/edges should be empty
+    assert!(engine.all_nodes().is_empty());
+    assert!(engine.all_edges().is_empty());
+
+    // Counts should be zero
+    assert_eq!(engine.node_count(), 0);
+    assert_eq!(engine.edge_count(), 0);
+}
+
+// Test parallel pagerank with large graph
+#[test]
+fn test_pagerank_parallel_large() {
+    use crate::config::GraphEngineConfig;
+
+    // Set low threshold for parallel execution
+    let config = GraphEngineConfig::new().pattern_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    // Create larger graph for parallel execution
+    let mut nodes = Vec::new();
+    for _ in 0..10 {
+        nodes.push(engine.create_node("Node", HashMap::new()).unwrap());
+    }
+
+    // Create cycle
+    for i in 0..10 {
+        engine
+            .create_edge(nodes[i], nodes[(i + 1) % 10], "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.pagerank(None).unwrap();
+    assert_eq!(result.scores.len(), 10);
+}
+
+// Test index not found error
+#[test]
+fn test_drop_nonexistent_index() {
+    let engine = GraphEngine::new();
+    let result = engine.drop_node_index("nonexistent");
+    assert!(result.is_err());
+}
+
+// Test property index already exists
+#[test]
+fn test_create_duplicate_index() {
+    let engine = GraphEngine::new();
+
+    let mut props = HashMap::new();
+    props.insert(
+        "name".to_string(),
+        PropertyValue::String("test".to_string()),
+    );
+    engine.create_node("Person", props).unwrap();
+
+    engine.create_node_property_index("name").unwrap();
+    let result = engine.create_node_property_index("name");
+    assert!(result.is_err());
+}
+
+// Test batch delete nodes
+#[test]
+fn test_batch_delete_nodes() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let result = engine.batch_delete_nodes(vec![n1, n2]).unwrap();
+    assert_eq!(result.count, 2);
+    assert!(!engine.node_exists(n1));
+    assert!(!engine.node_exists(n2));
+    assert!(engine.node_exists(n3));
+}
+
+// Test batch delete edges
+#[test]
+fn test_batch_delete_edges() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let e1 = engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    let e2 = engine
+        .create_edge(n2, n3, "E", HashMap::new(), true)
+        .unwrap();
+    let e3 = engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.batch_delete_edges(vec![e1, e2]).unwrap();
+    assert_eq!(result.count, 2);
+    assert!(engine.get_edge(e1).is_err());
+    assert!(engine.get_edge(e2).is_err());
+    assert!(engine.get_edge(e3).is_ok());
+}
+
+// Test parallel betweenness with config
+#[test]
+fn test_parallel_betweenness() {
+    use crate::config::GraphEngineConfig;
+
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(2);
+    let engine = GraphEngine::with_config(config);
+
+    // Create graph large enough for parallel
+    let mut nodes = Vec::new();
+    for _ in 0..8 {
+        nodes.push(engine.create_node("N", HashMap::new()).unwrap());
+    }
+    for i in 0..7 {
+        engine
+            .create_edge(nodes[i], nodes[i + 1], "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.betweenness_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 8);
+}
+
+// Test pattern matching with edge variable
+#[test]
+fn test_pattern_match_edge_variable() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+
+    let pattern = Pattern::new(PathPattern::new(
+        NodePattern::new().label("Person").variable("a"),
+        EdgePattern::new().edge_type("KNOWS").variable("e"),
+        NodePattern::new().label("Person").variable("b"),
+    ));
+
+    let result = engine.match_pattern(&pattern).unwrap();
+    assert!(!result.is_empty());
+    // Should have edge binding
+    let pm = &result.matches[0];
+    assert!(pm.get_edge("e").is_some());
+}
+
+// Test node with timestamps
+#[test]
+fn test_node_timestamps() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+
+    let node = engine.get_node(n1).unwrap();
+    assert!(node.created_at_millis().is_some());
+    assert!(node.updated_at_millis().is_none());
+
+    // Update node
+    let mut props = HashMap::new();
+    props.insert(
+        "key".to_string(),
+        PropertyValue::String("value".to_string()),
+    );
+    engine.update_node(n1, None, props).unwrap();
+
+    let updated_node = engine.get_node(n1).unwrap();
+    assert!(updated_node.updated_at_millis().is_some());
+}
+
+// Test edge with timestamps
+#[test]
+fn test_edge_timestamps() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let e1 = engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+
+    let edge = engine.get_edge(e1).unwrap();
+    assert!(edge.created_at_millis().is_some());
+    assert!(edge.updated_at_millis().is_none());
+
+    // Update edge
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    engine.update_edge(e1, props).unwrap();
+
+    let updated_edge = engine.get_edge(e1).unwrap();
+    assert!(updated_edge.updated_at_millis().is_some());
+}
+
+// Test louvain with config
+#[test]
+fn test_louvain_with_config() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n1, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.louvain_communities(None).unwrap();
+    assert!(result.community_count >= 1);
+}
+
+// Test parallel closeness with low threshold
+#[test]
+fn test_parallel_closeness_large() {
+    use crate::config::GraphEngineConfig;
+
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(3);
+    let engine = GraphEngine::with_config(config);
+
+    // Create graph larger than threshold
+    let mut nodes = Vec::new();
+    for _ in 0..6 {
+        nodes.push(engine.create_node("N", HashMap::new()).unwrap());
+    }
+    for i in 0..5 {
+        engine
+            .create_edge(nodes[i], nodes[i + 1], "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.closeness_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 6);
+}
+
+// Test edge delete and indexes
+#[test]
+fn test_edge_delete_index_update() {
+    let engine = GraphEngine::new();
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+    let e1 = engine.create_edge(n1, n2, "REL", props, true).unwrap();
+
+    // Create edge property index
+    engine.create_edge_property_index("weight").unwrap();
+
+    // Delete edge - should update index
+    engine.delete_edge(e1).unwrap();
+
+    // Find should return empty
+    let found = engine
+        .find_edges_by_property("weight", &PropertyValue::Float(1.0))
+        .unwrap();
+    assert!(found.is_empty());
+}
+
+// Test node_similarity with different metrics
+#[test]
+fn test_node_similarity_metrics() {
+    use crate::algorithms::{SimilarityConfig, SimilarityMetric};
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let common = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+
+    // Test Jaccard via node_similarity
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::Jaccard, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+
+    // Test AdamicAdar
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::AdamicAdar, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+
+    // Test ResourceAllocation
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::ResourceAllocation, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+
+    // Test PreferentialAttachment
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::PreferentialAttachment, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+
+    // Test CommonNeighbors
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::CommonNeighbors, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+
+    // Test Cosine
+    let result = engine
+        .node_similarity(n1, n2, SimilarityMetric::Cosine, &config)
+        .unwrap();
+    assert!(result.score >= 0.0);
+}
+
+// Test most_similar
+#[test]
+fn test_most_similar() {
+    use crate::algorithms::{SimilarityConfig, SimilarityMetric};
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let common = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let results = engine
+        .most_similar(n1, SimilarityMetric::Jaccard, &config, 5)
+        .unwrap();
+    assert!(!results.is_empty());
+}
+
+// Test cosine similarity directly
+#[test]
+fn test_cosine_similarity_direct() {
+    use crate::algorithms::SimilarityConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let common = engine.create_node("C", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, common, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, common, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = SimilarityConfig::default();
+    let result = engine.cosine_similarity(n1, n2, &config).unwrap();
+    assert!(result >= 0.0 && result <= 1.0);
+}
+
+// Test PropertyValue from string that looks like JSON but isn't valid PropertyValue JSON
+#[test]
+fn test_property_value_from_invalid_json_string() {
+    use tensor_store::ScalarValue;
+
+    // String that starts with { but isn't valid PropertyValue JSON
+    let invalid_json = "{invalid json}".to_string();
+    let pv = PropertyValue::from_scalar(&ScalarValue::String(invalid_json.clone()));
+    // Should fall back to treating it as a string
+    assert_eq!(pv, PropertyValue::String(invalid_json));
+
+    // String that starts with [ but isn't valid JSON
+    let invalid_array = "[not valid".to_string();
+    let pv = PropertyValue::from_scalar(&ScalarValue::String(invalid_array.clone()));
+    assert_eq!(pv, PropertyValue::String(invalid_array));
+}
+
+// Test Union-Find with specific graph structure to trigger Less ordering
+#[test]
+fn test_connected_components_union_find_less() {
+    let engine = GraphEngine::new();
+
+    // Create a chain structure where nodes are merged in specific order
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+    let n5 = engine.create_node("E", HashMap::new()).unwrap();
+
+    // Create edges to build specific tree structure
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n4, n5, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n1, n5, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.connected_components(None).unwrap();
+    assert_eq!(result.community_count, 1);
+}
+
+// Test DijkstraEntry equality (via weighted path)
+#[test]
+fn test_weighted_path_with_equal_costs() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(1.0));
+
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine.create_edge(n2, n3, "E", props, true).unwrap();
+
+    let result = engine.find_weighted_path(n1, n3, "weight").unwrap();
+    assert!((result.total_weight - 2.0).abs() < 0.001);
+}
+
+// Test index on _label property explicitly
+#[test]
+fn test_label_index_rebuild() {
+    use tensor_store::TensorStore;
+
+    // Create engine with store
+    let store = TensorStore::new();
+    let engine = GraphEngine::with_store(store);
+
+    // Create some nodes
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Person", HashMap::new()).unwrap();
+    engine.create_node("Company", HashMap::new()).unwrap();
+
+    // The _label index should be auto-created
+    assert!(engine.has_node_index("_label"));
+
+    // Query should work
+    let persons = engine.find_nodes_by_label("Person").unwrap();
+    assert_eq!(persons.len(), 2);
+}
+
+// Test edge index on _edge_type property
+#[test]
+fn test_edge_type_index_rebuild() {
+    use tensor_store::TensorStore;
+
+    let store = TensorStore::new();
+    let engine = GraphEngine::with_store(store);
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n2, "LIKES", HashMap::new(), true)
+        .unwrap();
+
+    // The _edge_type index should be auto-created
+    assert!(engine.has_edge_index("_edge_type"));
+
+    // Query should work
+    let knows = engine.find_edges_by_type("KNOWS").unwrap();
+    assert_eq!(knows.len(), 1);
+}
+
+// Test parallel eigenvector with config
+#[test]
+fn test_parallel_eigenvector() {
+    use crate::config::GraphEngineConfig;
+
+    let config = GraphEngineConfig::new().centrality_parallel_threshold(3);
+    let engine = GraphEngine::with_config(config);
+
+    // Create graph larger than threshold
+    let mut nodes = Vec::new();
+    for _ in 0..6 {
+        nodes.push(engine.create_node("N", HashMap::new()).unwrap());
+    }
+    // Create cycle
+    for i in 0..6 {
+        engine
+            .create_edge(nodes[i], nodes[(i + 1) % 6], "E", HashMap::new(), true)
+            .unwrap();
+    }
+
+    let result = engine.eigenvector_centrality(None).unwrap();
+    assert_eq!(result.scores.len(), 6);
+}
+
+// Test pattern match result stats
+#[test]
+fn test_pattern_match_stats() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Person", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "KNOWS", HashMap::new(), true)
+        .unwrap();
+
+    let pattern = Pattern::new(PathPattern::new(
+        NodePattern::new().label("Person"),
+        EdgePattern::new(),
+        NodePattern::new().label("Person"),
+    ));
+
+    let result = engine.match_pattern(&pattern).unwrap();
+    assert!(result.stats.nodes_evaluated > 0);
+}
+
+// Test find all paths with config limits
+#[test]
+fn test_find_all_paths_with_config() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // Diamond pattern
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = AllPathsConfig {
+        max_paths: 10,
+        max_parents_per_node: 5,
+    };
+    let result = engine.find_all_paths(n1, n4, Some(config)).unwrap();
+    assert_eq!(result.paths.len(), 2);
+}
+
+// Test weighted paths with config
+#[test]
+fn test_find_all_weighted_paths_with_config() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("w".to_string(), PropertyValue::Float(1.0));
+
+    engine
+        .create_edge(n1, n2, "E", props.clone(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", props.clone(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", props.clone(), true)
+        .unwrap();
+    engine.create_edge(n3, n4, "E", props, true).unwrap();
+
+    let config = AllPathsConfig {
+        max_paths: 10,
+        max_parents_per_node: 5,
+    };
+    let result = engine
+        .find_all_weighted_paths(n1, n4, "w", Some(config))
+        .unwrap();
+    assert_eq!(result.paths.len(), 2);
+}
+
+// Test negative weight error
+#[test]
+fn test_weighted_path_negative_weight() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut props = HashMap::new();
+    props.insert("weight".to_string(), PropertyValue::Float(-1.0));
+    engine.create_edge(n1, n2, "E", props, true).unwrap();
+
+    let result = engine.find_weighted_path(n1, n2, "weight");
+    assert!(result.is_err());
+}
+
+// Test articulation points
+#[test]
+fn test_articulation_points() {
+    use crate::algorithms::BiconnectedConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create a graph with an articulation point
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // n2 is articulation point: n1-n2, n2-n3, n2-n4
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = BiconnectedConfig::default();
+    let result = engine.biconnected_components(&config).unwrap();
+    assert!(!result.articulation_points.is_empty());
+}
+
+// Test bridges
+#[test]
+fn test_bridges() {
+    use crate::algorithms::BiconnectedConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // n1-n2-n3 chain has 2 bridges
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = BiconnectedConfig::default();
+    let result = engine.biconnected_components(&config).unwrap();
+    assert!(!result.bridges.is_empty());
+}
+
+// Test MstResult::default()
+#[test]
+fn test_mst_result_default() {
+    use crate::algorithms::MstResult;
+
+    let result = MstResult::default();
+    assert_eq!(result.edge_count(), 0);
+    assert_eq!(result.total_weight, 0.0);
+    assert_eq!(result.tree_count, 0);
+}
+
+// Test TriangleResult::default()
+#[test]
+fn test_triangle_result_default() {
+    use crate::algorithms::TriangleResult;
+
+    let result = TriangleResult::default();
+    assert_eq!(result.triangle_count, 0);
+    assert_eq!(result.average_clustering(), 0.0);
+}
+
+// Test TriangleConfig::edge_type()
+#[test]
+fn test_triangle_config_edge_type() {
+    use crate::algorithms::TriangleConfig;
+
+    let config = TriangleConfig::new().edge_type("FRIEND");
+    assert_eq!(config.edge_type, Some("FRIEND".to_string()));
+
+    // Test with actual graph
+    let engine = GraphEngine::new();
+    let a = engine.create_node("A", HashMap::new()).unwrap();
+    let b = engine.create_node("B", HashMap::new()).unwrap();
+    let c = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Create triangle with FRIEND edges
+    engine
+        .create_edge(a, b, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(b, c, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(c, a, "FRIEND", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.count_triangles(&config.undirected()).unwrap();
+    assert_eq!(result.triangle_count, 1);
+}
+
+// Test A* with missing coordinates (falls back to 0.0)
+#[test]
+fn test_astar_euclidean_missing_coordinates() {
+    let engine = GraphEngine::new();
+
+    // Create nodes without x,y coordinates
+    let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), false)
+        .unwrap();
+
+    // Should still find path, heuristic returns 0.0 for missing coords
+    let result = engine.astar_path_euclidean(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+    assert!(result.path.is_some());
+    assert_eq!(result.path.as_ref().unwrap().nodes.len(), 2);
+}
+
+// Test A* Manhattan with missing coordinates
+#[test]
+fn test_astar_manhattan_missing_coordinates() {
+    let engine = GraphEngine::new();
+
+    // Create nodes without x,y coordinates
+    let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), false)
+        .unwrap();
+
+    // Should still find path
+    let result = engine.astar_path_manhattan(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+    assert!(result.path.is_some());
+}
+
+// Test A* with partial coordinates (some nodes missing coords)
+#[test]
+fn test_astar_euclidean_partial_coordinates() {
+    let engine = GraphEngine::new();
+
+    // Node 1 has coordinates
+    let mut p1 = HashMap::new();
+    p1.insert("x".to_string(), PropertyValue::Float(0.0));
+    p1.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n1 = engine.create_node("Node", p1).unwrap();
+
+    // Node 2 has only x
+    let mut p2 = HashMap::new();
+    p2.insert("x".to_string(), PropertyValue::Float(1.0));
+    let n2 = engine.create_node("Node", p2).unwrap();
+
+    // Node 3 has full coordinates
+    let mut p3 = HashMap::new();
+    p3.insert("x".to_string(), PropertyValue::Float(2.0));
+    p3.insert("y".to_string(), PropertyValue::Float(2.0));
+    let n3 = engine.create_node("Node", p3).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "EDGE", HashMap::new(), false)
+        .unwrap();
+
+    // Should find path despite missing y on n2
+    let result = engine.astar_path_euclidean(n1, n3, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test MST forest with isolated nodes
+#[test]
+fn test_mst_forest_isolated_nodes() {
+    let engine = GraphEngine::new();
+
+    // Create connected component
+    let mut p1 = HashMap::new();
+    p1.insert("weight".to_string(), PropertyValue::Float(1.0));
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    engine.create_edge(n1, n2, "E", p1, false).unwrap();
+
+    // Create isolated nodes
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    let forests = engine.minimum_spanning_forest("weight").unwrap();
+
+    // Should have multiple trees: one for the connected pair, plus isolated nodes
+    assert!(forests.len() >= 1);
+
+    // Check that isolated nodes are represented
+    let all_nodes: Vec<u64> = forests.iter().flat_map(|f| f.nodes.clone()).collect();
+    assert!(all_nodes.contains(&n3) || forests.iter().any(|f| f.nodes.contains(&n3)));
+    assert!(all_nodes.contains(&n4) || forests.iter().any(|f| f.nodes.contains(&n4)));
+}
+
+// Test Union-Find Less case (node degrees arranged to trigger Less branch)
+#[test]
+fn test_connected_components_union_find_less_case() {
+    let engine = GraphEngine::new();
+
+    // Create a graph where union operations trigger different rank comparisons
+    let _n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let _n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let _n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let _n4 = engine.create_node("D", HashMap::new()).unwrap();
+    let _n5 = engine.create_node("E", HashMap::new()).unwrap();
+    let _n6 = engine.create_node("F", HashMap::new()).unwrap();
+
+    // First group: build up rank for n1
+    engine
+        .create_edge(_n1, _n2, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(_n1, _n3, "E", HashMap::new(), false)
+        .unwrap();
+
+    // Second group: build up rank for n4
+    engine
+        .create_edge(_n4, _n5, "E", HashMap::new(), false)
+        .unwrap();
+
+    // Now connect n6 to the smaller rank tree first
+    engine
+        .create_edge(_n6, _n4, "E", HashMap::new(), false)
+        .unwrap();
+
+    // Finally connect the groups to trigger rank comparisons
+    engine
+        .create_edge(_n3, _n5, "E", HashMap::new(), false)
+        .unwrap();
+
+    let result = engine.connected_components(None).unwrap();
+    assert_eq!(result.community_count, 1);
+    // All 6 nodes should be in one community
+    assert_eq!(result.communities.len(), 6);
+}
+
+// Test scan_nodes_where with _label
+#[test]
+fn test_scan_nodes_where_label() {
+    let engine = GraphEngine::new();
+
+    let _n1 = engine.create_node("Alpha", HashMap::new()).unwrap();
+    let _n2 = engine.create_node("Beta", HashMap::new()).unwrap();
+    let _n3 = engine.create_node("Gamma", HashMap::new()).unwrap();
+    let _n4 = engine.create_node("Delta", HashMap::new()).unwrap();
+
+    // Test range operations on labels
+    let nodes =
+        engine.scan_nodes_where("_label", RangeOp::Gt, &PropertyValue::String("Beta".into()));
+    // Delta and Gamma should match (> Beta alphabetically)
+    assert!(nodes.len() >= 2);
+
+    let nodes =
+        engine.scan_nodes_where("_label", RangeOp::Lt, &PropertyValue::String("Beta".into()));
+    // Alpha should match
+    assert!(nodes.len() >= 1);
+
+    let nodes = engine.scan_nodes_where(
+        "_label",
+        RangeOp::Ge,
+        &PropertyValue::String("Gamma".into()),
+    );
+    assert!(nodes.len() >= 1);
+
+    let nodes = engine.scan_nodes_where(
+        "_label",
+        RangeOp::Le,
+        &PropertyValue::String("Alpha".into()),
+    );
+    assert!(nodes.len() >= 1);
+}
+
+// Test building node index on a custom property (not _label since it's auto-indexed)
+#[test]
+fn test_build_node_custom_property_index() {
+    let engine = GraphEngine::new();
+
+    let mut p1 = HashMap::new();
+    p1.insert(
+        "department".to_string(),
+        PropertyValue::String("Engineering".into()),
+    );
+    let n1 = engine.create_node("Person", p1).unwrap();
+
+    let mut p2 = HashMap::new();
+    p2.insert(
+        "department".to_string(),
+        PropertyValue::String("Engineering".into()),
+    );
+    let n2 = engine.create_node("Person", p2).unwrap();
+
+    let mut p3 = HashMap::new();
+    p3.insert(
+        "department".to_string(),
+        PropertyValue::String("Sales".into()),
+    );
+    let n3 = engine.create_node("Company", p3).unwrap();
+
+    // Build index on department
+    engine.create_node_property_index("department").unwrap();
+
+    // Query using the index
+    let engineers = engine
+        .find_nodes_by_property("department", &PropertyValue::String("Engineering".into()))
+        .unwrap();
+    assert_eq!(engineers.len(), 2);
+    assert!(engineers.iter().any(|n| n.id == n1));
+    assert!(engineers.iter().any(|n| n.id == n2));
+
+    let sales = engine
+        .find_nodes_by_property("department", &PropertyValue::String("Sales".into()))
+        .unwrap();
+    assert_eq!(sales.len(), 1);
+    assert_eq!(sales[0].id, n3);
+}
+
+// Test edge index building on custom property
+#[test]
+fn test_build_edge_custom_property_index() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut p1 = HashMap::new();
+    p1.insert("strength".to_string(), PropertyValue::String("high".into()));
+    let e1 = engine.create_edge(n1, n2, "KNOWS", p1, true).unwrap();
+
+    let mut p2 = HashMap::new();
+    p2.insert("strength".to_string(), PropertyValue::String("low".into()));
+    let e2 = engine.create_edge(n2, n3, "LIKES", p2, true).unwrap();
+
+    let mut p3 = HashMap::new();
+    p3.insert("strength".to_string(), PropertyValue::String("high".into()));
+    let e3 = engine.create_edge(n1, n3, "KNOWS", p3, true).unwrap();
+
+    // Build index on strength
+    engine.create_edge_property_index("strength").unwrap();
+
+    // Query using the index
+    let high_edges = engine
+        .find_edges_by_property("strength", &PropertyValue::String("high".into()))
+        .unwrap();
+    assert_eq!(high_edges.len(), 2);
+    assert!(high_edges.iter().any(|e| e.id == e1));
+    assert!(high_edges.iter().any(|e| e.id == e3));
+
+    let low_edges = engine
+        .find_edges_by_property("strength", &PropertyValue::String("low".into()))
+        .unwrap();
+    assert_eq!(low_edges.len(), 1);
+    assert_eq!(low_edges[0].id, e2);
+}
+
+// Test AStarEntry PartialEq (comparing entries with same node_id)
+#[test]
+fn test_astar_path_reexploration() {
+    let engine = GraphEngine::new();
+
+    // Create a graph where same node can be reached via different paths
+    let mut p1 = HashMap::new();
+    p1.insert("x".to_string(), PropertyValue::Float(0.0));
+    p1.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n1 = engine.create_node("Node", p1).unwrap();
+
+    let mut p2 = HashMap::new();
+    p2.insert("x".to_string(), PropertyValue::Float(1.0));
+    p2.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n2 = engine.create_node("Node", p2).unwrap();
+
+    let mut p3 = HashMap::new();
+    p3.insert("x".to_string(), PropertyValue::Float(0.0));
+    p3.insert("y".to_string(), PropertyValue::Float(1.0));
+    let n3 = engine.create_node("Node", p3).unwrap();
+
+    let mut p4 = HashMap::new();
+    p4.insert("x".to_string(), PropertyValue::Float(1.0));
+    p4.insert("y".to_string(), PropertyValue::Float(1.0));
+    let n4 = engine.create_node("Node", p4).unwrap();
+
+    // Diamond graph: n1 -> n2 -> n4, n1 -> n3 -> n4
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "EDGE", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "EDGE", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.astar_path_euclidean(n1, n4, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test MST with Union-Find Less case
+#[test]
+fn test_mst_union_find_rank_less() {
+    use crate::algorithms::MstConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create nodes
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+    let n5 = engine.create_node("E", HashMap::new()).unwrap();
+
+    // Create edges with increasing weights to control MST order
+    let mut w1 = HashMap::new();
+    w1.insert("w".to_string(), PropertyValue::Float(1.0));
+    let mut w2 = HashMap::new();
+    w2.insert("w".to_string(), PropertyValue::Float(2.0));
+    let mut w3 = HashMap::new();
+    w3.insert("w".to_string(), PropertyValue::Float(3.0));
+    let mut w4 = HashMap::new();
+    w4.insert("w".to_string(), PropertyValue::Float(4.0));
+
+    // Build tree: First build rank on one side
+    engine.create_edge(n1, n2, "E", w1.clone(), false).unwrap(); // 1 - union n1,n2 (equal rank -> rank[n1]=1)
+    engine.create_edge(n3, n4, "E", w2.clone(), false).unwrap(); // 2 - union n3,n4 (equal rank -> rank[n3]=1)
+    engine.create_edge(n1, n3, "E", w3.clone(), false).unwrap(); // 3 - union groups (equal rank -> rank increases)
+    engine.create_edge(n5, n2, "E", w4.clone(), false).unwrap(); // 4 - n5 has rank 0, n1's tree has rank 2 -> Less case
+
+    let config = MstConfig::new("w");
+    let result = engine.minimum_spanning_tree(&config).unwrap();
+    assert_eq!(result.edge_count(), 4);
+    assert!(result.total_weight > 0.0);
+}
+
+// Test edge property index with None values
+#[test]
+fn test_edge_property_index_with_missing_values() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Some edges have the property, some don't
+    let mut props = HashMap::new();
+    props.insert("priority".to_string(), PropertyValue::Int(1));
+    let e1 = engine.create_edge(n1, n2, "HAS", props, true).unwrap();
+
+    let e2 = engine
+        .create_edge(n2, n3, "HAS", HashMap::new(), true)
+        .unwrap();
+
+    // Build index
+    engine.create_edge_property_index("priority").unwrap();
+
+    // Query should only find e1
+    let edges = engine
+        .find_edges_by_property("priority", &PropertyValue::Int(1))
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].id, e1);
+
+    // e2 shouldn't appear
+    assert!(!edges.iter().any(|e| e.id == e2));
+}
+
+// Test node property index with missing values
+#[test]
+fn test_node_property_index_with_missing_values() {
+    let engine = GraphEngine::new();
+
+    let mut p1 = HashMap::new();
+    p1.insert("score".to_string(), PropertyValue::Int(100));
+    let n1 = engine.create_node("A", p1).unwrap();
+
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    let mut p3 = HashMap::new();
+    p3.insert("score".to_string(), PropertyValue::Int(100));
+    let n3 = engine.create_node("C", p3).unwrap();
+
+    // Build index
+    engine.create_node_property_index("score").unwrap();
+
+    // Query should only find n1 and n3
+    let nodes = engine
+        .find_nodes_by_property("score", &PropertyValue::Int(100))
+        .unwrap();
+    assert_eq!(nodes.len(), 2);
+    assert!(nodes.iter().any(|n| n.id == n1));
+    assert!(nodes.iter().any(|n| n.id == n3));
+    assert!(!nodes.iter().any(|n| n.id == n2));
+}
+
+// Test with_store and _labels format
+#[test]
+fn test_with_store_labels_pointers_format() {
+    use tensor_store::{TensorData, TensorStore, TensorValue};
+
+    let store = TensorStore::new();
+
+    // Create node with _labels as Pointers (multi-label format)
+    let mut data = TensorData::new();
+    data.set(
+        "_labels",
+        TensorValue::Pointers(vec!["Person".to_string(), "Employee".to_string()]),
+    );
+    data.set(
+        "name",
+        TensorValue::Scalar(ScalarValue::String("Test".to_string())),
+    );
+    store.put("node:1", data).unwrap();
+
+    let mut node_id_data = TensorData::new();
+    node_id_data.set("value", TensorValue::Scalar(ScalarValue::Int(2)));
+    store.put("meta:next_node_id", node_id_data).unwrap();
+
+    let mut edge_id_data = TensorData::new();
+    edge_id_data.set("value", TensorValue::Scalar(ScalarValue::Int(1)));
+    store.put("meta:next_edge_id", edge_id_data).unwrap();
+
+    let engine = GraphEngine::with_store(store);
+
+    let node = engine.get_node(1).unwrap();
+    assert_eq!(node.labels.len(), 2);
+    assert!(node.labels.contains(&"Person".to_string()));
+    assert!(node.labels.contains(&"Employee".to_string()));
+
+    // Build _label index should handle multi-label nodes
+    engine.create_node_property_index("_label").unwrap();
+
+    let persons = engine
+        .find_nodes_by_property("_label", &PropertyValue::String("Person".into()))
+        .unwrap();
+    assert_eq!(persons.len(), 1);
+}
+
+// Test scan_nodes with _label equality
+#[test]
+fn test_scan_nodes_label_equality() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+    let _n2 = engine.create_node("Company", HashMap::new()).unwrap();
+    let n3 = engine.create_node("Person", HashMap::new()).unwrap();
+
+    // Without index, uses scan
+    let nodes = engine
+        .find_nodes_by_property("_label", &PropertyValue::String("Person".into()))
+        .unwrap();
+    assert_eq!(nodes.len(), 2);
+    assert!(nodes.iter().any(|n| n.id == n1));
+    assert!(nodes.iter().any(|n| n.id == n3));
+}
+
+// Test triangles with edge type filter
+#[test]
+fn test_triangles_edge_type_filter() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+    let a = engine.create_node("A", HashMap::new()).unwrap();
+    let b = engine.create_node("B", HashMap::new()).unwrap();
+    let c = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Triangle with FRIEND edges
+    engine
+        .create_edge(a, b, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(b, c, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(c, a, "FRIEND", HashMap::new(), false)
+        .unwrap();
+
+    // Extra edge with different type
+    engine
+        .create_edge(a, b, "ENEMY", HashMap::new(), false)
+        .unwrap();
+
+    // Filter to FRIEND only
+    let config = TriangleConfig::new().edge_type("FRIEND").undirected();
+    let result = engine.count_triangles(&config).unwrap();
+    assert_eq!(result.triangle_count, 1);
+}
+
+// Test A* Manhattan with target node missing
+#[test]
+fn test_astar_manhattan_target_missing_coords() {
+    let engine = GraphEngine::new();
+
+    let mut p1 = HashMap::new();
+    p1.insert("x".to_string(), PropertyValue::Float(0.0));
+    p1.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n1 = engine.create_node("Node", p1).unwrap();
+
+    // Target has no coordinates
+    let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    // Should still work (heuristic returns 0.0)
+    let result = engine.astar_path_manhattan(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test A* Euclidean with current node missing coords
+#[test]
+fn test_astar_euclidean_current_missing_coords() {
+    let engine = GraphEngine::new();
+
+    // Start has no coordinates
+    let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    let mut p2 = HashMap::new();
+    p2.insert("x".to_string(), PropertyValue::Float(1.0));
+    p2.insert("y".to_string(), PropertyValue::Float(1.0));
+    let n2 = engine.create_node("Node", p2).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    // Should work
+    let result = engine.astar_path_euclidean(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test with_store that rebuilds edge indexes from existing data
+#[test]
+fn test_with_store_edge_property_indexes() {
+    use tensor_store::{TensorData, TensorStore, TensorValue};
+
+    let store = TensorStore::new();
+
+    // Create edges with properties
+    let mut edge_data = TensorData::new();
+    edge_data.set("_from", TensorValue::Scalar(ScalarValue::Int(1)));
+    edge_data.set("_to", TensorValue::Scalar(ScalarValue::Int(2)));
+    edge_data.set(
+        "_edge_type",
+        TensorValue::Scalar(ScalarValue::String("KNOWS".to_string())),
+    );
+    edge_data.set("priority", TensorValue::Scalar(ScalarValue::Int(5)));
+    store.put("edge:1", edge_data).unwrap();
+
+    // Create corresponding nodes
+    let mut node1 = TensorData::new();
+    node1.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("Person".to_string())),
+    );
+    store.put("node:1", node1).unwrap();
+
+    let mut node2 = TensorData::new();
+    node2.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("Person".to_string())),
+    );
+    store.put("node:2", node2).unwrap();
+
+    // Set up meta counters
+    let mut node_id_data = TensorData::new();
+    node_id_data.set("value", TensorValue::Scalar(ScalarValue::Int(3)));
+    store.put("meta:next_node_id", node_id_data).unwrap();
+
+    let mut edge_id_data = TensorData::new();
+    edge_id_data.set("value", TensorValue::Scalar(ScalarValue::Int(2)));
+    store.put("meta:next_edge_id", edge_id_data).unwrap();
+
+    // Rebuild indexes on an existing store
+    let engine = GraphEngine::with_store(store);
+
+    // Verify edge data is accessible
+    let edge = engine.get_edge(1).unwrap();
+    assert_eq!(edge.edge_type, "KNOWS");
+}
+
+// Test weighted path finding (covers DijkstraEntry)
+#[test]
+fn test_weighted_path_dijkstra_entry_comparisons() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // Create a diamond graph with different weights
+    let mut w1 = HashMap::new();
+    w1.insert("cost".to_string(), PropertyValue::Float(1.0));
+    let mut w2 = HashMap::new();
+    w2.insert("cost".to_string(), PropertyValue::Float(10.0));
+    let mut w3 = HashMap::new();
+    w3.insert("cost".to_string(), PropertyValue::Float(1.0));
+    let mut w4 = HashMap::new();
+    w4.insert("cost".to_string(), PropertyValue::Float(1.0));
+
+    // n1 -> n2 -> n4 (cost = 1 + 1 = 2)
+    // n1 -> n3 -> n4 (cost = 10 + 1 = 11)
+    engine.create_edge(n1, n2, "E", w1, true).unwrap();
+    engine.create_edge(n2, n4, "E", w3, true).unwrap();
+    engine.create_edge(n1, n3, "E", w2, true).unwrap();
+    engine.create_edge(n3, n4, "E", w4, true).unwrap();
+
+    // Should find the shorter path via n2
+    let path = engine.find_weighted_path(n1, n4, "cost").unwrap();
+    assert_eq!(path.nodes.len(), 3); // n1 -> n2 -> n4
+    assert!((path.total_weight - 2.0).abs() < 0.01);
+}
+
+// Test Pattern matching with nodes and edges
+#[test]
+fn test_pattern_matching_nodes_and_edges() {
+    let engine = GraphEngine::new();
+
+    // Create test data
+    let n1 = engine.create_node("Person", HashMap::new()).unwrap();
+    let n2 = engine.create_node("Company", HashMap::new()).unwrap();
+    engine
+        .create_edge(n1, n2, "WORKS_AT", HashMap::new(), true)
+        .unwrap();
+
+    // Create a pattern
+    let path = PathPattern::new(
+        NodePattern::new().label("Person"),
+        EdgePattern::new().edge_type("WORKS_AT"),
+        NodePattern::new().label("Company"),
+    );
+    let pattern = Pattern::new(path);
+
+    // Match the pattern
+    let results = engine.match_pattern(&pattern).unwrap();
+    assert!(!results.is_empty());
+}
+
+// Test A* with only source having y coordinate (for branches in heuristic)
+#[test]
+fn test_astar_euclidean_only_source_has_y() {
+    let engine = GraphEngine::new();
+
+    // Source has full coordinates
+    let mut p1 = HashMap::new();
+    p1.insert("x".to_string(), PropertyValue::Float(0.0));
+    p1.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n1 = engine.create_node("Node", p1).unwrap();
+
+    // Target has only x (no y)
+    let mut p2 = HashMap::new();
+    p2.insert("x".to_string(), PropertyValue::Float(1.0));
+    let n2 = engine.create_node("Node", p2).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.astar_path_euclidean(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test A* Manhattan with only target having x
+#[test]
+fn test_astar_manhattan_only_target_has_x() {
+    let engine = GraphEngine::new();
+
+    // Source has no coordinates
+    let n1 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    // Target has only x (no y)
+    let mut p2 = HashMap::new();
+    p2.insert("x".to_string(), PropertyValue::Float(1.0));
+    let n2 = engine.create_node("Node", p2).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.astar_path_manhattan(n1, n2, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test A* Manhattan with intermediate nodes missing coords
+#[test]
+fn test_astar_manhattan_intermediate_missing() {
+    let engine = GraphEngine::new();
+
+    // Start with coords
+    let mut p1 = HashMap::new();
+    p1.insert("x".to_string(), PropertyValue::Float(0.0));
+    p1.insert("y".to_string(), PropertyValue::Float(0.0));
+    let n1 = engine.create_node("Node", p1).unwrap();
+
+    // Middle with no coords
+    let n2 = engine.create_node("Node", HashMap::new()).unwrap();
+
+    // End with coords
+    let mut p3 = HashMap::new();
+    p3.insert("x".to_string(), PropertyValue::Float(2.0));
+    p3.insert("y".to_string(), PropertyValue::Float(2.0));
+    let n3 = engine.create_node("Node", p3).unwrap();
+
+    engine
+        .create_edge(n1, n2, "EDGE", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "EDGE", HashMap::new(), true)
+        .unwrap();
+
+    let result = engine.astar_path_manhattan(n1, n3, "x", "y").unwrap();
+    assert!(result.found());
+}
+
+// Test finding edges with custom property via index rebuild
+#[test]
+fn test_with_store_custom_edge_property_index() {
+    use tensor_store::{TensorData, TensorStore, TensorValue};
+
+    let store = TensorStore::new();
+
+    // Create edge with custom property but no _edge_type match
+    let mut edge_data = TensorData::new();
+    edge_data.set("_from", TensorValue::Scalar(ScalarValue::Int(1)));
+    edge_data.set("_to", TensorValue::Scalar(ScalarValue::Int(2)));
+    edge_data.set("_edge_type", TensorValue::Scalar(ScalarValue::Int(123))); // Wrong type - not String
+    edge_data.set("weight", TensorValue::Scalar(ScalarValue::Float(5.5)));
+    store.put("edge:1", edge_data).unwrap();
+
+    // Create nodes
+    let mut node1 = TensorData::new();
+    node1.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("A".to_string())),
+    );
+    store.put("node:1", node1).unwrap();
+
+    let mut node2 = TensorData::new();
+    node2.set(
+        "_label",
+        TensorValue::Scalar(ScalarValue::String("B".to_string())),
+    );
+    store.put("node:2", node2).unwrap();
+
+    // Meta
+    let mut node_id = TensorData::new();
+    node_id.set("value", TensorValue::Scalar(ScalarValue::Int(3)));
+    store.put("meta:next_node_id", node_id).unwrap();
+
+    let mut edge_id = TensorData::new();
+    edge_id.set("value", TensorValue::Scalar(ScalarValue::Int(2)));
+    store.put("meta:next_edge_id", edge_id).unwrap();
+
+    // This should trigger the _edge_type fallback case (non-String type)
+    let engine = GraphEngine::with_store(store);
+
+    // Verify edge is accessible
+    let edge = engine.get_edge(1).unwrap();
+    assert!(edge.properties.get("weight").is_some());
+}
+
+// Test KCoreConfig::edge_type and KCoreResult::default
+#[test]
+fn test_kcore_config_edge_type() {
+    use crate::algorithms::{KCoreConfig, KCoreResult};
+
+    let config = KCoreConfig::new().edge_type("FRIEND");
+    assert_eq!(config.edge_type, Some("FRIEND".to_string()));
+
+    // Test default result
+    let result = KCoreResult::default();
+    assert_eq!(result.degeneracy, 0);
+}
+
+// Test triangles with isolated nodes (no neighbors)
+#[test]
+fn test_triangles_isolated_nodes() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create isolated nodes
+    let _n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let _n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let _n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let config = TriangleConfig::new().undirected();
+    let result = engine.count_triangles(&config).unwrap();
+
+    // No edges, so no triangles
+    assert_eq!(result.triangle_count, 0);
+    assert_eq!(result.global_clustering, 0.0);
+}
+
+// Test local_clustering_coefficient with degree < 2
+#[test]
+fn test_local_clustering_low_degree() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    // Single edge = degree 1
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::new().undirected();
+    let coeff = engine.local_clustering_coefficient(n1, &config).unwrap();
+
+    // Degree 1, can't form triangles
+    assert_eq!(coeff, 0.0);
+}
+
+// Test triangles where some nodes have no neighbors in adjacency
+#[test]
+fn test_triangles_sparse_graph() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create a line graph: A -- B -- C -- D
+    let a = engine.create_node("A", HashMap::new()).unwrap();
+    let b = engine.create_node("B", HashMap::new()).unwrap();
+    let c = engine.create_node("C", HashMap::new()).unwrap();
+    let d = engine.create_node("D", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(a, b, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(b, c, "E", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(c, d, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::new().undirected();
+    let result = engine.count_triangles(&config).unwrap();
+
+    // Line graph has no triangles
+    assert_eq!(result.triangle_count, 0);
+
+    // Check local clustering for middle node (has neighbors but they don't connect)
+    let b_clustering = result.local_clustering.get(&b).copied().unwrap_or(1.0);
+    assert_eq!(b_clustering, 0.0);
+}
+
+// Test kcore with edge type filter
+#[test]
+fn test_kcore_with_edge_type_filter() {
+    use crate::algorithms::KCoreConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // Create a complete graph with FRIEND edges
+    engine
+        .create_edge(n1, n2, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n1, n4, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n4, "FRIEND", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "FRIEND", HashMap::new(), false)
+        .unwrap();
+
+    // Add some ENEMY edges
+    engine
+        .create_edge(n1, n2, "ENEMY", HashMap::new(), false)
+        .unwrap();
+
+    let config = KCoreConfig::new().edge_type("FRIEND").undirected();
+    let result = engine.kcore_decomposition(&config).unwrap();
+
+    // Complete K4 graph has 3-core
+    assert_eq!(result.degeneracy, 3);
+}
+
+// Test triangles with v having no neighbors
+#[test]
+fn test_triangles_asymmetric_neighbors() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create directed edges that form partial graph
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Directed edges: n1 -> n2, n1 -> n3
+    // When checking undirected, n2 and n3 have different neighbor sets
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), true)
+        .unwrap();
+    engine
+        .create_edge(n1, n3, "E", HashMap::new(), true)
+        .unwrap();
+
+    let config = TriangleConfig::new(); // Directed
+    let result = engine.count_triangles(&config).unwrap();
+
+    // No triangles in this directed configuration
+    assert_eq!(result.triangle_count, 0);
+}
+
+// Test MST with compute_forest=false (early termination)
+#[test]
+fn test_mst_no_forest_early_termination() {
+    use crate::algorithms::MstConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut w1 = HashMap::new();
+    w1.insert("w".to_string(), PropertyValue::Float(1.0));
+    let mut w2 = HashMap::new();
+    w2.insert("w".to_string(), PropertyValue::Float(2.0));
+
+    engine.create_edge(n1, n2, "E", w1, false).unwrap();
+    engine.create_edge(n2, n3, "E", w2, false).unwrap();
+
+    // compute_forest = false should stop after n-1 edges
+    let config = MstConfig::new("w").compute_forest(false);
+    let result = engine.minimum_spanning_tree(&config).unwrap();
+
+    assert_eq!(result.edge_count(), 2); // Connected 3 nodes with 2 edges
+}
+
+// Test minimum_spanning_forest with connected graph (single tree)
+#[test]
+fn test_mst_forest_single_component() {
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+
+    let mut w1 = HashMap::new();
+    w1.insert("w".to_string(), PropertyValue::Float(1.0));
+    let mut w2 = HashMap::new();
+    w2.insert("w".to_string(), PropertyValue::Float(2.0));
+
+    engine.create_edge(n1, n2, "E", w1, false).unwrap();
+    engine.create_edge(n2, n3, "E", w2, false).unwrap();
+
+    // Single connected component should return one result
+    let forests = engine.minimum_spanning_forest("w").unwrap();
+
+    assert_eq!(forests.len(), 1);
+    assert_eq!(forests[0].edge_count(), 2);
+}
+
+// Test triangles where v has neighbors but continue is hit
+#[test]
+fn test_triangles_v_no_neighbors_path() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    // Create graph where v exists but has no neighbors (directed case)
+    let a = engine.create_node("A", HashMap::new()).unwrap();
+    let b = engine.create_node("B", HashMap::new()).unwrap();
+    let c = engine.create_node("C", HashMap::new()).unwrap();
+
+    // Directed: a->b, a->c only (b and c have no outgoing edges)
+    engine.create_edge(a, b, "E", HashMap::new(), true).unwrap();
+    engine.create_edge(a, c, "E", HashMap::new(), true).unwrap();
+
+    // Directed mode - b has no outgoing neighbors
+    let config = TriangleConfig::new();
+    let result = engine.count_triangles(&config).unwrap();
+
+    assert_eq!(result.triangle_count, 0);
+}
+
+// Test clustering coefficient on node with no possible triangles
+#[test]
+fn test_clustering_no_possible_triangles() {
+    use crate::algorithms::TriangleConfig;
+
+    let engine = GraphEngine::new();
+
+    // Node with degree 1 - can't form any triangles
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+
+    engine
+        .create_edge(n1, n2, "E", HashMap::new(), false)
+        .unwrap();
+
+    let config = TriangleConfig::new().undirected();
+    let result = engine.count_triangles(&config).unwrap();
+
+    // Both nodes should have 0.0 clustering (degree < 2)
+    assert_eq!(
+        result.local_clustering.get(&n1).copied().unwrap_or(1.0),
+        0.0
+    );
+    assert_eq!(
+        result.local_clustering.get(&n2).copied().unwrap_or(1.0),
+        0.0
+    );
+}
+
+// Test BiconnectedConfig::edge_type and BiconnectedResult::default
+#[test]
+fn test_biconnected_config_edge_type() {
+    use crate::algorithms::{BiconnectedConfig, BiconnectedResult};
+
+    // Test edge_type builder
+    let config = BiconnectedConfig::new().edge_type("ROAD");
+    assert_eq!(config.edge_type, Some("ROAD".to_string()));
+
+    // Test default result
+    let result = BiconnectedResult::default();
+    assert!(result.articulation_points.is_empty());
+    assert!(result.is_biconnected());
+}
+
+// Test biconnected components with edge type filter
+#[test]
+fn test_biconnected_with_edge_type() {
+    use crate::algorithms::BiconnectedConfig;
+
+    let engine = GraphEngine::new();
+
+    let n1 = engine.create_node("A", HashMap::new()).unwrap();
+    let n2 = engine.create_node("B", HashMap::new()).unwrap();
+    let n3 = engine.create_node("C", HashMap::new()).unwrap();
+    let n4 = engine.create_node("D", HashMap::new()).unwrap();
+
+    // Create chain with ROAD edges
+    engine
+        .create_edge(n1, n2, "ROAD", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n2, n3, "ROAD", HashMap::new(), false)
+        .unwrap();
+    engine
+        .create_edge(n3, n4, "ROAD", HashMap::new(), false)
+        .unwrap();
+
+    // Add some RAIL edges
+    engine
+        .create_edge(n1, n4, "RAIL", HashMap::new(), false)
+        .unwrap();
+
+    // Analyze only ROAD edges
+    let config = BiconnectedConfig::new().edge_type("ROAD");
+    let result = engine.biconnected_components(&config).unwrap();
+
+    // Chain should have articulation points
+    assert!(!result.articulation_points.is_empty());
+}

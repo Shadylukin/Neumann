@@ -144,3 +144,154 @@ impl GraphEngineConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default_values() {
+        let config = GraphEngineConfig::default();
+        assert_eq!(config.default_match_limit, 1000);
+        assert_eq!(config.pattern_parallel_threshold, 100);
+        assert_eq!(config.max_variable_length_hops, 20);
+        assert!((config.pagerank_default_damping - 0.85).abs() < f64::EPSILON);
+        assert!((config.pagerank_default_tolerance - 1e-6).abs() < f64::EPSILON);
+        assert_eq!(config.pagerank_default_max_iterations, 100);
+        assert_eq!(config.centrality_parallel_threshold, 100);
+        assert_eq!(config.community_max_passes, 10);
+        assert_eq!(config.label_propagation_max_iterations, 100);
+        assert_eq!(config.index_lock_count, 64);
+        assert_eq!(config.max_path_search_memory_bytes, 100 * 1024 * 1024);
+        assert_eq!(config.parallel_threshold, 100);
+        assert_eq!(config.aggregate_parallel_threshold, 1000);
+        assert_eq!(config.max_unpaginated_results, 100_000);
+    }
+
+    #[test]
+    fn test_config_new_equals_default() {
+        let new_config = GraphEngineConfig::new();
+        let default_config = GraphEngineConfig::default();
+        assert_eq!(
+            new_config.default_match_limit,
+            default_config.default_match_limit
+        );
+        assert_eq!(new_config.index_lock_count, default_config.index_lock_count);
+    }
+
+    #[test]
+    fn test_config_builder_default_match_limit() {
+        let config = GraphEngineConfig::new().default_match_limit(500);
+        assert_eq!(config.default_match_limit, 500);
+    }
+
+    #[test]
+    fn test_config_builder_pattern_parallel_threshold() {
+        let config = GraphEngineConfig::new().pattern_parallel_threshold(50);
+        assert_eq!(config.pattern_parallel_threshold, 50);
+    }
+
+    #[test]
+    fn test_config_builder_max_variable_length_hops() {
+        let config = GraphEngineConfig::new().max_variable_length_hops(10);
+        assert_eq!(config.max_variable_length_hops, 10);
+    }
+
+    #[test]
+    fn test_config_builder_pagerank_settings() {
+        let config = GraphEngineConfig::new()
+            .pagerank_default_damping(0.9)
+            .pagerank_default_tolerance(1e-8)
+            .pagerank_default_max_iterations(200);
+        assert!((config.pagerank_default_damping - 0.9).abs() < f64::EPSILON);
+        assert!((config.pagerank_default_tolerance - 1e-8).abs() < f64::EPSILON);
+        assert_eq!(config.pagerank_default_max_iterations, 200);
+    }
+
+    #[test]
+    fn test_config_builder_centrality_parallel_threshold() {
+        let config = GraphEngineConfig::new().centrality_parallel_threshold(200);
+        assert_eq!(config.centrality_parallel_threshold, 200);
+    }
+
+    #[test]
+    fn test_config_builder_community_max_passes() {
+        let config = GraphEngineConfig::new().community_max_passes(20);
+        assert_eq!(config.community_max_passes, 20);
+    }
+
+    #[test]
+    fn test_config_builder_label_propagation_max_iterations() {
+        let config = GraphEngineConfig::new().label_propagation_max_iterations(50);
+        assert_eq!(config.label_propagation_max_iterations, 50);
+    }
+
+    #[test]
+    fn test_config_builder_index_lock_count() {
+        let config = GraphEngineConfig::new().index_lock_count(128);
+        assert_eq!(config.index_lock_count, 128);
+    }
+
+    #[test]
+    fn test_config_builder_index_lock_count_zero_becomes_one() {
+        let config = GraphEngineConfig::new().index_lock_count(0);
+        assert_eq!(config.index_lock_count, 1);
+    }
+
+    #[test]
+    fn test_config_builder_max_path_search_memory_bytes() {
+        let config = GraphEngineConfig::new().max_path_search_memory_bytes(50 * 1024 * 1024);
+        assert_eq!(config.max_path_search_memory_bytes, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_config_builder_parallel_threshold() {
+        let config = GraphEngineConfig::new().parallel_threshold(250);
+        assert_eq!(config.parallel_threshold, 250);
+    }
+
+    #[test]
+    fn test_config_builder_aggregate_parallel_threshold() {
+        let config = GraphEngineConfig::new().aggregate_parallel_threshold(2000);
+        assert_eq!(config.aggregate_parallel_threshold, 2000);
+    }
+
+    #[test]
+    fn test_config_builder_max_unpaginated_results() {
+        let config = GraphEngineConfig::new().max_unpaginated_results(50_000);
+        assert_eq!(config.max_unpaginated_results, 50_000);
+    }
+
+    #[test]
+    fn test_config_builder_chaining() {
+        let config = GraphEngineConfig::new()
+            .default_match_limit(500)
+            .pattern_parallel_threshold(50)
+            .max_variable_length_hops(15)
+            .pagerank_default_damping(0.9)
+            .index_lock_count(32)
+            .parallel_threshold(200);
+
+        assert_eq!(config.default_match_limit, 500);
+        assert_eq!(config.pattern_parallel_threshold, 50);
+        assert_eq!(config.max_variable_length_hops, 15);
+        assert!((config.pagerank_default_damping - 0.9).abs() < f64::EPSILON);
+        assert_eq!(config.index_lock_count, 32);
+        assert_eq!(config.parallel_threshold, 200);
+    }
+
+    #[test]
+    fn test_config_debug_impl() {
+        let config = GraphEngineConfig::new();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("GraphEngineConfig"));
+        assert!(debug_str.contains("default_match_limit"));
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = GraphEngineConfig::new().default_match_limit(999);
+        let cloned = config.clone();
+        assert_eq!(cloned.default_match_limit, 999);
+    }
+}

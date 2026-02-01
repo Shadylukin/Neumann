@@ -1209,4 +1209,207 @@ mod tests {
         assert_eq!(view.generation, 0);
         assert_eq!(view.partition_status, PartitionStatus::Unknown);
     }
+
+    #[test]
+    fn test_single_node_consensus_current_term() {
+        let consensus = SingleNodeConsensus::new("node1");
+        assert_eq!(consensus.current_term(), 1);
+    }
+
+    #[test]
+    fn test_single_node_consensus_commit_index() {
+        let consensus = SingleNodeConsensus::new("node1");
+        assert_eq!(consensus.commit_index(), 0);
+    }
+
+    #[test]
+    fn test_single_node_membership_is_healthy() {
+        let membership = SingleNodeMembership::new("node1");
+        assert!(membership.is_healthy(&"node1".to_string()));
+        assert!(!membership.is_healthy(&"node2".to_string()));
+    }
+
+    #[test]
+    fn test_single_node_membership_healthy_count() {
+        let membership = SingleNodeMembership::new("node1");
+        assert_eq!(membership.healthy_count(), 1);
+    }
+
+    #[test]
+    fn test_single_node_membership_partition_status() {
+        let membership = SingleNodeMembership::new("node1");
+        assert_eq!(
+            membership.partition_status(),
+            PartitionStatus::QuorumReachable
+        );
+    }
+
+    #[test]
+    fn test_distributed_error_quorum_lost_display() {
+        let err = DistributedError::QuorumLost;
+        assert_eq!(err.to_string(), "Quorum lost");
+    }
+
+    #[test]
+    fn test_distributed_error_timeout_display() {
+        let err = DistributedError::Timeout;
+        assert_eq!(err.to_string(), "Operation timed out");
+    }
+
+    #[test]
+    fn test_distributed_error_shard_not_found_display() {
+        let err = DistributedError::ShardNotFound { shard: 5 };
+        assert!(err.to_string().contains("5"));
+    }
+
+    #[test]
+    fn test_distributed_error_cross_shard_failed_display() {
+        let err = DistributedError::CrossShardFailed {
+            reason: "network partition".to_string(),
+        };
+        assert!(err.to_string().contains("network partition"));
+    }
+
+    #[test]
+    fn test_distributed_error_network_error_display() {
+        let err = DistributedError::NetworkError("connection refused".to_string());
+        assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn test_distributed_error_graph_error_display() {
+        let err = DistributedError::GraphError("node not found".to_string());
+        assert!(err.to_string().contains("node not found"));
+    }
+
+    #[test]
+    fn test_distributed_error_is_error() {
+        let err: Box<dyn std::error::Error> = Box::new(DistributedError::Timeout);
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn test_distributed_config_with_read_replicas_disabled() {
+        let config = DistributedConfig::new("node1").with_read_replicas(false);
+        assert!(!config.enable_read_replicas);
+    }
+
+    #[test]
+    fn test_distributed_config_with_read_replicas_enabled() {
+        let config = DistributedConfig::new("node1").with_read_replicas(true);
+        assert!(config.enable_read_replicas);
+    }
+
+    #[test]
+    fn test_partition_status_variants() {
+        assert_ne!(
+            PartitionStatus::QuorumReachable,
+            PartitionStatus::QuorumLost
+        );
+        assert_ne!(PartitionStatus::Stalemate, PartitionStatus::Unknown);
+        assert_eq!(
+            PartitionStatus::QuorumReachable,
+            PartitionStatus::QuorumReachable
+        );
+    }
+
+    #[test]
+    fn test_raft_state_variants() {
+        assert_ne!(RaftState::Follower, RaftState::Candidate);
+        assert_ne!(RaftState::Candidate, RaftState::Leader);
+        assert_eq!(RaftState::Leader, RaftState::Leader);
+    }
+
+    #[test]
+    fn test_cross_shard_query_new() {
+        let config = DistributedConfig::new("node1");
+        let engine = DistributedGraphEngine::new(config);
+
+        let query = CrossShardQuery::new(&engine, vec![0, 1, 2]);
+        assert_eq!(query.shards(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn test_graph_operation_variants() {
+        let op1 = GraphOperation::CreateNode {
+            label: "Person".to_string(),
+            properties: HashMap::new(),
+        };
+        let _ = format!("{:?}", op1);
+
+        let op2 = GraphOperation::CreateEdge {
+            from_id: 1,
+            to_id: 2,
+            edge_type: "KNOWS".to_string(),
+            properties: HashMap::new(),
+            directed: true,
+        };
+        let _ = format!("{:?}", op2);
+
+        let op3 = GraphOperation::UpdateNode {
+            node_id: 1,
+            properties: HashMap::new(),
+        };
+        let _ = format!("{:?}", op3);
+
+        let op4 = GraphOperation::DeleteNode { node_id: 1 };
+        let _ = format!("{:?}", op4);
+
+        let op5 = GraphOperation::DeleteEdge { edge_id: 1 };
+        let _ = format!("{:?}", op5);
+    }
+
+    #[test]
+    fn test_distributed_stats_default() {
+        let stats = DistributedStats::default();
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.writes, 0);
+        assert_eq!(snapshot.reads, 0);
+        assert_eq!(snapshot.cross_shard_reads, 0);
+        assert_eq!(snapshot.commits, 0);
+        assert_eq!(snapshot.aborts, 0);
+        assert_eq!(snapshot.elections, 0);
+    }
+
+    #[test]
+    fn test_distributed_graph_engine_local_engine() {
+        let config = DistributedConfig::new("node1");
+        let engine = DistributedGraphEngine::new(config);
+
+        let local = engine.local_engine();
+        let node_id = local.create_node("Test", HashMap::new()).unwrap();
+        assert!(local.get_node(node_id).is_ok());
+    }
+
+    #[test]
+    fn test_distributed_error_from_graph_error() {
+        let graph_error = crate::GraphError::NodeNotFound(123);
+        let distributed_error: DistributedError = graph_error.into();
+        match distributed_error {
+            DistributedError::GraphError(msg) => assert!(msg.contains("123")),
+            _ => panic!("Expected GraphError variant"),
+        }
+    }
+
+    #[test]
+    fn test_distributed_config_default() {
+        let config = DistributedConfig::default();
+        assert_eq!(config.node_id, "node1");
+        assert!(config.peers.is_empty());
+        assert!(config.enable_read_replicas);
+    }
+
+    #[test]
+    fn test_cluster_view_clone() {
+        let view = ClusterView {
+            nodes: vec!["node1".to_string()],
+            healthy_nodes: vec!["node1".to_string()],
+            failed_nodes: Vec::new(),
+            generation: 5,
+            partition_status: PartitionStatus::QuorumReachable,
+        };
+        let cloned = view.clone();
+        assert_eq!(cloned.generation, 5);
+        assert_eq!(cloned.nodes.len(), 1);
+    }
 }

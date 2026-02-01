@@ -586,4 +586,284 @@ mod tests {
         let result = engine.astar_path(a, 9999, &AStarConfig::new()).unwrap();
         assert!(!result.found());
     }
+
+    #[test]
+    fn test_astar_config_debug() {
+        let config = AStarConfig::new();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("AStarConfig"));
+        assert!(debug_str.contains("weight_property"));
+        assert!(debug_str.contains("heuristic"));
+    }
+
+    #[test]
+    fn test_astar_config_weight_property() {
+        let config = AStarConfig::new().weight_property("cost");
+        assert_eq!(config.weight_property, Some("cost".to_string()));
+    }
+
+    #[test]
+    fn test_astar_config_default_weight() {
+        let config = AStarConfig::new().default_weight(2.5);
+        assert!((config.default_weight - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_astar_config_edge_type() {
+        let config = AStarConfig::new().edge_type("ROAD");
+        assert_eq!(config.edge_type, Some("ROAD".to_string()));
+    }
+
+    #[test]
+    fn test_astar_config_direction() {
+        let config = AStarConfig::new().direction(Direction::Incoming);
+        assert_eq!(config.direction, Direction::Incoming);
+
+        let config2 = AStarConfig::new().direction(Direction::Both);
+        assert_eq!(config2.direction, Direction::Both);
+    }
+
+    #[test]
+    fn test_astar_config_heuristic() {
+        let config = AStarConfig::new().heuristic(Box::new(|_src, _dst, _engine| 1.0));
+        assert!(config.heuristic.is_some());
+    }
+
+    #[test]
+    fn test_astar_result_empty() {
+        let result = AStarResult::empty();
+        assert!(!result.found());
+        assert_eq!(result.path_length(), None);
+        assert_eq!(result.total_weight(), None);
+        assert_eq!(result.nodes_explored, 0);
+        assert_eq!(result.open_set_size, 0);
+    }
+
+    #[test]
+    fn test_astar_result_default() {
+        let result = AStarResult::default();
+        assert!(!result.found());
+        assert_eq!(result.path, None);
+    }
+
+    #[test]
+    fn test_astar_result_accessors() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 3.0);
+        create_weighted_edge(&engine, b, c, 4.0);
+
+        let result = engine.astar_path(a, c, &AStarConfig::new()).unwrap();
+        assert!(result.found());
+        assert_eq!(result.path_length(), Some(2));
+        assert!((result.total_weight().unwrap() - 7.0).abs() < f64::EPSILON);
+        assert!(result.nodes_explored > 0);
+    }
+
+    #[test]
+    fn test_astar_with_integer_weight() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Int(5));
+        engine.create_edge(a, b, "EDGE", props, true).unwrap();
+
+        let result = engine.astar_path(a, b, &AStarConfig::new()).unwrap();
+        assert!(result.found());
+        assert!((result.total_weight().unwrap() - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_astar_missing_weight_uses_default() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        engine
+            .create_edge(a, b, "EDGE", HashMap::new(), true)
+            .unwrap();
+
+        let config = AStarConfig::new()
+            .weight_property("nonexistent")
+            .default_weight(3.0);
+        let result = engine.astar_path(a, b, &config).unwrap();
+        assert!(result.found());
+        assert!((result.total_weight().unwrap() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_astar_edge_type_filter() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), PropertyValue::Float(1.0));
+        engine.create_edge(b, c, "ROAD", props, true).unwrap();
+
+        let config = AStarConfig::new().edge_type("EDGE");
+        let result = engine.astar_path(a, c, &config).unwrap();
+        assert!(!result.found());
+    }
+
+    #[test]
+    fn test_astar_incoming_direction() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, b, a, 1.0);
+        create_weighted_edge(&engine, c, b, 1.0);
+
+        let config = AStarConfig::new().direction(Direction::Incoming);
+        let result = engine.astar_path(a, c, &config).unwrap();
+        assert!(result.found());
+        assert_eq!(result.path_length(), Some(2));
+    }
+
+    #[test]
+    fn test_astar_both_direction() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+        create_weighted_edge(&engine, c, b, 1.0);
+
+        let config = AStarConfig::new().direction(Direction::Both);
+        let result = engine.astar_path(a, c, &config).unwrap();
+        assert!(result.found());
+        assert_eq!(result.path_length(), Some(2));
+    }
+
+    #[test]
+    fn test_astar_custom_heuristic() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+        create_weighted_edge(&engine, b, c, 1.0);
+
+        let heuristic: HeuristicFn = Box::new(|_src, _dst, _engine| 0.5);
+        let config = AStarConfig::new().heuristic(heuristic);
+        let result = engine.astar_path(a, c, &config).unwrap();
+        assert!(result.found());
+        assert!((result.total_weight().unwrap() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_astar_euclidean_missing_coords() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+
+        let result = engine.astar_path_euclidean(a, b, "x", "y").unwrap();
+        assert!(result.found());
+    }
+
+    #[test]
+    fn test_astar_manhattan_missing_coords() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+
+        let result = engine.astar_path_manhattan(a, b, "x", "y").unwrap();
+        assert!(result.found());
+    }
+
+    #[test]
+    fn test_astar_euclidean_with_int_coords() {
+        let engine = GraphEngine::new();
+
+        let mut props_a = HashMap::new();
+        props_a.insert("x".to_string(), PropertyValue::Int(0));
+        props_a.insert("y".to_string(), PropertyValue::Int(0));
+        let a = engine.create_node("Point", props_a).unwrap();
+
+        let mut props_b = HashMap::new();
+        props_b.insert("x".to_string(), PropertyValue::Int(3));
+        props_b.insert("y".to_string(), PropertyValue::Int(4));
+        let b = engine.create_node("Point", props_b).unwrap();
+
+        create_weighted_edge(&engine, a, b, 5.0);
+
+        let result = engine.astar_path_euclidean(a, b, "x", "y").unwrap();
+        assert!(result.found());
+    }
+
+    #[test]
+    fn test_astar_manhattan_with_int_coords() {
+        let engine = GraphEngine::new();
+
+        let mut props_a = HashMap::new();
+        props_a.insert("x".to_string(), PropertyValue::Int(0));
+        props_a.insert("y".to_string(), PropertyValue::Int(0));
+        let a = engine.create_node("Point", props_a).unwrap();
+
+        let mut props_b = HashMap::new();
+        props_b.insert("x".to_string(), PropertyValue::Int(3));
+        props_b.insert("y".to_string(), PropertyValue::Int(4));
+        let b = engine.create_node("Point", props_b).unwrap();
+
+        create_weighted_edge(&engine, a, b, 7.0);
+
+        let result = engine.astar_path_manhattan(a, b, "x", "y").unwrap();
+        assert!(result.found());
+    }
+
+    #[test]
+    fn test_astar_source_not_found() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+
+        let result = engine.astar_path(9999, a, &AStarConfig::new()).unwrap();
+        assert!(!result.found());
+    }
+
+    #[test]
+    fn test_astar_multiple_paths() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+        let c = engine.create_node("C", HashMap::new()).unwrap();
+        let d = engine.create_node("D", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 1.0);
+        create_weighted_edge(&engine, b, d, 1.0);
+        create_weighted_edge(&engine, a, c, 1.0);
+        create_weighted_edge(&engine, c, d, 1.0);
+
+        let result = engine.astar_path(a, d, &AStarConfig::new()).unwrap();
+        assert!(result.found());
+        assert_eq!(result.path_length(), Some(2));
+    }
+
+    #[test]
+    fn test_astar_dijkstra_fallback() {
+        let engine = GraphEngine::new();
+        let a = engine.create_node("A", HashMap::new()).unwrap();
+        let b = engine.create_node("B", HashMap::new()).unwrap();
+
+        create_weighted_edge(&engine, a, b, 3.0);
+
+        let config = AStarConfig::new();
+        let result = engine.astar_path(a, b, &config).unwrap();
+        assert!(result.found());
+    }
 }
